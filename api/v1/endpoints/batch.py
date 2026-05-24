@@ -3,8 +3,10 @@
 
 import logging
 import json
+import threading
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -38,10 +40,15 @@ class BatchRunItem(BaseModel):
     completed_at: Optional[str] = None
     report_path: Optional[str] = None
     results_json: Optional[str] = None
+    stock_codes_json: Optional[str] = None
 
 
 class BatchRunListResponse(BaseModel):
     runs: list[BatchRunItem]
+
+
+class BatchRunResumeRequest(BaseModel):
+    stock_codes: list[str] = Field(default_factory=list, description="股票代码列表，旧批次缺少持久化列表时用于续跑")
 
 
 class BatchScheduleRequest(BaseModel):
@@ -61,6 +68,7 @@ class BatchScheduleResponse(BaseModel):
 
 # In-memory progress tracker for running batches
 _running_batch: Optional[dict] = None
+_running_lock = threading.Lock()
 
 
 @router.post("/run", status_code=202)
@@ -80,38 +88,24 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
     if not stock_codes:
         raise HTTPException(status_code=400, detail="股票列表为空")
 
-    global _running_batch
-    if _running_batch and _running_batch.get("running"):
+    if _is_batch_running():
         raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
 
     runner = BatchRunner()
-    _running_batch = {"running": True}
-
-    def on_progress(state):
-        _running_batch["state"] = state.to_dict()
 
     try:
-        # Run in a thread so the request doesn't block (for 202 response)
-        import threading
-
-        def _run():
-            try:
-                state = runner.run(
-                    stock_codes=stock_codes,
-                    system_prompt=template["content"],
-                    template_name=template["name"],
-                    template_id=template["id"],
-                    triggered_by="manual",
-                    on_progress=on_progress,
-                )
-                _running_batch["state"] = state.to_dict()
-            finally:
-                _running_batch["running"] = False
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
+        _start_batch_thread(
+            lambda on_progress: runner.run(
+                stock_codes=stock_codes,
+                system_prompt=template["content"],
+                template_name=template["name"],
+                template_id=template["id"],
+                triggered_by="manual",
+                on_progress=on_progress,
+            )
+        )
     except Exception as exc:
-        _running_batch["running"] = False
+        _mark_batch_stopped()
         raise HTTPException(status_code=500, detail=f"启动跑批失败: {exc}")
 
     return {"message": "跑批已启动", "stock_count": len(stock_codes), "template_name": template["name"]}
@@ -145,6 +139,60 @@ async def get_batch_run_detail(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail="跑批记录不存在")
     return BatchRunItem(**run)
+
+
+@router.post("/runs/{run_id}/resume", status_code=202)
+async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
+    """Resume an interrupted batch run and skip stocks that already have persisted results."""
+    if _is_batch_running():
+        raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
+
+    db = DatabaseManager.get_instance()
+    run = db.get_batch_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+    if run.get("completed_at"):
+        raise HTTPException(status_code=400, detail="跑批已完成，无需续跑")
+
+    store = get_prompt_template_store()
+    template_id = run.get("template_id") or ""
+    template = store.get(template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="模板不存在，无法续跑")
+
+    stock_codes = _resolve_resume_stock_codes(run, request.stock_codes)
+    if not stock_codes:
+        raise HTTPException(status_code=400, detail="无法确定续跑股票列表")
+
+    existing_results = _filter_results_for_stock_codes(
+        _parse_results_json(run.get("results_json")),
+        stock_codes,
+    )
+    pending_count = len([code for code in stock_codes if code not in existing_results])
+    runner = BatchRunner()
+
+    try:
+        _start_batch_thread(
+            lambda on_progress: runner.resume(
+                run_id=run_id,
+                stock_codes=stock_codes,
+                system_prompt=template["content"],
+                template_name=template["name"],
+                started_at=_parse_started_at(run.get("started_at")),
+                existing_results=existing_results,
+                on_progress=on_progress,
+            )
+        )
+    except Exception as exc:
+        _mark_batch_stopped()
+        raise HTTPException(status_code=500, detail=f"启动续跑失败: {exc}")
+
+    return {
+        "message": "续跑已启动",
+        "stock_count": len(stock_codes),
+        "pending_count": pending_count,
+        "template_name": template["name"],
+    }
 
 
 @router.get("/runs/{run_id}/report.md", response_class=PlainTextResponse)
@@ -209,6 +257,140 @@ def _build_partial_report_from_run(run: dict) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def resume_incomplete_batches_on_startup() -> bool:
+    """Resume the latest interrupted batch that has a persisted stock list."""
+    if _is_batch_running():
+        return False
+
+    db = DatabaseManager.get_instance()
+    runs = db.get_incomplete_batch_runs(limit=5)
+    for run in runs:
+        stock_codes = _resolve_auto_resume_stock_codes(run)
+        if not stock_codes:
+            continue
+        existing_results = _filter_results_for_stock_codes(
+            _parse_results_json(run.get("results_json")),
+            stock_codes,
+        )
+        if len(existing_results) >= len(stock_codes):
+            continue
+
+        store = get_prompt_template_store()
+        template = store.get(run.get("template_id") or "")
+        if template is None:
+            logger.warning("Cannot auto-resume batch %s: template missing", run.get("run_id"))
+            continue
+
+        runner = BatchRunner()
+        run_id = run["run_id"]
+        _start_batch_thread(
+            lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, template=template, run=run: runner.resume(
+                run_id=run_id,
+                stock_codes=stock_codes,
+                system_prompt=template["content"],
+                template_name=template["name"],
+                started_at=_parse_started_at(run.get("started_at")),
+                existing_results=existing_results,
+                on_progress=on_progress,
+            )
+        )
+        logger.info("Auto-resumed interrupted batch run: run_id=%s", run_id)
+        return True
+    return False
+
+
+def _is_batch_running() -> bool:
+    global _running_batch
+    return bool(_running_batch and _running_batch.get("running"))
+
+
+def _mark_batch_stopped():
+    global _running_batch
+    with _running_lock:
+        if _running_batch is not None:
+            _running_batch["running"] = False
+
+
+def _start_batch_thread(run_factory):
+    global _running_batch
+    with _running_lock:
+        if _running_batch and _running_batch.get("running"):
+            raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
+        _running_batch = {"running": True, "state": None}
+
+    def on_progress(state):
+        if _running_batch is not None:
+            _running_batch["state"] = state.to_dict()
+
+    def _run():
+        global _running_batch
+        try:
+            state = run_factory(on_progress)
+            if _running_batch is not None:
+                _running_batch["state"] = state.to_dict()
+        finally:
+            _mark_batch_stopped()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+
+def _parse_results_json(raw: Optional[str]) -> dict:
+    try:
+        parsed = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(code): result
+        for code, result in parsed.items()
+        if code != "__all__" and isinstance(result, dict)
+    }
+
+
+def _parse_stock_codes_json(raw: Optional[str]) -> list[str]:
+    try:
+        parsed = json.loads(raw or "[]")
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(code).strip() for code in parsed if str(code).strip()]
+
+
+def _resolve_resume_stock_codes(run: dict, fallback_stock_codes: list[str]) -> list[str]:
+    stored_codes = _parse_stock_codes_json(run.get("stock_codes_json"))
+    if stored_codes:
+        return stored_codes
+    return [code.strip() for code in fallback_stock_codes if code.strip()]
+
+
+def _resolve_auto_resume_stock_codes(run: dict) -> list[str]:
+    stored_codes = _parse_stock_codes_json(run.get("stock_codes_json"))
+    if stored_codes:
+        return stored_codes
+
+    config_codes = [code.strip() for code in get_config().stock_list if code.strip()]
+    if config_codes and len(config_codes) == int(run.get("stock_count") or 0):
+        return config_codes
+    return []
+
+
+def _filter_results_for_stock_codes(results: dict, stock_codes: list[str]) -> dict:
+    stock_code_set = set(stock_codes)
+    return {code: result for code, result in results.items() if code in stock_code_set}
+
+
+def _parse_started_at(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 @router.get("/schedule", response_model=BatchScheduleResponse)

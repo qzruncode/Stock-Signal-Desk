@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Play, X } from 'lucide-react';
+import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Play, RotateCcw, X } from 'lucide-react';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useBatchStore } from '../../stores/batchStore';
 import type { PromptTemplateItem } from '../../api/prompts';
@@ -73,6 +73,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     loadTemplates,
     setSelectedTemplateId,
     triggerBatchRun,
+    resumeBatchRun,
     syncCurrentProgress,
     pollProgress,
     fetchRuns,
@@ -173,6 +174,9 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     if (run.report_path) return true;
     if (!run.results_json) return false;
     return run.results_json !== '[]' && run.results_json !== '{}';
+  };
+  const canResumeRun = (run: { completed_at: string | null; success_count: number; fail_count: number; stock_count: number }) => {
+    return !run.completed_at && run.success_count + run.fail_count < run.stock_count;
   };
 
   return (
@@ -294,32 +298,55 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                   <div className="max-h-[200px] overflow-y-auto space-y-1">
                     {runs.map((run) => {
                       const canOpenReport = hasPersistedResults(run);
+                      const canResume = canResumeRun(run);
                       return (
-                        <button
+                        <div
                           key={run.run_id}
-                          type="button"
-                          onClick={() => {
-                            if (canOpenReport) {
-                              void viewReport(run.run_id);
-                            }
-                          }}
-                          disabled={!canOpenReport}
-                          className={cn(
-                            'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover/70',
-                            !canOpenReport && 'opacity-50 cursor-default'
-                          )}
+                          className="flex w-full items-center gap-1 rounded-lg transition-colors hover:bg-hover/70"
                         >
-                          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-text" />
-                          <span className="flex-1 truncate">
-                            {run.template_name || '未知模板'}
-                          </span>
-                          <span className="shrink-0 font-mono text-[10px] text-muted-text">
-                            {run.success_count}/{run.stock_count}
-                          </span>
-                          <span className="shrink-0 text-[10px] text-muted-text">
-                            {run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分'}
-                          </span>
-                        </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (canOpenReport) {
+                                void viewReport(run.run_id);
+                              }
+                            }}
+                            disabled={!canOpenReport}
+                            className={cn(
+                              'flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-xs',
+                              !canOpenReport && 'opacity-50 cursor-default',
+                            )}
+                          >
+                            <FileText className="h-3.5 w-3.5 shrink-0 text-muted-text" />
+                            <span className="flex-1 truncate">
+                              {run.template_name || '未知模板'}
+                            </span>
+                            <span className="shrink-0 font-mono text-[10px] text-muted-text">
+                              {run.success_count}/{run.stock_count}
+                            </span>
+                            <span className="shrink-0 text-[10px] text-muted-text">
+                              {run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分'}
+                            </span>
+                          </button>
+                          {canResume && (
+                            <button
+                              type="button"
+                              title="续跑剩余股票"
+                              disabled={isRunning}
+                              onClick={() => {
+                                if (!isRunning) {
+                                  void resumeBatchRun(run.run_id, stockCodes);
+                                }
+                              }}
+                              className={cn(
+                                'mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-primary transition-colors hover:bg-primary/10',
+                                isRunning && 'opacity-40',
+                              )}
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       );
                     })}
                   </div>

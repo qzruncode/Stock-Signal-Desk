@@ -716,6 +716,7 @@ class BatchRun(Base):
     completed_at = Column(DateTime)
     report_path = Column(Text)
     results_json = Column(Text, default='[]')
+    stock_codes_json = Column(Text, default='[]')
 
     __table_args__ = (
         Index('ix_batch_runs_started', 'started_at'),
@@ -802,6 +803,7 @@ class DatabaseManager:
         
         # 创建所有表
         Base.metadata.create_all(self._engine)
+        self._ensure_compatible_schema()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
@@ -858,6 +860,23 @@ class DatabaseManager:
                 logger.warning("初始化 SQLite PRAGMA 失败: %s", exc)
             finally:
                 cursor.close()
+
+    def _ensure_compatible_schema(self) -> None:
+        """Apply additive schema fixes for existing SQLite databases."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            with self._engine.begin() as conn:
+                columns = {
+                    row[1]
+                    for row in conn.exec_driver_sql("PRAGMA table_info(batch_runs)").fetchall()
+                }
+                if "stock_codes_json" not in columns:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE batch_runs ADD COLUMN stock_codes_json TEXT DEFAULT '[]'"
+                    )
+        except Exception:
+            logger.exception("Failed to ensure compatible SQLite schema")
 
     def _is_file_sqlite_database(self) -> bool:
         database = (self._engine.url.database or "").strip()
@@ -2247,6 +2266,17 @@ class DatabaseManager:
                 return None
             return row.report_path
 
+    def get_incomplete_batch_runs(self, limit: int = 5) -> List[Dict[str, Any]]:
+        with self.session_scope() as session:
+            rows = (
+                session.query(BatchRun)
+                .filter(BatchRun.completed_at.is_(None))
+                .order_by(desc(BatchRun.started_at))
+                .limit(limit)
+                .all()
+            )
+            return [_batch_run_to_dict(r) for r in rows]
+
     # ============ batch_schedules ============
 
     def get_batch_schedule(self) -> Optional[Dict[str, Any]]:
@@ -2300,6 +2330,7 @@ def _batch_run_to_dict(row: BatchRun) -> Dict[str, Any]:
         "completed_at": row.completed_at.isoformat() if row.completed_at else None,
         "report_path": row.report_path,
         "results_json": row.results_json,
+        "stock_codes_json": row.stock_codes_json,
     }
 
 

@@ -1,7 +1,7 @@
 import threading
 
 from api.v1.endpoints import batch
-from api.v1.endpoints.batch import _build_partial_report_from_run
+from api.v1.endpoints.batch import _build_partial_report_from_run, _resolve_resume_stock_codes
 from src.batch_runner import BatchRunState, _get_batch_max_concurrent, _save_batch_run_progress
 
 
@@ -40,6 +40,23 @@ def test_batch_progress_counts_failures_as_completed_work():
     assert snapshot["completed"] == 2
     assert snapshot["success"] == 1
     assert snapshot["failed"] == 1
+
+
+def test_batch_state_can_resume_from_existing_results():
+    state = BatchRunState(
+        "run-1",
+        total=3,
+        existing_results={
+            "600519": {"success": True, "text": "ok", "model": "test-model"},
+            "000001": {"success": False, "text": "failed", "model": ""},
+        },
+    )
+
+    snapshot = state.to_dict()
+    assert snapshot["completed"] == 2
+    assert snapshot["success"] == 1
+    assert snapshot["failed"] == 1
+    assert "已恢复 2/3" in snapshot["current_message"]
 
 
 def test_batch_abort_marks_all_work_completed_and_failed():
@@ -129,3 +146,12 @@ def test_partial_report_can_be_built_from_persisted_results():
     assert "批量分析报告（部分结果）" in report
     assert "600519" in report
     assert "分析正文" in report
+
+
+def test_resume_stock_codes_prefers_persisted_original_list():
+    codes = _resolve_resume_stock_codes(
+        {"stock_codes_json": '["600519", "000001"]'},
+        ["300750"],
+    )
+
+    assert codes == ["600519", "000001"]

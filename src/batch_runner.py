@@ -59,16 +59,20 @@ def _get_batch_max_concurrent() -> int:
 class BatchRunState:
     """Track progress of a running batch."""
 
-    def __init__(self, run_id: str, total: int):
+    def __init__(self, run_id: str, total: int, existing_results: Optional[Dict[str, dict]] = None):
         self.run_id = run_id
         self.total = total
-        self.completed = 0
-        self.success = 0
-        self.failed = 0
+        self.results: Dict[str, dict] = _normalize_results(existing_results)
+        self.success = sum(1 for result in self.results.values() if result.get("success"))
+        self.failed = sum(1 for result in self.results.values() if not result.get("success"))
+        self.completed = self.success + self.failed
         self.current_stock: Optional[str] = None
-        self.current_message: str = "准备中..."
+        self.current_message: str = (
+            f"已恢复 {self.completed}/{self.total}，准备续跑..."
+            if self.completed > 0
+            else "准备中..."
+        )
         self.active_stocks: Dict[str, str] = {}
-        self.results: Dict[str, dict] = {}  # stock_code -> result
         self._lock = threading.Lock()
         self._progress_callbacks: List[Callable] = []
 
@@ -201,21 +205,89 @@ class BatchRunner:
         import uuid
 
         run_id = uuid.uuid4().hex
-        total = len(stock_codes)
-        state = BatchRunState(run_id, total)
-
-        if on_progress:
-            state.add_progress_callback(on_progress)
-
         started_at = datetime.now(timezone.utc)
 
         logger.info(
             "Batch run started: run_id=%s stocks=%d template=%s",
-            run_id, total, template_name,
+            run_id, len(stock_codes), template_name,
         )
 
         # Save initial batch record
-        _save_batch_run_start(run_id, triggered_by, template_id, template_name, total)
+        _save_batch_run_start(run_id, triggered_by, template_id, template_name, stock_codes)
+
+        return self._execute(
+            run_id=run_id,
+            stock_codes=stock_codes,
+            pending_stock_codes=stock_codes,
+            system_prompt=system_prompt,
+            template_name=template_name,
+            started_at=started_at,
+            existing_results=None,
+            on_progress=on_progress,
+        )
+
+    def resume(
+        self,
+        *,
+        run_id: str,
+        stock_codes: List[str],
+        system_prompt: str,
+        template_name: str = "默认",
+        started_at: Optional[datetime] = None,
+        existing_results: Optional[Dict[str, dict]] = None,
+        on_progress: Optional[Callable[[BatchRunState], None]] = None,
+    ) -> BatchRunState:
+        """Resume an existing interrupted batch run without re-running completed stocks."""
+        stock_code_set = set(stock_codes)
+        existing_results = {
+            code: result
+            for code, result in _normalize_results(existing_results).items()
+            if code in stock_code_set
+        }
+        completed_codes = set(existing_results)
+        pending_stock_codes = [code for code in stock_codes if code not in completed_codes]
+        if started_at is None:
+            started_at = datetime.now(timezone.utc)
+
+        logger.info(
+            "Batch run resumed: run_id=%s total=%d completed=%d pending=%d template=%s",
+            run_id,
+            len(stock_codes),
+            len(completed_codes),
+            len(pending_stock_codes),
+            template_name,
+        )
+
+        _save_batch_run_resume_start(run_id, stock_codes, existing_results)
+
+        return self._execute(
+            run_id=run_id,
+            stock_codes=stock_codes,
+            pending_stock_codes=pending_stock_codes,
+            system_prompt=system_prompt,
+            template_name=template_name,
+            started_at=started_at,
+            existing_results=existing_results,
+            on_progress=on_progress,
+        )
+
+    def _execute(
+        self,
+        *,
+        run_id: str,
+        stock_codes: List[str],
+        pending_stock_codes: List[str],
+        system_prompt: str,
+        template_name: str,
+        started_at: datetime,
+        existing_results: Optional[Dict[str, dict]],
+        on_progress: Optional[Callable[[BatchRunState], None]],
+    ) -> BatchRunState:
+        state = BatchRunState(run_id, len(stock_codes), existing_results=existing_results)
+
+        if on_progress:
+            state.add_progress_callback(on_progress)
+            on_progress(state)
 
         analyzer = get_analyzer()
         if not analyzer.is_available():
@@ -226,7 +298,7 @@ class BatchRunner:
 
         with ThreadPoolExecutor(max_workers=self._max_concurrent, thread_name_prefix="batch") as pool:
             futures = {}
-            for code in stock_codes:
+            for code in pending_stock_codes:
                 stock_name = _lookup_stock_name(code)
                 future = pool.submit(
                     self._analyze_one,
@@ -292,6 +364,17 @@ def _lookup_stock_name(code: str) -> str:
         return STOCK_NAME_MAP.get(code, code)
     except Exception:
         return code
+
+
+def _normalize_results(value: Optional[Dict[str, dict]]) -> Dict[str, dict]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: Dict[str, dict] = {}
+    for code, result in value.items():
+        if code == "__all__" or not isinstance(result, dict):
+            continue
+        normalized[str(code)] = result
+    return normalized
 
 
 def _write_aggregated_report(
@@ -426,7 +509,7 @@ def _save_batch_run_start(
     triggered_by: str,
     template_id: str,
     template_name: str,
-    stock_count: int,
+    stock_codes: List[str],
 ):
     try:
         db = DatabaseManager.get_instance()
@@ -435,18 +518,41 @@ def _save_batch_run_start(
             triggered_by=triggered_by,
             template_id=template_id,
             template_name=template_name,
-            stock_count=stock_count,
+            stock_count=len(stock_codes),
             success_count=0,
             fail_count=0,
             started_at=datetime.now(timezone.utc),
             report_path="",
             results_json="[]",
+            stock_codes_json=json.dumps(stock_codes, ensure_ascii=False),
         )
         with db.get_session() as session:
             session.add(record)
             session.commit()
     except Exception:
         logger.exception("Failed to save batch run start record")
+
+
+def _save_batch_run_resume_start(
+    run_id: str,
+    stock_codes: List[str],
+    existing_results: Dict[str, dict],
+):
+    try:
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            record = session.query(BatchRun).filter_by(run_id=run_id).first()
+            if record:
+                record.stock_count = len(stock_codes)
+                record.success_count = sum(1 for result in existing_results.values() if result.get("success"))
+                record.fail_count = sum(1 for result in existing_results.values() if not result.get("success"))
+                record.completed_at = None
+                record.report_path = ""
+                record.results_json = json.dumps(existing_results, ensure_ascii=False)
+                record.stock_codes_json = json.dumps(stock_codes, ensure_ascii=False)
+                session.commit()
+    except Exception:
+        logger.exception("Failed to mark batch run as resumed")
 
 
 def _save_batch_run_end(

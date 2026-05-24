@@ -40,6 +40,7 @@ interface BatchState {
   loadTemplates: () => Promise<void>;
   setSelectedTemplateId: (id: string) => void;
   triggerBatchRun: (stockCodes: string[]) => Promise<boolean>;
+  resumeBatchRun: (runId: string, stockCodes: string[]) => Promise<boolean>;
   syncCurrentProgress: () => Promise<boolean>;
   pollProgress: () => () => void; // Returns stop function
   fetchRuns: () => Promise<void>;
@@ -131,6 +132,26 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         runFailed: 0,
         currentStock: null,
         currentMessage: '准备中...',
+      });
+      return true;
+    } catch (err) {
+      set({ error: getParsedApiError(err) });
+      return false;
+    }
+  },
+
+  resumeBatchRun: async (runId, stockCodes) => {
+    try {
+      const result = await batchApi.resumeRun(runId, stockCodes);
+      set({
+        error: null,
+        isRunning: true,
+        runStockCount: result.stock_count,
+        runCompleted: Math.max(0, result.stock_count - result.pending_count),
+        runSuccess: 0,
+        runFailed: 0,
+        currentStock: null,
+        currentMessage: result.pending_count > 0 ? '准备续跑...' : '正在生成报告...',
       });
       return true;
     } catch (err) {

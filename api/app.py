@@ -132,6 +132,12 @@ async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
     app.state.system_config_service = SystemConfigService()
     try:
+        from api.v1.endpoints.batch import resume_incomplete_batches_on_startup
+
+        resume_incomplete_batches_on_startup()
+    except Exception:
+        logger.exception("Failed to auto-resume incomplete batch runs")
+    try:
         yield
     finally:
         if hasattr(app.state, "system_config_service"):

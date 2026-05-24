@@ -13,6 +13,7 @@ export interface BatchRunItem {
   completed_at: string | null;
   report_path: string | null;
   results_json: string | null;
+  stock_codes_json: string | null;
 }
 
 export interface BatchRunListResponse {
@@ -51,6 +52,15 @@ export interface BatchSchedule {
 export const batchApi = {
   async triggerRun(data: BatchRunTriggerRequest): Promise<{ message: string; stock_count: number; template_name: string }> {
     const response = await apiClient.post('/api/v1/batch/run', data, {
+      validateStatus: (status) => status === 202,
+    });
+    return response.data;
+  },
+
+  async resumeRun(runId: string, stockCodes: string[]): Promise<{ message: string; stock_count: number; pending_count: number; template_name: string }> {
+    const response = await apiClient.post(`/api/v1/batch/runs/${runId}/resume`, {
+      stock_codes: stockCodes,
+    }, {
       validateStatus: (status) => status === 202,
     });
     return response.data;
