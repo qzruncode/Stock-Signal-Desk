@@ -1,0 +1,362 @@
+# -*- coding: utf-8 -*-
+"""
+===================================
+批量跑批模块
+===================================
+
+职责：
+1. 并发控制：Semaphore(3)，一个完成下一个进入
+2. 每只股票调用一次 AI（ai_caller）
+3. 结果汇总为单个 MD 文件，存入 reports/ 目录
+4. 跑批完成后自动推送通知
+5. 跑批记录存入数据库
+"""
+
+import json
+import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+from src.ai_caller import call_ai_for_stock
+from src.analyzer import GeminiAnalyzer, get_analyzer
+from src.storage import BatchRun, DatabaseManager, persist_llm_usage
+
+logger = logging.getLogger(__name__)
+
+BATCH_REPORTS_DIR = Path(__file__).parent.parent / "reports" / "batch"
+MAX_CONCURRENT = 3
+
+
+class BatchRunState:
+    """Track progress of a running batch."""
+
+    def __init__(self, run_id: str, total: int):
+        self.run_id = run_id
+        self.total = total
+        self.completed = 0
+        self.failed = 0
+        self.results: Dict[str, dict] = {}  # stock_code -> result
+        self._lock = threading.Lock()
+        self._progress_callbacks: List[Callable] = []
+
+    def add_result(self, stock_code: str, success: bool, text: str, model: str):
+        with self._lock:
+            if success:
+                self.completed += 1
+            else:
+                self.failed += 1
+            self.results[stock_code] = {
+                "success": success,
+                "text": text,
+                "model": model,
+            }
+            for cb in self._progress_callbacks:
+                try:
+                    cb(self)
+                except Exception:
+                    pass
+
+    def add_progress_callback(self, cb: Callable):
+        self._progress_callbacks.append(cb)
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            return {
+                "run_id": self.run_id,
+                "total": self.total,
+                "completed": self.completed,
+                "failed": self.failed,
+                "results": dict(self.results),
+            }
+
+
+class BatchRunner:
+    """批量跑批执行器。
+
+    用法::
+
+        runner = BatchRunner()
+        runner.run(
+            stock_codes=["600519", "000001"],
+            system_prompt="...",
+            template_name="默认",
+            on_progress=lambda state: print(state.completed),
+        )
+    """
+
+    def __init__(self, max_concurrent: int = MAX_CONCURRENT):
+        self._semaphore = threading.Semaphore(max_concurrent)
+        self._max_concurrent = max_concurrent
+
+    def run(
+        self,
+        stock_codes: List[str],
+        system_prompt: str,
+        *,
+        template_name: str = "默认",
+        template_id: str = "",
+        triggered_by: str = "manual",
+        on_progress: Optional[Callable[[BatchRunState], None]] = None,
+    ) -> BatchRunState:
+        """执行批量跑批。
+
+        Args:
+            stock_codes: 股票代码列表
+            system_prompt: 提示词模板内容（用作 system prompt）
+            template_name: 模板名称
+            template_id: 模板 ID
+            triggered_by: 触发来源 (manual/scheduled)
+            on_progress: 每完成一只股票时回调
+
+        Returns:
+            BatchRunState with aggregated results
+        """
+        import uuid
+
+        run_id = uuid.uuid4().hex
+        total = len(stock_codes)
+        state = BatchRunState(run_id, total)
+
+        if on_progress:
+            state.add_progress_callback(on_progress)
+
+        started_at = datetime.now(timezone.utc)
+
+        logger.info(
+            "Batch run started: run_id=%s stocks=%d template=%s",
+            run_id, total, template_name,
+        )
+
+        # Save initial batch record
+        _save_batch_run_start(run_id, triggered_by, template_id, template_name, total)
+
+        analyzer = get_analyzer()
+        if not analyzer.is_available():
+            logger.error("Batch run aborted: LLM not available")
+            state.add_result("__all__", False, "LLM 未配置，无法执行跑批", "")
+            _save_batch_run_end(run_id, state, started_at)
+            return state
+
+        with ThreadPoolExecutor(max_workers=self._max_concurrent, thread_name_prefix="batch") as pool:
+            futures = {}
+            for code in stock_codes:
+                stock_name = _lookup_stock_name(code)
+                future = pool.submit(
+                    self._analyze_one,
+                    analyzer, system_prompt, code, stock_name,
+                )
+                futures[future] = code
+
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    success, text, model = future.result()
+                except Exception as exc:
+                    logger.exception("Batch task for %s crashed", code)
+                    success, text, model = False, str(exc), ""
+                state.add_result(code, success, text, model)
+
+        # Generate aggregated MD
+        report_path = _write_aggregated_report(run_id, state, template_name, started_at)
+
+        # Save final batch record
+        _save_batch_run_end(run_id, state, started_at, report_path)
+
+        # Send notification
+        _send_batch_notification(run_id, state, template_name, report_path)
+
+        logger.info(
+            "Batch run complete: run_id=%s ok=%d fail=%d",
+            run_id, state.completed, state.failed,
+        )
+        return state
+
+    def _analyze_one(
+        self,
+        analyzer: GeminiAnalyzer,
+        system_prompt: str,
+        stock_code: str,
+        stock_name: str,
+    ) -> tuple:
+        """Analyze one stock, respecting the concurrency semaphore."""
+        with self._semaphore:
+            try:
+                text, model, _usage = call_ai_for_stock(
+                    analyzer,
+                    system_prompt,
+                    stock_code,
+                    stock_name,
+                )
+                return True, text, model
+            except Exception as exc:
+                logger.exception("AI call failed for %s(%s)", stock_name, stock_code)
+                return False, str(exc), ""
+
+
+def _lookup_stock_name(code: str) -> str:
+    try:
+        from src.data.stock_mapping import STOCK_NAME_MAP
+        return STOCK_NAME_MAP.get(code, code)
+    except Exception:
+        return code
+
+
+def _write_aggregated_report(
+    run_id: str,
+    state: BatchRunState,
+    template_name: str,
+    started_at: datetime,
+) -> str:
+    """Write aggregated MD report and return the file path."""
+    BATCH_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    ts = started_at.strftime("%Y%m%d_%H%M%S")
+    filename = f"batch_{ts}_{run_id[:8]}.md"
+    filepath = BATCH_REPORTS_DIR / filename
+
+    lines = [
+        f"# 批量分析报告",
+        f"",
+        f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- **分析模板**: {template_name}",
+        f"- **股票数量**: {state.total}",
+        f"- **成功**: {state.completed} / **失败**: {state.failed}",
+        f"",
+        "---",
+        "",
+    ]
+
+    for code, result in state.results.items():
+        if code == "__all__":
+            continue
+        lines.append(f"## {code}")
+        lines.append("")
+        if result["success"]:
+            lines.append(f"> 模型: {result['model']}")
+            lines.append("")
+            lines.append(result["text"])
+        else:
+            lines.append(f"> 分析失败: {result['text']}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    content = "\n".join(lines)
+    filepath.write_text(content, encoding="utf-8")
+    logger.info("Batch report saved: %s", filepath)
+    return str(filepath)
+
+
+def _send_batch_notification(
+    run_id: str,
+    state: BatchRunState,
+    template_name: str,
+    report_path: str,
+):
+    """Send WeChat notification about completed batch run."""
+    try:
+        from src.notification import get_notification_service
+
+        content = _build_batch_notification_content(run_id, state, template_name, report_path)
+        service = get_notification_service()
+        service.send(content)
+        logger.info("Batch notification sent: run_id=%s", run_id)
+    except Exception:
+        logger.exception("Failed to send batch notification")
+
+
+def _build_batch_notification_content(
+    run_id: str,
+    state: BatchRunState,
+    template_name: str,
+    report_path: str,
+) -> str:
+    """Build batch completion notification markdown content."""
+    from datetime import datetime
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_name = Path(report_path).name
+
+    lines = [
+        "## 批量分析完成",
+        "",
+        f"> 模板: **{template_name}**",
+        f"> 时间: {now}",
+        f"> 成功: **{state.completed}/{state.total}** | 失败: **{state.failed}**",
+        f"> 报告: `{report_name}`",
+        "",
+    ]
+
+    # Top 3 results summary
+    sorted_codes = sorted(
+        state.results.items(),
+        key=lambda item: len(item[1].get("text", "")) if item[1].get("success") else 0,
+        reverse=True,
+    )
+    if sorted_codes:
+        lines.append("### 分析结果")
+        lines.append("")
+        for code, result in sorted_codes[:10]:
+            if code == "__all__":
+                continue
+            status = "✅" if result["success"] else "❌"
+            text_preview = result["text"][:60].replace("\n", " ") if result["text"] else "无内容"
+            lines.append(f"- {status} **{code}**: {text_preview}...")
+        lines.append("")
+
+    lines.append(f"*批量分析完成于 {now}*")
+    return "\n".join(lines)
+
+
+def _save_batch_run_start(
+    run_id: str,
+    triggered_by: str,
+    template_id: str,
+    template_name: str,
+    stock_count: int,
+):
+    try:
+        db = DatabaseManager.get_instance()
+        record = BatchRun(
+            run_id=run_id,
+            triggered_by=triggered_by,
+            template_id=template_id,
+            template_name=template_name,
+            stock_count=stock_count,
+            success_count=0,
+            fail_count=0,
+            started_at=datetime.now(timezone.utc),
+            report_path="",
+            results_json="[]",
+        )
+        with db.get_session() as session:
+            session.add(record)
+            session.commit()
+    except Exception:
+        logger.exception("Failed to save batch run start record")
+
+
+def _save_batch_run_end(
+    run_id: str,
+    state: BatchRunState,
+    started_at: datetime,
+    report_path: str = "",
+):
+    try:
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            record = session.query(BatchRun).filter_by(run_id=run_id).first()
+            if record:
+                record.success_count = state.completed
+                record.fail_count = state.failed
+                record.completed_at = datetime.now(timezone.utc)
+                record.report_path = report_path
+                record.results_json = json.dumps(state.results, ensure_ascii=False)
+                session.commit()
+    except Exception:
+        logger.exception("Failed to save batch run end record")
+
