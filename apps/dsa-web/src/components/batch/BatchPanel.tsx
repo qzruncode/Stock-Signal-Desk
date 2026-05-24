@@ -64,6 +64,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     runSuccess,
     runFailed,
     currentStock,
+    currentMessage,
     runs,
     selectedReportContent,
     isLoadingReport,
@@ -257,7 +258,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-muted-text">
-                      {currentStock ? `分析中: ${currentStock}` : '准备中...'}
+                      {currentMessage || (currentStock ? `分析中: ${currentStock}` : '准备中...')}
                     </span>
                     <span className="font-mono text-foreground tabular-nums">
                       {runCompleted}/{runStockCount} ({progressPercent}%)

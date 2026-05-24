@@ -17,6 +17,7 @@ interface BatchState {
   runSuccess: number;
   runFailed: number;
   currentStock: string | null;
+  currentMessage: string | null;
 
   // Batch history
   runs: BatchRunItem[];
@@ -60,6 +61,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
   runSuccess: 0,
   runFailed: 0,
   currentStock: null,
+  currentMessage: null,
 
   runs: [],
   isLoadingRuns: false,
@@ -127,6 +129,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         runSuccess: 0,
         runFailed: 0,
         currentStock: null,
+        currentMessage: '准备中...',
       });
       return true;
     } catch (err) {
@@ -146,7 +149,18 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         if (!active) return;
 
         if (!progress.running) {
-          set({ isRunning: false });
+          if (progress.state) {
+            set({
+              isRunning: false,
+              runCompleted: (progress.state.completed as number) || 0,
+              runSuccess: (progress.state.success as number) || 0,
+              runFailed: (progress.state.failed as number) || 0,
+              currentStock: (progress.state.current_stock as string) || null,
+              currentMessage: (progress.state.current_message as string) || null,
+            });
+          } else {
+            set({ isRunning: false, currentStock: null, currentMessage: null });
+          }
           if (timer) {
             clearInterval(timer);
             timer = null;
@@ -161,6 +175,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
             runSuccess: (progress.state.success as number) || 0,
             runFailed: (progress.state.failed as number) || 0,
             currentStock: (progress.state.current_stock as string) || null,
+            currentMessage: (progress.state.current_message as string) || null,
           });
         }
       } catch {

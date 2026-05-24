@@ -106,7 +106,6 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
                 _running_batch["state"] = state.to_dict()
             finally:
                 _running_batch["running"] = False
-                _running_batch.pop("state", None)
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
@@ -123,6 +122,18 @@ async def list_batch_runs(limit: int = 20):
     db = DatabaseManager.get_instance()
     runs = db.get_batch_runs(limit=limit)
     return BatchRunListResponse(runs=[BatchRunItem(**r) for r in runs])
+
+
+@router.get("/runs/current")
+async def get_current_batch_status():
+    """获取当前正在执行的跑批进度。"""
+    global _running_batch
+    if _running_batch is None:
+        return {"running": False, "state": None}
+    if _running_batch.get("running"):
+        state = _running_batch.get("state", {})
+        return {"running": True, "state": state}
+    return {"running": False, "state": _running_batch.get("state")}
 
 
 @router.get("/runs/{run_id}")
@@ -156,18 +167,6 @@ async def get_batch_run_report(run_id: str):
         raise HTTPException(status_code=404, detail="报告文件不存在")
 
     return path.read_text(encoding="utf-8")
-
-
-@router.get("/runs/current")
-async def get_current_batch_status():
-    """获取当前正在执行的跑批进度。"""
-    global _running_batch
-    if _running_batch is None:
-        return {"running": False, "state": None}
-    if _running_batch.get("running"):
-        state = _running_batch.get("state", {})
-        return {"running": True, "state": state}
-    return {"running": False, "state": _running_batch.get("state")}
 
 
 @router.get("/schedule", response_model=BatchScheduleResponse)

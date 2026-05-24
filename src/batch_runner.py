@@ -5,7 +5,7 @@
 ===================================
 
 职责：
-1. 并发控制：Semaphore(3)，一个完成下一个进入
+1. 并发控制：默认 5 路并发，可通过 BATCH_MAX_CONCURRENT 调整
 2. 每只股票调用一次 AI（ai_caller）
 3. 结果汇总为单个 MD 文件，存入 reports/ 目录
 4. 跑批完成后自动推送通知
@@ -14,6 +14,7 @@
 
 import json
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,7 +29,31 @@ from src.storage import BatchRun, DatabaseManager, persist_llm_usage
 logger = logging.getLogger(__name__)
 
 BATCH_REPORTS_DIR = Path(__file__).parent.parent / "reports" / "batch"
-MAX_CONCURRENT = 3
+DEFAULT_MAX_CONCURRENT = 5
+MAX_CONCURRENT_LIMIT = 10
+
+
+def _get_batch_max_concurrent() -> int:
+    raw = os.getenv("BATCH_MAX_CONCURRENT", "").strip()
+    if not raw:
+        return DEFAULT_MAX_CONCURRENT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Invalid BATCH_MAX_CONCURRENT=%r, using default %d", raw, DEFAULT_MAX_CONCURRENT)
+        return DEFAULT_MAX_CONCURRENT
+    if value < 1:
+        logger.warning("BATCH_MAX_CONCURRENT=%d is too small, using 1", value)
+        return 1
+    if value > MAX_CONCURRENT_LIMIT:
+        logger.warning(
+            "BATCH_MAX_CONCURRENT=%d exceeds limit %d, using %d",
+            value,
+            MAX_CONCURRENT_LIMIT,
+            MAX_CONCURRENT_LIMIT,
+        )
+        return MAX_CONCURRENT_LIMIT
+    return value
 
 
 class BatchRunState:
@@ -38,27 +63,79 @@ class BatchRunState:
         self.run_id = run_id
         self.total = total
         self.completed = 0
+        self.success = 0
         self.failed = 0
+        self.current_stock: Optional[str] = None
+        self.current_message: str = "准备中..."
+        self.active_stocks: Dict[str, str] = {}
         self.results: Dict[str, dict] = {}  # stock_code -> result
         self._lock = threading.Lock()
         self._progress_callbacks: List[Callable] = []
 
+    def _notify(self, callbacks: List[Callable]):
+        for cb in callbacks:
+            try:
+                cb(self)
+            except Exception:
+                logger.debug("Batch progress callback failed", exc_info=True)
+
+    def start_stock(self, stock_code: str, stock_name: str):
+        label = f"{stock_name}({stock_code})" if stock_name and stock_name != stock_code else stock_code
+        with self._lock:
+            self.current_stock = label
+            self.current_message = f"{label}：正在调用 AI 模型并联网搜索..."
+            self.active_stocks[stock_code] = label
+            callbacks = list(self._progress_callbacks)
+        self._notify(callbacks)
+
+    def update_stock_progress(self, stock_code: str, stock_name: str, chars_received: int):
+        label = f"{stock_name}({stock_code})" if stock_name and stock_name != stock_code else stock_code
+        with self._lock:
+            self.current_stock = label
+            self.current_message = f"{label}：已接收 {chars_received} 字，仍在生成..."
+            self.active_stocks[stock_code] = label
+            callbacks = list(self._progress_callbacks)
+        self._notify(callbacks)
+
+    def abort_all(self, text: str):
+        with self._lock:
+            self.completed = self.total
+            self.success = 0
+            self.failed = self.total
+            self.current_stock = None
+            self.current_message = text
+            self.active_stocks.clear()
+            self.results["__all__"] = {
+                "success": False,
+                "text": text,
+                "model": "",
+            }
+            callbacks = list(self._progress_callbacks)
+        self._notify(callbacks)
+
     def add_result(self, stock_code: str, success: bool, text: str, model: str):
         with self._lock:
+            self.completed += 1
             if success:
-                self.completed += 1
+                self.success += 1
+                status_text = "分析完成"
             else:
                 self.failed += 1
+                status_text = "分析失败"
+            self.active_stocks.pop(stock_code, None)
+            self.current_stock = next(iter(self.active_stocks.values()), None)
+            self.current_message = (
+                f"{stock_code}：{status_text}"
+                if self.current_stock is None
+                else f"{self.current_stock}：正在调用 AI 模型并联网搜索..."
+            )
             self.results[stock_code] = {
                 "success": success,
                 "text": text,
                 "model": model,
             }
-            for cb in self._progress_callbacks:
-                try:
-                    cb(self)
-                except Exception:
-                    pass
+            callbacks = list(self._progress_callbacks)
+        self._notify(callbacks)
 
     def add_progress_callback(self, cb: Callable):
         self._progress_callbacks.append(cb)
@@ -69,7 +146,11 @@ class BatchRunState:
                 "run_id": self.run_id,
                 "total": self.total,
                 "completed": self.completed,
+                "success": self.success,
                 "failed": self.failed,
+                "current_stock": self.current_stock,
+                "current_message": self.current_message,
+                "active_stocks": list(self.active_stocks.values()),
                 "results": dict(self.results),
             }
 
@@ -88,7 +169,9 @@ class BatchRunner:
         )
     """
 
-    def __init__(self, max_concurrent: int = MAX_CONCURRENT):
+    def __init__(self, max_concurrent: Optional[int] = None):
+        if max_concurrent is None:
+            max_concurrent = _get_batch_max_concurrent()
         self._semaphore = threading.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
 
@@ -137,7 +220,7 @@ class BatchRunner:
         analyzer = get_analyzer()
         if not analyzer.is_available():
             logger.error("Batch run aborted: LLM not available")
-            state.add_result("__all__", False, "LLM 未配置，无法执行跑批", "")
+            state.abort_all("LLM 未配置，无法执行跑批")
             _save_batch_run_end(run_id, state, started_at)
             return state
 
@@ -147,7 +230,7 @@ class BatchRunner:
                 stock_name = _lookup_stock_name(code)
                 future = pool.submit(
                     self._analyze_one,
-                    analyzer, system_prompt, code, stock_name,
+                    analyzer, system_prompt, code, stock_name, state,
                 )
                 futures[future] = code
 
@@ -181,15 +264,20 @@ class BatchRunner:
         system_prompt: str,
         stock_code: str,
         stock_name: str,
+        state: BatchRunState,
     ) -> tuple:
         """Analyze one stock, respecting the concurrency semaphore."""
         with self._semaphore:
             try:
+                state.start_stock(stock_code, stock_name)
                 text, model, _usage = call_ai_for_stock(
                     analyzer,
                     system_prompt,
                     stock_code,
                     stock_name,
+                    stream_progress_callback=lambda chars: state.update_stock_progress(
+                        stock_code, stock_name, chars
+                    ),
                 )
                 return True, text, model
             except Exception as exc:
@@ -224,7 +312,7 @@ def _write_aggregated_report(
         f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
         f"- **分析模板**: {template_name}",
         f"- **股票数量**: {state.total}",
-        f"- **成功**: {state.completed} / **失败**: {state.failed}",
+        f"- **成功**: {state.success} / **失败**: {state.failed}",
         f"",
         "---",
         "",
@@ -286,7 +374,7 @@ def _build_batch_notification_content(
         "",
         f"> 模板: **{template_name}**",
         f"> 时间: {now}",
-        f"> 成功: **{state.completed}/{state.total}** | 失败: **{state.failed}**",
+        f"> 成功: **{state.success}/{state.total}** | 失败: **{state.failed}**",
         f"> 报告: `{report_name}`",
         "",
     ]
@@ -351,7 +439,7 @@ def _save_batch_run_end(
         with db.get_session() as session:
             record = session.query(BatchRun).filter_by(run_id=run_id).first()
             if record:
-                record.success_count = state.completed
+                record.success_count = state.success
                 record.fail_count = state.failed
                 record.completed_at = datetime.now(timezone.utc)
                 record.report_path = report_path
@@ -359,4 +447,3 @@ def _save_batch_run_end(
                 session.commit()
     except Exception:
         logger.exception("Failed to save batch run end record")
-

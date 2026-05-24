@@ -33,6 +33,8 @@ export interface BatchRunProgress {
     success?: number;
     failed?: number;
     current_stock?: string;
+    current_message?: string;
+    active_stocks?: string[];
     [key: string]: unknown;
   } | null;
 }
