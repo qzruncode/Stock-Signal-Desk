@@ -16,7 +16,7 @@ export interface AnalysisRequest {
   asyncMode?: boolean;
   stockName?: string;
   originalQuery?: string;
-  selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image';
+  selectionSource?: 'manual' | 'autocomplete' | 'import';
   notify?: boolean;
   promptTemplateId?: string;
 }

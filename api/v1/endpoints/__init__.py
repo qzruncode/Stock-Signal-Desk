@@ -9,17 +9,11 @@ API v1 Endpoints 模块初始化
 """
 
 __all__ = [
-    "health",
     "analysis",
-    "history",
-    "stocks",
-    "backtest",
-    "system_config",
     "auth",
-    "usage",
-    "portfolio",
-    "alerts",
-    "prompts",
     "batch",
+    "history",
+    "prompts",
+    "system_config",
     "watchlist",
 ]

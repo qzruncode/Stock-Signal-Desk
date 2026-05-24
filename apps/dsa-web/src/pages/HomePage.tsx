@@ -243,7 +243,7 @@ const HomePage: React.FC = () => {
     (
       stockCode?: string,
       stockName?: string,
-      selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
+      selectionSource?: 'manual' | 'autocomplete' | 'import',
     ) => {
       void submitAnalysis({
         stockCode,

@@ -47,12 +47,6 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
         "display_order": 50,
     },
     {
-        "category": "backtest",
-        "title": "Backtest",
-        "description": "Backtest engine behavior and evaluation parameters.",
-        "display_order": 60,
-    },
-    {
         "category": "uncategorized",
         "title": "Uncategorized",
         "description": "Keys not mapped in the field registry.",
@@ -939,20 +933,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 60,
-    },
-    "OPENAI_VISION_MODEL": {
-        "title": "OpenAI Vision Model",
-        "description": "Model for image extraction (some APIs e.g. DeepSeek lack vision). Leave empty to use OPENAI_MODEL.",
-        "category": "ai_model",
-        "data_type": "string",
-        "ui_control": "text",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": None,
-        "options": [],
-        "validation": {},
-        "display_order": 61,
     },
     "OPENAI_TEMPERATURE": {
         "title": "OpenAI Temperature",
@@ -2393,76 +2373,6 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "options": [],
         "validation": {},
         "display_order": 55,
-    },
-    "BACKTEST_ENABLED": {
-        "title": "Backtest Enabled",
-        "description": "Whether backtest is enabled.",
-        "category": "backtest",
-        "data_type": "boolean",
-        "ui_control": "switch",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "true",
-        "options": [],
-        "validation": {},
-        "display_order": 10,
-    },
-    "BACKTEST_EVAL_WINDOW_DAYS": {
-        "title": "Backtest Eval Window Days",
-        "description": "Backtest evaluation window in trading days.",
-        "category": "backtest",
-        "data_type": "integer",
-        "ui_control": "number",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "10",
-        "options": [],
-        "validation": {"min": 1, "max": 365},
-        "display_order": 20,
-    },
-    "BACKTEST_MIN_AGE_DAYS": {
-        "title": "Backtest Min Age Days",
-        "description": "Only evaluate analysis records older than this threshold.",
-        "category": "backtest",
-        "data_type": "integer",
-        "ui_control": "number",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "14",
-        "options": [],
-        "validation": {"min": 0, "max": 3650},
-        "display_order": 30,
-    },
-    "BACKTEST_ENGINE_VERSION": {
-        "title": "Backtest Engine Version",
-        "description": "Backtest engine version label.",
-        "category": "backtest",
-        "data_type": "string",
-        "ui_control": "text",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "v1",
-        "options": [],
-        "validation": {},
-        "display_order": 40,
-    },
-    "BACKTEST_NEUTRAL_BAND_PCT": {
-        "title": "Backtest Neutral Band Pct",
-        "description": "Neutral return band percentage for outcome labeling.",
-        "category": "backtest",
-        "data_type": "number",
-        "ui_control": "number",
-        "is_sensitive": False,
-        "is_required": False,
-        "is_editable": True,
-        "default_value": "2.0",
-        "options": [],
-        "validation": {"min": 0.0, "max": 100.0},
-        "display_order": 50,
     }
 }
 
@@ -2555,8 +2465,6 @@ def _is_sensitive_key(key: str) -> bool:
 def _infer_category(key: str) -> str:
     if key == "STOCK_LIST":
         return "base"
-    if key.startswith("BACKTEST_"):
-        return "backtest"
     if key.startswith(("GEMINI_", "OPENAI_", "ANTHROPIC_", "LITELLM_", "AIHUBMIX_", "DEEPSEEK_", "LLM_")):
         return "ai_model"
     if key.endswith("_PRIORITY") or key.startswith(

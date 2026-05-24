@@ -5,7 +5,6 @@ export type SystemConfigCategory =
   | 'notification'
   | 'system'
   | 'agent'
-  | 'backtest'
   | 'uncategorized';
 
 export type SystemConfigDataType =

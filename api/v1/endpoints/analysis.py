@@ -246,9 +246,9 @@ def _handle_async_analysis_batch(
     
     # Preserve metadata for single-stock requests. For batch requests,
     # only carry through metadata that semantically applies to the whole
-    # batch, such as import/image source tracking.
+    # batch, such as import source tracking.
     is_single = len(stock_codes) == 1
-    preserve_batch_metadata = request.selection_source in {"import", "image"}
+    preserve_batch_metadata = request.selection_source == "import"
 
     stock_name = request.stock_name if is_single else None
     original_query = request.original_query if (is_single or preserve_batch_metadata) else None

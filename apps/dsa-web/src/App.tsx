@@ -55,7 +55,6 @@ const AppContent: React.FC = () => {
       <Route element={<Shell />}>
         <Route path="/" element={<HomePage />} />
         <Route path="/portfolio" element={<WatchlistManagePage />} />
-        <Route path="/backtest" element={<Navigate to="/" replace />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

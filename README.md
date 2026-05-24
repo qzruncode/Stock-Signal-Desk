@@ -1,129 +1,146 @@
 # Stock Signal Desk
 
-A股自选股智能分析系统 — 基于多数据源 + LLM 的自动化股票信号分析平台。
+A 股 / 港股 / 美股自选股 AI 分析工作台。项目由 FastAPI 后端和 React WebUI 组成，用于管理自选股、选择分析模板、发起单股或批量分析，并追踪任务输出与历史报告。
 
-## 功能概览
+## 当前功能
 
-- **多数据源聚合** — efinance / akshare / tushare / pytdx / baostock / yfinance / longbridge / tickflow，按优先级自动切换
-- **LLM 智能分析** — 支持 Gemini / DeepSeek / Claude / GPT / 通义千问 / Kimi / Ollama 等数十种模型，单 Key 或多渠道轮询 + fallback
-- **实时行情** — 腾讯财经 / 新浪 / 东财多源量比、换手率、PE、PB 实时数据
-- **15 种内置策略** — 多头趋势、均线金叉、放量突破、缩量回踩、缠论、波浪理论、情绪周期等
-- **Multi-Agent 编排** — 单 Agent 快速分析 / 多 Agent 协作（技术→情报→风控→决策）
-- **新闻搜索** — Tavily / SerpAPI / Brave / SearXNG / 博查 / MiniMax 多引擎聚合
-- **企业微信推送** — 分析结果自动推送到群机器人
-- **Web 管理界面** — FastAPI + 前端，在线配置模型、管理自选股、查看报告
-- **图片识别** — 拍照识别股票代码，一键加入自选
+- **单股 AI 分析**：输入股票代码或名称，选择提示词模板后发起实时分析
+- **任务追踪**：通过 SSE 查看运行中的分析任务，支持查看完整 prompt 与 AI 输出
+- **历史报告**：查看历史分析记录，支持重新分析、查看 Markdown 全文和批量删除历史
+- **提示词模板**：在 WebUI 中新建、编辑、删除、设为默认模板，并用于单股 / 批量分析
+- **自选股管理**：维护 `STOCK_LIST`，支持单条添加、批量添加、按市场分组展示和删除
+- **批量分析**：对当前自选股列表跑批，查看跑批进度、跑批记录和汇总报告
+- **定时跑批**：在 WebUI 中配置每日跑批时间点和使用的提示词模板
+- **模型配置**：在设置页维护模型 API Key、主模型和相关参数，保存后自动重载配置
+- **可选推送**：分析时可开启企业微信推送；跑批完成后也会尝试发送通知
+- **可选认证**：支持运行时开启管理员认证，未登录时跳转登录页
+
+## WebUI 页面
+
+| 路径 | 页面 | 说明 |
+| --- | --- | --- |
+| `/` | 选股通知工作台 | 单股分析、任务列表、历史报告、自选股面板、批量分析面板、模板管理 |
+| `/portfolio` | 自选股列表管理 | 添加、批量添加、筛选、分组展示、删除自选股 |
+| `/settings` | 模型 API 配置 | 维护模型配置并保存到 `.env` |
+| `/login` | 登录页 | 仅在认证开启时使用 |
 
 ## 快速开始
 
 ### 环境要求
 
 - Python 3.10+
-- Node.js 18+（Web 前端构建，可选）
+- Node.js 18+（需要本地开发或重新构建 WebUI 时使用）
 
-### 安装
+### 安装依赖
 
 ```bash
-git clone git@github.com:qzruncode/Stock-Signal-Desk.git
-cd Stock-Signal-Desk
 pip install -r requirements.txt
+
+cd apps/dsa-web
+npm install
+cd ../..
 ```
 
 ### 配置
 
 ```bash
 cp .env.example .env
-# 编辑 .env，至少填入：
-#   STOCK_LIST=600519,300750,002594    # 自选股代码
-#   GEMINI_API_KEY=xxx                 # 或其他 LLM Key
 ```
 
-`.env.example` 中有完整的配置说明，包括所有支持的 LLM 渠道、搜索引擎、数据源等。
+最少需要配置：
 
-### 运行
+```dotenv
+STOCK_LIST=600519,300750,002594
+GEMINI_API_KEY=your_key
+```
+
+也可以使用 DeepSeek、OpenAI / OpenAI-compatible、Anthropic、Moonshot、DashScope、Ollama 等渠道。多渠道配置使用 `LLM_CHANNELS`，具体示例见 `.env.example`。
+
+## 运行
+
+### 推荐：后端托管 WebUI
 
 ```bash
-# 启动 Web 服务（推荐）
-python main.py --serve
-
-# 仅启动 API 服务
 python main.py --serve-only
-
-# 指定端口
-python main.py --serve --port 9000
-
-# 调试模式
-python main.py --debug --serve
 ```
 
-启动后访问 `http://localhost:8000` 打开管理界面，API 文档在 `/docs`。
+启动后访问：
+
+- WebUI: `http://localhost:8000`
+- API 文档: `http://localhost:8000/docs`
+- 健康检查: `http://localhost:8000/api/health`
+
+### 指定端口
+
+```bash
+python main.py --serve-only --port 9000
+```
+
+### 前端开发模式
+
+```bash
+# 终端 1：启动后端
+python main.py --serve-only
+
+# 终端 2：启动前端
+cd apps/dsa-web
+npm run dev
+```
+
+前端开发服务默认访问 `http://localhost:5173`。
+
+## 常用命令
+
+```bash
+# Python 测试
+pytest
+
+# 前端构建
+cd apps/dsa-web && npm run build
+
+# 前端测试
+cd apps/dsa-web && npm run test
+
+# 前端 lint
+cd apps/dsa-web && npm run lint
+```
 
 ## 项目结构
 
-```
-├── main.py                  # 主入口
-├── server.py                # FastAPI 应用入口
-├── api/                     # API 层
-│   ├── app.py               # FastAPI 实例
-│   └── v1/                  # v1 版本接口
-├── src/                     # 核心业务逻辑
-│   ├── analyzer.py          # 分析引擎
-│   ├── ai_caller.py         # LLM 调用封装
-│   ├── config.py            # 配置管理
-│   ├── notification.py      # 通知分发
-│   ├── search_service.py    # 新闻搜索
-│   ├── market_context.py    # 大盘复盘
-│   ├── llm/                 # LLM 渠道与参数管理
-│   ├── services/            # 业务服务层
-│   ├── data/                # 股票代码映射
-│   ├── notification_sender/ # 通知发送（企业微信等）
-│   ├── repositories/        # 数据访问层
-│   └── schemas/             # 数据模型
-├── data_provider/           # 数据源适配器
-│   ├── efinance_fetcher.py  # 东方财富
-│   ├── akshare_fetcher.py   # AkShare
-│   ├── tushare_fetcher.py   # Tushare Pro
-│   ├── pytdx_fetcher.py     # 通达信
-│   ├── baostock_fetcher.py  # 证券宝
-│   ├── yfinance_fetcher.py  # Yahoo Finance
-│   ├── longbridge_fetcher.py# 长桥 OpenAPI
-│   ├── tickflow_fetcher.py  # TickFlow
-│   └── fundamental_adapter.py # 基本面聚合
-├── tests/                   # 单元测试
+```text
+.
+├── main.py                  # 命令行入口，负责启动服务和准备 WebUI 静态资源
+├── server.py                # uvicorn 入口
+├── api/                     # FastAPI 应用、路由和中间件
+│   └── v1/
+│       ├── endpoints/       # auth / analysis / history / system / prompts / batch / watchlist
+│       └── schemas/         # API 入参和响应模型
+├── apps/dsa-web/            # React + Vite 前端
+│   └── src/
+│       ├── pages/           # Home / Watchlist / Settings / Login 页面
+│       ├── components/      # 任务、历史、报告、自选股、模板、批量分析等组件
+│       ├── api/             # 前端 API client
+│       ├── hooks/           # 任务流、仪表盘状态、自动补全等 hooks
+│       └── stores/          # 批量分析、自选股等状态管理
+├── data_provider/           # 行情和基本面数据源适配器
+├── src/                     # 分析、配置、LLM、搜索、通知、存储等核心逻辑
+├── tests/                   # Python 测试
 ├── .env.example             # 环境变量模板
 └── requirements.txt         # Python 依赖
 ```
 
-## 支持的 LLM 提供商
+## API 模块
 
-| 提供商 | 环境变量 | 说明 |
-|--------|----------|------|
-| Anspire Open | `ANSPIRE_API_KEYS` | 一站式模型 + 搜索 |
-| Gemini | `GEMINI_API_KEY` | 免费额度可用 |
-| DeepSeek | `DEEPSEEK_API_KEY` | 性价比高 |
-| AIHubmix | `AIHUBMIX_KEY` | 聚合多模型 |
-| Anthropic Claude | `ANTHROPIC_API_KEY` | |
-| OpenAI | `OPENAI_API_KEY` | |
-| Ollama | `OLLAMA_API_BASE` | 本地部署，免费 |
-| 通义千问 | DashScope 渠道 | |
-| Kimi / Moonshot | Moonshot 渠道 | |
-| 智谱 GLM | Zhipu 渠道 | |
-| MiniMax | MiniMax 渠道 | |
-| 硅基流动 | SiliconFlow 渠道 | |
-| 火山方舟 / 豆包 | Volcengine 渠道 | |
-| OpenRouter | OpenRouter 渠道 | |
+当前 v1 API 挂载在 `/api/v1` 下：
 
-支持多渠道配置（`LLM_CHANNELS`），自动轮询和 fallback。
-
-## 交易理念
-
-系统分析融入以下原则：
-
-- **严进策略** — 不追高，乖离率 > 5% 不买入
-- **趋势交易** — 只做 MA5 > MA10 > MA20 多头排列
-- **效率优先** — 关注筹码集中度好的股票
-- **买点偏好** — 缩量回踩 MA5/MA10 支撑
+- `/auth`：登录状态、登录、登出、初始密码设置
+- `/analysis`：提交分析任务、查询任务状态、任务 SSE、手动推送分析结果
+- `/history`：历史报告列表、详情、Markdown、关联新闻和删除
+- `/system`：系统配置读取、保存、导入导出、连接测试
+- `/prompts`：提示词模板管理
+- `/batch`：批量分析、跑批记录、汇总报告、定时跑批配置
+- `/watchlist`：自选股读取、添加、删除
 
 ## License
 
-MIT License - 详见 [LICENSE](LICENSE)
+MIT License，详见 [LICENSE](LICENSE)。

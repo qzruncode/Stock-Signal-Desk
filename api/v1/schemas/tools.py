@@ -29,7 +29,7 @@ class ToolInfo(BaseModel):
     name: str = Field(..., description="工具名称")
     description: str = Field(..., description="工具描述")
     parameters: List[ToolParameterSchema] = Field(default_factory=list, description="参数列表")
-    category: str = Field(..., description="分类 (data|analysis|search|market|backtest)")
+    category: str = Field(..., description="分类 (data|analysis|search|market)")
     display_name: str = Field(..., description="中文显示名称")
     healthy: bool = Field(True, description="工具是否可用")
 

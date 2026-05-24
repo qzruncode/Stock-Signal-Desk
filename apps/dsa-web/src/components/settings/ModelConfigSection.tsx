@@ -48,7 +48,7 @@ const PROVIDER_GROUPS: ProviderGroup[] = [
     key: 'openai',
     title: 'OpenAI',
     icon: <Globe className="h-4 w-4" />,
-    fieldKeys: ['OPENAI_API_KEY', 'OPENAI_API_KEYS', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_VISION_MODEL', 'OPENAI_TEMPERATURE'],
+    fieldKeys: ['OPENAI_API_KEY', 'OPENAI_API_KEYS', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_TEMPERATURE'],
     description: 'OpenAI and OpenAI-compatible APIs.',
     testable: {
       name: 'openai',

@@ -9,7 +9,7 @@ import { isObviouslyInvalidStockQuery, looksLikeStockCode, validateStockCode } f
 
 const PAGE_SIZE = 20;
 
-type SelectionSource = 'manual' | 'autocomplete' | 'import' | 'image';
+type SelectionSource = 'manual' | 'autocomplete' | 'import';
 
 type FetchHistoryOptions = {
   autoSelectFirst?: boolean;
