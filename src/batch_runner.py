@@ -242,6 +242,7 @@ class BatchRunner:
                     logger.exception("Batch task for %s crashed", code)
                     success, text, model = False, str(exc), ""
                 state.add_result(code, success, text, model)
+                _save_batch_run_progress(run_id, state)
 
         # Generate aggregated MD
         report_path = _write_aggregated_report(run_id, state, template_name, started_at)
@@ -398,6 +399,26 @@ def _build_batch_notification_content(
 
     lines.append(f"*批量分析完成于 {now}*")
     return "\n".join(lines)
+
+
+def _save_batch_run_progress(run_id: str, state: BatchRunState):
+    """Persist completed stock results during a running batch.
+
+    Batch jobs can be long-running. Persisting each completed stock keeps
+    already-paid AI output recoverable if the browser or backend process restarts
+    before the final aggregated report is written.
+    """
+    try:
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            record = session.query(BatchRun).filter_by(run_id=run_id).first()
+            if record:
+                record.success_count = state.success
+                record.fail_count = state.failed
+                record.results_json = json.dumps(state.results, ensure_ascii=False)
+                session.commit()
+    except Exception:
+        logger.exception("Failed to save batch run progress record")
 
 
 def _save_batch_run_start(

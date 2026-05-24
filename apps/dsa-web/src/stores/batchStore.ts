@@ -40,6 +40,7 @@ interface BatchState {
   loadTemplates: () => Promise<void>;
   setSelectedTemplateId: (id: string) => void;
   triggerBatchRun: (stockCodes: string[]) => Promise<boolean>;
+  syncCurrentProgress: () => Promise<boolean>;
   pollProgress: () => () => void; // Returns stop function
   fetchRuns: () => Promise<void>;
   viewReport: (runId: string) => Promise<void>;
@@ -138,6 +139,27 @@ export const useBatchStore = create<BatchState>((set, get) => ({
     }
   },
 
+  syncCurrentProgress: async () => {
+    try {
+      const progress = await batchApi.getCurrentProgress();
+      if (!progress.running || !progress.state) {
+        return false;
+      }
+      set({
+        isRunning: true,
+        runStockCount: (progress.state.total as number) || get().runStockCount,
+        runCompleted: (progress.state.completed as number) || 0,
+        runSuccess: (progress.state.success as number) || 0,
+        runFailed: (progress.state.failed as number) || 0,
+        currentStock: (progress.state.current_stock as string) || null,
+        currentMessage: (progress.state.current_message as string) || null,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   pollProgress: () => {
     let active = true;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -152,6 +174,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
           if (progress.state) {
             set({
               isRunning: false,
+              runStockCount: (progress.state.total as number) || get().runStockCount,
               runCompleted: (progress.state.completed as number) || 0,
               runSuccess: (progress.state.success as number) || 0,
               runFailed: (progress.state.failed as number) || 0,
@@ -171,6 +194,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
 
         if (progress.state) {
           set({
+            runStockCount: (progress.state.total as number) || get().runStockCount,
             runCompleted: (progress.state.completed as number) || 0,
             runSuccess: (progress.state.success as number) || 0,
             runFailed: (progress.state.failed as number) || 0,

@@ -1,7 +1,8 @@
 import threading
 
 from api.v1.endpoints import batch
-from src.batch_runner import BatchRunState, _get_batch_max_concurrent
+from api.v1.endpoints.batch import _build_partial_report_from_run
+from src.batch_runner import BatchRunState, _get_batch_max_concurrent, _save_batch_run_progress
 
 
 def test_batch_progress_callback_can_snapshot_without_deadlock():
@@ -65,3 +66,66 @@ def test_batch_max_concurrent_is_configurable_with_limit(monkeypatch):
 
     monkeypatch.setenv("BATCH_MAX_CONCURRENT", "99")
     assert _get_batch_max_concurrent() == 10
+
+
+def test_batch_progress_is_persisted_incrementally(monkeypatch):
+    class FakeRecord:
+        success_count = 0
+        fail_count = 0
+        results_json = "[]"
+
+    record = FakeRecord()
+
+    class FakeQuery:
+        def filter_by(self, run_id):
+            return self
+
+        def first(self):
+            return record
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def query(self, model):
+            return FakeQuery()
+
+        def commit(self):
+            pass
+
+    class FakeDb:
+        def get_session(self):
+            return FakeSession()
+
+    class FakeDatabaseManager:
+        @staticmethod
+        def get_instance():
+            return FakeDb()
+
+    monkeypatch.setattr("src.batch_runner.DatabaseManager", FakeDatabaseManager)
+    state = BatchRunState("run-1", total=2)
+    state.add_result("600519", True, "ok", "test-model")
+
+    _save_batch_run_progress("run-1", state)
+
+    assert record.success_count == 1
+    assert record.fail_count == 0
+    assert "600519" in record.results_json
+
+
+def test_partial_report_can_be_built_from_persisted_results():
+    report = _build_partial_report_from_run({
+        "started_at": "2026-05-24T14:44:39",
+        "template_name": "行业+预期差",
+        "stock_count": 347,
+        "success_count": 1,
+        "fail_count": 0,
+        "results_json": '{"600519":{"success":true,"text":"分析正文","model":"test-model"}}',
+    })
+
+    assert "批量分析报告（部分结果）" in report
+    assert "600519" in report
+    assert "分析正文" in report

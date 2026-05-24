@@ -2,6 +2,7 @@
 """Batch run and schedule API."""
 
 import logging
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -156,6 +157,9 @@ async def get_batch_run_report(run_id: str):
 
     report_path = run.get("report_path")
     if not report_path:
+        partial_report = _build_partial_report_from_run(run)
+        if partial_report:
+            return partial_report
         raise HTTPException(status_code=404, detail="报告尚未生成")
 
     path = Path(report_path)
@@ -167,6 +171,44 @@ async def get_batch_run_report(run_id: str):
         raise HTTPException(status_code=404, detail="报告文件不存在")
 
     return path.read_text(encoding="utf-8")
+
+
+def _build_partial_report_from_run(run: dict) -> str:
+    try:
+        results = json.loads(run.get("results_json") or "{}")
+    except Exception:
+        return ""
+    if not isinstance(results, dict) or not results:
+        return ""
+
+    lines = [
+        "# 批量分析报告（部分结果）",
+        "",
+        f"- **触发时间**: {run.get('started_at') or '-'}",
+        f"- **分析模板**: {run.get('template_name') or '-'}",
+        f"- **股票数量**: {run.get('stock_count') or 0}",
+        f"- **成功**: {run.get('success_count') or 0} / **失败**: {run.get('fail_count') or 0}",
+        "",
+        "---",
+        "",
+    ]
+
+    for code, result in results.items():
+        if code == "__all__" or not isinstance(result, dict):
+            continue
+        lines.append(f"## {code}")
+        lines.append("")
+        if result.get("success"):
+            lines.append(f"> 模型: {result.get('model') or '-'}")
+            lines.append("")
+            lines.append(result.get("text") or "")
+        else:
+            lines.append(f"> 分析失败: {result.get('text') or '未知错误'}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 @router.get("/schedule", response_model=BatchScheduleResponse)

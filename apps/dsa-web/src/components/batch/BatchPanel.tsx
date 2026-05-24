@@ -73,6 +73,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     loadTemplates,
     setSelectedTemplateId,
     triggerBatchRun,
+    syncCurrentProgress,
     pollProgress,
     fetchRuns,
     viewReport,
@@ -103,10 +104,11 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
 
   useEffect(() => {
     if (!collapsed) {
+      void syncCurrentProgress();
       void fetchRuns();
       void fetchSchedule();
     }
-  }, [collapsed, fetchRuns, fetchSchedule]);
+  }, [collapsed, fetchRuns, fetchSchedule, syncCurrentProgress]);
 
   useEffect(() => {
     if (isRunning) {
@@ -167,6 +169,11 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
   }, [newTime, scheduleTimes]);
 
   const progressPercent = runStockCount > 0 ? Math.round((runCompleted / runStockCount) * 100) : 0;
+  const hasPersistedResults = (run: { report_path: string | null; results_json: string | null }) => {
+    if (run.report_path) return true;
+    if (!run.results_json) return false;
+    return run.results_json !== '[]' && run.results_json !== '{}';
+  };
 
   return (
     <div className={cn('rounded-xl border border-subtle bg-surface/70 shadow-sm', className)}>
@@ -285,33 +292,36 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                     跑批记录
                   </p>
                   <div className="max-h-[200px] overflow-y-auto space-y-1">
-                    {runs.map((run) => (
-                      <button
-                        key={run.run_id}
-                        type="button"
-                        onClick={() => {
-                          if (run.report_path) {
-                            void viewReport(run.run_id);
-                          }
-                        }}
-                        disabled={!run.report_path}
-                        className={cn(
-                          'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover/70',
-                          !run.report_path && 'opacity-50 cursor-default'
-                        )}
-                      >
-                        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-text" />
-                        <span className="flex-1 truncate">
-                          {run.template_name || '未知模板'}
-                        </span>
-                        <span className="shrink-0 font-mono text-[10px] text-muted-text">
-                          {run.success_count}/{run.stock_count}
-                        </span>
-                        <span className="shrink-0 text-[10px] text-muted-text">
-                          {run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '-'}
-                        </span>
-                      </button>
-                    ))}
+                    {runs.map((run) => {
+                      const canOpenReport = hasPersistedResults(run);
+                      return (
+                        <button
+                          key={run.run_id}
+                          type="button"
+                          onClick={() => {
+                            if (canOpenReport) {
+                              void viewReport(run.run_id);
+                            }
+                          }}
+                          disabled={!canOpenReport}
+                          className={cn(
+                            'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover/70',
+                            !canOpenReport && 'opacity-50 cursor-default'
+                          )}
+                        >
+                          <FileText className="h-3.5 w-3.5 shrink-0 text-muted-text" />
+                          <span className="flex-1 truncate">
+                            {run.template_name || '未知模板'}
+                          </span>
+                          <span className="shrink-0 font-mono text-[10px] text-muted-text">
+                            {run.success_count}/{run.stock_count}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-muted-text">
+                            {run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分'}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}

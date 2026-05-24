@@ -62,4 +62,28 @@ describe('batchStore', () => {
 
     stop();
   });
+
+  it('restores visible progress after a page refresh', async () => {
+    vi.mocked(batchApi.getCurrentProgress).mockResolvedValue({
+      running: true,
+      state: {
+        run_id: 'run-1',
+        total: 347,
+        completed: 57,
+        success: 57,
+        failed: 0,
+        current_stock: '300820',
+        current_message: '300820：已接收 1447 字，仍在生成...',
+      },
+    });
+
+    const restored = await useBatchStore.getState().syncCurrentProgress();
+
+    const state = useBatchStore.getState();
+    expect(restored).toBe(true);
+    expect(state.isRunning).toBe(true);
+    expect(state.runStockCount).toBe(347);
+    expect(state.runCompleted).toBe(57);
+    expect(state.currentMessage).toContain('1447');
+  });
 });
