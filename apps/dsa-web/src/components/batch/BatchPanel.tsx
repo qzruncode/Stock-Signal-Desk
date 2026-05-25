@@ -16,6 +16,63 @@ interface BatchPanelProps {
   className?: string;
 }
 
+interface BatchResultItem {
+  code: string;
+  success: boolean;
+  model: string;
+  text: string;
+  summary: string;
+}
+
+interface WatchlistGroup {
+  id: string;
+  name: string;
+  codes: string[];
+}
+
+const WATCHLIST_GROUPS_STORAGE_KEY = 'dsa.watchlist.groups.v1';
+
+function loadWatchlistGroups(): WatchlistGroup[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(WATCHLIST_GROUPS_STORAGE_KEY) || '[]') as WatchlistGroup[];
+    return Array.isArray(parsed)
+      ? parsed.filter((group) => group && group.id && group.name && Array.isArray(group.codes))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function summarizeResult(text: string): string {
+  const compact = text
+    .split('\n')
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .find((line) => line.length > 0) || '无摘要';
+  return compact.length > 72 ? `${compact.slice(0, 71)}...` : compact;
+}
+
+function parseBatchResults(raw: string | null | undefined): BatchResultItem[] {
+  if (!raw || raw === '[]' || raw === '{}') return [];
+  try {
+    const parsed = JSON.parse(raw) as Record<string, { success?: boolean; model?: string; text?: string }>;
+    return Object.entries(parsed)
+      .filter(([code, result]) => code !== '__all__' && result && typeof result === 'object')
+      .map(([code, result]) => {
+        const text = result.text || '';
+        return {
+          code,
+          success: Boolean(result.success),
+          model: result.model || '-',
+          text,
+          summary: summarizeResult(text),
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
 export const BatchPanel: React.FC<BatchPanelProps> = ({
   stockCodes: stockCodesProp,
   templates: templatesProp,
@@ -29,6 +86,8 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [newTime, setNewTime] = useState('09:00');
   const [configStockCodes, setConfigStockCodes] = useState<string[]>([]);
+  const [selectedBatchRunId, setSelectedBatchRunId] = useState<string | null>(null);
+  const [selectedBatchCode, setSelectedBatchCode] = useState<string | null>(null);
 
   useEffect(() => {
     if (stockCodesProp && stockCodesProp.length > 0) return;
@@ -47,10 +106,30 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     return () => { active = false; };
   }, [stockCodesProp]);
 
-  const stockCodes = useMemo(
+  const baseStockCodes = useMemo(
     () => (stockCodesProp && stockCodesProp.length > 0 ? stockCodesProp : configStockCodes),
     [stockCodesProp, configStockCodes],
   );
+  const [watchlistGroups, setWatchlistGroups] = useState<WatchlistGroup[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState('all');
+
+  useEffect(() => {
+    const syncGroups = () => setWatchlistGroups(loadWatchlistGroups());
+    syncGroups();
+    window.addEventListener('storage', syncGroups);
+    window.addEventListener('dsa-watchlist-groups-updated', syncGroups);
+    return () => {
+      window.removeEventListener('storage', syncGroups);
+      window.removeEventListener('dsa-watchlist-groups-updated', syncGroups);
+    };
+  }, []);
+
+  const stockCodes = useMemo(() => {
+    if (stockCodesProp && stockCodesProp.length > 0) return baseStockCodes;
+    if (selectedGroupId === 'all') return baseStockCodes;
+    const group = watchlistGroups.find((item) => item.id === selectedGroupId);
+    return group?.codes || [];
+  }, [baseStockCodes, selectedGroupId, stockCodesProp, watchlistGroups]);
 
   const stopPollRef = useRef<(() => void) | null>(null);
 
@@ -67,8 +146,6 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     currentMessage,
     runStatus,
     runs,
-    selectedReportContent,
-    isLoadingReport,
     schedule,
     error,
     loadTemplates,
@@ -81,9 +158,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     syncCurrentProgress,
     pollProgress,
     fetchRuns,
-    viewReport,
     deleteRun,
-    closeReport,
     fetchSchedule,
     updateSchedule,
     clearError,
@@ -182,6 +257,20 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     if (!run.results_json) return false;
     return run.results_json !== '[]' && run.results_json !== '{}';
   };
+  const selectedBatchRun = useMemo(
+    () => runs.find((run) => run.run_id === selectedBatchRunId) || runs.find((run) => hasPersistedResults(run)) || null,
+    [runs, selectedBatchRunId],
+  );
+  const selectedBatchResults = useMemo(
+    () => parseBatchResults(selectedBatchRun?.results_json),
+    [selectedBatchRun],
+  );
+  const selectedBatchResult = useMemo(
+    () => selectedBatchResults.find((item) => item.code === selectedBatchCode) || selectedBatchResults[0] || null,
+    [selectedBatchCode, selectedBatchResults],
+  );
+  const selectedBatchFailed = selectedBatchResults.filter((item) => !item.success).length;
+  const selectedBatchSuccess = selectedBatchResults.length - selectedBatchFailed;
   const canResumeRun = (run: { completed_at: string | null; success_count: number; fail_count: number; stock_count: number }) => {
     return !run.completed_at && run.success_count + run.fail_count < run.stock_count;
   };
@@ -247,6 +336,26 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                   </select>
                 )}
               </div>
+
+              {!stockCodesProp && watchlistGroups.length > 0 && (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-muted-text uppercase tracking-wider">
+                    跑批范围
+                  </label>
+                  <select
+                    value={selectedGroupId}
+                    onChange={(event) => setSelectedGroupId(event.target.value)}
+                    className="w-full rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-foreground focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
+                  >
+                    <option value="all">全部自选股 ({baseStockCodes.length})</option>
+                    {watchlistGroups.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name} ({group.codes.length})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <Button
@@ -344,7 +453,9 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                             type="button"
                             onClick={() => {
                               if (canOpenReport) {
-                                void viewReport(run.run_id);
+                                setSelectedBatchRunId(run.run_id);
+                                const firstResult = parseBatchResults(run.results_json)[0];
+                                setSelectedBatchCode(firstResult?.code || null);
                               }
                             }}
                             disabled={!canOpenReport}
@@ -406,34 +517,87 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
               )}
 
               <AnimatePresence>
-                {selectedReportContent && (
+                {selectedBatchRun && selectedBatchResults.length > 0 && (
                   <motion.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: 'auto', opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
                     className="overflow-hidden"
                   >
-                    <div className="space-y-2 pt-2 border-t border-subtle">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-semibold text-foreground">汇总报告</p>
+                    <div className="space-y-3 pt-2 border-t border-subtle">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-semibold text-foreground">跑批详情</p>
+                          <p className="text-[10px] text-muted-text">
+                            成功 {selectedBatchSuccess} / 失败 {selectedBatchFailed} / 共 {selectedBatchRun.stock_count}
+                          </p>
+                        </div>
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
-                          onClick={closeReport}
+                          onClick={() => {
+                            setSelectedBatchRunId(null);
+                            setSelectedBatchCode(null);
+                          }}
                         >
                           <X className="h-3.5 w-3.5" />
                         </Button>
                       </div>
-                      {isLoadingReport ? (
-                        <div className="flex items-center justify-center py-4">
-                          <Loader2 className="h-4 w-4 animate-spin text-muted-text" />
+                      <div className="grid min-h-[360px] overflow-hidden rounded-lg border border-subtle bg-background md:grid-cols-[190px_1fr]">
+                        <div className="max-h-[520px] overflow-y-auto border-b border-subtle bg-surface/70 md:border-b-0 md:border-r">
+                          {selectedBatchResults.map((item) => (
+                            <button
+                              key={item.code}
+                              type="button"
+                              onClick={() => setSelectedBatchCode(item.code)}
+                              className={cn(
+                                'flex w-full flex-col gap-1 border-b border-subtle px-3 py-2 text-left transition-colors hover:bg-hover/70',
+                                selectedBatchResult?.code === item.code && 'bg-primary/10',
+                              )}
+                            >
+                              <span className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-xs font-semibold text-foreground">{item.code}</span>
+                                <span className={cn(
+                                  'rounded-full px-1.5 py-0.5 text-[10px]',
+                                  item.success
+                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                    : 'bg-red-500/10 text-red-600 dark:text-red-400',
+                                )}
+                                >
+                                  {item.success ? '成功' : '失败'}
+                                </span>
+                              </span>
+                              <span className="line-clamp-2 text-[10px] leading-4 text-muted-text">{item.summary}</span>
+                            </button>
+                          ))}
                         </div>
-                      ) : (
-                        <pre className="max-h-[400px] overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background px-3 py-2 text-xs leading-relaxed text-secondary-text">
-                          {selectedReportContent}
-                        </pre>
-                      )}
+                        <div className="min-w-0">
+                          {selectedBatchResult ? (
+                            <div className="flex h-full flex-col">
+                              <div className="border-b border-subtle px-4 py-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h4 className="font-mono text-sm font-semibold text-foreground">{selectedBatchResult.code}</h4>
+                                  <span className={cn(
+                                    'rounded-full px-2 py-0.5 text-[10px]',
+                                    selectedBatchResult.success
+                                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                      : 'bg-red-500/10 text-red-600 dark:text-red-400',
+                                  )}
+                                  >
+                                    {selectedBatchResult.success ? '分析成功' : '分析失败'}
+                                  </span>
+                                  <span className="text-[10px] text-muted-text">{selectedBatchResult.model}</span>
+                                </div>
+                                <p className="mt-1 text-xs text-muted-text">{selectedBatchResult.summary}</p>
+                              </div>
+                              <pre className="max-h-[460px] flex-1 overflow-auto whitespace-pre-wrap break-words px-4 py-3 text-xs leading-relaxed text-secondary-text">
+                                {selectedBatchResult.text || '无输出'}
+                              </pre>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
                   </motion.div>
                 )}

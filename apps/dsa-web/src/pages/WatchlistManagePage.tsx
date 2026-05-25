@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Plus, Search, Trash2, Upload, X, Check } from 'lucide-react';
+import { ArrowLeft, Check, Folder, FolderPlus, Plus, Search, Trash2, Upload, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
 import { StockAutocomplete } from '../components/StockAutocomplete';
@@ -10,6 +10,30 @@ interface StockItem {
   code: string;
   market: string;
   marketLabel: string;
+}
+
+interface WatchlistGroup {
+  id: string;
+  name: string;
+  codes: string[];
+}
+
+const WATCHLIST_GROUPS_STORAGE_KEY = 'dsa.watchlist.groups.v1';
+
+function loadWatchlistGroups(): WatchlistGroup[] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(WATCHLIST_GROUPS_STORAGE_KEY) || '[]') as WatchlistGroup[];
+    return Array.isArray(parsed)
+      ? parsed.filter((group) => group && group.id && group.name && Array.isArray(group.codes))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveWatchlistGroups(groups: WatchlistGroup[]) {
+  window.localStorage.setItem(WATCHLIST_GROUPS_STORAGE_KEY, JSON.stringify(groups));
+  window.dispatchEvent(new Event('dsa-watchlist-groups-updated'));
 }
 
 const MARKET_RULES: { prefix: string[]; key: string; label: string; color: string }[] = [
@@ -64,6 +88,9 @@ const WatchlistManagePage: React.FC = () => {
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [groups, setGroups] = useState<WatchlistGroup[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
+  const [newGroupName, setNewGroupName] = useState('');
 
   // Search filter
   const [filter, setFilter] = useState('');
@@ -83,8 +110,28 @@ const WatchlistManagePage: React.FC = () => {
 
   useEffect(() => {
     document.title = '自选股管理 - DSA';
+    setGroups(loadWatchlistGroups());
     void loadWatchlist();
   }, [loadWatchlist]);
+
+  const persistGroups = useCallback((nextGroups: WatchlistGroup[]) => {
+    setGroups(nextGroups);
+    saveWatchlistGroups(nextGroups);
+  }, []);
+
+  const selectedGroup = useMemo(
+    () => groups.find((group) => group.id === selectedGroupId) || groups[0] || null,
+    [groups, selectedGroupId],
+  );
+
+  useEffect(() => {
+    if (!selectedGroupId && groups.length > 0) {
+      setSelectedGroupId(groups[0].id);
+    }
+    if (selectedGroupId && groups.length > 0 && !groups.some((group) => group.id === selectedGroupId)) {
+      setSelectedGroupId(groups[0].id);
+    }
+  }, [groups, selectedGroupId]);
 
   const stocks = useMemo<StockItem[]>(() => {
     if (!data?.codes) return [];
@@ -211,6 +258,11 @@ const WatchlistManagePage: React.FC = () => {
     try {
       const result = await watchlistApi.remove(Array.from(selectedCodes));
       setData({ codes: result.codes, count: result.count, configVersion: result.configVersion });
+      const removeSet = new Set(selectedCodes);
+      persistGroups(groups.map((group) => ({
+        ...group,
+        codes: group.codes.filter((code) => !removeSet.has(code)),
+      })));
       setSelectedCodes(new Set());
       setShowRemoveConfirm(false);
       setSuccessMsg(result.message);
@@ -220,7 +272,7 @@ const WatchlistManagePage: React.FC = () => {
     } finally {
       setIsRemoving(false);
     }
-  }, [selectedCodes]);
+  }, [groups, persistGroups, selectedCodes]);
 
   const handleRemoveSingle = useCallback(async (code: string) => {
     setIsRemoving(true);
@@ -229,6 +281,10 @@ const WatchlistManagePage: React.FC = () => {
     try {
       const result = await watchlistApi.remove([code]);
       setData({ codes: result.codes, count: result.count, configVersion: result.configVersion });
+      persistGroups(groups.map((group) => ({
+        ...group,
+        codes: group.codes.filter((item) => item !== code),
+      })));
       setSelectedCodes((prev) => {
         const next = new Set(prev);
         next.delete(code);
@@ -241,7 +297,48 @@ const WatchlistManagePage: React.FC = () => {
     } finally {
       setIsRemoving(false);
     }
-  }, []);
+  }, [groups, persistGroups]);
+
+  const handleCreateGroup = useCallback(() => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    const nextGroup: WatchlistGroup = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      name,
+      codes: [],
+    };
+    persistGroups([...groups, nextGroup]);
+    setSelectedGroupId(nextGroup.id);
+    setNewGroupName('');
+  }, [groups, newGroupName, persistGroups]);
+
+  const handleAddSelectedToGroup = useCallback(() => {
+    if (!selectedGroup || selectedCodes.size === 0) return;
+    const selected = Array.from(selectedCodes);
+    const nextGroups = groups.map((group) => (
+      group.id === selectedGroup.id
+        ? { ...group, codes: Array.from(new Set([...group.codes, ...selected])) }
+        : group
+    ));
+    persistGroups(nextGroups);
+  }, [groups, persistGroups, selectedCodes, selectedGroup]);
+
+  const handleRemoveSelectedFromGroup = useCallback(() => {
+    if (!selectedGroup || selectedCodes.size === 0) return;
+    const removeSet = new Set(selectedCodes);
+    persistGroups(groups.map((group) => (
+      group.id === selectedGroup.id
+        ? { ...group, codes: group.codes.filter((code) => !removeSet.has(code)) }
+        : group
+    )));
+  }, [groups, persistGroups, selectedCodes, selectedGroup]);
+
+  const handleDeleteGroup = useCallback(() => {
+    if (!selectedGroup) return;
+    const nextGroups = groups.filter((group) => group.id !== selectedGroup.id);
+    persistGroups(nextGroups);
+    setSelectedGroupId(nextGroups[0]?.id || '');
+  }, [groups, persistGroups, selectedGroup]);
 
   if (isLoading) {
     return (
@@ -355,6 +452,113 @@ const WatchlistManagePage: React.FC = () => {
               >
                 取消
               </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+            <Folder className="h-4 w-4 text-cyan-600" />
+            股票分组
+          </h2>
+          <div className="flex min-w-[260px] flex-1 justify-end gap-2">
+            <input
+              value={newGroupName}
+              onChange={(event) => setNewGroupName(event.target.value)}
+              placeholder="新分组名称"
+              className="h-9 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-800 placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-4 focus:ring-cyan-100"
+            />
+            <Button
+              variant="home-action-report"
+              size="sm"
+              disabled={!newGroupName.trim()}
+              onClick={handleCreateGroup}
+              className="shrink-0"
+            >
+              <FolderPlus className="h-4 w-4" />
+              新建
+            </Button>
+          </div>
+        </div>
+
+        {groups.length === 0 ? (
+          <p className="mt-3 text-xs text-slate-500">还没有分组。创建分组后，选中股票即可加入不同跑批范围。</p>
+        ) : (
+          <div className="mt-4 grid gap-4 lg:grid-cols-[220px_1fr]">
+            <div className="space-y-1">
+              {groups.map((group) => (
+                <button
+                  key={group.id}
+                  type="button"
+                  onClick={() => setSelectedGroupId(group.id)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition',
+                    selectedGroup?.id === group.id
+                      ? 'bg-cyan-50 text-cyan-800 ring-1 ring-cyan-200'
+                      : 'text-slate-600 hover:bg-slate-50',
+                  )}
+                >
+                  <span className="truncate">{group.name}</span>
+                  <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] text-slate-500">{group.codes.length}</span>
+                </button>
+              ))}
+            </div>
+            <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">{selectedGroup?.name}</p>
+                  <p className="text-xs text-slate-500">选中下方股票后，可加入或移出当前分组。首页跑批可按该分组执行。</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!selectedGroup || selectedCodes.size === 0}
+                    onClick={handleAddSelectedToGroup}
+                  >
+                    加入选中
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!selectedGroup || selectedCodes.size === 0}
+                    onClick={handleRemoveSelectedFromGroup}
+                  >
+                    移出选中
+                  </Button>
+                  <Button
+                    variant="danger-subtle"
+                    size="sm"
+                    disabled={!selectedGroup}
+                    onClick={handleDeleteGroup}
+                  >
+                    删除分组
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-3 flex min-h-10 flex-wrap gap-1.5">
+                {selectedGroup && selectedGroup.codes.length > 0 ? (
+                  selectedGroup.codes.map((code) => (
+                    <button
+                      key={code}
+                      type="button"
+                      onClick={() => toggleSelect(code)}
+                      className={cn(
+                        'rounded-lg border px-2.5 py-1.5 font-mono text-xs transition',
+                        selectedCodes.has(code)
+                          ? 'border-red-300 bg-red-50 text-red-700'
+                          : 'border-slate-200 bg-white text-slate-700 hover:border-cyan-300',
+                      )}
+                    >
+                      {code}
+                    </button>
+                  ))
+                ) : (
+                  <span className="text-xs text-slate-400">当前分组为空</span>
+                )}
+              </div>
             </div>
           </div>
         )}

@@ -186,7 +186,7 @@ def test_auto_resume_only_uses_partial_runs():
     assert codes == ["600519", "000001"]
 
 
-def test_batch_notification_includes_every_stock_result():
+def test_batch_notification_is_statistical_summary_not_raw_stock_list():
     state = BatchRunState(
         "run-1",
         total=3,
@@ -204,6 +204,8 @@ def test_batch_notification_includes_every_stock_result():
         "/tmp/batch.md",
     )
 
-    assert "605118" in content
-    assert "000001" in content
+    assert "批量分析统计" in content
+    assert "成功率" in content
+    assert "605118" not in content
+    assert "000001" not in content
     assert "300750" in content

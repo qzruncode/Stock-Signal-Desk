@@ -472,29 +472,56 @@ def _write_aggregated_report(
     filename = f"batch_{ts}_{run_id[:8]}.md"
     filepath = BATCH_REPORTS_DIR / filename
 
+    result_items = _get_result_items(state)
+    failed_items = [(code, result) for code, result in result_items if not result.get("success")]
+    success_rate = (state.success / state.total * 100) if state.total else 0
+
     lines = [
-        f"# 批量分析报告",
+        "# 批量分析统计报告",
         f"",
         f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
         f"- **分析模板**: {template_name}",
         f"- **股票数量**: {state.total}",
-        f"- **成功**: {state.success} / **失败**: {state.failed}",
+        f"- **成功**: {state.success}",
+        f"- **失败**: {state.failed}",
+        f"- **完成率**: {state.completed}/{state.total}",
+        f"- **成功率**: {success_rate:.1f}%",
         f"",
         "---",
         "",
+        "## 统计概览",
+        "",
+        "| 指标 | 数值 |",
+        "| --- | ---: |",
+        f"| 总股票数 | {state.total} |",
+        f"| 已完成 | {state.completed} |",
+        f"| 成功 | {state.success} |",
+        f"| 失败 | {state.failed} |",
+        f"| 成功率 | {success_rate:.1f}% |",
+        "",
     ]
 
-    for code, result in state.results.items():
-        if code == "__all__":
-            continue
+    if failed_items:
+        lines.extend(["## 失败列表", ""])
+        for code, result in failed_items:
+            reason = _one_line(result.get("text") or "未知错误", limit=100)
+            lines.append(f"- **{code}**: {reason}")
+        lines.append("")
+
+    lines.extend(["## 单股明细", ""])
+
+    for code, result in result_items:
+        status = "成功" if result.get("success") else "失败"
         lines.append(f"## {code}")
         lines.append("")
-        if result["success"]:
-            lines.append(f"> 模型: {result['model']}")
+        lines.append(f"- **状态**: {status}")
+        lines.append(f"- **模型**: {result.get('model') or '-'}")
+        lines.append("")
+        if result.get("success"):
             lines.append("")
-            lines.append(result["text"])
+            lines.append(result.get("text") or "")
         else:
-            lines.append(f"> 分析失败: {result['text']}")
+            lines.append(f"> 分析失败: {result.get('text') or '未知错误'}")
         lines.append("")
         lines.append("---")
         lines.append("")
@@ -503,6 +530,21 @@ def _write_aggregated_report(
     filepath.write_text(content, encoding="utf-8")
     logger.info("Batch report saved: %s", filepath)
     return str(filepath)
+
+
+def _get_result_items(state: BatchRunState) -> List[tuple[str, dict]]:
+    return [
+        (code, result)
+        for code, result in state.results.items()
+        if code != "__all__" and isinstance(result, dict)
+    ]
+
+
+def _one_line(text: str, limit: int = 80) -> str:
+    compact = " ".join(str(text).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "..."
 
 
 def _send_batch_notification(
@@ -535,28 +577,39 @@ def _build_batch_notification_content(
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     report_name = Path(report_path).name
 
+    result_items = _get_result_items(state)
+    failed_items = [(code, result) for code, result in result_items if not result.get("success")]
+    success_rate = (state.success / state.total * 100) if state.total else 0
+
     lines = [
-        "## 批量分析完成",
+        "## 批量分析统计",
         "",
         f"> 模板: **{template_name}**",
         f"> 时间: {now}",
-        f"> 成功: **{state.success}/{state.total}** | 失败: **{state.failed}**",
+        f"> 完成: **{state.completed}/{state.total}**",
+        f"> 成功: **{state.success}** | 失败: **{state.failed}** | 成功率: **{success_rate:.1f}%**",
         f"> 报告: `{report_name}`",
         "",
     ]
 
-    result_items = [
-        (code, result)
-        for code, result in state.results.items()
-        if code != "__all__" and isinstance(result, dict)
-    ]
-    if result_items:
-        lines.append("### 分析结果")
+    lines.append("### 统计概览")
+    lines.append("")
+    lines.append("| 指标 | 数值 |")
+    lines.append("| --- | ---: |")
+    lines.append(f"| 股票数 | {state.total} |")
+    lines.append(f"| 已完成 | {state.completed} |")
+    lines.append(f"| 成功 | {state.success} |")
+    lines.append(f"| 失败 | {state.failed} |")
+    lines.append(f"| 成功率 | {success_rate:.1f}% |")
+    lines.append("")
+
+    if failed_items:
+        lines.append("### 失败项")
         lines.append("")
-        for code, result in result_items:
-            status = "✅" if result.get("success") else "❌"
-            model = result.get("model") or "-"
-            lines.append(f"- {status} **{code}** | 模型: `{model}`")
+        for code, result in failed_items[:20]:
+            lines.append(f"- **{code}**: {_one_line(result.get('text') or '未知错误', limit=80)}")
+        if len(failed_items) > 20:
+            lines.append(f"- 另有 {len(failed_items) - 20} 项失败，请查看完整报告。")
         lines.append("")
 
     lines.append(f"*批量分析完成于 {now}*")
