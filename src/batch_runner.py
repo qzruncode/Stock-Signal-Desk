@@ -549,44 +549,108 @@ def _escape_table_cell(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _clean_decision_line(text: str) -> str:
+    return re.sub(r"[*_`>#\-]+", "", str(text)).strip()
+
+
+def _extract_decision_context(text: str) -> str:
+    """Return the most relevant final-decision area from a model answer."""
+    lines = [_clean_decision_line(line) for line in str(text).splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+
+    high_priority_markers = (
+        "最终结论", "综合结论", "最终建议", "操作建议", "投资建议",
+        "筛选结果", "买入建议", "是否买入", "总评",
+    )
+    fallback_markers = ("核心结论", "结论", "建议")
+
+    for markers in (high_priority_markers, fallback_markers):
+        for index in range(len(lines) - 1, -1, -1):
+            if any(marker in lines[index] for marker in markers):
+                return "\n".join(lines[index:index + 4])
+
+    return "\n".join(lines[-6:])
+
+
+_NEGATIVE_DECISION_PATTERNS = [
+    "不买", "不买入", "不建议买", "不建议买入", "不建议参与", "不宜买入",
+    "暂不买", "暂不买入", "暂不建议", "暂不参与", "不纳入",
+    "筛选不通过", "未通过", "不通过", "不满足", "不具备买点",
+    "没有买点", "无买点", "否决", "回避", "规避", "淘汰", "排除",
+    "观望为主", "继续观察", "暂时观察", "谨慎观望", "不推荐",
+    "暂不关注", "暂不纳入", "低估值陷阱", "无操作价值", "放弃",
+    "风险否决", "触发否决",
+]
+
+
+_POSITIVE_DECISION_PATTERNS = [
+    "筛选通过", "通过筛选", "推荐买入", "建议买入", "强烈买入",
+    "逢低买入", "分批买入", "可以买入", "可以买", "可买入",
+    "可买", "买入评级", "买入", "建议参与", "可参与", "纳入重点观察",
+    "纳入观察", "重点关注", "积极关注", "优先关注", "推荐关注",
+    "值得关注", "可关注", "继续关注", "机会较好", "具备买点",
+    "符合买点", "赔率较好",
+]
+
+
+def _find_decision_token(text: str, tokens: List[str]) -> Optional[str]:
+    lowered = str(text).lower()
+    for token in tokens:
+        if token.lower() in lowered:
+            return token
+    return None
+
+
 def _extract_decision(text: str) -> str:
-    patterns = [
-        r"(?:操作建议|投资建议|最终建议|结论|核心结论|筛选结果|评级)[:：]\s*([^\n。；;|]{2,40})",
-        r"(强烈买入|建议买入|可以买入|买入|重点关注|可关注|继续关注|筛选通过|通过)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return _one_line(match.group(1), limit=28)
+    context = _extract_decision_context(text)
+    negative = _find_decision_token(context, _NEGATIVE_DECISION_PATTERNS)
+    if negative:
+        return negative
+    positive = _find_decision_token(context, _POSITIVE_DECISION_PATTERNS)
+    if positive:
+        return positive
+
+    match = re.search(
+        r"(?:操作建议|投资建议|最终建议|最终结论|综合结论|核心结论|筛选结果|评级)[:：]?\s*([^\n。；;|]{2,40})",
+        context,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return _one_line(match.group(1), limit=28)
     return "通过"
 
 
 def _extract_reason(text: str) -> str:
     candidates = []
-    for raw_line in str(text).splitlines():
+    context = _extract_decision_context(text)
+    for raw_line in context.splitlines():
         line = raw_line.strip().strip("-*#> ")
         if not line:
             continue
-        if any(token in line for token in ("理由", "原因", "看点", "核心", "摘要", "结论", "优势", "催化")):
+        if any(token in line for token in ("理由", "原因", "看点", "核心", "摘要", "优势", "催化", "否定")):
             candidates.append(line)
+    if not candidates:
+        for raw_line in str(text).splitlines():
+            line = raw_line.strip().strip("-*#> ")
+            if not line:
+                continue
+            if any(token in line for token in ("理由", "原因", "看点", "核心", "摘要", "结论", "优势", "催化", "否定")):
+                candidates.append(line)
     if not candidates:
         candidates = [line.strip().strip("-*#> ") for line in str(text).splitlines() if line.strip()]
     return _one_line(candidates[0] if candidates else "模型未给出摘要理由", limit=90)
 
 
 def _is_passed_stock(text: str) -> bool:
-    lowered = str(text).lower()
-    negative_patterns = [
-        "筛选不通过", "未通过", "不通过", "不建议买入", "暂不建议", "不宜买入",
-        "回避", "淘汰", "排除", "观望为主", "继续观察", "暂不纳入",
-    ]
-    if any(token in lowered for token in negative_patterns):
+    context = _extract_decision_context(text)
+    if _find_decision_token(context, _NEGATIVE_DECISION_PATTERNS):
         return False
-    positive_patterns = [
-        "筛选通过", "通过", "建议买入", "强烈买入", "可以买入", "买入",
-        "重点关注", "可关注", "纳入观察", "值得关注", "机会较好",
-    ]
-    return any(token in lowered for token in positive_patterns)
+    if _find_decision_token(context, _POSITIVE_DECISION_PATTERNS):
+        return True
+
+    return False
 
 
 def _get_passed_stock_summaries(result_items: List[tuple[str, dict]]) -> List[dict]:

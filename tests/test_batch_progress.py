@@ -210,3 +210,67 @@ def test_batch_notification_is_statistical_summary_not_raw_stock_list():
     assert "建议买入" in content
     assert "000001" not in content
     assert "300750" in content
+
+
+def test_batch_summary_respects_final_no_buy_over_section_pass():
+    state = BatchRunState(
+        "run-1",
+        total=2,
+        existing_results={
+            "603876": {
+                "success": True,
+                "text": (
+                    "### 主线属性判定\n"
+                    "结论：通过\n\n"
+                    "### 行业β判定\n"
+                    "结论：不通过\n\n"
+                    "### 最终结论\n"
+                    "**不买**\n"
+                    "最核心的否定原因：行业催化不足。"
+                ),
+                "model": "model-a",
+            },
+            "605118": {
+                "success": True,
+                "text": "### 最终结论：建议买入\n理由：业绩改善且趋势向上",
+                "model": "model-a",
+            },
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "| 605118 |" in content
+    assert "| 603876 |" not in content
+    assert "筛选通过: **1**" in content
+
+
+def test_batch_summary_accepts_buy_variants_and_rejects_no_buy_phrase():
+    state = BatchRunState(
+        "run-1",
+        total=4,
+        existing_results={
+            "000001": {"success": True, "text": "最终结论：可买入\n原因：赔率较好", "model": "model-a"},
+            "000002": {"success": True, "text": "操作建议：重点关注\n理由：催化明确", "model": "model-a"},
+            "000003": {"success": True, "text": "最终结论：不买\n原因：没有买点", "model": "model-a"},
+            "000004": {"success": True, "text": "综合结论：不建议买入\n原因：估值偏贵", "model": "model-a"},
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "| 000001 | 可买入 |" in content
+    assert "| 000002 | 重点关注 |" in content
+    assert "| 000003 |" not in content
+    assert "| 000004 |" not in content
+    assert "筛选通过: **2**" in content
