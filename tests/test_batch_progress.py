@@ -1,8 +1,17 @@
 import threading
 
 from api.v1.endpoints import batch
-from api.v1.endpoints.batch import _build_partial_report_from_run, _resolve_resume_stock_codes
-from src.batch_runner import BatchRunState, _get_batch_max_concurrent, _save_batch_run_progress
+from api.v1.endpoints.batch import (
+    _build_partial_report_from_run,
+    _resolve_auto_resume_stock_codes,
+    _resolve_resume_stock_codes,
+)
+from src.batch_runner import (
+    BatchRunState,
+    _build_batch_notification_content,
+    _get_batch_max_concurrent,
+    _save_batch_run_progress,
+)
 
 
 def test_batch_progress_callback_can_snapshot_without_deadlock():
@@ -155,3 +164,46 @@ def test_resume_stock_codes_prefers_persisted_original_list():
     )
 
     assert codes == ["600519", "000001"]
+
+
+def test_auto_resume_ignores_empty_incomplete_runs():
+    codes = _resolve_auto_resume_stock_codes({
+        "stock_codes_json": '["600519", "000001"]',
+        "stock_count": 2,
+        "results_json": "{}",
+    })
+
+    assert codes == []
+
+
+def test_auto_resume_only_uses_partial_runs():
+    codes = _resolve_auto_resume_stock_codes({
+        "stock_codes_json": '["600519", "000001"]',
+        "stock_count": 2,
+        "results_json": '{"600519":{"success":true,"text":"ok","model":"test-model"}}',
+    })
+
+    assert codes == ["600519", "000001"]
+
+
+def test_batch_notification_includes_every_stock_result():
+    state = BatchRunState(
+        "run-1",
+        total=3,
+        existing_results={
+            "605118": {"success": True, "text": "short", "model": "model-a"},
+            "000001": {"success": True, "text": "long text" * 100, "model": "model-b"},
+            "300750": {"success": False, "text": "failed", "model": ""},
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "605118" in content
+    assert "000001" in content
+    assert "300750" in content

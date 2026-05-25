@@ -463,21 +463,18 @@ def _build_batch_notification_content(
         "",
     ]
 
-    # Top 3 results summary
-    sorted_codes = sorted(
-        state.results.items(),
-        key=lambda item: len(item[1].get("text", "")) if item[1].get("success") else 0,
-        reverse=True,
-    )
-    if sorted_codes:
+    result_items = [
+        (code, result)
+        for code, result in state.results.items()
+        if code != "__all__" and isinstance(result, dict)
+    ]
+    if result_items:
         lines.append("### 分析结果")
         lines.append("")
-        for code, result in sorted_codes[:10]:
-            if code == "__all__":
-                continue
-            status = "✅" if result["success"] else "❌"
-            text_preview = result["text"][:60].replace("\n", " ") if result["text"] else "无内容"
-            lines.append(f"- {status} **{code}**: {text_preview}...")
+        for code, result in result_items:
+            status = "✅" if result.get("success") else "❌"
+            model = result.get("model") or "-"
+            lines.append(f"- {status} **{code}** | 模型: `{model}`")
         lines.append("")
 
     lines.append(f"*批量分析完成于 {now}*")

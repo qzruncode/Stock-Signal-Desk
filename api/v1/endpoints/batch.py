@@ -274,7 +274,7 @@ def resume_incomplete_batches_on_startup() -> bool:
             _parse_results_json(run.get("results_json")),
             stock_codes,
         )
-        if len(existing_results) >= len(stock_codes):
+        if len(existing_results) == 0 or len(existing_results) >= len(stock_codes):
             continue
 
         store = get_prompt_template_store()
@@ -369,12 +369,17 @@ def _resolve_resume_stock_codes(run: dict, fallback_stock_codes: list[str]) -> l
 
 
 def _resolve_auto_resume_stock_codes(run: dict) -> list[str]:
+    existing_result_count = len(_parse_results_json(run.get("results_json")))
+    stock_count = int(run.get("stock_count") or 0)
+    if existing_result_count <= 0 or existing_result_count >= stock_count:
+        return []
+
     stored_codes = _parse_stock_codes_json(run.get("stock_codes_json"))
     if stored_codes:
         return stored_codes
 
     config_codes = [code.strip() for code in get_config().stock_list if code.strip()]
-    if config_codes and len(config_codes) == int(run.get("stock_count") or 0):
+    if config_codes and len(config_codes) == stock_count:
         return config_codes
     return []
 
