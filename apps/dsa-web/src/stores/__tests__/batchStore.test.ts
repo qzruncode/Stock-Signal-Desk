@@ -10,6 +10,11 @@ vi.mock('../../api/batch', () => ({
     getRunReport: vi.fn(),
     getSchedule: vi.fn(),
     updateSchedule: vi.fn(),
+    resumeRun: vi.fn(),
+    pauseCurrentRun: vi.fn(),
+    resumeCurrentRun: vi.fn(),
+    stopCurrentRun: vi.fn(),
+    deleteRun: vi.fn(),
   },
 }));
 
@@ -31,6 +36,7 @@ describe('batchStore', () => {
       runFailed: 0,
       currentStock: null,
       currentMessage: null,
+      runStatus: null,
       runs: [],
       error: null,
     });

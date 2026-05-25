@@ -18,6 +18,7 @@ interface BatchState {
   runFailed: number;
   currentStock: string | null;
   currentMessage: string | null;
+  runStatus: string | null;
 
   // Batch history
   runs: BatchRunItem[];
@@ -41,10 +42,14 @@ interface BatchState {
   setSelectedTemplateId: (id: string) => void;
   triggerBatchRun: (stockCodes: string[]) => Promise<boolean>;
   resumeBatchRun: (runId: string, stockCodes: string[]) => Promise<boolean>;
+  pauseBatchRun: () => Promise<boolean>;
+  continueBatchRun: () => Promise<boolean>;
+  stopBatchRun: () => Promise<boolean>;
   syncCurrentProgress: () => Promise<boolean>;
   pollProgress: () => () => void; // Returns stop function
   fetchRuns: () => Promise<void>;
   viewReport: (runId: string) => Promise<void>;
+  deleteRun: (runId: string) => Promise<boolean>;
   closeReport: () => void;
   fetchSchedule: () => Promise<void>;
   updateSchedule: (data: { enabled: boolean; times: string[]; template_id: string }) => Promise<void>;
@@ -64,6 +69,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
   runFailed: 0,
   currentStock: null,
   currentMessage: null,
+  runStatus: null,
 
   runs: [],
   isLoadingRuns: false,
@@ -132,6 +138,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         runFailed: 0,
         currentStock: null,
         currentMessage: '准备中...',
+        runStatus: 'running',
       });
       return true;
     } catch (err) {
@@ -152,7 +159,41 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         runFailed: 0,
         currentStock: null,
         currentMessage: result.pending_count > 0 ? '准备续跑...' : '正在生成报告...',
+        runStatus: 'running',
       });
+      return true;
+    } catch (err) {
+      set({ error: getParsedApiError(err) });
+      return false;
+    }
+  },
+
+  pauseBatchRun: async () => {
+    try {
+      await batchApi.pauseCurrentRun();
+      set({ runStatus: 'paused', currentMessage: '已暂停：正在执行中的请求会先收尾' });
+      return true;
+    } catch (err) {
+      set({ error: getParsedApiError(err) });
+      return false;
+    }
+  },
+
+  continueBatchRun: async () => {
+    try {
+      await batchApi.resumeCurrentRun();
+      set({ runStatus: 'running', currentMessage: '继续跑批中...' });
+      return true;
+    } catch (err) {
+      set({ error: getParsedApiError(err) });
+      return false;
+    }
+  },
+
+  stopBatchRun: async () => {
+    try {
+      await batchApi.stopCurrentRun();
+      set({ runStatus: 'stopping', currentMessage: '正在终止：已开始的请求会先收尾' });
       return true;
     } catch (err) {
       set({ error: getParsedApiError(err) });
@@ -174,6 +215,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         runFailed: (progress.state.failed as number) || 0,
         currentStock: (progress.state.current_stock as string) || null,
         currentMessage: (progress.state.current_message as string) || null,
+        runStatus: (progress.state.status as string) || 'running',
       });
       return true;
     } catch {
@@ -201,9 +243,10 @@ export const useBatchStore = create<BatchState>((set, get) => ({
               runFailed: (progress.state.failed as number) || 0,
               currentStock: (progress.state.current_stock as string) || null,
               currentMessage: (progress.state.current_message as string) || null,
+              runStatus: (progress.state.status as string) || null,
             });
           } else {
-            set({ isRunning: false, currentStock: null, currentMessage: null });
+            set({ isRunning: false, currentStock: null, currentMessage: null, runStatus: null });
           }
           if (timer) {
             clearInterval(timer);
@@ -221,6 +264,7 @@ export const useBatchStore = create<BatchState>((set, get) => ({
             runFailed: (progress.state.failed as number) || 0,
             currentStock: (progress.state.current_stock as string) || null,
             currentMessage: (progress.state.current_message as string) || null,
+            runStatus: (progress.state.status as string) || 'running',
           });
         }
       } catch {
@@ -238,6 +282,22 @@ export const useBatchStore = create<BatchState>((set, get) => ({
         timer = null;
       }
     };
+  },
+
+  deleteRun: async (runId) => {
+    try {
+      await batchApi.deleteRun(runId);
+      set((state) => ({
+        runs: state.runs.filter((run) => run.run_id !== runId),
+        selectedReportContent: state.selectedReportRunId === runId ? null : state.selectedReportContent,
+        selectedReportRunId: state.selectedReportRunId === runId ? null : state.selectedReportRunId,
+        error: null,
+      }));
+      return true;
+    } catch (err) {
+      set({ error: getParsedApiError(err) });
+      return false;
+    }
   },
 
   fetchRuns: async () => {

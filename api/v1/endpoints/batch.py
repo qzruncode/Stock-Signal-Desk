@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from src.batch_runner import BatchRunner, BATCH_REPORTS_DIR
+from src.batch_runner import BatchRunControl, BatchRunner, BATCH_REPORTS_DIR
 from src.config import get_config
 from src.prompt_templates import get_prompt_template_store
 from src.storage import DatabaseManager
@@ -41,6 +41,7 @@ class BatchRunItem(BaseModel):
     report_path: Optional[str] = None
     results_json: Optional[str] = None
     stock_codes_json: Optional[str] = None
+    status: str = "completed"
 
 
 class BatchRunListResponse(BaseModel):
@@ -92,6 +93,7 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
         raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
 
     runner = BatchRunner()
+    control = BatchRunControl()
 
     try:
         _start_batch_thread(
@@ -101,8 +103,10 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
                 template_name=template["name"],
                 template_id=template["id"],
                 triggered_by="manual",
+                control=control,
                 on_progress=on_progress,
-            )
+            ),
+            control=control,
         )
     except Exception as exc:
         _mark_batch_stopped()
@@ -170,6 +174,7 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
     )
     pending_count = len([code for code in stock_codes if code not in existing_results])
     runner = BatchRunner()
+    control = BatchRunControl()
 
     try:
         _start_batch_thread(
@@ -180,8 +185,10 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
                 template_name=template["name"],
                 started_at=_parse_started_at(run.get("started_at")),
                 existing_results=existing_results,
+                control=control,
                 on_progress=on_progress,
-            )
+            ),
+            control=control,
         )
     except Exception as exc:
         _mark_batch_stopped()
@@ -193,6 +200,39 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
         "pending_count": pending_count,
         "template_name": template["name"],
     }
+
+
+@router.post("/runs/current/pause")
+async def pause_current_batch_run():
+    control = _get_running_control()
+    if control is None:
+        raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+    control.pause()
+    _set_running_status("paused", "已暂停：正在执行中的请求会先收尾")
+    _persist_current_status("paused")
+    return {"message": "跑批已暂停"}
+
+
+@router.post("/runs/current/resume")
+async def resume_current_batch_run():
+    control = _get_running_control()
+    if control is None:
+        raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+    control.resume()
+    _set_running_status("running", "继续跑批中...")
+    _persist_current_status("running")
+    return {"message": "跑批已继续"}
+
+
+@router.post("/runs/current/stop")
+async def stop_current_batch_run():
+    control = _get_running_control()
+    if control is None:
+        raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+    control.stop()
+    _set_running_status("stopping", "正在终止：已开始的请求会先收尾")
+    _persist_current_status("stopped")
+    return {"message": "跑批正在终止"}
 
 
 @router.get("/runs/{run_id}/report.md", response_class=PlainTextResponse)
@@ -219,6 +259,23 @@ async def get_batch_run_report(run_id: str):
         raise HTTPException(status_code=404, detail="报告文件不存在")
 
     return path.read_text(encoding="utf-8")
+
+
+@router.delete("/runs/{run_id}", status_code=204)
+async def delete_batch_run(run_id: str):
+    if _running_batch and _running_batch.get("running"):
+        state = _running_batch.get("state") or {}
+        if state.get("run_id") == run_id:
+            raise HTTPException(status_code=409, detail="当前跑批正在执行，请先终止后再删除")
+
+    db = DatabaseManager.get_instance()
+    run = db.get_batch_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+    if not db.delete_batch_run(run_id):
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+    _delete_batch_report_file(run.get("report_path"))
+    return None
 
 
 def _build_partial_report_from_run(run: dict) -> str:
@@ -284,6 +341,7 @@ def resume_incomplete_batches_on_startup() -> bool:
             continue
 
         runner = BatchRunner()
+        control = BatchRunControl()
         run_id = run["run_id"]
         _start_batch_thread(
             lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, template=template, run=run: runner.resume(
@@ -293,8 +351,10 @@ def resume_incomplete_batches_on_startup() -> bool:
                 template_name=template["name"],
                 started_at=_parse_started_at(run.get("started_at")),
                 existing_results=existing_results,
+                control=control,
                 on_progress=on_progress,
-            )
+            ),
+            control=control,
         )
         logger.info("Auto-resumed interrupted batch run: run_id=%s", run_id)
         return True
@@ -313,12 +373,45 @@ def _mark_batch_stopped():
             _running_batch["running"] = False
 
 
-def _start_batch_thread(run_factory):
+def _get_running_control() -> Optional[BatchRunControl]:
+    if not _running_batch or not _running_batch.get("running"):
+        return None
+    control = _running_batch.get("control")
+    if isinstance(control, BatchRunControl):
+        return control
+    return None
+
+
+def _set_running_status(status: str, message: str):
+    if not _running_batch:
+        return
+    state = _running_batch.get("state")
+    if isinstance(state, dict):
+        state["status"] = status
+        state["paused"] = status == "paused"
+        state["stopping"] = status == "stopping"
+        state["current_message"] = message
+
+
+def _persist_current_status(status: str):
+    if not _running_batch:
+        return
+    state = _running_batch.get("state") or {}
+    run_id = state.get("run_id")
+    if not run_id:
+        return
+    try:
+        DatabaseManager.get_instance().update_batch_run_status(run_id, status)
+    except Exception:
+        logger.exception("Failed to persist batch status: %s", status)
+
+
+def _start_batch_thread(run_factory, control: Optional[BatchRunControl] = None):
     global _running_batch
     with _running_lock:
         if _running_batch and _running_batch.get("running"):
             raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
-        _running_batch = {"running": True, "state": None}
+        _running_batch = {"running": True, "state": None, "control": control}
 
     def on_progress(state):
         if _running_batch is not None:
@@ -396,6 +489,18 @@ def _parse_started_at(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(value)
     except ValueError:
         return None
+
+
+def _delete_batch_report_file(report_path: Optional[str]):
+    if not report_path:
+        return
+    candidates = [Path(report_path), BATCH_REPORTS_DIR / Path(report_path).name]
+    for path in candidates:
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+        except Exception:
+            logger.warning("Failed to delete batch report file: %s", path, exc_info=True)
 
 
 @router.get("/schedule", response_model=BatchScheduleResponse)

@@ -17,7 +17,7 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -31,6 +31,33 @@ logger = logging.getLogger(__name__)
 BATCH_REPORTS_DIR = Path(__file__).parent.parent / "reports" / "batch"
 DEFAULT_MAX_CONCURRENT = 5
 MAX_CONCURRENT_LIMIT = 10
+
+
+class BatchRunControl:
+    """Cooperative controls for a running batch."""
+
+    def __init__(self):
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        self.stop_event = threading.Event()
+
+    def pause(self):
+        self.pause_event.clear()
+
+    def resume(self):
+        self.pause_event.set()
+
+    def stop(self):
+        self.stop_event.set()
+        self.pause_event.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self.pause_event.is_set() and not self.stop_event.is_set()
+
+    @property
+    def stopping(self) -> bool:
+        return self.stop_event.is_set()
 
 
 def _get_batch_max_concurrent() -> int:
@@ -72,6 +99,7 @@ class BatchRunState:
             if self.completed > 0
             else "准备中..."
         )
+        self.status = "running"
         self.active_stocks: Dict[str, str] = {}
         self._lock = threading.Lock()
         self._progress_callbacks: List[Callable] = []
@@ -141,6 +169,15 @@ class BatchRunState:
             callbacks = list(self._progress_callbacks)
         self._notify(callbacks)
 
+    def set_status(self, status: str, message: str):
+        with self._lock:
+            self.status = status
+            self.current_message = message
+            if status in {"paused", "stopped"}:
+                self.current_stock = None
+            callbacks = list(self._progress_callbacks)
+        self._notify(callbacks)
+
     def add_progress_callback(self, cb: Callable):
         self._progress_callbacks.append(cb)
 
@@ -154,6 +191,9 @@ class BatchRunState:
                 "failed": self.failed,
                 "current_stock": self.current_stock,
                 "current_message": self.current_message,
+                "status": self.status,
+                "paused": self.status == "paused",
+                "stopping": self.status == "stopping",
                 "active_stocks": list(self.active_stocks.values()),
                 "results": dict(self.results),
             }
@@ -187,6 +227,7 @@ class BatchRunner:
         template_name: str = "默认",
         template_id: str = "",
         triggered_by: str = "manual",
+        control: Optional[BatchRunControl] = None,
         on_progress: Optional[Callable[[BatchRunState], None]] = None,
     ) -> BatchRunState:
         """执行批量跑批。
@@ -223,6 +264,7 @@ class BatchRunner:
             template_name=template_name,
             started_at=started_at,
             existing_results=None,
+            control=control,
             on_progress=on_progress,
         )
 
@@ -235,6 +277,7 @@ class BatchRunner:
         template_name: str = "默认",
         started_at: Optional[datetime] = None,
         existing_results: Optional[Dict[str, dict]] = None,
+        control: Optional[BatchRunControl] = None,
         on_progress: Optional[Callable[[BatchRunState], None]] = None,
     ) -> BatchRunState:
         """Resume an existing interrupted batch run without re-running completed stocks."""
@@ -268,6 +311,7 @@ class BatchRunner:
             template_name=template_name,
             started_at=started_at,
             existing_results=existing_results,
+            control=control,
             on_progress=on_progress,
         )
 
@@ -281,8 +325,11 @@ class BatchRunner:
         template_name: str,
         started_at: datetime,
         existing_results: Optional[Dict[str, dict]],
+        control: Optional[BatchRunControl],
         on_progress: Optional[Callable[[BatchRunState], None]],
     ) -> BatchRunState:
+        if control is None:
+            control = BatchRunControl()
         state = BatchRunState(run_id, len(stock_codes), existing_results=existing_results)
 
         if on_progress:
@@ -296,25 +343,60 @@ class BatchRunner:
             _save_batch_run_end(run_id, state, started_at)
             return state
 
+        stopped = False
+        pending_queue = list(pending_stock_codes)
         with ThreadPoolExecutor(max_workers=self._max_concurrent, thread_name_prefix="batch") as pool:
             futures = {}
-            for code in pending_stock_codes:
-                stock_name = _lookup_stock_name(code)
-                future = pool.submit(
-                    self._analyze_one,
-                    analyzer, system_prompt, code, stock_name, state,
-                )
-                futures[future] = code
+            while pending_queue or futures:
+                if control.stop_event.is_set():
+                    stopped = True
+                    state.set_status("stopping", "正在终止，等待已开始的请求收尾...")
+                    for future in list(futures):
+                        if future.cancel():
+                            futures.pop(future, None)
+                    pending_queue.clear()
 
-            for future in as_completed(futures):
-                code = futures[future]
-                try:
-                    success, text, model = future.result()
-                except Exception as exc:
-                    logger.exception("Batch task for %s crashed", code)
-                    success, text, model = False, str(exc), ""
-                state.add_result(code, success, text, model)
-                _save_batch_run_progress(run_id, state)
+                while not control.stop_event.is_set() and not control.pause_event.is_set():
+                    state.set_status("paused", f"已暂停：{state.completed}/{state.total}")
+                    control.pause_event.wait(timeout=0.5)
+
+                if not control.stop_event.is_set() and state.status == "paused":
+                    state.set_status("running", "继续跑批中...")
+
+                while (
+                    pending_queue
+                    and not control.stop_event.is_set()
+                    and control.pause_event.is_set()
+                    and len(futures) < self._max_concurrent
+                ):
+                    code = pending_queue.pop(0)
+                    stock_name = _lookup_stock_name(code)
+                    future = pool.submit(
+                        self._analyze_one,
+                        analyzer, system_prompt, code, stock_name, state,
+                    )
+                    futures[future] = code
+
+                if not futures:
+                    continue
+
+                done, _pending = wait(futures, timeout=0.5, return_when=FIRST_COMPLETED)
+                for future in done:
+                    code = futures.pop(future)
+                    if future.cancelled():
+                        continue
+                    try:
+                        success, text, model = future.result()
+                    except Exception as exc:
+                        logger.exception("Batch task for %s crashed", code)
+                        success, text, model = False, str(exc), ""
+                    state.add_result(code, success, text, model)
+                    _save_batch_run_progress(run_id, state)
+
+        if stopped:
+            state.set_status("stopped", f"已终止：保留 {state.completed}/{state.total} 个结果")
+            _save_batch_run_progress(run_id, state, status="stopped")
+            return state
 
         # Generate aggregated MD
         report_path = _write_aggregated_report(run_id, state, template_name, started_at)
@@ -481,7 +563,7 @@ def _build_batch_notification_content(
     return "\n".join(lines)
 
 
-def _save_batch_run_progress(run_id: str, state: BatchRunState):
+def _save_batch_run_progress(run_id: str, state: BatchRunState, status: str = "running"):
     """Persist completed stock results during a running batch.
 
     Batch jobs can be long-running. Persisting each completed stock keeps
@@ -496,6 +578,7 @@ def _save_batch_run_progress(run_id: str, state: BatchRunState):
                 record.success_count = state.success
                 record.fail_count = state.failed
                 record.results_json = json.dumps(state.results, ensure_ascii=False)
+                record.status = status
                 session.commit()
     except Exception:
         logger.exception("Failed to save batch run progress record")
@@ -522,6 +605,7 @@ def _save_batch_run_start(
             report_path="",
             results_json="[]",
             stock_codes_json=json.dumps(stock_codes, ensure_ascii=False),
+            status="running",
         )
         with db.get_session() as session:
             session.add(record)
@@ -547,6 +631,7 @@ def _save_batch_run_resume_start(
                 record.report_path = ""
                 record.results_json = json.dumps(existing_results, ensure_ascii=False)
                 record.stock_codes_json = json.dumps(stock_codes, ensure_ascii=False)
+                record.status = "running"
                 session.commit()
     except Exception:
         logger.exception("Failed to mark batch run as resumed")
@@ -568,6 +653,7 @@ def _save_batch_run_end(
                 record.completed_at = datetime.now(timezone.utc)
                 record.report_path = report_path
                 record.results_json = json.dumps(state.results, ensure_ascii=False)
+                record.status = "completed"
                 session.commit()
     except Exception:
         logger.exception("Failed to save batch run end record")

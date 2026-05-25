@@ -14,6 +14,7 @@ export interface BatchRunItem {
   report_path: string | null;
   results_json: string | null;
   stock_codes_json: string | null;
+  status: string;
 }
 
 export interface BatchRunListResponse {
@@ -36,6 +37,9 @@ export interface BatchRunProgress {
     current_stock?: string;
     current_message?: string;
     active_stocks?: string[];
+    status?: string;
+    paused?: boolean;
+    stopping?: boolean;
     [key: string]: unknown;
   } | null;
 }
@@ -66,6 +70,21 @@ export const batchApi = {
     return response.data;
   },
 
+  async pauseCurrentRun(): Promise<{ message: string }> {
+    const response = await apiClient.post('/api/v1/batch/runs/current/pause');
+    return response.data;
+  },
+
+  async resumeCurrentRun(): Promise<{ message: string }> {
+    const response = await apiClient.post('/api/v1/batch/runs/current/resume');
+    return response.data;
+  },
+
+  async stopCurrentRun(): Promise<{ message: string }> {
+    const response = await apiClient.post('/api/v1/batch/runs/current/stop');
+    return response.data;
+  },
+
   async getRuns(limit = 20): Promise<BatchRunItem[]> {
     const response = await apiClient.get<BatchRunListResponse>('/api/v1/batch/runs', { params: { limit } });
     return response.data.runs;
@@ -81,6 +100,10 @@ export const batchApi = {
       responseType: 'text',
     });
     return response.data;
+  },
+
+  async deleteRun(runId: string): Promise<void> {
+    await apiClient.delete(`/api/v1/batch/runs/${runId}`);
   },
 
   async getCurrentProgress(): Promise<BatchRunProgress> {

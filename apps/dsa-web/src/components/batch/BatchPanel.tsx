@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Play, RotateCcw, X } from 'lucide-react';
+import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Pause, Play, RotateCcw, Square, Trash2, X } from 'lucide-react';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useBatchStore } from '../../stores/batchStore';
 import type { PromptTemplateItem } from '../../api/prompts';
@@ -65,6 +65,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     runFailed,
     currentStock,
     currentMessage,
+    runStatus,
     runs,
     selectedReportContent,
     isLoadingReport,
@@ -74,10 +75,14 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     setSelectedTemplateId,
     triggerBatchRun,
     resumeBatchRun,
+    pauseBatchRun,
+    continueBatchRun,
+    stopBatchRun,
     syncCurrentProgress,
     pollProgress,
     fetchRuns,
     viewReport,
+    deleteRun,
     closeReport,
     fetchSchedule,
     updateSchedule,
@@ -170,6 +175,8 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
   }, [newTime, scheduleTimes]);
 
   const progressPercent = runStockCount > 0 ? Math.round((runCompleted / runStockCount) * 100) : 0;
+  const isPaused = runStatus === 'paused';
+  const isStopping = runStatus === 'stopping';
   const hasPersistedResults = (run: { report_path: string | null; results_json: string | null }) => {
     if (run.report_path) return true;
     if (!run.results_json) return false;
@@ -286,6 +293,32 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                   <div className="flex gap-3 text-[10px] text-muted-text">
                     <span className="text-emerald-600 dark:text-emerald-400">成功 {runSuccess}</span>
                     <span className="text-red-600 dark:text-red-400">失败 {runFailed}</span>
+                    {isPaused && <span className="text-amber-600 dark:text-amber-400">已暂停</span>}
+                    {isStopping && <span className="text-amber-600 dark:text-amber-400">终止中</span>}
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void (isPaused ? continueBatchRun() : pauseBatchRun())}
+                      disabled={isStopping}
+                      className="flex-1"
+                    >
+                      {isPaused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                      {isPaused ? '继续' : '暂停'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void stopBatchRun()}
+                      disabled={isStopping}
+                      className="flex-1 text-red-600 hover:text-red-700 dark:text-red-400"
+                    >
+                      <Square className="h-3.5 w-3.5" />
+                      终止
+                    </Button>
                   </div>
                 </div>
               )}
@@ -299,6 +332,9 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                     {runs.map((run) => {
                       const canOpenReport = hasPersistedResults(run);
                       const canResume = canResumeRun(run);
+                      const statusText = run.status === 'stopped'
+                        ? '已终止'
+                        : run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分';
                       return (
                         <div
                           key={run.run_id}
@@ -325,7 +361,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                               {run.success_count}/{run.stock_count}
                             </span>
                             <span className="shrink-0 text-[10px] text-muted-text">
-                              {run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分'}
+                              {statusText}
                             </span>
                           </button>
                           {canResume && (
@@ -346,6 +382,22 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                               <RotateCcw className="h-3.5 w-3.5" />
                             </button>
                           )}
+                          <button
+                            type="button"
+                            title="删除跑批记录"
+                            disabled={isRunning}
+                            onClick={() => {
+                              if (!isRunning) {
+                                void deleteRun(run.run_id);
+                              }
+                            }}
+                            className={cn(
+                              'mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-text transition-colors hover:bg-red-500/10 hover:text-red-600',
+                              isRunning && 'opacity-40',
+                            )}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
                         </div>
                       );
                     })}

@@ -717,6 +717,7 @@ class BatchRun(Base):
     report_path = Column(Text)
     results_json = Column(Text, default='[]')
     stock_codes_json = Column(Text, default='[]')
+    status = Column(String(32), nullable=False, default='completed')
 
     __table_args__ = (
         Index('ix_batch_runs_started', 'started_at'),
@@ -874,6 +875,10 @@ class DatabaseManager:
                 if "stock_codes_json" not in columns:
                     conn.exec_driver_sql(
                         "ALTER TABLE batch_runs ADD COLUMN stock_codes_json TEXT DEFAULT '[]'"
+                    )
+                if "status" not in columns:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE batch_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
                     )
         except Exception:
             logger.exception("Failed to ensure compatible SQLite schema")
@@ -2271,11 +2276,28 @@ class DatabaseManager:
             rows = (
                 session.query(BatchRun)
                 .filter(BatchRun.completed_at.is_(None))
+                .filter(BatchRun.status == "running")
                 .order_by(desc(BatchRun.started_at))
                 .limit(limit)
                 .all()
             )
             return [_batch_run_to_dict(r) for r in rows]
+
+    def update_batch_run_status(self, run_id: str, status: str) -> bool:
+        with self.session_scope() as session:
+            row = session.query(BatchRun).filter_by(run_id=run_id).first()
+            if row is None:
+                return False
+            row.status = status
+            return True
+
+    def delete_batch_run(self, run_id: str) -> bool:
+        with self.session_scope() as session:
+            row = session.query(BatchRun).filter_by(run_id=run_id).first()
+            if row is None:
+                return False
+            session.delete(row)
+            return True
 
     # ============ batch_schedules ============
 
@@ -2331,6 +2353,7 @@ def _batch_run_to_dict(row: BatchRun) -> Dict[str, Any]:
         "report_path": row.report_path,
         "results_json": row.results_json,
         "stock_codes_json": row.stock_codes_json,
+        "status": row.status,
     }
 
 
