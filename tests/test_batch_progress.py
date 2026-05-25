@@ -278,6 +278,36 @@ def test_batch_summary_accepts_buy_variants_and_rejects_no_buy_phrase():
     assert "筛选通过: **2**" in content
 
 
+def test_batch_summary_prefers_leading_no_buy_over_future_may_buy():
+    state = BatchRunState(
+        "run-1",
+        total=1,
+        existing_results={
+            "301357": {
+                "success": True,
+                "text": (
+                    "不买\n\n"
+                    "最核心的否定原因：行业β不满足且存在风险否决项。\n\n"
+                    "最关键验证点：若后续订单实质性落地，可能转为可买。\n"
+                    "核心逻辑溯源：不符合主线属性与行业β。"
+                ),
+                "model": "model-a",
+            },
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "| 301357 |" not in content
+    assert "筛选通过: **0**" in content
+    assert "排除: **1**" in content
+
+
 def test_batch_structured_decision_overrides_unfamiliar_words():
     text = """
     这只股票的自然语言结论用了一个系统没见过的新词：火速上车。

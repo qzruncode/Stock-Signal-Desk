@@ -681,11 +681,18 @@ def _extract_decision_context(text: str) -> str:
     if not lines:
         return ""
 
+    explicit_decision_pattern = re.compile(
+        r"^(?:最终结论[:：]?)?\s*(不买|不买入|不建议买入|可买|买入|建议买入|强烈买入|继续观察|暂不行动)\s*[。.!！]?$"
+    )
+    for index in list(range(min(4, len(lines)))) + list(range(len(lines) - 1, max(-1, len(lines) - 8), -1)):
+        if explicit_decision_pattern.search(lines[index]):
+            return "\n".join(lines[index:index + 4])
+
     high_priority_markers = (
         "最终结论", "综合结论", "最终建议", "操作建议", "投资建议",
         "筛选结果", "买入建议", "是否买入", "总评",
     )
-    fallback_markers = ("核心结论", "结论", "建议")
+    fallback_markers = ("核心结论", "结论")
 
     for markers in (high_priority_markers, fallback_markers):
         for index in range(len(lines) - 1, -1, -1):
@@ -730,12 +737,23 @@ def _find_decision_token(text: str, tokens: List[str]) -> Optional[str]:
     return None
 
 
+def _find_positive_decision_token(text: str) -> Optional[str]:
+    lowered = str(text).lower()
+    future_or_conditional_patterns = [
+        "可能转为", "后续可能", "若后续", "如果后续", "未来若",
+        "转为可买", "转为买入", "可转为",
+    ]
+    if any(token in lowered for token in future_or_conditional_patterns):
+        return None
+    return _find_decision_token(text, _POSITIVE_DECISION_PATTERNS)
+
+
 def _extract_decision(text: str) -> str:
     context = _extract_decision_context(text)
     negative = _find_decision_token(context, _NEGATIVE_DECISION_PATTERNS)
     if negative:
         return negative
-    positive = _find_decision_token(context, _POSITIVE_DECISION_PATTERNS)
+    positive = _find_positive_decision_token(context)
     if positive:
         return positive
 
@@ -787,7 +805,7 @@ def _classify_legacy_decision(text: str) -> Dict[str, str]:
             "decision_reason": _extract_reason(text),
             "decision_source": "legacy",
         }
-    positive = _find_decision_token(context, _POSITIVE_DECISION_PATTERNS)
+    positive = _find_positive_decision_token(context)
     if positive:
         return {
             "decision": "buy",
