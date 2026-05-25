@@ -47,6 +47,8 @@ const BatchRunDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const { runId = '' } = useParams();
   const [run, setRun] = useState<BatchRunItem | null>(null);
+  const [summaryMd, setSummaryMd] = useState('');
+  const [activeView, setActiveView] = useState<'summary' | 'details'>('summary');
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<ParsedApiError | null>(null);
@@ -56,8 +58,12 @@ const BatchRunDetailPage: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await batchApi.getRunDetail(runId);
+      const [data, report] = await Promise.all([
+        batchApi.getRunDetail(runId),
+        batchApi.getRunReport(runId).catch(() => ''),
+      ]);
       setRun(data);
+      setSummaryMd(report);
       const first = parseBatchResults(data.results_json)[0];
       setSelectedCode((current) => current || first?.code || null);
     } catch (err) {
@@ -135,13 +141,51 @@ const BatchRunDetailPage: React.FC = () => {
                 </div>
               </section>
 
+              <div className="flex items-center gap-2 rounded-xl border border-subtle bg-surface p-1">
+                <button
+                  type="button"
+                  onClick={() => setActiveView('summary')}
+                  className={cn(
+                    'h-8 rounded-lg px-3 text-sm transition-colors',
+                    activeView === 'summary'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-text hover:bg-hover hover:text-foreground',
+                  )}
+                >
+                  汇总 MD
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveView('details')}
+                  className={cn(
+                    'h-8 rounded-lg px-3 text-sm transition-colors',
+                    activeView === 'details'
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-text hover:bg-hover hover:text-foreground',
+                  )}
+                >
+                  单股明细
+                </button>
+              </div>
+
+              {activeView === 'summary' ? (
+                <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-subtle bg-surface">
+                  <div className="border-b border-subtle px-5 py-4">
+                    <p className="text-sm font-semibold text-foreground">汇总统计 MD</p>
+                    <p className="text-xs text-muted-text">通知同源的统计报告，包含整体完成、成功率和失败项。</p>
+                  </div>
+                  <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words px-5 py-4 text-sm leading-7 text-secondary-text">
+                    {summaryMd || '暂无汇总报告'}
+                  </pre>
+                </section>
+              ) : (
               <section className="grid min-h-0 flex-1 overflow-hidden rounded-xl border border-subtle bg-surface lg:grid-cols-[320px_1fr]">
-                <aside className="min-h-0 border-b border-subtle lg:border-b-0 lg:border-r">
+                <aside className="flex min-h-0 flex-col border-b border-subtle lg:border-b-0 lg:border-r">
                   <div className="border-b border-subtle px-4 py-3">
                     <p className="text-sm font-semibold text-foreground">单股结果</p>
                     <p className="text-xs text-muted-text">{results.length} 条已保存结果</p>
                   </div>
-                  <div className="max-h-[320px] overflow-y-auto lg:max-h-full">
+                  <div className="min-h-0 flex-1 overflow-y-auto">
                     {results.map((item) => (
                       <button
                         key={item.code}
@@ -168,7 +212,7 @@ const BatchRunDetailPage: React.FC = () => {
                   </div>
                 </aside>
 
-                <article className="min-h-0 overflow-hidden">
+                <article className="flex min-h-0 flex-col overflow-hidden">
                   {selectedResult ? (
                     <div className="flex h-full min-h-0 flex-col">
                       <div className="border-b border-subtle px-5 py-4">
@@ -193,6 +237,7 @@ const BatchRunDetailPage: React.FC = () => {
                   ) : null}
                 </article>
               </section>
+              )}
             </>
           ) : (
             <EmptyState
