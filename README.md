@@ -89,6 +89,22 @@ npm run dev
 
 前端开发服务默认访问 `http://localhost:5173`。
 
+### 一键管理脚本
+
+使用 `dev.sh` 可一键启动 / 停止前后端开发服务：
+
+```bash
+./dev.sh start     # 启动前后端
+./dev.sh stop      # 停止服务
+./dev.sh restart   # 重启服务
+./dev.sh status    # 查看运行状态
+```
+
+启动后：
+
+- 后端: `http://localhost:8000`
+- 前端: `http://localhost:5173`
+
 ## 常用命令
 
 ```bash
