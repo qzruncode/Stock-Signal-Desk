@@ -2291,6 +2291,14 @@ class DatabaseManager:
             row.status = status
             return True
 
+    def update_batch_run_report_path(self, run_id: str, report_path: str) -> bool:
+        with self.session_scope() as session:
+            row = session.query(BatchRun).filter_by(run_id=run_id).first()
+            if row is None:
+                return False
+            row.report_path = report_path
+            return True
+
     def delete_batch_run(self, run_id: str) -> bool:
         with self.session_scope() as session:
             row = session.query(BatchRun).filter_by(run_id=run_id).first()

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, FileText, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Bell, FileText, Loader2, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { batchApi, type BatchRunItem } from '../api/batch';
 import { ApiErrorAlert, Button, EmptyState } from '../components/common';
@@ -51,12 +51,16 @@ const BatchRunDetailPage: React.FC = () => {
   const [activeView, setActiveView] = useState<'summary' | 'details'>('summary');
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isNotifying, setIsNotifying] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   const loadRun = useCallback(async () => {
     if (!runId) return;
     setIsLoading(true);
     setError(null);
+    setActionMessage(null);
     try {
       const [data, report] = await Promise.all([
         batchApi.getRunDetail(runId),
@@ -77,6 +81,50 @@ const BatchRunDetailPage: React.FC = () => {
     document.title = '跑批详情 - DSA';
     void loadRun();
   }, [loadRun]);
+
+  const handleRegenerateReport = useCallback(async () => {
+    if (!runId) return;
+    setIsRegenerating(true);
+    setError(null);
+    setActionMessage(null);
+    try {
+      const result = await batchApi.regenerateRunReport(runId);
+      const [data, report] = await Promise.all([
+        batchApi.getRunDetail(runId),
+        batchApi.getRunReport(runId),
+      ]);
+      setRun(data);
+      setSummaryMd(report);
+      setActiveView('summary');
+      setActionMessage(result.message);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setIsRegenerating(false);
+    }
+  }, [runId]);
+
+  const handleNotifyRun = useCallback(async () => {
+    if (!runId) return;
+    setIsNotifying(true);
+    setError(null);
+    setActionMessage(null);
+    try {
+      const result = await batchApi.notifyRun(runId);
+      const [data, report] = await Promise.all([
+        batchApi.getRunDetail(runId),
+        batchApi.getRunReport(runId),
+      ]);
+      setRun(data);
+      setSummaryMd(report);
+      setActiveView('summary');
+      setActionMessage(result.message);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setIsNotifying(false);
+    }
+  }, [runId]);
 
   const results = useMemo(() => parseBatchResults(run?.results_json), [run]);
   const selectedResult = useMemo(
@@ -105,16 +153,43 @@ const BatchRunDetailPage: React.FC = () => {
               <h1 className="truncate text-lg font-semibold text-foreground">{run?.template_name || '跑批详情'}</h1>
             </div>
           </div>
-          <Button variant="secondary" size="sm" onClick={() => void loadRun()} isLoading={isLoading}>
-            <RefreshCw className="h-4 w-4" />
-            刷新
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleRegenerateReport()}
+              isLoading={isRegenerating}
+              loadingText="生成中..."
+            >
+              <FileText className="h-4 w-4" />
+              重生成汇总
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void handleNotifyRun()}
+              isLoading={isNotifying}
+              loadingText="发送中..."
+            >
+              <Bell className="h-4 w-4" />
+              发送通知
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => void loadRun()} isLoading={isLoading}>
+              <RefreshCw className="h-4 w-4" />
+              刷新
+            </Button>
+          </div>
         </div>
       </div>
 
       <main className="min-h-0 flex-1 overflow-hidden px-4 py-4">
         <div className="mx-auto flex h-full w-full max-w-[1440px] flex-col gap-4">
           {error && <ApiErrorAlert error={error} onDismiss={() => setError(null)} />}
+          {actionMessage && (
+            <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
+              {actionMessage}
+            </div>
+          )}
 
           {isLoading && !run ? (
             <div className="flex min-h-[24rem] items-center justify-center rounded-xl border border-subtle bg-surface">

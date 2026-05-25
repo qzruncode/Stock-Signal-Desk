@@ -12,7 +12,14 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from src.batch_runner import BatchRunControl, BatchRunner, BATCH_REPORTS_DIR
+from src.batch_runner import (
+    BatchRunControl,
+    BatchRunner,
+    BatchRunState,
+    BATCH_REPORTS_DIR,
+    _build_batch_notification_content,
+    _write_aggregated_report,
+)
 from src.config import get_config
 from src.prompt_templates import get_prompt_template_store
 from src.storage import DatabaseManager
@@ -65,6 +72,11 @@ class BatchScheduleResponse(BaseModel):
     template_id: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+class BatchRunActionResponse(BaseModel):
+    message: str
+    report_path: Optional[str] = None
 
 
 # In-memory progress tracker for running batches
@@ -261,6 +273,50 @@ async def get_batch_run_report(run_id: str):
     return path.read_text(encoding="utf-8")
 
 
+@router.post("/runs/{run_id}/report/regenerate", response_model=BatchRunActionResponse)
+async def regenerate_batch_run_report(run_id: str):
+    """基于已保存的单股结果重新生成跑批汇总 MD。"""
+    db = DatabaseManager.get_instance()
+    run = db.get_batch_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+
+    report_path, _ = _regenerate_batch_report_for_run(run)
+    if not db.update_batch_run_report_path(run_id, report_path):
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+
+    return BatchRunActionResponse(message="汇总 MD 已重新生成", report_path=report_path)
+
+
+@router.post("/runs/{run_id}/notify", response_model=BatchRunActionResponse)
+async def notify_batch_run(run_id: str):
+    """手动发送跑批汇总通知。发送前会先用当前规则重建汇总报告。"""
+    db = DatabaseManager.get_instance()
+    run = db.get_batch_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+
+    report_path, state = _regenerate_batch_report_for_run(run)
+    if not db.update_batch_run_report_path(run_id, report_path):
+        raise HTTPException(status_code=404, detail="跑批记录不存在")
+
+    try:
+        from src.notification import get_notification_service
+
+        content = _build_batch_notification_content(
+            run_id,
+            state,
+            run.get("template_name") or "-",
+            report_path,
+        )
+        get_notification_service().send(content)
+    except Exception as exc:
+        logger.exception("Failed to send manual batch notification: run_id=%s", run_id)
+        raise HTTPException(status_code=500, detail=f"通知发送失败: {exc}") from exc
+
+    return BatchRunActionResponse(message="跑批汇总通知已发送", report_path=report_path)
+
+
 @router.delete("/runs/{run_id}", status_code=204)
 async def delete_batch_run(run_id: str):
     if _running_batch and _running_batch.get("running"):
@@ -276,6 +332,27 @@ async def delete_batch_run(run_id: str):
         raise HTTPException(status_code=404, detail="跑批记录不存在")
     _delete_batch_report_file(run.get("report_path"))
     return None
+
+
+def _regenerate_batch_report_for_run(run: dict) -> tuple[str, BatchRunState]:
+    results = _parse_results_json(run.get("results_json"))
+    if not results:
+        raise HTTPException(status_code=400, detail="该跑批没有可用于汇总的单股结果")
+
+    run_id = run.get("run_id") or ""
+    state = BatchRunState(
+        run_id,
+        total=int(run.get("stock_count") or len(results)),
+        existing_results=results,
+    )
+    started_at = _parse_started_at(run.get("started_at")) or datetime.now()
+    report_path = _write_aggregated_report(
+        run_id,
+        state,
+        run.get("template_name") or "-",
+        started_at,
+    )
+    return report_path, state
 
 
 def _build_partial_report_from_run(run: dict) -> str:

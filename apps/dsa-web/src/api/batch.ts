@@ -53,6 +53,11 @@ export interface BatchSchedule {
   updated_at?: string | null;
 }
 
+export interface BatchRunActionResponse {
+  message: string;
+  report_path: string | null;
+}
+
 export const batchApi = {
   async triggerRun(data: BatchRunTriggerRequest): Promise<{ message: string; stock_count: number; template_name: string }> {
     const response = await apiClient.post('/api/v1/batch/run', data, {
@@ -99,6 +104,16 @@ export const batchApi = {
     const response = await apiClient.get<string>(`/api/v1/batch/runs/${runId}/report.md`, {
       responseType: 'text',
     });
+    return response.data;
+  },
+
+  async regenerateRunReport(runId: string): Promise<BatchRunActionResponse> {
+    const response = await apiClient.post<BatchRunActionResponse>(`/api/v1/batch/runs/${runId}/report/regenerate`);
+    return response.data;
+  },
+
+  async notifyRun(runId: string): Promise<BatchRunActionResponse> {
+    const response = await apiClient.post<BatchRunActionResponse>(`/api/v1/batch/runs/${runId}/notify`);
     return response.data;
   },
 
