@@ -15,6 +15,7 @@
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -474,18 +475,18 @@ def _write_aggregated_report(
 
     result_items = _get_result_items(state)
     failed_items = [(code, result) for code, result in result_items if not result.get("success")]
+    passed_items = _get_passed_stock_summaries(result_items)
     success_rate = (state.success / state.total * 100) if state.total else 0
 
     lines = [
-        "# 批量分析统计报告",
+        "# 跑批筛选汇总",
         f"",
         f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
         f"- **分析模板**: {template_name}",
         f"- **股票数量**: {state.total}",
-        f"- **成功**: {state.success}",
-        f"- **失败**: {state.failed}",
         f"- **完成率**: {state.completed}/{state.total}",
-        f"- **成功率**: {success_rate:.1f}%",
+        f"- **分析成功率**: {success_rate:.1f}%",
+        f"- **筛选通过**: {len(passed_items)}",
         f"",
         "---",
         "",
@@ -495,35 +496,32 @@ def _write_aggregated_report(
         "| --- | ---: |",
         f"| 总股票数 | {state.total} |",
         f"| 已完成 | {state.completed} |",
-        f"| 成功 | {state.success} |",
-        f"| 失败 | {state.failed} |",
-        f"| 成功率 | {success_rate:.1f}% |",
+        f"| 分析成功 | {state.success} |",
+        f"| 分析失败 | {state.failed} |",
+        f"| 筛选通过 | {len(passed_items)} |",
+        f"| 分析成功率 | {success_rate:.1f}% |",
         "",
     ]
 
+    lines.extend(["## 筛选通过股票", ""])
+    if passed_items:
+        lines.extend([
+            "| 股票 | 结论 | 摘要理由 | 模型 |",
+            "| --- | --- | --- | --- |",
+        ])
+        for item in passed_items:
+            lines.append(
+                f"| {item['code']} | {item['decision']} | {item['reason']} | `{item['model']}` |"
+            )
+    else:
+        lines.append("本次跑批没有识别到明确筛选通过的股票。")
+    lines.append("")
+
     if failed_items:
-        lines.extend(["## 失败列表", ""])
+        lines.extend(["## 分析失败", ""])
         for code, result in failed_items:
             reason = _one_line(result.get("text") or "未知错误", limit=100)
             lines.append(f"- **{code}**: {reason}")
-        lines.append("")
-
-    lines.extend(["## 单股明细", ""])
-
-    for code, result in result_items:
-        status = "成功" if result.get("success") else "失败"
-        lines.append(f"## {code}")
-        lines.append("")
-        lines.append(f"- **状态**: {status}")
-        lines.append(f"- **模型**: {result.get('model') or '-'}")
-        lines.append("")
-        if result.get("success"):
-            lines.append("")
-            lines.append(result.get("text") or "")
-        else:
-            lines.append(f"> 分析失败: {result.get('text') or '未知错误'}")
-        lines.append("")
-        lines.append("---")
         lines.append("")
 
     content = "\n".join(lines)
@@ -541,10 +539,71 @@ def _get_result_items(state: BatchRunState) -> List[tuple[str, dict]]:
 
 
 def _one_line(text: str, limit: int = 80) -> str:
-    compact = " ".join(str(text).split())
+    compact = _escape_table_cell(" ".join(str(text).split()))
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1] + "..."
+
+
+def _escape_table_cell(text: str) -> str:
+    return str(text).replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _extract_decision(text: str) -> str:
+    patterns = [
+        r"(?:操作建议|投资建议|最终建议|结论|核心结论|筛选结果|评级)[:：]\s*([^\n。；;|]{2,40})",
+        r"(强烈买入|建议买入|可以买入|买入|重点关注|可关注|继续关注|筛选通过|通过)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _one_line(match.group(1), limit=28)
+    return "通过"
+
+
+def _extract_reason(text: str) -> str:
+    candidates = []
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip().strip("-*#> ")
+        if not line:
+            continue
+        if any(token in line for token in ("理由", "原因", "看点", "核心", "摘要", "结论", "优势", "催化")):
+            candidates.append(line)
+    if not candidates:
+        candidates = [line.strip().strip("-*#> ") for line in str(text).splitlines() if line.strip()]
+    return _one_line(candidates[0] if candidates else "模型未给出摘要理由", limit=90)
+
+
+def _is_passed_stock(text: str) -> bool:
+    lowered = str(text).lower()
+    negative_patterns = [
+        "筛选不通过", "未通过", "不通过", "不建议买入", "暂不建议", "不宜买入",
+        "回避", "淘汰", "排除", "观望为主", "继续观察", "暂不纳入",
+    ]
+    if any(token in lowered for token in negative_patterns):
+        return False
+    positive_patterns = [
+        "筛选通过", "通过", "建议买入", "强烈买入", "可以买入", "买入",
+        "重点关注", "可关注", "纳入观察", "值得关注", "机会较好",
+    ]
+    return any(token in lowered for token in positive_patterns)
+
+
+def _get_passed_stock_summaries(result_items: List[tuple[str, dict]]) -> List[dict]:
+    passed = []
+    for code, result in result_items:
+        if not result.get("success"):
+            continue
+        text = result.get("text") or ""
+        if not _is_passed_stock(text):
+            continue
+        passed.append({
+            "code": _escape_table_cell(code),
+            "decision": _extract_decision(text),
+            "reason": _extract_reason(text),
+            "model": _escape_table_cell(result.get("model") or "-"),
+        })
+    return passed
 
 
 def _send_batch_notification(
@@ -579,15 +638,17 @@ def _build_batch_notification_content(
 
     result_items = _get_result_items(state)
     failed_items = [(code, result) for code, result in result_items if not result.get("success")]
+    passed_items = _get_passed_stock_summaries(result_items)
     success_rate = (state.success / state.total * 100) if state.total else 0
 
     lines = [
-        "## 批量分析统计",
+        "## 跑批筛选汇总",
         "",
         f"> 模板: **{template_name}**",
         f"> 时间: {now}",
         f"> 完成: **{state.completed}/{state.total}**",
-        f"> 成功: **{state.success}** | 失败: **{state.failed}** | 成功率: **{success_rate:.1f}%**",
+        f"> 分析成功: **{state.success}** | 分析失败: **{state.failed}** | 分析成功率: **{success_rate:.1f}%**",
+        f"> 筛选通过: **{len(passed_items)}**",
         f"> 报告: `{report_name}`",
         "",
     ]
@@ -598,13 +659,27 @@ def _build_batch_notification_content(
     lines.append("| --- | ---: |")
     lines.append(f"| 股票数 | {state.total} |")
     lines.append(f"| 已完成 | {state.completed} |")
-    lines.append(f"| 成功 | {state.success} |")
-    lines.append(f"| 失败 | {state.failed} |")
-    lines.append(f"| 成功率 | {success_rate:.1f}% |")
+    lines.append(f"| 分析成功 | {state.success} |")
+    lines.append(f"| 分析失败 | {state.failed} |")
+    lines.append(f"| 筛选通过 | {len(passed_items)} |")
+    lines.append(f"| 分析成功率 | {success_rate:.1f}% |")
+    lines.append("")
+
+    lines.append("### 筛选通过股票")
+    lines.append("")
+    if passed_items:
+        lines.append("| 股票 | 结论 | 摘要理由 |")
+        lines.append("| --- | --- | --- |")
+        for item in passed_items[:20]:
+            lines.append(f"| {item['code']} | {item['decision']} | {item['reason']} |")
+        if len(passed_items) > 20:
+            lines.append(f"| ... | ... | 另有 {len(passed_items) - 20} 只通过，请查看完整报告 |")
+    else:
+        lines.append("本次跑批没有识别到明确筛选通过的股票。")
     lines.append("")
 
     if failed_items:
-        lines.append("### 失败项")
+        lines.append("### 分析失败")
         lines.append("")
         for code, result in failed_items[:20]:
             lines.append(f"- **{code}**: {_one_line(result.get('text') or '未知错误', limit=80)}")

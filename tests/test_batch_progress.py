@@ -191,7 +191,7 @@ def test_batch_notification_is_statistical_summary_not_raw_stock_list():
         "run-1",
         total=3,
         existing_results={
-            "605118": {"success": True, "text": "short", "model": "model-a"},
+            "605118": {"success": True, "text": "筛选通过：建议买入\n理由：基本面改善且趋势向上", "model": "model-a"},
             "000001": {"success": True, "text": "long text" * 100, "model": "model-b"},
             "300750": {"success": False, "text": "failed", "model": ""},
         },
@@ -204,8 +204,9 @@ def test_batch_notification_is_statistical_summary_not_raw_stock_list():
         "/tmp/batch.md",
     )
 
-    assert "批量分析统计" in content
+    assert "跑批筛选汇总" in content
     assert "成功率" in content
-    assert "605118" not in content
+    assert "| 605118 |" in content
+    assert "建议买入" in content
     assert "000001" not in content
     assert "300750" in content
