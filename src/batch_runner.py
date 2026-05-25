@@ -32,6 +32,30 @@ logger = logging.getLogger(__name__)
 BATCH_REPORTS_DIR = Path(__file__).parent.parent / "reports" / "batch"
 DEFAULT_MAX_CONCURRENT = 5
 MAX_CONCURRENT_LIMIT = 10
+BATCH_DECISION_SCHEMA_MARKER = "BATCH_DECISION_JSON"
+BATCH_DECISION_SCHEMA_INSTRUCTION = f"""
+
+【跑批结构化判定要求】
+在完整分析正文末尾必须追加一个独立的结构化判定区，格式必须严格如下：
+
+{BATCH_DECISION_SCHEMA_MARKER}
+```json
+{{
+  "decision": "buy",
+  "decision_label": "建议买入",
+  "reason": "一句话说明最核心原因"
+}}
+```
+
+字段规则：
+- decision 只能取 buy、watch、reject、unknown 四个值之一。
+- buy 表示明确筛选通过、可买、建议买入、重点关注且值得纳入本次筛选结果。
+- watch 表示继续观察、暂不行动、条件未完全满足，不计入筛选通过。
+- reject 表示不买、不建议买入、不通过、排除、回避，不计入筛选通过。
+- unknown 表示无法给出清晰结论或信息不足，不计入筛选通过。
+- decision_label 保留你给用户看的原始中文结论，例如“建议买入”“不买”“继续观察”。
+- reason 必须简短，适合放入跑批汇总表格。
+""".strip()
 
 
 class BatchRunControl:
@@ -146,7 +170,14 @@ class BatchRunState:
             callbacks = list(self._progress_callbacks)
         self._notify(callbacks)
 
-    def add_result(self, stock_code: str, success: bool, text: str, model: str):
+    def add_result(
+        self,
+        stock_code: str,
+        success: bool,
+        text: str,
+        model: str,
+        decision_meta: Optional[Dict[str, str]] = None,
+    ):
         with self._lock:
             self.completed += 1
             if success:
@@ -162,11 +193,14 @@ class BatchRunState:
                 if self.current_stock is None
                 else f"{self.current_stock}：正在调用 AI 模型并联网搜索..."
             )
-            self.results[stock_code] = {
+            result = {
                 "success": success,
                 "text": text,
                 "model": model,
             }
+            if success and decision_meta:
+                result.update(decision_meta)
+            self.results[stock_code] = result
             callbacks = list(self._progress_callbacks)
         self._notify(callbacks)
 
@@ -387,11 +421,11 @@ class BatchRunner:
                     if future.cancelled():
                         continue
                     try:
-                        success, text, model = future.result()
+                        success, text, model, decision_meta = future.result()
                     except Exception as exc:
                         logger.exception("Batch task for %s crashed", code)
-                        success, text, model = False, str(exc), ""
-                    state.add_result(code, success, text, model)
+                        success, text, model, decision_meta = False, str(exc), "", None
+                    state.add_result(code, success, text, model, decision_meta)
                     _save_batch_run_progress(run_id, state)
 
         if stopped:
@@ -428,17 +462,17 @@ class BatchRunner:
                 state.start_stock(stock_code, stock_name)
                 text, model, _usage = call_ai_for_stock(
                     analyzer,
-                    system_prompt,
+                    _with_batch_decision_schema(system_prompt),
                     stock_code,
                     stock_name,
                     stream_progress_callback=lambda chars: state.update_stock_progress(
                         stock_code, stock_name, chars
                     ),
                 )
-                return True, text, model
+                return True, text, model, _extract_structured_decision(text)
             except Exception as exc:
                 logger.exception("AI call failed for %s(%s)", stock_name, stock_code)
-                return False, str(exc), ""
+                return False, str(exc), "", None
 
 
 def _lookup_stock_name(code: str) -> str:
@@ -460,6 +494,13 @@ def _normalize_results(value: Optional[Dict[str, dict]]) -> Dict[str, dict]:
     return normalized
 
 
+def _with_batch_decision_schema(system_prompt: str) -> str:
+    base = (system_prompt or "").strip()
+    if BATCH_DECISION_SCHEMA_MARKER in base:
+        return base
+    return f"{base}\n\n{BATCH_DECISION_SCHEMA_INSTRUCTION}".strip()
+
+
 def _write_aggregated_report(
     run_id: str,
     state: BatchRunState,
@@ -475,7 +516,11 @@ def _write_aggregated_report(
 
     result_items = _get_result_items(state)
     failed_items = [(code, result) for code, result in result_items if not result.get("success")]
-    passed_items = _get_passed_stock_summaries(result_items)
+    summary_items = _get_stock_decision_summaries(result_items)
+    passed_items = [item for item in summary_items if item["decision"] == "buy"]
+    watch_items = [item for item in summary_items if item["decision"] == "watch"]
+    rejected_items = [item for item in summary_items if item["decision"] == "reject"]
+    unknown_items = [item for item in summary_items if item["decision"] == "unknown"]
     success_rate = (state.success / state.total * 100) if state.total else 0
 
     lines = [
@@ -487,6 +532,9 @@ def _write_aggregated_report(
         f"- **完成率**: {state.completed}/{state.total}",
         f"- **分析成功率**: {success_rate:.1f}%",
         f"- **筛选通过**: {len(passed_items)}",
+        f"- **观察**: {len(watch_items)}",
+        f"- **排除**: {len(rejected_items)}",
+        f"- **待确认**: {len(unknown_items)}",
         f"",
         "---",
         "",
@@ -499,6 +547,9 @@ def _write_aggregated_report(
         f"| 分析成功 | {state.success} |",
         f"| 分析失败 | {state.failed} |",
         f"| 筛选通过 | {len(passed_items)} |",
+        f"| 观察 | {len(watch_items)} |",
+        f"| 排除 | {len(rejected_items)} |",
+        f"| 待确认 | {len(unknown_items)} |",
         f"| 分析成功率 | {success_rate:.1f}% |",
         "",
     ]
@@ -511,11 +562,23 @@ def _write_aggregated_report(
         ])
         for item in passed_items:
             lines.append(
-                f"| {item['code']} | {item['decision']} | {item['reason']} | `{item['model']}` |"
+                f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |"
             )
     else:
         lines.append("本次跑批没有识别到明确筛选通过的股票。")
     lines.append("")
+
+    if unknown_items:
+        lines.extend(["## 待人工确认", ""])
+        lines.extend([
+            "| 股票 | 识别到的结论 | 摘要理由 | 模型 |",
+            "| --- | --- | --- | --- |",
+        ])
+        for item in unknown_items:
+            lines.append(
+                f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |"
+            )
+        lines.append("")
 
     if failed_items:
         lines.extend(["## 分析失败", ""])
@@ -549,6 +612,64 @@ def _escape_table_cell(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ").strip()
 
 
+def _normalize_decision(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"buy", "watch", "reject", "unknown"}:
+        return normalized
+    aliases = {
+        "pass": "buy",
+        "passed": "buy",
+        "positive": "buy",
+        "yes": "buy",
+        "hold": "watch",
+        "observe": "watch",
+        "neutral": "watch",
+        "no": "reject",
+        "avoid": "reject",
+        "sell": "reject",
+        "negative": "reject",
+    }
+    return aliases.get(normalized, "unknown")
+
+
+def _json_objects_from_text(text: str) -> List[dict]:
+    decoder = json.JSONDecoder()
+    objects: List[dict] = []
+    raw = str(text or "")
+    for index, char in enumerate(raw):
+        if char != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(raw[index:])
+        except Exception:
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    return objects
+
+
+def _extract_structured_decision(text: str) -> Optional[Dict[str, str]]:
+    marker_index = str(text or "").rfind(BATCH_DECISION_SCHEMA_MARKER)
+    candidates = _json_objects_from_text(str(text or "")[marker_index:] if marker_index >= 0 else str(text or ""))
+    for obj in reversed(candidates):
+        decision_value = obj.get("decision") or obj.get("batch_decision")
+        if isinstance(decision_value, dict):
+            obj = decision_value
+            decision_value = obj.get("decision")
+        if not decision_value:
+            continue
+        decision = _normalize_decision(str(decision_value))
+        label = str(obj.get("decision_label") or obj.get("label") or obj.get("conclusion") or decision).strip()
+        reason = str(obj.get("reason") or obj.get("summary") or obj.get("decision_reason") or "").strip()
+        return {
+            "decision": decision,
+            "decision_label": label or decision,
+            "decision_reason": reason or "模型未给出摘要理由",
+            "decision_source": "structured",
+        }
+    return None
+
+
 def _clean_decision_line(text: str) -> str:
     return re.sub(r"[*_`>#\-]+", "", str(text)).strip()
 
@@ -579,9 +700,15 @@ _NEGATIVE_DECISION_PATTERNS = [
     "暂不买", "暂不买入", "暂不建议", "暂不参与", "不纳入",
     "筛选不通过", "未通过", "不通过", "不满足", "不具备买点",
     "没有买点", "无买点", "否决", "回避", "规避", "淘汰", "排除",
-    "观望为主", "继续观察", "暂时观察", "谨慎观望", "不推荐",
+    "观望为主", "谨慎观望", "不推荐",
     "暂不关注", "暂不纳入", "低估值陷阱", "无操作价值", "放弃",
     "风险否决", "触发否决",
+]
+
+
+_WATCH_DECISION_PATTERNS = [
+    "继续观察", "暂时观察", "观察为主", "保持观察",
+    "等待买点", "等待确认", "暂不行动",
 ]
 
 
@@ -619,7 +746,7 @@ def _extract_decision(text: str) -> str:
     )
     if match:
         return _one_line(match.group(1), limit=28)
-    return "通过"
+    return "未识别"
 
 
 def _extract_reason(text: str) -> str:
@@ -643,31 +770,73 @@ def _extract_reason(text: str) -> str:
     return _one_line(candidates[0] if candidates else "模型未给出摘要理由", limit=90)
 
 
-def _is_passed_stock(text: str) -> bool:
+def _classify_legacy_decision(text: str) -> Dict[str, str]:
     context = _extract_decision_context(text)
     if _find_decision_token(context, _NEGATIVE_DECISION_PATTERNS):
-        return False
-    if _find_decision_token(context, _POSITIVE_DECISION_PATTERNS):
-        return True
+        return {
+            "decision": "reject",
+            "decision_label": _extract_decision(text),
+            "decision_reason": _extract_reason(text),
+            "decision_source": "legacy",
+        }
+    watch = _find_decision_token(context, _WATCH_DECISION_PATTERNS)
+    if watch:
+        return {
+            "decision": "watch",
+            "decision_label": watch,
+            "decision_reason": _extract_reason(text),
+            "decision_source": "legacy",
+        }
+    positive = _find_decision_token(context, _POSITIVE_DECISION_PATTERNS)
+    if positive:
+        return {
+            "decision": "buy",
+            "decision_label": positive,
+            "decision_reason": _extract_reason(text),
+            "decision_source": "legacy",
+        }
 
-    return False
+    return {
+        "decision": "unknown",
+        "decision_label": _extract_decision(text),
+        "decision_reason": _extract_reason(text),
+        "decision_source": "legacy",
+    }
 
 
-def _get_passed_stock_summaries(result_items: List[tuple[str, dict]]) -> List[dict]:
-    passed = []
+def _get_result_decision(result: dict) -> Dict[str, str]:
+    if result.get("decision"):
+        return {
+            "decision": _normalize_decision(result.get("decision") or ""),
+            "decision_label": str(result.get("decision_label") or result.get("decision") or "unknown"),
+            "decision_reason": str(result.get("decision_reason") or result.get("reason") or "模型未给出摘要理由"),
+            "decision_source": str(result.get("decision_source") or "stored"),
+        }
+    structured = _extract_structured_decision(result.get("text") or "")
+    if structured:
+        return structured
+    return _classify_legacy_decision(result.get("text") or "")
+
+
+def _is_passed_stock(text: str) -> bool:
+    return _classify_legacy_decision(text)["decision"] == "buy"
+
+
+def _get_stock_decision_summaries(result_items: List[tuple[str, dict]]) -> List[dict]:
+    summaries = []
     for code, result in result_items:
         if not result.get("success"):
             continue
-        text = result.get("text") or ""
-        if not _is_passed_stock(text):
-            continue
-        passed.append({
+        decision_meta = _get_result_decision(result)
+        summaries.append({
             "code": _escape_table_cell(code),
-            "decision": _extract_decision(text),
-            "reason": _extract_reason(text),
+            "decision": decision_meta["decision"],
+            "label": _one_line(decision_meta["decision_label"], limit=28),
+            "reason": _one_line(decision_meta["decision_reason"], limit=90),
+            "source": _escape_table_cell(decision_meta["decision_source"]),
             "model": _escape_table_cell(result.get("model") or "-"),
         })
-    return passed
+    return summaries
 
 
 def _send_batch_notification(
@@ -702,7 +871,11 @@ def _build_batch_notification_content(
 
     result_items = _get_result_items(state)
     failed_items = [(code, result) for code, result in result_items if not result.get("success")]
-    passed_items = _get_passed_stock_summaries(result_items)
+    summary_items = _get_stock_decision_summaries(result_items)
+    passed_items = [item for item in summary_items if item["decision"] == "buy"]
+    watch_items = [item for item in summary_items if item["decision"] == "watch"]
+    rejected_items = [item for item in summary_items if item["decision"] == "reject"]
+    unknown_items = [item for item in summary_items if item["decision"] == "unknown"]
     success_rate = (state.success / state.total * 100) if state.total else 0
 
     lines = [
@@ -713,6 +886,7 @@ def _build_batch_notification_content(
         f"> 完成: **{state.completed}/{state.total}**",
         f"> 分析成功: **{state.success}** | 分析失败: **{state.failed}** | 分析成功率: **{success_rate:.1f}%**",
         f"> 筛选通过: **{len(passed_items)}**",
+        f"> 观察: **{len(watch_items)}** | 排除: **{len(rejected_items)}** | 待确认: **{len(unknown_items)}**",
         f"> 报告: `{report_name}`",
         "",
     ]
@@ -726,6 +900,9 @@ def _build_batch_notification_content(
     lines.append(f"| 分析成功 | {state.success} |")
     lines.append(f"| 分析失败 | {state.failed} |")
     lines.append(f"| 筛选通过 | {len(passed_items)} |")
+    lines.append(f"| 观察 | {len(watch_items)} |")
+    lines.append(f"| 排除 | {len(rejected_items)} |")
+    lines.append(f"| 待确认 | {len(unknown_items)} |")
     lines.append(f"| 分析成功率 | {success_rate:.1f}% |")
     lines.append("")
 
@@ -735,12 +912,23 @@ def _build_batch_notification_content(
         lines.append("| 股票 | 结论 | 摘要理由 |")
         lines.append("| --- | --- | --- |")
         for item in passed_items[:20]:
-            lines.append(f"| {item['code']} | {item['decision']} | {item['reason']} |")
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
         if len(passed_items) > 20:
             lines.append(f"| ... | ... | 另有 {len(passed_items) - 20} 只通过，请查看完整报告 |")
     else:
         lines.append("本次跑批没有识别到明确筛选通过的股票。")
     lines.append("")
+
+    if unknown_items:
+        lines.append("### 待人工确认")
+        lines.append("")
+        lines.append("| 股票 | 识别到的结论 | 摘要理由 |")
+        lines.append("| --- | --- | --- |")
+        for item in unknown_items[:20]:
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
+        if len(unknown_items) > 20:
+            lines.append(f"| ... | ... | 另有 {len(unknown_items) - 20} 只待确认，请查看完整报告 |")
+        lines.append("")
 
     if failed_items:
         lines.append("### 分析失败")

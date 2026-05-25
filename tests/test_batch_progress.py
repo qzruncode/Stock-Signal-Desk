@@ -9,8 +9,10 @@ from api.v1.endpoints.batch import (
 from src.batch_runner import (
     BatchRunState,
     _build_batch_notification_content,
+    _extract_structured_decision,
     _get_batch_max_concurrent,
     _save_batch_run_progress,
+    _with_batch_decision_schema,
 )
 
 
@@ -192,7 +194,7 @@ def test_batch_notification_is_statistical_summary_not_raw_stock_list():
         total=3,
         existing_results={
             "605118": {"success": True, "text": "筛选通过：建议买入\n理由：基本面改善且趋势向上", "model": "model-a"},
-            "000001": {"success": True, "text": "long text" * 100, "model": "model-b"},
+            "000001": {"success": True, "text": "最终结论：不买\n原因：买点不足", "model": "model-b"},
             "300750": {"success": False, "text": "failed", "model": ""},
         },
     )
@@ -256,7 +258,7 @@ def test_batch_summary_accepts_buy_variants_and_rejects_no_buy_phrase():
         total=4,
         existing_results={
             "000001": {"success": True, "text": "最终结论：可买入\n原因：赔率较好", "model": "model-a"},
-            "000002": {"success": True, "text": "操作建议：重点关注\n理由：催化明确", "model": "model-a"},
+            "000002": {"success": True, "text": "操作建议：建议买入\n理由：催化明确", "model": "model-a"},
             "000003": {"success": True, "text": "最终结论：不买\n原因：没有买点", "model": "model-a"},
             "000004": {"success": True, "text": "综合结论：不建议买入\n原因：估值偏贵", "model": "model-a"},
         },
@@ -270,7 +272,80 @@ def test_batch_summary_accepts_buy_variants_and_rejects_no_buy_phrase():
     )
 
     assert "| 000001 | 可买入 |" in content
-    assert "| 000002 | 重点关注 |" in content
+    assert "| 000002 | 建议买入 |" in content
     assert "| 000003 |" not in content
     assert "| 000004 |" not in content
     assert "筛选通过: **2**" in content
+
+
+def test_batch_structured_decision_overrides_unfamiliar_words():
+    text = """
+    这只股票的自然语言结论用了一个系统没见过的新词：火速上车。
+
+    BATCH_DECISION_JSON
+    ```json
+    {
+      "decision": "buy",
+      "decision_label": "火速上车",
+      "reason": "结构化字段明确给出 buy"
+    }
+    ```
+    """
+    state = BatchRunState(
+        "run-1",
+        total=1,
+        existing_results={
+            "000001": {"success": True, "text": text, "model": "model-a"},
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "| 000001 | 火速上车 | 结构化字段明确给出 buy |" in content
+    assert "筛选通过: **1**" in content
+
+
+def test_batch_unrecognized_legacy_words_go_to_unknown_not_passed():
+    state = BatchRunState(
+        "run-1",
+        total=1,
+        existing_results={
+            "000001": {"success": True, "text": "最终结论：火速上车\n原因：新表达未配置", "model": "model-a"},
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "| 000001 |" in content
+    assert "待确认: **1**" in content
+    assert "筛选通过: **0**" in content
+
+
+def test_batch_decision_schema_is_injected_once():
+    prompt = _with_batch_decision_schema("原始模板")
+
+    assert "BATCH_DECISION_JSON" in prompt
+    assert _with_batch_decision_schema(prompt) == prompt
+
+
+def test_structured_decision_parser_accepts_json_tail():
+    parsed = _extract_structured_decision(
+        '正文\nBATCH_DECISION_JSON\n```json\n{"decision":"reject","decision_label":"暂避","reason":"结构化否决"}\n```'
+    )
+
+    assert parsed == {
+        "decision": "reject",
+        "decision_label": "暂避",
+        "decision_reason": "结构化否决",
+        "decision_source": "structured",
+    }
