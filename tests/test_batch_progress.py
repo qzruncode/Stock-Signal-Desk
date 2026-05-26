@@ -340,6 +340,32 @@ def test_batch_structured_decision_overrides_unfamiliar_words():
     assert "筛选通过: **1**" in content
 
 
+def test_batch_notification_includes_all_passed_stocks_without_summary_ellipsis():
+    state = BatchRunState(
+        "run-1",
+        total=25,
+        existing_results={
+            f"{index:06d}": {
+                "success": True,
+                "text": "最终结论：建议买入\n理由：结构化测试",
+                "model": "model-a",
+            }
+            for index in range(25)
+        },
+    )
+
+    content = _build_batch_notification_content(
+        "run-1",
+        state,
+        "行业+预期差",
+        "/tmp/batch.md",
+    )
+
+    assert "| 000024 | 建议买入 |" in content
+    assert "另有" not in content
+    assert "| ... |" not in content
+
+
 def test_batch_unrecognized_legacy_words_go_to_unknown_not_passed():
     state = BatchRunState(
         "run-1",

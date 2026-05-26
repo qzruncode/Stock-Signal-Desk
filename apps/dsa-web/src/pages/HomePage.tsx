@@ -4,6 +4,7 @@ import {
   Bell,
   BellOff,
   FileText,
+  GitBranch,
   History,
   Layers3,
   Menu,
@@ -468,6 +469,14 @@ const HomePage: React.FC = () => {
                 <FileText className="h-3.5 w-3.5" />
                 AI 输出可追踪
               </span>
+              <Link
+                to="/workflows"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 shadow-sm transition hover:border-cyan-300 hover:text-cyan-700"
+                aria-label="工作流编排"
+                title="工作流编排"
+              >
+                <GitBranch className="h-4 w-4" />
+              </Link>
               <Link
                 to="/settings"
                 className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 shadow-sm transition hover:border-cyan-300 hover:text-cyan-700"

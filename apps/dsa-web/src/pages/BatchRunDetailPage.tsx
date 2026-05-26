@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Bell, FileText, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Bell, FileText, FolderPlus, Loader2, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { batchApi, type BatchRunItem } from '../api/batch';
 import { ApiErrorAlert, Button, EmptyState } from '../components/common';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import { cn } from '../utils/cn';
+import { upsertWatchlistGroup } from '../utils/watchlistGroups';
 
 interface BatchResultItem {
   code: string;
@@ -12,6 +13,7 @@ interface BatchResultItem {
   model: string;
   text: string;
   summary: string;
+  decision?: string;
 }
 
 function summarizeResult(text: string): string {
@@ -25,7 +27,7 @@ function summarizeResult(text: string): string {
 function parseBatchResults(raw: string | null | undefined): BatchResultItem[] {
   if (!raw || raw === '[]' || raw === '{}') return [];
   try {
-    const parsed = JSON.parse(raw) as Record<string, { success?: boolean; model?: string; text?: string }>;
+    const parsed = JSON.parse(raw) as Record<string, { success?: boolean; model?: string; text?: string; decision?: string }>;
     return Object.entries(parsed)
       .filter(([code, result]) => code !== '__all__' && result && typeof result === 'object')
       .map(([code, result]) => {
@@ -36,11 +38,30 @@ function parseBatchResults(raw: string | null | undefined): BatchResultItem[] {
           model: result.model || '-',
           text,
           summary: summarizeResult(text),
+          decision: result.decision,
         };
       });
   } catch {
     return [];
   }
+}
+
+function extractPassedCodesFromSummary(summaryMd: string): string[] {
+  const lines = summaryMd.split('\n');
+  const start = lines.findIndex((line) => /^##+\s+筛选通过股票/.test(line.trim()));
+  if (start < 0) return [];
+  const codes: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    const trimmed = line.trim();
+    if (/^##+\s+/.test(trimmed)) break;
+    if (!trimmed.startsWith('|') || trimmed.includes('---')) continue;
+    const cells = trimmed.split('|').map((cell) => cell.trim()).filter(Boolean);
+    const code = cells[0];
+    if (/^[A-Za-z0-9.]+$/.test(code) && code !== '股票') {
+      codes.push(code);
+    }
+  }
+  return Array.from(new Set(codes));
 }
 
 const BatchRunDetailPage: React.FC = () => {
@@ -55,6 +76,7 @@ const BatchRunDetailPage: React.FC = () => {
   const [isNotifying, setIsNotifying] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [groupName, setGroupName] = useState('');
 
   const loadRun = useCallback(async () => {
     if (!runId) return;
@@ -127,6 +149,11 @@ const BatchRunDetailPage: React.FC = () => {
   }, [runId]);
 
   const results = useMemo(() => parseBatchResults(run?.results_json), [run]);
+  const passedCodes = useMemo(() => {
+    const fromSummary = extractPassedCodesFromSummary(summaryMd);
+    if (fromSummary.length > 0) return fromSummary;
+    return results.filter((item) => item.decision === 'buy').map((item) => item.code);
+  }, [results, summaryMd]);
   const selectedResult = useMemo(
     () => results.find((item) => item.code === selectedCode) || results[0] || null,
     [results, selectedCode],
@@ -134,6 +161,18 @@ const BatchRunDetailPage: React.FC = () => {
   const failedCount = results.filter((item) => !item.success).length;
   const successCount = results.length - failedCount;
   const successRate = run?.stock_count ? ((run.success_count / run.stock_count) * 100).toFixed(1) : '0.0';
+  const defaultGroupName = useMemo(() => {
+    const started = run?.started_at ? run.started_at.slice(0, 10) : new Date().toISOString().slice(0, 10);
+    return `${run?.template_name || '跑批'}筛选-${started}`;
+  }, [run]);
+
+  const handleCreatePassedGroup = useCallback(() => {
+    if (passedCodes.length === 0) return;
+    const targetName = groupName.trim() || defaultGroupName;
+    const group = upsertWatchlistGroup(targetName, passedCodes);
+    setGroupName(group.name);
+    setActionMessage(`已创建股票池分组「${group.name}」，共 ${group.codes.length} 只。`);
+  }, [defaultGroupName, groupName, passedCodes]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-base">
@@ -197,7 +236,7 @@ const BatchRunDetailPage: React.FC = () => {
             </div>
           ) : run && results.length > 0 ? (
             <>
-              <section className="grid gap-3 sm:grid-cols-4">
+              <section className="grid gap-3 sm:grid-cols-5">
                 <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
                   <p className="text-[10px] uppercase tracking-wider text-muted-text">股票数</p>
                   <p className="mt-1 text-xl font-semibold text-foreground">{run.stock_count}</p>
@@ -213,6 +252,10 @@ const BatchRunDetailPage: React.FC = () => {
                 <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
                   <p className="text-[10px] uppercase tracking-wider text-muted-text">成功率</p>
                   <p className="mt-1 text-xl font-semibold text-foreground">{successRate}%</p>
+                </div>
+                <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-text">筛选通过</p>
+                  <p className="mt-1 text-xl font-semibold text-cyan-700">{passedCodes.length}</p>
                 </div>
               </section>
 
@@ -246,8 +289,29 @@ const BatchRunDetailPage: React.FC = () => {
               {activeView === 'summary' ? (
                 <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-subtle bg-surface">
                   <div className="border-b border-subtle px-5 py-4">
-                    <p className="text-sm font-semibold text-foreground">汇总统计 MD</p>
-                    <p className="text-xs text-muted-text">通知同源的统计报告，包含整体完成、成功率和失败项。</p>
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">汇总统计 MD</p>
+                        <p className="text-xs text-muted-text">通知同源的统计报告，包含整体完成、成功率和失败项。</p>
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <input
+                          value={groupName}
+                          onChange={(event) => setGroupName(event.target.value)}
+                          placeholder={defaultGroupName}
+                          className="h-9 min-w-[16rem] rounded-lg border border-subtle bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
+                        />
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={handleCreatePassedGroup}
+                          disabled={passedCodes.length === 0}
+                        >
+                          <FolderPlus className="h-4 w-4" />
+                          建股票池 ({passedCodes.length})
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                   <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words px-5 py-4 text-sm leading-7 text-secondary-text">
                     {summaryMd || '暂无汇总报告'}

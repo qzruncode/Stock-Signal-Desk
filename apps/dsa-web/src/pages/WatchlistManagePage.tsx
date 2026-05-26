@@ -5,35 +5,16 @@ import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { Button, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
 import { cn } from '../utils/cn';
+import {
+  loadWatchlistGroups,
+  saveWatchlistGroups,
+  type WatchlistGroup,
+} from '../utils/watchlistGroups';
 
 interface StockItem {
   code: string;
   market: string;
   marketLabel: string;
-}
-
-interface WatchlistGroup {
-  id: string;
-  name: string;
-  codes: string[];
-}
-
-const WATCHLIST_GROUPS_STORAGE_KEY = 'dsa.watchlist.groups.v1';
-
-function loadWatchlistGroups(): WatchlistGroup[] {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(WATCHLIST_GROUPS_STORAGE_KEY) || '[]') as WatchlistGroup[];
-    return Array.isArray(parsed)
-      ? parsed.filter((group) => group && group.id && group.name && Array.isArray(group.codes))
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveWatchlistGroups(groups: WatchlistGroup[]) {
-  window.localStorage.setItem(WATCHLIST_GROUPS_STORAGE_KEY, JSON.stringify(groups));
-  window.dispatchEvent(new Event('dsa-watchlist-groups-updated'));
 }
 
 const MARKET_RULES: { prefix: string[]; key: string; label: string; color: string }[] = [

@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import SettingsPage from './pages/SettingsPage';
 import WatchlistManagePage from './pages/WatchlistManagePage';
+import WorkflowBuilderPage from './pages/WorkflowBuilderPage';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
@@ -57,6 +58,7 @@ const AppContent: React.FC = () => {
         <Route path="/" element={<HomePage />} />
         <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
         <Route path="/portfolio" element={<WatchlistManagePage />} />
+        <Route path="/workflows" element={<WorkflowBuilderPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

@@ -7,6 +7,7 @@ import { systemConfigApi } from '../../api/systemConfig';
 import { useBatchStore } from '../../stores/batchStore';
 import type { PromptTemplateItem } from '../../api/prompts';
 import { cn } from '../../utils/cn';
+import { loadWatchlistGroups, WATCHLIST_GROUPS_UPDATED_EVENT, type WatchlistGroup } from '../../utils/watchlistGroups';
 import { Button, ApiErrorAlert } from '../common';
 
 interface BatchPanelProps {
@@ -15,26 +16,6 @@ interface BatchPanelProps {
   selectedTemplateId?: string;
   onTemplateChange?: (templateId: string) => void;
   className?: string;
-}
-
-interface WatchlistGroup {
-  id: string;
-  name: string;
-  codes: string[];
-}
-
-const WATCHLIST_GROUPS_STORAGE_KEY = 'dsa.watchlist.groups.v1';
-
-function loadWatchlistGroups(): WatchlistGroup[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(WATCHLIST_GROUPS_STORAGE_KEY) || '[]') as WatchlistGroup[];
-    return Array.isArray(parsed)
-      ? parsed.filter((group) => group && group.id && group.name && Array.isArray(group.codes))
-      : [];
-  } catch {
-    return [];
-  }
 }
 
 export const BatchPanel: React.FC<BatchPanelProps> = ({
@@ -80,10 +61,10 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     const syncGroups = () => setWatchlistGroups(loadWatchlistGroups());
     syncGroups();
     window.addEventListener('storage', syncGroups);
-    window.addEventListener('dsa-watchlist-groups-updated', syncGroups);
+    window.addEventListener(WATCHLIST_GROUPS_UPDATED_EVENT, syncGroups);
     return () => {
       window.removeEventListener('storage', syncGroups);
-      window.removeEventListener('dsa-watchlist-groups-updated', syncGroups);
+      window.removeEventListener(WATCHLIST_GROUPS_UPDATED_EVENT, syncGroups);
     };
   }, []);
 

@@ -929,10 +929,8 @@ def _build_batch_notification_content(
     if passed_items:
         lines.append("| 股票 | 结论 | 摘要理由 |")
         lines.append("| --- | --- | --- |")
-        for item in passed_items[:20]:
+        for item in passed_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
-        if len(passed_items) > 20:
-            lines.append(f"| ... | ... | 另有 {len(passed_items) - 20} 只通过，请查看完整报告 |")
     else:
         lines.append("本次跑批没有识别到明确筛选通过的股票。")
     lines.append("")
@@ -942,10 +940,8 @@ def _build_batch_notification_content(
         lines.append("")
         lines.append("| 股票 | 识别到的结论 | 摘要理由 |")
         lines.append("| --- | --- | --- |")
-        for item in unknown_items[:20]:
+        for item in unknown_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
-        if len(unknown_items) > 20:
-            lines.append(f"| ... | ... | 另有 {len(unknown_items) - 20} 只待确认，请查看完整报告 |")
         lines.append("")
 
     if failed_items:
