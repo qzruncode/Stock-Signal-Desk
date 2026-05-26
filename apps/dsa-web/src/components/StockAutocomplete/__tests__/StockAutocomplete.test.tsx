@@ -26,6 +26,7 @@ let autocompleteHookImpl: () => {
   highlightNext: ReturnType<typeof vi.fn>;
   handleSelect: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
+  openDefaultSuggestions: ReturnType<typeof vi.fn>;
   reset: ReturnType<typeof vi.fn>;
   isComposing: boolean;
   setIsComposing: ReturnType<typeof vi.fn>;
@@ -113,6 +114,7 @@ describe('StockAutocomplete', () => {
       highlightNext: vi.fn(),
       handleSelect: vi.fn(),
       close: vi.fn(),
+      openDefaultSuggestions: vi.fn(),
       reset: vi.fn(),
       isComposing: false,
       setIsComposing: vi.fn(),
@@ -252,6 +254,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),
@@ -283,6 +286,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),
@@ -338,6 +342,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),
@@ -371,6 +376,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),
@@ -405,6 +411,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),
@@ -439,6 +446,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),
@@ -503,6 +511,7 @@ describe('StockAutocomplete', () => {
         highlightNext: vi.fn(),
         handleSelect: vi.fn(),
         close: vi.fn(),
+        openDefaultSuggestions: vi.fn(),
         reset: vi.fn(),
         isComposing: false,
         setIsComposing: vi.fn(),

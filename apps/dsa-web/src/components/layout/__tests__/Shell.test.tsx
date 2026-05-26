@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Shell } from '../Shell';
 
 describe('Shell', () => {
-  it('renders the focused single-page workspace without legacy navigation controls', () => {
+  it('renders the workspace with collapsible primary navigation', () => {
     render(
       <MemoryRouter>
         <Shell>
@@ -14,9 +14,12 @@ describe('Shell', () => {
     );
 
     expect(screen.getByText('page content')).toBeInTheDocument();
+    expect(screen.getByRole('navigation')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '工作台' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '管理自选股' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '收起菜单栏' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '切换主题' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '持仓' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '回测' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '设置' })).not.toBeInTheDocument();
   });
 });

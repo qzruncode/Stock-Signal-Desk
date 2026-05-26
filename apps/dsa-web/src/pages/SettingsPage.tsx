@@ -26,7 +26,7 @@ const SettingsPage: React.FC = () => {
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    document.title = '模型 API 配置 - DSA';
+    document.title = '模型 API 配置 - Stock-Signal-Desk';
   }, []);
 
   const fetchConfig = useCallback(async () => {
@@ -239,7 +239,7 @@ const SettingsPage: React.FC = () => {
 
       {/* Sticky footer */}
       {dirtyKeys.length > 0 && (
-        <div className="sticky bottom-4 mt-6 flex items-center gap-3 rounded-2xl border border-warning/30 bg-settings-surface-strong p-4 shadow-[0_-8px_32px_rgba(15,23,42,0.18)]">
+        <div className="settings-surface-strong sticky bottom-4 z-20 mt-6 flex items-center gap-3 rounded-xl border border-warning/30 p-4 shadow-[0_-8px_32px_rgba(15,23,42,0.18)] backdrop-blur-xl">
           <span className="flex-1 text-sm text-secondary-text">
             有 {dirtyKeys.length} 项更改未保存
           </span>

@@ -228,8 +228,8 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ onSelectStock, c
             )}
           </div>
 
-          {/* Stock grid */}
-          <div className="max-h-[300px] overflow-y-auto space-y-2">
+          {/* Stock list */}
+          <div className="max-h-[300px] space-y-3 overflow-y-auto pr-1">
             {filteredGroups.length === 0 ? (
               <p className="text-xs text-muted-text py-2 text-center">无匹配结果</p>
             ) : (
@@ -238,25 +238,31 @@ export const WatchlistPanel: React.FC<WatchlistPanelProps> = ({ onSelectStock, c
                   <p className="text-[10px] font-medium text-muted-text mb-1.5 uppercase tracking-wider">
                     {group.label}
                   </p>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="space-y-1">
                     {group.items.map((item) => (
-                      <div key={item.code} className="group relative">
+                      <div
+                        key={item.code}
+                        className="group flex items-center gap-2 rounded-lg border border-subtle bg-surface px-2 py-1.5 transition-colors hover:border-primary/40 hover:bg-primary/5"
+                      >
                         <button
                           type="button"
                           onClick={() => handleCodeClick(item.code)}
-                          className="inline-flex items-center gap-1 rounded-md border border-subtle bg-surface px-2 py-1 text-xs font-mono text-foreground transition-all hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
+                          className="min-w-0 flex-1 truncate text-left font-mono text-xs text-foreground transition-colors hover:text-primary"
                           title={`点击搜索 ${item.code}`}
                         >
                           {item.code}
                         </button>
+                        <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', group.color)}>
+                          {item.marketLabel}
+                        </span>
                         <button
                           type="button"
                           onClick={(e) => handleCopyCode(item.code, e)}
-                          className="absolute -top-1 -right-1 hidden h-4 w-4 items-center justify-center rounded-full bg-primary text-[10px] text-primary-foreground shadow-sm group-hover:inline-flex"
+                          className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-text transition hover:bg-primary/10 hover:text-primary"
                           title="复制代码"
                         >
                           {copiedCode === item.code ? (
-                            <span className="text-[9px]">✓</span>
+                            <span className="text-[10px] text-primary">✓</span>
                           ) : (
                             <Copy className="h-2.5 w-2.5" />
                           )}

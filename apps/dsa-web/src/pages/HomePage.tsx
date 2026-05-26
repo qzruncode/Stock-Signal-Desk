@@ -4,23 +4,19 @@ import {
   Bell,
   BellOff,
   FileText,
-  GitBranch,
   History,
   Layers3,
   Menu,
   RadioTower,
   RefreshCw,
-  Settings,
   SlidersHorizontal,
   Sparkles,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
 import { analysisApi } from '../api/analysis';
 import { systemConfigApi } from '../api/systemConfig';
 import { promptsApi, type PromptTemplateItem } from '../api/prompts';
 import { ApiErrorAlert, ConfirmDialog, Button, EmptyState, InlineAlert } from '../components/common';
 import { DashboardStateBlock } from '../components/dashboard';
-import { WatchlistPanel } from '../components/dashboard/WatchlistPanel';
 import { BatchPanel } from '../components/batch';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
@@ -87,7 +83,7 @@ const HomePage: React.FC = () => {
   } = useHomeDashboardState();
 
   useEffect(() => {
-    document.title = '每日选股分析 - DSA';
+    document.title = 'Stock-Signal-Desk';
   }, []);
 
   useEffect(() => {
@@ -272,14 +268,6 @@ const HomePage: React.FC = () => {
     });
   }, [selectedReport, submitAnalysis, selectedTemplateId]);
 
-  const handleSelectStock = useCallback(
-    (code: string) => {
-      setQuery(code);
-      dashboardScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
-    },
-    [setQuery],
-  );
-
   const handleDeleteSelectedHistory = useCallback(() => {
     void deleteSelectedHistory();
     setShowDeleteConfirm(false);
@@ -351,15 +339,6 @@ const HomePage: React.FC = () => {
                 <RadioTower className="h-3.5 w-3.5 text-cyan-600" />
                 实时任务
               </span>
-              <button
-                type="button"
-                onClick={() => setTemplateManagerOpen(true)}
-                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#d8e1ec] bg-white text-slate-500 transition hover:border-cyan-300 hover:text-cyan-700"
-                title="管理分析模板"
-                aria-label="管理分析模板"
-              >
-                <SlidersHorizontal className="h-4 w-4" />
-              </button>
             </div>
 
             <StockAutocomplete
@@ -371,9 +350,10 @@ const HomePage: React.FC = () => {
               placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
               disabled={isAnalyzing}
               className={inputError ? 'border-danger/50' : undefined}
+              showSuggestionsOnFocus
             />
 
-            <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+            <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
               {templates.length > 0 ? (
                 <select
                   value={selectedTemplateId}
@@ -390,6 +370,21 @@ const HomePage: React.FC = () => {
               ) : (
                 <div className="flex h-10 items-center rounded-xl border border-[#d8e1ec] bg-white px-3 text-sm text-slate-400">加载模板</div>
               )}
+              <button
+                type="button"
+                onClick={() => setTemplateManagerOpen(true)}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 transition hover:border-cyan-300 hover:text-cyan-700"
+                title="管理分析模板"
+                aria-label="管理分析模板"
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between rounded-xl border border-dashed border-[#d3dde9] bg-white/70 px-3 py-2 text-xs text-slate-500">
+              <span>
+                当前模板：<span className="font-medium text-slate-700">{selectedTemplate?.name || '默认模板'}</span>
+              </span>
               <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-[#d8e1ec] bg-white px-3 text-xs font-medium text-slate-600 transition hover:border-cyan-300">
                 <input
                   type="checkbox"
@@ -398,7 +393,7 @@ const HomePage: React.FC = () => {
                   className="sr-only"
                 />
                 {notify ? <Bell className="h-4 w-4 text-emerald-600" /> : <BellOff className="h-4 w-4 text-slate-400" />}
-                推送通知
+                {notify ? '通知开' : '通知关'}
               </label>
             </div>
 
@@ -411,10 +406,6 @@ const HomePage: React.FC = () => {
               {isAnalyzing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {isAnalyzing ? '分析中' : '分析'}
             </button>
-
-            <div className="mt-3 rounded-xl border border-dashed border-[#d3dde9] bg-white/70 px-3 py-2 text-xs text-slate-500">
-              当前模板：<span className="font-medium text-slate-700">{selectedTemplate?.name || '默认模板'}</span>
-            </div>
           </div>
 
           <div className="mt-3 flex min-h-0 flex-1 flex-col">
@@ -457,7 +448,7 @@ const HomePage: React.FC = () => {
               <Menu className="h-5 w-5" />
             </button>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Daily Stock Analysis</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Stock-Signal-Desk</p>
               <h2 className="truncate text-lg font-semibold text-slate-950 sm:text-xl">选股通知工作台</h2>
             </div>
             <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
@@ -469,22 +460,6 @@ const HomePage: React.FC = () => {
                 <FileText className="h-3.5 w-3.5" />
                 AI 输出可追踪
               </span>
-              <Link
-                to="/workflows"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 shadow-sm transition hover:border-cyan-300 hover:text-cyan-700"
-                aria-label="工作流编排"
-                title="工作流编排"
-              >
-                <GitBranch className="h-4 w-4" />
-              </Link>
-              <Link
-                to="/settings"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 shadow-sm transition hover:border-cyan-300 hover:text-cyan-700"
-                aria-label="模型 API 配置"
-                title="模型 API 配置"
-              >
-                <Settings className="h-4 w-4" />
-              </Link>
             </div>
           </header>
 
@@ -499,6 +474,7 @@ const HomePage: React.FC = () => {
                 placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
                 disabled={isAnalyzing}
                 className={inputError ? 'border-danger/50' : undefined}
+                showSuggestionsOnFocus
               />
               <button
                 type="button"
@@ -550,8 +526,7 @@ const HomePage: React.FC = () => {
             className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5"
           >
             <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-4">
-              <div className="grid gap-4 2xl:hidden xl:grid-cols-2">
-                <WatchlistPanel onSelectStock={handleSelectStock} />
+              <div className="grid gap-4 2xl:hidden">
                 <BatchPanel
                   templates={templates}
                   selectedTemplateId={selectedTemplateId}
@@ -637,7 +612,6 @@ const HomePage: React.FC = () => {
         </main>
 
         <aside className="hidden min-h-0 border-l border-[#dbe3ed] bg-[#fbfcfe]/86 p-4 backdrop-blur-xl 2xl:flex 2xl:flex-col 2xl:gap-4">
-          <WatchlistPanel onSelectStock={handleSelectStock} />
           <BatchPanel
             templates={templates}
             selectedTemplateId={selectedTemplateId}

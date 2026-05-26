@@ -1,15 +1,23 @@
 import type React from 'react';
+import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import HomePage from './pages/HomePage';
-import BatchRunDetailPage from './pages/BatchRunDetailPage';
-import LoginPage from './pages/LoginPage';
-import NotFoundPage from './pages/NotFoundPage';
-import SettingsPage from './pages/SettingsPage';
-import WatchlistManagePage from './pages/WatchlistManagePage';
-import WorkflowBuilderPage from './pages/WorkflowBuilderPage';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
+
+const HomePage = lazy(() => import('./pages/HomePage'));
+const BatchRunDetailPage = lazy(() => import('./pages/BatchRunDetailPage'));
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const WatchlistManagePage = lazy(() => import('./pages/WatchlistManagePage'));
+const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
+
+const PageFallback: React.FC = () => (
+  <div className="flex min-h-screen items-center justify-center bg-base">
+    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+  </div>
+);
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -42,7 +50,11 @@ const AppContent: React.FC = () => {
 
   if (authEnabled && !loggedIn) {
     if (location.pathname === '/login') {
-      return <LoginPage />;
+      return (
+        <Suspense fallback={<PageFallback />}>
+          <LoginPage />
+        </Suspense>
+      );
     }
     const redirect = encodeURIComponent(location.pathname + location.search);
     return <Navigate to={`/login?redirect=${redirect}`} replace />;
@@ -53,17 +65,19 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <Routes>
-      <Route element={<Shell />}>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
-        <Route path="/portfolio" element={<WatchlistManagePage />} />
-        <Route path="/workflows" element={<WorkflowBuilderPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-      <Route path="/login" element={<LoginPage />} />
-    </Routes>
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route element={<Shell />}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
+          <Route path="/portfolio" element={<WatchlistManagePage />} />
+          <Route path="/workflows" element={<WorkflowBuilderPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+        <Route path="/login" element={<LoginPage />} />
+      </Routes>
+    </Suspense>
   );
 };
 

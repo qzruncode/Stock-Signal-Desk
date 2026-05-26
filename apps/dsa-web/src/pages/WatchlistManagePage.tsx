@@ -90,7 +90,7 @@ const WatchlistManagePage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    document.title = '自选股管理 - DSA';
+    document.title = '自选股管理 - Stock-Signal-Desk';
     setGroups(loadWatchlistGroups());
     void loadWatchlist();
   }, [loadWatchlist]);
@@ -519,7 +519,7 @@ const WatchlistManagePage: React.FC = () => {
                   </Button>
                 </div>
               </div>
-              <div className="mt-3 flex min-h-10 flex-wrap gap-1.5">
+              <div className="mt-3 max-h-40 min-h-10 space-y-1 overflow-y-auto pr-1">
                 {selectedGroup && selectedGroup.codes.length > 0 ? (
                   selectedGroup.codes.map((code) => (
                     <button
@@ -527,13 +527,14 @@ const WatchlistManagePage: React.FC = () => {
                       type="button"
                       onClick={() => toggleSelect(code)}
                       className={cn(
-                        'rounded-lg border px-2.5 py-1.5 font-mono text-xs transition',
+                        'flex w-full items-center justify-between rounded-lg border px-2.5 py-1.5 font-mono text-xs transition',
                         selectedCodes.has(code)
                           ? 'border-red-300 bg-red-50 text-red-700'
                           : 'border-slate-200 bg-white text-slate-700 hover:border-cyan-300',
                       )}
                     >
-                      {code}
+                      <span>{code}</span>
+                      {selectedCodes.has(code) ? <Check className="h-3 w-3" /> : null}
                     </button>
                   ))
                 ) : (
@@ -632,30 +633,34 @@ const WatchlistManagePage: React.FC = () => {
                     </span>
                     <span className="text-[10px] text-slate-400">{group.items.length} 只</span>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
+                  <div className="space-y-1.5">
                     {group.items.map((item) => {
                       const isSelected = selectedCodes.has(item.code);
                       return (
-                        <div key={item.code} className="group relative">
+                        <div
+                          key={item.code}
+                          className={cn(
+                            'group flex items-center gap-3 rounded-xl border px-3 py-2 transition-colors',
+                            isSelected
+                              ? 'border-red-300 bg-red-50 text-red-700'
+                              : 'border-slate-200 bg-white text-slate-700 hover:border-cyan-300 hover:bg-cyan-50',
+                          )}
+                        >
                           <button
                             type="button"
                             onClick={() => toggleSelect(item.code)}
-                            className={cn(
-                              'inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-mono transition-all',
-                              isSelected
-                                ? 'border-red-300 bg-red-50 text-red-700'
-                                : 'border-slate-200 bg-white text-slate-700 hover:border-cyan-300 hover:bg-cyan-50',
-                            )}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
                           >
                             {isSelected ? (
-                              <Check className="h-3 w-3 text-red-500" />
+                              <Check className="h-3.5 w-3.5 shrink-0 text-red-500" />
                             ) : null}
-                            {item.code}
+                            <span className="truncate font-mono text-sm">{item.code}</span>
+                            <span className="shrink-0 text-xs text-slate-400">{item.marketLabel}</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => handleRemoveSingle(item.code)}
-                            className="absolute -top-1.5 -right-1.5 hidden h-5 w-5 items-center justify-center rounded-full bg-red-500 text-white shadow-sm transition hover:bg-red-600 group-hover:inline-flex"
+                            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-500 hover:text-white"
                             title={`删除 ${item.code}`}
                           >
                             <X className="h-3 w-3" />

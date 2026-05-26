@@ -1,5 +1,5 @@
-import React, { useMemo } from 'react';
-import { Sparkles, Cpu, Globe, AlertTriangle, Lightbulb } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Sparkles, Cpu, Globe, AlertTriangle, Lightbulb, ChevronDown, ChevronRight } from 'lucide-react';
 import { Card } from '../common/Card';
 import { Badge } from '../common/Badge';
 import { SettingsField } from './SettingsField';
@@ -28,6 +28,43 @@ interface ProviderGroup {
     model: string;
   };
 }
+
+interface CollapsibleConfigCardProps {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+  status?: React.ReactNode;
+}
+
+const CollapsibleConfigCard: React.FC<CollapsibleConfigCardProps> = ({
+  title,
+  subtitle,
+  children,
+  status,
+}) => {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <Card variant="default" padding="none" className="overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-start gap-3 px-5 py-4 text-left transition hover:bg-hover/40"
+        aria-expanded={expanded}
+      >
+        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-surface-1 text-secondary-text">
+          {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-base font-semibold text-foreground">{title}</span>
+          <span className="mt-1 block text-xs leading-5 text-secondary-text">{subtitle}</span>
+        </span>
+        {status ? <span className="shrink-0">{status}</span> : null}
+      </button>
+      {expanded ? <div className="border-t border-border/50 px-5 py-4">{children}</div> : null}
+    </Card>
+  );
+};
 
 const PROVIDER_GROUPS: ProviderGroup[] = [
   {
@@ -198,11 +235,9 @@ export const ModelConfigSection: React.FC<ModelConfigSectionProps> = ({
     <div className="flex flex-col gap-4">
       {/* LITELLM_MODEL main config card */}
       {fieldSchemas['LITELLM_MODEL'] && (
-        <Card
+        <CollapsibleConfigCard
           title="主模型 (LITELLM_MODEL)"
           subtitle="这个字段决定实际调用哪个 AI 模型。格式必须是 提供商/模型名。"
-          variant="default"
-          padding="md"
         >
           <div className="flex flex-col gap-3">
             {activeProvider && (
@@ -267,7 +302,7 @@ export const ModelConfigSection: React.FC<ModelConfigSectionProps> = ({
               />
             )}
           </div>
-        </Card>
+        </CollapsibleConfigCard>
       )}
 
       {/* Provider cards */}
@@ -282,21 +317,22 @@ export const ModelConfigSection: React.FC<ModelConfigSectionProps> = ({
           : (group.testable?.defaultBaseUrl ?? '');
 
         return (
-          <Card
+          <CollapsibleConfigCard
             key={group.key}
             title={group.title}
             subtitle={group.description}
-            variant="default"
-            padding="md"
-          >
-            <div className="mb-3 flex items-center gap-2">
-              {group.icon}
+            status={(
               <Badge
                 variant={group.status === 'configured' ? 'success' : 'default'}
                 size="sm"
               >
                 {group.status === 'configured' ? '已配置' : '未配置'}
               </Badge>
+            )}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              {group.icon}
+              <span className="text-sm font-medium text-foreground">{group.title}</span>
             </div>
             <div className="flex flex-col gap-4">
               {group.fields.map((fieldSchema) => (
@@ -323,7 +359,7 @@ export const ModelConfigSection: React.FC<ModelConfigSectionProps> = ({
                 );
               })()}
             </div>
-          </Card>
+          </CollapsibleConfigCard>
         );
       })}
     </div>

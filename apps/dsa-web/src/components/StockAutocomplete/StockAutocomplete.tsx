@@ -30,6 +30,8 @@ export interface StockAutocompleteProps {
   placeholder?: string;
   /** Additional CSS class name */
   className?: string;
+  /** Show a default stock list when the input receives focus without a query */
+  showSuggestionsOnFocus?: boolean;
 }
 
 function FallbackInput({
@@ -98,6 +100,7 @@ function StockAutocompleteInner({
   disabled = false,
   placeholder = '输入股票代码或名称',
   className,
+  showSuggestionsOnFocus = false,
 }: StockAutocompleteProps) {
   const { index, loading, fallback } = useStockIndex();
   const {
@@ -110,6 +113,7 @@ function StockAutocompleteInner({
     highlightPrevious,
     highlightNext,
     close,
+    openDefaultSuggestions,
     // reset,
     isComposing,
     setIsComposing,
@@ -246,7 +250,10 @@ function StockAutocompleteInner({
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
         onFocus={() => {
-          if (isOpen) {
+          if (showSuggestionsOnFocus && !value.trim()) {
+            openDefaultSuggestions();
+            window.requestAnimationFrame(updateDropdownPosition);
+          } else if (isOpen) {
             updateDropdownPosition();
           }
         }}

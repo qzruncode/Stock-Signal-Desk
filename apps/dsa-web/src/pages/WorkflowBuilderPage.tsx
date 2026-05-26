@@ -59,7 +59,7 @@ const WorkflowBuilderPage: React.FC = () => {
   const groups = useMemo(() => loadWatchlistGroups(), []);
 
   useEffect(() => {
-    document.title = '工作流编排 - DSA';
+    document.title = '工作流编排 - Stock-Signal-Desk';
     const saved = loadWorkflow();
     if (saved) {
       setWorkflowName(saved.name || '多轮筛选工作流');
@@ -143,7 +143,7 @@ const WorkflowBuilderPage: React.FC = () => {
         </div>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-auto px-4 py-4">
+      <main className="min-h-0 flex-1 overflow-auto mt-3">
         <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-4">
           {error && (
             <InlineAlert

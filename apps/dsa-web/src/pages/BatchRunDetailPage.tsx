@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Bell, FileText, FolderPlus, Loader2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Bell, FileText, FolderPlus, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { batchApi, type BatchRunItem } from '../api/batch';
 import { ApiErrorAlert, Button, EmptyState } from '../components/common';
@@ -77,6 +77,7 @@ const BatchRunDetailPage: React.FC = () => {
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [groupName, setGroupName] = useState('');
+  const [resultSearch, setResultSearch] = useState('');
 
   const loadRun = useCallback(async () => {
     if (!runId) return;
@@ -100,7 +101,7 @@ const BatchRunDetailPage: React.FC = () => {
   }, [runId]);
 
   useEffect(() => {
-    document.title = '跑批详情 - DSA';
+    document.title = '跑批详情 - Stock-Signal-Desk';
     void loadRun();
   }, [loadRun]);
 
@@ -149,13 +150,27 @@ const BatchRunDetailPage: React.FC = () => {
   }, [runId]);
 
   const results = useMemo(() => parseBatchResults(run?.results_json), [run]);
+  const filteredResults = useMemo(() => {
+    const keyword = resultSearch.trim().toLowerCase();
+    if (!keyword) return results;
+    return results.filter((item) => {
+      const statusText = item.success ? '成功' : '失败';
+      return [
+        item.code,
+        item.summary,
+        item.model,
+        item.decision || '',
+        statusText,
+      ].some((value) => value.toLowerCase().includes(keyword));
+    });
+  }, [resultSearch, results]);
   const passedCodes = useMemo(() => {
     const fromSummary = extractPassedCodesFromSummary(summaryMd);
     if (fromSummary.length > 0) return fromSummary;
     return results.filter((item) => item.decision === 'buy').map((item) => item.code);
   }, [results, summaryMd]);
   const selectedResult = useMemo(
-    () => results.find((item) => item.code === selectedCode) || results[0] || null,
+    () => selectedCode ? results.find((item) => item.code === selectedCode) || null : null,
     [results, selectedCode],
   );
   const failedCount = results.filter((item) => !item.success).length;
@@ -166,6 +181,17 @@ const BatchRunDetailPage: React.FC = () => {
     return `${run?.template_name || '跑批'}筛选-${started}`;
   }, [run]);
 
+  useEffect(() => {
+    if (activeView !== 'details') return;
+    if (filteredResults.length === 0) {
+      setSelectedCode(null);
+      return;
+    }
+    if (!selectedCode || !filteredResults.some((item) => item.code === selectedCode)) {
+      setSelectedCode(filteredResults[0].code);
+    }
+  }, [activeView, filteredResults, selectedCode]);
+
   const handleCreatePassedGroup = useCallback(() => {
     if (passedCodes.length === 0) return;
     const targetName = groupName.trim() || defaultGroupName;
@@ -175,9 +201,9 @@ const BatchRunDetailPage: React.FC = () => {
   }, [defaultGroupName, groupName, passedCodes]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-base">
+    <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col bg-base sm:h-[calc(100vh-2rem)]">
       <div className="border-b border-[#dbe3ed] bg-[#fbfcfe]/90 px-4 py-3 backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-[1440px] flex-wrap items-center justify-between gap-3">
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <button
               type="button"
@@ -222,7 +248,7 @@ const BatchRunDetailPage: React.FC = () => {
       </div>
 
       <main className="min-h-0 flex-1 overflow-hidden px-4 py-4">
-        <div className="mx-auto flex h-full w-full max-w-[1440px] flex-col gap-4">
+        <div className="flex h-full w-full flex-col gap-4">
           {error && <ApiErrorAlert error={error} onDismiss={() => setError(null)} />}
           {actionMessage && (
             <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
@@ -318,14 +344,35 @@ const BatchRunDetailPage: React.FC = () => {
                   </pre>
                 </section>
               ) : (
-              <section className="grid min-h-0 flex-1 overflow-hidden rounded-xl border border-subtle bg-surface lg:grid-cols-[320px_1fr]">
+              <section className="grid min-h-0 flex-1 grid-rows-[minmax(12rem,34%)_minmax(0,1fr)] overflow-hidden rounded-xl border border-subtle bg-surface lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-1">
                 <aside className="flex min-h-0 flex-col border-b border-subtle lg:border-b-0 lg:border-r">
                   <div className="border-b border-subtle px-4 py-3">
                     <p className="text-sm font-semibold text-foreground">单股结果</p>
-                    <p className="text-xs text-muted-text">{results.length} 条已保存结果</p>
+                    <p className="text-xs text-muted-text">
+                      {resultSearch.trim() ? `${filteredResults.length} / ${results.length} 条匹配` : `${results.length} 条已保存结果`}
+                    </p>
+                    <div className="relative mt-3">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-text" />
+                      <input
+                        value={resultSearch}
+                        onChange={(event) => setResultSearch(event.target.value)}
+                        placeholder="搜索代码、摘要、状态..."
+                        className="h-9 w-full rounded-lg border border-subtle bg-background pl-9 pr-9 text-sm text-foreground outline-none transition placeholder:text-muted-text/70 focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
+                      />
+                      {resultSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setResultSearch('')}
+                          className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-text transition hover:bg-hover hover:text-foreground"
+                          aria-label="清空搜索"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto">
-                    {results.map((item) => (
+                    {filteredResults.length > 0 ? filteredResults.map((item) => (
                       <button
                         key={item.code}
                         type="button"
@@ -347,7 +394,11 @@ const BatchRunDetailPage: React.FC = () => {
                         </span>
                         <span className="line-clamp-2 text-xs leading-5 text-muted-text">{item.summary}</span>
                       </button>
-                    ))}
+                    )) : (
+                      <div className="px-4 py-8 text-center text-sm text-muted-text">
+                        没有匹配的单股结果
+                      </div>
+                    )}
                   </div>
                 </aside>
 

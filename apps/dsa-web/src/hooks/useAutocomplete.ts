@@ -39,6 +39,8 @@ export interface UseAutocompleteResult {
   handleSelect: (suggestion: StockSuggestion) => void;
   /** Close suggestions list */
   close: () => void;
+  /** Open default suggestions when the input is focused without a query */
+  openDefaultSuggestions: () => void;
   /** Reset state */
   reset: () => void;
   /** Whether IME is composing */
@@ -107,6 +109,40 @@ export function useAutocomplete(
       setHighlightedIndex(-1);
     }
   }, [index, minLength, limit, runtimeFallback]);
+
+  const openDefaultSuggestions = useCallback(() => {
+    if (runtimeFallback) {
+      return;
+    }
+
+    try {
+      const results = index
+        .filter((item) => item.active)
+        .sort((a, b) => (b.popularity || 0) - (a.popularity || 0))
+        .slice(0, limit)
+        .map((item) => ({
+          canonicalCode: item.canonicalCode,
+          displayCode: item.displayCode,
+          nameZh: item.nameZh,
+          market: item.market,
+          matchType: 'prefix' as const,
+          matchField: 'code' as const,
+          score: item.popularity || 0,
+        }));
+
+      setSuggestions(results);
+      setIsOpen(results.length > 0);
+      setHighlightedIndex(-1);
+    } catch (caught) {
+      const runtimeError = caught instanceof Error ? caught : new Error('Autocomplete default suggestions failed');
+      console.error('Autocomplete default suggestions failed. Falling back to plain input.', runtimeError);
+      setError(runtimeError);
+      setRuntimeFallback(true);
+      setSuggestions([]);
+      setIsOpen(false);
+      setHighlightedIndex(-1);
+    }
+  }, [index, limit, runtimeFallback]);
 
   // Input handling (with debounce)
   const handleInputChange = useCallback((value: string) => {
@@ -185,6 +221,7 @@ export function useAutocomplete(
     highlightNext,
     handleSelect,
     close,
+    openDefaultSuggestions,
     reset,
     isComposing,
     setIsComposing,
