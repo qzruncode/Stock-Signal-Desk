@@ -136,6 +136,69 @@ class StockDaily(Base):
         }
 
 
+class StockMeta(Base):
+    """
+    股票元数据模型
+
+    存储 A 股全市场股票基础信息，支持同步更新和增量维护。
+    作为 stock list 展示和 evidence_pack 的基础数据源。
+    """
+    __tablename__ = 'stock_meta'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 基本信息
+    code = Column(String(10), nullable=False, unique=True, index=True)
+    name = Column(String(50), nullable=False)
+
+    # 市场分类
+    market = Column(String(10), nullable=False, index=True)  # sh, sz, cyb, kcb, bj
+    sector = Column(String(100))  # 申万一级行业
+    area = Column(String(50))  # 地区/省份
+
+    # 交易状态
+    status = Column(String(20), nullable=False, default='active', index=True)  # active, delisted, suspended
+
+    # 上市信息
+    ipo_date = Column(Date)
+
+    # 市值/估值快照（同步时获取的最新值）
+    total_market_cap = Column(Float)  # 总市值（元）
+    circulating_market_cap = Column(Float)  # 流通市值（元）
+    pe_ttm = Column(Float)  # 市盈率 TTM
+    pb = Column(Float)  # 市净率
+
+    # 同步时间戳
+    last_sync_at = Column(DateTime, default=datetime.now)
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_stock_meta_market_status', 'market', 'status'),
+        Index('ix_stock_meta_name', 'name'),
+    )
+
+    def __repr__(self):
+        return f"<StockMeta(code={self.code}, name={self.name}, market={self.market})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'code': self.code,
+            'name': self.name,
+            'market': self.market,
+            'sector': self.sector,
+            'area': self.area,
+            'status': self.status,
+            'ipo_date': self.ipo_date.isoformat() if self.ipo_date else None,
+            'total_market_cap': self.total_market_cap,
+            'circulating_market_cap': self.circulating_market_cap,
+            'pe_ttm': self.pe_ttm,
+            'pb': self.pb,
+            'last_sync_at': self.last_sync_at.isoformat() if self.last_sync_at else None,
+        }
+
+
 class NewsIntel(Base):
     """
     新闻情报数据模型

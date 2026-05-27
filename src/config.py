@@ -1489,7 +1489,6 @@ class Config:
         return model_list
 
     @classmethod
-    @classmethod
     def _parse_report_type(cls, value: str) -> str:
         """Parse REPORT_TYPE, fallback to simple for invalid values (supports brief)."""
         v = (value or 'simple').strip().lower()
@@ -1653,7 +1652,6 @@ class Config:
             news_strategy_profile=self.news_strategy_profile,
         )
 
-    @classmethod
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """

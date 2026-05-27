@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Check, Folder, FolderPlus, Plus, Search, Trash2, Upload, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Check, ChevronLeft, ChevronRight, Folder, FolderPlus, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
-import { StockAutocomplete } from '../components/StockAutocomplete';
+import { stocksApi, type StockMetaItem, type SyncStatusResponse } from '../api/stocks';
 import { Button, ConfirmDialog, EmptyState, InlineAlert } from '../components/common';
 import { cn } from '../utils/cn';
 import {
@@ -73,8 +73,30 @@ const WatchlistManagePage: React.FC = () => {
   const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [newGroupName, setNewGroupName] = useState('');
 
+  // Sync state
+  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Stock list state
+  const [allStocks, setAllStocks] = useState<StockMetaItem[]>([]);
+  const [stockTotal, setStockTotal] = useState(0);
+  const [stockTotalPages, setStockTotalPages] = useState(1);
+  const [stockPage, setStockPage] = useState(1);
+  const [stockSearch, setStockSearch] = useState('');
+  const [stockMarket, setStockMarket] = useState('');
+  const [stockLoading, setStockLoading] = useState(false);
+
   // Search filter
   const [filter, setFilter] = useState('');
+
+  // Add-stock suggestion dropdown (API-backed)
+  const [suggestions, setSuggestions] = useState<StockMetaItem[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suggestContainerRef = useRef<HTMLDivElement | null>(null);
 
   const loadWatchlist = useCallback(async () => {
     setIsLoading(true);
@@ -93,7 +115,140 @@ const WatchlistManagePage: React.FC = () => {
     document.title = '自选股管理 - Stock-Signal-Desk';
     setGroups(loadWatchlistGroups());
     void loadWatchlist();
+    void loadSyncStatus();
+    void loadStockList(1, '', '');
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
   }, [loadWatchlist]);
+
+  // ---- Sync handlers ----
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const status = await stocksApi.syncStatus();
+      setSyncStatus(status);
+      if (status.status === 'running') {
+        // Poll every 2 seconds while running
+        if (!pollRef.current) {
+          pollRef.current = setInterval(async () => {
+            try {
+              const s = await stocksApi.syncStatus();
+              setSyncStatus(s);
+              if (s.status !== 'running') {
+                if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+                if (s.status === 'success') {
+                  setStockPage(1);
+                  void loadStockList(1, stockSearch, stockMarket);
+                }
+              }
+            } catch { /* ignore poll errors */ }
+          }, 2000);
+        }
+      } else {
+        if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      }
+      return status;
+    } catch { return null; }
+  }, [stockSearch, stockMarket]);
+
+  const loadStockList = useCallback(async (page: number, search: string, market: string) => {
+    setStockLoading(true);
+    try {
+      const result = await stocksApi.list({ page, page_size: 50, search: search || undefined, market: market || undefined });
+      setAllStocks(result.items);
+      setStockTotal(result.total);
+      setStockTotalPages(result.total_pages);
+      setStockPage(result.page);
+    } catch { /* ignore */ }
+    finally { setStockLoading(false); }
+  }, []);
+
+  const handleSync = useCallback(async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    setSyncError(null);
+    try {
+      const result = await stocksApi.sync();
+      if (result.success) {
+        await loadSyncStatus();
+      }
+    } catch (err: unknown) {
+      setSyncError(err instanceof Error ? err.message : '同步启动失败');
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [isSyncing, loadSyncStatus]);
+
+  // ---- Stock list search ----
+  const handleStockSearch = useCallback((value: string) => {
+    setStockSearch(value);
+    setStockPage(1);
+    void loadStockList(1, value, stockMarket);
+  }, [stockMarket, loadStockList]);
+
+  const handleMarketFilter = useCallback((value: string) => {
+    setStockMarket(value);
+    setStockPage(1);
+    void loadStockList(1, stockSearch, value);
+  }, [stockSearch, loadStockList]);
+
+  const handleStockPageChange = useCallback((page: number) => {
+    if (page < 1 || page > stockTotalPages) return;
+    void loadStockList(page, stockSearch, stockMarket);
+  }, [stockSearch, stockMarket, stockTotalPages, loadStockList]);
+
+  // ---- Add-stock suggestion search (API-backed) ----
+  const handleAddInputChange = useCallback((value: string) => {
+    setAddInput(value);
+    if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
+    if (!value.trim()) {
+      setSuggestions([]);
+      setSuggestOpen(false);
+      return;
+    }
+    suggestTimerRef.current = setTimeout(async () => {
+      setSuggestLoading(true);
+      try {
+        const result = await stocksApi.list({ page: 1, page_size: 10, search: value.trim() });
+        setSuggestions(result.items);
+        setSuggestOpen(result.items.length > 0);
+      } catch { setSuggestions([]); setSuggestOpen(false); }
+      finally { setSuggestLoading(false); }
+    }, 200);
+  }, []);
+
+  const handleSelectSuggestion = useCallback((code: string) => {
+    setAddInput(code);
+    setSuggestions([]);
+    setSuggestOpen(false);
+  }, []);
+
+  // Close suggestion dropdown on outside click
+  useEffect(() => {
+    if (!suggestOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (suggestContainerRef.current && !suggestContainerRef.current.contains(e.target as Node)) {
+        setSuggestOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [suggestOpen]);
+
+  // ---- Add from stock list to watchlist ----
+  const handleAddStockFromList = useCallback(async (code: string) => {
+    setError(null);
+    setSuccessMsg(null);
+    try {
+      const result = await watchlistApi.add([code]);
+      setData({ codes: result.codes, count: result.count, configVersion: result.configVersion });
+      setSuccessMsg(`已添加 ${code}`);
+      setTimeout(() => setSuccessMsg(null), 2000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '添加失败');
+    }
+  }, []);
 
   const persistGroups = useCallback((nextGroups: WatchlistGroup[]) => {
     setGroups(nextGroups);
@@ -193,24 +348,6 @@ const WatchlistManagePage: React.FC = () => {
       setIsAdding(false);
     }
   }, [batchInput]);
-
-  const handleAutocompleteSubmit = useCallback(
-    (stockCode: string) => {
-      setAddInput(stockCode);
-      // auto-submit after a tick to allow state to settle
-      setTimeout(() => {
-        watchlistApi.add([stockCode]).then((result) => {
-          setData({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-          setAddInput('');
-          setSuccessMsg(result.message);
-          setTimeout(() => setSuccessMsg(null), 3000);
-        }).catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : '添加失败');
-        });
-      }, 50);
-    },
-    [],
-  );
 
   // ---- Remove handlers ----
   const toggleSelect = useCallback((code: string) => {
@@ -355,6 +492,46 @@ const WatchlistManagePage: React.FC = () => {
       {successMsg ? (
         <InlineAlert variant="success" title="操作成功" message={successMsg} className="rounded-xl px-3 py-2 text-xs shadow-none" />
       ) : null}
+      {syncError ? (
+        <InlineAlert variant="danger" title="同步失败" message={syncError} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+      ) : null}
+
+      {/* Sync section */}
+      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <RefreshCw className={cn('h-4 w-4 text-cyan-600', isSyncing && 'animate-spin')} />
+              A 股全市场同步
+            </h2>
+            <p className="mt-1 text-xs text-slate-400">
+              {syncStatus?.status === 'success'
+                ? `最近同步: ${syncStatus.finished_at ? new Date(syncStatus.finished_at).toLocaleString() : '-'} | 共 ${syncStatus.total} 只 A 股`
+                : syncStatus?.status === 'running'
+                  ? `同步中... ${syncStatus.progress}/${syncStatus.total || '...'}`
+                  : syncStatus?.status === 'failed'
+                    ? `同步失败: ${syncStatus.error || syncStatus.message}`
+                    : syncStatus?.status === 'idle' && syncStatus.total > 0
+                      ? `上次同步: ${syncStatus.finished_at ? new Date(syncStatus.finished_at).toLocaleString() : '-'} | 共 ${syncStatus.total} 只`
+                      : '尚未同步，点击按钮从东方财富同步全部 A 股数据'}
+            </p>
+          </div>
+          <Button
+            variant="home-action-ai"
+            size="sm"
+            disabled={isSyncing || syncStatus?.status === 'running'}
+            onClick={handleSync}
+            className="shrink-0"
+          >
+            {isSyncing || syncStatus?.status === 'running' ? (
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            立即同步
+          </Button>
+        </div>
+      </div>
 
       {/* Add section */}
       <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
@@ -375,14 +552,53 @@ const WatchlistManagePage: React.FC = () => {
 
         {!showBatch ? (
           <div className="mt-3 flex gap-2">
-            <div className="flex-1">
-              <StockAutocomplete
-                value={addInput}
-                onChange={setAddInput}
-                onSubmit={handleAutocompleteSubmit}
-                placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
-                disabled={isAdding}
-              />
+            <div className="relative flex-1" ref={suggestContainerRef}>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={addInput}
+                  onChange={(e) => handleAddInputChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !isAdding && addInput.trim()) {
+                      handleAddSingle();
+                    }
+                  }}
+                  placeholder="搜索股票代码或名称，如 600519、贵州茅台"
+                  disabled={isAdding}
+                  className="h-11 w-full rounded-xl border border-slate-200 bg-white pl-9 pr-4 text-sm text-slate-800 placeholder:text-slate-400 transition focus:border-cyan-400 focus:outline-none focus:ring-4 focus:ring-cyan-100 disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                {suggestLoading && (
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                  </div>
+                )}
+              </div>
+              {suggestOpen && suggestions.length > 0 && (
+                <div className="absolute z-50 mt-1 w-full rounded-xl border border-slate-200 bg-white shadow-lg">
+                  {suggestions.map((stock) => (
+                    <button
+                      key={stock.code}
+                      type="button"
+                      onClick={async () => {
+                        handleSelectSuggestion(stock.code);
+                        await handleAddStockFromList(stock.code);
+                        setAddInput('');
+                      }}
+                      className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm transition first:rounded-t-xl last:rounded-b-xl hover:bg-cyan-50"
+                    >
+                      <span className="font-mono font-medium text-slate-700">{stock.code}</span>
+                      <span className="truncate text-slate-500">{stock.name}</span>
+                      <span className={cn(
+                        'ml-auto shrink-0 inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium',
+                        MARKET_COLORS[stock.market] || '',
+                      )}>
+                        {MARKET_LABELS[stock.market] || stock.market}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <Button
               variant="home-action-ai"
@@ -541,6 +757,155 @@ const WatchlistManagePage: React.FC = () => {
                   <span className="text-xs text-slate-400">当前分组为空</span>
                 )}
               </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* A-share stock browser */}
+      <div className="rounded-2xl border border-slate-200 bg-white/88 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+            <Search className="h-4 w-4 text-indigo-600" />
+            A 股全市场股票
+            {syncStatus?.total ? (
+              <span className="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                {syncStatus.total} 只
+              </span>
+            ) : null}
+          </h2>
+        </div>
+
+        {/* Search and filter bar */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-5 py-3">
+          <div className="relative flex-1 min-w-[180px]">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={stockSearch}
+              onChange={(e) => handleStockSearch(e.target.value)}
+              placeholder="搜索股票代码或名称..."
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-8 text-sm text-slate-800 placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-4 focus:ring-cyan-100"
+            />
+            {stockSearch && (
+              <button
+                type="button"
+                onClick={() => handleStockSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <select
+            value={stockMarket}
+            onChange={(e) => handleMarketFilter(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-cyan-400 focus:outline-none"
+          >
+            <option value="">全部市场</option>
+            <option value="sh">沪市主板</option>
+            <option value="sz">深市主板</option>
+            <option value="cyb">创业板</option>
+            <option value="kcb">科创板</option>
+            <option value="bj">北交所</option>
+          </select>
+        </div>
+
+        {/* Stock list */}
+        <div className="max-h-[400px] overflow-y-auto px-5 py-4">
+          {stockLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo/20 border-t-indigo" />
+            </div>
+          ) : allStocks.length === 0 && (!syncStatus || syncStatus.total === 0) ? (
+            <EmptyState
+              title="尚未同步股票数据"
+              description="点击上方「立即同步」按钮，从东方财富同步全部 A 股数据"
+              className="border-dashed py-12"
+            />
+          ) : allStocks.length === 0 ? (
+            <EmptyState
+              title="无匹配结果"
+              description="尝试调整搜索或市场筛选条件"
+              className="border-dashed py-12"
+            />
+          ) : (
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+              {allStocks.map((stock) => {
+                const isInWatchlist = data?.codes?.includes(stock.code);
+                return (
+                  <div
+                    key={stock.code}
+                    className={cn(
+                      'flex items-center justify-between rounded-lg border px-3 py-2 text-xs transition',
+                      isInWatchlist
+                        ? 'border-emerald-200 bg-emerald-50/50'
+                        : 'border-slate-100 bg-white hover:border-cyan-200 hover:bg-cyan-50/30',
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono font-medium text-slate-700">{stock.code}</span>
+                        <span className={cn(
+                          'inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium',
+                          MARKET_COLORS[stock.market] || '',
+                        )}>
+                          {MARKET_LABELS[stock.market] || stock.market}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 truncate text-slate-500">{stock.name}</div>
+                      {stock.pe_ttm != null && (
+                        <div className="mt-0.5 text-[10px] text-slate-400">
+                          PE: {stock.pe_ttm.toFixed(1)} | 市值: {stock.total_market_cap != null ? (stock.total_market_cap / 1e8).toFixed(1) + '亿' : '-'}
+                        </div>
+                      )}
+                    </div>
+                    {isInWatchlist ? (
+                      <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                        已添加
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleAddStockFromList(stock.code)}
+                        className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-cyan-100 hover:text-cyan-700"
+                        title={`添加 ${stock.code}`}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Pagination */}
+        {syncStatus && syncStatus.total > 0 && stockTotalPages > 1 && (
+          <div className="flex items-center justify-between border-t border-slate-100 px-5 py-3">
+            <span className="text-xs text-slate-400">
+              共 {stockTotal} 只，第 {stockPage}/{stockTotalPages} 页
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={stockPage <= 1}
+                onClick={() => handleStockPageChange(stockPage - 1)}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:border-cyan-300 disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                上一页
+              </button>
+              <button
+                type="button"
+                disabled={stockPage >= stockTotalPages}
+                onClick={() => handleStockPageChange(stockPage + 1)}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 transition hover:border-cyan-300 disabled:opacity-40"
+              >
+                下一页
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
         )}

@@ -1745,6 +1745,111 @@ class AkshareFetcher(BaseFetcher):
             
         return stats
 
+    def get_all_a_stocks(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        获取全部 A 股股票列表（含基础元数据）。
+
+        分两步：
+        1. 使用 ak.stock_info_a_code_name() 获取全部股票代码和名称（稳定接口）
+        2. 尝试用 ak.stock_zh_a_spot_em() 或 ak.stock_zh_a_spot() 获取估值快照
+
+        Returns:
+            List[Dict] 或 None: 股票列表，每只股票包含:
+                - code: 股票代码（6位）
+                - name: 股票名称
+                - market: 市场分类（sh/sz/cyb/kcb/bj）
+                - pe_ttm: 市盈率 TTM
+                - pb: 市净率
+                - total_market_cap: 总市值
+                - circulating_market_cap: 流通市值
+        """
+        try:
+            import akshare as ak
+
+            # Re-apply eastmoney patch before any API call
+            try:
+                eastmoney_patch()
+            except Exception:
+                pass
+
+            logger.info("[StocksSync] Step 1: 获取 A 股代码名称列表...")
+
+            # Step 1: Get stock code + name (uses multiple sub-APIs, more reliable)
+            name_df = ak.stock_info_a_code_name()
+
+            if name_df is None or name_df.empty:
+                logger.warning("[StocksSync] stock_info_a_code_name 返回空数据")
+                return None
+
+            logger.info("[StocksSync] 获取到 %d 只股票代码", len(name_df))
+
+            # Step 2: Try to get valuation snapshot (optional, fail gracefully)
+            spot_df = None
+            try:
+                self._enforce_rate_limit()
+                logger.info("[StocksSync] Step 2: 尝试获取估值快照...")
+                spot_df = ak.stock_zh_a_spot_em()
+                if spot_df is not None and not spot_df.empty:
+                    logger.info("[StocksSync] 估值快照: %d 条", len(spot_df))
+                else:
+                    spot_df = None
+            except Exception as e:
+                logger.warning("[StocksSync] 估值快照获取失败，将仅保存基础信息: %s", str(e)[:120])
+
+            # Build stock list
+            results: List[Dict[str, Any]] = []
+            spot_map: Dict[str, Any] = {}
+
+            if spot_df is not None:
+                for _, row in spot_df.iterrows():
+                    c = str(row.get('代码', '')).strip()
+                    if len(c) >= 6:
+                        spot_map[c] = row
+
+            for _, row in name_df.iterrows():
+                code_str = str(row.get('code', '')).strip()
+                name_str = str(row.get('name', '')).strip()
+
+                if not code_str or len(code_str) < 6:
+                    continue
+
+                market = self._classify_a_stock_market(code_str)
+                spot = spot_map.get(code_str)
+
+                item = {
+                    'code': code_str,
+                    'name': name_str,
+                    'market': market,
+                    'pe_ttm': self._safe_float(spot.get('市盈率-动态')) if spot is not None else None,
+                    'pb': self._safe_float(spot.get('市净率')) if spot is not None else None,
+                    'total_market_cap': self._safe_float(spot.get('总市值')) if spot is not None else None,
+                    'circulating_market_cap': self._safe_float(spot.get('流通市值')) if spot is not None else None,
+                }
+                results.append(item)
+
+            logger.info("[StocksSync] 完成: %d 只 A 股", len(results))
+            return results
+
+        except Exception as e:
+            logger.error("[StocksSync] 获取全 A 股列表失败: %s", e, exc_info=True)
+            return None
+
+    @staticmethod
+    def _classify_a_stock_market(code: str) -> str:
+        """根据股票代码判断 A 股市场分类"""
+        code = code.strip()
+        if code.startswith('688'):
+            return 'kcb'
+        if code.startswith(('300', '301')):
+            return 'cyb'
+        if code.startswith(('8', '9')) and len(code) == 6:
+            return 'bj'
+        if code.startswith(('600', '601', '603', '605')):
+            return 'sh'
+        if code.startswith(('000', '001', '002', '003')):
+            return 'sz'
+        return 'other'
+
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取行业板块涨跌榜

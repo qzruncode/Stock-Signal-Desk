@@ -10,6 +10,7 @@ const BatchRunDetailPage = lazy(() => import('./pages/BatchRunDetailPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const MarketStocksPage = lazy(() => import('./pages/MarketStocksPage'));
 const WatchlistManagePage = lazy(() => import('./pages/WatchlistManagePage'));
 const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
 
@@ -70,6 +71,7 @@ const AppContent: React.FC = () => {
         <Route element={<Shell />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
+          <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/settings" element={<SettingsPage />} />

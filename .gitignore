@@ -86,3 +86,5 @@ static/
 # logs
 logs/
 excalidraw.log
+tmp.md
+todo.md
