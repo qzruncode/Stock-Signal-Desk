@@ -1,10 +1,11 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Save, RotateCcw, Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { systemConfigApi, SystemConfigValidationError, SystemConfigConflictError } from '../api/systemConfig';
 import { Button, InlineAlert } from '../components/common';
 import { ModelConfigSection } from '../components/settings/ModelConfigSection';
+import { QuickConfigBar } from '../components/settings/QuickConfigBar';
 import type {
   SystemConfigSchemaResponse,
   SystemConfigResponse,
@@ -237,22 +238,18 @@ const SettingsPage: React.FC = () => {
         />
       )}
 
-      {/* Sticky footer */}
-      {dirtyKeys.length > 0 && (
-        <div className="settings-surface-strong sticky bottom-4 z-20 mt-6 flex items-center gap-3 rounded-xl border border-warning/30 p-4 shadow-[0_-8px_32px_rgba(15,23,42,0.18)] backdrop-blur-xl">
-          <span className="flex-1 text-sm text-secondary-text">
-            有 {dirtyKeys.length} 项更改未保存
-          </span>
-          <Button variant="settings-secondary" size="sm" onClick={handleReset} disabled={saving}>
-            <RotateCcw className="h-4 w-4" />
-            放弃更改
-          </Button>
-          <Button variant="settings-primary" size="sm" onClick={handleSave} isLoading={saving} loadingText="保存中...">
-            <Save className="h-4 w-4" />
-            保存配置
-          </Button>
-        </div>
-      )}
+      {/* Quick config bar */}
+      <QuickConfigBar
+        currentModel={fieldValues['LITELLM_MODEL'] ?? ''}
+        thinkingEnabled={fieldValues['LLM_THINKING_ENABLED'] === 'true'}
+        reasoningEffort={fieldValues['LLM_REASONING_EFFORT'] ?? 'auto'}
+        dirtyCount={dirtyKeys.length}
+        saving={saving}
+        onThinkingToggle={() => handleFieldChange('LLM_THINKING_ENABLED', fieldValues['LLM_THINKING_ENABLED'] === 'true' ? 'false' : 'true')}
+        onReasoningEffortChange={(value) => handleFieldChange('LLM_REASONING_EFFORT', value)}
+        onSave={handleSave}
+        onReset={handleReset}
+      />
     </div>
   );
 };

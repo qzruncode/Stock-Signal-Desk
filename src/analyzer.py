@@ -2241,6 +2241,19 @@ class GeminiAnalyzer:
                     model_list=recovery_model_list,
                 )
 
+                # Inject thinking mode and reasoning effort if configured
+                thinking_enabled = getattr(config, "llm_thinking_enabled", False)
+                reasoning_effort = getattr(config, "llm_reasoning_effort", "auto")
+                if thinking_enabled and reasoning_effort != "auto":
+                    extra_body = call_kwargs.get("extra_body", {})
+                    extra_body["reasoning_effort"] = reasoning_effort
+                    call_kwargs["extra_body"] = extra_body
+                    logger.debug(
+                        "[LiteLLM] Injecting reasoning_effort=%s for model %s (thinking enabled)",
+                        reasoning_effort,
+                        model,
+                    )
+
                 _stream_text: Optional[str] = None
                 _stream_usage: Dict[str, Any] = {}
 

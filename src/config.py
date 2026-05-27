@@ -460,6 +460,10 @@ class Config:
     # Unified temperature for all LLM calls (LLM_TEMPERATURE); legacy per-provider temps are fallback only
     llm_temperature: float = 0.7
 
+    # Thinking mode controls
+    llm_thinking_enabled: bool = False
+    llm_reasoning_effort: str = "auto"  # auto, low, medium, high
+
     # --- Multi-channel LLM config (new) ---
     # LITELLM_CONFIG: path to a standard litellm_config.yaml file (most powerful)
     litellm_config_path: Optional[str] = None
@@ -1050,6 +1054,8 @@ class Config:
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
+            llm_thinking_enabled=os.getenv('LLM_THINKING_ENABLED', 'false').lower() == 'true',
+            llm_reasoning_effort=(os.getenv('LLM_REASONING_EFFORT') or 'auto').strip().lower(),
             litellm_config_path=litellm_config_path,
             llm_models_source=llm_models_source,
             llm_channels=llm_channels,
