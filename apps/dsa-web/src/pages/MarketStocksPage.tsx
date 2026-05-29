@@ -5,22 +5,9 @@ import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
 import { stocksApi, type StockMetaItem, type SyncStatusResponse } from '../api/stocks';
 import { EmptyState, InlineAlert } from '../components/common';
 import { cn } from '../utils/cn';
+import { MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
 const PAGE_SIZE = 50;
-
-const MARKET_LABELS: Record<string, string> = {
-  sh: '沪市主板', sz: '深市主板', cyb: '创业板', kcb: '科创板', bj: '北交所', hk: '港股', us: '美股', other: '其他',
-};
-const MARKET_COLORS: Record<string, string> = {
-  sh: 'bg-red-100 text-red-700',
-  sz: 'bg-blue-100 text-blue-700',
-  cyb: 'bg-purple-100 text-purple-700',
-  kcb: 'bg-amber-100 text-amber-700',
-  bj: 'bg-emerald-100 text-emerald-700',
-  hk: 'bg-rose-100 text-rose-700',
-  us: 'bg-indigo-100 text-indigo-700',
-  other: 'bg-gray-100 text-gray-600',
-};
 
 const MarketStocksPage: React.FC = () => {
   const navigate = useNavigate();
@@ -174,9 +161,9 @@ const MarketStocksPage: React.FC = () => {
   const isSyncingActive = isSyncing || syncStatus?.status === 'running';
 
   return (
-    <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-3 py-6 sm:px-5">
-      {/* Header */}
-      <div className="flex items-center gap-4">
+    <div className="mx-auto flex h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col gap-4 overflow-hidden px-3 py-4 sm:px-5">
+      {/* Header — fixed at top */}
+      <div className="flex shrink-0 items-center gap-4">
         <button
           type="button"
           onClick={() => navigate('/')}
@@ -192,19 +179,21 @@ const MarketStocksPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Alerts */}
-      {error ? (
-        <InlineAlert variant="danger" title="操作失败" message={error} className="rounded-xl px-3 py-2 text-xs shadow-none" />
-      ) : null}
-      {successMsg ? (
-        <InlineAlert variant="success" title="操作成功" message={successMsg} className="rounded-xl px-3 py-2 text-xs shadow-none" />
-      ) : null}
-      {syncError ? (
-        <InlineAlert variant="danger" title="同步失败" message={syncError} className="rounded-xl px-3 py-2 text-xs shadow-none" />
-      ) : null}
+      {/* Alerts — fixed at top */}
+      <div className="shrink-0 space-y-2">
+        {error ? (
+          <InlineAlert variant="danger" title="操作失败" message={error} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+        ) : null}
+        {successMsg ? (
+          <InlineAlert variant="success" title="操作成功" message={successMsg} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+        ) : null}
+        {syncError ? (
+          <InlineAlert variant="danger" title="同步失败" message={syncError} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+        ) : null}
+      </div>
 
-      {/* Sync bar */}
-      <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/88 px-5 py-4 shadow-sm">
+      {/* Sync bar — fixed at top */}
+      <div className="shrink-0 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
         <div className="flex items-center gap-3">
           <TrendingUp className="h-5 w-5 text-indigo-600" />
           <div>
@@ -244,8 +233,8 @@ const MarketStocksPage: React.FC = () => {
         </button>
       </div>
 
-      {/* Search and filter bar */}
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
+      {/* Search and filter bar — fixed at top */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
         <div className="relative flex-1 min-w-[180px]">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
@@ -279,8 +268,8 @@ const MarketStocksPage: React.FC = () => {
         </select>
       </div>
 
-      {/* Stock list with infinite scroll */}
-      <div className="rounded-2xl border border-slate-200 bg-white/88 shadow-sm">
+      {/* Stock list — fills remaining space, only scrollable area */}
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white/88 shadow-sm">
         <div className="px-5 py-4">
           {stockLoading ? (
             <div className="flex items-center justify-center py-12">

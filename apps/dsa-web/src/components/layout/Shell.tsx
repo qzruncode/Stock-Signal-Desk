@@ -24,7 +24,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
       <div className="mx-auto flex min-h-screen w-full max-w-[1720px] gap-3 px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
         <aside
           className={cn(
-            'hidden min-h-0 shrink-0 flex-col rounded-[1.35rem] border border-[#d6dee8] bg-white/86 p-3 shadow-[0_14px_46px_rgba(24,45,77,0.10)] backdrop-blur-xl transition-[width] duration-200 lg:flex',
+            'hidden min-h-0 shrink-0 flex-col rounded-[1.35rem] border border-[#d6dee8] bg-white/86 p-3 backdrop-blur-xl transition-[width] duration-200 lg:flex',
             collapsed ? 'w-[4.75rem]' : 'w-64',
           )}
           aria-label="主菜单"
