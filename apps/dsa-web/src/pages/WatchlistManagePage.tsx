@@ -12,18 +12,21 @@ import {
   type WatchlistGroup,
 } from '../utils/watchlistGroups';
 
+const DEFAULT_GROUP_ID = 'default';
+const DEFAULT_GROUP_NAME = '我的自选股';
+
 const WatchlistManagePage: React.FC = () => {
   const navigate = useNavigate();
 
-  // Watchlist data (API)
+  // Watchlist data (API) — this IS the default group's source of truth
   const [watchlist, setWatchlist] = useState<WatchlistResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Groups (localStorage)
+  // Groups (localStorage) — custom groups only; default group is implicit from API
   const [groups, setGroups] = useState<WatchlistGroup[]>([]);
-  const [activeGroupId, setActiveGroupId] = useState<string>('');
+  const [activeGroupId, setActiveGroupId] = useState<string>(DEFAULT_GROUP_ID);
 
   // Action loading states
   const [isAdding, setIsAdding] = useState(false);
@@ -63,14 +66,6 @@ const WatchlistManagePage: React.FC = () => {
     document.title = '自选分组管理 - Stock-Signal-Desk';
     const loaded = loadWatchlistGroups();
     setGroups(loaded);
-    if (loaded.length === 0) {
-      const defaultGroup: WatchlistGroup = {
-        id: 'all',
-        name: '全部自选',
-        codes: [],
-      };
-      setGroups([defaultGroup]);
-    }
     void loadWatchlist();
 
     return () => {
@@ -85,27 +80,32 @@ const WatchlistManagePage: React.FC = () => {
       groupsInitialized.current = true;
       return;
     }
-    if (groups.length > 0) saveWatchlistGroups(groups);
+    saveWatchlistGroups(groups);
   }, [groups]);
 
   // Ensure activeGroupId is valid
   useEffect(() => {
-    if (groups.length > 0 && !groups.some((g) => g.id === activeGroupId)) {
-      setActiveGroupId(groups[0].id);
+    if (activeGroupId !== DEFAULT_GROUP_ID && !groups.some((g) => g.id === activeGroupId)) {
+      setActiveGroupId(DEFAULT_GROUP_ID);
     }
   }, [groups, activeGroupId]);
 
   // --- Derived state ---
-  const activeGroup = useMemo(
-    () => groups.find((g) => g.id === activeGroupId) || groups[0] || null,
-    [groups, activeGroupId],
-  );
+  const activeGroup = useMemo<WatchlistGroup | null>(() => {
+    if (activeGroupId === DEFAULT_GROUP_ID) {
+      return {
+        id: DEFAULT_GROUP_ID,
+        name: DEFAULT_GROUP_NAME,
+        codes: watchlist?.codes || [],
+      };
+    }
+    return groups.find((g) => g.id === activeGroupId) || null;
+  }, [groups, activeGroupId, watchlist]);
 
   const displayCodes = useMemo(() => {
     if (!activeGroup) return [];
-    if (activeGroup.id === 'all') return watchlist?.codes || [];
     return activeGroup.codes;
-  }, [activeGroup, watchlist]);
+  }, [activeGroup]);
 
   const displayStocks = useMemo(() => {
     return displayCodes.map((code) => {
@@ -114,7 +114,16 @@ const WatchlistManagePage: React.FC = () => {
     });
   }, [displayCodes]);
 
-  const allWatchlistCodes = useMemo(() => new Set(watchlist?.codes || []), [watchlist]);
+  const watchlistCodes = useMemo(() => new Set(watchlist?.codes || []), [watchlist]);
+
+  // All group codes = default (API) ∪ custom groups
+  const allGroupCodes = useMemo(() => {
+    const codes = new Set(watchlist?.codes || []);
+    for (const g of groups) {
+      for (const c of g.codes) codes.add(c);
+    }
+    return codes;
+  }, [groups, watchlist]);
 
   // --- Search / suggest (API on demand) ---
   const handleAddInputChange = useCallback(() => {
@@ -164,7 +173,8 @@ const WatchlistManagePage: React.FC = () => {
       const result = await watchlistApi.add([code]);
       setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
 
-      if (activeGroup && activeGroup.id !== 'all') {
+      // If in a custom group, also add to that group
+      if (activeGroup && activeGroup.id !== DEFAULT_GROUP_ID) {
         setGroups((prev) =>
           prev.map((g) =>
             g.id === activeGroup.id && !g.codes.includes(code)
@@ -187,7 +197,33 @@ const WatchlistManagePage: React.FC = () => {
   const handleRemoveFromGroup = useCallback((code: string) => {
     if (!activeGroup) return;
 
-    const executeRemoval = (fromApi: boolean) => {
+    if (activeGroup.id === DEFAULT_GROUP_ID) {
+      // Default group: remove from API (syncs to stocks page) + custom groups
+      setRemovingCodes((prev) => new Set(prev).add(code));
+      void watchlistApi.remove([code])
+        .then((result) => {
+          setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
+          // Also remove from custom groups
+          setGroups((prev) =>
+            prev.map((g) => ({
+              ...g,
+              codes: g.codes.filter((c) => c !== code),
+            })),
+          );
+          holdMessage(`已移除 ${code}`);
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : '移除失败');
+        })
+        .finally(() => {
+          setRemovingCodes((prev) => {
+            const next = new Set(prev);
+            next.delete(code);
+            return next;
+          });
+        });
+    } else {
+      // Custom group: remove from group only
       setGroups((prev) =>
         prev.map((g) =>
           g.id === activeGroup.id
@@ -195,38 +231,9 @@ const WatchlistManagePage: React.FC = () => {
             : g,
         ),
       );
-
-      if (fromApi) {
-        setRemovingCodes((prev) => new Set(prev).add(code));
-        void watchlistApi.remove([code])
-          .then((result) => {
-            setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-            holdMessage(`已移除 ${code}`);
-          })
-          .catch((err: unknown) => {
-            setError(err instanceof Error ? err.message : '移除失败');
-          })
-          .finally(() => {
-            setRemovingCodes((prev) => {
-              const next = new Set(prev);
-              next.delete(code);
-              return next;
-            });
-          });
-      } else {
-        holdMessage(`已从分组移除 ${code}`);
-      }
-    };
-
-    if (activeGroup.id === 'all') {
-      executeRemoval(true);
-    } else {
-      const inOtherGroup = groups.some(
-        (g) => g.id !== activeGroup.id && g.codes.includes(code),
-      );
-      executeRemoval(!inOtherGroup);
+      holdMessage(`已从分组移除 ${code}`);
     }
-  }, [activeGroup, groups]);
+  }, [activeGroup]);
 
   // --- Group management ---
   const handleCreateGroup = useCallback(() => {
@@ -244,33 +251,32 @@ const WatchlistManagePage: React.FC = () => {
   }, [newGroupName]);
 
   const handleDeleteGroup = useCallback(() => {
-    if (!activeGroup || activeGroup.id === 'all') return;
+    if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID) return;
     setGroups((prev) => prev.filter((g) => g.id !== activeGroup.id));
-    setActiveGroupId('all');
+    setActiveGroupId(DEFAULT_GROUP_ID);
     holdMessage(`已删除分组「${activeGroup.name}」`);
   }, [activeGroup]);
 
   const handleRenameGroup = useCallback((name: string) => {
-    if (!activeGroup || activeGroup.id === 'all' || !name.trim()) return;
+    if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID || !name.trim()) return;
     setGroups((prev) =>
       prev.map((g) => (g.id === activeGroup.id ? { ...g, name: name.trim() } : g)),
     );
     holdMessage(`已重命名为「${name.trim()}」`);
   }, [activeGroup]);
 
-  // --- Sync watchlist: on mount, clean orphaned API codes ---
+  // --- Sync watchlist: on mount, sync default group codes into custom groups ---
   const syncWatchlistRef = useRef(false);
   useEffect(() => {
     if (syncWatchlistRef.current || isLoading || !watchlist || groups.length === 0) return;
     syncWatchlistRef.current = true;
-    // Compute union of all group codes
-    const allGroupCodes = new Set<string>();
+    // Clean orphaned API codes: in API but not in any group (default + custom)
+    const allCodeSet = new Set<string>();
+    for (const c of watchlist.codes) allCodeSet.add(c);
     for (const g of groups) {
-      for (const c of g.codes) allGroupCodes.add(c);
+      for (const c of g.codes) allCodeSet.add(c);
     }
-    // Find orphaned codes: in API but not in any group
-    const apiCodes = new Set(watchlist.codes || []);
-    const orphans = [...apiCodes].filter((c) => !allGroupCodes.has(c));
+    const orphans = watchlist.codes.filter((c) => !allCodeSet.has(c));
     if (orphans.length === 0) return;
     void watchlistApi.remove(orphans)
       .then((result) => {
@@ -286,7 +292,7 @@ const WatchlistManagePage: React.FC = () => {
     void watchlistApi.add(codes)
       .then((result) => {
         setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-        if (activeGroup.id !== 'all') {
+        if (activeGroup.id !== DEFAULT_GROUP_ID) {
           setGroups((prev) =>
             prev.map((g) =>
               g.id === activeGroup.id
@@ -307,11 +313,17 @@ const WatchlistManagePage: React.FC = () => {
   const handleBatchRemove = useCallback(() => {
     if (selectedCodes.size === 0 || !activeGroup) return;
     const codes = Array.from(selectedCodes);
-    if (activeGroup.id === 'all') {
+    if (activeGroup.id === DEFAULT_GROUP_ID) {
       setIsBatchRemoving(true);
       void watchlistApi.remove(codes)
         .then((result) => {
           setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
+          setGroups((prev) =>
+            prev.map((g) => ({
+              ...g,
+              codes: g.codes.filter((c) => !codes.includes(c)),
+            })),
+          );
           setSelectedCodes(new Set());
           holdMessage(`已移除 ${codes.length} 只股票`);
         })
@@ -387,6 +399,27 @@ const WatchlistManagePage: React.FC = () => {
 
       {/* Group tab bar — fixed at top */}
       <div className="shrink-0 flex items-center gap-1.5 overflow-x-auto rounded-2xl border border-slate-200 bg-white/88 px-3 py-2 shadow-sm">
+        {/* Default group tab */}
+        <button
+          type="button"
+          onClick={() => { setActiveGroupId(DEFAULT_GROUP_ID); setSelectedCodes(new Set()); }}
+          className={cn(
+            'flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition whitespace-nowrap',
+            activeGroupId === DEFAULT_GROUP_ID
+              ? 'bg-cyan-50 text-cyan-800 ring-1 ring-cyan-200'
+              : 'text-slate-600 hover:bg-slate-100',
+          )}
+        >
+          {DEFAULT_GROUP_NAME}
+          <span className={cn(
+            'rounded-full px-1.5 py-0.5 text-[10px] font-normal',
+            activeGroupId === DEFAULT_GROUP_ID ? 'bg-cyan-100 text-cyan-700' : 'bg-slate-100 text-slate-500',
+          )}>
+            {watchlist?.count || 0}
+          </span>
+        </button>
+
+        {/* Custom group tabs */}
         {groups.map((group) => (
           <button
             key={group.id}
@@ -394,7 +427,7 @@ const WatchlistManagePage: React.FC = () => {
             onClick={() => { setActiveGroupId(group.id); setSelectedCodes(new Set()); }}
             className={cn(
               'flex shrink-0 items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-medium transition whitespace-nowrap',
-              activeGroup?.id === group.id
+              activeGroupId === group.id
                 ? 'bg-cyan-50 text-cyan-800 ring-1 ring-cyan-200'
                 : 'text-slate-600 hover:bg-slate-100',
             )}
@@ -402,9 +435,9 @@ const WatchlistManagePage: React.FC = () => {
             {group.name}
             <span className={cn(
               'rounded-full px-1.5 py-0.5 text-[10px] font-normal',
-              activeGroup?.id === group.id ? 'bg-cyan-100 text-cyan-700' : 'bg-slate-100 text-slate-500',
+              activeGroupId === group.id ? 'bg-cyan-100 text-cyan-700' : 'bg-slate-100 text-slate-500',
             )}>
-              {group.id === 'all' ? (watchlist?.count || 0) : group.codes.length}
+              {group.codes.length}
             </span>
           </button>
         ))}
@@ -455,9 +488,9 @@ const WatchlistManagePage: React.FC = () => {
           {suggestOpen && suggestions.length > 0 && (
             <div className="absolute z-50 mt-1 w-full rounded-xl border border-slate-200 bg-white shadow-lg">
               {suggestions.map((stock) => {
-                const alreadyInGroup = activeGroup?.id === 'all'
-                  ? allWatchlistCodes.has(stock.code)
-                  : activeGroup?.codes.includes(stock.code) || false;
+                const alreadyInGroup = activeGroupId === DEFAULT_GROUP_ID
+                  ? watchlistCodes.has(stock.code)
+                  : allGroupCodes.has(stock.code) || false;
                 return (
                   <button
                     key={stock.code}
@@ -518,7 +551,7 @@ const WatchlistManagePage: React.FC = () => {
         <div className="px-5 py-4">
           <div className="mb-3 flex items-center gap-2">
             <h2 className="text-sm font-semibold text-slate-800">
-              {activeGroup?.name || '全部自选'}
+              {activeGroup?.name || DEFAULT_GROUP_NAME}
             </h2>
             <span className="rounded-full bg-cyan-100 px-2 py-0.5 text-[10px] font-medium text-cyan-700">
               {displayStocks.length} 只
@@ -528,7 +561,7 @@ const WatchlistManagePage: React.FC = () => {
           {displayStocks.length === 0 ? (
             <EmptyState
               title="暂无股票"
-              description={activeGroup?.id === 'all' ? '在上方搜索并添加你的第一只自选股' : '搜索股票并添加到当前分组'}
+              description={activeGroupId === DEFAULT_GROUP_ID ? '在上方搜索并添加你的第一只自选股' : '搜索股票并添加到当前分组'}
               className="border-dashed py-12"
             />
           ) : (
@@ -559,7 +592,7 @@ const WatchlistManagePage: React.FC = () => {
                       onClick={() => handleRemoveFromGroup(stock.code)}
                       disabled={isRemoving}
                       className="invisible ml-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-400 transition hover:bg-red-500 hover:text-white group-hover:visible disabled:visible disabled:cursor-wait"
-                      title={`从${activeGroup?.id === 'all' ? '自选股' : '分组'}移除 ${stock.code}`}
+                      title={`从${activeGroupId === DEFAULT_GROUP_ID ? '我的自选股' : '分组'}移除 ${stock.code}`}
                     >
                       {isRemoving ? (
                         <div className="h-3 w-3 animate-spin rounded-full border-[2px] border-red-200 border-t-red-500" />
@@ -583,8 +616,18 @@ const WatchlistManagePage: React.FC = () => {
         width="max-w-lg"
       >
         <div className="space-y-6">
-          {/* Rename / Delete group */}
-          {activeGroup && activeGroup.id !== 'all' && (
+          {/* Default group info (read-only) */}
+          {activeGroupId === DEFAULT_GROUP_ID && (
+            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+              <h3 className="text-sm font-semibold text-slate-800">{DEFAULT_GROUP_NAME}</h3>
+              <p className="text-xs text-slate-500">
+                这是默认分组，与全市场股票页的"已添加"状态同步。在此分组中增删股票，会实时同步到 stocks 页面。不可改名或删除。
+              </p>
+            </div>
+          )}
+
+          {/* Rename / Delete group (custom groups only) */}
+          {activeGroup && activeGroup.id !== DEFAULT_GROUP_ID && (
             <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
               <h3 className="text-sm font-semibold text-slate-800">当前分组：{activeGroup.name}</h3>
               <div className="flex gap-2">

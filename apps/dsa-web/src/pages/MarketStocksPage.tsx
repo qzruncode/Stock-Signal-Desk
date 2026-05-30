@@ -83,8 +83,18 @@ const MarketStocksPage: React.FC = () => {
     void loadStockList(1, '', '', false);
     void loadWatchlist();
 
+    // Re-sync watchlist when returning from portfolio page
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void loadWatchlist();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    // Also listen for focus in case of same-tab navigation
+    window.addEventListener('focus', () => void loadWatchlist());
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', loadWatchlist);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
