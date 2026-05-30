@@ -919,7 +919,7 @@ class AkshareFetcher:
                 url,
                 params={
                     "secid": secid,
-                    "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f55,f57,f58,f60,f116,f117,f162,f168,f170,f171,f292",
+                    "fields": "f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f116,f117,f162,f167,f168,f169,f170,f171",
                     "ut": "fa5fd1943c7b386f172d6893dbfba10b",
                 },
                 headers={
@@ -940,27 +940,27 @@ class AkshareFetcher:
 
             # EM push API 字段说明（整数需 /100 得到实际值）：
             # f43=最新价 f44=最高 f45=最低 f46=今开 f47=成交量 f48=成交额
-            # f50=量比 f51=换手率 f52=涨跌幅(‰) f55=振幅 f57=代码 f58=名称
-            # f60=昨收 f116=总市值 f117=流通市值 f162=市盈率 f168=市净率
-            # f170=涨跌幅(%) f171=涨跌额 f292=量比
+            # f50=量比 f57=代码 f58=名称 f60=昨收
+            # f116=总市值 f117=流通市值 f162=市盈率(动态)
+            # f167=市净率 f168=换手率 f169=涨跌额 f170=涨跌幅(%) f171=振幅
             quote = UnifiedRealtimeQuote(
                 code=stock_code,
                 name=str(d.get("f58", "")),
                 source=RealtimeSource.EASTMONEY_PUSH,
                 price=safe_float(d.get("f43")) / 100 if d.get("f43") else None,
                 change_pct=safe_float(d.get("f170")) / 100 if d.get("f170") else None,
-                change_amount=safe_float(d.get("f171")) / 100 if d.get("f171") else None,
+                change_amount=safe_float(d.get("f169")) / 100 if d.get("f169") else None,
                 volume=safe_int(d.get("f47")),
                 amount=safe_float(d.get("f48")),
-                volume_ratio=safe_float(d.get("f292")),
-                turnover_rate=safe_float(d.get("f51")),
-                amplitude=safe_float(d.get("f55")) / 100 if d.get("f55") else None,
+                volume_ratio=safe_float(d.get("f50")) / 100 if d.get("f50") else None,
+                turnover_rate=safe_float(d.get("f168")) / 100 if d.get("f168") else None,
+                amplitude=safe_float(d.get("f171")) / 100 if d.get("f171") else None,
                 open_price=safe_float(d.get("f46")) / 100 if d.get("f46") else None,
                 high=safe_float(d.get("f44")) / 100 if d.get("f44") else None,
                 low=safe_float(d.get("f45")) / 100 if d.get("f45") else None,
                 pre_close=safe_float(d.get("f60")) / 100 if d.get("f60") else None,
                 pe_ratio=safe_float(d.get("f162")) / 100 if d.get("f162") else None,
-                pb_ratio=safe_float(d.get("f168")) / 100 if d.get("f168") else None,
+                pb_ratio=safe_float(d.get("f167")) / 100 if d.get("f167") else None,
                 total_mv=safe_float(d.get("f116")),
                 circ_mv=safe_float(d.get("f117")),
             )

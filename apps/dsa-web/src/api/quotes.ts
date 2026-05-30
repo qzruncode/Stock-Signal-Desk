@@ -23,6 +23,8 @@ export interface RealtimeQuote {
   change_60d: number | null;
   high_52w: number | null;
   low_52w: number | null;
+  _fetched_at?: string;
+  _cached?: boolean;
 }
 
 export interface RealtimeQuotesResponse {
