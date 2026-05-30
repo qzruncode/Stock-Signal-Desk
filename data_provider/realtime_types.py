@@ -47,7 +47,11 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
 
 class RealtimeSource(Enum):
     """实时行情数据源"""
-    AKSHARE_EM = "akshare_em"       # 东方财富（akshare库）
+    AKSHARE_EM = "akshare_em"       # 东方财富（akshare库，全量拉取）
+    EASTMONEY_PUSH = "eastmoney_push"  # 东方财富 push API（单股查询，快）
+    XUEQIU = "xueqiu"               # 雪球
+    AKSHARE_SINA = "akshare_sina"   # 新浪财经
+    AKSHARE_TENCENT = "akshare_tencent"  # 腾讯财经
 
 
 @dataclass

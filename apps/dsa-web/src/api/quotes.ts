@@ -34,7 +34,7 @@ export const quotesApi = {
   async getRealtime(symbol: string): Promise<RealtimeQuotesResponse> {
     const response = await apiClient.get<RealtimeQuotesResponse>(
       '/api/v1/quotes/realtime',
-      { params: { symbol } },
+      { params: { symbol }, timeout: 45000 },
     );
     return response.data;
   },
