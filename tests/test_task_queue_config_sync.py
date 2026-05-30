@@ -11,26 +11,26 @@ from unittest.mock import patch
 
 # Keep task_queue import lightweight in environments without optional deps,
 # but restore sys.modules immediately to avoid cross-test pollution.
-_orig_data_provider_base = sys.modules.get("data_provider.base")
+_orig_data_provider_utils = sys.modules.get("data_provider.utils")
 _orig_data_provider = sys.modules.get("data_provider")
 
-if _orig_data_provider_base is None:
-    base_mod = types.ModuleType("data_provider.base")
-    base_mod.canonical_stock_code = lambda x: (x or "").strip().upper()
-    base_mod.normalize_stock_code = lambda x: (x or "").strip().upper().removesuffix(".SH").removesuffix(".SZ")
-    sys.modules["data_provider.base"] = base_mod
+if _orig_data_provider_utils is None:
+    utils_mod = types.ModuleType("data_provider.utils")
+    utils_mod.canonical_stock_code = lambda x: (x or "").strip().upper()
+    utils_mod.normalize_stock_code = lambda x: (x or "").strip().upper().removesuffix(".SH").removesuffix(".SZ")
+    sys.modules["data_provider.utils"] = utils_mod
 
 if _orig_data_provider is None:
     pkg_mod = types.ModuleType("data_provider")
-    pkg_mod.base = sys.modules["data_provider.base"]
+    pkg_mod.utils = sys.modules["data_provider.utils"]
     sys.modules["data_provider"] = pkg_mod
 
 from src.services.task_queue import AnalysisTaskQueue, get_task_queue, _dedupe_stock_code_key
 
-if _orig_data_provider_base is None:
-    sys.modules.pop("data_provider.base", None)
+if _orig_data_provider_utils is None:
+    sys.modules.pop("data_provider.utils", None)
 else:
-    sys.modules["data_provider.base"] = _orig_data_provider_base
+    sys.modules["data_provider.utils"] = _orig_data_provider_utils
 
 if _orig_data_provider is None:
     sys.modules.pop("data_provider", None)

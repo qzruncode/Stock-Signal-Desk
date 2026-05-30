@@ -26,7 +26,7 @@ from typing import Optional, Dict, List, Any, TYPE_CHECKING, Tuple, Literal, Cal
 if TYPE_CHECKING:
     from asyncio import Queue as AsyncQueue
 
-from data_provider.base import canonical_stock_code, normalize_stock_code
+from data_provider.utils import canonical_stock_code, normalize_stock_code
 from src.utils.analysis_metadata import SELECTION_SOURCES
 
 logger = logging.getLogger(__name__)

@@ -576,7 +576,11 @@ const WatchlistManagePage: React.FC = () => {
                       isRemoving && 'opacity-50',
                     )}
                   >
-                    <div className="min-w-0 flex-1">
+                    <div
+                      className="min-w-0 cursor-pointer flex-1"
+                      onClick={() => navigate(`/analysis?symbol=${stock.code}`)}
+                      title={`查看 ${stock.code} 分析`}
+                    >
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono font-medium text-slate-700">{stock.code}</span>
                         <span className={cn(

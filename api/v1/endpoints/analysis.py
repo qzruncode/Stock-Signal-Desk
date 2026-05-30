@@ -48,7 +48,7 @@ from api.v1.schemas.history import (
     ReportStrategy,
     ReportDetails,
 )
-from data_provider.base import canonical_stock_code, normalize_stock_code
+from data_provider.utils import canonical_stock_code, normalize_stock_code
 from src.config import Config
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.services.name_to_code_resolver import resolve_name_to_code

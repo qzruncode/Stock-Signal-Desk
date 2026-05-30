@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional, List
 
 from fastapi import APIRouter, Query
 
@@ -14,6 +13,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+_fetcher: AkshareFetcher | None = None
+
+
+def _get_fetcher() -> AkshareFetcher:
+    global _fetcher
+    if _fetcher is None:
+        from src.config import get_config
+        from src.patches.eastmoney_patch import eastmoney_patch
+        if get_config().enable_eastmoney_patch:
+            eastmoney_patch()
+        _fetcher = AkshareFetcher()
+    return _fetcher
+
 
 @router.get(
     "/realtime",
@@ -21,22 +33,21 @@ router = APIRouter()
 )
 def get_realtime_quotes(
     symbol: str = Query(default="", description="股票代码（如 600519）"),
-    symbols: Optional[List[str]] = Query(default=None, description="股票代码列表"),
-    market: str = Query(default="A股", description="市场（A股 / 港股 / 美股）"),
+    symbols: list[str] | None = Query(default=None, description="股票代码列表"),
+    market: str = Query(default="A股", description="市场（A股 / 港股 / 美股），默认 A股"),
 ):
     """获取股票实时行情数据。
 
-    支持单只或多只股票查询。
-    A 股使用 akshare.stock_zh_a_spot_em() 全量拉取后过滤。
+    使用 akshare.stock_zh_a_spot_em() 全量拉取后过滤。
     """
-    symbols_list = symbols or []
+    symbols_list = list(symbols) if symbols else []
     if symbol and symbol not in symbols_list:
         symbols_list.insert(0, symbol)
 
     if not symbols_list:
         return {"items": [], "total": 0}
 
-    fetcher = AkshareFetcher()
+    fetcher = _get_fetcher()
     results = []
 
     for sym in symbols_list:
@@ -44,7 +55,4 @@ def get_realtime_quotes(
         if quote and quote.has_basic_data():
             results.append(quote.to_dict())
 
-    return {
-        "items": results,
-        "total": len(results),
-    }
+    return {"items": results, "total": len(results)}

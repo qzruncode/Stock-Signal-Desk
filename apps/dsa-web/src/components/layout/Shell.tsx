@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, GitBranch, Home, Search, Settings, Star } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, GitBranch, Home, Search, Settings, Star, Zap } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { cn } from '../../utils/cn';
 
@@ -15,6 +15,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
     { to: '/', label: '工作台', icon: Home },
     { to: '/stocks', label: '全市场股票', icon: Search },
     { to: '/portfolio', label: '管理自选股', icon: Star },
+    { to: '/analysis', label: '个股分析', icon: Zap },
     { to: '/workflows', label: '工作流编排', icon: GitBranch },
     { to: '/settings', label: '模型 API 配置', icon: Settings },
   ];

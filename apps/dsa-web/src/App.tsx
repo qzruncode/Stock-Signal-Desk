@@ -13,6 +13,7 @@ const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const MarketStocksPage = lazy(() => import('./pages/MarketStocksPage'));
 const WatchlistManagePage = lazy(() => import('./pages/WatchlistManagePage'));
 const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
+const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 
 const PageFallback: React.FC = () => (
   <div className="flex min-h-screen items-center justify-center bg-base">
@@ -73,6 +74,7 @@ const AppContent: React.FC = () => {
           <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
           <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
+          <Route path="/analysis" element={<StockAnalysisPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />

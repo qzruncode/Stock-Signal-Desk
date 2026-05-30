@@ -52,7 +52,7 @@ class ToolTestRequest(BaseModel):
     tool_name: str = Field(..., min_length=1, description="要测试的工具名称")
     stock_code: str = Field(..., min_length=1, description="股票代码，如 600519")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="额外参数")
-    source: Optional[str] = Field(None, description="强制指定数据源（覆盖实时行情优先级链）。可选: tencent, sina, efinance, akshare_em, akshare_sina, akshare_qq, tushare, stooq, longbridge")
+    source: Optional[str] = Field(None, description="强制指定数据源。可选: em, sina, tencent")
 
 
 class ToolTestResponse(BaseModel):

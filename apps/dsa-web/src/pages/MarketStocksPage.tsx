@@ -312,7 +312,11 @@ const MarketStocksPage: React.FC = () => {
                           : 'border-slate-100 bg-white hover:border-indigo-200 hover:bg-indigo-50/30',
                       )}
                     >
-                      <div className="min-w-0 flex-1">
+                      <div
+                        className="min-w-0 flex-1 cursor-pointer"
+                        onClick={() => navigate(`/analysis?symbol=${stock.code}`)}
+                        title={`查看 ${stock.code} 分析`}
+                      >
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono font-medium text-slate-700">{stock.code}</span>
                           <span className={cn(

@@ -78,6 +78,7 @@ verify_*.py
 
 # ignore tool workspace
 .claude/
+.superpowers/
 
 # ignore build output
 static/

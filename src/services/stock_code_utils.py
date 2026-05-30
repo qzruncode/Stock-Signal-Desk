@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from data_provider.base import is_bse_code
+from data_provider.utils import is_bse_code
 
 
 # Known exchange prefixes (case-insensitive) and the digit lengths they accept.
