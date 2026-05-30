@@ -800,6 +800,30 @@ class BatchSchedule(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class QuoteSnapshot(Base):
+    """实时行情缓存快照"""
+
+    __tablename__ = 'quote_snapshot'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, unique=True, index=True)
+    data = Column(Text, nullable=False)  # JSON serialized UnifiedRealtimeQuote.to_dict()
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class KlineSnapshot(Base):
+    """K线数据缓存快照（日线前复权）"""
+
+    __tablename__ = 'kline_snapshot'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, unique=True, index=True)
+    data = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -943,6 +967,17 @@ class DatabaseManager:
                     conn.exec_driver_sql(
                         "ALTER TABLE batch_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
                     )
+                # 2026-05: kline_snapshot 模型去掉了 period/adjust 列，旧表需重建
+                if conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='kline_snapshot'"
+                ).fetchone():
+                    kline_cols = {
+                        row[1]
+                        for row in conn.exec_driver_sql("PRAGMA table_info(kline_snapshot)").fetchall()
+                    }
+                    if "period" in kline_cols:
+                        logger.info("迁移: 重建 kline_snapshot 表（移除 period/adjust 列）")
+                        conn.exec_driver_sql("DROP TABLE kline_snapshot")
         except Exception:
             logger.exception("Failed to ensure compatible SQLite schema")
 
@@ -1321,6 +1356,82 @@ class DatabaseManager:
                 return payload if isinstance(payload, dict) else None
             except Exception:
                 return None
+
+    def save_quote_snapshot(self, code: str, data_json: str) -> None:
+        """保存实时行情快照（upsert by code）。写入失败不抛异常。"""
+        try:
+            def _write(session: Session) -> None:
+                existing = session.execute(
+                    select(QuoteSnapshot).where(QuoteSnapshot.code == code)
+                ).scalar_one_or_none()
+                if existing:
+                    existing.data = data_json
+                    existing.updated_at = datetime.now()
+                else:
+                    session.add(QuoteSnapshot(code=code, data=data_json))
+            self._run_write_transaction(f"save_quote_snapshot[{code}]", _write)
+        except Exception:
+            logger.debug("行情快照写入失败: code=%s", code, exc_info=True)
+
+    def get_quote_snapshots(self, codes: list[str], since: Optional[datetime] = None) -> dict[str, Any]:
+        """批量获取行情快照。返回 {code: data_dict}，每个 dict 含 _fetched_at 字段。
+
+        Args:
+            codes: 股票代码列表
+            since: 可选，只返回 updated_at >= since 的快照（用于过滤旧交易日盘中数据）
+        """
+        if not codes:
+            return {}
+        result: dict[str, Any] = {}
+        with self.get_session() as session:
+            try:
+                stmt = select(QuoteSnapshot).where(QuoteSnapshot.code.in_(codes))
+                if since is not None:
+                    stmt = stmt.where(QuoteSnapshot.updated_at >= since)
+                rows = session.execute(stmt).scalars().all()
+                for row in rows:
+                    try:
+                        d = json.loads(row.data or "{}")
+                        if isinstance(d, dict):
+                            d['_fetched_at'] = row.updated_at.isoformat() if row.updated_at else None
+                            result[row.code] = d
+                    except Exception:
+                        continue
+            except Exception:
+                logger.debug("行情快照读取失败", exc_info=True)
+        return result
+
+    def save_kline_snapshot(self, code: str, data_json: str) -> None:
+        """保存K线数据快照（upsert by code）。写入失败不抛异常。"""
+        try:
+            def _write(session: Session) -> None:
+                existing = session.execute(
+                    select(KlineSnapshot).where(KlineSnapshot.code == code)
+                ).scalar_one_or_none()
+                if existing:
+                    existing.data = data_json
+                    existing.updated_at = datetime.now()
+                else:
+                    session.add(KlineSnapshot(code=code, data=data_json))
+            self._run_write_transaction(f"save_kline_snapshot[{code}]", _write)
+        except Exception:
+            logger.debug("K线快照写入失败: code=%s", code, exc_info=True)
+
+    def get_kline_snapshot(self, code: str) -> dict[str, Any] | None:
+        """获取K线数据快照。返回 dict 含 _fetched_at 字段，或 None。"""
+        try:
+            with self.get_session() as session:
+                row = session.execute(
+                    select(KlineSnapshot).where(KlineSnapshot.code == code)
+                ).scalar_one_or_none()
+                if row:
+                    d = json.loads(row.data or "{}")
+                    if isinstance(d, dict):
+                        d['_fetched_at'] = row.updated_at.isoformat() if row.updated_at else None
+                        return d
+        except Exception:
+            logger.debug("K线快照读取失败", exc_info=True)
+        return None
 
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:
         """

@@ -12,10 +12,15 @@ import {
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { Select } from '../components/common';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
+import { klineApi, type KlineResponse } from '../api/kline';
+import KLineChartPanel from '../components/KLineChartPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
-/** Format large number to human-readable (亿/万) */
+// ---------------------------------------------------------------------------
+// Formatters (shared)
+// ---------------------------------------------------------------------------
+
 function formatMarketCap(value: number | null): string {
   if (value == null) return '-';
   if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
@@ -23,7 +28,6 @@ function formatMarketCap(value: number | null): string {
   return value.toFixed(2);
 }
 
-/** Format volume */
 function formatVolume(value: number | null): string {
   if (value == null) return '-';
   if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿手`;
@@ -31,7 +35,6 @@ function formatVolume(value: number | null): string {
   return `${value}手`;
 }
 
-/** Format amount */
 function formatAmount(value: number | null): string {
   if (value == null) return '-';
   if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
@@ -39,7 +42,6 @@ function formatAmount(value: number | null): string {
   return value.toFixed(2);
 }
 
-/** Single data row in a grid */
 function DataItem({
   label,
   value,
@@ -60,7 +62,6 @@ function DataItem({
       : highlight
         ? 'text-slate-900 font-semibold'
         : 'text-slate-700';
-
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-xs text-slate-400">{label}</span>
@@ -69,16 +70,16 @@ function DataItem({
   );
 }
 
-/** Real-time quote display panel */
+// ---------------------------------------------------------------------------
+// RealtimeQuotePanel
+// ---------------------------------------------------------------------------
+
 function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
   const changePct = quote.change_pct ?? 0;
   const isUp = changePct > 0;
   const isDown = changePct < 0;
-
   const changeColor = isUp ? 'text-red-600' : isDown ? 'text-green-600' : 'text-slate-500';
   const changeBg = isUp ? 'bg-red-50' : isDown ? 'bg-green-50' : 'bg-slate-50';
-
-  // Calculate limit up/down prices (A-share rules)
   const { market } = classifyStock(quote.code);
   const limitRatio = market === 'cyb' || market === 'kcb' ? 0.2 : market === 'bj' ? 0.3 : quote.name.includes('ST') ? 0.05 : 0.1;
   const preClose = quote.pre_close ?? quote.price;
@@ -87,7 +88,6 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
 
   return (
     <div className="space-y-4">
-      {/* Price header */}
       <div className={cn('rounded-2xl border p-6 shadow-sm', changeBg)}>
         <div className="flex items-start justify-between">
           <div>
@@ -114,11 +114,9 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      {/* Trading data grid */}
       <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <BarChart3 className="h-4 w-4 text-cyan-600" />
-          交易数据
+          <BarChart3 className="h-4 w-4 text-cyan-600" />交易数据
         </h3>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
           <DataItem label="成交量" value={formatVolume(quote.volume)} />
@@ -130,11 +128,9 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      {/* Price range */}
       <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <TrendingUp className="h-4 w-4 text-cyan-600" />
-          价格区间
+          <TrendingUp className="h-4 w-4 text-cyan-600" />价格区间
         </h3>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
           <DataItem label="今开" value={quote.open_price != null ? quote.open_price.toFixed(2) : '-'} />
@@ -146,11 +142,9 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      {/* Market cap & valuation */}
       <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <DollarSign className="h-4 w-4 text-cyan-600" />
-          市值与估值
+          <DollarSign className="h-4 w-4 text-cyan-600" />市值与估值
         </h3>
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
           <DataItem label="总市值" value={formatMarketCap(quote.total_mv)} />
@@ -159,61 +153,112 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      {/* Data source */}
       <div className="flex items-center gap-1.5 text-xs text-slate-400">
         <Clock className="h-3 w-3" />
-        <span>数据来源: {quote.source} · 非实时，仅供参考</span>
+        <span>
+          数据获取时间: {quote._fetched_at ? new Date(quote._fetched_at).toLocaleString('zh-CN') : '-'}
+          {quote._cached ? ' · 缓存' : ' · 实时'}
+        </span>
+        {quote.source && (
+          <>
+            <span className="text-slate-300">|</span>
+            <span>数据源: {quote.source}</span>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main Page
+// ---------------------------------------------------------------------------
+
+type AnalysisMode = 'realtime' | 'kline';
+
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchValue, setSearchValue] = useState('');
-  const [quote, setQuote] = useState<RealtimeQuote | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Sync search value from URL
+  // --- Realtime quote state ---
+  const [quote, setQuote] = useState<RealtimeQuote | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+
+  // --- K-line state ---
+  const [klineData, setKlineData] = useState<KlineResponse | null>(null);
+  const [klineLoading, setKlineLoading] = useState(false);
+  const [klineError, setKlineError] = useState<string | null>(null);
+  // --- Tab mode ---
+  const [mode, setMode] = useState<AnalysisMode>('realtime');
+
+  const selectedSymbol = searchParams.get('symbol');
+
+  // Sync search value from URL (only fetch realtime on initial load)
   useEffect(() => {
     const symbol = searchParams.get('symbol');
     if (symbol) {
       setSearchValue(symbol);
       void fetchQuote(symbol);
+      // K-line is fetched lazily when user switches to kline tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // --- Fetch K-line when mode switches to 'kline' ---
+  useEffect(() => {
+    if (mode === 'kline' && selectedSymbol) {
+      setKlineLoading(true);
+      setKlineError(null);
+      void fetchKline(selectedSymbol);
+    }
+  }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- Quote fetching ---
   const fetchQuote = useCallback(async (symbol: string) => {
-    setLoading(true);
-    setError(null);
+    setQuoteLoading(true);
+    setQuoteError(null);
     try {
       const result = await quotesApi.getRealtime(symbol);
       if (result.items.length > 0) {
         setQuote(result.items[0]);
       } else {
         setQuote(null);
-        setError(`未找到股票 ${symbol} 的实时行情数据`);
+        setQuoteError(`未找到股票 ${symbol} 的实时行情数据`);
       }
     } catch {
       setQuote(null);
-      setError('获取实时行情失败，请稍后重试');
+      setQuoteError('获取实时行情失败，请稍后重试');
     } finally {
-      setLoading(false);
+      setQuoteLoading(false);
     }
   }, []);
 
+  // --- K-line fetching ---
+  const fetchKline = useCallback(async (symbol: string) => {
+    setKlineLoading(true);
+    setKlineError(null);
+    try {
+      const result = await klineApi.getKline(symbol);
+      setKlineData(result);
+    } catch {
+      setKlineData(null);
+      setKlineError('获取K线数据失败，请稍后重试');
+    } finally {
+      setKlineLoading(false);
+    }
+  }, []);
+
+  // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
     setSearchParams({ symbol: code });
     void fetchQuote(code);
+    // K-line will be fetched by the useEffect when mode is 'kline'
   }, [setSearchParams, fetchQuote]);
-
-  const selectedSymbol = searchParams.get('symbol');
 
   return (
     <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4">
-      {/* Header: title + search + dimension dropdown */}
+      {/* Header */}
       <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Stock Analysis</p>
@@ -232,38 +277,48 @@ const StockAnalysisPage: React.FC = () => {
           </div>
           <div className="w-36 shrink-0">
             <Select
-              value="realtime"
-              onChange={() => {}}
-              options={[{ value: 'realtime', label: '实时行情' }]}
+              value={mode}
+              onChange={(v) => setMode(v as AnalysisMode)}
+              options={[
+                { value: 'realtime', label: '实时行情' },
+                { value: 'kline', label: 'K线分析' },
+              ]}
             />
           </div>
         </div>
       </div>
 
-      {/* Main content area */}
+      {/* Main content */}
       {selectedSymbol ? (
         <main className="min-w-0 flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="flex h-40 items-center justify-center">
-              <div className="flex flex-col items-center gap-3">
-                <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
-                <span className="text-sm text-slate-400">正在获取行情数据...</span>
+          {mode === 'realtime' ? (
+            quoteLoading ? (
+              <div className="flex h-40 items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                  <span className="text-sm text-slate-400">正在获取行情数据...</span>
+                </div>
               </div>
-            </div>
-          ) : error && !quote ? (
-            <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/50 p-8 text-center">
-              <p className="text-sm font-medium text-red-600">{error}</p>
-            </div>
-          ) : quote ? (
-            <RealtimeQuotePanel quote={quote} />
+            ) : quoteError && !quote ? (
+              <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/50 p-8 text-center">
+                <p className="text-sm font-medium text-red-600">{quoteError}</p>
+              </div>
+            ) : quote ? (
+              <RealtimeQuotePanel quote={quote} />
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                <p className="text-sm text-slate-400">暂无行情数据</p>
+              </div>
+            )
           ) : (
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
-              <p className="text-sm text-slate-400">暂无行情数据</p>
-            </div>
+            <KLineChartPanel
+              data={klineData}
+              loading={klineLoading}
+              error={klineError}
+            />
           )}
         </main>
       ) : (
-        /* Empty state: no stock selected */
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
             <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-50">
