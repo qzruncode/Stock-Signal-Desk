@@ -17,9 +17,10 @@ import { Select } from '../components/common';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
-import { financialsApi, type FinancialsResponse } from '../api/financials';
+import { financialsApi, type FinancialsResponse, financialStatementsApi, type FinancialStatementsResponse } from '../api/financials';
 import KLineChartPanel from '../components/KLineChartPanel';
 import FinancialPanel from '../components/FinancialPanel';
+import FinancialStatementsPanel from '../components/FinancialStatementsPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
@@ -269,7 +270,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'overview' | 'kline';
+type AnalysisMode = 'overview' | 'kline' | 'financials';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -293,6 +294,10 @@ const StockAnalysisPage: React.FC = () => {
   const [financials, setFinancials] = useState<FinancialsResponse | null>(null);
   const [financialsLoading, setFinancialsLoading] = useState(false);
 
+  // --- Financial statements state ---
+  const [financialStatements, setFinancialStatements] = useState<FinancialStatementsResponse | null>(null);
+  const [financialStatementsLoading, setFinancialStatementsLoading] = useState(false);
+
   // --- Tab mode ---
   const [mode, setMode] = useState<AnalysisMode>('overview');
 
@@ -306,6 +311,7 @@ const StockAnalysisPage: React.FC = () => {
       void fetchQuote(symbol);
       void fetchStockInfo(symbol);
       void fetchFinancials(symbol);
+      void fetchFinancialStatements(symbol);
       // K-line is fetched lazily when user switches to kline tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -380,6 +386,19 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  // --- Financial statements fetching ---
+  const fetchFinancialStatements = useCallback(async (symbol: string) => {
+    setFinancialStatementsLoading(true);
+    try {
+      const result = await financialStatementsApi.getStatements(symbol);
+      setFinancialStatements(result);
+    } catch {
+      setFinancialStatements(null);
+    } finally {
+      setFinancialStatementsLoading(false);
+    }
+  }, []);
+
   // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
@@ -387,8 +406,9 @@ const StockAnalysisPage: React.FC = () => {
     void fetchQuote(code);
     void fetchStockInfo(code);
     void fetchFinancials(code);
+    void fetchFinancialStatements(code);
     // K-line will be fetched by the useEffect when mode is 'kline'
-  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials]);
+  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials, fetchFinancialStatements]);
 
   return (
     <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4 overflow-hidden">
@@ -416,6 +436,7 @@ const StockAnalysisPage: React.FC = () => {
               options={[
                 { value: 'overview', label: '行情概览' },
                 { value: 'kline', label: 'K线分析' },
+                { value: 'financials', label: '财报分析' },
               ]}
             />
           </div>
@@ -491,12 +512,48 @@ const StockAnalysisPage: React.FC = () => {
                 </div>
               )}
             </div>
-          ) : (
+          ) : mode === 'kline' ? (
             <KLineChartPanel
               data={klineData}
               loading={klineLoading}
               error={klineError}
             />
+          ) : (
+            <div className="space-y-6">
+              {financialStatementsLoading ? (
+                <div className="flex h-40 items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                    <span className="text-sm text-slate-400">正在获取财报数据...</span>
+                  </div>
+                </div>
+              ) : financialStatements ? (
+                <FinancialStatementsPanel
+                  balance_sheet={financialStatements.balance_sheet}
+                  income_statement={financialStatements.income_statement}
+                  cashflow={financialStatements.cashflow}
+                />
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">暂无财报数据</p>
+                </div>
+              )}
+              {financialStatements && (
+                <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                  <Clock className="h-3 w-3" />
+                  <span>
+                    数据获取时间: {financialStatements._fetched_at ? new Date(financialStatements._fetched_at).toLocaleString('zh-CN') : '-'}
+                    {financialStatements._cached ? ' · 缓存' : ' · 实时'}
+                  </span>
+                  {financialStatements.source && (
+                    <>
+                      <span className="text-slate-300">|</span>
+                      <span>数据源: {financialStatements.source}</span>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </main>
       ) : (
