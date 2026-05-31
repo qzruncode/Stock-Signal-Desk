@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import analysis, auth, history, system_config, prompts, batch, stocks, watchlist, quotes, kline
+from api.v1.endpoints import analysis, auth, history, system_config, prompts, batch, stocks, watchlist, quotes, kline, market_status, sectors, stock_info
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -74,4 +74,22 @@ router.include_router(
     kline.router,
     prefix="/kline",
     tags=["KLine"]
+)
+
+router.include_router(
+    market_status.router,
+    prefix="/market",
+    tags=["Market"]
+)
+
+router.include_router(
+    sectors.router,
+    prefix="/market",
+    tags=["Market"]
+)
+
+router.include_router(
+    stock_info.router,
+    prefix="/stocks",
+    tags=["Stocks"]
 )

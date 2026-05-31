@@ -5,14 +5,18 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
+  Building2,
   Clock,
   DollarSign,
+  FileText,
+  Info,
   TrendingUp,
 } from 'lucide-react';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { Select } from '../components/common';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
+import { stockInfoApi, type StockInfo } from '../api/stockInfo';
 import KLineChartPanel from '../components/KLineChartPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
@@ -40,6 +44,13 @@ function formatAmount(value: number | null): string {
   if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
   if (value >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
   return value.toFixed(2);
+}
+
+function formatShares(value: number | null): string {
+  if (value == null) return '-';
+  if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿股`;
+  if (value >= 1e4) return `${(value / 1e4).toFixed(2)}万股`;
+  return `${value.toFixed(0)}股`;
 }
 
 function DataItem({
@@ -171,6 +182,116 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
 }
 
 // ---------------------------------------------------------------------------
+// StockInfoPanel — 公司概况
+// ---------------------------------------------------------------------------
+
+function StockInfoPanel({ info }: { info: StockInfo }) {
+  const hasCninfo = info._cninfo_ok !== false;
+  const hasEm = info._em_ok === true;
+
+  return (
+    <div className="space-y-4">
+      {/* 公司概况 */}
+      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <Building2 className="h-4 w-4 text-cyan-600" />公司概况
+        </h3>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+          <DataItem label="公司全称" value={info.name || info.short_name || '-'} />
+          <DataItem label="所属行业" value={info.industry || '-'} />
+          <DataItem label="所属市场" value={info.market || '-'} />
+          <DataItem
+            label="上市日期"
+            value={info.listing_date ? info.listing_date.replace(/-/g, '/') : '-'}
+          />
+          <DataItem
+            label="成立日期"
+            value={info.establish_date ? info.establish_date.replace(/-/g, '/') : '-'}
+          />
+          <DataItem label="注册资本" value={formatAmount(info.register_capital)} />
+        </div>
+      </div>
+
+      {/* 股本信息 */}
+      {(info.total_shares != null || info.circ_shares != null) && (
+        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <BarChart3 className="h-4 w-4 text-cyan-600" />股本信息
+          </h3>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+            <DataItem label="总股本" value={formatShares(info.total_shares)} />
+            <DataItem label="流通股本" value={formatShares(info.circ_shares)} />
+            <DataItem label="总市值" value={formatMarketCap(info.total_mv)} />
+            <DataItem label="流通市值" value={formatMarketCap(info.circ_mv)} />
+          </div>
+          {hasEm && (
+            <p className="mt-2 text-xs text-slate-400">股本数据来源: 东方财富</p>
+          )}
+        </div>
+      )}
+
+      {/* 估值指标 (PE/PB) */}
+      {(info.pe_dynamic != null || info.pe_static != null || info.pb_ratio != null) && (
+        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <TrendingUp className="h-4 w-4 text-cyan-600" />估值指标
+          </h3>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+            <DataItem
+              label="市盈率(动)"
+              value={info.pe_dynamic != null ? info.pe_dynamic.toFixed(2) : '-'}
+            />
+            <DataItem
+              label="市盈率(静)"
+              value={info.pe_static != null ? info.pe_static.toFixed(2) : '-'}
+            />
+            <DataItem
+              label="市净率"
+              value={info.pb_ratio != null ? info.pb_ratio.toFixed(2) : '-'}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* 主营业务 */}
+      {info.main_business && (
+        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <FileText className="h-4 w-4 text-cyan-600" />主营业务
+          </h3>
+          <p className="text-sm leading-relaxed text-slate-600">{info.main_business}</p>
+        </div>
+      )}
+
+      {/* 公司简介 */}
+      {info.profile && (
+        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <Info className="h-4 w-4 text-cyan-600" />公司简介
+          </h3>
+          <p className="text-sm leading-relaxed text-slate-600 line-clamp-6">{info.profile}</p>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className="flex items-center gap-1.5 text-xs text-slate-400">
+        <Clock className="h-3 w-3" />
+        <span>
+          数据获取时间: {info._fetched_at ? new Date(info._fetched_at).toLocaleString('zh-CN') : '-'}
+          {info._cached ? ' · 缓存' : ' · 实时'}
+        </span>
+        {hasCninfo && (
+          <>
+            <span className="text-slate-300">|</span>
+            <span>数据源: 巨潮资讯{hasEm ? ' + 东方财富' : ''}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
@@ -189,6 +310,11 @@ const StockAnalysisPage: React.FC = () => {
   const [klineData, setKlineData] = useState<KlineResponse | null>(null);
   const [klineLoading, setKlineLoading] = useState(false);
   const [klineError, setKlineError] = useState<string | null>(null);
+
+  // --- Stock info state ---
+  const [stockInfo, setStockInfo] = useState<StockInfo | null>(null);
+  const [stockInfoLoading, setStockInfoLoading] = useState(false);
+
   // --- Tab mode ---
   const [mode, setMode] = useState<AnalysisMode>('realtime');
 
@@ -200,6 +326,7 @@ const StockAnalysisPage: React.FC = () => {
     if (symbol) {
       setSearchValue(symbol);
       void fetchQuote(symbol);
+      void fetchStockInfo(symbol);
       // K-line is fetched lazily when user switches to kline tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -248,16 +375,30 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  // --- Stock info fetching ---
+  const fetchStockInfo = useCallback(async (symbol: string) => {
+    setStockInfoLoading(true);
+    try {
+      const result = await stockInfoApi.getInfo(symbol);
+      setStockInfo(result);
+    } catch {
+      setStockInfo(null);
+    } finally {
+      setStockInfoLoading(false);
+    }
+  }, []);
+
   // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
     setSearchParams({ symbol: code });
     void fetchQuote(code);
+    void fetchStockInfo(code);
     // K-line will be fetched by the useEffect when mode is 'kline'
-  }, [setSearchParams, fetchQuote]);
+  }, [setSearchParams, fetchQuote, fetchStockInfo]);
 
   return (
-    <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4">
+    <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4 overflow-hidden">
       {/* Header */}
       <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -290,26 +431,42 @@ const StockAnalysisPage: React.FC = () => {
 
       {/* Main content */}
       {selectedSymbol ? (
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           {mode === 'realtime' ? (
-            quoteLoading ? (
-              <div className="flex h-40 items-center justify-center">
-                <div className="flex flex-col items-center gap-3">
-                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
-                  <span className="text-sm text-slate-400">正在获取行情数据...</span>
+            <div className="space-y-6">
+              {quoteLoading ? (
+                <div className="flex h-40 items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                    <span className="text-sm text-slate-400">正在获取行情数据...</span>
+                  </div>
                 </div>
-              </div>
-            ) : quoteError && !quote ? (
-              <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/50 p-8 text-center">
-                <p className="text-sm font-medium text-red-600">{quoteError}</p>
-              </div>
-            ) : quote ? (
-              <RealtimeQuotePanel quote={quote} />
-            ) : (
-              <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
-                <p className="text-sm text-slate-400">暂无行情数据</p>
-              </div>
-            )
+              ) : quoteError && !quote ? (
+                <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/50 p-8 text-center">
+                  <p className="text-sm font-medium text-red-600">{quoteError}</p>
+                </div>
+              ) : quote ? (
+                <RealtimeQuotePanel quote={quote} />
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">暂无行情数据</p>
+                </div>
+              )}
+
+              {/* Stock info panel — shown when quote is available */}
+              {quote && (
+                stockInfoLoading ? (
+                  <div className="flex h-20 items-center justify-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                      <span className="text-xs text-slate-400">正在获取公司资料...</span>
+                    </div>
+                  </div>
+                ) : stockInfo ? (
+                  <StockInfoPanel info={stockInfo} />
+                ) : null
+              )}
+            </div>
           ) : (
             <KLineChartPanel
               data={klineData}

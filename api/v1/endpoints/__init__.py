@@ -14,6 +14,7 @@ __all__ = [
     "batch",
     "history",
     "prompts",
+    "stock_info",
     "system_config",
     "watchlist",
 ]
