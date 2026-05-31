@@ -125,7 +125,9 @@ function BalanceSheetTable({ items }: { items: BalanceSheetItem[] }) {
           <DataRow label="总负债" items={items} getValue={(i) => i.total_liabilities} fmt={fmtLargeNum} bold />
           <DataRow label="短期借款" items={items} getValue={(i) => i.short_loan} fmt={fmtLargeNum} />
           <DataRow label="应付账款" items={items} getValue={(i) => i.accounts_payable} fmt={fmtLargeNum} />
+          <DataRow label="一年内到期非流动负债" items={items} getValue={(i) => i.noncurrent_liab_1year} fmt={fmtLargeNum} />
           <DataRow label="长期借款" items={items} getValue={(i) => i.long_loan} fmt={fmtLargeNum} />
+          <DataRow label="租赁负债" items={items} getValue={(i) => i.lease_liab} fmt={fmtLargeNum} />
 
           <SectionHeader label="股东权益" colSpan={colSpan} />
           <DataRow label="股东权益" items={items} getValue={(i) => i.total_equity} fmt={fmtLargeNum} bold />
