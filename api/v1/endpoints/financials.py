@@ -1137,6 +1137,8 @@ def _fetch_financial_statements(symbol: str, periods: int = 12) -> dict:
 
 # --- Endpoint ---
 
+_fins_lock = None
+
 
 @router.get("/financials/statements", summary="获取三大财务报表")
 def get_financial_statements(
