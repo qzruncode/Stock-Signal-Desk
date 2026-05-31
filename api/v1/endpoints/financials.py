@@ -1086,6 +1086,32 @@ def _fetch_from_ths_abstract(symbol: str, periods: int) -> dict:
     return result
 
 
+def _backfill_cf_net_profit(result: dict) -> None:
+    """Backfill cashflow.net_profit from income_statement where null.
+
+    东方财富的现金流表对一季报/三季报不返回 NETPROFIT，
+    用利润表的 net_profit 回补，使经营CF/净利润可计算。
+    """
+    is_lookup: dict[str, float | None] = {}
+    for item in result.get('income_statement', []):
+        rd = item.get('report_date')
+        if rd:
+            is_lookup[rd] = item.get('net_profit')
+
+    for cf_item in result.get('cashflow', []):
+        if cf_item.get('net_profit') is None:
+            rd = cf_item.get('report_date')
+            if rd and rd in is_lookup:
+                cf_item['net_profit'] = is_lookup[rd]
+
+    # Re-derive cf_quality after backfill
+    for cf_item in result.get('cashflow', []):
+        ocf = cf_item.get('operating_cf')
+        np_val = cf_item.get('net_profit')
+        if ocf and np_val and np_val != 0:
+            cf_item['cf_quality'] = round(ocf / np_val, 2)
+
+
 # --- Orchestrator ---
 
 def _fetch_financial_statements(symbol: str, periods: int = 12) -> dict:
@@ -1122,6 +1148,7 @@ def _fetch_financial_statements(symbol: str, periods: int = 12) -> dict:
         try:
             src_data = src_fn(symbol, periods)
             result.update(src_data)
+            _backfill_cf_net_profit(result)
             if src_name != '东方财富':
                 result['_fallback'] = True
             logger.info(f"[FinancialStatements] total {_time.time() - t0:.1f}s for {symbol} (source: {src_name})")
