@@ -2121,3 +2121,728 @@ def get_financial_statements(
     data = _fetch_financial_statements(symbol, periods)
     _fins_cache_put(symbol, periods, data)
     return data
+
+
+# ============================================================================
+# Stock News Search
+# ============================================================================
+
+NEWS_CACHE_KEY = "stocks:news:v1"
+
+
+def _fetch_news(symbol: str, days: int, source: str) -> dict:
+    """搜索指定股票的相关新闻。
+
+    数据源:
+      1. 东方财富个股新闻 (翻页获取更多)
+      2. 东方财富个股研报 (stock_research_report_em)
+      3. 东方财富个股公告 (stock_individual_notice_report)
+    """
+    import time as _time
+    import json as _json
+    import akshare as ak
+    import pandas as pd
+    import requests as _requests
+
+    t0 = _time.time()
+    code = _normalize_symbol(symbol)
+    errors: list[str] = []
+    news_items: list[dict] = []
+    used_sources: list[str] = []
+
+    cutoff = datetime.now() - timedelta(days=days)
+
+    def _is_recent(d) -> bool:
+        if d is None:
+            return True
+        return d >= cutoff
+
+    # -------------------------------------------------------------------
+    # Source 1: 东方财富个股新闻（优先用 akshare，失败时直接调 API 翻页）
+    # -------------------------------------------------------------------
+    if source in ("all", "eastmoney", "news"):
+        news_count = 0
+        # 先尝试 akshare 封装
+        try:
+            df = ak.stock_news_em(symbol=code)
+            if df is not None and not df.empty:
+                title_col = _pick_col(df.columns, ["新闻标题", "title"])
+                content_col = _pick_col(df.columns, ["新闻内容", "content"])
+                time_col = _pick_col(df.columns, ["发布时间", "time", "date"])
+                url_col = _pick_col(df.columns, ["新闻链接", "url"])
+                source_col = _pick_col(df.columns, ["文章来源", "source", "media"])
+
+                for _, row in df.iterrows():
+                    pub_time = _parse_date(row.get(time_col)) if time_col is not None else None
+                    if not _is_recent(pub_time):
+                        continue
+                    news_items.append({
+                        "title": _safe_str(row.get(title_col)) if title_col is not None else "",
+                        "summary": _safe_str(row.get(content_col)) if content_col is not None else "",
+                        "publish_time": pub_time.isoformat() if pub_time else None,
+                        "source": _safe_str(row.get(source_col)) if source_col is not None else "东方财富",
+                        "url": _safe_str(row.get(url_col)) if url_col is not None else "",
+                        "category": "新闻",
+                    })
+                    news_count += 1
+        except Exception as exc:
+            logger.warning(f"[News] akshare stock_news_em failed for {code}: {exc}")
+
+        # 如果 akshare 没拿到足够数据，直接调东方财富 API 翻页补充
+        if news_count < 5:
+            try:
+                for page in range(1, 6):
+                    inner_param = {
+                        "uid": "",
+                        "keyword": code,
+                        "type": ["cmsArticleWebOld"],
+                        "client": "web",
+                        "clientType": "web",
+                        "clientVersion": "curr",
+                        "param": {
+                            "cmsArticleWebOld": {
+                                "searchScope": "default",
+                                "sort": "default",
+                                "pageIndex": page,
+                                "pageSize": 10,
+                                "preTag": "",
+                                "postTag": "",
+                            }
+                        },
+                    }
+                    params = {
+                        "cb": "",
+                        "param": _json.dumps(inner_param, ensure_ascii=False),
+                    }
+                    headers = {
+                        "accept": "*/*",
+                        "referer": f"https://so.eastmoney.com/news/s?keyword={code}",
+                        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    }
+                    r = _requests.get(
+                        "https://search-api-web.eastmoney.com/search/jsonp",
+                        params=params,
+                        headers=headers,
+                        timeout=15,
+                    )
+                    if not r.text or not r.text.strip():
+                        break
+                    data = r.json()
+                    articles = data.get("result", {}).get("cmsArticleWebOld", [])
+                    if not articles:
+                        break
+
+                    for art in articles:
+                        title = _safe_str(art.get("title", "")).replace("<em>", "").replace("</em>", "")
+                        content = _safe_str(art.get("content", "")).replace("<em>", "").replace("</em>", "")
+                        pub_time = _parse_date(art.get("date"))
+                        if not _is_recent(pub_time):
+                            continue
+                        news_items.append({
+                            "title": title,
+                            "summary": content,
+                            "publish_time": pub_time.isoformat() if pub_time else None,
+                            "source": _safe_str(art.get("mediaName")) or "东方财富",
+                            "url": "http://finance.eastmoney.com/a/" + _safe_str(art.get("code", "")) + ".html",
+                            "category": "新闻",
+                        })
+                        news_count += 1
+
+                    if len(articles) < 10:
+                        break
+            except Exception as exc:
+                errors.append(f"东方财富新闻API: {exc}")
+                logger.warning(f"[News] eastmoney direct API failed for {code}: {exc}")
+
+        if news_count > 0:
+            used_sources.append(f"东方财富新闻({news_count}条)")
+            logger.info(f"[News] eastmoney news OK for {code}: {news_count} items")
+
+    # -------------------------------------------------------------------
+    # Source 2: 东方财富个股研报
+    # -------------------------------------------------------------------
+    if source in ("all", "eastmoney", "research"):
+        try:
+            df = ak.stock_research_report_em(symbol=code)
+            if df is not None and not df.empty:
+                title_col = _pick_col(df.columns, ["报告名称", "title"])
+                org_col = _pick_col(df.columns, ["机构", "org"])
+                date_col = _pick_col(df.columns, ["日期", "date"])
+                url_col = _pick_col(df.columns, ["报告PDF链接", "url"])
+                rating_col = _pick_col(df.columns, ["东财评级", "评级", "rating"])
+
+                research_count = 0
+                for _, row in df.iterrows():
+                    pub_time = _parse_date(row.get(date_col)) if date_col is not None else None
+                    if not _is_recent(pub_time):
+                        continue
+                    title = _safe_str(row.get(title_col)) if title_col is not None else ""
+                    org = _safe_str(row.get(org_col)) if org_col is not None else ""
+                    rating = _safe_str(row.get(rating_col)) if rating_col is not None else ""
+                    summary_parts = [p for p in [f"机构: {org}", f"评级: {rating}"] if p.strip() not in ("机构: ", "评级: ")]
+                    news_items.append({
+                        "title": title,
+                        "summary": "；".join(summary_parts) if summary_parts else "",
+                        "publish_time": pub_time.isoformat() if pub_time else None,
+                        "source": org or "券商研报",
+                        "url": _safe_str(row.get(url_col)) if url_col is not None else "",
+                        "category": "研报",
+                    })
+                    research_count += 1
+
+                if research_count > 0:
+                    used_sources.append(f"券商研报({research_count}条)")
+                    logger.info(f"[News] research reports OK for {code}: {research_count} items")
+        except Exception as exc:
+            errors.append(f"券商研报: {exc}")
+            logger.warning(f"[News] research reports failed for {code}: {exc}")
+
+    # 去重 + 按时间倒序
+    seen = set()
+    unique_items = []
+    for item in news_items:
+        key = (item.get("title") or "") + (item.get("url") or "")
+        if key and key not in seen:
+            seen.add(key)
+            unique_items.append(item)
+    unique_items.sort(
+        key=lambda x: x.get("publish_time") or "",
+        reverse=True,
+    )
+
+    logger.info(f"[News] total {_time.time() - t0:.1f}s for {code}: "
+                f"{len(unique_items)} unique items from {used_sources}")
+
+    return {
+        "symbol": code,
+        "days": days,
+        "source": source,
+        "items": unique_items,
+        "source_chain": used_sources,
+        "errors": errors,
+        "_fetched_at": datetime.now().isoformat(),
+        "_cached": False,
+    }
+
+
+@router.get("/news", summary="搜索相关新闻")
+def search_news(
+    symbol: str = Query(..., description="股票代码 或 关键词"),
+    days: int = Query(7, ge=1, le=90, description="查询最近N天的新闻"),
+    source: str = Query("all", description="来源: all | eastmoney | news | research"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """搜索指定股票的相关新闻。
+
+    返回新闻标题、摘要、发布时间、来源、链接、分类。
+
+    数据源:
+      - 东方财富个股新闻 (翻页获取，最多50条)
+      - 东方财富个股研报 (stock_research_report_em)
+
+    按天缓存。
+    """
+    symbol = _normalize_symbol(symbol)
+    cache_part = f"d{days}:{source}"
+    if not force:
+        cached = _daily_cache_get(NEWS_CACHE_KEY, symbol, cache_part)
+        if cached:
+            cached["_cached"] = True
+            return cached
+    data = _fetch_news(symbol, days, source)
+    _daily_cache_put(NEWS_CACHE_KEY, symbol, data, cache_part)
+    return data
+
+
+# ============================================================================
+# Company Announcements
+# ============================================================================
+
+ANNOUNCEMENTS_CACHE_KEY = "stocks:announcements:v1"
+
+
+def _fetch_announcements(symbol: str, days: int, ann_type: str) -> dict:
+    """获取上市公司公告。
+
+    数据源: akshare.stock_individual_notice_report()
+    """
+    import time as _time
+    import akshare as ak
+
+    t0 = _time.time()
+    code = _normalize_symbol(symbol)
+    errors: list[str] = []
+    items: list[dict] = []
+
+    try:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        begin_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        df = ak.stock_individual_notice_report(
+            security=code,
+            symbol="全部",
+            begin_date=begin_date,
+            end_date=end_date,
+        )
+        if df is not None and not df.empty:
+            title_col = _pick_col(df.columns, ["公告标题", "title"])
+            type_col = _pick_col(df.columns, ["公告类型", "type"])
+            date_col = _pick_col(df.columns, ["公告日期", "date"])
+            url_col = _pick_col(df.columns, ["网址", "url"])
+
+            # 类型关键词映射
+            TYPE_KEYWORDS = {
+                "业绩": ["业绩", "年报", "半年报", "季报", "报告", "预告", "快报", "修正"],
+                "分红": ["分红", "派息", "送转", "权益分派", "利润分配"],
+                "增持": ["增持", "回购"],
+                "减持": ["减持"],
+                "高管变动": ["高管", "董事", "监事", "独立董事", "任职", "辞职", "变更", "聘任"],
+            }
+
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get(date_col)) if date_col is not None else None
+                title = _safe_str(row.get(title_col)) if title_col is not None else ""
+                notice_type = _safe_str(row.get(type_col)) if type_col is not None else ""
+
+                # 类型过滤
+                if ann_type != "all":
+                    keywords = TYPE_KEYWORDS.get(ann_type, [])
+                    if not any(kw in title or kw in notice_type for kw in keywords):
+                        continue
+
+                items.append({
+                    "title": title,
+                    "notice_type": notice_type,
+                    "publish_date": pub_time.date().isoformat() if pub_time else None,
+                    "url": _safe_str(row.get(url_col)) if url_col is not None else "",
+                })
+
+            logger.info(f"[Announcements] OK for {code}: {len(items)} items (type={ann_type})")
+    except Exception as exc:
+        errors.append(f"公司公告: {exc}")
+        logger.warning(f"[Announcements] failed for {code}: {exc}")
+
+    return {
+        "symbol": code,
+        "days": days,
+        "type": ann_type,
+        "items": items,
+        "errors": errors,
+        "_fetched_at": datetime.now().isoformat(),
+        "_cached": False,
+    }
+
+
+@router.get("/announcements", summary="获取公司公告")
+def get_announcements(
+    symbol: str = Query(..., description="股票代码"),
+    days: int = Query(30, ge=1, le=365, description="查询最近N天"),
+    type: str = Query("all", description="公告类型: all | 业绩 | 分红 | 增持 | 减持 | 高管变动"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """获取上市公司正式公告。
+
+    返回公告标题、公告日期、公告类型、链接。
+
+    数据源: 东方财富 (stock_individual_notice_report)
+
+    按天缓存。
+    """
+    symbol = _normalize_symbol(symbol)
+    cache_part = f"d{days}:{type}"
+    if not force:
+        cached = _daily_cache_get(ANNOUNCEMENTS_CACHE_KEY, symbol, cache_part)
+        if cached:
+            cached["_cached"] = True
+            return cached
+    data = _fetch_announcements(symbol, days, type)
+    _daily_cache_put(ANNOUNCEMENTS_CACHE_KEY, symbol, data, cache_part)
+    return data
+
+
+# ============================================================================
+# Sentiment Analysis
+# ============================================================================
+
+SENTIMENT_CACHE_KEY = "stocks:sentiment:v1"
+
+# Chinese financial sentiment keywords
+_SENTIMENT_POSITIVE = {
+    '增长', '上升', '突破', '新高', '利好', '看好', '受益', '回暖',
+    '复苏', '改善', '提升', '盈利', '超额', '领先', '强劲', '大涨', '涨停',
+    '增持', '回购', '分红', '超预期', '创新高', '景气', '放量', '优化',
+    '成功', '签约', '合作', '扩张', '布局', '亮眼', '丰厚', '稳健',
+    '持续增长', '净流入', '上涨', '反弹', '拉升', '领涨', '跑赢',
+    '提振', '兑现', '创纪录', '高景气', '高增长', '强势',
+}
+
+_SENTIMENT_NEGATIVE = {
+    '下跌', '暴跌', '亏损', '下滑', '减持', '套牢', '风险',
+    '警告', '违规', '处罚', '退市', '爆雷', '缩水', '承压',
+    '低迷', '恶化', '诉讼', '违约', '暴雷', '跌停', '腰斩', '清仓',
+    '解禁', '停牌', '摘牌', '造假', '欺诈', '质疑', '压力', '下行',
+    '净流出', '流出', '撤离', '利空', '拖累', '受挫', '遇阻', '受阻',
+    '负增长', '大幅下滑', '大幅下跌', '不及预期', '低于预期',
+}
+
+_SENTIMENT_AMPLIFIER = {
+    '大幅', '暴涨', '暴跌', '严重', '超预期', '远超', '显著', '急剧',
+    '远低于', '远高于', '超预期', '不及预期', '低于预期', '远低于预期',
+}
+
+
+def _classify_sentiment(text: str) -> float:
+    """Classify sentiment of a single text. Returns score in [-1, 1]."""
+    try:
+        import jieba
+    except ImportError:
+        jieba = None
+
+    if jieba is not None:
+        words = list(jieba.cut(text))
+    else:
+        words = [text[i:i+2] for i in range(len(text)-1)]
+
+    pos = sum(1 for w in words if w in _SENTIMENT_POSITIVE)
+    neg = sum(1 for w in words if w in _SENTIMENT_NEGATIVE)
+    amp = sum(1 for w in words if w in _SENTIMENT_AMPLIFIER)
+
+    total = pos + neg
+    if total == 0:
+        return 0.0  # neutral
+
+    raw = (pos - neg) / total
+    if amp > 0:
+        raw = max(-1.0, min(1.0, raw * 1.3))
+    return raw
+
+
+def _fetch_sentiment(symbol: str, days: int) -> dict:
+    """分析市场对某股票的情绪倾向。
+
+    数据源: 东方财富个股新闻 + 券商研报
+    方法: 中文分词 + 金融情绪词典匹配
+    """
+    import time as _time
+    import json as _json
+    import akshare as ak
+    import requests as _requests
+
+    t0 = _time.time()
+    code = _normalize_symbol(symbol)
+    errors: list[str] = []
+    cutoff = datetime.now() - timedelta(days=days)
+
+    def _is_recent(d) -> bool:
+        if d is None:
+            return True
+        return d >= cutoff
+
+    all_items: list[dict] = []
+
+    # Source 1: 东方财富新闻
+    try:
+        df = ak.stock_news_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("发布时间"))
+                if not _is_recent(pub_time):
+                    continue
+                all_items.append({
+                    "title": _safe_str(row.get("新闻标题")),
+                    "content": _safe_str(row.get("新闻内容")),
+                    "date_str": pub_time.date().isoformat() if pub_time else None,
+                    "source": "新闻",
+                })
+    except Exception as exc:
+        errors.append(f"东方财富新闻: {exc}")
+
+    # 翻页补充
+    if len(all_items) < 5:
+        try:
+            for page in range(1, 4):
+                inner_param = {
+                    "uid": "", "keyword": code,
+                    "type": ["cmsArticleWebOld"],
+                    "client": "web", "clientType": "web", "clientVersion": "curr",
+                    "param": {
+                        "cmsArticleWebOld": {
+                            "searchScope": "default", "sort": "default",
+                            "pageIndex": page, "pageSize": 10,
+                            "preTag": "", "postTag": "",
+                        }
+                    },
+                }
+                r = _requests.get(
+                    "https://search-api-web.eastmoney.com/search/jsonp",
+                    params={"cb": "", "param": _json.dumps(inner_param, ensure_ascii=False)},
+                    headers={"accept": "*/*", "referer": f"https://so.eastmoney.com/news/s?keyword={code}",
+                             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+                    timeout=15,
+                )
+                if not r.text or not r.text.strip():
+                    break
+                data = r.json()
+                articles = data.get("result", {}).get("cmsArticleWebOld", [])
+                if not articles:
+                    break
+                for art in articles:
+                    pub_time = _parse_date(art.get("date"))
+                    if not _is_recent(pub_time):
+                        continue
+                    all_items.append({
+                        "title": _safe_str(art.get("title", "")).replace("<em>", "").replace("</em>", ""),
+                        "content": _safe_str(art.get("content", "")).replace("<em>", "").replace("</em>", ""),
+                        "date_str": pub_time.date().isoformat() if pub_time else None,
+                        "source": "新闻",
+                    })
+                if len(articles) < 10:
+                    break
+        except Exception as exc:
+            errors.append(f"补充新闻: {exc}")
+
+    # Source 2: 券商研报
+    try:
+        df = ak.stock_research_report_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("日期"))
+                if not _is_recent(pub_time):
+                    continue
+                all_items.append({
+                    "title": _safe_str(row.get("报告名称")),
+                    "content": f"机构: {_safe_str(row.get('机构'))}, 评级: {_safe_str(row.get('东财评级'))}",
+                    "date_str": pub_time.date().isoformat() if pub_time else None,
+                    "source": "研报",
+                })
+    except Exception as exc:
+        errors.append(f"券商研报: {exc}")
+
+    # 去重
+    seen = set()
+    unique_items = []
+    for item in all_items:
+        key = (item.get("title") or "") + (item.get("content") or "")[:50]
+        if key not in seen:
+            seen.add(key)
+            unique_items.append(item)
+
+    # 情感分析
+    positive_count = 0
+    negative_count = 0
+    neutral_count = 0
+    daily_counts: dict[str, dict] = {}
+    sentiment_items: list[dict] = []
+
+    for item in unique_items:
+        combined = (item.get("title") or "") + " " + (item.get("content") or "")
+        score = _classify_sentiment(combined)
+
+        if score > 0.01:
+            label = "positive"
+            positive_count += 1
+        elif score < -0.01:
+            label = "negative"
+            negative_count += 1
+        else:
+            label = "neutral"
+            neutral_count += 1
+
+        # Date for trend
+        date_str = item.get("date_str")  # use pre-extracted date
+        if not date_str:
+            for part in [item.get("title") or "", item.get("content") or ""]:
+                m = re.search(r'(\d{4}-\d{2}-\d{2})', part)
+                if m:
+                    date_str = m.group(1)
+                    break
+
+        if date_str:
+            daily = daily_counts.setdefault(date_str, {"total": 0, "positive": 0, "negative": 0, "neutral": 0})
+            daily["total"] += 1
+            daily[label] += 1
+
+        sentiment_items.append({
+            "title": item.get("title", ""),
+            "sentiment_score": round(score, 3),
+            "label": label,
+            "source": item.get("source", ""),
+        })
+
+    # Overall sentiment score (-100 to +100)
+    total_classified = positive_count + negative_count + neutral_count
+    if total_classified > 0:
+        overall = ((positive_count - negative_count) / total_classified) * 100
+    else:
+        overall = 0.0
+
+    daily_trend = [
+        {"date": k, "total": v["total"], "positive": v["positive"],
+         "negative": v["negative"], "neutral": v["neutral"]}
+        for k, v in sorted(daily_counts.items())
+    ]
+
+    # Top keywords
+    try:
+        import jieba
+        from collections import Counter
+        all_text = " ".join(i.get("title") or "" for i in unique_items)
+        stop_words = {
+            '的', '了', '是', '在', '和', '与', '或', '但', '而', '对', '于',
+            '中', '上', '下', '到', '将', '以', '被', '由', '从', '向', '个',
+            '年', '月', '日', '一', '这', '那', '他', '她', '它', '们',
+            '等', '并', '各', '已', '仍', '再', '又', '也', '还',
+        }
+        words = [w for w in jieba.cut(all_text) if len(w) >= 2 and w not in stop_words]
+        top_keywords = [w for w, _ in Counter(words).most_common(20)]
+    except Exception:
+        top_keywords = []
+
+    logger.info(f"[Sentiment] total {_time.time() - t0:.1f}s for {code}: "
+                f"{len(unique_items)} items, score={overall:.1f}")
+
+    return {
+        "symbol": code,
+        "days": days,
+        "sentiment_score": round(overall, 1),
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "neutral_count": neutral_count,
+        "daily_trend": daily_trend,
+        "top_keywords": top_keywords,
+        "items": sentiment_items[:50],
+        "errors": errors,
+        "_fetched_at": datetime.now().isoformat(),
+        "_cached": False,
+    }
+
+
+@router.get("/sentiment", summary="获取舆情情绪")
+def get_sentiment(
+    symbol: str = Query(..., description="股票代码"),
+    days: int = Query(7, ge=1, le=90, description="分析最近N天"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """分析市场对某股票的情绪倾向。
+
+    返回舆情分数（-100到+100）、正/负/中性新闻条数、
+    讨论热度趋势、关键词、逐条情绪标注。
+
+    数据源: 东方财富个股新闻 + 券商研报
+    方法: 中文分词 + 金融情绪词典匹配
+
+    按天缓存。
+    """
+    symbol = _normalize_symbol(symbol)
+    cache_part = f"d{days}"
+    if not force:
+        cached = _daily_cache_get(SENTIMENT_CACHE_KEY, symbol, cache_part)
+        if cached:
+            cached["_cached"] = True
+            return cached
+    data = _fetch_sentiment(symbol, days)
+    _daily_cache_put(SENTIMENT_CACHE_KEY, symbol, data, cache_part)
+    return data
+
+
+# ============================================================================
+# Research Reports (券商研报)
+# ============================================================================
+
+RESEARCH_CACHE_KEY = "stocks:research_report:v1"
+
+
+def _fetch_research_reports(symbol: str, days: int) -> dict:
+    """获取券商对公司的最新研究报告摘要。
+
+    数据源: akshare.stock_research_report_em()
+    """
+    import time as _time
+    import akshare as ak
+
+    t0 = _time.time()
+    code = _normalize_symbol(symbol)
+    errors: list[str] = []
+    cutoff = datetime.now() - timedelta(days=days)
+    items: list[dict] = []
+
+    try:
+        df = ak.stock_research_report_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("日期"))
+                if pub_time and pub_time < cutoff:
+                    continue
+
+                # Extract analyst info from title (some reports include analyst names)
+                title = _safe_str(row.get("报告名称"))
+                org = _safe_str(row.get("机构"))
+                rating = _safe_str(row.get("东财评级"))
+                url = _safe_str(row.get("报告PDF链接"))
+                industry = _safe_str(row.get("行业"))
+
+                # Build profit forecast summary
+                forecasts = []
+                for year_key, label in [
+                    ("2026-盈利预测-收益", "2026"),
+                    ("2027-盈利预测-收益", "2027"),
+                    ("2028-盈利预测-收益", "2028"),
+                ]:
+                    eps = _safe_float(row.get(year_key))
+                    pe = _safe_float(row.get(year_key.replace("-收益", "-市盈率")))
+                    if eps is not None:
+                        forecasts.append({
+                            "year": label,
+                            "eps": eps,
+                            "pe": pe,
+                        })
+
+                items.append({
+                    "title": title,
+                    "org": org,
+                    "rating": rating,
+                    "industry": industry,
+                    "publish_date": pub_time.date().isoformat() if pub_time else None,
+                    "url": url,
+                    "profit_forecasts": forecasts,
+                    "monthly_report_count": _safe_int_like(row.get("近一月个股研报数")),
+                })
+
+            logger.info(f"[Research] OK for {code}: {len(items)} items (days={days})")
+    except Exception as exc:
+        errors.append(f"券商研报: {exc}")
+        logger.warning(f"[Research] failed for {code}: {exc}")
+
+    return {
+        "symbol": code,
+        "days": days,
+        "items": items,
+        "errors": errors,
+        "_fetched_at": datetime.now().isoformat(),
+        "_cached": False,
+    }
+
+
+@router.get("/research-report", summary="获取券商研报")
+def get_research_report(
+    symbol: str = Query(..., description="股票代码"),
+    days: int = Query(90, ge=1, le=365, description="查询最近N天"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """获取券商对公司的最新研究报告摘要。
+
+    返回券商名称、评级、目标价、盈利预测、研报标题。
+
+    数据源: 东方财富 (stock_research_report_em)
+
+    按天缓存。
+    """
+    symbol = _normalize_symbol(symbol)
+    cache_part = f"d{days}"
+    if not force:
+        cached = _daily_cache_get(RESEARCH_CACHE_KEY, symbol, cache_part)
+        if cached:
+            cached["_cached"] = True
+            return cached
+    data = _fetch_research_reports(symbol, days)
+    _daily_cache_put(RESEARCH_CACHE_KEY, symbol, data, cache_part)
+    return data

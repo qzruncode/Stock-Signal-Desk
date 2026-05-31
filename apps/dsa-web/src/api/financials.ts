@@ -216,6 +216,173 @@ export interface FinancialStatementsResponse {
   _errors?: string[];
 }
 
+// ---------------------------------------------------------------------------
+// Stock News
+// ---------------------------------------------------------------------------
+
+export interface NewsItem {
+  title: string;
+  summary: string;
+  publish_time: string | null;
+  source: string;
+  url: string;
+  category?: string;
+}
+
+export interface NewsResponse {
+  symbol: string;
+  days: number;
+  source: string;
+  items: NewsItem[];
+  source_chain?: string[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export const newsApi = {
+  async searchNews(
+    symbol: string,
+    days: number = 7,
+    source: string = 'all',
+    force: boolean = false,
+  ): Promise<NewsResponse> {
+    const response = await apiClient.get<NewsResponse>(
+      '/api/v1/stocks/news',
+      { params: { symbol, days, source, force }, timeout: 30000 },
+    );
+    return response.data;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Company Announcements
+// ---------------------------------------------------------------------------
+
+export interface AnnouncementItem {
+  title: string;
+  notice_type: string;
+  publish_date: string | null;
+  url: string;
+}
+
+export interface AnnouncementsResponse {
+  symbol: string;
+  days: number;
+  type: string;
+  items: AnnouncementItem[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export const announcementsApi = {
+  async getAnnouncements(
+    symbol: string,
+    days: number = 30,
+    type: string = 'all',
+    force: boolean = false,
+  ): Promise<AnnouncementsResponse> {
+    const response = await apiClient.get<AnnouncementsResponse>(
+      '/api/v1/stocks/announcements',
+      { params: { symbol, days, type, force }, timeout: 30000 },
+    );
+    return response.data;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Sentiment Analysis
+// ---------------------------------------------------------------------------
+
+export interface SentimentItem {
+  title: string;
+  sentiment_score: number;
+  label: 'positive' | 'negative' | 'neutral';
+  source: string;
+}
+
+export interface DailyTrendItem {
+  date: string;
+  total: number;
+  positive: number;
+  negative: number;
+  neutral: number;
+}
+
+export interface SentimentResponse {
+  symbol: string;
+  days: number;
+  sentiment_score: number;
+  positive_count: number;
+  negative_count: number;
+  neutral_count: number;
+  daily_trend: DailyTrendItem[];
+  top_keywords: string[];
+  items: SentimentItem[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export const sentimentApi = {
+  async getSentiment(
+    symbol: string,
+    days: number = 7,
+    force: boolean = false,
+  ): Promise<SentimentResponse> {
+    const response = await apiClient.get<SentimentResponse>(
+      '/api/v1/stocks/sentiment',
+      { params: { symbol, days, force }, timeout: 45000 },
+    );
+    return response.data;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Research Reports
+// ---------------------------------------------------------------------------
+
+export interface ProfitForecast {
+  year: string;
+  eps: number;
+  pe: number | null;
+}
+
+export interface ResearchReportItem {
+  title: string;
+  org: string;
+  rating: string;
+  industry: string;
+  publish_date: string | null;
+  url: string;
+  profit_forecasts: ProfitForecast[];
+  monthly_report_count: number | null;
+}
+
+export interface ResearchReportResponse {
+  symbol: string;
+  days: number;
+  items: ResearchReportItem[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export const researchReportApi = {
+  async getResearchReports(
+    symbol: string,
+    days: number = 90,
+    force: boolean = false,
+  ): Promise<ResearchReportResponse> {
+    const response = await apiClient.get<ResearchReportResponse>(
+      '/api/v1/stocks/research-report',
+      { params: { symbol, days, force }, timeout: 45000 },
+    );
+    return response.data;
+  },
+};
+
 export const financialStatementsApi = {
   async getStatements(
     symbol: string,
