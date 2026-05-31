@@ -51,6 +51,97 @@ export const financialsApi = {
 };
 
 // ---------------------------------------------------------------------------
+// Valuation ratios + shareholder structure
+// ---------------------------------------------------------------------------
+
+export interface ValuationRatiosResponse {
+  symbol: string;
+  trade_date: string | null;
+  pe_static: number | null;
+  pe_dynamic: number | null;
+  pe_ttm: number | null;
+  pb: number | null;
+  ps: number | null;
+  pcf: number | null;
+  peg: number | null;
+  dividend_yield: number | null;
+  dividend_date?: string | null;
+  pe_percentiles: Record<string, number>;
+  industry?: string | null;
+  industry_average: {
+    industry: string | null;
+    pe: number | null;
+    pb: number | null;
+    sample_size: number;
+  };
+  source_chain?: string[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export interface TopHolderItem {
+  name: string;
+  holding_pct: number | null;
+  holding_amount: number | null;
+  holder_type: string | null;
+  change: string | null;
+}
+
+export interface MajorHolderChangeItem {
+  date: string | null;
+  holder: string;
+  direction: string | null;
+  shares: number | null;
+  pct: number | null;
+  price: number | null;
+}
+
+export interface ShareholderStructureResponse {
+  symbol: string;
+  holder_count: number | null;
+  holder_count_previous: number | null;
+  holder_count_change: number | null;
+  holder_count_change_pct: number | null;
+  holder_report_date: string | null;
+  top10_holders: TopHolderItem[];
+  institution_holding_pct: number | null;
+  major_holder_changes: MajorHolderChangeItem[];
+  actual_controller: string | null;
+  source_chain?: string[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export const valuationApi = {
+  async getValuationRatios(
+    symbol: string,
+    withHistory: boolean = true,
+    force: boolean = false,
+  ): Promise<ValuationRatiosResponse> {
+    const response = await apiClient.get<ValuationRatiosResponse>(
+      '/api/v1/stocks/valuation-ratios',
+      { params: { symbol, with_history: withHistory, force }, timeout: 45000 },
+    );
+    return response.data;
+  },
+};
+
+export const shareholderApi = {
+  async getShareholderStructure(
+    symbol: string,
+    force: boolean = false,
+  ): Promise<ShareholderStructureResponse> {
+    const response = await apiClient.get<ShareholderStructureResponse>(
+      '/api/v1/stocks/shareholder-structure',
+      { params: { symbol, force }, timeout: 45000 },
+    );
+    return response.data;
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Financial Statements (三大财务报表)
 // ---------------------------------------------------------------------------
 
@@ -68,6 +159,8 @@ export interface BalanceSheetItem {
   short_loan: number | null;
   long_loan: number | null;
   accounts_payable: number | null;
+  noncurrent_liab_1year: number | null;
+  lease_liab: number | null;
   total_current_assets: number | null;
   total_current_liabilities: number | null;
   debt_ratio: number | null;

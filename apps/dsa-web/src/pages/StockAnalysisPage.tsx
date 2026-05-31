@@ -10,14 +10,25 @@ import {
   DollarSign,
   FileText,
   Info,
+  Percent,
   TrendingUp,
+  Users,
 } from 'lucide-react';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { Select } from '../components/common';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
-import { financialsApi, type FinancialsResponse, financialStatementsApi, type FinancialStatementsResponse } from '../api/financials';
+import {
+  financialsApi,
+  type FinancialsResponse,
+  financialStatementsApi,
+  type FinancialStatementsResponse,
+  shareholderApi,
+  type ShareholderStructureResponse,
+  valuationApi,
+  type ValuationRatiosResponse,
+} from '../api/financials';
 import KLineChartPanel from '../components/KLineChartPanel';
 import FinancialPanel from '../components/FinancialPanel';
 import FinancialStatementsPanel from '../components/FinancialStatementsPanel';
@@ -54,6 +65,18 @@ function formatShares(value: number | null): string {
   if (value >= 1e8) return `${(value / 1e8).toFixed(2)}亿股`;
   if (value >= 1e4) return `${(value / 1e4).toFixed(2)}万股`;
   return `${value.toFixed(0)}股`;
+}
+
+function formatRatio(value: number | null): string {
+  return value == null ? '-' : value.toFixed(2);
+}
+
+function formatPctValue(value: number | null | undefined): string {
+  return value == null ? '-' : `${value.toFixed(2)}%`;
+}
+
+function formatSourceChain(sources?: string[]): string {
+  return sources?.filter(Boolean).join(' / ') || '-';
 }
 
 function DataItem({
@@ -267,10 +290,143 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 }
 
 // ---------------------------------------------------------------------------
+// Valuation + shareholder panels
+// ---------------------------------------------------------------------------
+
+function ValuationRatiosPanel({ valuation }: { valuation: ValuationRatiosResponse }) {
+  const industry = valuation.industry_average;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+        <Percent className="h-4 w-4 text-cyan-600" />估值指标
+        {valuation.trade_date && (
+          <span className="ml-auto text-xs font-normal text-slate-400">{valuation.trade_date}</span>
+        )}
+      </h3>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+        <DataItem label="PE(TTM)" value={formatRatio(valuation.pe_ttm)} highlight />
+        <DataItem label="PE(动态)" value={formatRatio(valuation.pe_dynamic)} />
+        <DataItem label="PE(静态)" value={formatRatio(valuation.pe_static)} />
+        <DataItem label="PB" value={formatRatio(valuation.pb)} />
+        <DataItem label="PS" value={formatRatio(valuation.ps)} />
+        <DataItem label="PCF" value={formatRatio(valuation.pcf)} />
+        <DataItem label="PEG" value={formatRatio(valuation.peg)} />
+        <DataItem
+          label={valuation.dividend_date ? `股息率(${valuation.dividend_date})` : '股息率'}
+          value={formatPctValue(valuation.dividend_yield)}
+        />
+      </div>
+
+      {(valuation.pe_percentiles?.['5y'] != null || industry?.industry) && (
+        <div className="mt-4 grid grid-cols-1 gap-3 border-t border-slate-100 pt-4 md:grid-cols-2">
+          <div>
+            <p className="mb-2 text-xs font-medium text-slate-400">历史 PE 分位</p>
+            <div className="grid grid-cols-3 gap-3">
+              <DataItem label="近5年" value={formatPctValue(valuation.pe_percentiles?.['5y'])} />
+              <DataItem label="近3年" value={formatPctValue(valuation.pe_percentiles?.['3y'])} />
+              <DataItem label="近1年" value={formatPctValue(valuation.pe_percentiles?.['1y'])} />
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-medium text-slate-400">
+              行业对比{industry?.industry ? ` · ${industry.industry}` : ''}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <DataItem label="行业PE" value={formatRatio(industry?.pe ?? null)} />
+              <DataItem label="行业PB" value={formatRatio(industry?.pb ?? null)} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderStructureResponse }) {
+  const countChange = shareholder.holder_count_change_pct ?? 0;
+  const changeUp = countChange > 0;
+  const changeDown = countChange < 0;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+        <Users className="h-4 w-4 text-cyan-600" />股东结构
+        {shareholder.holder_report_date && (
+          <span className="ml-auto text-xs font-normal text-slate-400">{shareholder.holder_report_date}</span>
+        )}
+      </h3>
+
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+        <DataItem label="股东人数" value={shareholder.holder_count != null ? shareholder.holder_count.toLocaleString('zh-CN') : '-'} highlight />
+        <DataItem
+          label="环比变化"
+          value={formatPctValue(shareholder.holder_count_change_pct)}
+          highlightUp={changeUp}
+          highlightDown={changeDown}
+        />
+        <DataItem label="机构持股" value={formatPctValue(shareholder.institution_holding_pct)} />
+        <DataItem label="实际控制人" value={shareholder.actual_controller || '-'} />
+      </div>
+
+      {shareholder.top10_holders.length > 0 && (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[52rem] table-fixed">
+              <colgroup>
+                <col className="w-[48%]" />
+                <col className="w-[14%]" />
+                <col className="w-[20%]" />
+                <col className="w-[18%]" />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-slate-100 text-xs text-slate-400">
+                  <th className="pb-2 text-left font-medium">股东名称</th>
+                  <th className="pb-2 text-right font-medium">持股比例</th>
+                  <th className="border-r border-slate-100 pb-2 pr-6 text-right font-medium">持股数量</th>
+                  <th className="pb-2 pl-6 text-left font-medium">性质</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shareholder.top10_holders.slice(0, 10).map((holder, index) => (
+                  <tr key={`${holder.name}-${index}`} className="border-b border-slate-50 text-xs">
+                    <td className="py-2 pr-4 text-slate-700">{holder.name || '-'}</td>
+                    <td className="py-2 text-right tabular-nums text-slate-700">{formatPctValue(holder.holding_pct)}</td>
+                    <td className="border-r border-slate-100 py-2 pr-6 text-right tabular-nums text-slate-600">{formatShares(holder.holding_amount)}</td>
+                    <td className="py-2 pl-6 text-slate-500">{holder.holder_type || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {shareholder.major_holder_changes.length > 0 && (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <p className="mb-2 text-xs font-medium text-slate-400">近期大股东增减持</p>
+          <div className="grid gap-2">
+            {shareholder.major_holder_changes.slice(0, 8).map((item, index) => (
+              <div key={`${item.date}-${item.holder}-${index}`} className="grid grid-cols-[5.5rem_1fr_auto] items-center gap-3 text-xs">
+                <span className="text-slate-400">{item.date || '-'}</span>
+                <span className="truncate text-slate-700">{item.holder || '-'}</span>
+                <span className="tabular-nums text-slate-500">
+                  {item.direction || '-'} {formatShares(item.shares)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'overview' | 'kline' | 'financials';
+type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'shareholder';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -298,6 +454,12 @@ const StockAnalysisPage: React.FC = () => {
   const [financialStatements, setFinancialStatements] = useState<FinancialStatementsResponse | null>(null);
   const [financialStatementsLoading, setFinancialStatementsLoading] = useState(false);
 
+  // --- Valuation/shareholder state ---
+  const [valuation, setValuation] = useState<ValuationRatiosResponse | null>(null);
+  const [valuationLoading, setValuationLoading] = useState(false);
+  const [shareholder, setShareholder] = useState<ShareholderStructureResponse | null>(null);
+  const [shareholderLoading, setShareholderLoading] = useState(false);
+
   // --- Tab mode ---
   const [mode, setMode] = useState<AnalysisMode>('overview');
 
@@ -312,6 +474,8 @@ const StockAnalysisPage: React.FC = () => {
       void fetchStockInfo(symbol);
       void fetchFinancials(symbol);
       void fetchFinancialStatements(symbol);
+      void fetchValuation(symbol);
+      void fetchShareholder(symbol);
       // K-line is fetched lazily when user switches to kline tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -399,6 +563,32 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  // --- Valuation fetching ---
+  const fetchValuation = useCallback(async (symbol: string) => {
+    setValuationLoading(true);
+    try {
+      const result = await valuationApi.getValuationRatios(symbol);
+      setValuation(result);
+    } catch {
+      setValuation(null);
+    } finally {
+      setValuationLoading(false);
+    }
+  }, []);
+
+  // --- Shareholder fetching ---
+  const fetchShareholder = useCallback(async (symbol: string) => {
+    setShareholderLoading(true);
+    try {
+      const result = await shareholderApi.getShareholderStructure(symbol);
+      setShareholder(result);
+    } catch {
+      setShareholder(null);
+    } finally {
+      setShareholderLoading(false);
+    }
+  }, []);
+
   // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
@@ -407,8 +597,10 @@ const StockAnalysisPage: React.FC = () => {
     void fetchStockInfo(code);
     void fetchFinancials(code);
     void fetchFinancialStatements(code);
+    void fetchValuation(code);
+    void fetchShareholder(code);
     // K-line will be fetched by the useEffect when mode is 'kline'
-  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials, fetchFinancialStatements]);
+  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials, fetchFinancialStatements, fetchValuation, fetchShareholder]);
 
   return (
     <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4 overflow-hidden">
@@ -437,6 +629,8 @@ const StockAnalysisPage: React.FC = () => {
                 { value: 'overview', label: '行情概览' },
                 { value: 'kline', label: 'K线分析' },
                 { value: 'financials', label: '财报分析' },
+                { value: 'valuation', label: '估值分析' },
+                { value: 'shareholder', label: '股东结构' },
               ]}
             />
           </div>
@@ -518,7 +712,7 @@ const StockAnalysisPage: React.FC = () => {
               loading={klineLoading}
               error={klineError}
             />
-          ) : (
+          ) : mode === 'financials' ? (
             <div className="space-y-6">
               {financialStatementsLoading ? (
                 <div className="flex h-40 items-center justify-center">
@@ -551,6 +745,62 @@ const StockAnalysisPage: React.FC = () => {
                       <span>数据源: {financialStatements.source}</span>
                     </>
                   )}
+                </div>
+              )}
+            </div>
+          ) : mode === 'valuation' ? (
+            <div className="space-y-6">
+              {valuationLoading ? (
+                <div className="flex h-40 items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                    <span className="text-sm text-slate-400">正在获取估值指标...</span>
+                  </div>
+                </div>
+              ) : valuation ? (
+                <>
+                  <ValuationRatiosPanel valuation={valuation} />
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                    <Clock className="h-3 w-3" />
+                    <span>
+                      数据获取时间: {valuation._fetched_at ? new Date(valuation._fetched_at).toLocaleString('zh-CN') : '-'}
+                      {valuation._cached ? ' · 缓存' : ' · 实时'}
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span>数据源: {formatSourceChain(valuation.source_chain)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">暂无估值数据</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {shareholderLoading ? (
+                <div className="flex h-40 items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                    <span className="text-sm text-slate-400">正在获取股东结构...</span>
+                  </div>
+                </div>
+              ) : shareholder ? (
+                <>
+                  <ShareholderStructurePanel shareholder={shareholder} />
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                    <Clock className="h-3 w-3" />
+                    <span>
+                      数据获取时间: {shareholder._fetched_at ? new Date(shareholder._fetched_at).toLocaleString('zh-CN') : '-'}
+                      {shareholder._cached ? ' · 缓存' : ' · 实时'}
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span>数据源: {formatSourceChain(shareholder.source_chain)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">暂无股东结构数据</p>
                 </div>
               )}
             </div>
