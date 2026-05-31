@@ -978,6 +978,7 @@ class DatabaseManager:
                     if "period" in kline_cols:
                         logger.info("迁移: 重建 kline_snapshot 表（移除 period/adjust 列）")
                         conn.exec_driver_sql("DROP TABLE kline_snapshot")
+                        KlineSnapshot.__table__.create(bind=conn, checkfirst=True)
         except Exception:
             logger.exception("Failed to ensure compatible SQLite schema")
 

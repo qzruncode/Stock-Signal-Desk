@@ -2,8 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Plus, Search, Settings, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
-import { stocksApi, type StockMetaItem } from '../api/stocks';
-import { Button, EmptyState, InlineAlert, Drawer } from '../components/common';
+import { Button, EmptyState, InlineAlert } from '../components/common';
+import WatchlistManageDrawer from '../components/watchlist/WatchlistManageDrawer';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_COLORS, MARKET_LABELS } from '../utils/market';
 import {
@@ -11,6 +11,8 @@ import {
   saveWatchlistGroups,
   type WatchlistGroup,
 } from '../utils/watchlistGroups';
+import { useTransientMessage } from '../hooks/useTransientMessage';
+import { useStockSuggest } from '../hooks/useStockSuggest';
 
 const DEFAULT_GROUP_ID = 'default';
 const DEFAULT_GROUP_NAME = '我的自选股';
@@ -18,37 +20,34 @@ const DEFAULT_GROUP_NAME = '我的自选股';
 const WatchlistManagePage: React.FC = () => {
   const navigate = useNavigate();
 
-  // Watchlist data (API) — this IS the default group's source of truth
   const [watchlist, setWatchlist] = useState<WatchlistResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const { message: successMsg, showMessage: holdMessage } = useTransientMessage();
 
-  // Groups (localStorage) — custom groups only; default group is implicit from API
   const [groups, setGroups] = useState<WatchlistGroup[]>([]);
   const [activeGroupId, setActiveGroupId] = useState<string>(DEFAULT_GROUP_ID);
 
-  // Action loading states
   const [isAdding, setIsAdding] = useState(false);
   const [isBatchAdding, setIsBatchAdding] = useState(false);
   const [isBatchRemoving, setIsBatchRemoving] = useState(false);
   const [removingCodes, setRemovingCodes] = useState<Set<string>>(new Set());
 
-  // Search / suggest — input uses ref to avoid re-render on every keystroke
-  const addInputRef = useRef<HTMLInputElement | null>(null);
-  const [suggestLoading, setSuggestLoading] = useState(false);
-  const [suggestions, setSuggestions] = useState<StockMetaItem[]>([]);
-  const [suggestOpen, setSuggestOpen] = useState(false);
-  const suggestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const suggestRef = useRef<HTMLDivElement | null>(null);
+  const {
+    inputRef: suggestInputRef,
+    containerRef: suggestContainerRef,
+    loading: suggestLoading,
+    suggestions,
+    open: suggestOpen,
+    clear: clearSuggest,
+    handleInputChange,
+  } = useStockSuggest();
 
-  // Manage drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [batchInput, setBatchInput] = useState('');
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
 
-  // --- Data loading ---
   const loadWatchlist = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -67,13 +66,8 @@ const WatchlistManagePage: React.FC = () => {
     const loaded = loadWatchlistGroups();
     setGroups(loaded);
     void loadWatchlist();
-
-    return () => {
-      if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
-    };
   }, [loadWatchlist]);
 
-  // persist groups whenever they change (skip initial load)
   const groupsInitialized = useRef(false);
   useEffect(() => {
     if (!groupsInitialized.current) {
@@ -125,47 +119,7 @@ const WatchlistManagePage: React.FC = () => {
     return codes;
   }, [groups, watchlist]);
 
-  // --- Search / suggest (API on demand) ---
-  const handleAddInputChange = useCallback(() => {
-    const value = addInputRef.current?.value || '';
-    if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
-    if (!value.trim()) {
-      setSuggestions([]);
-      setSuggestOpen(false);
-      return;
-    }
-    suggestTimerRef.current = setTimeout(async () => {
-      setSuggestLoading(true);
-      try {
-        const result = await stocksApi.list({ page: 1, page_size: 10, search: value.trim() });
-        setSuggestions(result.items);
-        setSuggestOpen(result.items.length > 0);
-      } catch {
-        setSuggestions([]);
-        setSuggestOpen(false);
-      } finally {
-        setSuggestLoading(false);
-      }
-    }, 250);
-  }, []);
-
-  useEffect(() => {
-    if (!suggestOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (suggestRef.current && !suggestRef.current.contains(e.target as Node)) {
-        setSuggestOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [suggestOpen]);
-
   // --- Actions ---
-  const holdMessage = (msg: string) => {
-    setSuccessMsg(msg);
-    setTimeout(() => setSuccessMsg(null), 2000);
-  };
-
   const handleAddStock = useCallback(async (code: string) => {
     setError(null);
     setIsAdding(true);
@@ -183,16 +137,14 @@ const WatchlistManagePage: React.FC = () => {
           ),
         );
       }
-      if (addInputRef.current) addInputRef.current.value = '';
-      setSuggestOpen(false);
-      setSuggestions([]);
+      clearSuggest();
       holdMessage(`已添加 ${code}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '添加失败');
     } finally {
       setIsAdding(false);
     }
-  }, [activeGroup]);
+  }, [activeGroup, clearSuggest, holdMessage]);
 
   const handleRemoveFromGroup = useCallback((code: string) => {
     if (!activeGroup) return;
@@ -233,7 +185,7 @@ const WatchlistManagePage: React.FC = () => {
       );
       holdMessage(`已从分组移除 ${code}`);
     }
-  }, [activeGroup]);
+  }, [activeGroup, holdMessage]);
 
   // --- Group management ---
   const handleCreateGroup = useCallback(() => {
@@ -248,14 +200,14 @@ const WatchlistManagePage: React.FC = () => {
     setActiveGroupId(newGroup.id);
     setNewGroupName('');
     holdMessage(`已创建分组「${name}」`);
-  }, [newGroupName]);
+  }, [holdMessage, newGroupName]);
 
   const handleDeleteGroup = useCallback(() => {
     if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID) return;
     setGroups((prev) => prev.filter((g) => g.id !== activeGroup.id));
     setActiveGroupId(DEFAULT_GROUP_ID);
     holdMessage(`已删除分组「${activeGroup.name}」`);
-  }, [activeGroup]);
+  }, [activeGroup, holdMessage]);
 
   const handleRenameGroup = useCallback((name: string) => {
     if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID || !name.trim()) return;
@@ -263,7 +215,7 @@ const WatchlistManagePage: React.FC = () => {
       prev.map((g) => (g.id === activeGroup.id ? { ...g, name: name.trim() } : g)),
     );
     holdMessage(`已重命名为「${name.trim()}」`);
-  }, [activeGroup]);
+  }, [activeGroup, holdMessage]);
 
   // --- Sync watchlist: on mount, sync default group codes into custom groups ---
   const syncWatchlistRef = useRef(false);
@@ -308,7 +260,7 @@ const WatchlistManagePage: React.FC = () => {
         setError(err instanceof Error ? err.message : '批量添加失败');
       })
       .finally(() => setIsBatchAdding(false));
-  }, [batchInput, activeGroup]);
+  }, [activeGroup, batchInput, holdMessage]);
 
   const handleBatchRemove = useCallback(() => {
     if (selectedCodes.size === 0 || !activeGroup) return;
@@ -343,7 +295,7 @@ const WatchlistManagePage: React.FC = () => {
       setSelectedCodes(new Set());
       holdMessage(`已从分组移出 ${codes.length} 只股票`);
     }
-  }, [selectedCodes, activeGroup]);
+  }, [activeGroup, holdMessage, selectedCodes]);
 
   const toggleSelect = useCallback((code: string) => {
     setSelectedCodes((prev) => {
@@ -462,15 +414,15 @@ const WatchlistManagePage: React.FC = () => {
 
       {/* Search + add bar — fixed at top */}
       <div className="shrink-0 flex gap-2">
-        <div className="relative flex-1" ref={suggestRef}>
+        <div className="relative flex-1" ref={suggestContainerRef}>
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
-            ref={addInputRef}
+            ref={suggestInputRef}
             type="text"
-            onInput={handleAddInputChange}
+            onInput={handleInputChange}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !isAdding) {
-                const val = addInputRef.current?.value?.trim();
+                const val = suggestInputRef.current?.value?.trim();
                 if (val) handleAddStock(val.split(/[,，\s]+/)[0]);
               }
             }}
@@ -524,7 +476,7 @@ const WatchlistManagePage: React.FC = () => {
           size="sm"
           disabled={isAdding}
           onClick={() => {
-            const val = addInputRef.current?.value?.trim();
+            const val = suggestInputRef.current?.value?.trim();
             if (val) handleAddStock(val.split(/[,，\s]+/)[0]);
           }}
           className="h-11 shrink-0"
@@ -612,140 +564,30 @@ const WatchlistManagePage: React.FC = () => {
         </div>
       </div>
 
-      {/* Manage Drawer */}
-      <Drawer
+      <WatchlistManageDrawer
         isOpen={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        title="管理分组"
-        width="max-w-lg"
-      >
-        <div className="space-y-6">
-          {/* Default group info (read-only) */}
-          {activeGroupId === DEFAULT_GROUP_ID && (
-            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-              <h3 className="text-sm font-semibold text-slate-800">{DEFAULT_GROUP_NAME}</h3>
-              <p className="text-xs text-slate-500">
-                这是默认分组，与全市场股票页的"已添加"状态同步。在此分组中增删股票，会实时同步到 stocks 页面。不可改名或删除。
-              </p>
-            </div>
-          )}
-
-          {/* Rename / Delete group (custom groups only) */}
-          {activeGroup && activeGroup.id !== DEFAULT_GROUP_ID && (
-            <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-              <h3 className="text-sm font-semibold text-slate-800">当前分组：{activeGroup.name}</h3>
-              <div className="flex gap-2">
-                <input
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  placeholder="新名称"
-                  className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={!renameValue.trim() || renameValue === activeGroup.name}
-                  onClick={() => handleRenameGroup(renameValue)}
-                >
-                  重命名
-                </Button>
-              </div>
-              <Button
-                variant="danger-subtle"
-                size="sm"
-                onClick={handleDeleteGroup}
-              >
-                删除此分组
-              </Button>
-            </div>
-          )}
-
-          {/* Create new group */}
-          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-            <h3 className="text-sm font-semibold text-slate-800">新建分组</h3>
-            <div className="flex gap-2">
-              <input
-                value={newGroupName}
-                onChange={(e) => setNewGroupName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleCreateGroup(); }}
-                placeholder="分组名称"
-                className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-              />
-              <Button
-                variant="home-action-ai"
-                size="sm"
-                disabled={!newGroupName.trim()}
-                onClick={handleCreateGroup}
-              >
-                创建
-              </Button>
-            </div>
-          </div>
-
-          {/* Batch add */}
-          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-            <h3 className="text-sm font-semibold text-slate-800">批量添加股票</h3>
-            <textarea
-              value={batchInput}
-              onChange={(e) => setBatchInput(e.target.value)}
-              placeholder="粘贴股票代码，换行/逗号/空格分隔&#10;例如：&#10;600519&#10;300750&#10;000858"
-              rows={4}
-              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
-            />
-            <Button
-              variant="home-action-ai"
-              size="sm"
-              disabled={!batchInput.trim() || isBatchAdding}
-              onClick={handleBatchAdd}
-            >
-              {isBatchAdding ? (
-                <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              ) : (
-                <Plus className="h-4 w-4" />
-              )}
-              {isBatchAdding ? '添加中...' : '确认添加'}
-            </Button>
-          </div>
-
-          {/* Batch remove */}
-          {displayStocks.length > 0 && (
-            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
-              <h3 className="text-sm font-semibold text-slate-800">
-                从当前分组移出股票
-              </h3>
-              <div className="max-h-[180px] space-y-1 overflow-y-auto">
-                {displayStocks.map((stock) => (
-                  <button
-                    key={stock.code}
-                    type="button"
-                    onClick={() => toggleSelect(stock.code)}
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 font-mono text-xs transition',
-                      selectedCodes.has(stock.code)
-                        ? 'border-red-300 bg-red-50 text-red-700'
-                        : 'border-slate-200 bg-white text-slate-700 hover:border-cyan-200',
-                    )}
-                  >
-                    {stock.code}
-                    <span className="text-slate-400">{stock.marketLabel}</span>
-                  </button>
-                ))}
-              </div>
-              <Button
-                variant="danger-subtle"
-                size="sm"
-                disabled={selectedCodes.size === 0 || isBatchRemoving}
-                onClick={handleBatchRemove}
-              >
-                {isBatchRemoving ? (
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-red-200 border-t-red-500" />
-                ) : null}
-                {isBatchRemoving ? '移出中...' : `移出选中 (${selectedCodes.size})`}
-              </Button>
-            </div>
-          )}
-        </div>
-      </Drawer>
+        defaultGroupId={DEFAULT_GROUP_ID}
+        defaultGroupName={DEFAULT_GROUP_NAME}
+        activeGroupId={activeGroupId}
+        activeGroup={activeGroup}
+        renameValue={renameValue}
+        onRenameValueChange={setRenameValue}
+        onRenameGroup={handleRenameGroup}
+        onDeleteGroup={handleDeleteGroup}
+        newGroupName={newGroupName}
+        onNewGroupNameChange={setNewGroupName}
+        onCreateGroup={handleCreateGroup}
+        batchInput={batchInput}
+        onBatchInputChange={setBatchInput}
+        onBatchAdd={handleBatchAdd}
+        isBatchAdding={isBatchAdding}
+        displayStocks={displayStocks}
+        selectedCodes={selectedCodes}
+        onToggleSelect={toggleSelect}
+        onBatchRemove={handleBatchRemove}
+        isBatchRemoving={isBatchRemoving}
+      />
     </div>
   );
 };

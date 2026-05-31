@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -33,41 +33,51 @@ _sync_state: dict = {
 }
 
 
-def _classify_a_stock_market(code: str) -> str:
-    code = code.strip()
-    if code.startswith("688"):
-        return "kcb"
-    if code.startswith(("300", "301")):
-        return "cyb"
-    if code.startswith(("8", "9")) and len(code) == 6:
-        return "bj"
-    if code.startswith(("600", "601", "603", "605")):
-        return "sh"
-    if code.startswith(("000", "001", "002", "003")):
-        return "sz"
-    return "other"
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _set_sync_state(**updates) -> None:
+    with _sync_lock:
+        _sync_state.update(updates)
+
+
+def _get_sync_state_copy() -> dict:
+    with _sync_lock:
+        return dict(_sync_state)
+
+
+def _mark_sync_started() -> bool:
+    with _sync_lock:
+        if _sync_state["status"] == "running":
+            return False
+        _sync_state.update({
+            "status": "running",
+            "progress": 0,
+            "total": 0,
+            "started_at": _utc_now_iso(),
+            "finished_at": None,
+            "message": "",
+            "error": None,
+        })
+        return True
 
 
 def _run_sync():
     """Execute full A-share stock sync in a background thread."""
-    global _sync_state
     try:
-        _sync_state["status"] = "running"
-        _sync_state["started_at"] = datetime.now(timezone.utc).isoformat()
-        _sync_state["progress"] = 0
-        _sync_state["total"] = 0
-        _sync_state["error"] = None
-
         fetcher = AkshareFetcher()
         stocks = fetcher.get_all_a_stocks()
 
         if not stocks:
-            _sync_state["status"] = "failed"
-            _sync_state["message"] = "未能从数据源获取股票列表"
-            _sync_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+            _set_sync_state(
+                status="failed",
+                message="未能从数据源获取股票列表",
+                finished_at=_utc_now_iso(),
+            )
             return
 
-        _sync_state["total"] = len(stocks)
+        _set_sync_state(total=len(stocks))
         db = DatabaseManager.get_instance()
         now = datetime.now()
 
@@ -112,7 +122,7 @@ def _run_sync():
 
                 # Update progress every 100 records
                 if (i + 1) % 100 == 0:
-                    _sync_state["progress"] = i + 1
+                    _set_sync_state(progress=i + 1)
 
             # Mark delisted stocks (not in current list)
             current_codes = set(all_codes)
@@ -124,10 +134,12 @@ def _run_sync():
 
             session.commit()
 
-        _sync_state["status"] = "success"
-        _sync_state["progress"] = len(stocks)
-        _sync_state["finished_at"] = datetime.now(timezone.utc).isoformat()
-        _sync_state["message"] = f"同步完成: 新增 {added}, 更新 {updated}, 退市标记 {delisted}"
+        _set_sync_state(
+            status="success",
+            progress=len(stocks),
+            finished_at=_utc_now_iso(),
+            message=f"同步完成: 新增 {added}, 更新 {updated}, 退市标记 {delisted}",
+        )
 
         logger.info(
             "[StocksSync] 同步完成: 总数=%d 新增=%d 更新=%d 退市=%d",
@@ -135,9 +147,7 @@ def _run_sync():
         )
 
     except Exception as e:
-        _sync_state["status"] = "failed"
-        _sync_state["error"] = str(e)
-        _sync_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+        _set_sync_state(status="failed", error=str(e), finished_at=_utc_now_iso())
         logger.error("[StocksSync] 同步失败: %s", e, exc_info=True)
 
 
@@ -150,23 +160,14 @@ def sync_stocks(
     service: SystemConfigService = Depends(get_system_config_service),
 ):
     """Trigger a full sync of all A-share stock metadata from East Money via akshare."""
-    global _sync_state
-
-    if _sync_state["status"] == "running":
+    if not _mark_sync_started():
         raise HTTPException(
             status_code=409,
             detail={"error": "sync_in_progress", "message": "同步正在进行中，请稍后再试"},
         )
 
-    # Fire-and-forget in background thread
-    with _sync_lock:
-        if _sync_state["status"] == "running":
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "sync_in_progress", "message": "同步正在进行中，请稍后再试"},
-            )
-        thread = threading.Thread(target=_run_sync, daemon=True)
-        thread.start()
+    thread = threading.Thread(target=_run_sync, daemon=True)
+    thread.start()
 
     return {
         "success": True,
@@ -185,21 +186,22 @@ def get_sync_status():
     When the in-memory state is idle/empty (e.g. after a restart), fall back
     to the database count so the frontend doesn't show "not synced yet".
     """
-    if _sync_state["total"] == 0:
+    state = _get_sync_state_copy()
+    if state["total"] == 0:
         try:
             db = DatabaseManager.get_instance()
             with db.get_session() as session:
                 total = session.query(StockMeta).filter(StockMeta.status == "active").count()
             if total > 0:
                 return {
-                    **{k: v for k, v in _sync_state.items()},
-                    "status": "success" if _sync_state["status"] == "idle" else _sync_state["status"],
+                    **state,
+                    "status": "success" if state["status"] == "idle" else state["status"],
                     "total": total,
-                    "message": _sync_state["message"] or "数据已存在（来自数据库）",
+                    "message": state["message"] or "数据已存在（来自数据库）",
                 }
         except Exception:
             pass
-    return _sync_state
+    return state
 
 
 @router.get(

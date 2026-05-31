@@ -577,6 +577,52 @@ class AnalysisTaskQueue:
 
         self._broadcast_event(event_type, task_snapshot.to_dict())
         return task_snapshot
+
+    def _clear_analyzing_stock_locked(self, task: TaskInfo) -> None:
+        """Remove an in-flight stock marker only when it still points to this task."""
+        dedupe_key = _dedupe_stock_code_key(task.stock_code)
+        if self._analyzing_stocks.get(dedupe_key) == task.task_id:
+            del self._analyzing_stocks[dedupe_key]
+
+    def _mark_task_completed_locked(
+        self,
+        task_id: str,
+        result: Dict[str, Any],
+        message: str = "分析完成",
+    ) -> Optional[TaskInfo]:
+        """Transition a task to completed and return a broadcast snapshot."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return None
+
+        task.status = TaskStatus.COMPLETED
+        task.progress = 100
+        task.completed_at = datetime.now()
+        task.result = result
+        task.message = message
+        task.stock_name = result.get("stock_name", task.stock_name)
+        self._clear_analyzing_stock_locked(task)
+        return task.copy()
+
+    def _mark_task_failed_locked(
+        self,
+        task_id: str,
+        error_msg: str,
+        *,
+        message_prefix: str = "分析失败",
+        message_limit: int = 50,
+    ) -> Optional[TaskInfo]:
+        """Transition a task to failed and return a broadcast snapshot."""
+        task = self._tasks.get(task_id)
+        if not task:
+            return None
+
+        task.status = TaskStatus.FAILED
+        task.completed_at = datetime.now()
+        task.error = error_msg[:200]
+        task.message = f"{message_prefix}: {error_msg[:message_limit]}"
+        self._clear_analyzing_stock_locked(task)
+        return task.copy()
     
     # ========== 任务执行 ==========
     
@@ -650,23 +696,11 @@ class AnalysisTaskQueue:
             )
             
             if result:
-                # 更新任务状态为完成
                 with self._data_lock:
-                    task = self._tasks.get(task_id)
-                    if task:
-                        task.status = TaskStatus.COMPLETED
-                        task.progress = 100
-                        task.completed_at = datetime.now()
-                        task.result = result
-                        task.message = "分析完成"
-                        task.stock_name = result.get("stock_name", task.stock_name)
-                        
-                        # 从分析中集合移除
-                        dedupe_key = _dedupe_stock_code_key(task.stock_code)
-                        if dedupe_key in self._analyzing_stocks:
-                            del self._analyzing_stocks[dedupe_key]
+                    task_snapshot = self._mark_task_completed_locked(task_id, result)
                 
-                self._broadcast_event("task_completed", task.to_dict())
+                if task_snapshot is not None:
+                    self._broadcast_event("task_completed", task_snapshot.to_dict())
                 logger.info(f"[TaskQueue] 任务完成: {task_id} ({stock_code})")
                 
                 # 清理过期任务
@@ -682,19 +716,10 @@ class AnalysisTaskQueue:
             logger.error(f"[TaskQueue] 任务失败: {task_id} ({stock_code}), 错误: {error_msg}")
             
             with self._data_lock:
-                task = self._tasks.get(task_id)
-                if task:
-                    task.status = TaskStatus.FAILED
-                    task.completed_at = datetime.now()
-                    task.error = error_msg[:200]  # 限制错误信息长度
-                    task.message = f"分析失败: {error_msg[:50]}"
-                    
-                    # 从分析中集合移除
-                    dedupe_key = _dedupe_stock_code_key(task.stock_code)
-                    if dedupe_key in self._analyzing_stocks:
-                        del self._analyzing_stocks[dedupe_key]
+                task_snapshot = self._mark_task_failed_locked(task_id, error_msg)
             
-            self._broadcast_event("task_failed", task.to_dict())
+            if task_snapshot is not None:
+                self._broadcast_event("task_failed", task_snapshot.to_dict())
             
             # 清理过期任务
             self._cleanup_old_tasks()
@@ -733,15 +758,14 @@ class AnalysisTaskQueue:
                 raise RuntimeError("任务返回空结果，未生成可持久化内容")
 
             with self._data_lock:
-                task = self._tasks.get(task_id)
-                if task:
-                    task.status = TaskStatus.COMPLETED
-                    task.progress = 100
-                    task.completed_at = datetime.now()
-                    task.result = result
-                    task.message = "任务执行完成"
+                task_snapshot = self._mark_task_completed_locked(
+                    task_id,
+                    result,
+                    message="任务执行完成",
+                )
 
-            self._broadcast_event("task_completed", task.to_dict())
+            if task_snapshot is not None:
+                self._broadcast_event("task_completed", task_snapshot.to_dict())
             logger.info(f"[TaskQueue] 自定义任务完成: {task_id}")
 
             self._cleanup_old_tasks()
@@ -754,15 +778,15 @@ class AnalysisTaskQueue:
             )
 
             with self._data_lock:
-                task = self._tasks.get(task_id)
-                if task:
-                    task.status = TaskStatus.FAILED
-                    task.completed_at = datetime.now()
-                    task.error = error_msg[:200]
-                    task.message = f"任务失败: {error_msg[:80]}"
+                task_snapshot = self._mark_task_failed_locked(
+                    task_id,
+                    error_msg,
+                    message_prefix="任务失败",
+                    message_limit=80,
+                )
 
-            if task:
-                self._broadcast_event("task_failed", task.to_dict())
+            if task_snapshot is not None:
+                self._broadcast_event("task_failed", task_snapshot.to_dict())
 
             self._cleanup_old_tasks()
             return None

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Pause, Play, RotateCcw, Square, Trash2, X } from 'lucide-react';
+import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Pause, Play, RotateCcw, Square, Trash2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useBatchStore } from '../../stores/batchStore';
@@ -9,6 +8,7 @@ import type { PromptTemplateItem } from '../../api/prompts';
 import { cn } from '../../utils/cn';
 import { loadWatchlistGroups, WATCHLIST_GROUPS_UPDATED_EVENT, type WatchlistGroup } from '../../utils/watchlistGroups';
 import { Button, ApiErrorAlert } from '../common';
+import BatchScheduleDialog from './BatchScheduleDialog';
 
 interface BatchPanelProps {
   stockCodes?: string[];
@@ -448,100 +448,19 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
         )}
       </AnimatePresence>
 
-      {showScheduleDialog && createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={() => setShowScheduleDialog(false)}>
-          <div className="absolute inset-0 bg-black/40" />
-          <div
-            className="relative w-full max-w-sm rounded-2xl border border-subtle bg-surface p-5 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-foreground">定时跑批设置</h3>
-              <button
-                type="button"
-                onClick={() => setShowScheduleDialog(false)}
-                className="rounded-lg p-1 text-muted-text hover:bg-hover hover:text-foreground"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <label className="flex items-center gap-2 text-sm text-foreground">
-                <input
-                  type="checkbox"
-                  checked={scheduleEnabled}
-                  onChange={(e) => setScheduleEnabled(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-border accent-primary"
-                />
-                启用每日定时跑批
-              </label>
-
-              {scheduleEnabled && (
-                <div className="space-y-2">
-                  <div className="flex gap-1.5">
-                    <input
-                      type="time"
-                      value={newTime}
-                      onChange={(e) => setNewTime(e.target.value)}
-                      className="flex-1 rounded-lg border border-subtle bg-background px-2 py-1.5 text-xs"
-                    />
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      onClick={handleAddTime}
-                    >
-                      添加
-                    </Button>
-                  </div>
-                  {scheduleTimes.length > 0 ? (
-                    <div className="flex flex-wrap gap-1">
-                      {scheduleTimes.map((t) => (
-                        <span
-                          key={t}
-                          className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
-                        >
-                          {t}
-                          <button
-                            type="button"
-                            onClick={() => setScheduleTimes(scheduleTimes.filter((x) => x !== t))}
-                            className="ml-0.5 hover:text-red-500"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-text">尚未添加时间点</p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2 mt-5">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => setShowScheduleDialog(false)}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                variant="primary"
-                size="sm"
-                onClick={handleSaveSchedule}
-              >
-                保存
-              </Button>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+      {showScheduleDialog ? (
+        <BatchScheduleDialog
+          enabled={scheduleEnabled}
+          onEnabledChange={setScheduleEnabled}
+          times={scheduleTimes}
+          onTimesChange={setScheduleTimes}
+          newTime={newTime}
+          onNewTimeChange={setNewTime}
+          onAddTime={handleAddTime}
+          onSave={handleSaveSchedule}
+          onClose={() => setShowScheduleDialog(false)}
+        />
+      ) : null}
     </div>
   );
 };

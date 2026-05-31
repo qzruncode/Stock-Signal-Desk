@@ -40,8 +40,8 @@ def _save_stock_list(
     codes: List[str],
     config_version: str,
     mask_token: str,
-) -> List[str]:
-    """Persist STOCK_LIST. Returns the updated list."""
+) -> tuple[List[str], str]:
+    """Persist STOCK_LIST. Returns the updated list and new config version."""
     value = ",".join(codes)
     result = service.update(
         config_version=config_version,
@@ -50,7 +50,7 @@ def _save_stock_list(
         reload_now=True,
     )
     updated_codes = [c.strip() for c in value.split(",") if c.strip()]
-    return updated_codes
+    return updated_codes, result.get("config_version", config_version)
 
 
 @router.get(
@@ -105,13 +105,13 @@ def add_to_watchlist(
                 "message": "No new stocks added (all already in list)",
                 "configVersion": config_version,
             }
-        updated = _save_stock_list(service, current, config_version, mask_token)
+        updated, new_config_version = _save_stock_list(service, current, config_version, mask_token)
         return {
             "codes": updated,
             "count": len(updated),
             "added": added,
             "message": f"Added {len(added)} stock(s)",
-            "configVersion": config_version,
+            "configVersion": new_config_version,
         }
     except ConfigValidationError as exc:
         raise HTTPException(
@@ -159,13 +159,13 @@ def remove_from_watchlist(
                 "message": "No matching stocks found to remove",
                 "configVersion": config_version,
             }
-        updated = _save_stock_list(service, new_list, config_version, mask_token)
+        updated, new_config_version = _save_stock_list(service, new_list, config_version, mask_token)
         return {
             "codes": updated,
             "count": len(updated),
             "removed": removed,
             "message": f"Removed {len(removed)} stock(s)",
-            "configVersion": config_version,
+            "configVersion": new_config_version,
         }
     except ConfigValidationError as exc:
         raise HTTPException(

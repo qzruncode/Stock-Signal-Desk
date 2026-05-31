@@ -25,7 +25,7 @@ if _orig_data_provider is None:
     pkg_mod.utils = sys.modules["data_provider.utils"]
     sys.modules["data_provider"] = pkg_mod
 
-from src.services.task_queue import AnalysisTaskQueue, get_task_queue, _dedupe_stock_code_key
+from src.services.task_queue import AnalysisTaskQueue, TaskInfo, TaskStatus, get_task_queue, _dedupe_stock_code_key
 
 if _orig_data_provider_utils is None:
     sys.modules.pop("data_provider.utils", None)
@@ -108,6 +108,23 @@ class TaskQueueConfigSyncTestCase(unittest.TestCase):
 
         self.assertIs(synced, queue)
         self.assertEqual(synced.max_workers, 3)
+
+    def test_terminal_update_ignores_missing_task(self) -> None:
+        queue = AnalysisTaskQueue(max_workers=3)
+
+        self.assertIsNone(queue._mark_task_completed_locked("missing", {"stock_name": "贵州茅台"}))
+        self.assertIsNone(queue._mark_task_failed_locked("missing", "boom"))
+
+    def test_terminal_update_does_not_clear_newer_inflight_marker(self) -> None:
+        queue = AnalysisTaskQueue(max_workers=3)
+        stale_task = TaskInfo(task_id="old-task", stock_code="600519", status=TaskStatus.PROCESSING)
+        queue._tasks[stale_task.task_id] = stale_task
+        queue._analyzing_stocks[_dedupe_stock_code_key("600519")] = "new-task"
+
+        snapshot = queue._mark_task_failed_locked(stale_task.task_id, "boom")
+
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(queue._analyzing_stocks[_dedupe_stock_code_key("600519")], "new-task")
 
 
 if __name__ == "__main__":

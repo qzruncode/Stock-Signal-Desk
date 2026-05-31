@@ -47,6 +47,12 @@ class TestChunkContentByMaxWords(unittest.TestCase):
         self.assertGreaterEqual(len(result), 2)
         self.assertEqual("".join(result), text)
 
+    def test_content_with_h1_headings_splits_without_losing_headings(self):
+        text = "Intro\n# Section A\n" + "A" * 80 + "\n# Section B\n" + "B" * 80
+        result = chunk_content_by_max_words(text, 90)
+        self.assertGreaterEqual(len(result), 2)
+        self.assertEqual("".join(result).replace(TRUNCATION_SUFFIX, ""), text)
+
     def test_long_content_without_separators_gets_force_split_with_suffix(self):
         long_text = "X" * 200
         result = chunk_content_by_max_words(long_text, 50)
@@ -135,6 +141,12 @@ class TestChunkContentByMaxBytes(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0], text)
         self.assertNotIn("\n---\n\n---\n", result[0])
+
+    def test_content_with_h1_headings_splits_without_losing_headings(self):
+        text = "Intro\n# Section A\n" + "A" * 180 + "\n# Section B\n" + "B" * 180
+        result = chunk_content_by_max_bytes(text, 220)
+        self.assertGreaterEqual(len(result), 2)
+        self.assertEqual("".join(result).replace(TRUNCATION_SUFFIX, ""), text)
 
     def test_long_content_without_separators_gets_force_split_with_suffix(self):
         long_text = "X" * 500

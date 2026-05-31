@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { init, dispose } from 'klinecharts';
 import type { KlineBar, KlineResponse } from '../api/kline';
 import { cn } from '../utils/cn';
@@ -62,7 +62,9 @@ const KLineChartPanel: React.FC<KLineChartPanelProps> = ({
   className,
 }) => {
   const chartRef = useRef<ReturnType<typeof init> | null>(null);
-  const hasData = data?.data && data.data.length > 0;
+  const chartData = useMemo(() => toChartData(data?.data ?? []), [data?.data]);
+  const hasData = chartData.length > 0;
+  const symbol = data?.symbol;
 
   // Initialize chart when data becomes available
   useEffect(() => {
@@ -139,21 +141,22 @@ const KLineChartPanel: React.FC<KLineChartPanelProps> = ({
 
       chart.createIndicator('VOL', { isStack: false });
 
-      const chartData = toChartData(data!.data!);
       chart.setDataLoader({
         getBars: ({ callback }) => {
           callback(chartData, false);
         },
       });
 
-      chart.setSymbol({ ticker: data!.symbol });
+      if (symbol) {
+        chart.setSymbol({ ticker: symbol });
+      }
       chart.setPeriod({ span: 1, type: 'day' });
     }, 100);
 
     return () => {
       clearTimeout(timer);
     };
-  }, [hasData, data?.symbol]);
+  }, [chartData, hasData, symbol]);
 
   // Cleanup on unmount
   useEffect(() => {

@@ -1,3 +1,5 @@
+import { loadJsonFromStorage, saveJsonToStorage } from './storage';
+
 export interface WatchlistGroup {
   id: string;
   name: string;
@@ -19,17 +21,12 @@ function normalizeGroups(value: unknown): WatchlistGroup[] {
 }
 
 export function loadWatchlistGroups(): WatchlistGroup[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    return normalizeGroups(JSON.parse(window.localStorage.getItem(WATCHLIST_GROUPS_STORAGE_KEY) || '[]'));
-  } catch {
-    return [];
-  }
+  return normalizeGroups(loadJsonFromStorage<unknown>(WATCHLIST_GROUPS_STORAGE_KEY, []));
 }
 
 export function saveWatchlistGroups(groups: WatchlistGroup[]) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(WATCHLIST_GROUPS_STORAGE_KEY, JSON.stringify(groups));
+  saveJsonToStorage(WATCHLIST_GROUPS_STORAGE_KEY, groups);
   window.dispatchEvent(new Event(WATCHLIST_GROUPS_UPDATED_EVENT));
 }
 

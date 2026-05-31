@@ -28,6 +28,24 @@ def _page_marker(i: int, total: int) -> str:
     return f"{PAGE_MARKER_PREFIX} {i+1}/{total}"
 
 
+def _append_page_markers(chunks: List[str]) -> List[str]:
+    """Append stable page markers without mutating caller-owned lists."""
+    total_chunks = len(chunks)
+    return [
+        f"{chunk}{_page_marker(index, total_chunks)}"
+        for index, chunk in enumerate(chunks)
+    ]
+
+
+def _remove_trailing_separator(chunks: List[str], separator: str) -> None:
+    """Remove the artificial trailing separator from the final chunk in-place."""
+    if not separator or not chunks:
+        return
+
+    if chunks[-1].endswith(separator):
+        chunks[-1] = chunks[-1][:-len(separator)]
+
+
 def _is_special_char(c: str) -> bool:
     """判断字符是否为特殊字符
     
@@ -354,12 +372,7 @@ def chunk_content_by_max_bytes(content: str, max_bytes: int, add_page_marker: bo
         if current_chunk:
             chunks.append("".join(current_chunk))
             
-        # 移除最后一个块的分割符
-        if (chunks and 
-            len(chunks[-1]) > separator_bytes and 
-            chunks[-1][-separator_bytes:] == separator
-        ):
-            chunks[-1] = chunks[-1][:-separator_bytes]
+        _remove_trailing_separator(chunks, separator)
         
         return chunks
     
@@ -368,9 +381,7 @@ def chunk_content_by_max_bytes(content: str, max_bytes: int, add_page_marker: bo
     
     chunks = _chunk(content, max_bytes)
     if add_page_marker:
-        total_chunks = len(chunks)
-        for i, chunk in enumerate(chunks):
-            chunks[i] = chunk + _page_marker(i, total_chunks)
+        chunks = _append_page_markers(chunks)
     return chunks
 
 
@@ -511,8 +522,8 @@ def _chunk_by_separators(content: str) -> tuple[list[str], str]:
         separator = "\n---\n"
     elif "\n# " in content:
         # 按 # 分割 (兼容一级标题)
-        parts = content.split("\n## ")
-        sections = [parts[0]] + [f"## {p}" for p in parts[1:]]
+        parts = content.split("\n# ")
+        sections = [parts[0]] + [f"# {p}" for p in parts[1:]]
         separator = "\n"
     elif "\n## " in content:
         # 按 ## 分割 (兼容二级标题)
@@ -623,6 +634,8 @@ def chunk_content_by_max_words(
                 # 先保存当前积累的内容
                 if current_chunk:
                     chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_word_len = 0
 
                 # 强制截断这个超长 section
                 section_chunks = _chunk(
@@ -647,12 +660,7 @@ def chunk_content_by_max_words(
         if current_chunk:
             chunks.append("".join(current_chunk))
 
-        # 移除最后一个块的分割符
-        if (chunks and
-            len(chunks[-1]) > separator_len and
-            chunks[-1][-separator_len:] == separator
-        ):
-            chunks[-1] = chunks[-1][:-separator_len]
+        _remove_trailing_separator(chunks, separator)
         return chunks
     
     
@@ -661,7 +669,5 @@ def chunk_content_by_max_words(
     
     chunks = _chunk(content, max_words, special_char_len)
     if add_page_marker:
-        total_chunks = len(chunks)
-        for i, chunk in enumerate(chunks):
-            chunks[i] = chunk + _page_marker(i, total_chunks)
+        chunks = _append_page_markers(chunks)
     return chunks

@@ -152,7 +152,7 @@ export const ModelConfigSection: React.FC<ModelConfigSectionProps> = ({
   }, [fieldValues, maskedKeys]);
 
   // Detect active provider hint
-  const activeProvider = useMemo(() => {
+  const activeProvider = (() => {
     const currentModel = (fieldValues['LITELLM_MODEL'] ?? '').trim();
     if (!currentModel) return null;
 
@@ -169,7 +169,7 @@ export const ModelConfigSection: React.FC<ModelConfigSectionProps> = ({
       }
     }
     return null;
-  }, [fieldValues, maskedKeys]);
+  })();
 
   const currentModel = fieldValues['LITELLM_MODEL'] ?? '';
   const modelMissingPrefix = currentModel !== '' && !currentModel.includes('/');

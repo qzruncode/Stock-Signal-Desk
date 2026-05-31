@@ -5,6 +5,7 @@ import { promptsApi, type PromptTemplateItem } from '../api/prompts';
 import { Button, EmptyState, InlineAlert } from '../components/common';
 import { loadWatchlistGroups } from '../utils/watchlistGroups';
 import { cn } from '../utils/cn';
+import { loadJsonFromStorage, saveJsonToStorage } from '../utils/storage';
 
 interface WorkflowStage {
   id: string;
@@ -34,24 +35,27 @@ function makeStage(index: number, templateId = ''): WorkflowStage {
 }
 
 function loadWorkflow(): SavedWorkflow | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(WORKFLOW_STORAGE_KEY) || 'null') as SavedWorkflow | null;
-    return parsed && Array.isArray(parsed.stages) ? parsed : null;
-  } catch {
-    return null;
-  }
+  return loadJsonFromStorage<SavedWorkflow | null>(
+    WORKFLOW_STORAGE_KEY,
+    null,
+    (value): value is SavedWorkflow | null => value === null || (
+      Boolean(value)
+      && typeof value === 'object'
+      && Array.isArray((value as SavedWorkflow).stages)
+    ),
+  );
 }
 
 function saveWorkflow(workflow: SavedWorkflow) {
-  window.localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(workflow));
+  saveJsonToStorage(WORKFLOW_STORAGE_KEY, workflow);
 }
 
 const WorkflowBuilderPage: React.FC = () => {
   const navigate = useNavigate();
+  const initialWorkflow = useMemo(() => loadWorkflow(), []);
   const [templates, setTemplates] = useState<PromptTemplateItem[]>([]);
-  const [workflowName, setWorkflowName] = useState('多轮筛选工作流');
-  const [stages, setStages] = useState<WorkflowStage[]>([]);
+  const [workflowName, setWorkflowName] = useState(() => initialWorkflow?.name || '多轮筛选工作流');
+  const [stages, setStages] = useState<WorkflowStage[]>(() => initialWorkflow?.stages || []);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,15 +64,10 @@ const WorkflowBuilderPage: React.FC = () => {
 
   useEffect(() => {
     document.title = '工作流编排 - Stock-Signal-Desk';
-    const saved = loadWorkflow();
-    if (saved) {
-      setWorkflowName(saved.name || '多轮筛选工作流');
-      setStages(saved.stages);
-    }
     promptsApi.getPromptTemplates()
       .then((items) => {
         setTemplates(items);
-        if (!saved) {
+        if (!initialWorkflow) {
           const defaultTemplate = items.find((item) => item.is_default) || items[0];
           setStages([
             makeStage(0, defaultTemplate?.id || ''),
@@ -78,7 +77,7 @@ const WorkflowBuilderPage: React.FC = () => {
         }
       })
       .catch(() => setError('加载分析模型失败'));
-  }, []);
+  }, [initialWorkflow]);
 
   const updateStage = useCallback((id: string, patch: Partial<WorkflowStage>) => {
     setStages((current) => current.map((stage) => (stage.id === id ? { ...stage, ...patch } : stage)));

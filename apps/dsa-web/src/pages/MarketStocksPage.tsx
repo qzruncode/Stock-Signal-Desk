@@ -6,6 +6,7 @@ import { stocksApi, type StockMetaItem, type SyncStatusResponse } from '../api/s
 import { EmptyState, InlineAlert } from '../components/common';
 import { cn } from '../utils/cn';
 import { MARKET_LABELS, MARKET_COLORS } from '../utils/market';
+import { useTransientMessage } from '../hooks/useTransientMessage';
 
 const PAGE_SIZE = 50;
 
@@ -33,7 +34,7 @@ const MarketStocksPage: React.FC = () => {
 
   // Alerts
   const [error, setError] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const { message: successMsg, showMessage: showSuccessMessage } = useTransientMessage();
 
   // Sentinel for infinite scroll
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -89,12 +90,13 @@ const MarketStocksPage: React.FC = () => {
     };
     document.addEventListener('visibilitychange', onVisibility);
     // Also listen for focus in case of same-tab navigation
-    window.addEventListener('focus', () => void loadWatchlist());
+    const onFocus = () => void loadWatchlist();
+    window.addEventListener('focus', onFocus);
 
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('focus', loadWatchlist);
+      window.removeEventListener('focus', onFocus);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -115,6 +117,10 @@ const MarketStocksPage: React.FC = () => {
 
   const handleSync = useCallback(async () => {
     if (isSyncing) return;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     setIsSyncing(true);
     setSyncError(null);
     try {
@@ -155,16 +161,14 @@ const MarketStocksPage: React.FC = () => {
 
   const handleAddStock = useCallback(async (code: string) => {
     setError(null);
-    setSuccessMsg(null);
     try {
       const result = await watchlistApi.add([code]);
       setWatchlistData({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-      setSuccessMsg(`已添加 ${code}`);
-      setTimeout(() => setSuccessMsg(null), 2000);
+      showSuccessMessage(`已添加 ${code}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : '添加失败');
     }
-  }, []);
+  }, [showSuccessMessage]);
 
   const watchlistCodes = useMemo(() => new Set(watchlistData?.codes || []), [watchlistData]);
 

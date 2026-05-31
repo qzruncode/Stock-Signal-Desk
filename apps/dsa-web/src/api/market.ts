@@ -27,7 +27,7 @@ export const marketApi = {
   async getStatus(useCache: boolean = true): Promise<MarketStatus> {
     const response = await apiClient.get<MarketStatus>(
       '/api/v1/market/status',
-      { params: { use_cache: useCache }, timeout: 30000 },
+      { params: { force: !useCache }, timeout: 30000 },
     );
     return response.data;
   },

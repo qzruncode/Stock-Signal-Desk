@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:constraints": "node scripts/check-code-constraints.mjs",
     "lint": "eslint .",
     "test": "vitest run",
     "test:smoke": "playwright test",

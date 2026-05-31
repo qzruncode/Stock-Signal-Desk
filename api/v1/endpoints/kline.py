@@ -27,6 +27,16 @@ KLINE_SOURCE_TENCENT = "tencent"
 DEFAULT_COUNT = 500
 
 
+def _latest_kline_cache_key(symbol: str, count: int) -> str:
+    """Build cache key for latest-count K-line requests."""
+    return f"kline:latest:{symbol}:{count}"
+
+
+def _history_kline_cache_key(symbol: str, start_date: str, end_date: str) -> str:
+    """Build cache key for date-range K-line requests."""
+    return f"kline:history:{symbol}:{start_date}:{end_date}"
+
+
 # ---------------------------------------------------------------------------
 # Normalization
 # ---------------------------------------------------------------------------
@@ -225,21 +235,21 @@ def _is_trading_hours() -> bool:
     return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
 
 
-def _get_kline_from_cache(symbol: str) -> dict | None:
+def _get_kline_from_cache(cache_key: str) -> dict | None:
     try:
         from src.storage import DatabaseManager
-        return DatabaseManager.get_instance().get_kline_snapshot(symbol)
+        return DatabaseManager.get_instance().get_kline_snapshot(cache_key)
     except Exception as e:
         logger.debug(f"[K线缓存] 读取失败: {e}")
     return None
 
 
-def _save_kline_to_cache(symbol: str, data: list, source: str) -> None:
+def _save_kline_to_cache(cache_key: str, symbol: str, data: list, source: str) -> None:
     try:
         from src.storage import DatabaseManager
         payload = {'symbol': symbol, 'source': source, 'data': data, 'count': len(data)}
         DatabaseManager.get_instance().save_kline_snapshot(
-            symbol, json.dumps(payload, ensure_ascii=False),
+            cache_key, json.dumps(payload, ensure_ascii=False),
         )
     except Exception as e:
         logger.debug(f"[K线缓存] 写入失败: {e}")
@@ -256,8 +266,9 @@ def get_kline(
     use_cache: bool = Query(True, description="是否使用缓存"),
 ):
     """获取日线K线数据（前复权）。非交易时段优先缓存，交易时段实时拉取。"""
+    cache_key = _latest_kline_cache_key(symbol, count)
     if use_cache and not _is_trading_hours():
-        cached = _get_kline_from_cache(symbol)
+        cached = _get_kline_from_cache(cache_key)
         if cached:
             logger.info(f"[K线缓存] 命中 {symbol}")
             cached['_cached'] = True
@@ -272,7 +283,7 @@ def get_kline(
         records = records[-count:]
 
     now_ts = datetime.now().isoformat()
-    _save_kline_to_cache(symbol, records, source)
+    _save_kline_to_cache(cache_key, symbol, records, source)
 
     return {
         'symbol': symbol, 'source': source,
@@ -297,8 +308,9 @@ def get_history_data(
             "error": "invalid_date", "message": "日期格式错误，应为 YYYYMMDD",
         })
 
+    cache_key = _history_kline_cache_key(symbol, start_date, end_date)
     if use_cache and not _is_trading_hours():
-        cached = _get_kline_from_cache(symbol)
+        cached = _get_kline_from_cache(cache_key)
         if cached:
             logger.info(f"[K线缓存] 命中 {symbol}")
             cached['_cached'] = True
@@ -307,7 +319,7 @@ def get_history_data(
     records, source = _fetch_kline_with_fallback(symbol, start_date, end_date)
 
     now_ts = datetime.now().isoformat()
-    _save_kline_to_cache(symbol, records, source)
+    _save_kline_to_cache(cache_key, symbol, records, source)
 
     return {
         'symbol': symbol, 'source': source,

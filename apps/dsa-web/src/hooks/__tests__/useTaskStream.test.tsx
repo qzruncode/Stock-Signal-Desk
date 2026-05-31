@@ -25,22 +25,18 @@ describe('useTaskStream', () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    eventSourceInstance = {
-      listeners: {},
-      addEventListener: vi.fn((type: string, listener: (event: MessageEvent<string>) => void) => {
-        eventSourceInstance.listeners[type] = listener;
-      }),
-      close: vi.fn(),
-      onerror: null,
-    };
-
     class MockEventSource {
-      addEventListener = eventSourceInstance.addEventListener;
-      close = eventSourceInstance.close;
-      onerror = eventSourceInstance.onerror;
+      listeners: MockEventSourceInstance['listeners'] = {};
+      addEventListener = vi.fn((type: string, listener: (event: MessageEvent<string>) => void) => {
+        this.listeners[type] = listener;
+      });
+      close = vi.fn();
+      onerror: ((event: Event) => void) | null = null;
 
       constructor(...args: unknown[]) {
         void args;
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
+        eventSourceInstance = this;
       }
     }
 
@@ -96,5 +92,26 @@ describe('useTaskStream', () => {
       originalQuery: undefined,
       selectionSource: undefined,
     });
+  });
+
+  it('schedules only one reconnect while repeated errors arrive before the timer fires', () => {
+    vi.useFakeTimers();
+
+    renderHook(() => useTaskStream({ enabled: true, reconnectDelay: 3000 }));
+
+    const firstInstance = eventSourceInstance;
+
+    firstInstance.onerror?.(new Event('error'));
+    firstInstance.onerror?.(new Event('error'));
+
+    expect(firstInstance.close).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(2999);
+    expect(getTaskStreamUrl).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(1);
+    expect(getTaskStreamUrl).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
   });
 });

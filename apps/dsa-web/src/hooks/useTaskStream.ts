@@ -160,6 +160,10 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
 
     // Connected event
     eventSource.addEventListener('connected', () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
       setIsConnected(true);
       callbacksRef.current.onConnected?.();
     });
@@ -204,9 +208,10 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
       callbacksRef.current.onError?.(error);
 
       // Auto-reconnect via ref to avoid stale closure issues.
-      if (autoReconnect && enabled) {
+      if (autoReconnect && enabled && !reconnectTimeoutRef.current) {
         eventSource.close();
         reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = null;
           connectRef.current();
         }, reconnectDelay);
       }
