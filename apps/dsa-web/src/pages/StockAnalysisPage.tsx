@@ -17,7 +17,9 @@ import { Select } from '../components/common';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
+import { financialsApi, type FinancialsResponse } from '../api/financials';
 import KLineChartPanel from '../components/KLineChartPanel';
+import FinancialPanel from '../components/FinancialPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
@@ -164,19 +166,6 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 text-xs text-slate-400">
-        <Clock className="h-3 w-3" />
-        <span>
-          数据获取时间: {quote._fetched_at ? new Date(quote._fetched_at).toLocaleString('zh-CN') : '-'}
-          {quote._cached ? ' · 缓存' : ' · 实时'}
-        </span>
-        {quote.source && (
-          <>
-            <span className="text-slate-300">|</span>
-            <span>数据源: {quote.source}</span>
-          </>
-        )}
-      </div>
     </div>
   );
 }
@@ -186,7 +175,6 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
 // ---------------------------------------------------------------------------
 
 function StockInfoPanel({ info }: { info: StockInfo }) {
-  const hasCninfo = info._cninfo_ok !== false;
   const hasEm = info._em_ok === true;
 
   return (
@@ -273,20 +261,6 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
         </div>
       )}
 
-      {/* Footer */}
-      <div className="flex items-center gap-1.5 text-xs text-slate-400">
-        <Clock className="h-3 w-3" />
-        <span>
-          数据获取时间: {info._fetched_at ? new Date(info._fetched_at).toLocaleString('zh-CN') : '-'}
-          {info._cached ? ' · 缓存' : ' · 实时'}
-        </span>
-        {hasCninfo && (
-          <>
-            <span className="text-slate-300">|</span>
-            <span>数据源: 巨潮资讯{hasEm ? ' + 东方财富' : ''}</span>
-          </>
-        )}
-      </div>
     </div>
   );
 }
@@ -295,7 +269,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'realtime' | 'kline';
+type AnalysisMode = 'overview' | 'kline';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -315,8 +289,12 @@ const StockAnalysisPage: React.FC = () => {
   const [stockInfo, setStockInfo] = useState<StockInfo | null>(null);
   const [stockInfoLoading, setStockInfoLoading] = useState(false);
 
+  // --- Financials state ---
+  const [financials, setFinancials] = useState<FinancialsResponse | null>(null);
+  const [financialsLoading, setFinancialsLoading] = useState(false);
+
   // --- Tab mode ---
-  const [mode, setMode] = useState<AnalysisMode>('realtime');
+  const [mode, setMode] = useState<AnalysisMode>('overview');
 
   const selectedSymbol = searchParams.get('symbol');
 
@@ -327,6 +305,7 @@ const StockAnalysisPage: React.FC = () => {
       setSearchValue(symbol);
       void fetchQuote(symbol);
       void fetchStockInfo(symbol);
+      void fetchFinancials(symbol);
       // K-line is fetched lazily when user switches to kline tab
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -388,14 +367,28 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  // --- Financials fetching ---
+  const fetchFinancials = useCallback(async (symbol: string) => {
+    setFinancialsLoading(true);
+    try {
+      const result = await financialsApi.getFinancials(symbol);
+      setFinancials(result);
+    } catch {
+      setFinancials(null);
+    } finally {
+      setFinancialsLoading(false);
+    }
+  }, []);
+
   // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
     setSearchParams({ symbol: code });
     void fetchQuote(code);
     void fetchStockInfo(code);
+    void fetchFinancials(code);
     // K-line will be fetched by the useEffect when mode is 'kline'
-  }, [setSearchParams, fetchQuote, fetchStockInfo]);
+  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials]);
 
   return (
     <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4 overflow-hidden">
@@ -421,7 +414,7 @@ const StockAnalysisPage: React.FC = () => {
               value={mode}
               onChange={(v) => setMode(v as AnalysisMode)}
               options={[
-                { value: 'realtime', label: '实时行情' },
+                { value: 'overview', label: '行情概览' },
                 { value: 'kline', label: 'K线分析' },
               ]}
             />
@@ -431,8 +424,8 @@ const StockAnalysisPage: React.FC = () => {
 
       {/* Main content */}
       {selectedSymbol ? (
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-          {mode === 'realtime' ? (
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+          {mode === 'overview' ? (
             <div className="space-y-6">
               {quoteLoading ? (
                 <div className="flex h-40 items-center justify-center">
@@ -453,6 +446,20 @@ const StockAnalysisPage: React.FC = () => {
                 </div>
               )}
 
+              {/* Financial panel — core data, shown right after quote */}
+              {quote && (
+                financialsLoading ? (
+                  <div className="flex h-20 items-center justify-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <div className="h-5 w-5 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                      <span className="text-xs text-slate-400">正在获取财务数据...</span>
+                    </div>
+                  </div>
+                ) : (
+                  <FinancialPanel items={financials?.items ?? []} />
+                )
+              )}
+
               {/* Stock info panel — shown when quote is available */}
               {quote && (
                 stockInfoLoading ? (
@@ -465,6 +472,23 @@ const StockAnalysisPage: React.FC = () => {
                 ) : stockInfo ? (
                   <StockInfoPanel info={stockInfo} />
                 ) : null
+              )}
+
+              {/* Shared footer */}
+              {quote && (
+                <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                  <Clock className="h-3 w-3" />
+                  <span>
+                    数据获取时间: {quote._fetched_at ? new Date(quote._fetched_at).toLocaleString('zh-CN') : '-'}
+                    {quote._cached ? ' · 缓存' : ' · 实时'}
+                  </span>
+                  {quote.source && (
+                    <>
+                      <span className="text-slate-300">|</span>
+                      <span>数据源: {quote.source}</span>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           ) : (
