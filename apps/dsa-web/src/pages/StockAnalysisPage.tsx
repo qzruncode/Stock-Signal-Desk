@@ -34,13 +34,15 @@ import {
   type SentimentResponse,
   shareholderApi,
   type ShareholderStructureResponse,
+  socialSentimentApi,
+  type SocialSentimentResponse,
   valuationApi,
   type ValuationRatiosResponse,
 } from '../api/financials';
 import KLineChartPanel from '../components/KLineChartPanel';
 import FinancialPanel from '../components/FinancialPanel';
 import FinancialStatementsPanel from '../components/FinancialStatementsPanel';
-import { AnnouncementsPanel, NewsPanel, ResearchPanel, SentimentPanel } from '../components/NewsAnnouncementPanel';
+import { AnnouncementsPanel, NewsPanel, ResearchPanel, SentimentPanel, SocialSentimentPanel } from '../components/NewsAnnouncementPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
@@ -435,7 +437,7 @@ function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderSt
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'shareholder' | 'news' | 'announcements' | 'sentiment' | 'research';
+type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'shareholder' | 'news' | 'announcements' | 'sentiment' | 'research' | 'social';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -484,6 +486,10 @@ const StockAnalysisPage: React.FC = () => {
   // --- Research state ---
   const [research, setResearch] = useState<ResearchReportResponse | null>(null);
   const [researchLoading, setResearchLoading] = useState(false);
+
+  // --- Social sentiment state ---
+  const [social, setSocial] = useState<SocialSentimentResponse | null>(null);
+  const [socialLoading, setSocialLoading] = useState(false);
 
   // --- Tab mode ---
   const [mode, setMode] = useState<AnalysisMode>('overview');
@@ -539,6 +545,13 @@ const StockAnalysisPage: React.FC = () => {
   useEffect(() => {
     if (mode === 'research' && selectedSymbol) {
       void fetchResearch(selectedSymbol);
+    }
+  }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // --- Fetch social sentiment when mode switches to 'social' ---
+  useEffect(() => {
+    if (mode === 'social' && selectedSymbol) {
+      void fetchSocial(selectedSymbol);
     }
   }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -694,6 +707,19 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  // --- Social sentiment fetching ---
+  const fetchSocial = useCallback(async (symbol: string) => {
+    setSocialLoading(true);
+    try {
+      const result = await socialSentimentApi.getSocialSentiment(symbol);
+      setSocial(result);
+    } catch {
+      setSocial(null);
+    } finally {
+      setSocialLoading(false);
+    }
+  }, []);
+
   // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
@@ -740,6 +766,7 @@ const StockAnalysisPage: React.FC = () => {
                 { value: 'announcements', label: '公司公告' },
                 { value: 'sentiment', label: '舆情情绪' },
                 { value: 'research', label: '券商研报' },
+                { value: 'social', label: '社交情绪' },
               ]}
             />
           </div>
@@ -988,6 +1015,32 @@ const StockAnalysisPage: React.FC = () => {
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
                   <p className="text-sm text-slate-400">暂无券商研报</p>
+                </div>
+              )}
+            </div>
+          ) : mode === 'social' ? (
+            <div className="space-y-6">
+              {socialLoading ? (
+                <div className="flex h-40 items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                    <span className="text-sm text-slate-400">正在分析社交情绪...</span>
+                  </div>
+                </div>
+              ) : social ? (
+                <>
+                  <SocialSentimentPanel social={social} />
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                    <Clock className="h-3 w-3" />
+                    <span>
+                      数据获取时间: {social._fetched_at ? new Date(social._fetched_at).toLocaleString('zh-CN') : '-'}
+                      {social._cached ? ' · 缓存' : ' · 实时'}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">暂无社交情绪数据</p>
                 </div>
               )}
             </div>

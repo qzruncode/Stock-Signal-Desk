@@ -2846,3 +2846,241 @@ def get_research_report(
     data = _fetch_research_reports(symbol, days)
     _daily_cache_put(RESEARCH_CACHE_KEY, symbol, data, cache_part)
     return data
+
+
+# ============================================================================
+# Social Media Sentiment (社交媒体情绪)
+# ============================================================================
+
+SOCIAL_SENTIMENT_CACHE_KEY = "stocks:social_sentiment:v1"
+
+
+def _fetch_social_sentiment(symbol: str, days: int) -> dict:
+    """获取社交媒体讨论热度和情绪。
+
+    数据源:
+      1. 东方财富千股千评 (datacenter-web) — 每日评分趋势
+      2. 东方财富个股新闻 — 讨论热度 + 情绪分析
+      3. 券商研报 — 专业情绪
+    """
+    import time as _time
+    import json as _json
+    import akshare as ak
+    import requests as _requests
+
+    t0 = _time.time()
+    code = _normalize_symbol(symbol)
+    errors: list[str] = []
+    cutoff = datetime.now() - timedelta(days=days)
+
+    def _is_recent(d) -> bool:
+        if d is None:
+            return True
+        return d >= cutoff
+
+    # ----------------------------------------------------------------
+    # 1. 千股千评历史评分 (datacenter-web API)
+    # ----------------------------------------------------------------
+    score_trend: list[dict] = []
+    current_score: float | None = None
+    try:
+        url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+        params = {
+            "filter": f'(SECURITY_CODE="{code}")',
+            "columns": "ALL",
+            "source": "WEB",
+            "client": "WEB",
+            "reportName": "RPT_STOCK_HISTORYMARK",
+            "sortColumns": "DIAGNOSE_DATE",
+            "sortTypes": "1",
+        }
+        r = _requests.get(url, params=params, timeout=15)
+        data = r.json()
+        if data.get("result") and data["result"].get("data"):
+            rows = data["result"]["data"]
+            for row in rows:
+                raw_date = row.get("DIAGNOSE_DATE", "")
+                date_obj = _parse_date(raw_date)
+                if not date_obj or date_obj < cutoff:
+                    continue
+                score = _safe_float(row.get("TOTAL_SCORE"))
+                close = _safe_float(row.get("CLOSE"))
+                score_trend.append({
+                    "date": date_obj.date().isoformat(),
+                    "score": round(score, 1) if score is not None else None,
+                    "close": close,
+                })
+            if rows:
+                current_score = _safe_float(rows[-1].get("TOTAL_SCORE"))
+    except Exception as exc:
+        errors.append(f"千股千评: {exc}")
+
+    # ----------------------------------------------------------------
+    # 2. 个股新闻 + 情绪分析
+    # ----------------------------------------------------------------
+    news_items: list[dict] = []
+    try:
+        df = ak.stock_news_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("发布时间"))
+                if not _is_recent(pub_time):
+                    continue
+                title = _safe_str(row.get("新闻标题"))
+                content = _safe_str(row.get("新闻内容"))
+                score = _classify_sentiment(title + " " + content)
+                label = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
+                news_items.append({
+                    "title": title,
+                    "content": content,
+                    "source": _safe_str(row.get("文章来源")) or "东方财富",
+                    "url": "http://finance.eastmoney.com/a/" + _safe_str(row.get("code", "")) + ".html",
+                    "sentiment_score": round(score, 3),
+                    "label": label,
+                    "publish_time": pub_time.isoformat() if pub_time else None,
+                })
+    except Exception as exc:
+        errors.append(f"东方财富新闻: {exc}")
+
+    # 翻页补充
+    if len(news_items) < 5:
+        try:
+            for page in range(1, 4):
+                inner_param = {
+                    "uid": "", "keyword": code,
+                    "type": ["cmsArticleWebOld"],
+                    "client": "web", "clientType": "web", "clientVersion": "curr",
+                    "param": {
+                        "cmsArticleWebOld": {
+                            "searchScope": "default", "sort": "default",
+                            "pageIndex": page, "pageSize": 10,
+                            "preTag": "", "postTag": "",
+                        }
+                    },
+                }
+                r = _requests.get(
+                    "https://search-api-web.eastmoney.com/search/jsonp",
+                    params={"cb": "", "param": _json.dumps(inner_param, ensure_ascii=False)},
+                    headers={"accept": "*/*", "referer": f"https://so.eastmoney.com/news/s?keyword={code}",
+                             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
+                    timeout=15,
+                )
+                if not r.text or not r.text.strip():
+                    break
+                jdata = r.json()
+                articles = jdata.get("result", {}).get("cmsArticleWebOld", [])
+                if not articles:
+                    break
+                for art in articles:
+                    pub_time = _parse_date(art.get("date"))
+                    if not _is_recent(pub_time):
+                        continue
+                    title = _safe_str(art.get("title", "")).replace("<em>", "").replace("</em>", "")
+                    content = _safe_str(art.get("content", "")).replace("<em>", "").replace("</em>", "")
+                    score = _classify_sentiment(title + " " + content)
+                    label = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
+                    news_items.append({
+                        "title": title,
+                        "content": content,
+                        "source": _safe_str(art.get("mediaName")) or "东方财富",
+                        "url": "http://finance.eastmoney.com/a/" + _safe_str(art.get("code", "")) + ".html",
+                        "sentiment_score": round(score, 3),
+                        "label": label,
+                        "publish_time": pub_time.isoformat() if pub_time else None,
+                    })
+                if len(articles) < 10:
+                    break
+        except Exception as exc:
+            errors.append(f"补充新闻: {exc}")
+
+    # ----------------------------------------------------------------
+    # 3. 聚合统计
+    # ----------------------------------------------------------------
+    positive_count = sum(1 for i in news_items if i["label"] == "positive")
+    negative_count = sum(1 for i in news_items if i["label"] == "negative")
+    neutral_count = sum(1 for i in news_items if i["label"] == "neutral")
+
+    # 热度趋势 (按日统计)
+    daily_counts: dict[str, dict] = {}
+    for item in news_items:
+        date_str = (item.get("publish_time") or "")[:10]
+        if date_str:
+            daily = daily_counts.setdefault(date_str, {
+                "total": 0, "positive": 0, "negative": 0, "neutral": 0})
+            daily["total"] += 1
+            daily[item["label"]] += 1
+
+    # 加入千股千评评分到每日趋势
+    for st in score_trend:
+        if st["date"] in daily_counts:
+            daily_counts[st["date"]]["score"] = st["score"]
+        else:
+            daily_counts[st["date"]] = {
+                "total": 0, "positive": 0, "negative": 0, "neutral": 0,
+                "score": st["score"],
+            }
+
+    # 总体情绪 (-100 ~ +100)
+    total = positive_count + negative_count + neutral_count
+    if total > 0:
+        overall_score = round(((positive_count - negative_count) / total) * 100, 1)
+    else:
+        overall_score = 0
+
+    # 讨论热度排名 (总讨论数)
+    total_discussion = total
+
+    logger.info(f"[SocialSentiment] total {_time.time() - t0:.1f}s for {code}: "
+                f"{len(news_items)} posts, score={overall_score}, "
+                f"diagnose_score={current_score}")
+
+    return {
+        "symbol": code,
+        "days": days,
+        "overall_score": overall_score,
+        "total_discussion": total_discussion,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "neutral_count": neutral_count,
+        "diagnose_score": round(current_score, 1) if current_score is not None else None,
+        "score_trend": score_trend,
+        "daily_trend": [
+            {"date": k, **v}
+            for k, v in sorted(daily_counts.items())
+        ],
+        "items": news_items[:50],
+        "errors": errors,
+        "_fetched_at": datetime.now().isoformat(),
+        "_cached": False,
+    }
+
+
+@router.get("/social-sentiment", summary="获取社交媒体情绪")
+def get_social_sentiment(
+    symbol: str = Query(..., description="股票代码"),
+    days: int = Query(7, ge=1, le=90, description="查询最近N天"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """获取社交媒体讨论热度和情绪。
+
+    返回:
+      - 舆情分数 (-100~+100)
+      - 讨论帖子数量/日趋势
+      - 千股千评评分趋势
+      - 正/负/中性比例
+      - 逐条帖子
+
+    数据源: 东方财富千股千评 + 个股新闻情绪分析
+
+    按天缓存。
+    """
+    symbol = _normalize_symbol(symbol)
+    cache_part = f"d{days}"
+    if not force:
+        cached = _daily_cache_get(SOCIAL_SENTIMENT_CACHE_KEY, symbol, cache_part)
+        if cached:
+            cached["_cached"] = True
+            return cached
+    data = _fetch_social_sentiment(symbol, days)
+    _daily_cache_put(SOCIAL_SENTIMENT_CACHE_KEY, symbol, data, cache_part)
+    return data
