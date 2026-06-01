@@ -824,6 +824,72 @@ class KlineSnapshot(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class MacroIndexDaily(Base):
+    """大盘指数日线数据"""
+
+    __tablename__ = 'macro_index_daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    index_code = Column(String(10), nullable=False, index=True)  # 000001, 399001, etc.
+    date = Column(Date, nullable=False, index=True)
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)
+    pct_chg = Column(Float)
+    change_amount = Column(Float)
+    data_source = Column(String(50))
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('index_code', 'date', name='uix_macro_index_date'),
+        Index('ix_macro_index_date', 'index_code', 'date'),
+    )
+
+
+class BondYieldDaily(Base):
+    """国债收益率日线数据"""
+
+    __tablename__ = 'bond_yield_daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    country = Column(String(5), nullable=False, index=True)  # cn, us
+    term = Column(String(5), nullable=False, index=True)  # 1y, 5y, 10y, 30y
+    date = Column(Date, nullable=False, index=True)
+    yield_value = Column(Float, nullable=False)  # 收益率 (%)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('country', 'term', 'date', name='uix_bond_country_term_date'),
+        Index('ix_bond_country_term_date', 'country', 'term', 'date'),
+    )
+
+
+class MacroIndicator(Base):
+    """宏观经济指标数据"""
+
+    __tablename__ = 'macro_indicator'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    indicator = Column(String(20), nullable=False, index=True)  # PMI, CPI, PPI, GDP, M2, etc.
+    period = Column(String(20), nullable=False, index=True)  # 2025年03月, 2025Q1, etc.
+    value = Column(Float)
+    yoy = Column(Float)  # 同比
+    mom = Column(Float)  # 环比
+    extra_json = Column(Text)  # 扩展字段 JSON
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('indicator', 'period', name='uix_macro_indicator_period'),
+        Index('ix_macro_indicator_period', 'indicator', 'period'),
+    )
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -1432,6 +1498,257 @@ class DatabaseManager:
                         return d
         except Exception:
             logger.debug("K线快照读取失败", exc_info=True)
+        return None
+
+    # ========================================================================
+    # Macro data persistence
+    # ========================================================================
+
+    def save_macro_index_daily(
+        self,
+        index_code: str,
+        records: list[dict],
+        data_source: str = "新浪",
+    ) -> int:
+        """批量保存指数日线数据到数据库（UPSERT by (index_code, date)）"""
+        if not records:
+            return 0
+        now = datetime.now()
+
+        def _write(session: Session) -> int:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            rows = []
+            for rec in records:
+                d = self._normalize_daily_date(rec.get("date"))
+                if d is None:
+                    continue
+                rows.append({
+                    "index_code": index_code,
+                    "date": d,
+                    "open": rec.get("open"),
+                    "high": rec.get("high"),
+                    "low": rec.get("low"),
+                    "close": rec.get("close"),
+                    "volume": rec.get("volume"),
+                    "amount": rec.get("amount"),
+                    "pct_chg": rec.get("pct_chg"),
+                    "change_amount": rec.get("change_amount"),
+                    "data_source": data_source,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            if not rows:
+                return 0
+            stmt = sqlite_insert(MacroIndexDaily).values(rows)
+            excluded = stmt.excluded
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["index_code", "date"],
+                    set_={
+                        "open": excluded.open,
+                        "high": excluded.high,
+                        "low": excluded.low,
+                        "close": excluded.close,
+                        "volume": excluded.volume,
+                        "amount": excluded.amount,
+                        "pct_chg": excluded.pct_chg,
+                        "change_amount": excluded.change_amount,
+                        "data_source": excluded.data_source,
+                        "updated_at": excluded.updated_at,
+                    },
+                )
+            )
+            session.flush()
+            return len(rows)
+
+        return self._run_write_transaction(f"save_macro_index_daily[{index_code}]", _write)
+
+    def get_macro_index_daily(
+        self,
+        index_code: str,
+        limit: int = 50,
+    ) -> list[dict] | None:
+        """获取指数日线历史数据"""
+        try:
+            with self.get_session() as session:
+                rows = session.execute(
+                    select(MacroIndexDaily)
+                    .where(MacroIndexDaily.index_code == index_code)
+                    .order_by(desc(MacroIndexDaily.date))
+                    .limit(limit)
+                ).scalars().all()
+                if rows:
+                    return [
+                        {
+                            "date": str(r.date),
+                            "open": r.open,
+                            "high": r.high,
+                            "low": r.low,
+                            "close": r.close,
+                            "volume": r.volume,
+                            "amount": r.amount,
+                            "pct_chg": r.pct_chg,
+                            "change_amount": r.change_amount,
+                        }
+                        for r in rows
+                    ]
+        except Exception:
+            logger.debug("指数日线读取失败", exc_info=True)
+        return None
+
+    def save_bond_yield_daily(
+        self,
+        country: str,
+        term: str,
+        records: list[dict],
+    ) -> int:
+        """批量保存国债收益率数据（UPSERT by (country, term, date)）"""
+        if not records:
+            return 0
+        now = datetime.now()
+
+        def _write(session: Session) -> int:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            rows = []
+            for rec in records:
+                d = self._normalize_daily_date(rec.get("date"))
+                if d is None:
+                    continue
+                rows.append({
+                    "country": country,
+                    "term": term,
+                    "date": d,
+                    "yield_value": rec.get("value"),
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            if not rows:
+                return 0
+            stmt = sqlite_insert(BondYieldDaily).values(rows)
+            excluded = stmt.excluded
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["country", "term", "date"],
+                    set_={
+                        "yield_value": excluded.yield_value,
+                        "updated_at": excluded.updated_at,
+                    },
+                )
+            )
+            session.flush()
+            return len(rows)
+
+        return self._run_write_transaction(f"save_bond_yield_daily[{country}:{term}]", _write)
+
+    def get_bond_yield_daily(
+        self,
+        country: str,
+        term: str,
+        limit: int = 30,
+    ) -> list[dict] | None:
+        """获取国债收益率历史数据"""
+        try:
+            with self.get_session() as session:
+                rows = session.execute(
+                    select(BondYieldDaily)
+                    .where(BondYieldDaily.country == country, BondYieldDaily.term == term)
+                    .order_by(desc(BondYieldDaily.date))
+                    .limit(limit)
+                ).scalars().all()
+                if rows:
+                    return [
+                        {"date": str(r.date), "value": r.yield_value} for r in rows
+                    ]
+        except Exception:
+            logger.debug("国债收益率读取失败", exc_info=True)
+        return None
+
+    def save_macro_indicator(
+        self,
+        indicator: str,
+        records: list[dict],
+    ) -> int:
+        """批量保存宏观经济指标数据（UPSERT by (indicator, period)）"""
+        if not records:
+            return 0
+        now = datetime.now()
+
+        def _write(session: Session) -> int:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            rows = []
+            for rec in records:
+                period = rec.get("period", "")
+                if not period:
+                    continue
+                extra_json = None
+                if rec.get("extra"):
+                    extra_json = json.dumps(rec["extra"], ensure_ascii=False)
+                rows.append({
+                    "indicator": indicator,
+                    "period": period,
+                    "value": rec.get("value"),
+                    "yoy": rec.get("yoy"),
+                    "mom": rec.get("mom"),
+                    "extra_json": extra_json,
+                    "created_at": now,
+                    "updated_at": now,
+                })
+            if not rows:
+                return 0
+            stmt = sqlite_insert(MacroIndicator).values(rows)
+            excluded = stmt.excluded
+            session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=["indicator", "period"],
+                    set_={
+                        "value": excluded.value,
+                        "yoy": excluded.yoy,
+                        "mom": excluded.mom,
+                        "extra_json": excluded.extra_json,
+                        "updated_at": excluded.updated_at,
+                    },
+                )
+            )
+            session.flush()
+            return len(rows)
+
+        return self._run_write_transaction(f"save_macro_indicator[{indicator}]", _write)
+
+    def get_macro_indicator(
+        self,
+        indicator: str,
+        limit: int = 120,
+    ) -> list[dict] | None:
+        """获取宏观经济指标历史数据"""
+        try:
+            with self.get_session() as session:
+                rows = session.execute(
+                    select(MacroIndicator)
+                    .where(MacroIndicator.indicator == indicator)
+                    .order_by(desc(MacroIndicator.period))
+                    .limit(limit)
+                ).scalars().all()
+                if rows:
+                    result = []
+                    for r in rows:
+                        rec = {
+                            "period": r.period,
+                            "value": r.value,
+                            "yoy": r.yoy,
+                            "mom": r.mom,
+                        }
+                        if r.extra_json:
+                            try:
+                                rec["extra"] = json.loads(r.extra_json)
+                            except Exception:
+                                pass
+                        result.append(rec)
+                    return result
+        except Exception:
+            logger.debug("宏观指标读取失败", exc_info=True)
         return None
 
     def get_recent_news(self, code: str, days: int = 7, limit: int = 20) -> List[NewsIntel]:

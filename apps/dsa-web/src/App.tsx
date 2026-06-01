@@ -14,6 +14,7 @@ const MarketStocksPage = lazy(() => import('./pages/MarketStocksPage'));
 const WatchlistManagePage = lazy(() => import('./pages/WatchlistManagePage'));
 const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
 const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
+const MacroDataPage = lazy(() => import('./pages/MacroDataPage'));
 const MarketAnalysisPage = lazy(() => import('./pages/MarketAnalysisPage'));
 
 const PageFallback: React.FC = () => (
@@ -76,6 +77,7 @@ const AppContent: React.FC = () => {
           <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
           <Route path="/analysis" element={<StockAnalysisPage />} />
+          <Route path="/macro" element={<MacroDataPage />} />
           <Route path="/market" element={<MarketAnalysisPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/settings" element={<SettingsPage />} />
