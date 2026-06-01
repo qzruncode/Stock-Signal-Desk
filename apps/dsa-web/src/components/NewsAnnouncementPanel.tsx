@@ -1,15 +1,11 @@
 import React from 'react';
-import { AlertTriangle, CheckCircle2, FileQuestion, Megaphone, Newspaper, Smile, Frown, FileText, Target, TrendingUp } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileQuestion, Megaphone, Newspaper, Smile, Frown, FileText, TrendingUp } from 'lucide-react';
 import { cn } from '../utils/cn';
 import { type NewsResponse, type AnnouncementsResponse, type SentimentResponse, type ResearchReportResponse } from '../api/financials';
 
 // ---------------------------------------------------------------------------
 // Formatters
 // ---------------------------------------------------------------------------
-
-function formatSourceChain(sources?: string[]): string {
-  return sources?.filter(Boolean).join(' / ') || '-';
-}
 
 // ---------------------------------------------------------------------------
 // Sentiment panel
@@ -23,7 +19,6 @@ const LABEL_CONFIG = {
 
 export function SentimentPanel({ sentiment }: { sentiment: SentimentResponse }) {
   const score = sentiment.sentiment_score;
-  const scoreAbs = Math.abs(score);
   const isPositive = score > 0;
   const isNegative = score < 0;
   const total = sentiment.positive_count + sentiment.negative_count + sentiment.neutral_count;
