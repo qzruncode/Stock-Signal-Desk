@@ -2912,8 +2912,9 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
                 else:
                     pub_dt = _parse_date(update_time)
 
-                if pub_dt and pub_dt < cutoff:
-                    continue
+                # 股吧帖子本来就少，不过滤时间，全部返回
+                # if pub_dt and pub_dt < cutoff:
+                #     continue
 
                 # NLP 情绪分析
                 score = _classify_sentiment(title)
