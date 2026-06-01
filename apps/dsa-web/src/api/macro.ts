@@ -15,7 +15,7 @@ export const macroApi = {
   /**
    * Fetch government bond yield curve.
    * @param country - "cn" | "us"
-   * @param term - "1y" | "5y" | "10y" | "30y"
+   * @param term - "2y" | "5y" | "10y" | "30y"
    */
   getBondYield(country = "cn", term = "10y") {
     return apiClient
@@ -35,6 +35,28 @@ export const macroApi = {
       .get(`/api/v1/macro/indicator`, {
         params: { indicator, months },
       })
+      .then((r) => r.data);
+  },
+
+  /**
+   * Fetch sector fund flow ranking.
+   * @param type - "industry" | "concept"
+   * @param topN - Number of top sectors (default 10)
+   */
+  getSectorFlow(type: string = "industry", topN = 10) {
+    return apiClient
+      .get(`/api/v1/macro/sector-flow`, {
+        params: { type, top_n: topN },
+      })
+      .then((r) => r.data);
+  },
+
+  /**
+   * Fetch market breadth data.
+   */
+  getMarketBreadth() {
+    return apiClient
+      .get(`/api/v1/macro/market-breadth`)
       .then((r) => r.data);
   },
 };

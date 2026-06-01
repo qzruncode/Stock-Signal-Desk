@@ -50,7 +50,7 @@ export interface BondYieldResponse {
   term: string;
   latest_yield: number | null;
   history: BondYieldPoint[];
-  spread: number | null; // 10y - 1y
+  spread: number | null; // 10y - 2y
   _fetched_at: string;
   _cached: boolean;
   source: string;
@@ -59,11 +59,11 @@ export interface BondYieldResponse {
 
 export const BOND_COUNTRY_OPTIONS: Record<string, string> = {
   cn: "中国",
-  // us: "美国", // TODO: FRED API
+  us: "美国",
 };
 
 export const BOND_TERM_OPTIONS: Record<string, string> = {
-  "1y": "1年期",
+  "2y": "2年期",
   "5y": "5年期",
   "10y": "10年期",
   "30y": "30年期",
@@ -102,3 +102,54 @@ export const INDICATOR_OPTIONS: Record<string, string> = {
   "社融": "社会融资规模",
   LPR: "贷款市场报价利率",
 };
+
+// ---------------------------------------------------------------------------
+// Sector fund flow
+// ---------------------------------------------------------------------------
+
+export interface SectorFlowRecord {
+  name: string;
+  pct_chg: number | null;
+  main_net_inflow: number | null;
+  super_large_net_inflow: number | null;
+  large_net_inflow: number | null;
+  total_amount?: number | null;
+  up_count?: number | null;
+  down_count?: number | null;
+  leading_stock?: string | null;
+}
+
+export interface SectorFlowResponse {
+  type: string;
+  top_n: number;
+  inflow_top: SectorFlowRecord[];
+  outflow_top: SectorFlowRecord[];
+  records: SectorFlowRecord[]; // compat
+  _fetched_at: string;
+  _cached: boolean;
+  source: string;
+  errors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Market breadth
+// ---------------------------------------------------------------------------
+
+export interface MarketBreadthResponse {
+  up_count: number | null;
+  down_count: number | null;
+  flat_count?: number | null;
+  advance_decline_ratio: number | null;
+  new_high_60d?: number | null;
+  new_low_60d?: number | null;
+  consecutive_up_days?: number | null;
+  consecutive_down_days?: number | null;
+  limit_up_count: number | null;
+  limit_down_count: number | null;
+  broken_board_rate: number | null;
+  volume: number | null;
+  _fetched_at: string;
+  _cached: boolean;
+  source: string;
+  errors: string[];
+}
