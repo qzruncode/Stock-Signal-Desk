@@ -395,6 +395,12 @@ export function SocialSentimentPanel({ social }: { social: SocialSentimentRespon
         </span>
       </h3>
 
+      {/* 热度概览 */}
+      <div className="flex items-center gap-4 text-xs text-slate-500">
+        <span>总阅读 {social.total_read.toLocaleString()}</span>
+        <span>总评论 {social.total_reply.toLocaleString()}</span>
+      </div>
+
       <div className="flex items-center gap-4">
         <div className="text-center">
           <div className={cn('text-4xl font-bold tabular-nums',

@@ -2859,14 +2859,14 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
     """获取社交媒体讨论热度和情绪。
 
     数据源:
-      1. 东方财富千股千评 (datacenter-web) — 每日评分趋势
-      2. 东方财富个股新闻 — 讨论热度 + 情绪分析
-      3. 券商研报 — 专业情绪
+      1. 东方财富股吧 — 帖子列表 (标题+阅读+评论)
+      2. 东方财富千股千评 — 每日评分趋势
+      3. jieba 分词 + 金融情绪词典 — NLP 情绪分析
     """
     import time as _time
-    import json as _json
-    import akshare as ak
+    import re as _re
     import requests as _requests
+    import akshare as ak
 
     t0 = _time.time()
     code = _normalize_symbol(symbol)
@@ -2879,7 +2879,64 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
         return d >= cutoff
 
     # ----------------------------------------------------------------
-    # 1. 千股千评历史评分 (datacenter-web API)
+    # 1. 东方财富股吧帖子
+    # ----------------------------------------------------------------
+    guba_items: list[dict] = []
+    try:
+        url = f"https://guba.eastmoney.com/list,{code},1,f.html"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        }
+        r = _requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            # 提取帖子: 阅读数、评论数、post_id、标题、更新时间
+            pattern = (
+                r'<div class="read">(\d+)</div>.*?'
+                r'<div class="reply">(\d+)</div>.*?'
+                r'<a data-postid="(\d+)" href="/news,\w+,(\d+)\.html">(.*?)</a>.*?'
+                r'<div class="update">(.*?)</div>'
+            )
+            posts = _re.findall(pattern, r.text, _re.DOTALL)
+            for p in posts:
+                read_count, reply_count, post_id, _, title, update_time = p
+                title = _safe_str(title)
+
+                # 解析日期 (格式: "06-01 08:00" 或 "2025-12-31")
+                date_match = _re.match(r'(\d{2})-(\d{2})\s+(\d{2}):(\d{2})', update_time)
+                if date_match:
+                    month, day, hour, minute = date_match.groups()
+                    year = datetime.now().year
+                    pub_dt = datetime(year, int(month), int(day), int(hour), int(minute))
+                    if pub_dt > datetime.now():
+                        pub_dt = pub_dt.replace(year=year - 1)
+                else:
+                    pub_dt = _parse_date(update_time)
+
+                if pub_dt and pub_dt < cutoff:
+                    continue
+
+                # NLP 情绪分析
+                score = _classify_sentiment(title)
+                label = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
+
+                guba_items.append({
+                    "title": title,
+                    "content": "",
+                    "source": "股吧",
+                    "url": f"https://guba.eastmoney.com/news,{code},{post_id}.html",
+                    "read_count": int(read_count),
+                    "reply_count": int(reply_count),
+                    "sentiment_score": round(score, 3),
+                    "label": label,
+                    "publish_time": pub_dt.isoformat() if pub_dt else None,
+                })
+            logger.info(f"[SocialSentiment] Guba OK for {code}: {len(guba_items)} posts")
+    except Exception as exc:
+        errors.append(f"股吧: {exc}")
+        logger.warning(f"[SocialSentiment] Guba failed for {code}: {exc}")
+
+    # ----------------------------------------------------------------
+    # 2. 千股千评历史评分
     # ----------------------------------------------------------------
     score_trend: list[dict] = []
     current_score: float | None = None
@@ -2916,129 +2973,58 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
         errors.append(f"千股千评: {exc}")
 
     # ----------------------------------------------------------------
-    # 2. 个股新闻 + 情绪分析
-    # ----------------------------------------------------------------
-    news_items: list[dict] = []
-    try:
-        df = ak.stock_news_em(symbol=code)
-        if df is not None and not df.empty:
-            for _, row in df.iterrows():
-                pub_time = _parse_date(row.get("发布时间"))
-                if not _is_recent(pub_time):
-                    continue
-                title = _safe_str(row.get("新闻标题"))
-                content = _safe_str(row.get("新闻内容"))
-                score = _classify_sentiment(title + " " + content)
-                label = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
-                news_items.append({
-                    "title": title,
-                    "content": content,
-                    "source": _safe_str(row.get("文章来源")) or "东方财富",
-                    "url": "http://finance.eastmoney.com/a/" + _safe_str(row.get("code", "")) + ".html",
-                    "sentiment_score": round(score, 3),
-                    "label": label,
-                    "publish_time": pub_time.isoformat() if pub_time else None,
-                })
-    except Exception as exc:
-        errors.append(f"东方财富新闻: {exc}")
-
-    # 翻页补充
-    if len(news_items) < 5:
-        try:
-            for page in range(1, 4):
-                inner_param = {
-                    "uid": "", "keyword": code,
-                    "type": ["cmsArticleWebOld"],
-                    "client": "web", "clientType": "web", "clientVersion": "curr",
-                    "param": {
-                        "cmsArticleWebOld": {
-                            "searchScope": "default", "sort": "default",
-                            "pageIndex": page, "pageSize": 10,
-                            "preTag": "", "postTag": "",
-                        }
-                    },
-                }
-                r = _requests.get(
-                    "https://search-api-web.eastmoney.com/search/jsonp",
-                    params={"cb": "", "param": _json.dumps(inner_param, ensure_ascii=False)},
-                    headers={"accept": "*/*", "referer": f"https://so.eastmoney.com/news/s?keyword={code}",
-                             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
-                    timeout=15,
-                )
-                if not r.text or not r.text.strip():
-                    break
-                jdata = r.json()
-                articles = jdata.get("result", {}).get("cmsArticleWebOld", [])
-                if not articles:
-                    break
-                for art in articles:
-                    pub_time = _parse_date(art.get("date"))
-                    if not _is_recent(pub_time):
-                        continue
-                    title = _safe_str(art.get("title", "")).replace("<em>", "").replace("</em>", "")
-                    content = _safe_str(art.get("content", "")).replace("<em>", "").replace("</em>", "")
-                    score = _classify_sentiment(title + " " + content)
-                    label = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
-                    news_items.append({
-                        "title": title,
-                        "content": content,
-                        "source": _safe_str(art.get("mediaName")) or "东方财富",
-                        "url": "http://finance.eastmoney.com/a/" + _safe_str(art.get("code", "")) + ".html",
-                        "sentiment_score": round(score, 3),
-                        "label": label,
-                        "publish_time": pub_time.isoformat() if pub_time else None,
-                    })
-                if len(articles) < 10:
-                    break
-        except Exception as exc:
-            errors.append(f"补充新闻: {exc}")
-
-    # ----------------------------------------------------------------
     # 3. 聚合统计
     # ----------------------------------------------------------------
-    positive_count = sum(1 for i in news_items if i["label"] == "positive")
-    negative_count = sum(1 for i in news_items if i["label"] == "negative")
-    neutral_count = sum(1 for i in news_items if i["label"] == "neutral")
+    all_items = guba_items
+
+    positive_count = sum(1 for i in all_items if i["label"] == "positive")
+    negative_count = sum(1 for i in all_items if i["label"] == "negative")
+    neutral_count = sum(1 for i in all_items if i["label"] == "neutral")
 
     # 热度趋势 (按日统计)
     daily_counts: dict[str, dict] = {}
-    for item in news_items:
+    for item in all_items:
         date_str = (item.get("publish_time") or "")[:10]
         if date_str:
             daily = daily_counts.setdefault(date_str, {
-                "total": 0, "positive": 0, "negative": 0, "neutral": 0})
+                "total": 0, "positive": 0, "negative": 0, "neutral": 0,
+                "read_total": 0, "reply_total": 0,
+            })
             daily["total"] += 1
             daily[item["label"]] += 1
+            daily["read_total"] += item.get("read_count", 0)
+            daily["reply_total"] += item.get("reply_count", 0)
 
-    # 加入千股千评评分到每日趋势
+    # 加入千股千评评分
     for st in score_trend:
         if st["date"] in daily_counts:
             daily_counts[st["date"]]["score"] = st["score"]
         else:
             daily_counts[st["date"]] = {
                 "total": 0, "positive": 0, "negative": 0, "neutral": 0,
-                "score": st["score"],
+                "read_total": 0, "reply_total": 0, "score": st["score"],
             }
 
-    # 总体情绪 (-100 ~ +100)
+    # 总体情绪
     total = positive_count + negative_count + neutral_count
     if total > 0:
         overall_score = round(((positive_count - negative_count) / total) * 100, 1)
     else:
         overall_score = 0
 
-    # 讨论热度排名 (总讨论数)
-    total_discussion = total
+    total_read = sum(i.get("read_count", 0) for i in all_items)
+    total_reply = sum(i.get("reply_count", 0) for i in all_items)
 
     logger.info(f"[SocialSentiment] total {_time.time() - t0:.1f}s for {code}: "
-                f"{len(news_items)} posts, score={overall_score}, "
-                f"diagnose_score={current_score}")
+                f"{len(all_items)} guba posts, score={overall_score}")
 
     return {
         "symbol": code,
         "days": days,
         "overall_score": overall_score,
-        "total_discussion": total_discussion,
+        "total_discussion": total,
+        "total_read": total_read,
+        "total_reply": total_reply,
         "positive_count": positive_count,
         "negative_count": negative_count,
         "neutral_count": neutral_count,
@@ -3048,7 +3034,7 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
             {"date": k, **v}
             for k, v in sorted(daily_counts.items())
         ],
-        "items": news_items[:50],
+        "items": all_items[:50],
         "errors": errors,
         "_fetched_at": datetime.now().isoformat(),
         "_cached": False,

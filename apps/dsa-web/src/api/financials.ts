@@ -392,6 +392,8 @@ export interface SocialSentimentItem {
   content: string;
   source: string;
   url: string;
+  read_count: number;
+  reply_count: number;
   sentiment_score: number;
   label: 'positive' | 'negative' | 'neutral';
   publish_time: string | null;
@@ -409,6 +411,8 @@ export interface SocialDailyTrendItem {
   positive: number;
   negative: number;
   neutral: number;
+  read_total?: number;
+  reply_total?: number;
   score?: number;
 }
 
@@ -417,6 +421,8 @@ export interface SocialSentimentResponse {
   days: number;
   overall_score: number;
   total_discussion: number;
+  total_read: number;
+  total_reply: number;
   positive_count: number;
   negative_count: number;
   neutral_count: number;
