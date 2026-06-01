@@ -2825,7 +2825,7 @@ def _fetch_research_reports(symbol: str, days: int) -> dict:
 @router.get("/research-report", summary="获取券商研报")
 def get_research_report(
     symbol: str = Query(..., description="股票代码"),
-    days: int = Query(365, ge=1, le=730, description="查询最近N天"),
+    days: int = Query(1095, ge=1, le=1095, description="查询最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取券商对公司的最新研究报告摘要。

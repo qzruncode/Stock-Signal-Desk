@@ -372,7 +372,7 @@ export interface ResearchReportResponse {
 export const researchReportApi = {
   async getResearchReports(
     symbol: string,
-    days: number = 730,
+    days: number = 1095,
     force: boolean = false,
   ): Promise<ResearchReportResponse> {
     const response = await apiClient.get<ResearchReportResponse>(
