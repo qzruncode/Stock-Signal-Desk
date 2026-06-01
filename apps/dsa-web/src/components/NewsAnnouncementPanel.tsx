@@ -397,8 +397,8 @@ export function SocialSentimentPanel({ social }: { social: SocialSentimentRespon
 
       {/* 热度概览 */}
       <div className="flex items-center gap-4 text-xs text-slate-500">
-        <span>总阅读 {social.total_read.toLocaleString()}</span>
-        <span>总评论 {social.total_reply.toLocaleString()}</span>
+        <span>总阅读 {(social.total_read ?? 0).toLocaleString()}</span>
+        <span>总评论 {(social.total_reply ?? 0).toLocaleString()}</span>
       </div>
 
       <div className="flex items-center gap-4">
