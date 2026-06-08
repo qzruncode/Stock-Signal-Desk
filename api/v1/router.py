@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import analysis, auth, history, system_config, prompts, batch, stocks, watchlist, quotes, kline, market_status, sectors, stock_info, financials, macro
+from api.v1.endpoints import analysis, auth, history, system_config, prompts, batch, stocks, watchlist, quotes, kline, market_status, sectors, stock_info, financials, macro, agent, rss
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -104,4 +104,16 @@ router.include_router(
     macro.router,
     prefix="/macro",
     tags=["Macro"]
+)
+
+router.include_router(
+    agent.router,
+    prefix="",
+    tags=["Agent"]
+)
+
+router.include_router(
+    rss.router,
+    prefix="/rss",
+    tags=["RSS"]
 )

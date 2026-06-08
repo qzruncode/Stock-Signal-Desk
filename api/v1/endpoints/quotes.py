@@ -18,6 +18,28 @@ router = APIRouter()
 _fetcher: AkshareFetcher | None = None
 
 
+def _quote_data_time(item: dict) -> str | None:
+    return item.get("_fetched_at") or item.get("data_time") or item.get("trade_time")
+
+
+def _mark_quote_freshness(items: list[dict], *, trading: bool, fallback_used: bool) -> list[dict]:
+    today = datetime.now().date()
+    for item in items:
+        data_time = _quote_data_time(item)
+        is_stale = False
+        if data_time:
+            try:
+                parsed = datetime.fromisoformat(str(data_time).replace("Z", "+00:00"))
+                if trading:
+                    is_stale = parsed.date() < today
+            except ValueError:
+                pass
+        item["data_time"] = data_time
+        item["is_stale"] = is_stale
+        item["fallback_used"] = fallback_used
+    return items
+
+
 def _get_fetcher() -> AkshareFetcher:
     global _fetcher
     if _fetcher is None:
@@ -94,7 +116,13 @@ def get_realtime_quotes(
                 logger.info(f"[行情缓存] 缓存命中 {len(cached)} 只, 需拉取 {len(missing)} 只")
             else:
                 logger.info(f"[行情缓存] 全部命中 {len(cached)} 只，跳过 API")
-                return {"items": results, "total": len(results)}
+                return {
+                    "items": _mark_quote_freshness(results, trading=trading, fallback_used=True),
+                    "total": len(results),
+                    "data_time": max((_quote_data_time(item) for item in results if _quote_data_time(item)), default=None),
+                    "is_stale": any(item.get("is_stale") for item in results),
+                    "fallback_used": True,
+                }
             symbols_list = missing
         else:
             logger.info("[行情缓存] 无缓存，需全量拉取")
@@ -115,6 +143,20 @@ def get_realtime_quotes(
 
     if not trading:
         # 合并缓存结果和拉取结果
-        return {"items": results + fetch_results, "total": len(results) + len(fetch_results)}
+        merged = _mark_quote_freshness(results + fetch_results, trading=trading, fallback_used=bool(results))
+        return {
+            "items": merged,
+            "total": len(merged),
+            "data_time": max((_quote_data_time(item) for item in merged if _quote_data_time(item)), default=None),
+            "is_stale": any(item.get("is_stale") for item in merged),
+            "fallback_used": bool(results),
+        }
 
-    return {"items": fetch_results, "total": len(fetch_results)}
+    marked = _mark_quote_freshness(fetch_results, trading=trading, fallback_used=False)
+    return {
+        "items": marked,
+        "total": len(marked),
+        "data_time": max((_quote_data_time(item) for item in marked if _quote_data_time(item)), default=None),
+        "is_stale": any(item.get("is_stale") for item in marked),
+        "fallback_used": False,
+    }

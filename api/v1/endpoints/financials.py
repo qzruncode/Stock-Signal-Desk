@@ -179,7 +179,7 @@ def _safe_pct(val) -> Optional[float]:
 
 
 def _cache_key(symbol: str) -> str:
-    return f"{CACHE_KEY}:{symbol}:{datetime.now().strftime('%Y%m%d')}"
+    return f"{CACHE_KEY}:{_normalize_symbol(symbol)}:{datetime.now().strftime('%Y%m%d')}"
 
 
 def _cache_get(symbol: str) -> dict | None:
@@ -404,8 +404,9 @@ def _fetch_financials(symbol: str, periods: int = 12) -> dict:
     import time as _time
 
     t0 = _time.time()
+    code = _normalize_symbol(symbol)
     result: dict = {
-        'symbol': symbol,
+        'symbol': code,
         'periods': periods,
         'items': [],
         '_fetched_at': datetime.now().isoformat(),
@@ -415,7 +416,7 @@ def _fetch_financials(symbol: str, periods: int = 12) -> dict:
 
     # Source 1: 同花顺
     try:
-        items = _fetch_from_ths(symbol, periods)
+        items = _fetch_from_ths(code, periods)
         if items:
             result['items'] = items
             result['source'] = '同花顺'
@@ -428,7 +429,7 @@ def _fetch_financials(symbol: str, periods: int = 12) -> dict:
 
     # Source 2: 新浪财经
     try:
-        items = _fetch_from_sina(symbol, periods)
+        items = _fetch_from_sina(code, periods)
         if items:
             result['items'] = items
             result['source'] = '新浪财经'
@@ -468,7 +469,7 @@ def get_financials(
 
     按天缓存。
     """
-    symbol = symbol.strip()
+    symbol = _normalize_symbol(symbol)
 
     if not force:
         cached = _cache_get(symbol)
@@ -1189,7 +1190,7 @@ FINS_STATEMENTS_CACHE_KEY = "financials:statements:v2"
 
 
 def _fins_cache_key(symbol: str, periods: int) -> str:
-    return f"{FINS_STATEMENTS_CACHE_KEY}:{symbol}:p{periods}:{datetime.now().strftime('%Y%m%d')}"
+    return f"{FINS_STATEMENTS_CACHE_KEY}:{_normalize_symbol(symbol)}:p{periods}:{datetime.now().strftime('%Y%m%d')}"
 
 
 def _fins_cache_get(symbol: str, periods: int) -> dict | None:
@@ -2021,8 +2022,9 @@ def _fetch_financial_statements(symbol: str, periods: int = 12) -> dict:
     import time as _time
 
     t0 = _time.time()
+    code = _normalize_symbol(symbol)
     result: dict = {
-        'symbol': symbol,
+        'symbol': code,
         'periods': periods,
         'balance_sheet': [],
         'income_statement': [],
@@ -2045,7 +2047,7 @@ def _fetch_financial_statements(symbol: str, periods: int = 12) -> dict:
 
     for src_name, src_fn in sources:
         try:
-            src_data = src_fn(symbol, periods)
+            src_data = src_fn(code, periods)
             if not base_loaded:
                 result.update(src_data)
                 used_sources.append(src_name)
@@ -2097,7 +2099,7 @@ def get_financial_statements(
 
     数据源：东方财富 (stock_*_by_report_em)，按天缓存。
     """
-    symbol = symbol.strip()
+    symbol = _normalize_symbol(symbol)
 
     if not force:
         cached = _fins_cache_get(symbol, periods)
@@ -2127,22 +2129,632 @@ def get_financial_statements(
 # Stock News Search
 # ============================================================================
 
-NEWS_CACHE_KEY = "stocks:news:v1"
+NEWS_CACHE_KEY = "stocks:news:v3:rss_structured"
+
+
+def _rss_stock_keywords(code: str) -> list[str]:
+    keywords = [code]
+    try:
+        from src.data.stock_index_loader import get_index_stock_name
+
+        stock_name = get_index_stock_name(code)
+        if stock_name:
+            keywords.append(stock_name)
+            normalized_name = stock_name.replace("Ａ", "A").replace("Ｂ", "B")
+            if normalized_name != stock_name:
+                keywords.append(normalized_name)
+    except Exception as exc:
+        logger.debug("[RSSHub] stock name lookup failed for %s: %s", code, exc)
+
+    deduped = []
+    seen_keywords = set()
+    for keyword in keywords:
+        value = _safe_str(keyword)
+        if value and value not in seen_keywords:
+            seen_keywords.add(value)
+            deduped.append(value)
+    return deduped
+
+
+def _rss_stock_industry_keywords(code: str) -> list[str]:
+    keywords: list[str] = []
+    try:
+        import akshare as ak
+
+        df = ak.stock_individual_info_em(symbol=code, timeout=10)
+        if df is not None and not df.empty:
+            info_map = {str(row.get("item", "")): row.get("value") for _, row in df.iterrows()}
+            industry = _safe_str(info_map.get("行业"))
+            if industry:
+                keywords.append(industry)
+    except Exception as exc:
+        logger.debug("[RSSHub] stock industry lookup failed for %s: %s", code, exc)
+
+    stock_name = next((kw for kw in _rss_stock_keywords(code) if kw != code), "")
+    fallback_map = {
+        "中金岭南": ["有色金属", "铅锌", "锌", "铅"],
+        "贵州茅台": ["白酒", "食品饮料"],
+        "平安银行": ["银行"],
+        "宁德时代": ["电池", "新能源"],
+    }
+    keywords.extend(fallback_map.get(stock_name, []))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for keyword in keywords:
+        value = _safe_str(keyword)
+        if value and value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return deduped
+
+
+def _normalize_rss_text(value: Any) -> str:
+    text = re.sub(r"<[^>]+>", "", _safe_str(value))
+    return text.replace("Ａ", "A").replace("Ｂ", "B").upper()
+
+
+def _rss_entry_matches_keywords(entry: dict, keywords: list[str]) -> bool:
+    text = " ".join(
+        _normalize_rss_text(entry.get(field))
+        for field in ("title", "summary", "author", "link")
+    )
+    return any(_normalize_rss_text(keyword) in text for keyword in keywords)
+
+
+def _rss_entry_is_recent(entry: dict, cutoff: datetime) -> bool:
+    value = entry.get("published")
+    if not value:
+        return True
+    parsed = _parse_date(value)
+    if parsed is None:
+        return True
+    if getattr(parsed, "tzinfo", None) is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed >= cutoff
+
+
+def _rss_stock_feed_specs(keywords: list[str]) -> list[tuple[str, dict, str, bool]]:
+    feed_specs: list[tuple[str, dict, str, bool]] = []
+    for keyword in keywords:
+        feed_specs.append((
+            "eastmoney_search",
+            {"keyword": keyword},
+            f"东方财富搜索:{keyword}",
+            True,
+        ))
+    feed_specs.extend([
+        ("cls", {"category": "telegraph"}, "财联社电报", True),
+        ("cls", {"category": "depth"}, "财联社深度", True),
+        ("wallstreetcn_live", {}, "华尔街见闻实时快讯", True),
+        ("wallstreetcn", {"category": "shares"}, "华尔街见闻股市", True),
+        ("wallstreetcn_hot", {}, "华尔街见闻热门", True),
+        ("sina_roll", {"category": "2517"}, "新浪股市滚动", True),
+        ("sina_roll", {"category": "2516"}, "新浪财经滚动", True),
+        ("sina_finance", {"category": "rollnews"}, "新浪财经频道", True),
+        ("yicai", {"category": "brief"}, "第一财经快讯", True),
+        ("yicai", {"category": "latest"}, "第一财经最新", True),
+        ("yicai", {"category": "news"}, "第一财经新闻", True),
+        ("36kr", {"category": "newsflashes"}, "36氪快讯", True),
+        ("36kr", {"category": "information/web_news"}, "36氪网页新闻", True),
+    ])
+    return feed_specs
+
+
+def _rsshub_is_slow_spec(spec: tuple[str, dict, str, bool]) -> bool:
+    source_id, params, _, _ = spec
+    category = _safe_str(params.get("category"))
+    keyword = _safe_str(params.get("keyword"))
+
+    if source_id == "36kr" and category == "information/web_news":
+        return True
+    if source_id == "yicai" and category in {"latest", "news"}:
+        return True
+    if source_id == "sina_finance" and category == "rollnews":
+        return True
+    if source_id == "cls" and category == "depth":
+        return True
+    if source_id == "wallstreetcn_hot":
+        return True
+    if source_id == "eastmoney_search" and keyword and len(keyword) > 6:
+        return True
+    return False
+
+
+def _rsshub_enough_entries(entries: list[dict], target: int) -> bool:
+    if len(entries) < target:
+        return False
+    return len(_dedupe_rss_entries(entries)) >= target
+
+
+def _fetch_rsshub_entries(
+    code: str,
+    days: int,
+    feed_specs: list[tuple[str, dict, str, bool]],
+    *,
+    keywords: Optional[list[str]] = None,
+    limit: int = 50,
+    max_workers: int = 8,
+    timeout: float = 6.0,
+    target_items: int = 8,
+) -> tuple[list[dict], list[str], list[str]]:
+    errors: list[str] = []
+    entries: list[dict] = []
+    cutoff = datetime.now() - timedelta(days=days)
+    keywords = keywords or _rss_stock_keywords(code)
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from api.v1.endpoints.rss import _build_feed_url, _fetch_rss_feed
+
+        def _fetch_one(spec: tuple[str, dict, str, bool], phase_timeout: float) -> tuple[str, bool, dict]:
+            source_id, params, label, require_match = spec
+            feed_url = _build_feed_url(source_id, **params)
+            return label, require_match, _fetch_rss_feed(feed_url, limit=limit, timeout=phase_timeout)
+
+        def _collect(specs: list[tuple[str, dict, str, bool]], *, phase_timeout: float, phase_workers: int) -> None:
+            if not specs:
+                return
+            with ThreadPoolExecutor(max_workers=max(1, min(phase_workers, len(specs) or 1))) as pool:
+                futures = {pool.submit(_fetch_one, spec, phase_timeout): spec for spec in specs}
+                for future in as_completed(futures):
+                    _, _, label, _ = futures[future]
+                    try:
+                        fetched_label, require_match, rss_result = future.result()
+                    except Exception as exc:
+                        errors.append(f"RSSHub {label}: {exc}")
+                        logger.warning("[RSSHub] feed failed for %s/%s: %s", code, label, exc)
+                        continue
+
+                    for error in rss_result.get("errors", []) or []:
+                        errors.append(f"RSSHub {fetched_label}: {error}")
+
+                    for entry in rss_result.get("items", []) or []:
+                        if not _rss_entry_is_recent(entry, cutoff):
+                            continue
+                        if require_match and not _rss_entry_matches_keywords(entry, keywords):
+                            continue
+                        entry = dict(entry)
+                        entry["_rss_source_id"] = futures[future][0]
+                        entry["_rss_source_label"] = fetched_label
+                        entries.append(entry)
+
+        fast_specs = [spec for spec in feed_specs if not _rsshub_is_slow_spec(spec)]
+        slow_specs = [spec for spec in feed_specs if _rsshub_is_slow_spec(spec)]
+
+        _collect(
+            fast_specs,
+            phase_timeout=max(1.5, min(timeout, 4.0)),
+            phase_workers=max(1, min(max_workers, 4)),
+        )
+        if slow_specs and not _rsshub_enough_entries(entries, target_items):
+            _collect(
+                slow_specs,
+                phase_timeout=max(1.5, min(timeout, 2.5)),
+                phase_workers=max(1, min(max_workers, 2)),
+            )
+    except Exception as exc:
+        errors.append(f"RSSHub 聚合: {exc}")
+        logger.warning("[RSSHub] aggregate failed for %s: %s", code, exc)
+
+    return entries, keywords, errors
+
+
+def _rss_entry_text(entry: dict) -> str:
+    return re.sub(r"<[^>]+>", "", _safe_str(entry.get("title") or entry.get("summary")))
+
+
+def _rss_entry_summary(entry: dict, limit: int = 180) -> str:
+    text = re.sub(r"<[^>]+>", "", _safe_str(entry.get("summary")))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _rss_entry_date(entry: dict) -> Optional[datetime]:
+    parsed = _parse_date(entry.get("published"))
+    if parsed and getattr(parsed, "tzinfo", None) is not None:
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+def _dedupe_rss_entries(entries: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for entry in entries:
+        key = re.sub(r"\s+", "", _rss_entry_text(entry)).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(entry)
+    unique.sort(key=lambda item: _rss_entry_date(item) or datetime.min, reverse=True)
+    return unique
+
+
+def _fetch_direct_sentiment_sources(symbol: str, days: int) -> tuple[list[dict], list[str]]:
+    """Fallback to direct AkShare news/report feeds when RSSHub coverage is empty or too thin."""
+    import akshare as ak
+
+    code = _normalize_symbol(symbol)
+    cutoff = datetime.now() - timedelta(days=days)
+    items: list[dict] = []
+    errors: list[str] = []
+
+    try:
+        df = ak.stock_news_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("发布时间"))
+                if pub_time is not None and pub_time < cutoff:
+                    continue
+                items.append({
+                    "title": _safe_str(row.get("新闻标题")),
+                    "content": _safe_str(row.get("新闻内容")),
+                    "date_str": pub_time.date().isoformat() if pub_time else None,
+                    "source": _safe_str(row.get("文章来源")) or "东方财富新闻",
+                })
+    except Exception as exc:
+        errors.append(f"东方财富新闻直连: {exc}")
+
+    try:
+        df = ak.stock_research_report_em(symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("日期"))
+                if pub_time is not None and pub_time < cutoff:
+                    continue
+                institution = _safe_str(row.get("机构"))
+                rating = _safe_str(row.get("东财评级"))
+                summary_parts = [part for part in (institution, rating) if part]
+                items.append({
+                    "title": _safe_str(row.get("报告名称")),
+                    "content": "；".join(summary_parts),
+                    "date_str": pub_time.date().isoformat() if pub_time else None,
+                    "source": institution or "东方财富研报",
+                })
+    except Exception as exc:
+        errors.append(f"东方财富研报直连: {exc}")
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('date_str', '')}").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped, errors
+
+
+def _fetch_direct_news_sources(symbol: str, days: int) -> tuple[list[dict], list[str], list[str]]:
+    """Direct AkShare fallback for stock news and research reports."""
+    import akshare as ak
+
+    code = _normalize_symbol(symbol)
+    cutoff = datetime.now() - timedelta(days=days)
+    items: list[dict] = []
+    errors: list[str] = []
+    used_sources: list[str] = []
+
+    try:
+        df = ak.stock_news_em(symbol=code)
+        if df is not None and not df.empty:
+            count = 0
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("发布时间"))
+                if pub_time is not None and pub_time < cutoff:
+                    continue
+                title = _safe_str(row.get("新闻标题"))
+                summary = _safe_str(row.get("新闻内容"))
+                structured = _classify_financial_text(f"{title} {summary}")
+                items.append({
+                    "title": title,
+                    "summary": summary,
+                    "publish_time": pub_time.isoformat() if pub_time else None,
+                    "source": _safe_str(row.get("文章来源")) or "东方财富新闻",
+                    "url": _safe_str(row.get("新闻链接")),
+                    "category": "新闻",
+                    **structured,
+                })
+                count += 1
+            if count > 0:
+                used_sources.append(f"东方财富新闻直连({count}条)")
+    except Exception as exc:
+        errors.append(f"东方财富新闻直连: {exc}")
+
+    try:
+        df = ak.stock_research_report_em(symbol=code)
+        if df is not None and not df.empty:
+            count = 0
+            for _, row in df.iterrows():
+                pub_time = _parse_date(row.get("日期"))
+                if pub_time is not None and pub_time < cutoff:
+                    continue
+                title = _safe_str(row.get("报告名称"))
+                org = _safe_str(row.get("机构"))
+                rating = _safe_str(row.get("东财评级"))
+                summary_parts = [p for p in [f"机构: {org}", f"评级: {rating}"] if p.strip() not in ("机构: ", "评级: ")]
+                structured = _classify_financial_text(f"{title} {'；'.join(summary_parts)}")
+                items.append({
+                    "title": title,
+                    "summary": "；".join(summary_parts) if summary_parts else "",
+                    "publish_time": pub_time.isoformat() if pub_time else None,
+                    "source": org or "券商研报",
+                    "url": _safe_str(row.get("报告PDF链接")),
+                    "category": "研报",
+                    **structured,
+                })
+                count += 1
+            if count > 0:
+                used_sources.append(f"券商研报直连({count}条)")
+    except Exception as exc:
+        errors.append(f"券商研报直连: {exc}")
+
+    return items, used_sources, errors
+
+
+def _fetch_rss_research_reports(symbol: str, days: int) -> tuple[list[dict], list[str], list[str]]:
+    code = _normalize_symbol(symbol)
+    keywords = _rss_stock_keywords(code)
+    feed_specs = [
+        ("eastmoney_report", {"category": "stock"}, "东方财富个股研报", True),
+        ("ulapia", {"category": "stock_research"}, "ulapia个股研报", True),
+        ("ulapia", {"category": "brokerage_news"}, "ulapia券商晨报", True),
+    ]
+    entries, _, errors = _fetch_rsshub_entries(
+        code,
+        days,
+        feed_specs,
+        keywords=keywords,
+        limit=80,
+        max_workers=6,
+    )
+
+    items: list[dict] = []
+    source_counts: dict[str, int] = {}
+    for entry in _dedupe_rss_entries(entries):
+        title = _rss_entry_text(entry)
+        summary = _rss_entry_summary(entry)
+        pub_time = _rss_entry_date(entry)
+        label = _safe_str(entry.get("_rss_source_label") or entry.get("author") or "RSSHub研报")
+        structured = _classify_financial_text(f"{title} {summary}")
+        items.append({
+            "title": title,
+            "org": _safe_str(entry.get("author")) or label,
+            "rating": None,
+            "industry": None,
+            "publish_date": pub_time.date().isoformat() if pub_time else None,
+            "url": _safe_str(entry.get("link")),
+            "profit_forecasts": [],
+            "monthly_report_count": None,
+            **structured,
+        })
+        source_counts[label] = source_counts.get(label, 0) + 1
+
+    used_sources = [f"RSSHub{label}({count}条)" for label, count in source_counts.items() if count > 0]
+    return items, used_sources, errors
+
+
+def _fetch_rss_announcements(symbol: str, days: int, ann_type: str) -> tuple[list[dict], list[str], list[str]]:
+    code = _normalize_symbol(symbol)
+    em_symbol = _to_em_symbol(code)
+    feed_specs: list[tuple[str, dict, str, bool]] = []
+    if em_symbol.startswith("SZ"):
+        feed_specs.append(("szse_disclosure", {"stock_code": code}, "深交所公告", False))
+
+    entries, _, errors = _fetch_rsshub_entries(
+        code,
+        days,
+        feed_specs,
+        keywords=[],
+        limit=100,
+        max_workers=2,
+        timeout=10.0,
+    )
+
+    type_keywords = {
+        "业绩": ["业绩", "年报", "半年报", "季报", "报告", "预告", "快报", "修正"],
+        "分红": ["分红", "派息", "送转", "权益分派", "利润分配"],
+        "增持": ["增持", "回购"],
+        "减持": ["减持"],
+        "高管变动": ["高管", "董事", "监事", "独立董事", "任职", "辞职", "变更", "聘任"],
+    }
+
+    items: list[dict] = []
+    source_counts: dict[str, int] = {}
+    for entry in _dedupe_rss_entries(entries):
+        title = _rss_entry_text(entry)
+        if ann_type != "all":
+            keywords = type_keywords.get(ann_type, [])
+            if keywords and not any(keyword in title for keyword in keywords):
+                continue
+        pub_time = _rss_entry_date(entry)
+        label = _safe_str(entry.get("_rss_source_label") or entry.get("author") or "RSSHub公告")
+        items.append({
+            "title": title,
+            "notice_type": ann_type if ann_type != "all" else "公告",
+            "publish_date": pub_time.date().isoformat() if pub_time else None,
+            "url": _safe_str(entry.get("link")),
+            "source": label,
+        })
+        source_counts[label] = source_counts.get(label, 0) + 1
+
+    used_sources = [f"RSSHub{label}({count}条)" for label, count in source_counts.items() if count > 0]
+    return items, used_sources, errors
+
+
+def _classify_financial_text(text: str) -> dict:
+    normalized = _safe_str(text)
+    event_rules = [
+        ("earnings", "业绩", ("业绩", "净利润", "营收", "年报", "半年报", "季报", "预告", "快报", "盈利", "亏损")),
+        ("capital_action", "资本动作", ("增发", "定增", "发行", "并购", "收购", "重组", "资产", "投资", "募资")),
+        ("shareholder", "股东变化", ("股东", "增持", "减持", "回购", "质押", "解押")),
+        ("governance", "治理变动", ("董事", "监事", "高管", "总经理", "财务总监", "辞职", "聘任", "变更")),
+        ("risk", "风险监管", ("问询", "监管", "处罚", "诉讼", "仲裁", "违规", "退市", "立案", "风险")),
+        ("market", "市场交易", ("涨停", "跌停", "大宗交易", "龙虎榜", "主力资金", "净流入", "净流出")),
+        ("research", "研究评级", ("研报", "评级", "买入", "增持", "中性", "减持", "卖出", "盈利预测", "目标价")),
+        ("industry", "行业主题", ("行业", "板块", "景气", "周期", "需求", "供给", "价格")),
+    ]
+    event_type = "general"
+    event_label = "一般资讯"
+    tags: list[str] = []
+    for key, label, words in event_rules:
+        matched = [word for word in words if word in normalized]
+        if matched:
+            if event_type == "general":
+                event_type = key
+                event_label = label
+            tags.extend(matched[:3])
+
+    score = _classify_sentiment(normalized) if normalized else 0.0
+    polarity = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
+    high_words = ("重大", "终止", "停牌", "复牌", "退市", "处罚", "立案", "亏损", "预增", "预减", "收购", "重组", "分红", "回购")
+    medium_words = ("公告", "业绩", "评级", "增持", "减持", "资金", "问询", "诉讼", "投资")
+    importance = "high" if any(word in normalized for word in high_words) else (
+        "medium" if any(word in normalized for word in medium_words) else "low"
+    )
+    return {
+        "event_type": event_type,
+        "event_label": event_label,
+        "polarity": polarity,
+        "sentiment_score": round(score, 3),
+        "importance": importance,
+        "tags": list(dict.fromkeys(tags))[:8],
+    }
+
+
+def _build_structured_analysis(items: list[dict], *, days: int, dimension: str, source_key: str = "source") -> dict:
+    from collections import Counter, defaultdict
+
+    source_counter = Counter(_safe_str(item.get(source_key)) or "未知" for item in items)
+    event_counter = Counter(_safe_str(item.get("event_type")) or _safe_str(item.get("notice_type")) or _safe_str(item.get("category")) or "general" for item in items)
+    polarity_counter = Counter(_safe_str(item.get("polarity") or item.get("label")) or "neutral" for item in items)
+    importance_counter = Counter(_safe_str(item.get("importance")) or "low" for item in items)
+    daily_counter: dict[str, int] = defaultdict(int)
+    for item in items:
+        date_value = (
+            _safe_str(item.get("publish_date"))
+            or _safe_str(item.get("publish_time"))[:10]
+            or _safe_str(item.get("date_str"))
+        )
+        if date_value:
+            daily_counter[date_value[:10]] += 1
+
+    key_events = [
+        {
+            "title": item.get("title", ""),
+            "date": item.get("publish_date") or _safe_str(item.get("publish_time"))[:10] or item.get("date_str"),
+            "source": item.get(source_key) or item.get("org") or "未知",
+            "event_type": item.get("event_type") or item.get("notice_type") or item.get("category") or "general",
+            "polarity": item.get("polarity") or item.get("label") or "neutral",
+            "importance": item.get("importance") or "low",
+            "tags": item.get("tags", []),
+        }
+        for item in items
+        if item.get("importance") in ("high", "medium")
+    ][:12]
+
+    coverage_level = "none"
+    if len(items) >= 20:
+        coverage_level = "good"
+    elif len(items) >= 8:
+        coverage_level = "fair"
+    elif items:
+        coverage_level = "thin"
+
+    return {
+        "dimension": dimension,
+        "data_quality": {
+            "item_count": len(items),
+            "source_count": len(source_counter),
+            "days": days,
+            "coverage_level": coverage_level,
+            "proxy_item_count": sum(1 for item in items if item.get("is_proxy")),
+        },
+        "source_distribution": dict(source_counter.most_common()),
+        "event_distribution": dict(event_counter.most_common()),
+        "polarity_distribution": dict(polarity_counter.most_common()),
+        "importance_distribution": dict(importance_counter.most_common()),
+        "daily_distribution": dict(sorted(daily_counter.items())),
+        "key_events": key_events,
+        "ai_summary_hints": [
+            f"{dimension}覆盖度: {coverage_level}, 共{len(items)}条, 来源{len(source_counter)}个",
+            f"主要事件类型: {', '.join([k for k, _ in event_counter.most_common(3)]) or '无'}",
+            f"情绪分布: {dict(polarity_counter.most_common())}",
+        ],
+    }
+
+
+def _fetch_rss_stock_news(code: str, days: int, limit: int = 80) -> tuple[list[dict], list[str], list[str]]:
+    """Fetch and aggregate stock news through the project-local RSSHub instance."""
+    errors: list[str] = []
+    used_sources: list[str] = []
+    items: list[dict] = []
+    keywords = _rss_stock_keywords(code)
+
+    entries, keywords, fetch_errors = _fetch_rsshub_entries(
+        code,
+        days,
+        _rss_stock_feed_specs(keywords),
+        keywords=keywords,
+        limit=limit,
+    )
+    errors.extend(fetch_errors)
+    for entry in entries:
+        label = _safe_str(entry.get("_rss_source_label", "RSSHub"))
+        title = re.sub(r"<[^>]+>", "", _safe_str(entry.get("title")))
+        text = f"{title} {_safe_str(entry.get('summary'))}"
+        structured = _classify_financial_text(text)
+        items.append({
+            "title": title,
+            "summary": _safe_str(entry.get("summary")),
+            "publish_time": entry.get("published"),
+            "source": _safe_str(entry.get("author")) or label,
+            "url": _safe_str(entry.get("link")),
+            "category": "新闻",
+            **structured,
+            "_rss_source_label": label,
+        })
+
+    unique_rss_items = []
+    seen_rss = set()
+    source_counts: dict[str, int] = {}
+    for item in items:
+        normalized_title = _normalize_rss_text(item.get("title")).strip()
+        key = normalized_title or _safe_str(item.get("url"))
+        if key and key in seen_rss:
+            continue
+        seen_rss.add(key)
+        label = _safe_str(item.pop("_rss_source_label", "RSSHub"))
+        source_counts[label] = source_counts.get(label, 0) + 1
+        unique_rss_items.append(item)
+    items = unique_rss_items
+
+    used_sources.extend(
+        f"RSSHub{label}({count}条)"
+        for label, count in source_counts.items()
+        if count > 0
+    )
+
+    if items:
+        logger.info(
+            "[News] RSSHub aggregate OK for %s: %s items, keywords=%s",
+            code,
+            len(items),
+            keywords,
+        )
+
+    return items, used_sources, errors
 
 
 def _fetch_news(symbol: str, days: int, source: str) -> dict:
     """搜索指定股票的相关新闻。
 
     数据源:
-      1. 东方财富个股新闻 (翻页获取更多)
+      1. RSSHub 东方财富搜索新闻 (/eastmoney/search/:keyword)
       2. 东方财富个股研报 (stock_research_report_em)
-      3. 东方财富个股公告 (stock_individual_notice_report)
     """
     import time as _time
-    import json as _json
     import akshare as ak
-    import pandas as pd
-    import requests as _requests
 
     t0 = _time.time()
     code = _normalize_symbol(symbol)
@@ -2158,105 +2770,18 @@ def _fetch_news(symbol: str, days: int, source: str) -> dict:
         return d >= cutoff
 
     # -------------------------------------------------------------------
-    # Source 1: 东方财富个股新闻（优先用 akshare，失败时直接调 API 翻页）
+    # Source 1: RSSHub 东方财富搜索新闻
     # -------------------------------------------------------------------
     if source in ("all", "eastmoney", "news"):
-        news_count = 0
-        # 先尝试 akshare 封装
-        try:
-            df = ak.stock_news_em(symbol=code)
-            if df is not None and not df.empty:
-                title_col = _pick_col(df.columns, ["新闻标题", "title"])
-                content_col = _pick_col(df.columns, ["新闻内容", "content"])
-                time_col = _pick_col(df.columns, ["发布时间", "time", "date"])
-                url_col = _pick_col(df.columns, ["新闻链接", "url"])
-                source_col = _pick_col(df.columns, ["文章来源", "source", "media"])
-
-                for _, row in df.iterrows():
-                    pub_time = _parse_date(row.get(time_col)) if time_col is not None else None
-                    if not _is_recent(pub_time):
-                        continue
-                    news_items.append({
-                        "title": _safe_str(row.get(title_col)) if title_col is not None else "",
-                        "summary": _safe_str(row.get(content_col)) if content_col is not None else "",
-                        "publish_time": pub_time.isoformat() if pub_time else None,
-                        "source": _safe_str(row.get(source_col)) if source_col is not None else "东方财富",
-                        "url": _safe_str(row.get(url_col)) if url_col is not None else "",
-                        "category": "新闻",
-                    })
-                    news_count += 1
-        except Exception as exc:
-            logger.warning(f"[News] akshare stock_news_em failed for {code}: {exc}")
-
-        # 如果 akshare 没拿到足够数据，直接调东方财富 API 翻页补充
-        if news_count < 5:
-            try:
-                for page in range(1, 6):
-                    inner_param = {
-                        "uid": "",
-                        "keyword": code,
-                        "type": ["cmsArticleWebOld"],
-                        "client": "web",
-                        "clientType": "web",
-                        "clientVersion": "curr",
-                        "param": {
-                            "cmsArticleWebOld": {
-                                "searchScope": "default",
-                                "sort": "default",
-                                "pageIndex": page,
-                                "pageSize": 10,
-                                "preTag": "",
-                                "postTag": "",
-                            }
-                        },
-                    }
-                    params = {
-                        "cb": "",
-                        "param": _json.dumps(inner_param, ensure_ascii=False),
-                    }
-                    headers = {
-                        "accept": "*/*",
-                        "referer": f"https://so.eastmoney.com/news/s?keyword={code}",
-                        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                    }
-                    r = _requests.get(
-                        "https://search-api-web.eastmoney.com/search/jsonp",
-                        params=params,
-                        headers=headers,
-                        timeout=15,
-                    )
-                    if not r.text or not r.text.strip():
-                        break
-                    data = r.json()
-                    articles = data.get("result", {}).get("cmsArticleWebOld", [])
-                    if not articles:
-                        break
-
-                    for art in articles:
-                        title = _safe_str(art.get("title", "")).replace("<em>", "").replace("</em>", "")
-                        content = _safe_str(art.get("content", "")).replace("<em>", "").replace("</em>", "")
-                        pub_time = _parse_date(art.get("date"))
-                        if not _is_recent(pub_time):
-                            continue
-                        news_items.append({
-                            "title": title,
-                            "summary": content,
-                            "publish_time": pub_time.isoformat() if pub_time else None,
-                            "source": _safe_str(art.get("mediaName")) or "东方财富",
-                            "url": "http://finance.eastmoney.com/a/" + _safe_str(art.get("code", "")) + ".html",
-                            "category": "新闻",
-                        })
-                        news_count += 1
-
-                    if len(articles) < 10:
-                        break
-            except Exception as exc:
-                errors.append(f"东方财富新闻API: {exc}")
-                logger.warning(f"[News] eastmoney direct API failed for {code}: {exc}")
-
-        if news_count > 0:
-            used_sources.append(f"东方财富新闻({news_count}条)")
-            logger.info(f"[News] eastmoney news OK for {code}: {news_count} items")
+        rss_items, rss_sources, rss_errors = _fetch_rss_stock_news(code, days)
+        news_items.extend(rss_items)
+        used_sources.extend(rss_sources)
+        errors.extend(rss_errors)
+        if len(rss_items) < 5:
+            direct_items, direct_sources, direct_errors = _fetch_direct_news_sources(code, days)
+            news_items.extend([item for item in direct_items if item.get("category") == "新闻"])
+            used_sources.extend([item for item in direct_sources if "新闻" in item])
+            errors.extend(direct_errors)
 
     # -------------------------------------------------------------------
     # Source 2: 东方财富个股研报
@@ -2280,6 +2805,7 @@ def _fetch_news(symbol: str, days: int, source: str) -> dict:
                     org = _safe_str(row.get(org_col)) if org_col is not None else ""
                     rating = _safe_str(row.get(rating_col)) if rating_col is not None else ""
                     summary_parts = [p for p in [f"机构: {org}", f"评级: {rating}"] if p.strip() not in ("机构: ", "评级: ")]
+                    structured = _classify_financial_text(f"{title} {'；'.join(summary_parts)}")
                     news_items.append({
                         "title": title,
                         "summary": "；".join(summary_parts) if summary_parts else "",
@@ -2287,21 +2813,63 @@ def _fetch_news(symbol: str, days: int, source: str) -> dict:
                         "source": org or "券商研报",
                         "url": _safe_str(row.get(url_col)) if url_col is not None else "",
                         "category": "研报",
+                        **structured,
                     })
                     research_count += 1
 
                 if research_count > 0:
                     used_sources.append(f"券商研报({research_count}条)")
                     logger.info(f"[News] research reports OK for {code}: {research_count} items")
+                if research_count < 3:
+                    rss_research_items, rss_research_sources, rss_research_errors = _fetch_rss_research_reports(code, days)
+                    news_items.extend([
+                        {
+                            "title": item.get("title", ""),
+                            "summary": _safe_str(item.get("event_label") or ""),
+                            "publish_time": item.get("publish_date"),
+                            "source": item.get("org") or "RSSHub研报",
+                            "url": item.get("url") or "",
+                            "category": "研报",
+                            "event_type": item.get("event_type"),
+                            "event_label": item.get("event_label"),
+                            "polarity": item.get("polarity"),
+                            "importance": item.get("importance"),
+                            "tags": item.get("tags", []),
+                        }
+                        for item in rss_research_items
+                    ])
+                    used_sources.extend(rss_research_sources)
+                    errors.extend(rss_research_errors)
         except Exception as exc:
             errors.append(f"券商研报: {exc}")
             logger.warning(f"[News] research reports failed for {code}: {exc}")
+            rss_research_items, rss_research_sources, rss_research_errors = _fetch_rss_research_reports(code, days)
+            news_items.extend([
+                {
+                    "title": item.get("title", ""),
+                    "summary": _safe_str(item.get("event_label") or ""),
+                    "publish_time": item.get("publish_date"),
+                    "source": item.get("org") or "RSSHub研报",
+                    "url": item.get("url") or "",
+                    "category": "研报",
+                    "event_type": item.get("event_type"),
+                    "event_label": item.get("event_label"),
+                    "polarity": item.get("polarity"),
+                    "importance": item.get("importance"),
+                    "tags": item.get("tags", []),
+                }
+                for item in rss_research_items
+            ])
+            used_sources.extend(rss_research_sources)
+            errors.extend(rss_research_errors)
 
     # 去重 + 按时间倒序
     seen = set()
     unique_items = []
     for item in news_items:
-        key = (item.get("title") or "") + (item.get("url") or "")
+        normalized_title = re.sub(r"<[^>]+>", "", item.get("title") or "")
+        normalized_title = normalized_title.replace("Ａ", "A").replace("Ｂ", "B").strip().upper()
+        key = normalized_title or (item.get("url") or "")
         if key and key not in seen:
             seen.add(key)
             unique_items.append(item)
@@ -2312,14 +2880,19 @@ def _fetch_news(symbol: str, days: int, source: str) -> dict:
 
     logger.info(f"[News] total {_time.time() - t0:.1f}s for {code}: "
                 f"{len(unique_items)} unique items from {used_sources}")
+    latest_time = _latest_content_time(unique_items, ["publish_time", "publish_date", "date_str"])
 
     return {
         "symbol": code,
         "days": days,
         "source": source,
         "items": unique_items,
+        "analysis": _build_structured_analysis(unique_items, days=days, dimension="相关新闻"),
         "source_chain": used_sources,
         "errors": errors,
+        "data_time": latest_time,
+        "is_stale": _content_is_stale(unique_items, days, ["publish_time", "publish_date", "date_str"]),
+        "fallback_used": bool(errors),
         "_fetched_at": datetime.now().isoformat(),
         "_cached": False,
     }
@@ -2328,7 +2901,7 @@ def _fetch_news(symbol: str, days: int, source: str) -> dict:
 @router.get("/news", summary="搜索相关新闻")
 def search_news(
     symbol: str = Query(..., description="股票代码 或 关键词"),
-    days: int = Query(7, ge=1, le=90, description="查询最近N天的新闻"),
+    days: int = Query(90, ge=1, le=90, description="查询最近N天的新闻"),
     source: str = Query("all", description="来源: all | eastmoney | news | research"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
@@ -2358,7 +2931,7 @@ def search_news(
 # Company Announcements
 # ============================================================================
 
-ANNOUNCEMENTS_CACHE_KEY = "stocks:announcements:v1"
+ANNOUNCEMENTS_CACHE_KEY = "stocks:announcements:v4"
 
 
 def _fetch_announcements(symbol: str, days: int, ann_type: str) -> dict:
@@ -2421,12 +2994,38 @@ def _fetch_announcements(symbol: str, days: int, ann_type: str) -> dict:
         errors.append(f"公司公告: {exc}")
         logger.warning(f"[Announcements] failed for {code}: {exc}")
 
+    if len(items) < 3:
+        rss_items, rss_sources, rss_errors = _fetch_rss_announcements(code, days, ann_type)
+        items.extend(rss_items)
+        errors.extend(rss_errors)
+        if rss_sources:
+            source_chain = rss_sources
+        else:
+            source_chain = []
+    else:
+        source_chain = []
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('publish_date', '')}").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    deduped.sort(key=lambda item: item.get("publish_date") or "", reverse=True)
+
     return {
         "symbol": code,
         "days": days,
         "type": ann_type,
-        "items": items,
+        "items": deduped,
+        "analysis": _build_structured_analysis(deduped, days=days, dimension="公司公告"),
+        "source_chain": source_chain,
         "errors": errors,
+        "data_time": _latest_content_time(deduped, ["publish_date"]),
+        "is_stale": _content_is_stale(deduped, days, ["publish_date"]),
+        "fallback_used": bool(errors or source_chain),
         "_fetched_at": datetime.now().isoformat(),
         "_cached": False,
     }
@@ -2435,7 +3034,7 @@ def _fetch_announcements(symbol: str, days: int, ann_type: str) -> dict:
 @router.get("/announcements", summary="获取公司公告")
 def get_announcements(
     symbol: str = Query(..., description="股票代码"),
-    days: int = Query(30, ge=1, le=365, description="查询最近N天"),
+    days: int = Query(90, ge=1, le=365, description="查询最近N天"),
     type: str = Query("all", description="公告类型: all | 业绩 | 分红 | 增持 | 减持 | 高管变动"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
@@ -2443,7 +3042,7 @@ def get_announcements(
 
     返回公告标题、公告日期、公告类型、链接。
 
-    数据源: 东方财富 (stock_individual_notice_report)
+    数据源: RSSHub 交易所披露路由。
 
     按天缓存。
     """
@@ -2463,7 +3062,7 @@ def get_announcements(
 # Sentiment Analysis
 # ============================================================================
 
-SENTIMENT_CACHE_KEY = "stocks:sentiment:v1"
+SENTIMENT_CACHE_KEY = "stocks:sentiment:v3:rss_structured"
 
 # Chinese financial sentiment keywords
 _SENTIMENT_POSITIVE = {
@@ -2519,112 +3118,52 @@ def _classify_sentiment(text: str) -> float:
 def _fetch_sentiment(symbol: str, days: int) -> dict:
     """分析市场对某股票的情绪倾向。
 
-    数据源: 东方财富个股新闻 + 券商研报
+    数据源: RSSHub 聚合财经资讯 + 个股研报
     方法: 中文分词 + 金融情绪词典匹配
     """
     import time as _time
-    import json as _json
-    import akshare as ak
-    import requests as _requests
 
     t0 = _time.time()
     code = _normalize_symbol(symbol)
     errors: list[str] = []
-    cutoff = datetime.now() - timedelta(days=days)
+    keywords = _rss_stock_keywords(code)
+    feed_specs = _rss_stock_feed_specs(keywords) + [
+        ("eastmoney_report", {"category": "stock"}, "东方财富个股研报", True),
+        ("ulapia", {"category": "stock_research"}, "ulapia个股研报", True),
+        ("ulapia", {"category": "brokerage_news"}, "ulapia券商晨报", True),
+    ]
+    entries, _, fetch_errors = _fetch_rsshub_entries(
+        code,
+        days,
+        feed_specs,
+        keywords=keywords,
+        limit=100,
+        max_workers=10,
+    )
+    errors.extend(fetch_errors)
 
-    def _is_recent(d) -> bool:
-        if d is None:
-            return True
-        return d >= cutoff
-
-    all_items: list[dict] = []
-
-    # Source 1: 东方财富新闻
-    try:
-        df = ak.stock_news_em(symbol=code)
-        if df is not None and not df.empty:
-            for _, row in df.iterrows():
-                pub_time = _parse_date(row.get("发布时间"))
-                if not _is_recent(pub_time):
-                    continue
-                all_items.append({
-                    "title": _safe_str(row.get("新闻标题")),
-                    "content": _safe_str(row.get("新闻内容")),
-                    "date_str": pub_time.date().isoformat() if pub_time else None,
-                    "source": "新闻",
-                })
-    except Exception as exc:
-        errors.append(f"东方财富新闻: {exc}")
-
-    # 翻页补充
-    if len(all_items) < 5:
-        try:
-            for page in range(1, 4):
-                inner_param = {
-                    "uid": "", "keyword": code,
-                    "type": ["cmsArticleWebOld"],
-                    "client": "web", "clientType": "web", "clientVersion": "curr",
-                    "param": {
-                        "cmsArticleWebOld": {
-                            "searchScope": "default", "sort": "default",
-                            "pageIndex": page, "pageSize": 10,
-                            "preTag": "", "postTag": "",
-                        }
-                    },
-                }
-                r = _requests.get(
-                    "https://search-api-web.eastmoney.com/search/jsonp",
-                    params={"cb": "", "param": _json.dumps(inner_param, ensure_ascii=False)},
-                    headers={"accept": "*/*", "referer": f"https://so.eastmoney.com/news/s?keyword={code}",
-                             "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"},
-                    timeout=15,
-                )
-                if not r.text or not r.text.strip():
-                    break
-                data = r.json()
-                articles = data.get("result", {}).get("cmsArticleWebOld", [])
-                if not articles:
-                    break
-                for art in articles:
-                    pub_time = _parse_date(art.get("date"))
-                    if not _is_recent(pub_time):
-                        continue
-                    all_items.append({
-                        "title": _safe_str(art.get("title", "")).replace("<em>", "").replace("</em>", ""),
-                        "content": _safe_str(art.get("content", "")).replace("<em>", "").replace("</em>", ""),
-                        "date_str": pub_time.date().isoformat() if pub_time else None,
-                        "source": "新闻",
-                    })
-                if len(articles) < 10:
-                    break
-        except Exception as exc:
-            errors.append(f"补充新闻: {exc}")
-
-    # Source 2: 券商研报
-    try:
-        df = ak.stock_research_report_em(symbol=code)
-        if df is not None and not df.empty:
-            for _, row in df.iterrows():
-                pub_time = _parse_date(row.get("日期"))
-                if not _is_recent(pub_time):
-                    continue
-                all_items.append({
-                    "title": _safe_str(row.get("报告名称")),
-                    "content": f"机构: {_safe_str(row.get('机构'))}, 评级: {_safe_str(row.get('东财评级'))}",
-                    "date_str": pub_time.date().isoformat() if pub_time else None,
-                    "source": "研报",
-                })
-    except Exception as exc:
-        errors.append(f"券商研报: {exc}")
-
-    # 去重
-    seen = set()
     unique_items = []
-    for item in all_items:
-        key = (item.get("title") or "") + (item.get("content") or "")[:50]
-        if key not in seen:
-            seen.add(key)
-            unique_items.append(item)
+    for entry in _dedupe_rss_entries(entries):
+        pub_time = _rss_entry_date(entry)
+        unique_items.append({
+            "title": _rss_entry_text(entry),
+            "content": _rss_entry_summary(entry),
+            "date_str": pub_time.date().isoformat() if pub_time else None,
+            "source": _safe_str(entry.get("_rss_source_label") or entry.get("author") or "RSSHub"),
+        })
+
+    if len(unique_items) < 5:
+        direct_items, direct_errors = _fetch_direct_sentiment_sources(code, days)
+        errors.extend(direct_errors)
+        existing_keys = {
+            re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('date_str', '')}").lower()
+            for item in unique_items
+        }
+        for item in direct_items:
+            key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('date_str', '')}").lower()
+            if key and key not in existing_keys:
+                existing_keys.add(key)
+                unique_items.append(item)
 
     # 情感分析
     positive_count = 0
@@ -2666,6 +3205,7 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
             "sentiment_score": round(score, 3),
             "label": label,
             "source": item.get("source", ""),
+            **_classify_financial_text(combined),
         })
 
     # Overall sentiment score (-100 to +100)
@@ -2699,6 +3239,7 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
 
     logger.info(f"[Sentiment] total {_time.time() - t0:.1f}s for {code}: "
                 f"{len(unique_items)} items, score={overall:.1f}")
+    latest_time = _latest_content_time(unique_items, ["date_str"])
 
     return {
         "symbol": code,
@@ -2710,7 +3251,11 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
         "daily_trend": daily_trend,
         "top_keywords": top_keywords,
         "items": sentiment_items[:50],
+        "analysis": _build_structured_analysis(sentiment_items, days=days, dimension="舆情情绪"),
         "errors": errors,
+        "data_time": latest_time,
+        "is_stale": _content_is_stale(unique_items, days, ["date_str"]),
+        "fallback_used": bool(errors),
         "_fetched_at": datetime.now().isoformat(),
         "_cached": False,
     }
@@ -2719,7 +3264,7 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
 @router.get("/sentiment", summary="获取舆情情绪")
 def get_sentiment(
     symbol: str = Query(..., description="股票代码"),
-    days: int = Query(7, ge=1, le=90, description="分析最近N天"),
+    days: int = Query(90, ge=1, le=90, description="分析最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """分析市场对某股票的情绪倾向。
@@ -2727,7 +3272,7 @@ def get_sentiment(
     返回舆情分数（-100到+100）、正/负/中性新闻条数、
     讨论热度趋势、关键词、逐条情绪标注。
 
-    数据源: 东方财富个股新闻 + 券商研报
+    数据源: RSSHub 聚合财经资讯 + 个股研报
     方法: 中文分词 + 金融情绪词典匹配
 
     按天缓存。
@@ -2748,7 +3293,7 @@ def get_sentiment(
 # Research Reports (券商研报)
 # ============================================================================
 
-RESEARCH_CACHE_KEY = "stocks:research_report:v1"
+RESEARCH_CACHE_KEY = "stocks:research_report:v5"
 
 
 def _fetch_research_reports(symbol: str, days: int) -> dict:
@@ -2812,11 +3357,31 @@ def _fetch_research_reports(symbol: str, days: int) -> dict:
         errors.append(f"券商研报: {exc}")
         logger.warning(f"[Research] failed for {code}: {exc}")
 
+    used_sources: list[str] = [f"东方财富研报直连({len(items)}条)"] if items else []
+    if len(items) < 3:
+        rss_items, rss_sources, rss_errors = _fetch_rss_research_reports(code, days)
+        errors.extend(rss_errors)
+        existing_keys = {
+            re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('publish_date', '')}").lower()
+            for item in items
+        }
+        for item in rss_items:
+            key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('publish_date', '')}").lower()
+            if key and key not in existing_keys:
+                existing_keys.add(key)
+                items.append(item)
+        used_sources.extend(rss_sources)
+
     return {
         "symbol": code,
         "days": days,
         "items": items,
+        "analysis": _build_structured_analysis(items, days=days, dimension="券商研报", source_key="org"),
+        "source_chain": used_sources,
         "errors": errors,
+        "data_time": _latest_content_time(items, ["publish_date"]),
+        "is_stale": _content_is_stale(items, days, ["publish_date"]),
+        "fallback_used": bool(errors or len(used_sources) > 1 or (used_sources and not used_sources[0].startswith("东方财富"))),
         "_fetched_at": datetime.now().isoformat(),
         "_cached": False,
     }
@@ -2832,7 +3397,7 @@ def get_research_report(
 
     返回券商名称、评级、目标价、盈利预测、研报标题。
 
-    数据源: 东方财富 (stock_research_report_em)
+    数据源: RSSHub 东方财富研报 + ulapia 研报。
 
     按天缓存。
     """
@@ -2852,7 +3417,31 @@ def get_research_report(
 # Social Media Sentiment (社交媒体情绪)
 # ============================================================================
 
-SOCIAL_SENTIMENT_CACHE_KEY = "stocks:social_sentiment:v1"
+SOCIAL_SENTIMENT_CACHE_KEY = "stocks:social_sentiment:v4"
+
+
+def _latest_content_time(items: list[dict], keys: list[str]) -> str | None:
+    latest: datetime | None = None
+    for item in items:
+        for key in keys:
+            raw = item.get(key)
+            if not raw:
+                continue
+            parsed = _parse_date(raw)
+            if parsed is not None and (latest is None or parsed > latest):
+                latest = parsed
+                break
+    return latest.isoformat() if latest is not None else None
+
+
+def _content_is_stale(items: list[dict], max_age_days: int, keys: list[str]) -> bool:
+    latest = _latest_content_time(items, keys)
+    if not latest:
+        return True
+    parsed = _parse_date(latest)
+    if parsed is None:
+        return True
+    return parsed < (datetime.now() - timedelta(days=max_age_days))
 
 
 def _fetch_social_sentiment(symbol: str, days: int) -> dict:
@@ -3018,6 +3607,7 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
 
     logger.info(f"[SocialSentiment] total {_time.time() - t0:.1f}s for {code}: "
                 f"{len(all_items)} guba posts, score={overall_score}")
+    latest_time = _latest_content_time(all_items, ["publish_time"])
 
     return {
         "symbol": code,
@@ -3037,6 +3627,9 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
         ],
         "items": all_items[:50],
         "errors": errors,
+        "data_time": latest_time,
+        "is_stale": _content_is_stale(all_items, days, ["publish_time"]),
+        "fallback_used": bool(errors),
         "_fetched_at": datetime.now().isoformat(),
         "_cached": False,
     }
@@ -3045,7 +3638,7 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
 @router.get("/social-sentiment", summary="获取社交媒体情绪")
 def get_social_sentiment(
     symbol: str = Query(..., description="股票代码"),
-    days: int = Query(7, ge=1, le=90, description="查询最近N天"),
+    days: int = Query(90, ge=1, le=90, description="查询最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取社交媒体讨论热度和情绪。
@@ -3057,7 +3650,7 @@ def get_social_sentiment(
       - 正/负/中性比例
       - 逐条帖子
 
-    数据源: 东方财富千股千评 + 个股新闻情绪分析
+    数据源: RSSHub 东方财富关键词搜索。
 
     按天缓存。
     """

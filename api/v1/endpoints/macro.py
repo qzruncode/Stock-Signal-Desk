@@ -20,7 +20,7 @@ import json
 import logging
 import math
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -38,6 +38,23 @@ INDEX_MAP = {
     "399006": "创业板指",
     "000688": "科创50",
 }
+
+
+def _latest_series_date(records: list[dict], key: str = "date") -> str | None:
+    if not records:
+        return None
+    return records[-1].get(key) or records[0].get(key)
+
+
+def _is_series_stale(records: list[dict], key: str, max_days: int = 7) -> bool:
+    latest = _latest_series_date(records, key)
+    if not latest:
+        return True
+    try:
+        latest_dt = datetime.fromisoformat(str(latest)[:10])
+    except ValueError:
+        return False
+    return latest_dt < (datetime.now() - timedelta(days=max_days))
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +216,9 @@ def _build_index_response(index_code: str, records: list[dict], cached: bool, so
         "_cached": cached,
         "source": source,
         "errors": [],
+        "data_time": _latest_series_date(records, "date"),
+        "is_stale": _is_series_stale(records, "date", 7),
+        "fallback_used": cached,
     }
 
 
@@ -347,6 +367,9 @@ def _build_bond_response(
         "_cached": cached,
         "source": "东方财富",
         "errors": [],
+        "data_time": _latest_series_date(history, "date"),
+        "is_stale": _is_series_stale(history, "date", 14),
+        "fallback_used": cached,
     }
 
 
@@ -669,6 +692,9 @@ def _build_indicator_response(
         "_cached": cached,
         "source": "东方财富",
         "errors": [],
+        "data_time": _latest_series_date(records, "period"),
+        "is_stale": _is_series_stale(records, "period", 120),
+        "fallback_used": cached,
     }
 
 
@@ -920,6 +946,7 @@ def get_sector_flow(
             "records": records,
             "top_n": top_n,
             "_cached": True,
+            "fallback_used": True,
         }
 
     errors: list[str] = []
@@ -975,6 +1002,9 @@ def get_sector_flow(
         "_cached": False,
         "source": source,
         "errors": errors,
+        "data_time": datetime.now().date().isoformat(),
+        "is_stale": False,
+        "fallback_used": source == "新浪",
     }
 
     # 写缓存（存全量，请求时按 top_n 截取）
@@ -1169,6 +1199,9 @@ def _fetch_market_breadth_data() -> dict:
         "_cached": False,
         "source": source_label,
         "errors": errors,
+        "data_time": datetime.now().date().isoformat(),
+        "is_stale": False,
+        "fallback_used": "新浪" in source_label,
     }
 
 
@@ -1182,6 +1215,9 @@ def get_market_breadth():
     cached = _macro_cache_get("market-breadth")
     if cached:
         cached["_cached"] = True
+        cached.setdefault("data_time", datetime.now().date().isoformat())
+        cached.setdefault("is_stale", False)
+        cached.setdefault("fallback_used", True)
         return cached
 
     data = _fetch_market_breadth_data()

@@ -48,7 +48,17 @@ def _safe_int(val) -> Optional[int]:
 
 
 def _cache_key(symbol: str) -> str:
-    return f"{CACHE_KEY}:{symbol}:{datetime.now().strftime('%Y%m%d')}"
+    return f"{CACHE_KEY}:{_normalize_symbol(symbol)}:{datetime.now().strftime('%Y%m%d')}"
+
+
+def _normalize_symbol(symbol: str) -> str:
+    code = symbol.strip().upper()
+    if "." in code:
+        code = code.split(".", 1)[0]
+    for prefix in ("SH", "SZ", "BJ"):
+        if code.startswith(prefix):
+            return code[2:]
+    return code
 
 
 def _cache_get(symbol: str) -> dict | None:
@@ -225,7 +235,7 @@ def get_stock_info(
 
     按天缓存。当 East Money 被屏蔽时，返回 cninfo 数据（部分字段可能为空）。
     """
-    symbol = symbol.strip()
+    symbol = _normalize_symbol(symbol)
 
     if not force:
         cached = _cache_get(symbol)

@@ -47,6 +47,23 @@ def _latest_trade_day() -> str:
     return d.strftime("%Y%m%d")
 
 
+def _market_status_data_time(result: dict) -> str | None:
+    sh_index = result.get("sh_index") or {}
+    return sh_index.get("date") or _latest_trade_day()
+
+
+def _market_status_is_stale(result: dict) -> bool:
+    data_time = _market_status_data_time(result)
+    try:
+        latest_date = datetime.strptime(str(data_time), "%Y%m%d").date()
+    except ValueError:
+        try:
+            latest_date = datetime.strptime(str(data_time)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            return False
+    return latest_date < (date.today() - timedelta(days=7))
+
+
 # ---------------------------------------------------------------------------
 # Cache
 # ---------------------------------------------------------------------------
@@ -187,6 +204,9 @@ def _fetch_all() -> dict:
         logger.warning(f"[Market] 平盘计算失败: {e}")
 
     result['_fetched_at'] = datetime.now().isoformat()
+    result['data_time'] = _market_status_data_time(result)
+    result['is_stale'] = _market_status_is_stale(result)
+    result['fallback_used'] = False
     logger.info(f"[Market] 完成 {_time.time()-t0:.1f}s")
     return result
 
@@ -221,6 +241,9 @@ def get_market_status(
                           ('total_amount', 0.0), ('north_flow', 0.0)]:
                 cached.setdefault(k, v)
             cached['_cached'] = True
+            cached.setdefault('data_time', _market_status_data_time(cached))
+            cached.setdefault('is_stale', _market_status_is_stale(cached))
+            cached.setdefault('fallback_used', True)
 
             global _lock
             if _lock is None:

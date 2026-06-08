@@ -8,11 +8,14 @@
     "build": "tsc -b && vite build",
     "check:constraints": "node scripts/check-code-constraints.mjs",
     "lint": "eslint .",
+    "postinstall": "patch-package",
     "test": "vitest run",
     "test:smoke": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@assistant-ui/react": "^0.14.13",
+    "@assistant-ui/react-data-stream": "^0.12.15",
     "@remixicon/react": "^4.9.0",
     "axios": "^1.13.4",
     "camelcase-keys": "^10.0.2",
@@ -49,6 +52,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^28.1.0",
+    "patch-package": "^8.0.1",
     "postcss": "^8.5.6",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.9.3",

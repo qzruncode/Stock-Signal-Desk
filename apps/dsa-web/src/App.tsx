@@ -5,6 +5,7 @@ import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
+const ChatHomePage = lazy(() => import('./pages/ChatHomePage'));
 const HomePage = lazy(() => import('./pages/HomePage'));
 const BatchRunDetailPage = lazy(() => import('./pages/BatchRunDetailPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -16,6 +17,7 @@ const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
 const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 const MacroDataPage = lazy(() => import('./pages/MacroDataPage'));
 const MarketAnalysisPage = lazy(() => import('./pages/MarketAnalysisPage'));
+const RssPage = lazy(() => import('./pages/RssPage'));
 
 const PageFallback: React.FC = () => (
   <div className="flex min-h-screen items-center justify-center bg-base">
@@ -72,11 +74,13 @@ const AppContent: React.FC = () => {
     <Suspense fallback={<PageFallback />}>
       <Routes>
         <Route element={<Shell />}>
-          <Route path="/" element={<HomePage />} />
+          <Route path="/" element={<ChatHomePage />} />
+          <Route path="/dashboard" element={<HomePage />} />
           <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
           <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
           <Route path="/analysis" element={<StockAnalysisPage />} />
+          <Route path="/rss" element={<RssPage />} />
           <Route path="/macro" element={<MacroDataPage />} />
           <Route path="/market" element={<MarketAnalysisPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />

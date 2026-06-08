@@ -88,4 +88,9 @@ static/
 logs/
 excalidraw.log
 tmp.md
-todo.md
+todo*.md
+
+# local service dependencies
+services/rsshub/node_modules/
+services/rsshub/logs/
+services/rsshub/app/

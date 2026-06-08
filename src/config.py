@@ -560,6 +560,9 @@ class Config:
     debug: bool = False
     http_proxy: Optional[str] = None  # HTTP 代理 (例如: http://127.0.0.1:10809)
     https_proxy: Optional[str] = None # HTTPS 代理
+
+    # === RSS 配置 ===
+    rsshub_base_url: str = "http://127.0.0.1:1200"  # 项目内自建 RSSHub 实例地址
     
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
@@ -1113,6 +1116,7 @@ class Config:
             config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
             http_proxy=os.getenv('HTTP_PROXY'),
             https_proxy=os.getenv('HTTPS_PROXY'),
+            rsshub_base_url=(os.getenv('RSSHUB_BASE_URL') or 'http://127.0.0.1:1200').rstrip('/'),
             schedule_enabled=cls._resolve_env_value(
                 'SCHEDULE_ENABLED',
                 default='false',

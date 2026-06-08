@@ -27,6 +27,24 @@ KLINE_SOURCE_TENCENT = "tencent"
 DEFAULT_COUNT = 500
 
 
+def _kline_data_time(records: list[dict]) -> str | None:
+    if not records:
+        return None
+    latest = records[-1]
+    return latest.get("date")
+
+
+def _kline_is_stale(records: list[dict]) -> bool:
+    data_time = _kline_data_time(records)
+    if not data_time:
+        return True
+    try:
+        latest_date = datetime.strptime(str(data_time)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    return latest_date < (datetime.now().date() - timedelta(days=7))
+
+
 def _latest_kline_cache_key(symbol: str, count: int) -> str:
     """Build cache key for latest-count K-line requests."""
     return f"kline:latest:{symbol}:{count}"
@@ -272,6 +290,10 @@ def get_kline(
         if cached:
             logger.info(f"[K线缓存] 命中 {symbol}")
             cached['_cached'] = True
+            records = cached.get('data') or []
+            cached.setdefault('data_time', _kline_data_time(records))
+            cached.setdefault('is_stale', _kline_is_stale(records))
+            cached.setdefault('fallback_used', cached.get('source') != KLINE_SOURCE_EM if cached.get('source') else False)
             return cached
 
     end_date = datetime.now().strftime("%Y%m%d")
@@ -289,6 +311,9 @@ def get_kline(
         'symbol': symbol, 'source': source,
         'count': len(records), 'data': records,
         '_fetched_at': now_ts, '_cached': False,
+        'data_time': _kline_data_time(records),
+        'is_stale': _kline_is_stale(records),
+        'fallback_used': source != KLINE_SOURCE_EM,
     }
 
 
@@ -314,6 +339,10 @@ def get_history_data(
         if cached:
             logger.info(f"[K线缓存] 命中 {symbol}")
             cached['_cached'] = True
+            records = cached.get('data') or []
+            cached.setdefault('data_time', _kline_data_time(records))
+            cached.setdefault('is_stale', _kline_is_stale(records))
+            cached.setdefault('fallback_used', cached.get('source') != KLINE_SOURCE_EM if cached.get('source') else False)
             return cached
 
     records, source = _fetch_kline_with_fallback(symbol, start_date, end_date)
@@ -325,4 +354,7 @@ def get_history_data(
         'symbol': symbol, 'source': source,
         'count': len(records), 'data': records,
         '_fetched_at': now_ts, '_cached': False,
+        'data_time': _kline_data_time(records),
+        'is_stale': _kline_is_stale(records),
+        'fallback_used': source != KLINE_SOURCE_EM,
     }

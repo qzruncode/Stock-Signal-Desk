@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, GitBranch, Globe, Home, Search, Settings, Star, TrendingUp, Zap } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, GitBranch, Globe, Home, MessageSquare, Rss, Search, Settings, Star, TrendingUp, Zap } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { cn } from '../../utils/cn';
 
@@ -12,10 +12,12 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   const [collapsed, setCollapsed] = useState(false);
 
   const navItems = [
-    { to: '/', label: '工作台', icon: Home },
+    { to: '/', label: 'AI 助手', icon: MessageSquare },
+    { to: '/dashboard', label: '工作台', icon: Home },
     { to: '/stocks', label: '全市场股票', icon: Search },
     { to: '/portfolio', label: '管理自选股', icon: Star },
     { to: '/analysis', label: '个股分析', icon: Zap },
+    { to: '/rss', label: 'RSS 资讯', icon: Rss },
     { to: '/macro', label: '宏观数据', icon: TrendingUp },
     { to: '/market', label: '市场分析', icon: Globe },
     { to: '/workflows', label: '工作流编排', icon: GitBranch },
@@ -23,8 +25,8 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   ];
 
   return (
-    <div className="min-h-screen bg-background text-foreground selection:bg-primary/20">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1720px] gap-3 px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
+    <div className="h-screen overflow-hidden bg-background text-foreground selection:bg-primary/20">
+      <div className="mx-auto flex h-full w-full max-w-[1720px] gap-3 px-3 py-3 sm:px-4 sm:py-4 lg:px-5">
         <aside
           className={cn(
             'hidden min-h-0 shrink-0 flex-col rounded-[1.35rem] border border-[#d6dee8] bg-white/86 p-3 backdrop-blur-xl transition-[width] duration-200 lg:flex',
@@ -78,7 +80,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
           </button>
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 touch-pan-y">
+        <main className="min-h-0 min-w-0 flex-1 touch-pan-y overflow-hidden">
           {children ?? <Outlet />}
         </main>
       </div>

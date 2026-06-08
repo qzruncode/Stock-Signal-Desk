@@ -78,6 +78,10 @@ def _safe_int(val) -> Optional[int]:
         return None
 
 
+def _sector_data_time() -> str:
+    return datetime.now().date().isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Concept filter: remove non-concept entries from EM board_change
 # ---------------------------------------------------------------------------
@@ -302,7 +306,8 @@ def get_sector_list(
                 threading.Thread(target=_bg_refresh, daemon=True).start()
 
             return {"type": sector_type, "items": cached_items,
-                    "_fetched_at": cached_ts or fetched_at, "_cached": True}
+                    "_fetched_at": cached_ts or fetched_at, "_cached": True,
+                    "data_time": (cached_ts or fetched_at)[:10], "is_stale": False, "fallback_used": True}
 
     if sector_type == "industry":
         items = _fetch_industry()
@@ -313,4 +318,5 @@ def get_sector_list(
 
     _cache_put(sector_type, items, fetched_at)
     return {"type": sector_type, "items": items,
-            "_fetched_at": fetched_at, "_cached": False}
+            "_fetched_at": fetched_at, "_cached": False,
+            "data_time": _sector_data_time(), "is_stale": False, "fallback_used": False}

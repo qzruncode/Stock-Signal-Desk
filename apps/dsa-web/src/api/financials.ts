@@ -234,6 +234,7 @@ export interface NewsResponse {
   days: number;
   source: string;
   items: NewsItem[];
+  analysis?: Record<string, unknown>;
   source_chain?: string[];
   errors?: string[];
   _fetched_at?: string;
@@ -271,6 +272,7 @@ export interface AnnouncementsResponse {
   days: number;
   type: string;
   items: AnnouncementItem[];
+  analysis?: Record<string, unknown>;
   errors?: string[];
   _fetched_at?: string;
   _cached?: boolean;
@@ -279,7 +281,7 @@ export interface AnnouncementsResponse {
 export const announcementsApi = {
   async getAnnouncements(
     symbol: string,
-    days: number = 30,
+    days: number = 90,
     type: string = 'all',
     force: boolean = false,
   ): Promise<AnnouncementsResponse> {
@@ -320,6 +322,7 @@ export interface SentimentResponse {
   daily_trend: DailyTrendItem[];
   top_keywords: string[];
   items: SentimentItem[];
+  analysis?: Record<string, unknown>;
   errors?: string[];
   _fetched_at?: string;
   _cached?: boolean;
@@ -328,7 +331,7 @@ export interface SentimentResponse {
 export const sentimentApi = {
   async getSentiment(
     symbol: string,
-    days: number = 7,
+    days: number = 90,
     force: boolean = false,
   ): Promise<SentimentResponse> {
     const response = await apiClient.get<SentimentResponse>(
@@ -364,6 +367,7 @@ export interface ResearchReportResponse {
   symbol: string;
   days: number;
   items: ResearchReportItem[];
+  analysis?: Record<string, unknown>;
   errors?: string[];
   _fetched_at?: string;
   _cached?: boolean;
@@ -430,6 +434,7 @@ export interface SocialSentimentResponse {
   score_trend: SocialScoreTrendItem[];
   daily_trend: SocialDailyTrendItem[];
   items: SocialSentimentItem[];
+  analysis?: Record<string, unknown>;
   errors?: string[];
   _fetched_at?: string;
   _cached?: boolean;
@@ -438,7 +443,7 @@ export interface SocialSentimentResponse {
 export const socialSentimentApi = {
   async getSocialSentiment(
     symbol: string,
-    days: number = 7,
+    days: number = 90,
     force: boolean = false,
   ): Promise<SocialSentimentResponse> {
     const response = await apiClient.get<SocialSentimentResponse>(

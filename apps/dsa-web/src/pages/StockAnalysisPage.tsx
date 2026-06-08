@@ -659,7 +659,7 @@ const StockAnalysisPage: React.FC = () => {
   const fetchNews = useCallback(async (symbol: string) => {
     setNewsLoading(true);
     try {
-      const result = await newsApi.searchNews(symbol);
+      const result = await newsApi.searchNews(symbol, 90);
       setNews(result);
     } catch {
       setNews(null);
