@@ -454,6 +454,28 @@ class ToolRegistry:
             category="financials",
         ))
 
+        # --- get_price_overdraft_signal ---
+        def _exec_get_price_overdraft_signal(symbol: str) -> Any:
+            from api.v1.endpoints.financials import get_price_overdraft_signal
+            return get_price_overdraft_signal(symbol=self._resolve_symbol(symbol))
+
+        self._add(ToolDef(
+            name="get_price_overdraft_signal",
+            description="获取预期校准后的股价透支判定信号，包括透支风险分、估值昂贵度、预期支撑度、触发信号、关键估值指标和判定依据",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
+                    },
+                },
+                "required": ["symbol"],
+            },
+            executor=_exec_get_price_overdraft_signal,
+            category="financials",
+        ))
+
         # --- get_shareholder_structure ---
         def _exec_get_shareholder_structure(symbol: str) -> Any:
             from api.v1.endpoints.financials import get_shareholder_structure
@@ -571,6 +593,33 @@ class ToolRegistry:
                 "required": ["symbol"],
             },
             executor=_exec_get_announcements,
+            category="sentiment",
+        ))
+
+        # --- get_risk_events ---
+        def _exec_get_risk_events(symbol: str, days: int = 90) -> Any:
+            from api.v1.endpoints.financials import get_risk_events
+            return get_risk_events(symbol=self._resolve_symbol(symbol), days=days)
+
+        self._add(ToolDef(
+            name="get_risk_events",
+            description="聚合相关新闻与公司公告中的风险事件，返回风险事件清单、严重度分布、主要风险主题和高风险事件摘要，适合模型快速判断个股近期风险暴露。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "查询最近N天的风险事件，默认90",
+                        "default": 90,
+                    },
+                },
+                "required": ["symbol"],
+            },
+            executor=_exec_get_risk_events,
             category="sentiment",
         ))
 

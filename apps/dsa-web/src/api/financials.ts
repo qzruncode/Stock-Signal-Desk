@@ -74,6 +74,31 @@ export interface ValuationRatiosResponse {
     pb: number | null;
     sample_size: number;
   };
+  price_overdraft_signal?: {
+    status: 'low' | 'watch' | 'medium' | 'high' | 'uncertain';
+    score: number;
+    confidence: number;
+    valuation_expensive_score: number;
+    expectation_support_score: number;
+    signals: string[];
+    metrics: {
+      pe_ttm: number | null;
+      pe_dynamic: number | null;
+      pb: number | null;
+      peg: number | null;
+      dividend_yield: number | null;
+      pe_percentile_1y: number | null;
+      pe_percentile_3y: number | null;
+      pe_percentile_5y: number | null;
+      industry_pe: number | null;
+      industry_pb: number | null;
+      pe_premium_vs_industry: number | null;
+      pb_premium_vs_industry: number | null;
+      dynamic_pe_discount_vs_ttm: number | null;
+    };
+    reasoning: string[];
+    limitations: string[];
+  };
   source_chain?: string[];
   errors?: string[];
   _fetched_at?: string;
@@ -288,6 +313,58 @@ export const announcementsApi = {
     const response = await apiClient.get<AnnouncementsResponse>(
       '/api/v1/stocks/announcements',
       { params: { symbol, days, type, force }, timeout: 30000 },
+    );
+    return response.data;
+  },
+};
+
+export interface RiskEventItem {
+  title: string;
+  summary: string;
+  risk_summary: string;
+  date: string | null;
+  source: string;
+  source_type: 'news' | 'announcement';
+  url: string;
+  severity: 'high' | 'medium' | 'low';
+  risk_category: string;
+  risk_label: string;
+  event_type: string;
+  tags: string[];
+}
+
+export interface RiskEventsResponse {
+  symbol: string;
+  days: number;
+  items: RiskEventItem[];
+  analysis: {
+    overall_level: 'low' | 'watch' | 'medium' | 'high';
+    risk_score: number;
+    total_events: number;
+    severity_distribution: {
+      high: number;
+      medium: number;
+      low: number;
+    };
+    top_risk_labels: string[];
+    high_severity_titles: string[];
+    ai_summary_hints: string[];
+  };
+  source_chain?: string[];
+  errors?: string[];
+  _fetched_at?: string;
+  _cached?: boolean;
+}
+
+export const riskEventsApi = {
+  async getRiskEvents(
+    symbol: string,
+    days: number = 90,
+    force: boolean = false,
+  ): Promise<RiskEventsResponse> {
+    const response = await apiClient.get<RiskEventsResponse>(
+      '/api/v1/stocks/risk-events',
+      { params: { symbol, days, force }, timeout: 45000 },
     );
     return response.data;
   },

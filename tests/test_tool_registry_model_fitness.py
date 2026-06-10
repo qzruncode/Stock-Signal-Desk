@@ -76,6 +76,18 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertIn("search_web_price_fallback", names)
         self.assertIn("fetch_web_content", names)
 
+    def test_price_overdraft_signal_tool_is_registered(self) -> None:
+        registry = ToolRegistry()
+        names = set(registry.get_tool_names())
+
+        self.assertIn("get_price_overdraft_signal", names)
+
+    def test_risk_events_tool_is_registered(self) -> None:
+        registry = ToolRegistry()
+        names = set(registry.get_tool_names())
+
+        self.assertIn("get_risk_events", names)
+
 
 if __name__ == "__main__":
     unittest.main()

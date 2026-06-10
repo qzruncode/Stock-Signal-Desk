@@ -117,6 +117,64 @@ def _get_llm_config():
     }
 
 
+async def _stream_final_answer_without_tools(
+    controller: RunController,
+    messages: List[Dict[str, Any]],
+    llm_cfg: Dict[str, Any],
+) -> bool:
+    """Force one final synthesis pass without tool use to avoid silent exits."""
+    forced_messages = [
+        *messages,
+        {
+            "role": "system",
+            "content": (
+                "你已经拿到了前面工具返回的数据。"
+                "现在必须直接给出最终分析结论，不要再调用任何工具。"
+                "如果信息仍有缺口，要明确说明缺口、风险点和结论置信度。"
+            ),
+        },
+    ]
+
+    kwargs: Dict[str, Any] = {
+        "model": llm_cfg["model"],
+        "messages": forced_messages,
+        "stream": True,
+    }
+    if llm_cfg.get("api_key"):
+        kwargs["api_key"] = llm_cfg["api_key"]
+    if llm_cfg.get("api_base"):
+        kwargs["api_base"] = llm_cfg["api_base"]
+    if llm_cfg.get("extra_headers"):
+        kwargs["extra_headers"] = llm_cfg["extra_headers"]
+
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except Exception as e:
+        logger.exception("[Agent] Forced final answer failed")
+        controller.append_text(
+            "\n\n已完成多轮数据查询，但生成最终总结时出错。"
+            f"请稍后重试，或缩小问题范围后再问一次。\n\n错误：{e}"
+        )
+        return False
+
+    content_text = ""
+    async for chunk in response:
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if not delta or not delta.content:
+            continue
+        content_text += delta.content
+        controller.append_text(delta.content)
+
+    if content_text.strip():
+        return True
+
+    controller.append_text(
+        "\n\n已完成多轮数据查询，但模型没有产出最终总结。"
+        "建议重试一次，或把问题拆成更小的比较维度来问。"
+    )
+    return False
+
+
 def _format_result(result: Any) -> str:
     """Format a tool result for LLM context, truncating if needed."""
     text = json.dumps(result, ensure_ascii=False, default=str)
@@ -301,10 +359,11 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ),
         }
 
-    if tool_name in {"search_news", "get_announcements", "get_sentiment", "get_research_report", "get_social_sentiment"}:
+    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_sentiment", "get_research_report", "get_social_sentiment"}:
         item_fields_map = {
             "search_news": ["title", "publish_time", "source", "category", "event_type", "polarity", "importance", "summary"],
             "get_announcements": ["title", "publish_date", "notice_type", "url"],
+            "get_risk_events": ["title", "date", "source", "source_type", "severity", "risk_label", "risk_summary", "tags"],
             "get_sentiment": ["title", "label", "sentiment_score", "source", "event_type", "importance", "tags"],
             "get_research_report": ["title", "org", "rating", "publish_date", "industry", "profit_forecasts", "monthly_report_count"],
             "get_social_sentiment": ["title", "publish_time", "source", "label", "sentiment_score", "read_count", "reply_count"],
@@ -473,7 +532,7 @@ def _assess_tool_data_health(tool_name: str, result: Any) -> Dict[str, Any]:
             return {"should_fallback": True, "reason": "stale_kline", "latest_date": latest.date().isoformat()}
         return {"should_fallback": False, "reason": None}
 
-    if tool_name in {"search_news", "get_announcements", "get_sentiment", "get_research_report", "get_social_sentiment"}:
+    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_sentiment", "get_research_report", "get_social_sentiment"}:
         items = result.get("items") or []
         if not items:
             return {"should_fallback": True, "reason": "empty_news_family"}
@@ -739,6 +798,10 @@ async def _run_react_loop(
 
         # Update kwargs messages
         kwargs["messages"] = full_messages
+
+    logger.warning("[Agent] ReAct loop hit max iterations without final answer")
+    controller.append_text("\n\n已完成多轮数据查询，正在生成最终总结...\n\n")
+    await _stream_final_answer_without_tools(controller, full_messages, llm_cfg)
 
 
 @router.post("/agent/chat")

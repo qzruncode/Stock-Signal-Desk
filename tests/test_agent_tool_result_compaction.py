@@ -5,7 +5,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from api.v1.endpoints.agent import _assess_tool_data_health, _compact_tool_result, _maybe_attach_search_fallback
+from api.v1.endpoints.agent import (
+    _assess_tool_data_health,
+    _compact_tool_result,
+    _maybe_attach_search_fallback,
+    _run_react_loop,
+)
 
 
 class AgentToolResultCompactionTestCase(unittest.TestCase):
@@ -231,3 +236,93 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeDelta:
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+class _FakeChunk:
+    def __init__(self, delta):
+        self.choices = [SimpleNamespace(delta=delta)]
+
+
+class _FakeToolCall:
+    def __init__(self, name: str, arguments: str, idx: int = 0, call_id: str = "call_1"):
+        self.index = idx
+        self.id = call_id
+        self.function = SimpleNamespace(name=name, arguments=arguments)
+
+
+class _FakeResponse:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __aiter__(self):
+        self._iter = iter(self._chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+class _FakeToolStream:
+    def append_args_text(self, _text):
+        return None
+
+    def set_response(self, _payload, is_error=False):
+        return None
+
+
+class _FakeController:
+    def __init__(self):
+        self.text_parts = []
+        self._stream_tasks = []
+
+    def append_text(self, text):
+        self.text_parts.append(text)
+
+    async def add_tool_call(self, _tool_name, tool_call_id=None):
+        return _FakeToolStream()
+
+
+class AgentReactLoopFallbackTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_forces_final_summary_when_iterations_are_exhausted(self) -> None:
+        first_response = _FakeResponse([
+            _FakeChunk(_FakeDelta(tool_calls=[
+                _FakeToolCall("get_risk_events", "{\"symbol\": \"002284\"}"),
+            ])),
+        ])
+        final_response = _FakeResponse([
+            _FakeChunk(_FakeDelta(content="最终结论：亚太股份短线弹性更高，但风险也更大。")),
+        ])
+        controller = _FakeController()
+        llm_cfg = {"model": "test-model"}
+
+        class _FakeRegistry:
+            def get_all_schemas(self):
+                return [{"type": "function", "function": {"name": "get_risk_events"}}]
+
+            def get_tool_names(self):
+                return ["get_risk_events"]
+
+            def execute(self, tool_name, args):
+                return {"tool": tool_name, "args": args, "items": []}
+
+        with patch("api.v1.endpoints.agent.MAX_REACT_ITERATIONS", 1), \
+             patch("api.v1.endpoints.agent._registry", _FakeRegistry()), \
+             patch("api.v1.endpoints.agent.litellm.acompletion", side_effect=[first_response, final_response]):
+            await _run_react_loop(
+                controller,
+                [{"role": "user", "content": "分析A股广电计量和亚太股份谁更值得买"}],
+                llm_cfg,
+            )
+
+        combined = "".join(controller.text_parts)
+        self.assertIn("已完成多轮数据查询，正在生成最终总结", combined)
+        self.assertIn("最终结论：亚太股份短线弹性更高，但风险也更大。", combined)

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Activity,
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   BarChart3,
@@ -28,6 +29,8 @@ import {
   type FinancialStatementsResponse,
   newsApi,
   type NewsResponse,
+  riskEventsApi,
+  type RiskEventsResponse,
   researchReportApi,
   type ResearchReportResponse,
   sentimentApi,
@@ -42,7 +45,7 @@ import {
 import KLineChartPanel from '../components/KLineChartPanel';
 import FinancialPanel from '../components/FinancialPanel';
 import FinancialStatementsPanel from '../components/FinancialStatementsPanel';
-import { AnnouncementsPanel, NewsPanel, ResearchPanel, SentimentPanel, SocialSentimentPanel } from '../components/NewsAnnouncementPanel';
+import { AnnouncementsPanel, NewsPanel, ResearchPanel, RiskEventsPanel, SentimentPanel, SocialSentimentPanel } from '../components/NewsAnnouncementPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
@@ -354,6 +357,90 @@ function ValuationRatiosPanel({ valuation }: { valuation: ValuationRatiosRespons
   );
 }
 
+function PriceOverdraftPanel({ valuation }: { valuation: ValuationRatiosResponse }) {
+  const signal = valuation.price_overdraft_signal;
+  if (!signal) return null;
+
+  const statusMeta: Record<string, { label: string; tone: string; dot: string }> = {
+    low: { label: '透支压力低', tone: 'text-emerald-700 bg-emerald-50 border-emerald-200', dot: 'bg-emerald-500' },
+    watch: { label: '需要跟踪', tone: 'text-amber-700 bg-amber-50 border-amber-200', dot: 'bg-amber-500' },
+    medium: { label: '中度透支', tone: 'text-orange-700 bg-orange-50 border-orange-200', dot: 'bg-orange-500' },
+    high: { label: '明显透支', tone: 'text-red-700 bg-red-50 border-red-200', dot: 'bg-red-500' },
+    uncertain: { label: '证据不足', tone: 'text-slate-700 bg-slate-50 border-slate-200', dot: 'bg-slate-400' },
+  };
+  const meta = statusMeta[signal.status] || statusMeta.uncertain;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+          <AlertTriangle className="h-4 w-4 text-cyan-600" />股价透支判定
+        </h3>
+        <span className={cn('inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium', meta.tone)}>
+          <span className={cn('h-2 w-2 rounded-full', meta.dot)} />
+          {meta.label}
+        </span>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+        <DataItem label="透支风险分" value={formatRatio(signal.score)} highlight />
+        <DataItem label="估值昂贵度" value={formatRatio(signal.valuation_expensive_score)} />
+        <DataItem label="预期支撑度" value={formatRatio(signal.expectation_support_score)} />
+        <DataItem label="证据完整度" value={formatPctValue(signal.confidence)} />
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-3 border-t border-slate-100 pt-4 md:grid-cols-2">
+        <div>
+          <p className="mb-2 text-xs font-medium text-slate-400">关键判断依据</p>
+          <div className="grid gap-2">
+            {signal.reasoning.length > 0 ? signal.reasoning.map((item, index) => (
+              <p key={`${index}-${item}`} className="text-sm leading-6 text-slate-600">{item}</p>
+            )) : (
+              <p className="text-sm text-slate-500">暂无判定说明</p>
+            )}
+          </div>
+        </div>
+        <div>
+          <p className="mb-2 text-xs font-medium text-slate-400">预期校准指标</p>
+          <div className="grid grid-cols-2 gap-3">
+            <DataItem label="PE相对行业" value={formatPctValue(signal.metrics.pe_premium_vs_industry)} />
+            <DataItem label="PB相对行业" value={formatPctValue(signal.metrics.pb_premium_vs_industry)} />
+            <DataItem label="动态PE改善" value={formatPctValue(signal.metrics.dynamic_pe_discount_vs_ttm)} />
+            <DataItem label="PEG" value={formatRatio(signal.metrics.peg)} />
+          </div>
+        </div>
+      </div>
+
+      {(signal.signals.length > 0 || signal.limitations.length > 0) && (
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          {signal.signals.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-2 text-xs font-medium text-slate-400">触发信号</p>
+              <div className="flex flex-wrap gap-2">
+                {signal.signals.map((item) => (
+                  <span key={item} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs text-slate-600">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {signal.limitations.length > 0 && (
+            <div>
+              <p className="mb-2 text-xs font-medium text-slate-400">判定边界</p>
+              <div className="grid gap-1.5">
+                {signal.limitations.map((item, index) => (
+                  <p key={`${index}-${item}`} className="text-xs leading-5 text-slate-500">{item}</p>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderStructureResponse }) {
   const countChange = shareholder.holder_count_change_pct ?? 0;
   const changeUp = countChange > 0;
@@ -437,7 +524,7 @@ function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderSt
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'shareholder' | 'news' | 'announcements' | 'sentiment' | 'research' | 'social';
+type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'shareholder' | 'news' | 'risk' | 'announcements' | 'sentiment' | 'research' | 'social';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -474,6 +561,8 @@ const StockAnalysisPage: React.FC = () => {
   // --- News state ---
   const [news, setNews] = useState<NewsResponse | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
+  const [riskEvents, setRiskEvents] = useState<RiskEventsResponse | null>(null);
+  const [riskEventsLoading, setRiskEventsLoading] = useState(false);
 
   // --- Announcements state ---
   const [announcements, setAnnouncements] = useState<AnnouncementsResponse | null>(null);
@@ -524,6 +613,12 @@ const StockAnalysisPage: React.FC = () => {
   useEffect(() => {
     if (mode === 'news' && selectedSymbol) {
       void fetchNews(selectedSymbol);
+    }
+  }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (mode === 'risk' && selectedSymbol) {
+      void fetchRiskEvents(selectedSymbol);
     }
   }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -668,6 +763,18 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  const fetchRiskEvents = useCallback(async (symbol: string) => {
+    setRiskEventsLoading(true);
+    try {
+      const result = await riskEventsApi.getRiskEvents(symbol);
+      setRiskEvents(result);
+    } catch {
+      setRiskEvents(null);
+    } finally {
+      setRiskEventsLoading(false);
+    }
+  }, []);
+
   // --- Announcements fetching ---
   const fetchAnnouncements = useCallback(async (symbol: string) => {
     setAnnouncementsLoading(true);
@@ -763,6 +870,7 @@ const StockAnalysisPage: React.FC = () => {
                 { value: 'valuation', label: '估值分析' },
                 { value: 'shareholder', label: '股东结构' },
                 { value: 'news', label: '相关新闻' },
+                { value: 'risk', label: '风险事件' },
                 { value: 'announcements', label: '公司公告' },
                 { value: 'sentiment', label: '舆情情绪' },
                 { value: 'research', label: '券商研报' },
@@ -896,6 +1004,7 @@ const StockAnalysisPage: React.FC = () => {
               ) : valuation ? (
                 <>
                   <ValuationRatiosPanel valuation={valuation} />
+                  <PriceOverdraftPanel valuation={valuation} />
                   <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
                     <Clock className="h-3 w-3" />
                     <span>
@@ -963,6 +1072,34 @@ const StockAnalysisPage: React.FC = () => {
               ) : (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
                   <p className="text-sm text-slate-400">暂无公司公告</p>
+                </div>
+              )}
+            </div>
+          ) : mode === 'risk' ? (
+            <div className="space-y-6">
+              {riskEventsLoading ? (
+                <div className="flex h-40 items-center justify-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+                    <span className="text-sm text-slate-400">正在扫描风险事件...</span>
+                  </div>
+                </div>
+              ) : riskEvents ? (
+                <>
+                  <RiskEventsPanel riskEvents={riskEvents} />
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+                    <Clock className="h-3 w-3" />
+                    <span>
+                      数据获取时间: {riskEvents._fetched_at ? new Date(riskEvents._fetched_at).toLocaleString('zh-CN') : '-'}
+                      {riskEvents._cached ? ' · 缓存' : ' · 实时'}
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span>数据源: {formatSourceChain(riskEvents.source_chain)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">暂无风险事件</p>
                 </div>
               )}
             </div>

@@ -793,6 +793,181 @@ def _fill_industry_average(payload: dict) -> tuple[dict, Optional[str]]:
         return payload, None
 
 
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _build_price_overdraft_signal(payload: dict) -> dict:
+    pe_ttm = _safe_float(payload.get("pe_ttm"))
+    pe_dynamic = _safe_float(payload.get("pe_dynamic"))
+    pb = _safe_float(payload.get("pb"))
+    peg = _safe_float(payload.get("peg"))
+    dividend_yield = _safe_float(payload.get("dividend_yield"))
+    pe_percentiles = payload.get("pe_percentiles") or {}
+    industry_average = payload.get("industry_average") or {}
+    industry_pe = _safe_float(industry_average.get("pe"))
+    industry_pb = _safe_float(industry_average.get("pb"))
+
+    pe_1y = _safe_float(pe_percentiles.get("1y"))
+    pe_3y = _safe_float(pe_percentiles.get("3y"))
+    pe_5y = _safe_float(pe_percentiles.get("5y"))
+
+    pe_premium_vs_industry = (
+        round((pe_ttm - industry_pe) / industry_pe * 100, 2)
+        if pe_ttm is not None and industry_pe not in (None, 0)
+        else None
+    )
+    pb_premium_vs_industry = (
+        round((pb - industry_pb) / industry_pb * 100, 2)
+        if pb is not None and industry_pb not in (None, 0)
+        else None
+    )
+    dynamic_pe_discount_vs_ttm = (
+        round((pe_ttm - pe_dynamic) / pe_ttm * 100, 2)
+        if pe_ttm not in (None, 0) and pe_dynamic is not None
+        else None
+    )
+
+    expensive_score = 0.0
+    expectation_support_score = 50.0
+    signals: list[str] = []
+    reasoning: list[str] = []
+    limitations: list[str] = []
+
+    percentile_anchor = max(v for v in (pe_1y, pe_3y, pe_5y) if v is not None) if any(
+        v is not None for v in (pe_1y, pe_3y, pe_5y)
+    ) else None
+    if percentile_anchor is not None:
+        expensive_score += _clamp((percentile_anchor - 50) * 0.7, 0, 35)
+        if percentile_anchor >= 90:
+            signals.append("pe_percentile_extremely_high")
+            reasoning.append(f"PE 历史分位处于高位（最高分位 {percentile_anchor:.2f}%），说明当前定价接近历史偏贵区间。")
+        elif percentile_anchor >= 75:
+            signals.append("pe_percentile_high")
+            reasoning.append(f"PE 历史分位偏高（最高分位 {percentile_anchor:.2f}%），估值安全边际正在收窄。")
+    else:
+        limitations.append("缺少足够的历史 PE 分位数据，无法完整评估当前估值所处区间。")
+
+    if pe_premium_vs_industry is not None:
+        expensive_score += _clamp(pe_premium_vs_industry * 0.25, 0, 25)
+        if pe_premium_vs_industry >= 40:
+            signals.append("pe_premium_vs_industry_high")
+            reasoning.append(f"当前 PE 相对行业平均溢价 {pe_premium_vs_industry:.2f}%，市场已经计入更高成长预期。")
+        elif pe_premium_vs_industry <= -15:
+            signals.append("pe_discount_vs_industry")
+            reasoning.append(f"当前 PE 低于行业平均 {abs(pe_premium_vs_industry):.2f}%，纯估值层面的透支压力有限。")
+    else:
+        limitations.append("缺少可比行业 PE，行业相对估值判断不完整。")
+
+    if pb_premium_vs_industry is not None:
+        expensive_score += _clamp(pb_premium_vs_industry * 0.12, 0, 10)
+        if pb_premium_vs_industry >= 35:
+            signals.append("pb_premium_vs_industry_high")
+            reasoning.append(f"PB 相对行业也存在 {pb_premium_vs_industry:.2f}% 溢价，说明高定价不只体现在盈利倍数。")
+    else:
+        limitations.append("缺少可比行业 PB，资产端估值溢价无法充分验证。")
+
+    if dynamic_pe_discount_vs_ttm is not None:
+        if dynamic_pe_discount_vs_ttm >= 25:
+            expectation_support_score += 20
+            signals.append("forward_pe_improving")
+            reasoning.append(f"动态 PE 较 TTM 下降 {dynamic_pe_discount_vs_ttm:.2f}%，说明市场预期未来盈利改善能够部分消化高估值。")
+        elif dynamic_pe_discount_vs_ttm >= 10:
+            expectation_support_score += 10
+        elif dynamic_pe_discount_vs_ttm <= 0:
+            expectation_support_score -= 15
+            signals.append("forward_pe_not_improving")
+            reasoning.append("动态 PE 没有明显低于 TTM PE，意味着盈利改善预期对当前高估值的消化能力有限。")
+    else:
+        limitations.append("缺少动态 PE 或 TTM PE，无法判断未来盈利预期是否显著改善。")
+
+    if peg is not None:
+        if peg <= 1:
+            expectation_support_score += 20
+            signals.append("peg_supportive")
+            reasoning.append(f"PEG 为 {peg:.2f}，估值与增长匹配度较好。")
+        elif peg <= 1.5:
+            expectation_support_score += 5
+        elif peg <= 2:
+            expectation_support_score -= 10
+            signals.append("peg_elevated")
+            reasoning.append(f"PEG 为 {peg:.2f}，增长对估值的支撑开始偏弱。")
+        else:
+            expectation_support_score -= 25
+            signals.append("peg_above_2")
+            reasoning.append(f"PEG 为 {peg:.2f}，当前估值对增长兑现的要求较高。")
+    else:
+        limitations.append("缺少 PEG，无法直接衡量估值与增长预期是否匹配。")
+
+    if dividend_yield is not None:
+        if dividend_yield >= 3:
+            expectation_support_score += 8
+            signals.append("dividend_buffer_strong")
+        elif dividend_yield < 1:
+            expectation_support_score -= 8
+            signals.append("dividend_buffer_weak")
+    else:
+        limitations.append("缺少股息率，无法评估现金回报对高估值的缓冲作用。")
+
+    expensive_score = round(_clamp(expensive_score, 0, 100), 2)
+    expectation_support_score = round(_clamp(expectation_support_score, 0, 100), 2)
+
+    evidence_count = sum(
+        metric is not None
+        for metric in (
+            percentile_anchor,
+            pe_premium_vs_industry,
+            pb_premium_vs_industry,
+            dynamic_pe_discount_vs_ttm,
+            peg,
+            dividend_yield,
+        )
+    )
+    confidence = round(_clamp(evidence_count / 6 * 100, 0, 100), 2)
+    overdraft_score = round(_clamp(expensive_score * 0.65 + (100 - expectation_support_score) * 0.35, 0, 100), 2)
+
+    if evidence_count < 2:
+        status = "uncertain"
+        reasoning.append("可用估值证据较少，当前更适合把结果视作提示信号而非明确结论。")
+    elif overdraft_score >= 75:
+        status = "high"
+    elif overdraft_score >= 55:
+        status = "medium"
+    elif overdraft_score >= 35:
+        status = "watch"
+    else:
+        status = "low"
+
+    if not reasoning:
+        reasoning.append("现有估值与预期信号没有出现明显背离，短期内未观察到强烈的透支特征。")
+
+    return {
+        "status": status,
+        "score": overdraft_score,
+        "confidence": confidence,
+        "valuation_expensive_score": expensive_score,
+        "expectation_support_score": expectation_support_score,
+        "signals": signals,
+        "metrics": {
+            "pe_ttm": pe_ttm,
+            "pe_dynamic": pe_dynamic,
+            "pb": pb,
+            "peg": peg,
+            "dividend_yield": dividend_yield,
+            "pe_percentile_1y": pe_1y,
+            "pe_percentile_3y": pe_3y,
+            "pe_percentile_5y": pe_5y,
+            "industry_pe": industry_pe,
+            "industry_pb": industry_pb,
+            "pe_premium_vs_industry": pe_premium_vs_industry,
+            "pb_premium_vs_industry": pb_premium_vs_industry,
+            "dynamic_pe_discount_vs_ttm": dynamic_pe_discount_vs_ttm,
+        },
+        "reasoning": reasoning[:4],
+        "limitations": limitations[:4],
+    }
+
+
 def _fetch_valuation_ratios(symbol: str, with_history: bool = True) -> dict:
     code = _normalize_symbol(symbol)
     result: dict = {
@@ -809,6 +984,7 @@ def _fetch_valuation_ratios(symbol: str, with_history: bool = True) -> dict:
         "dividend_date": None,
         "pe_percentiles": {},
         "industry_average": {"industry": None, "pe": None, "pb": None, "sample_size": 0},
+        "price_overdraft_signal": {},
         "source_chain": [],
         "errors": [],
         "_fetched_at": datetime.now().isoformat(),
@@ -850,6 +1026,7 @@ def _fetch_valuation_ratios(symbol: str, with_history: bool = True) -> dict:
         result["dividend_date"] = dividend_date
     if dividend_source:
         result["source_chain"].append(dividend_source)
+    result["price_overdraft_signal"] = _build_price_overdraft_signal(result)
     return result
 
 
@@ -1150,11 +1327,31 @@ def get_valuation_ratios(
     if not force:
         cached = _daily_cache_get(VALUATION_CACHE_KEY, symbol, cache_part)
         if cached:
+            if not cached.get("price_overdraft_signal"):
+                cached["price_overdraft_signal"] = _build_price_overdraft_signal(cached)
             cached["_cached"] = True
             return cached
     data = _fetch_valuation_ratios(symbol, with_history=with_history)
     _daily_cache_put(VALUATION_CACHE_KEY, symbol, data, cache_part)
     return data
+
+
+@router.get("/price-overdraft-signal", summary="获取股价透支判定信号")
+def get_price_overdraft_signal(
+    symbol: str = Query(..., description="股票代码，如 600519"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """获取预期校准后的股价透支判定信号。"""
+    valuation = get_valuation_ratios(symbol=symbol, with_history=True, force=force)
+    return {
+        "symbol": valuation.get("symbol"),
+        "trade_date": valuation.get("trade_date"),
+        "price_overdraft_signal": valuation.get("price_overdraft_signal") or _build_price_overdraft_signal(valuation),
+        "source_chain": valuation.get("source_chain", []),
+        "errors": valuation.get("errors", []),
+        "_fetched_at": valuation.get("_fetched_at"),
+        "_cached": valuation.get("_cached", False),
+    }
 
 
 @router.get("/shareholder-structure", summary="获取股东结构")
@@ -2684,6 +2881,47 @@ def _build_structured_analysis(items: list[dict], *, days: int, dimension: str, 
     }
 
 
+def _classify_risk_event(text: str, *, source_kind: str) -> Optional[dict]:
+    normalized = _safe_str(text)
+    if not normalized:
+        return None
+
+    risk_rules = [
+        ("regulatory", "监管处罚", "high", ("立案", "处罚", "罚款", "监管", "问询", "警示函", "通报批评", "调查", "违规")),
+        ("litigation", "诉讼仲裁", "high", ("诉讼", "仲裁", "冻结", "查封", "执行", "被告", "纠纷")),
+        ("delisting", "退市警示", "high", ("退市", "ST", "*ST", "终止上市", "暂停上市", "风险警示")),
+        ("profit_warning", "业绩预警", "high", ("预亏", "首亏", "亏损", "下修", "减值", "商誉减值", "大幅下滑")),
+        ("debt_cashflow", "债务现金流", "high", ("违约", "逾期", "债务", "流动性", "无法偿还", "票据", "现金流紧张")),
+        ("pledge_reduction", "质押减持", "medium", ("质押", "平仓", "爆仓", "减持", "清仓", "解除质押")),
+        ("governance", "治理异动", "medium", ("辞职", "失联", "更正", "无法保证", "内控", "非标", "保留意见", "否定意见")),
+        ("operation", "经营波动", "medium", ("停产", "停工", "事故", "召回", "失火", "环保", "安全生产")),
+    ]
+
+    matched_tags: list[str] = []
+    matched_rule: Optional[tuple[str, str, str]] = None
+    for category, label, severity, words in risk_rules:
+        hits = [word for word in words if word in normalized]
+        if hits:
+            matched_rule = (category, label, severity)
+            matched_tags = hits[:5]
+            break
+
+    if matched_rule is None:
+        return None
+
+    category, label, base_severity = matched_rule
+    severity = base_severity
+    if source_kind == "announcement" and severity == "medium":
+        severity = "high"
+
+    return {
+        "risk_category": category,
+        "risk_label": label,
+        "severity": severity,
+        "tags": list(dict.fromkeys(matched_tags)),
+    }
+
+
 def _fetch_rss_stock_news(code: str, days: int, limit: int = 80) -> tuple[list[dict], list[str], list[str]]:
     """Fetch and aggregate stock news through the project-local RSSHub instance."""
     errors: list[str] = []
@@ -2987,6 +3225,7 @@ def _fetch_announcements(symbol: str, days: int, ann_type: str) -> dict:
                     "notice_type": notice_type,
                     "publish_date": pub_time.date().isoformat() if pub_time else None,
                     "url": _safe_str(row.get(url_col)) if url_col is not None else "",
+                    **_classify_financial_text(f"{notice_type} {title}"),
                 })
 
             logger.info(f"[Announcements] OK for {code}: {len(items)} items (type={ann_type})")
@@ -3055,6 +3294,224 @@ def get_announcements(
             return cached
     data = _fetch_announcements(symbol, days, type)
     _daily_cache_put(ANNOUNCEMENTS_CACHE_KEY, symbol, data, cache_part)
+    return data
+
+
+# ============================================================================
+# Risk Events
+# ============================================================================
+
+RISK_EVENTS_CACHE_KEY = "stocks:risk_events:v1"
+
+RISK_KEYWORDS: tuple[str, ...] = (
+    "减持",
+    "质押",
+    "冻结",
+    "诉讼",
+    "仲裁",
+    "问询函",
+    "监管函",
+    "立案",
+    "处罚",
+    "资产减值",
+    "商誉减值",
+    "业绩预告下修",
+    "募投延期",
+    "关联交易",
+    "大额应收",
+    "债务逾期",
+    "担保",
+    "退市风险",
+)
+
+
+def _match_risk_keywords(text: str) -> list[str]:
+    normalized = _safe_str(text)
+    return [kw for kw in RISK_KEYWORDS if kw in normalized]
+
+
+def _extract_risk_summary(content: str, keywords: list[str]) -> str:
+    normalized = _safe_str(content)
+    if not normalized or not keywords:
+        return ""
+    sentences = re.split(r"[。！？；\n\r]+", normalized)
+    matched = []
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if any(keyword in sentence for keyword in keywords):
+            matched.append(sentence)
+        if len(matched) >= 3:
+            break
+    return "；".join(matched)[:240]
+
+
+def _fetch_risk_body_if_needed(url: str, title: str, matched_keywords: list[str]) -> tuple[str, str]:
+    if not url or not matched_keywords:
+        return "", ""
+    try:
+        from src.search_service import fetch_url_content
+
+        content = fetch_url_content(url, timeout=8)
+        summary = _extract_risk_summary(content, matched_keywords)
+        return content[:1500], summary
+    except Exception as exc:
+        logger.warning("[RiskEvents] fetch body failed for %s: %s", title, exc)
+        return "", ""
+
+
+def _build_risk_events(symbol: str, days: int) -> dict:
+    code = _normalize_symbol(symbol)
+    news = _fetch_news(code, days, "all")
+    announcements = _fetch_announcements(code, days, "all")
+
+    items: list[dict] = []
+    risk_counter: dict[str, int] = {}
+    severity_counter = {"high": 0, "medium": 0, "low": 0}
+
+    for item in news.get("items", []):
+        title = _safe_str(item.get("title"))
+        title_keywords = _match_risk_keywords(title)
+        text = " ".join(
+            filter(
+                None,
+                [
+                    title,
+                    _safe_str(item.get("summary")),
+                    _safe_str(item.get("event_label")),
+                    " ".join(item.get("tags", []) or []),
+                ],
+            )
+        )
+        risk = _classify_risk_event(text, source_kind="news")
+        if not title_keywords and not risk:
+            continue
+        body_content, risk_summary = _fetch_risk_body_if_needed(item.get("url") or "", title, title_keywords)
+        body_keywords = _match_risk_keywords(body_content)
+        merged_keywords = list(dict.fromkeys(title_keywords + body_keywords + (risk["tags"] if risk else [])))
+        risk = risk or _classify_risk_event(body_content, source_kind="news")
+        if not risk:
+            continue
+        severity_counter[risk["severity"]] = severity_counter.get(risk["severity"], 0) + 1
+        risk_counter[risk["risk_label"]] = risk_counter.get(risk["risk_label"], 0) + 1
+        items.append({
+            "title": title,
+            "summary": item.get("summary"),
+            "risk_summary": risk_summary or _extract_risk_summary(_safe_str(item.get("summary")), merged_keywords),
+            "date": _safe_str(item.get("publish_time"))[:10] or None,
+            "source": item.get("source") or "新闻",
+            "source_type": "news",
+            "url": item.get("url") or "",
+            "severity": risk["severity"],
+            "risk_category": risk["risk_category"],
+            "risk_label": risk["risk_label"],
+            "event_type": item.get("event_type") or "general",
+            "tags": merged_keywords[:8],
+        })
+
+    for item in announcements.get("items", []):
+        title = _safe_str(item.get("title"))
+        title_keywords = _match_risk_keywords(title)
+        text = " ".join(
+            filter(
+                None,
+                [
+                    _safe_str(item.get("notice_type")),
+                    title,
+                    _safe_str(item.get("event_label")),
+                    " ".join(item.get("tags", []) or []),
+                ],
+            )
+        )
+        risk = _classify_risk_event(text, source_kind="announcement")
+        if not title_keywords and not risk:
+            continue
+        body_content, risk_summary = _fetch_risk_body_if_needed(item.get("url") or "", title, title_keywords)
+        body_keywords = _match_risk_keywords(body_content)
+        merged_keywords = list(dict.fromkeys(title_keywords + body_keywords + (risk["tags"] if risk else [])))
+        risk = risk or _classify_risk_event(body_content, source_kind="announcement")
+        if not risk:
+            continue
+        severity_counter[risk["severity"]] = severity_counter.get(risk["severity"], 0) + 1
+        risk_counter[risk["risk_label"]] = risk_counter.get(risk["risk_label"], 0) + 1
+        items.append({
+            "title": title,
+            "summary": item.get("notice_type") or "",
+            "risk_summary": risk_summary or _extract_risk_summary(_safe_str(item.get("notice_type")), merged_keywords),
+            "date": item.get("publish_date"),
+            "source": item.get("source") or "公司公告",
+            "source_type": "announcement",
+            "url": item.get("url") or "",
+            "severity": risk["severity"],
+            "risk_category": risk["risk_category"],
+            "risk_label": risk["risk_label"],
+            "event_type": item.get("event_type") or "announcement",
+            "tags": merged_keywords[:8],
+        })
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in sorted(items, key=lambda row: row.get("date") or "", reverse=True):
+        key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('date', '')}|{item.get('risk_category', '')}").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    top_risk_labels = [label for label, _ in sorted(risk_counter.items(), key=lambda pair: pair[1], reverse=True)[:5]]
+    risk_score = min(100, severity_counter["high"] * 18 + severity_counter["medium"] * 9 + len(deduped))
+    if severity_counter["high"] >= 3 or risk_score >= 70:
+        overall_level = "high"
+    elif severity_counter["high"] >= 1 or risk_score >= 40:
+        overall_level = "medium"
+    elif deduped:
+        overall_level = "watch"
+    else:
+        overall_level = "low"
+
+    analysis = {
+        "overall_level": overall_level,
+        "risk_score": risk_score,
+        "total_events": len(deduped),
+        "severity_distribution": severity_counter,
+        "top_risk_labels": top_risk_labels,
+        "high_severity_titles": [item["title"] for item in deduped if item.get("severity") == "high"][:8],
+        "ai_summary_hints": [
+            f"风险事件等级: {overall_level}, 风险分 {risk_score}",
+            f"高风险事件 {severity_counter['high']} 条, 中风险事件 {severity_counter['medium']} 条",
+            f"主要风险主题: {', '.join(top_risk_labels) or '暂无明显风险主题'}",
+        ],
+    }
+
+    return {
+        "symbol": code,
+        "days": days,
+        "items": deduped[:50],
+        "analysis": analysis,
+        "source_chain": list(dict.fromkeys((news.get("source_chain") or []) + (announcements.get("source_chain") or []))),
+        "errors": list(dict.fromkeys((news.get("errors") or []) + (announcements.get("errors") or []))),
+        "_fetched_at": datetime.now().isoformat(),
+        "_cached": False,
+    }
+
+
+@router.get("/risk-events", summary="获取风险事件")
+def get_risk_events(
+    symbol: str = Query(..., description="股票代码"),
+    days: int = Query(90, ge=1, le=365, description="查询最近N天"),
+    force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+):
+    """聚合相关新闻和公司公告中的风险事件。"""
+    symbol = _normalize_symbol(symbol)
+    cache_part = f"d{days}"
+    if not force:
+        cached = _daily_cache_get(RISK_EVENTS_CACHE_KEY, symbol, cache_part)
+        if cached:
+            cached["_cached"] = True
+            return cached
+    data = _build_risk_events(symbol, days)
+    _daily_cache_put(RISK_EVENTS_CACHE_KEY, symbol, data, cache_part)
     return data
 
 
