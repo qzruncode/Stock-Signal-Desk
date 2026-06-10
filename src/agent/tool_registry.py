@@ -308,7 +308,7 @@ class ToolRegistry:
 
         self._add(ToolDef(
             name="get_financials",
-            description="获取单只股票的核心财务指标（单季度数据），包括盈利能力(ROE、毛利率、净利率)、成长性(营收/利润增长率)、偿债能力(资产负债率、流动/速动比率)、每股指标(EPS、BPS)",
+            description="获取单只股票的核心财务指标（单季度数据），包括盈利能力(ROE、毛利率、净利率)、成长性(营收同比/环比、归母净利润同比、扣非净利润同比)、现金流(经营现金流)、营运与资产质量(应收账款、存货、合同负债、资产减值损失)、偿债能力(资产负债率、流动/速动比率)、每股指标(EPS、BPS)",
             parameters={
                 "type": "object",
                 "properties": {
@@ -603,7 +603,7 @@ class ToolRegistry:
 
         self._add(ToolDef(
             name="get_risk_events",
-            description="聚合相关新闻与公司公告中的风险事件，返回风险事件清单、严重度分布、主要风险主题和高风险事件摘要，适合模型快速判断个股近期风险暴露。",
+            description="聚合相关新闻与公司公告中的风险线索，不做接口层最终风险打分或 LLM 重研判。返回线索清单、来源分布、主题分布和启发式标签，适合后续由模型结合上下文继续判断哪些线索真正构成实质风险。",
             parameters={
                 "type": "object",
                 "properties": {

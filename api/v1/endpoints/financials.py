@@ -418,8 +418,15 @@ def _fetch_financials(symbol: str, periods: int = 12) -> dict:
     try:
         items = _fetch_from_ths(code, periods)
         if items:
+            try:
+                _enrich_financial_items_with_statements(code, items)
+            except Exception as enrich_exc:
+                errors.append(f"财报明细补充: {enrich_exc}")
+                logger.warning(f"[Financials] statement enrichment failed for {symbol}: {enrich_exc}")
             result['items'] = items
             result['source'] = '同花顺'
+            if errors:
+                result['_errors'] = errors
             logger.info(f"[Financials] 同花顺 OK for {symbol}: {len(items)} periods, {_time.time() - t0:.1f}s")
             return result
         errors.append("同花顺返回空数据")
@@ -431,8 +438,15 @@ def _fetch_financials(symbol: str, periods: int = 12) -> dict:
     try:
         items = _fetch_from_sina(code, periods)
         if items:
+            try:
+                _enrich_financial_items_with_statements(code, items)
+            except Exception as enrich_exc:
+                errors.append(f"财报明细补充: {enrich_exc}")
+                logger.warning(f"[Financials] statement enrichment failed for {symbol}: {enrich_exc}")
             result['items'] = items
             result['source'] = '新浪财经'
+            if errors:
+                result['_errors'] = errors
             logger.info(f"[Financials] 新浪 OK for {symbol}: {len(items)} periods, {_time.time() - t0:.1f}s")
             return result
         errors.append("新浪返回空数据")
@@ -1450,6 +1464,7 @@ _BS_COLUMNS = {
     'MONETARYFUNDS': 'monetary_funds',
     'ACCOUNTS_RECE': 'accounts_receivable',
     'INVENTORY': 'inventory',
+    'CONTRACT_LIAB': 'contract_liabilities',
     'FIXED_ASSET': 'fixed_asset',
     'SHORT_LOAN': 'short_loan',
     'LONG_LOAN': 'long_loan',
@@ -1514,13 +1529,17 @@ _IS_COLUMNS = {
     'REPORT_DATE': 'report_date',
     'REPORT_DATE_NAME': 'report_date_name',
     'TOTAL_OPERATE_INCOME': 'revenue',
+    'TOTAL_OPERATE_INCOME_YOY': 'revenue_yoy',
     'TOTAL_OPERATE_COST': 'total_cost',
     'OPERATE_COST': 'operate_cost',
     'OPERATE_PROFIT': 'operate_profit',
     'TOTAL_PROFIT': 'total_profit',
     'NETPROFIT': 'net_profit',
+    'NETPROFIT_YOY': 'net_profit_yoy',
     'PARENT_NETPROFIT': 'parent_net_profit',
+    'PARENT_NETPROFIT_YOY': 'parent_net_profit_yoy',
     'DEDUCT_PARENT_NETPROFIT': 'deducted_net_profit',
+    'DEDUCT_PARENT_NETPROFIT_YOY': 'deducted_net_profit_yoy',
     'BASIC_EPS': 'basic_eps',
     'DILUTED_EPS': 'diluted_eps',
     'SALE_EXPENSE': 'sale_expense',
@@ -1530,6 +1549,7 @@ _IS_COLUMNS = {
     'INVEST_INCOME': 'invest_income',
     'OPERATE_TAX_ADD': 'operate_tax_add',
     'INCOME_TAX': 'income_tax',
+    'ASSET_IMPAIRMENT_LOSS': 'asset_impairment_loss',
 }
 
 _IS_STRING_FIELDS = {'report_date', 'report_date_name'}
@@ -1674,6 +1694,7 @@ _THS_DEBT_COLUMNS = {
     '货币资金': 'monetary_funds',
     '应收账款': 'accounts_receivable',
     '存货': 'inventory',
+    '合同负债': 'contract_liabilities',
     '固定资产合计': 'fixed_asset',
     '短期借款': 'short_loan',
     '长期借款': 'long_loan',
@@ -1696,6 +1717,7 @@ _THS_BENEFIT_COLUMNS = {
     '研发费用': 'research_expense',
     '财务费用': 'finance_expense',
     '营业税金及附加': 'operate_tax_add',
+    '资产减值损失': 'asset_impairment_loss',
 }
 
 _THS_CASH_COLUMNS = {
@@ -1846,6 +1868,7 @@ _SINA_BS_COLUMNS = {
     '货币资金': 'monetary_funds',
     '应收账款': 'accounts_receivable',
     '存货': 'inventory',
+    '合同负债': 'contract_liabilities',
     '固定资产及清理合计': 'fixed_asset',
     '短期借款': 'short_loan',
     '长期借款': 'long_loan',
@@ -1869,6 +1892,7 @@ _SINA_IS_COLUMNS = {
     '研发费用': 'research_expense',
     '财务费用': 'finance_expense',
     '营业税金及附加': 'operate_tax_add',
+    '资产减值损失': 'asset_impairment_loss',
 }
 
 _SINA_CF_COLUMNS = {
@@ -2011,6 +2035,7 @@ _THS_NEW_BALANCE_METRICS = {
     'monetary_fund': 'monetary_funds',
     'accounts_receivable': 'accounts_receivable',
     'inventory': 'inventory',
+    'contract_liability': 'contract_liabilities',
     'fixed_assets_total': 'fixed_asset',
     'short_term_loans': 'short_loan',
     'long_term_loan': 'long_loan',
@@ -2112,7 +2137,7 @@ def _fetch_from_ths_abstract(symbol: str, periods: int) -> dict:
             'report_date': rd, 'report_date_name': rdn,
             'total_assets': None, 'total_liabilities': None, 'total_equity': None,
             'parent_equity': None, 'monetary_funds': None, 'accounts_receivable': None,
-            'inventory': None, 'fixed_asset': None, 'short_loan': None,
+            'inventory': None, 'contract_liabilities': None, 'fixed_asset': None, 'short_loan': None,
             'long_loan': None, 'accounts_payable': None,
             'noncurrent_liab_1year': None, 'lease_liab': None,
             'total_current_assets': None, 'total_current_liabilities': None,
@@ -2122,14 +2147,20 @@ def _fetch_from_ths_abstract(symbol: str, periods: int) -> dict:
             'report_date': rd, 'report_date_name': rdn,
             'revenue': item.get('revenue'), 'total_cost': None,
             'operate_cost': None, 'operate_profit': None, 'total_profit': None,
-            'net_profit': item.get('net_profit'), 'parent_net_profit': None,
+            'net_profit': item.get('net_profit'),
+            'net_profit_yoy': item.get('net_profit_yoy'),
+            'parent_net_profit': None,
+            'parent_net_profit_yoy': item.get('net_profit_yoy'),
             'deducted_net_profit': item.get('deducted_profit'),
+            'deducted_net_profit_yoy': item.get('deducted_profit_yoy'),
             'basic_eps': item.get('eps'), 'diluted_eps': None,
             'sale_expense': None, 'manage_expense': None, 'research_expense': None,
             'finance_expense': None, 'invest_income': None,
             'operate_tax_add': None, 'income_tax': None,
+            'asset_impairment_loss': None,
             'gross_profit': None, 'gross_margin': item.get('gross_margin'),
             'net_margin': item.get('net_margin'),
+            'revenue_yoy': item.get('revenue_yoy'),
         })
         result['cashflow'].append({
             'report_date': rd, 'report_date_name': rdn,
@@ -2271,6 +2302,98 @@ def _fetch_financial_statements(symbol: str, periods: int = 12) -> dict:
         result['_errors'] = errors
     logger.info(f"[FinancialStatements] total {_time.time() - t0:.1f}s for {symbol} (source: {result['source']})")
     return result
+
+
+def _safe_growth_pct(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous is None or previous == 0:
+        return None
+    return round((current - previous) / abs(previous) * 100, 2)
+
+
+def _statements_payload_supports_summary_enrichment(statements: dict) -> bool:
+    balance_items = statements.get('balance_sheet') or []
+    income_items = statements.get('income_statement') or []
+
+    balance_has_contract = any('contract_liabilities' in item for item in balance_items if isinstance(item, dict))
+    income_has_impairment = any('asset_impairment_loss' in item for item in income_items if isinstance(item, dict))
+    income_has_parent_yoy = any('parent_net_profit_yoy' in item for item in income_items if isinstance(item, dict))
+    income_has_deducted_yoy = any('deducted_net_profit_yoy' in item for item in income_items if isinstance(item, dict))
+    return balance_has_contract and income_has_impairment and income_has_parent_yoy and income_has_deducted_yoy
+
+
+def _enrich_financial_items_with_statements(symbol: str, items: list[dict]) -> None:
+    """Backfill summary rows with statement-only fields needed by the agent."""
+    if not items:
+        return
+
+    periods = len(items)
+    statements = _fins_cache_get(symbol, periods)
+    if statements and not _statements_payload_supports_summary_enrichment(statements):
+        statements = None
+    if not statements:
+        statements = _fetch_financial_statements(symbol, periods)
+
+    income_by_date = {
+        item.get('report_date'): item
+        for item in statements.get('income_statement', [])
+        if item.get('report_date')
+    }
+    cashflow_by_date = {
+        item.get('report_date'): item
+        for item in statements.get('cashflow', [])
+        if item.get('report_date')
+    }
+    balance_by_date = {
+        item.get('report_date'): item
+        for item in statements.get('balance_sheet', [])
+        if item.get('report_date')
+    }
+
+    for item in items:
+        report_date = item.get('report_date')
+        income = income_by_date.get(report_date, {})
+        cashflow = cashflow_by_date.get(report_date, {})
+        balance = balance_by_date.get(report_date, {})
+
+        if item.get('parent_net_profit') is None:
+            item['parent_net_profit'] = income.get('parent_net_profit')
+        if item.get('parent_net_profit_yoy') is None:
+            item['parent_net_profit_yoy'] = (
+                income.get('parent_net_profit_yoy')
+                if income.get('parent_net_profit_yoy') is not None
+                else item.get('net_profit_yoy')
+            )
+        if item.get('deducted_net_profit') is None:
+            item['deducted_net_profit'] = (
+                income.get('deducted_net_profit')
+                if income.get('deducted_net_profit') is not None
+                else item.get('deducted_profit')
+            )
+        if item.get('deducted_net_profit_yoy') is None:
+            item['deducted_net_profit_yoy'] = (
+                income.get('deducted_net_profit_yoy')
+                if income.get('deducted_net_profit_yoy') is not None
+                else item.get('deducted_profit_yoy')
+            )
+        if item.get('operating_cash_flow') is None:
+            item['operating_cash_flow'] = cashflow.get('operating_cf')
+        if item.get('accounts_receivable') is None:
+            item['accounts_receivable'] = balance.get('accounts_receivable')
+        if item.get('inventory') is None:
+            item['inventory'] = balance.get('inventory')
+        if item.get('contract_liabilities') is None:
+            item['contract_liabilities'] = balance.get('contract_liabilities')
+        if item.get('asset_impairment_loss') is None:
+            item['asset_impairment_loss'] = income.get('asset_impairment_loss')
+
+    for idx, item in enumerate(items):
+        if idx == 0:
+            item.setdefault('revenue_qoq', None)
+            continue
+        item['revenue_qoq'] = _safe_growth_pct(
+            item.get('revenue'),
+            items[idx - 1].get('revenue'),
+        )
 
 
 # --- Endpoint ---
@@ -2823,6 +2946,7 @@ def _build_structured_analysis(items: list[dict], *, days: int, dimension: str, 
     from collections import Counter, defaultdict
 
     source_counter = Counter(_safe_str(item.get(source_key)) or "未知" for item in items)
+    notice_type_counter = Counter(_safe_str(item.get("notice_type")) or "未分类" for item in items if _safe_str(item.get("notice_type")))
     event_counter = Counter(_safe_str(item.get("event_type")) or _safe_str(item.get("notice_type")) or _safe_str(item.get("category")) or "general" for item in items)
     polarity_counter = Counter(_safe_str(item.get("polarity") or item.get("label")) or "neutral" for item in items)
     importance_counter = Counter(_safe_str(item.get("importance")) or "low" for item in items)
@@ -2868,6 +2992,7 @@ def _build_structured_analysis(items: list[dict], *, days: int, dimension: str, 
             "proxy_item_count": sum(1 for item in items if item.get("is_proxy")),
         },
         "source_distribution": dict(source_counter.most_common()),
+        "notice_type_distribution": dict(notice_type_counter.most_common()),
         "event_distribution": dict(event_counter.most_common()),
         "polarity_distribution": dict(polarity_counter.most_common()),
         "importance_distribution": dict(importance_counter.most_common()),
@@ -2887,39 +3012,102 @@ def _classify_risk_event(text: str, *, source_kind: str) -> Optional[dict]:
         return None
 
     risk_rules = [
-        ("regulatory", "监管处罚", "high", ("立案", "处罚", "罚款", "监管", "问询", "警示函", "通报批评", "调查", "违规")),
-        ("litigation", "诉讼仲裁", "high", ("诉讼", "仲裁", "冻结", "查封", "执行", "被告", "纠纷")),
-        ("delisting", "退市警示", "high", ("退市", "ST", "*ST", "终止上市", "暂停上市", "风险警示")),
-        ("profit_warning", "业绩预警", "high", ("预亏", "首亏", "亏损", "下修", "减值", "商誉减值", "大幅下滑")),
-        ("debt_cashflow", "债务现金流", "high", ("违约", "逾期", "债务", "流动性", "无法偿还", "票据", "现金流紧张")),
-        ("pledge_reduction", "质押减持", "medium", ("质押", "平仓", "爆仓", "减持", "清仓", "解除质押")),
-        ("governance", "治理异动", "medium", ("辞职", "失联", "更正", "无法保证", "内控", "非标", "保留意见", "否定意见")),
-        ("operation", "经营波动", "medium", ("停产", "停工", "事故", "召回", "失火", "环保", "安全生产")),
+        (
+            "regulatory",
+            "监管处罚",
+            {
+                "high": ("立案", "处罚", "罚款", "通报批评", "调查", "违规"),
+                "medium": ("监管函", "问询", "问询函", "警示函"),
+            },
+        ),
+        (
+            "litigation",
+            "诉讼仲裁",
+            {
+                "high": ("冻结", "查封", "执行"),
+                "medium": ("诉讼", "仲裁", "被告", "纠纷"),
+            },
+        ),
+        (
+            "delisting",
+            "退市警示",
+            {
+                "high": ("退市", "*ST", "终止上市", "暂停上市"),
+                "medium": ("风险警示", "ST"),
+            },
+        ),
+        (
+            "profit_warning",
+            "业绩预警",
+            {
+                "high": ("预亏", "首亏", "亏损", "商誉减值", "大幅下滑"),
+                "medium": ("下修", "减值", "资产减值"),
+            },
+        ),
+        (
+            "debt_cashflow",
+            "债务现金流",
+            {
+                "high": ("违约", "无法偿还", "债务逾期", "现金流紧张"),
+                "medium": ("债务", "流动性", "票据", "担保", "大额应收"),
+            },
+        ),
+        (
+            "pledge_reduction",
+            "质押减持",
+            {
+                "high": ("平仓", "爆仓", "清仓", "被动减持"),
+                "medium": ("质押", "减持"),
+                "low": ("解除质押",),
+            },
+        ),
+        (
+            "governance",
+            "治理异动",
+            {
+                "medium": ("失联", "无法保证", "非标", "保留意见", "否定意见"),
+                "low": ("辞职", "更正", "内控", "内部控制"),
+            },
+        ),
+        (
+            "operation",
+            "经营波动",
+            {
+                "high": ("事故", "失火", "安全生产"),
+                "medium": ("停产", "停工", "召回", "环保"),
+            },
+        ),
     ]
 
-    matched_tags: list[str] = []
-    matched_rule: Optional[tuple[str, str, str]] = None
-    for category, label, severity, words in risk_rules:
-        hits = [word for word in words if word in normalized]
-        if hits:
-            matched_rule = (category, label, severity)
-            matched_tags = hits[:5]
-            break
+    severity_rank = {"low": 1, "medium": 2, "high": 3}
+    matched: Optional[dict[str, Any]] = None
+    for category, label, severity_map in risk_rules:
+        rule_hits: list[str] = []
+        rule_severity: Optional[str] = None
+        for severity in ("high", "medium", "low"):
+            words = severity_map.get(severity, ())
+            hits = [word for word in words if word in normalized]
+            if hits:
+                rule_hits.extend(hits)
+                if rule_severity is None:
+                    rule_severity = severity
+        if rule_severity is None:
+            continue
+        candidate = {
+            "risk_category": category,
+            "risk_label": label,
+            "severity": rule_severity,
+            "tags": list(dict.fromkeys(rule_hits))[:5],
+        }
+        if matched is None or severity_rank[candidate["severity"]] > severity_rank[matched["severity"]]:
+            matched = candidate
 
-    if matched_rule is None:
+    if matched is None:
         return None
 
-    category, label, base_severity = matched_rule
-    severity = base_severity
-    if source_kind == "announcement" and severity == "medium":
-        severity = "high"
+    return matched
 
-    return {
-        "risk_category": category,
-        "risk_label": label,
-        "severity": severity,
-        "tags": list(dict.fromkeys(matched_tags)),
-    }
+
 
 
 def _fetch_rss_stock_news(code: str, days: int, limit: int = 80) -> tuple[list[dict], list[str], list[str]]:
@@ -3301,7 +3489,7 @@ def get_announcements(
 # Risk Events
 # ============================================================================
 
-RISK_EVENTS_CACHE_KEY = "stocks:risk_events:v1"
+RISK_EVENTS_CACHE_KEY = "stocks:risk_events:v4"
 
 RISK_KEYWORDS: tuple[str, ...] = (
     "减持",
@@ -3323,6 +3511,21 @@ RISK_KEYWORDS: tuple[str, ...] = (
     "担保",
     "退市风险",
 )
+
+RISK_CATEGORY_LABELS: dict[str, str] = {
+    "regulatory": "监管处罚",
+    "litigation": "诉讼仲裁",
+    "delisting": "退市警示",
+    "profit_warning": "业绩预警",
+    "debt_cashflow": "债务现金流",
+    "pledge_reduction": "质押减持",
+    "governance": "治理异动",
+    "operation": "经营波动",
+}
+
+RISK_LABEL_TO_CATEGORY: dict[str, str] = {
+    label: category for category, label in RISK_CATEGORY_LABELS.items()
+}
 
 
 def _match_risk_keywords(text: str) -> list[str]:
@@ -3460,25 +3663,20 @@ def _build_risk_events(symbol: str, days: int) -> dict:
         deduped.append(item)
 
     top_risk_labels = [label for label, _ in sorted(risk_counter.items(), key=lambda pair: pair[1], reverse=True)[:5]]
-    risk_score = min(100, severity_counter["high"] * 18 + severity_counter["medium"] * 9 + len(deduped))
-    if severity_counter["high"] >= 3 or risk_score >= 70:
-        overall_level = "high"
-    elif severity_counter["high"] >= 1 or risk_score >= 40:
-        overall_level = "medium"
-    elif deduped:
-        overall_level = "watch"
-    else:
-        overall_level = "low"
+    source_type_counter = {"news": 0, "announcement": 0}
+    for item in deduped:
+        source_type = _safe_str(item.get("source_type")).lower()
+        if source_type in source_type_counter:
+            source_type_counter[source_type] += 1
 
     analysis = {
-        "overall_level": overall_level,
-        "risk_score": risk_score,
         "total_events": len(deduped),
         "severity_distribution": severity_counter,
+        "source_distribution": source_type_counter,
         "top_risk_labels": top_risk_labels,
         "high_severity_titles": [item["title"] for item in deduped if item.get("severity") == "high"][:8],
         "ai_summary_hints": [
-            f"风险事件等级: {overall_level}, 风险分 {risk_score}",
+            f"近{days}天共发现 {len(deduped)} 条风险线索",
             f"高风险事件 {severity_counter['high']} 条, 中风险事件 {severity_counter['medium']} 条",
             f"主要风险主题: {', '.join(top_risk_labels) or '暂无明显风险主题'}",
         ],

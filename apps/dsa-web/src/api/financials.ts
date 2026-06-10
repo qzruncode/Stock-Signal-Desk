@@ -4,10 +4,15 @@ export interface FinancialItem {
   report_date: string | null;
   net_profit: number | null;
   net_profit_yoy: number | null;
+  parent_net_profit: number | null;
+  parent_net_profit_yoy: number | null;
   deducted_profit: number | null;
   deducted_profit_yoy: number | null;
+  deducted_net_profit: number | null;
+  deducted_net_profit_yoy: number | null;
   revenue: number | null;
   revenue_yoy: number | null;
+  revenue_qoq: number | null;
   eps: number | null;
   bps: number | null;
   capital_reserve_per_share: number | null;
@@ -26,6 +31,11 @@ export interface FinancialItem {
   conservative_quick_ratio: number | null;
   equity_ratio: number | null;
   debt_ratio: number | null;
+  operating_cash_flow: number | null;
+  accounts_receivable: number | null;
+  inventory: number | null;
+  contract_liabilities: number | null;
+  asset_impairment_loss: number | null;
 }
 
 export interface FinancialsResponse {
@@ -180,6 +190,7 @@ export interface BalanceSheetItem {
   monetary_funds: number | null;
   accounts_receivable: number | null;
   inventory: number | null;
+  contract_liabilities: number | null;
   fixed_asset: number | null;
   short_loan: number | null;
   long_loan: number | null;
@@ -196,13 +207,17 @@ export interface IncomeStatementItem {
   report_date: string | null;
   report_date_name: string | null;
   revenue: number | null;
+  revenue_yoy?: number | null;
   total_cost: number | null;
   operate_cost: number | null;
   operate_profit: number | null;
   total_profit: number | null;
   net_profit: number | null;
+  net_profit_yoy?: number | null;
   parent_net_profit: number | null;
+  parent_net_profit_yoy?: number | null;
   deducted_net_profit: number | null;
+  deducted_net_profit_yoy?: number | null;
   basic_eps: number | null;
   diluted_eps: number | null;
   sale_expense: number | null;
@@ -212,6 +227,7 @@ export interface IncomeStatementItem {
   invest_income: number | null;
   operate_tax_add: number | null;
   income_tax: number | null;
+  asset_impairment_loss?: number | null;
   gross_profit: number | null;
   gross_margin: number | null;
   net_margin: number | null;
@@ -290,6 +306,42 @@ export interface AnnouncementItem {
   notice_type: string;
   publish_date: string | null;
   url: string;
+  source?: string;
+  event_type?: string;
+  event_label?: string;
+  polarity?: 'positive' | 'negative' | 'neutral';
+  sentiment_score?: number;
+  importance?: 'high' | 'medium' | 'low';
+  tags?: string[];
+}
+
+export interface AnnouncementKeyEvent {
+  title: string;
+  date: string | null;
+  source: string;
+  event_type: string;
+  polarity: 'positive' | 'negative' | 'neutral';
+  importance: 'high' | 'medium' | 'low';
+  tags: string[];
+}
+
+export interface AnnouncementsAnalysis {
+  dimension: string;
+  data_quality: {
+    item_count: number;
+    source_count: number;
+    days: number;
+    coverage_level: 'none' | 'thin' | 'fair' | 'good';
+    proxy_item_count: number;
+  };
+  source_distribution: Record<string, number>;
+  notice_type_distribution: Record<string, number>;
+  event_distribution: Record<string, number>;
+  polarity_distribution: Record<string, number>;
+  importance_distribution: Record<string, number>;
+  daily_distribution: Record<string, number>;
+  key_events: AnnouncementKeyEvent[];
+  ai_summary_hints: string[];
 }
 
 export interface AnnouncementsResponse {
@@ -297,8 +349,12 @@ export interface AnnouncementsResponse {
   days: number;
   type: string;
   items: AnnouncementItem[];
-  analysis?: Record<string, unknown>;
+  analysis?: AnnouncementsAnalysis;
+  source_chain?: string[];
   errors?: string[];
+  data_time?: string | null;
+  is_stale?: boolean;
+  fallback_used?: boolean;
   _fetched_at?: string;
   _cached?: boolean;
 }
@@ -338,13 +394,15 @@ export interface RiskEventsResponse {
   days: number;
   items: RiskEventItem[];
   analysis: {
-    overall_level: 'low' | 'watch' | 'medium' | 'high';
-    risk_score: number;
     total_events: number;
     severity_distribution: {
       high: number;
       medium: number;
       low: number;
+    };
+    source_distribution?: {
+      news: number;
+      announcement: number;
     };
     top_risk_labels: string[];
     high_severity_titles: string[];

@@ -169,6 +169,53 @@ def test_announcements_uses_rsshub_fallback_when_direct_source_is_empty(client, 
     assert payload["fallback_used"] is True
 
 
+def test_announcements_return_notice_type_distribution(client, monkeypatch):
+    from api.v1.endpoints import financials
+
+    monkeypatch.setattr(
+        financials,
+        "_fetch_announcements",
+        lambda symbol, days, ann_type: {
+            "symbol": symbol,
+            "days": days,
+            "type": ann_type,
+            "items": [
+                {"title": "年报", "notice_type": "定期报告", "publish_date": "2026-06-08", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "neutral", "tags": []},
+                {"title": "分红方案", "notice_type": "分红派息", "publish_date": "2026-06-07", "url": "", "event_type": "earnings", "importance": "high", "polarity": "positive", "tags": []},
+                {"title": "董事辞任", "notice_type": "高管变动", "publish_date": "2026-06-06", "url": "", "event_type": "governance", "importance": "medium", "polarity": "neutral", "tags": []},
+                {"title": "利润分配补充", "notice_type": "分红派息", "publish_date": "2026-06-05", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "positive", "tags": []},
+            ],
+            "analysis": financials._build_structured_analysis(
+                [
+                    {"title": "年报", "notice_type": "定期报告", "publish_date": "2026-06-08", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "neutral", "tags": []},
+                    {"title": "分红方案", "notice_type": "分红派息", "publish_date": "2026-06-07", "url": "", "event_type": "earnings", "importance": "high", "polarity": "positive", "tags": []},
+                    {"title": "董事辞任", "notice_type": "高管变动", "publish_date": "2026-06-06", "url": "", "event_type": "governance", "importance": "medium", "polarity": "neutral", "tags": []},
+                    {"title": "利润分配补充", "notice_type": "分红派息", "publish_date": "2026-06-05", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "positive", "tags": []},
+                ],
+                days=days,
+                dimension="公司公告",
+            ),
+            "source_chain": [],
+            "errors": [],
+            "data_time": "2026-06-08",
+            "is_stale": False,
+            "fallback_used": False,
+            "_fetched_at": "2026-06-08T00:00:00",
+            "_cached": False,
+        },
+    )
+
+    response = client.get("/api/v1/stocks/announcements", params={"symbol": "300850.SZ", "force": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["analysis"]["notice_type_distribution"] == {
+        "分红派息": 2,
+        "定期报告": 1,
+        "高管变动": 1,
+    }
+
+
 def test_research_uses_rsshub_fallback_when_direct_source_is_empty(client, monkeypatch):
     from api.v1.endpoints import financials
 
