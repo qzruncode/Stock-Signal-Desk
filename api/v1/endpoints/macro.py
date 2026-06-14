@@ -762,33 +762,43 @@ def get_macro_indicator(
 def _fetch_sector_flow_industry() -> list[dict]:
     """获取行业板块资金流向 — 返回全量排序数据。
 
-    1. 优先: 同花顺 stock_board_industry_summary_ths — 有净流入、上涨下跌家数
+    1. 优先: 东方财富 stock_sector_fund_flow_rank(indicator='今日', sector_type='行业资金流')
     2. 降级: 新浪 stock_sector_spot(indicator='行业') — 有涨跌幅、总成交额、领涨股
     """
     import akshare as ak
 
-    # 优先: 同花顺
+    # 优先: 东方财富
     try:
-        df = ak.stock_board_industry_summary_ths()
+        df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
         if df is not None and not df.empty:
-            df = df.sort_values("净流入", ascending=False).reset_index(drop=True)
+            sort_col = next(
+                (c for c in df.columns if "主力净流入" in c and "净额" in c),
+                next((c for c in df.columns if "主力净流入" in c), None),
+            )
+            if sort_col:
+                df = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            main_col = next((c for c in df.columns if "主力净流入" in c and "净额" in c), None)
+            super_col = next((c for c in df.columns if "超大单净流入" in c and "净额" in c), None)
+            large_col = next((c for c in df.columns if "大单净流入" in c and "净额" in c and "超大" not in c), None)
+            pct_col = next((c for c in df.columns if "涨跌幅" in c), "涨跌幅")
+            leader_col = next((c for c in df.columns if "最大股" in c), None)
             records = []
             for _, row in df.iterrows():
                 rec = {
-                    "name": str(row.get("板块", "")).strip(),
-                    "pct_chg": _safe_float(row.get("涨跌幅")),
-                    "main_net_inflow": _yiyuan_to_yuan(row.get("净流入")),  # 亿→元
-                    "super_large_net_inflow": None,
-                    "large_net_inflow": None,
-                    "total_amount": _yiyuan_to_yuan(row.get("总成交额")),  # 亿→元
-                    "up_count": _safe_float(row.get("上涨家数")),
-                    "down_count": _safe_float(row.get("下跌家数")),
-                    "leading_stock": str(row.get("领涨股", "")).strip(),
+                    "name": str(row.get("名称", "")).strip(),
+                    "pct_chg": _safe_float(row.get(pct_col)),
+                    "main_net_inflow": _safe_float(row.get(main_col) if main_col else None),
+                    "super_large_net_inflow": _safe_float(row.get(super_col) if super_col else None),
+                    "large_net_inflow": _safe_float(row.get(large_col) if large_col else None),
+                    "total_amount": None,
+                    "up_count": None,
+                    "down_count": None,
+                    "leading_stock": str(row.get(leader_col, "")).strip() if leader_col else None,
                 }
                 records.append(rec)
             return records
     except Exception as e:
-        logger.warning(f"[Macro-板块资金-行业THS] 降级: {e}")
+        logger.warning(f"[Macro-板块资金-行业EM] 降级: {e}")
 
     # 降级: 新浪行业板块 (成交额已经是元)
     try:
@@ -889,7 +899,7 @@ def _fetch_sector_flow_concept() -> list[dict]:
 
 def _macro_cache_key(prefix: str) -> str:
     """按天粒度的缓存 key。"""
-    return f"macro:{prefix}:{datetime.now().strftime('%Y%m%d')}"
+    return f"macro:v2:{prefix}:{datetime.now().strftime('%Y%m%d')}"
 
 
 def _macro_cache_get(prefix: str) -> dict | None:
@@ -920,7 +930,7 @@ def get_sector_flow(
 ):
     """获取行业/概念板块的主力资金净流入/流出情况。
 
-    行业板块数据源: 同花顺 (stock_board_industry_summary_ths)
+    行业板块数据源: 东方财富 (stock_sector_fund_flow_rank)
     概念板块数据源: 东方财富 (stock_sector_fund_flow_rank)，降级到新浪
     按天缓存。
     """
@@ -955,7 +965,7 @@ def get_sector_flow(
         if type == "industry":
             all_records = _fetch_sector_flow_industry()
             if all_records and all_records[0].get("main_net_inflow") is not None:
-                source = "同花顺"
+                source = "东方财富"
             else:
                 source = "新浪"
         else:
@@ -1040,21 +1050,18 @@ def _fetch_market_breadth_data() -> dict:
     volume = None
 
     try:
-        ths_df = ak.stock_board_industry_summary_ths()
-        if ths_df is not None and not ths_df.empty:
-            if "上涨家数" in ths_df.columns:
-                up_count = int(ths_df["上涨家数"].sum())
-            if "下跌家数" in ths_df.columns:
-                down_count = int(ths_df["下跌家数"].sum())
-            if "总成交额" in ths_df.columns:
-                # THS 总成交额单位是亿元
-                volume = float(ths_df["总成交额"].sum()) * 1e8
-            source_parts.append("同花顺")
+        industry_df = ak.stock_board_industry_name_em()
+        if industry_df is not None and not industry_df.empty:
+            if "上涨家数" in industry_df.columns:
+                up_count = int(industry_df["上涨家数"].sum())
+            if "下跌家数" in industry_df.columns:
+                down_count = int(industry_df["下跌家数"].sum())
+            source_parts.append("东方财富")
     except Exception as e:
-        errors.append(f"同花顺行业汇总: {e}")
-        logger.warning(f"[Macro-市场宽度-THS] 降级: {e}")
+        errors.append(f"东方财富行业汇总: {e}")
+        logger.warning(f"[Macro-市场宽度-EM] 降级: {e}")
 
-    # 同花顺失败时降级到新浪行业板块
+    # 行业板块补成交额，或在行业汇总失败时整体降级到新浪
     if up_count is None and down_count is None:
         try:
             sina_df = ak.stock_sector_spot(indicator="行业")
@@ -1068,6 +1075,15 @@ def _fetch_market_breadth_data() -> dict:
         except Exception as e:
             errors.append(f"新浪行业板块: {e}")
             logger.warning(f"[Macro-市场宽度-新浪] 失败: {e}")
+    elif volume is None:
+        try:
+            sina_df = ak.stock_sector_spot(indicator="行业")
+            if sina_df is not None and not sina_df.empty and "总成交额" in sina_df.columns:
+                volume = float(sina_df["总成交额"].sum())
+                source_parts.append("新浪成交额")
+        except Exception as e:
+            errors.append(f"新浪行业成交额: {e}")
+            logger.warning(f"[Macro-市场宽度-新浪成交额] 失败: {e}")
 
     # ---- 1b. 平盘家数 ----
     # 复用 market_status.py 的逻辑: 沪深交易所总股票数 - 上涨 - 下跌

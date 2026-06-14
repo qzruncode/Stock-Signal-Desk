@@ -2,7 +2,8 @@
 """Market status endpoint. All data from fast sources, < 2s total.
 
 Data sources:
-  - 涨跌家数 + 总成交额: stock_board_industry_summary_ths (同花顺行业板块, 0.4s, 90行业汇总)
+  - 涨跌家数: stock_board_industry_name_em (东方财富行业板块)
+  - 总成交额: stock_sector_spot(indicator='行业') (新浪行业板块)
   - 上证指数: stock_zh_index_daily(sh000001) (0.6s)
   - 涨停/跌停: stock_zt_pool_em + stock_zt_pool_dtgc_em (0.1s each)
   - 北向资金: stock_hsgt_fund_flow_summary_em (0.2s)
@@ -22,7 +23,7 @@ from fastapi import APIRouter, Query, HTTPException
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-CACHE_KEY = "market_status:v9"
+CACHE_KEY = "market_status:v10"
 
 
 # ---------------------------------------------------------------------------
@@ -109,17 +110,24 @@ def _fetch_all() -> dict:
         '_fetched_at': datetime.now().isoformat(), '_cached': False,
     }
 
-    # 1. 涨跌家数 + 总成交额 (同花顺行业板块汇总, 0.4s)
+    # 1. 涨跌家数 (东方财富行业板块)
     try:
-        df = ak.stock_board_industry_summary_ths()
+        df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
             result['up_count'] = int(df['上涨家数'].sum())
             result['down_count'] = int(df['下跌家数'].sum())
-            result['total_amount'] = round(float(df['总成交额'].sum()), 2)
             logger.info(f"[Market] 行业汇总: up={result['up_count']} down={result['down_count']} "
-                        f"amount={result['total_amount']}")
+                        "source=Eastmoney")
     except Exception as e:
         logger.warning(f"[Market] 行业汇总失败: {e}")
+
+    # 1b. 总成交额 (新浪行业板块)
+    try:
+        df = ak.stock_sector_spot(indicator="行业")
+        if df is not None and not df.empty and "总成交额" in df.columns:
+            result['total_amount'] = round(float(df['总成交额'].sum()), 2)
+    except Exception as e:
+        logger.warning(f"[Market] 行业成交额失败: {e}")
 
     # 2. 上证指数 (0.6s)
     try:
@@ -225,7 +233,8 @@ def get_market_status(
     """获取市场整体状态（< 2s）。
 
     数据源:
-    - 涨跌家数 + 总成交额: stock_board_industry_summary_ths (同花顺, 90行业汇总)
+    - 涨跌家数: stock_board_industry_name_em (东方财富行业板块)
+    - 总成交额: stock_sector_spot(indicator='行业') (新浪行业板块)
     - 平盘家数: SSE+SZSE总数 - 上涨 - 下跌
     - 上证指数: stock_zh_index_daily
     - 涨停/跌停: stock_zt_pool_em + stock_zt_pool_dtgc_em

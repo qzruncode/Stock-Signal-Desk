@@ -17,6 +17,7 @@ const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
 const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
 const MacroDataPage = lazy(() => import('./pages/MacroDataPage'));
 const MarketAnalysisPage = lazy(() => import('./pages/MarketAnalysisPage'));
+const MarketLeadersPage = lazy(() => import('./pages/MarketLeadersPage'));
 const RssPage = lazy(() => import('./pages/RssPage'));
 
 const PageFallback: React.FC = () => (
@@ -83,6 +84,7 @@ const AppContent: React.FC = () => {
           <Route path="/rss" element={<RssPage />} />
           <Route path="/macro" element={<MacroDataPage />} />
           <Route path="/market" element={<MarketAnalysisPage />} />
+          <Route path="/market-leaders" element={<MarketLeadersPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />

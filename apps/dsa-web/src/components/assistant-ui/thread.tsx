@@ -38,8 +38,8 @@ import { cn } from '../../utils/cn';
 
 export const Thread: FC = () => {
   return (
-    <ThreadPrimitive.Root className="flex h-full flex-col">
-      <ThreadPrimitive.Viewport className="flex flex-1 flex-col gap-6 overflow-y-auto bg-[radial-gradient(circle_at_50%_0%,hsl(var(--primary)/0.08),transparent_34%),linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-4 py-6">
+    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
+      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-[radial-gradient(circle_at_50%_0%,hsl(var(--primary)/0.08),transparent_34%),linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pt-16 pb-5 sm:gap-6 sm:px-4 sm:pt-6 sm:pb-6 lg:px-6">
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <EmptyState />
         </AuiIf>
@@ -51,19 +51,21 @@ export const Thread: FC = () => {
           }}
         />
 
-        <ThreadPrimitive.ViewportFooter className="sticky bottom-0 pt-2">
-          <div className="mx-auto w-full max-w-3xl">
-            <ThreadPrimitive.ScrollToBottom
-              className={cn(
-                'mx-auto mb-2 flex size-8 items-center justify-center',
-                'rounded-full border border-border bg-card text-muted-foreground',
-                'shadow-sm transition hover:text-foreground',
-              )}
-            >
-              <ChevronDownIcon className="size-4" />
-            </ThreadPrimitive.ScrollToBottom>
-          </div>
-        </ThreadPrimitive.ViewportFooter>
+        <AuiIf condition={(s) => !s.thread.isEmpty}>
+          <ThreadPrimitive.ViewportFooter className="sticky bottom-0 pt-2">
+            <div className="mx-auto w-full max-w-3xl">
+              <ThreadPrimitive.ScrollToBottom
+                className={cn(
+                  'mx-auto mb-2 flex size-8 items-center justify-center',
+                  'rounded-full border border-border bg-card text-muted-foreground',
+                  'shadow-sm transition hover:text-foreground',
+                )}
+              >
+                <ChevronDownIcon className="size-4" />
+              </ThreadPrimitive.ScrollToBottom>
+            </div>
+          </ThreadPrimitive.ViewportFooter>
+        </AuiIf>
       </ThreadPrimitive.Viewport>
 
       <Composer />
@@ -74,7 +76,7 @@ export const Thread: FC = () => {
 /* ── Empty State ─────────────────────────────────────────────────────── */
 
 const EmptyState: FC = () => (
-  <div className="flex flex-1 flex-col items-center justify-center gap-5 text-center">
+  <div className="flex flex-col items-center gap-5 px-2 pt-16 text-center sm:pt-20">
     <div className="flex size-16 items-center justify-center rounded-2xl border border-primary/20 bg-card text-primary shadow-[0_18px_50px_hsl(var(--primary)/0.14)]">
       <SparklesIcon className="size-7" />
     </div>
@@ -113,8 +115,8 @@ const SUGGESTIONS = [
 /* ── User Message ────────────────────────────────────────────────────── */
 
 const UserMessage: FC = () => (
-  <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-end gap-3">
-    <div className="flex min-w-0 max-w-[min(78%,calc(100%-3rem))] flex-col items-end space-y-1">
+  <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-end gap-2.5 sm:gap-3">
+    <div className="flex min-w-0 max-w-[min(88%,calc(100%-2.5rem))] flex-col items-end space-y-1 sm:max-w-[min(78%,calc(100%-3rem))]">
       <UserMessageAttachments />
       <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-br-md border border-primary/20 bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm [overflow-wrap:anywhere]">
         <MessagePrimitive.Parts />
@@ -130,10 +132,10 @@ const UserMessage: FC = () => (
 const AssistantMessage: FC = () => {
   const isRunning = useMessage((s) => s.status?.type === 'running');
   return (
-    <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-start gap-3">
+    <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-start gap-2.5 sm:gap-3">
       <Avatar fallback={<BotIcon className="size-3.5" />} className="chat-avatar-ai" />
-      <div className="min-w-0 max-w-[min(86%,780px,calc(100%-3rem))]">
-        <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-4 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur">
+      <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 sm:max-w-[min(92%,780px,calc(100%-3rem))] sm:flex-none">
+        <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-3 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur sm:px-4">
           <MessagePrimitive.Parts
             components={{
               Text: AssistantMarkdownText,
@@ -250,12 +252,27 @@ const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
                 </blockquote>
               ),
               table: ({ children }) => (
-                <div className="my-3 overflow-x-auto rounded-lg border border-border">
-                  <table className="min-w-full border-collapse text-left text-xs">{children}</table>
+                <div className="my-3 overflow-x-auto rounded-lg border border-border bg-card/60">
+                  <table className="w-max min-w-full border-collapse text-left text-[11px] sm:text-xs">
+                    {children}
+                  </table>
                 </div>
               ),
-              th: ({ children }) => <th className="border-b border-border bg-muted px-3 py-2 font-semibold text-foreground">{children}</th>,
-              td: ({ children }) => <td className="border-b border-border px-3 py-2 align-top last:border-b-0">{children}</td>,
+              tr: ({ children }) => (
+                <tr className="[&:last-child_td]:border-b-0">
+                  {children}
+                </tr>
+              ),
+              th: ({ children }) => (
+                <th className="border-b border-border bg-muted px-3 py-2 font-semibold whitespace-nowrap text-foreground first:min-w-20 first:w-20 sm:px-3.5">
+                  {children}
+                </th>
+              ),
+              td: ({ children }) => (
+                <td className="border-b border-border px-3 py-2 align-top leading-6 break-words first:min-w-20 first:w-20 first:whitespace-nowrap last:min-w-[16rem] sm:px-3.5 sm:last:min-w-[20rem]">
+                  {children}
+                </td>
+              ),
               code: ({ children }) => (
                 <code className="rounded-md border border-border bg-muted/70 px-1.5 py-0.5 font-mono text-[0.9em] text-foreground/85">
                   {children}
@@ -301,15 +318,15 @@ const BranchPicker: FC = () => (
 /* ── Composer ────────────────────────────────────────────────────────── */
 
 const Composer: FC = () => (
-  <div className="border-t border-border/70 bg-background/85 px-4 py-4 backdrop-blur-xl">
-    <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-3xl flex-col rounded-2xl border border-border bg-card shadow-[0_18px_50px_hsl(220_22%_34%/0.12)] transition focus-within:border-primary/45 focus-within:shadow-[0_20px_60px_hsl(var(--primary)/0.16)]">
+  <div className="shrink-0 border-t border-border/70 bg-background/85 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
+    <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-4xl flex-col rounded-2xl border border-border bg-card shadow-[0_18px_50px_hsl(220_22%_34%/0.12)] transition focus-within:border-primary/45 focus-within:shadow-[0_20px_60px_hsl(var(--primary)/0.16)]">
       <ComposerAttachmentDropzone />
 
       <ComposerAttachments />
 
       <ComposerPrimitive.Input
         placeholder="问问市场、个股、板块或财务数据..."
-        className="min-h-16 w-full resize-none bg-transparent px-5 pt-4 pb-2 text-[15px] leading-7 text-foreground placeholder-muted-foreground focus:outline-none"
+        className="min-h-16 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-[15px] leading-7 text-foreground placeholder-muted-foreground focus:outline-none sm:px-5"
         rows={1}
       />
 

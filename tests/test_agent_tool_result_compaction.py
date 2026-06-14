@@ -8,6 +8,7 @@ from unittest.mock import patch
 from api.v1.endpoints.agent import (
     _assess_tool_data_health,
     _compact_tool_result,
+    _format_result,
     _maybe_attach_search_fallback,
     _run_react_loop,
 )
@@ -45,6 +46,8 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertIn("analysis", compact)
         self.assertNotIn("url", compact["items"][0])
         self.assertNotIn("extra", compact["items"][0])
+        self.assertTrue(compact["_tool_payload_meta"]["compacted"])
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "news_family_item_window")
 
     def test_sector_list_returns_top_and_bottom_movers(self) -> None:
         payload = {
@@ -63,6 +66,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["top_movers"][0]["name"], "A")
         self.assertEqual(compact["bottom_movers"][0]["name"], "B")
         self.assertNotIn("items", compact)
+        self.assertEqual(compact["_tool_payload_meta"]["payload_policy"], "compacted")
 
     def test_kline_keeps_recent_window_not_full_series(self) -> None:
         payload = {
@@ -79,6 +83,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["latest"]["close"], 59)
         self.assertEqual(compact["range"]["start"], "2026-05-01")
         self.assertEqual(compact["range"]["end"], "2026-05-60")
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "time_series_recent_window")
 
     def test_sector_flow_drops_duplicate_records_bucket(self) -> None:
         payload = {
@@ -96,6 +101,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertIn("outflow_top", compact)
         self.assertNotIn("records", compact)
         self.assertNotIn("noise", compact["inflow_top"][0])
+        self.assertTrue(compact["_tool_payload_meta"]["compacted"])
 
     def test_empty_quotes_attach_price_search_fallback(self) -> None:
         search_response = SimpleNamespace(
@@ -201,6 +207,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["data_time"], "2026-06-08T10:00:00")
         self.assertFalse(compact["is_stale"])
         self.assertFalse(compact["fallback_used"])
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "quotes_item_window")
 
     def test_compact_market_status_keeps_freshness_fields(self) -> None:
         compact = _compact_tool_result(
@@ -216,6 +223,39 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["data_time"], "2026-06-08")
         self.assertFalse(compact["is_stale"])
         self.assertTrue(compact["fallback_used"])
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "market_status_key_fields")
+
+    def test_market_mainline_report_is_not_compacted(self) -> None:
+        payload = {
+            "generated_at": "2026-06-13 12:00:00 CST",
+            "as_of_date": "2026-06-13",
+            "overview": "总判断",
+            "full_report": "完整正文",
+            "market_stage": {"label": "主升中期", "description": "阶段"},
+            "current_mainlines": [{"name": "资源重估", "rank": 1, "branches": ["黄金", "铜"]}],
+            "future_mainlines": [{"name": "AI科技链", "triggers": ["订单"]}],
+            "action_summary": ["结论1", "结论2"],
+            "evidence_digest": {"policy": ["政策1"], "industry": ["产业1"], "market": ["市场1"]},
+            "raw_response": "{\"full_report\":\"完整正文\"}",
+            "raw_stream_output": "{\"full_report\":\"完整正文\"}",
+            "_cached": True,
+        }
+
+        compact = _compact_tool_result("get_market_mainline_report", payload)
+
+        self.assertEqual(compact["overview"], payload["overview"])
+        self.assertEqual(compact["_tool_payload_meta"]["payload_policy"], "full")
+        self.assertFalse(compact["_tool_payload_meta"]["compacted"])
+        self.assertEqual(compact["_tool_payload_meta"]["source_scope"], "page_and_storage_aligned")
+
+    def test_format_result_does_not_silently_truncate(self) -> None:
+        payload = {"text": "甲" * 6000}
+
+        formatted = _format_result(payload)
+
+        self.assertIn("甲" * 50, formatted)
+        self.assertNotIn("...[数据已截断]", formatted)
+        self.assertGreater(len(formatted), 4000)
 
     def test_compact_macro_indicator_keeps_freshness_fields(self) -> None:
         compact = _compact_tool_result(
@@ -232,6 +272,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["data_time"], "2026-05-01")
         self.assertFalse(compact["is_stale"])
         self.assertTrue(compact["fallback_used"])
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "macro_history_window")
 
 
 if __name__ == "__main__":

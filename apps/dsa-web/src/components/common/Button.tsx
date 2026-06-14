@@ -63,6 +63,7 @@ export const Button: React.FC<ButtonProps> = ({
         'inline-flex cursor-pointer items-center justify-center gap-2 font-medium transition-all duration-200',
         'focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15 focus-visible:ring-offset-0',
         'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 disabled:transform-none',
+        isLoading && 'opacity-100',
         BUTTON_SIZE_STYLES[size],
         BUTTON_VARIANT_STYLES[variant],
         glowStyles,

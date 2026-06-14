@@ -406,7 +406,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                           {canResume && (
                             <button
                               type="button"
-                              title="续跑剩余股票"
+                              aria-label="续跑剩余股票"
                               disabled={isRunning}
                               onClick={() => {
                                 if (!isRunning) {
@@ -423,7 +423,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                           )}
                           <button
                             type="button"
-                            title="删除跑批记录"
+                            aria-label="删除跑批记录"
                             disabled={isRunning}
                             onClick={() => {
                               if (!isRunning) {

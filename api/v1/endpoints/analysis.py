@@ -585,13 +585,28 @@ def get_analysis_status(task_id: str) -> TaskStatus:
     if task:
         result: Optional[AnalysisResultResponse] = None
 
-        if task.status == TaskStatusEnum.COMPLETED and isinstance(task.result, dict):
+        if isinstance(task.result, dict):
             try:
                 result = AnalysisResultResponse.model_validate(task.result)
             except Exception:
-                logger.warning(
-                    "解析任务结果失败，回退为空返回: task_id=%s",
+                report_payload = task.result.get("report")
+                if report_payload is None:
+                    report_payload = task.result
+                result = AnalysisResultResponse(
+                    query_id=task.task_id,
+                    stock_code=task.stock_code,
+                    stock_name=task.stock_name,
+                    report=report_payload,
+                    created_at=(
+                        task.completed_at.isoformat()
+                        if task.completed_at
+                        else task.created_at.isoformat()
+                    ),
+                )
+                logger.info(
+                    "任务结果采用通用包装返回: task_id=%s stock_code=%s",
                     task.task_id,
+                    task.stock_code,
                 )
 
         return TaskStatus(

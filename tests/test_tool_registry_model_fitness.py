@@ -76,6 +76,45 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertIn("search_web_price_fallback", names)
         self.assertIn("fetch_web_content", names)
 
+    def test_market_mainline_report_tool_is_registered(self) -> None:
+        registry = ToolRegistry()
+        names = set(registry.get_tool_names())
+
+        self.assertIn("get_market_mainline_report", names)
+
+    def test_market_mainline_report_tool_uses_service_payload(self) -> None:
+        expected = {
+            "generated_at": "2026-06-13 12:00:00 CST",
+            "as_of_date": "2026-06-13",
+            "overview": "当前主线是资源重估与大金融共振。",
+            "full_report": "完整报告",
+            "market_stage": {"label": "主升中期", "description": "阶段描述"},
+            "current_mainlines": [{"name": "资源重估", "rank": 1}],
+            "future_mainlines": [{"name": "AI科技链"}],
+            "action_summary": ["动作1"],
+            "evidence_digest": {"policy": [], "industry": [], "market": []},
+            "raw_response": "{\"overview\":\"...\"}",
+            "raw_stream_output": "{\"overview\":\"...\"}",
+            "report_pending": False,
+            "_cached": True,
+        }
+
+        class _FakeService:
+            def get_model_report_for_tool(self, *, include_debug_input: bool = False):
+                payload = dict(expected)
+                if include_debug_input:
+                    payload["debug_input"] = {"evidence_pack": {"k": "v"}}
+                return payload
+
+        registry = ToolRegistry()
+        with patch("src.services.market_theme_service.MarketThemeService", return_value=_FakeService()):
+            result = registry.execute("get_market_mainline_report", {})
+            result_with_debug = registry.execute("get_market_mainline_report", {"include_debug_input": True})
+
+        self.assertEqual(result, expected)
+        self.assertNotIn("debug_input", result)
+        self.assertEqual(result_with_debug["debug_input"]["evidence_pack"]["k"], "v")
+
     def test_price_overdraft_signal_tool_is_registered(self) -> None:
         registry = ToolRegistry()
         names = set(registry.get_tool_names())

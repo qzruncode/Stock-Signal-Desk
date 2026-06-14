@@ -189,6 +189,7 @@ export interface TaskInfo {
   promptTemplateId?: string;
   promptTemplateName?: string;
   conversation?: ConversationRecord;
+  result?: Record<string, unknown>;
 }
 
 /** Task list response */

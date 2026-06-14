@@ -11,10 +11,11 @@
 
 """
 
+import json
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, Callable
 
 from src.storage import persist_llm_usage
 
@@ -97,4 +98,49 @@ def call_ai_for_stock(
         return response_text, model_used, usage
     except Exception:
         logger.exception("AI call failed for %s(%s)", stock_name, stock_code)
+        raise
+
+
+def call_ai_structured(
+    analyzer,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    call_type: str,
+    temperature: float = 0.2,
+    max_tokens: int = 4096,
+    response_validator: Optional[Callable[[str], None]] = None,
+    stream: bool = False,
+    stream_progress_callback: Optional[Callable[[int], None]] = None,
+    stream_text_callback: Optional[Callable[[str, str], None]] = None,
+) -> Tuple[str, str, Dict[str, Any]]:
+    """Call the shared analyzer for non-stock structured JSON generation."""
+    generation_config = {
+        "temperature": temperature,
+        "max_output_tokens": max_tokens,
+    }
+
+    def _default_json_validator(text: str) -> None:
+        json.loads(text)
+
+    validator = response_validator or _default_json_validator
+
+    try:
+        response_text, model_used, usage = analyzer._call_litellm(
+            user_prompt,
+            generation_config,
+            system_prompt=system_prompt,
+            stream=stream,
+            stream_progress_callback=stream_progress_callback,
+            stream_text_callback=stream_text_callback,
+            response_validator=validator,
+        )
+        persist_llm_usage(usage, model_used, call_type=call_type)
+        logger.info(
+            "Structured AI call complete: %d chars, model=%s, call_type=%s",
+            len(response_text), model_used, call_type,
+        )
+        return response_text, model_used, usage
+    except Exception:
+        logger.exception("Structured AI call failed for call_type=%s", call_type)
         raise

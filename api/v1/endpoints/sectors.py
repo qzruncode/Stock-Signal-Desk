@@ -2,7 +2,7 @@
 """Sector/Board list endpoint.
 
 Data sources:
-  - 行业板块: ak.stock_board_industry_summary_ths() — 同花顺行业板块, 90 条, 完整数据
+  - 行业板块: ak.stock_board_industry_name_em() — 东方财富行业板块
   - 概念板块: ak.stock_board_change_em() — 东方财富板块异动 (此接口可用), 过滤后约 200+ 条, 全量含涨跌幅
   - 地区板块: 暂不支持
 """
@@ -21,7 +21,7 @@ from fastapi import APIRouter, Query
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-CACHE_KEY = "sectors:v3"
+CACHE_KEY = "sectors:v4"
 
 
 # ---------------------------------------------------------------------------
@@ -144,10 +144,7 @@ def _normalize_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _fetch_industry() -> list[dict]:
-    """Fetch industry board list from THS (同花顺行业板块).
-
-    Returns 90 industries with: name, change_pct, lead_stock, up_count, down_count, etc.
-    """
+    """Fetch industry board list from Eastmoney."""
     import time as _time
     import akshare as ak
 
@@ -155,20 +152,20 @@ def _fetch_industry() -> list[dict]:
     result: list[dict] = []
 
     try:
-        df = ak.stock_board_industry_summary_ths()
+        df = ak.stock_board_industry_name_em()
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 item = {
-                    'name': str(row.get('板块', '')),
-                    'code': str(row.get('序号', '')),
+                    'name': str(row.get('板块名称', '')),
+                    'code': str(row.get('板块代码', '')),
                     'change_pct': _safe_float(row.get('涨跌幅')),
-                    'lead_stock': str(row.get('领涨股', '')),
-                    'lead_stock_price': _safe_float(row.get('领涨股-最新价')),
-                    'lead_stock_change_pct': _safe_float(row.get('领涨股-涨跌幅')),
+                    'lead_stock': str(row.get('领涨股票', '')),
+                    'lead_stock_price': None,
+                    'lead_stock_change_pct': _safe_float(row.get('领涨股票-涨跌幅')),
                     'up_count': _safe_int(row.get('上涨家数')),
                     'down_count': _safe_int(row.get('下跌家数')),
-                    'total_amount': _safe_float(row.get('总成交额')),
-                    'net_flow': _safe_float(row.get('净流入')),
+                    'total_amount': None,
+                    'net_flow': None,
                 }
                 result.append(item)
         logger.info(f"[Sectors] industry: {len(result)} 条, {_time.time() - t0:.1f}s")
@@ -192,15 +189,15 @@ def _fetch_concept() -> list[dict]:
     result: list[dict] = []
 
     try:
-        # 1. Get concept name→code mapping from THS
+        # 1. Get concept name→code mapping from Eastmoney
         code_map: dict[str, str] = {}
         try:
-            names_df = ak.stock_board_concept_name_ths()
+            names_df = ak.stock_board_concept_name_em()
             if names_df is not None and not names_df.empty:
                 for _, row in names_df.iterrows():
-                    code_map[_normalize_name(str(row.get('name', '')))] = str(row.get('code', ''))
+                    code_map[_normalize_name(str(row.get('板块名称', '')))] = str(row.get('板块代码', ''))
         except Exception as e:
-            logger.warning(f"[Sectors] concept THS names failed: {e}")
+            logger.warning(f"[Sectors] concept EM names failed: {e}")
 
         # 2. Get board change data from EM (this endpoint works)
         change_df = ak.stock_board_change_em()
@@ -268,7 +265,7 @@ def get_sector_list(
     """获取行业/概念板块列表及各板块涨跌情况。
 
     数据源:
-    - 行业板块: stock_board_industry_summary_ths (同花顺, 90 条, 含涨跌幅/领涨股/上涨下跌家数)
+    - 行业板块: stock_board_industry_name_em (东方财富, 含涨跌幅/领涨股/上涨下跌家数)
     - 概念板块: stock_board_change_em (东方财富, ~200+ 条, 全量含涨跌幅)
     - 地区板块: 暂不支持
 

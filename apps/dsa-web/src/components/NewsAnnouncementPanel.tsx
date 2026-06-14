@@ -88,7 +88,7 @@ export function SentimentPanel({ sentiment }: { sentiment: SentimentResponse }) 
               <div
                 key={day.date}
                 className="flex-1 flex flex-col items-center justify-end h-full"
-                title={`${day.date}: ${day.total} 条`}
+                aria-label={`${day.date}: ${day.total} 条`}
               >
                 <div
                   className="w-full rounded-sm min-h-0.5 bg-cyan-500/70"

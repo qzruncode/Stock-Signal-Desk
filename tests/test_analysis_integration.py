@@ -12,10 +12,11 @@ Covers:
 """
 
 import pytest
+from datetime import datetime
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from api.app import create_app
-from src.services.task_queue import AnalysisTaskQueue, TaskStatus
+from src.services.task_queue import AnalysisTaskQueue, TaskStatus, TaskInfo
 from src.config import Config
 import src.auth as auth
 
@@ -43,6 +44,36 @@ def mock_task_queue():
 
 class TestAnalysisIntegration:
     """End-to-end integration tests for the analysis flow."""
+
+    def test_status_returns_generic_background_task_result(self, client):
+        task = TaskInfo(
+            task_id="market-mainline-task",
+            stock_code="MARKET_MAINLINE",
+            stock_name="市场主线",
+            status=TaskStatus.COMPLETED,
+            progress=100,
+            result={
+                "phase": "completed",
+                "report": {
+                    "overview": "资源重估正在强化",
+                    "full_report": "测试正文",
+                },
+            },
+            completed_at=datetime(2026, 6, 12, 11, 30, 11),
+        )
+
+        queue = MagicMock(spec=AnalysisTaskQueue)
+        queue.get_task.return_value = task
+
+        with patch("api.v1.endpoints.analysis.get_task_queue", return_value=queue):
+            response = client.get("/api/v1/analysis/status/market-mainline-task")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "completed"
+        assert payload["result"]["query_id"] == "market-mainline-task"
+        assert payload["result"]["stock_code"] == "MARKET_MAINLINE"
+        assert payload["result"]["report"]["overview"] == "资源重估正在强化"
 
     def test_trigger_analysis_flow_manual_name(self, client, mock_task_queue):
         """Test flow: User enters stock name -> resolved to code -> task submitted."""

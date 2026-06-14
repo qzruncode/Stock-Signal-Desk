@@ -193,13 +193,6 @@ function stringifyCompact(value: unknown): string {
   }
 }
 
-function truncateDisplay(text: string, maxLength = 5000): string {
-  if (text.length <= maxLength) {
-    return text;
-  }
-  return `${text.slice(0, maxLength)}\n...[内容已截断]`;
-}
-
 function getToolError(result: unknown): string {
   if (!result || typeof result !== 'object') {
     return stringifyCompact(result);
@@ -294,7 +287,7 @@ const GenericToolUI = ({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 text-xs text-muted-foreground">
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-5 py-4 text-xs text-muted-foreground">
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <div className="font-medium text-foreground">Tool</div>
@@ -312,15 +305,15 @@ const GenericToolUI = ({
 
           <div className="mt-4">
             <div className="font-medium text-foreground">Arguments</div>
-            <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-[11px] leading-relaxed text-foreground">
-              {truncateDisplay(argsDisplay || '{}')}
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-[11px] leading-relaxed text-foreground">
+              {argsDisplay || '{}'}
             </pre>
           </div>
 
           <div className="mt-4">
             <div className="font-medium text-foreground">{failed ? 'Error' : 'Result'}</div>
-            <pre className="mt-1 max-h-[55vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-[11px] leading-relaxed text-foreground">
-              {truncateDisplay(resultDisplay || (status.type === 'running' ? '等待工具返回...' : '无返回内容'))}
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-[11px] leading-relaxed text-foreground">
+              {resultDisplay || (status.type === 'running' ? '等待工具返回...' : '无返回内容')}
             </pre>
           </div>
         </div>

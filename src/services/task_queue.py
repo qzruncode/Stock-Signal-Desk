@@ -94,6 +94,7 @@ class TaskInfo:
             "prompt_template_id": self.prompt_template_id,
             "prompt_template_name": self.prompt_template_name,
             "conversation": self.conversation,
+            "result": self.result,
         }
 
     def copy(self) -> 'TaskInfo':
@@ -105,7 +106,6 @@ class TaskInfo:
             status=self.status,
             progress=self.progress,
             message=self.message,
-            result=self.result,
             error=self.error,
             report_type=self.report_type,
             created_at=self.created_at,
@@ -116,6 +116,7 @@ class TaskInfo:
             prompt_template_id=self.prompt_template_id,
             prompt_template_name=self.prompt_template_name,
             conversation=dict(self.conversation) if isinstance(self.conversation, dict) else self.conversation,
+            result=dict(self.result) if isinstance(self.result, dict) else self.result,
         )
 
 
@@ -578,6 +579,50 @@ class AnalysisTaskQueue:
         self._broadcast_event(event_type, task_snapshot.to_dict())
         return task_snapshot
 
+    def update_task_result(
+        self,
+        task_id: str,
+        result: Dict[str, Any],
+        *,
+        progress: Optional[int] = None,
+        message: Optional[str] = None,
+        event_type: str = "task_progress",
+    ) -> Optional[TaskInfo]:
+        """
+        Merge partial task result data and broadcast an SSE update.
+
+        This is used by long-running tasks that need to push incremental
+        payloads (for example, streaming model output) to the frontend.
+        """
+        with self._data_lock:
+            task = self._tasks.get(task_id)
+            if not task or task.status not in (TaskStatus.PENDING, TaskStatus.PROCESSING):
+                return None
+
+            changed = False
+            existing_result = task.result if isinstance(task.result, dict) else {}
+            if result:
+                task.result = {**existing_result, **result}
+                changed = True
+
+            if progress is not None:
+                next_progress = max(task.progress, max(0, min(99, int(progress))))
+                if next_progress != task.progress:
+                    task.progress = next_progress
+                    changed = True
+
+            if message is not None and message != task.message:
+                task.message = message
+                changed = True
+
+            if not changed:
+                return task.copy()
+
+            task_snapshot = task.copy()
+
+        self._broadcast_event(event_type, task_snapshot.to_dict())
+        return task_snapshot
+
     def _clear_analyzing_stock_locked(self, task: TaskInfo) -> None:
         """Remove an in-flight stock marker only when it still points to this task."""
         dedupe_key = _dedupe_stock_code_key(task.stock_code)
@@ -587,7 +632,7 @@ class AnalysisTaskQueue:
     def _mark_task_completed_locked(
         self,
         task_id: str,
-        result: Dict[str, Any],
+        result: Any,
         message: str = "分析完成",
     ) -> Optional[TaskInfo]:
         """Transition a task to completed and return a broadcast snapshot."""
@@ -600,7 +645,8 @@ class AnalysisTaskQueue:
         task.completed_at = datetime.now()
         task.result = result
         task.message = message
-        task.stock_name = result.get("stock_name", task.stock_name)
+        if isinstance(result, dict):
+            task.stock_name = result.get("stock_name", task.stock_name)
         self._clear_analyzing_stock_locked(task)
         return task.copy()
 

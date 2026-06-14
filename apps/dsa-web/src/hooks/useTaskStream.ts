@@ -134,6 +134,7 @@ export function useTaskStream(options: UseTaskStreamOptions = {}): UseTaskStream
             templateId: (data.conversation as Record<string, unknown>).template_id as string | undefined,
           }
         : undefined,
+      result: data.result as Record<string, unknown> | undefined,
     };
   };
 

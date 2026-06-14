@@ -64,7 +64,7 @@ export const ProviderSidebar: React.FC<ProviderSidebarProps> = ({
                 'h-2 w-2 shrink-0 rounded-full transition-colors',
                 isConfigured ? 'bg-success' : 'bg-border/60',
               )}
-              title={isConfigured ? '已配置' : '未配置'}
+              aria-label={isConfigured ? '已配置' : '未配置'}
             />
           </button>
         );

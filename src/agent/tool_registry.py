@@ -91,6 +91,7 @@ class ToolRegistry:
         self._register_quotes_tools()
         self._register_kline_tools()
         self._register_market_status_tools()
+        self._register_market_mainline_tools()
         self._register_sector_tools()
         self._register_stock_info_tools()
         self._register_financials_tools()
@@ -237,6 +238,37 @@ class ToolRegistry:
                 "required": [],
             },
             executor=_exec_get_market_status,
+            category="market",
+        ))
+
+    def _register_market_mainline_tools(self) -> None:
+        # --- get_market_mainline_report ---
+        def _exec_get_market_mainline_report(include_debug_input: bool = False) -> Any:
+            from src.services.market_theme_service import MarketThemeService
+
+            return MarketThemeService().get_model_report_for_tool(
+                include_debug_input=include_debug_input,
+            )
+
+        self._add(ToolDef(
+            name="get_market_mainline_report",
+            description=(
+                "获取当前市场主线报告，与市场主线页面展示使用同一份结构化结果。"
+                "返回完整字段，包括 overview、full_report、market_stage、current_mainlines、"
+                "future_mainlines、action_summary、evidence_digest，以及模型原始输出字段。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "include_debug_input": {
+                        "type": "boolean",
+                        "description": "是否附带生成时的 prompts 和 evidence_pack 调试输入，默认 false。",
+                        "default": False,
+                    },
+                },
+                "required": [],
+            },
+            executor=_exec_get_market_mainline_report,
             category="market",
         ))
 

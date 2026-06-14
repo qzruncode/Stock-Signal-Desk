@@ -2090,6 +2090,7 @@ class GeminiAnalyzer:
         *,
         model: str,
         progress_callback: Optional[Callable[[int], None]] = None,
+        text_callback: Optional[Callable[[str, str], None]] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Consume a LiteLLM stream into a single text payload."""
         chunks: List[str] = []
@@ -2110,6 +2111,8 @@ class GeminiAnalyzer:
 
                 chunks.append(delta_text)
                 chars_received += len(delta_text)
+                if text_callback:
+                    text_callback(delta_text, "".join(chunks))
                 if progress_callback and chars_received >= next_emit_at:
                     progress_callback(chars_received)
                     next_emit_at = chars_received + 160
@@ -2139,6 +2142,7 @@ class GeminiAnalyzer:
         system_prompt: Optional[str] = None,
         stream: bool = False,
         stream_progress_callback: Optional[Callable[[int], None]] = None,
+        stream_text_callback: Optional[Callable[[str, str], None]] = None,
         response_validator: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
@@ -2253,6 +2257,7 @@ class GeminiAnalyzer:
                             stream_response,
                             model=model,
                             progress_callback=stream_progress_callback,
+                            text_callback=stream_text_callback,
                         )
                     except _LiteLLMStreamError as exc:
                         if exc.partial_received:

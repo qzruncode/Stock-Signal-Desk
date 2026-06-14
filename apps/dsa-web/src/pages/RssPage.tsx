@@ -105,7 +105,7 @@ function FeedItemCard({ item }: { item: RssFeedResponse['items'][0] }) {
             target="_blank"
             rel="noopener noreferrer"
             className="shrink-0 text-slate-300 transition hover:text-cyan-500"
-            title="打开原文"
+            aria-label="打开原文"
           >
             <ExternalLink className="h-4 w-4" />
           </a>

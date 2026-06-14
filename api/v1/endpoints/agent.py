@@ -20,17 +20,19 @@ from typing import Any, Dict, List
 import litellm
 from assistant_stream import RunController, create_run
 from assistant_stream.serialization.data_stream import DataStreamResponse
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
+from api.deps import get_database_manager
 from src.agent.tool_registry import ToolRegistry
 from src.config import get_config, extra_litellm_params, get_api_keys_for_model
+from src.services.chat_session_service import ChatSessionService
+from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 MAX_REACT_ITERATIONS = 10
-TOOL_RESULT_MAX_CHARS = 4000
 LLM_ARRAY_LIMIT = 8
 LLM_SERIES_LIMIT = 30
 
@@ -121,7 +123,7 @@ async def _stream_final_answer_without_tools(
     controller: RunController,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
-) -> bool:
+) -> str:
     """Force one final synthesis pass without tool use to avoid silent exits."""
     forced_messages = [
         *messages,
@@ -155,7 +157,7 @@ async def _stream_final_answer_without_tools(
             "\n\n已完成多轮数据查询，但生成最终总结时出错。"
             f"请稍后重试，或缩小问题范围后再问一次。\n\n错误：{e}"
         )
-        return False
+        return ""
 
     content_text = ""
     async for chunk in response:
@@ -166,21 +168,23 @@ async def _stream_final_answer_without_tools(
         controller.append_text(delta.content)
 
     if content_text.strip():
-        return True
+        return content_text
 
     controller.append_text(
         "\n\n已完成多轮数据查询，但模型没有产出最终总结。"
         "建议重试一次，或把问题拆成更小的比较维度来问。"
     )
-    return False
+    return ""
 
 
 def _format_result(result: Any) -> str:
-    """Format a tool result for LLM context, truncating if needed."""
-    text = json.dumps(result, ensure_ascii=False, default=str)
-    if len(text) > TOOL_RESULT_MAX_CHARS:
-        text = text[:TOOL_RESULT_MAX_CHARS] + "\n...[数据已截断]"
-    return text
+    """Format a tool result for LLM context without implicit truncation.
+
+    Tool-facing compaction must stay explicit and tool-specific inside
+    ``_compact_tool_result`` so neither the model nor the user silently
+    receives clipped payloads.
+    """
+    return json.dumps(result, ensure_ascii=False, default=str)
 
 
 def _pick_fields(item: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
@@ -204,6 +208,26 @@ def _trim_list(items: Any, limit: int, fields: List[str] | None = None) -> list[
         else:
             result.append(item)
     return result
+
+
+def _annotate_tool_payload(
+    tool_name: str,
+    payload: Dict[str, Any],
+    *,
+    payload_policy: str,
+    compacted: bool,
+    compaction_reason: str | None = None,
+    source_scope: str = "tool_defined_view",
+) -> Dict[str, Any]:
+    annotated = dict(payload)
+    annotated["_tool_payload_meta"] = {
+        "tool_name": tool_name,
+        "payload_policy": payload_policy,
+        "compacted": compacted,
+        "compaction_reason": compaction_reason,
+        "source_scope": source_scope,
+    }
+    return annotated
 
 
 def _compact_time_series(result: Dict[str, Any], key: str = "data") -> Dict[str, Any]:
@@ -246,26 +270,42 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
                 "volume", "amount", "turnover_rate", "pe", "pb", "total_mv", "circ_mv",
             ],
         )
-        return {
+        return _annotate_tool_payload(tool_name, {
             "total": result.get("total", len(compact_items)),
             "items": compact_items,
             "data_time": result.get("data_time"),
             "is_stale": result.get("is_stale"),
             "fallback_used": result.get("fallback_used"),
             "_cached": result.get("_cached"),
-        }
+        }, payload_policy="compacted", compacted=True, compaction_reason="quotes_item_window")
 
     if tool_name in {"get_kline", "get_history_data"}:
-        return _compact_time_series(result, "data")
+        return _annotate_tool_payload(
+            tool_name,
+            _compact_time_series(result, "data"),
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="time_series_recent_window",
+        )
 
     if tool_name == "get_market_status":
-        return _pick_fields(
+        return _annotate_tool_payload(tool_name, _pick_fields(
             result,
             [
                 "is_trading_time", "up_count", "down_count", "flat_count",
                 "limit_up_count", "limit_down_count", "total_amount", "north_flow",
                 "sh_index", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
             ],
+        ), payload_policy="compacted", compacted=True, compaction_reason="market_status_key_fields")
+
+    if tool_name == "get_market_mainline_report":
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="full",
+            compacted=False,
+            compaction_reason=None,
+            source_scope="page_and_storage_aligned",
         )
 
     if tool_name == "get_sector_list":
@@ -285,7 +325,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             12,
             ["name", "code", "change_pct", "lead_stock", "lead_stock_change_pct", "up_count", "down_count", "net_flow"],
         )
-        return {
+        return _annotate_tool_payload(tool_name, {
             "type": result.get("type"),
             "total": len(items),
             "top_movers": top,
@@ -295,17 +335,17 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "fallback_used": result.get("fallback_used"),
             "_cached": result.get("_cached"),
             "_fetched_at": result.get("_fetched_at"),
-        }
+        }, payload_policy="compacted", compacted=True, compaction_reason="sector_top_bottom_window")
 
     if tool_name == "get_stock_info":
-        return _pick_fields(
+        return _annotate_tool_payload(tool_name, _pick_fields(
             result,
             [
                 "symbol", "name", "short_name", "industry", "market", "listing_date",
                 "main_business", "total_shares", "circ_shares", "pe_dynamic",
                 "pe_static", "pb_ratio", "total_mv", "circ_mv", "_cached", "_fetched_at",
             ],
-        )
+        ), payload_policy="compacted", compacted=True, compaction_reason="stock_info_key_fields")
 
     if tool_name in {"get_financials", "get_balance_sheet", "get_income_statement", "get_cashflow"}:
         series_key = "items"
@@ -316,7 +356,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         elif tool_name == "get_cashflow":
             series_key = "cashflow"
         series = result.get(series_key, [])
-        return {
+        return _annotate_tool_payload(tool_name, {
             "symbol": result.get("symbol"),
             "periods": len(series) if isinstance(series, list) else result.get("periods"),
             "latest": series[-1] if isinstance(series, list) and series else {},
@@ -324,20 +364,20 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "source": result.get("source"),
             "_cached": result.get("_cached"),
             "_fetched_at": result.get("_fetched_at"),
-        }
+        }, payload_policy="compacted", compacted=True, compaction_reason="financial_recent_periods")
 
     if tool_name == "get_valuation_ratios":
-        return _pick_fields(
+        return _annotate_tool_payload(tool_name, _pick_fields(
             result,
             [
                 "symbol", "trade_date", "pe_static", "pe_dynamic", "pe_ttm", "pb", "ps",
                 "pcf", "peg", "dividend_yield", "dividend_date", "pe_percentiles",
                 "industry_average", "source_chain", "errors", "_cached", "_fetched_at",
             ],
-        )
+        ), payload_policy="compacted", compacted=True, compaction_reason="valuation_key_fields")
 
     if tool_name == "get_shareholder_structure":
-        return {
+        return _annotate_tool_payload(tool_name, {
             **_pick_fields(
                 result,
                 [
@@ -357,7 +397,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
                 8,
                 ["holder_name", "change_type", "change_amount", "change_ratio", "date"],
             ),
-        }
+        }, payload_policy="compacted", compacted=True, compaction_reason="shareholder_top_lists")
 
     if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_sentiment", "get_research_report", "get_social_sentiment"}:
         item_fields_map = {
@@ -383,7 +423,13 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             compact["score_trend"] = _trim_list(result.get("score_trend"), LLM_ARRAY_LIMIT)
         compact["items"] = _trim_list(result.get("items"), LLM_ARRAY_LIMIT, item_fields_map[tool_name])
         compact["item_count"] = len(result.get("items") or [])
-        return compact
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="news_family_item_window",
+        )
 
     if tool_name == "get_index_data":
         compact = _pick_fields(
@@ -391,7 +437,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ["index_code", "index_name", "latest", "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at"],
         )
         compact["history"] = _trim_list(result.get("history"), 12)
-        return compact
+        return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="index_history_window")
 
     if tool_name == "get_bond_yield":
         compact = _pick_fields(
@@ -399,7 +445,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ["country", "term", "latest_yield", "spread", "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at"],
         )
         compact["history"] = _trim_list(result.get("history"), 12)
-        return compact
+        return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="bond_history_window")
 
     if tool_name == "get_macro_indicator":
         compact = _pick_fields(
@@ -407,10 +453,10 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ["indicator", "indicator_name", "latest", "trend", "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at"],
         )
         compact["history"] = _trim_list(result.get("history"), 12)
-        return compact
+        return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="macro_history_window")
 
     if tool_name == "get_sector_flow":
-        return {
+        return _annotate_tool_payload(tool_name, {
             "type": result.get("type"),
             "top_n": result.get("top_n"),
             "inflow_top": _trim_list(
@@ -430,10 +476,10 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "fallback_used": result.get("fallback_used"),
             "_cached": result.get("_cached"),
             "_fetched_at": result.get("_fetched_at"),
-        }
+        }, payload_policy="compacted", compacted=True, compaction_reason="sector_flow_top_lists")
 
     if tool_name == "get_market_breadth":
-        return _pick_fields(
+        return _annotate_tool_payload(tool_name, _pick_fields(
             result,
             [
                 "up_count", "down_count", "flat_count", "advance_decline_ratio",
@@ -441,7 +487,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
                 "limit_up_count", "limit_down_count", "broken_board_rate", "volume",
                 "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
             ],
-        )
+        ), payload_policy="compacted", compacted=True, compaction_reason="market_breadth_key_fields")
 
     if tool_name in {"search_web_news", "search_web_price_fallback"}:
         compact = _pick_fields(
@@ -453,15 +499,15 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             LLM_ARRAY_LIMIT,
             ["title", "snippet", "url", "source", "published_date"],
         )
-        return compact
+        return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="web_search_result_window")
 
     if tool_name == "fetch_web_content":
-        return {
+        return _annotate_tool_payload(tool_name, {
             "url": result.get("url"),
             "content": str(result.get("content") or "")[:2500],
-        }
+        }, payload_policy="compacted", compacted=True, compaction_reason="web_content_preview")
 
-    return result
+    return _annotate_tool_payload(tool_name, result, payload_policy="full", compacted=False)
 
 
 def _parse_iso_datetime(value: Any) -> datetime | None:
@@ -667,7 +713,7 @@ async def _run_react_loop(
     controller: RunController,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
-) -> None:
+) -> str:
     """Execute the ReAct loop: LLM thinks → calls tools → observes → repeats."""
 
     tools = _registry.get_all_schemas()
@@ -707,7 +753,7 @@ async def _run_react_loop(
         except Exception as e:
             logger.exception("[Agent] LLM call failed")
             controller.append_text(f"\n\n分析出错：{e}")
-            return
+            return ""
 
         # Process stream
         async for chunk in response:
@@ -740,7 +786,7 @@ async def _run_react_loop(
 
         # If LLM returned content without tool calls → done
         if not tool_calls_acc:
-            return
+            return content_text
 
         # Execute tool calls
         controller.append_text("\n\n正在调用数据工具...\n\n")
@@ -801,23 +847,120 @@ async def _run_react_loop(
 
     logger.warning("[Agent] ReAct loop hit max iterations without final answer")
     controller.append_text("\n\n已完成多轮数据查询，正在生成最终总结...\n\n")
-    await _stream_final_answer_without_tools(controller, full_messages, llm_cfg)
+    return await _stream_final_answer_without_tools(controller, full_messages, llm_cfg)
+
+
+@router.get("/agent/conversations")
+def list_agent_conversations(
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    service = ChatSessionService(db_manager)
+    return service.list_conversations(page=page, limit=limit)
+
+
+@router.post("/agent/conversations")
+def create_agent_conversation(
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    service = ChatSessionService(db_manager)
+    return service.create_conversation()
+
+
+@router.get("/agent/conversations/{conversation_id}")
+def get_agent_conversation(
+    conversation_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    service = ChatSessionService(db_manager)
+    conversation = service.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return conversation
+
+
+@router.patch("/agent/conversations/{conversation_id}")
+def rename_agent_conversation(
+    conversation_id: str,
+    payload: Dict[str, Any] = Body(...),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title 不能为空")
+    service = ChatSessionService(db_manager)
+    conversation = service.rename_conversation(conversation_id, title)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return conversation
+
+
+@router.delete("/agent/conversations/{conversation_id}")
+def delete_agent_conversation(
+    conversation_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    service = ChatSessionService(db_manager)
+    deleted = service.delete_conversation(conversation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return {"deleted": deleted}
+
+
+@router.put("/agent/conversations/{conversation_id}/snapshot")
+def sync_agent_conversation_snapshot(
+    conversation_id: str,
+    payload: Dict[str, Any] = Body(...),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    service = ChatSessionService(db_manager)
+    messages = payload.get("messages", [])
+    thread_state = payload.get("thread_state")
+    conversation = service.save_conversation_snapshot(
+        conversation_id,
+        messages if isinstance(messages, list) else [],
+        thread_state=thread_state if isinstance(thread_state, dict) else None,
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    return conversation
 
 
 @router.post("/agent/chat")
-async def agent_chat(request: Request):
+async def agent_chat(
+    request: Request,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
     """Chat endpoint using assistant-stream DataStream protocol."""
     body = await request.json()
     messages = body.get("messages", [])
+    conversation_id = body.get("conversation_id")
     llm_cfg = _get_llm_config()
+    session_service = ChatSessionService(db_manager)
+    conversation = session_service.ensure_conversation(conversation_id)
+    final_response_text = ""
 
     logger.info(
         f"[Agent] Chat request with {len(messages)} messages, "
-        f"model={llm_cfg['model']}"
+        f"model={llm_cfg['model']}, conversation_id={conversation['id']}"
     )
 
     async def run_callback(controller: RunController):
-        await _run_react_loop(controller, messages, llm_cfg)
+        nonlocal final_response_text
+        final_response_text = await _run_react_loop(controller, messages, llm_cfg)
+
+        persisted_messages = list(messages)
+        if final_response_text.strip():
+            persisted_messages.append(
+                {
+                    "id": f"assistant-{uuid.uuid4().hex}",
+                    "role": "assistant",
+                    "content": final_response_text,
+                    "created_at": datetime.now().isoformat(),
+                }
+            )
+        session_service.save_conversation_snapshot(conversation["id"], persisted_messages)
 
     stream = create_run(run_callback)
     return DataStreamResponse(stream)

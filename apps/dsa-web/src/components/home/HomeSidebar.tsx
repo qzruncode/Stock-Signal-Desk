@@ -86,7 +86,6 @@ function AnalyzeControl({
           type="button"
           onClick={onOpenTemplateManager}
           className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 transition hover:border-cyan-300 hover:text-cyan-700"
-          title="管理分析模板"
           aria-label="管理分析模板"
         >
           <SlidersHorizontal className="h-4 w-4" />

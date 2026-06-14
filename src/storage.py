@@ -336,6 +336,128 @@ class AnalysisHistory(Base):
         }
 
 
+class MarketMainlineReport(Base):
+    """市场主线结构化研判报告。"""
+
+    __tablename__ = 'market_mainline_report'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_key = Column(String(64), nullable=False, index=True)
+    as_of_date = Column(String(16), nullable=False, index=True)
+    mode = Column(String(16), nullable=False, default='llm', index=True)
+    model_used = Column(String(128))
+    overview = Column(Text)
+    market_stage_label = Column(String(64))
+    market_stage_description = Column(Text)
+    raw_response = Column(Text)
+    payload = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_market_mainline_report_key_created', 'report_key', 'created_at'),
+        Index('ix_market_mainline_report_mode_date', 'mode', 'as_of_date'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        try:
+            payload = json.loads(self.payload or "{}")
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if not payload.get("full_report") and self.raw_response:
+            try:
+                raw_payload = json.loads(self.raw_response)
+                if isinstance(raw_payload, dict):
+                    payload.setdefault("full_report", raw_payload.get("full_report"))
+                    payload.setdefault("overview", raw_payload.get("overview"))
+                    payload.setdefault("current_mainlines", raw_payload.get("current_mainlines"))
+                    payload.setdefault("future_mainlines", raw_payload.get("future_mainlines"))
+                    payload.setdefault("action_summary", raw_payload.get("action_summary"))
+                    payload.setdefault("evidence_digest", raw_payload.get("evidence_digest"))
+                    payload.setdefault("debug_input", raw_payload.get("debug_input"))
+            except Exception:
+                pass
+        payload.setdefault("id", self.id)
+        payload.setdefault("report_key", self.report_key)
+        payload.setdefault("as_of_date", self.as_of_date)
+        payload.setdefault("mode", self.mode)
+        payload.setdefault("model_used", self.model_used)
+        payload.setdefault("overview", self.overview)
+        payload.setdefault(
+            "market_stage",
+            {
+                "label": self.market_stage_label,
+                "description": self.market_stage_description,
+            },
+        )
+        payload.setdefault("raw_response", self.raw_response)
+        payload.setdefault("raw_stream_output", self.raw_response or payload.get("full_report"))
+        payload.setdefault("created_at", self.created_at.isoformat() if self.created_at else None)
+        return payload
+
+
+class ChatConversation(Base):
+    """AI 对话会话元数据。"""
+
+    __tablename__ = 'chat_conversations'
+
+    id = Column(String(64), primary_key=True)
+    title = Column(String(120), nullable=False, default='新对话')
+    title_source = Column(String(16), nullable=False, default='auto', index=True)  # auto/manual
+    preview_text = Column(String(200))
+    thread_state_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_chat_conversations_updated', 'updated_at'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'title': self.title,
+            'title_source': self.title_source,
+            'preview_text': self.preview_text,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class ChatMessage(Base):
+    """AI 对话消息内容。"""
+
+    __tablename__ = 'chat_messages'
+
+    id = Column(String(64), primary_key=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey('chat_conversations.id'),
+        nullable=False,
+        index=True,
+    )
+    role = Column(String(16), nullable=False, index=True)
+    content = Column(Text, nullable=False, default='')
+    sequence = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('conversation_id', 'sequence', name='uix_chat_message_conversation_sequence'),
+        Index('ix_chat_messages_conversation_sequence', 'conversation_id', 'sequence'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'conversation_id': self.conversation_id,
+            'role': self.role,
+            'content': self.content,
+            'sequence': self.sequence,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class BacktestResult(Base):
     """单条分析记录的回测结果。"""
 
@@ -1033,6 +1155,17 @@ class DatabaseManager:
                     conn.exec_driver_sql(
                         "ALTER TABLE batch_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
                     )
+                if conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_conversations'"
+                ).fetchone():
+                    chat_conversation_columns = {
+                        row[1]
+                        for row in conn.exec_driver_sql("PRAGMA table_info(chat_conversations)").fetchall()
+                    }
+                    if "thread_state_json" not in chat_conversation_columns:
+                        conn.exec_driver_sql(
+                            "ALTER TABLE chat_conversations ADD COLUMN thread_state_json TEXT"
+                        )
                 # 2026-05: kline_snapshot 模型去掉了 period/adjust 列，旧表需重建
                 if conn.exec_driver_sql(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='kline_snapshot'"
@@ -1499,6 +1632,73 @@ class DatabaseManager:
         except Exception:
             logger.debug("K线快照读取失败", exc_info=True)
         return None
+
+    def save_market_mainline_report(
+        self,
+        *,
+        report_key: str,
+        as_of_date: str,
+        mode: str,
+        payload: Dict[str, Any],
+        raw_response: Optional[str],
+        model_used: Optional[str],
+    ) -> int:
+        """保存市场主线结构化研判报告。"""
+        try:
+            payload_json = self._safe_json_dumps(payload)
+            market_stage = payload.get("market_stage") if isinstance(payload, dict) else {}
+            overview = payload.get("overview") if isinstance(payload, dict) else None
+
+            def _write(session: Session) -> int:
+                session.add(
+                    MarketMainlineReport(
+                        report_key=report_key,
+                        as_of_date=as_of_date,
+                        mode=mode,
+                        model_used=model_used,
+                        overview=str(overview or ""),
+                        market_stage_label=str((market_stage or {}).get("label") or ""),
+                        market_stage_description=str((market_stage or {}).get("description") or ""),
+                        raw_response=raw_response,
+                        payload=payload_json,
+                        created_at=datetime.now(),
+                    )
+                )
+                return 1
+
+            return self._run_write_transaction(
+                f"save_market_mainline_report[{report_key}:{mode}:{as_of_date}]",
+                _write,
+            )
+        except Exception:
+            logger.exception("保存市场主线研判报告失败")
+            return 0
+
+    def get_latest_market_mainline_report(
+        self,
+        *,
+        report_key: str,
+        mode: str = "llm",
+        as_of_date: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """获取最新市场主线结构化研判报告。"""
+        try:
+            with self.get_session() as session:
+                stmt = select(MarketMainlineReport).where(
+                    and_(
+                        MarketMainlineReport.report_key == report_key,
+                        MarketMainlineReport.mode == mode,
+                    )
+                )
+                if as_of_date:
+                    stmt = stmt.where(MarketMainlineReport.as_of_date == as_of_date)
+                row = session.execute(
+                    stmt.order_by(desc(MarketMainlineReport.created_at)).limit(1)
+                ).scalar_one_or_none()
+                return row.to_dict() if row else None
+        except Exception:
+            logger.exception("读取市场主线研判报告失败")
+            return None
 
     # ========================================================================
     # Macro data persistence
@@ -2010,6 +2210,167 @@ class DatabaseManager:
                 .limit(1)
             ).scalars().first()
             return result
+
+    def create_chat_conversation(
+        self,
+        conversation_id: str,
+        title: str = "新对话",
+        title_source: str = "auto",
+    ) -> ChatConversation:
+        """创建对话会话。"""
+        now = datetime.now()
+        normalized_title = (title or "新对话").strip() or "新对话"
+
+        with self.session_scope() as session:
+            record = ChatConversation(
+                id=conversation_id,
+                title=normalized_title,
+                title_source=title_source or "auto",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(record)
+            session.flush()
+            session.expunge(record)
+            return record
+
+    def get_chat_conversation(self, conversation_id: str) -> Optional[ChatConversation]:
+        """按 ID 查询单个对话会话。"""
+        with self.get_session() as session:
+            record = session.execute(
+                select(ChatConversation).where(ChatConversation.id == conversation_id)
+            ).scalars().first()
+            if record:
+                session.expunge(record)
+            return record
+
+    def list_chat_conversations(
+        self,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Tuple[List[ChatConversation], int]:
+        """分页查询对话会话列表。"""
+        with self.get_session() as session:
+            total = session.execute(
+                select(func.count(ChatConversation.id))
+            ).scalar() or 0
+            records = session.execute(
+                select(ChatConversation)
+                .order_by(desc(ChatConversation.updated_at), desc(ChatConversation.created_at))
+                .offset(offset)
+                .limit(limit)
+            ).scalars().all()
+            for record in records:
+                session.expunge(record)
+            return list(records), total
+
+    def update_chat_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: Optional[str] = None,
+        title_source: Optional[str] = None,
+        preview_text: Optional[str] = None,
+        updated_at: Optional[datetime] = None,
+    ) -> Optional[ChatConversation]:
+        """更新对话会话元数据。"""
+        with self.session_scope() as session:
+            record = session.execute(
+                select(ChatConversation).where(ChatConversation.id == conversation_id)
+            ).scalars().first()
+            if not record:
+                return None
+
+            if title is not None:
+                normalized_title = title.strip() or "新对话"
+                record.title = normalized_title[:120]
+            if title_source is not None:
+                record.title_source = title_source
+            if preview_text is not None:
+                record.preview_text = preview_text[:200] if preview_text else None
+            record.updated_at = updated_at or datetime.now()
+            session.flush()
+            session.expunge(record)
+            return record
+
+    def delete_chat_conversation(self, conversation_id: str) -> int:
+        """删除对话会话及其消息。"""
+        with self.session_scope() as session:
+            session.execute(
+                delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+            )
+            result = session.execute(
+                delete(ChatConversation).where(ChatConversation.id == conversation_id)
+            )
+            return result.rowcount or 0
+
+    def get_chat_messages(self, conversation_id: str) -> List[ChatMessage]:
+        """查询对话消息列表。"""
+        with self.get_session() as session:
+            records = session.execute(
+                select(ChatMessage)
+                .where(ChatMessage.conversation_id == conversation_id)
+                .order_by(ChatMessage.sequence.asc(), ChatMessage.created_at.asc())
+            ).scalars().all()
+            for record in records:
+                session.expunge(record)
+            return list(records)
+
+    def replace_chat_messages(
+        self,
+        conversation_id: str,
+        messages: List[Dict[str, Any]],
+        *,
+        preview_text: Optional[str] = None,
+        thread_state_json: Optional[str] = None,
+        updated_at: Optional[datetime] = None,
+    ) -> None:
+        """用完整消息快照覆盖对话消息。"""
+        timestamp = updated_at or datetime.now()
+
+        def _normalize_message(raw: Dict[str, Any], sequence: int) -> ChatMessage:
+            message_id = str(raw.get("id") or f"{conversation_id}-{sequence}")
+            role = str(raw.get("role") or "user").strip() or "user"
+            content = raw.get("content")
+            if not isinstance(content, str):
+                content = "" if content is None else str(content)
+            created_at_raw = raw.get("created_at")
+            created_at = timestamp
+            if isinstance(created_at_raw, datetime):
+                created_at = created_at_raw
+            elif created_at_raw:
+                try:
+                    created_at = datetime.fromisoformat(str(created_at_raw).replace("Z", "+00:00"))
+                except ValueError:
+                    created_at = timestamp
+            return ChatMessage(
+                id=message_id[:64],
+                conversation_id=conversation_id,
+                role=role[:16],
+                content=content,
+                sequence=sequence,
+                created_at=created_at,
+            )
+
+        with self.session_scope() as session:
+            session.execute(
+                delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+            )
+            for index, message in enumerate(messages):
+                if not isinstance(message, dict):
+                    continue
+                session.add(_normalize_message(message, index))
+
+            record = session.execute(
+                select(ChatConversation).where(ChatConversation.id == conversation_id)
+            ).scalars().first()
+            if record:
+                record.preview_text = (preview_text or record.preview_text or None)
+                if record.preview_text:
+                    record.preview_text = record.preview_text[:200]
+                if thread_state_json is not None:
+                    record.thread_state_json = thread_state_json
+                record.updated_at = timestamp
     
     def get_data_range(
         self, 
