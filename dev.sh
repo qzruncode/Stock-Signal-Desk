@@ -14,6 +14,23 @@ fi
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
 
+start_detached() {
+    local workdir="$1"
+    local logfile="$2"
+    shift 2
+
+    (
+        cd "$workdir"
+        nohup python3 -c '
+import os
+import sys
+
+os.setsid()
+os.execvp(sys.argv[1], sys.argv[1:])
+' "$@" </dev/null >"$logfile" 2>&1 &
+    )
+}
+
 get_pids() {
     lsof -i ":$1" -t 2>/dev/null || true
 }
@@ -77,13 +94,15 @@ start_services() {
         log "初始化 RSSHub 源码与依赖..."
         (cd "$RSSHUB_DIR" && npm run install:rsshub)
     fi
-    (cd "$RSSHUB_DIR" && PORT="$RSSHUB_PORT" nohup npm start > "$PROJECT_DIR/logs/RSSHub.log" 2>&1 &)
+    start_detached "$RSSHUB_DIR" "$PROJECT_DIR/logs/RSSHub.log" env PORT="$RSSHUB_PORT" npm start
 
     log "启动后端 FastAPI (port $BACKEND_PORT)..."
-    (cd "$PROJECT_DIR" && nohup uvicorn server:app --reload --host 0.0.0.0 --port "$BACKEND_PORT" > "$PROJECT_DIR/logs/backend.log" 2>&1 &)
+    start_detached "$PROJECT_DIR" "$PROJECT_DIR/logs/backend.log" \
+        uvicorn server:app --reload --host 0.0.0.0 --port "$BACKEND_PORT"
 
     log "启动前端 Vite Dev (port $FRONTEND_PORT)..."
-    (cd "$FRONTEND_DIR" && nohup npm run dev > "$PROJECT_DIR/logs/frontend.log" 2>&1 &)
+    start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
+        npm run dev -- --host 0.0.0.0
 
     wait_for_port "$RSSHUB_PORT" "RSSHub" 90 || true
     wait_for_port "$BACKEND_PORT" "backend" 30 || true

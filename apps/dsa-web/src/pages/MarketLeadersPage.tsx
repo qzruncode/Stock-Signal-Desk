@@ -6,7 +6,7 @@ import {
 } from '../api/marketThemes';
 import { analysisApi } from '../api/analysis';
 import { useTaskStream } from '../hooks/useTaskStream';
-import { Badge, Button, Card, InlineAlert, Loading } from '../components/common';
+import { Badge, Button, InlineAlert, Loading } from '../components/common';
 
 const ACTIVE_TASK_STORAGE_KEY = 'market-mainline-active-task-id';
 
@@ -479,7 +479,7 @@ const MarketLeadersPage: React.FC = () => {
   }, [formattedDisplayText, streamKind]);
 
   return (
-    <div className="flex min-h-[calc(100vh-2rem)] w-full flex-col gap-4 lg:h-[calc(100vh-2rem)] lg:overflow-hidden">
+    <div className="market-mainline-page flex min-h-[calc(100vh-2rem)] w-full flex-col gap-4 lg:h-[calc(100vh-2rem)] lg:overflow-hidden">
       <div className="flex shrink-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Model Stream</p>
@@ -498,7 +498,7 @@ const MarketLeadersPage: React.FC = () => {
         </div>
       </div>
 
-      <main className="min-h-0 min-w-0 flex-1 overflow-visible pr-1">
+      <main className="min-h-0 min-w-0 flex-1 overflow-visible">
         {error ? (
           <InlineAlert
             title="加载失败"
@@ -530,7 +530,7 @@ const MarketLeadersPage: React.FC = () => {
         {loading && !displayReport ? <Loading label="正在加载最近一次市场主线报告..." className="h-full" /> : null}
 
         <div className="space-y-4 pb-4">
-          <Card className="border border-slate-200/80 bg-white/92" padding="lg">
+          <section className="market-mainline-surface market-mainline-status">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="space-y-2">
                 <p className="text-sm font-medium text-slate-900">
@@ -581,9 +581,13 @@ const MarketLeadersPage: React.FC = () => {
                 )}
               </div>
             </div>
-          </Card>
+          </section>
 
-          <Card title="模型实时输出" subtitle="Streaming Output" className="border border-cyan-200 bg-cyan-50/30" padding="lg">
+          <section className="market-mainline-surface space-y-4">
+            <div>
+              <span className="label-uppercase">Streaming Output</span>
+              <h2 className="mt-1 text-2xl font-semibold text-slate-950">模型实时输出</h2>
+            </div>
             <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
               <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 font-medium text-slate-600">
                 <span className={`h-2 w-2 rounded-full ${isGenerating ? 'bg-cyan-500 shadow-[0_0_0_4px_rgba(34,211,238,0.12)]' : 'bg-slate-300'}`} />
@@ -602,7 +606,7 @@ const MarketLeadersPage: React.FC = () => {
             {renderReport ? (
               <div className="space-y-4">
                 {(renderReport.overview || renderReport.market_stage?.label) ? (
-                  <div className="rounded-3xl border border-cyan-200/80 bg-white/90 p-5 shadow-[0_20px_45px_-35px_rgba(8,145,178,0.45)]">
+                  <div className="market-mainline-featured">
                     <div className="mb-3 flex flex-wrap items-center gap-2">
                       {renderReport.market_stage?.label ? (
                         <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-semibold text-cyan-700">
@@ -629,7 +633,7 @@ const MarketLeadersPage: React.FC = () => {
                 ) : null}
 
                 {renderReport.full_report ? (
-                  <div className="rounded-3xl border border-slate-200 bg-white/88 p-5">
+                  <div className="market-mainline-block">
                     <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
                       核心研判
                     </div>
@@ -644,7 +648,7 @@ const MarketLeadersPage: React.FC = () => {
                     </div>
                     <div className="grid gap-3">
                       {renderReport.current_mainlines.map((item) => (
-                        <div key={`${item.rank}-${item.name}`} className="rounded-3xl border border-slate-200 bg-white/88 p-5">
+                        <div key={`${item.rank}-${item.name}`} className="market-mainline-block">
                           <div className="mb-3 flex flex-wrap items-center gap-2">
                             <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
                               #{item.rank}
@@ -699,13 +703,13 @@ const MarketLeadersPage: React.FC = () => {
                 ) : null}
 
                 {renderReport.future_mainlines && renderReport.future_mainlines.length > 0 ? (
-                  <div className="rounded-3xl border border-slate-200 bg-white/88 p-5">
+                  <div className="market-mainline-block">
                     <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
                       候选主线
                     </div>
                     <div className="grid gap-3">
                       {renderReport.future_mainlines.map((item) => (
-                        <div key={`${item.name}-${item.stage_hint}`} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div key={`${item.name}-${item.stage_hint}`} className="market-mainline-muted-block">
                           <div className="flex flex-wrap items-center gap-2">
                             <h4 className="text-sm font-semibold text-slate-900">{item.name}</h4>
                             {item.stage_hint ? (
@@ -731,7 +735,7 @@ const MarketLeadersPage: React.FC = () => {
                 ) : null}
 
                 {renderReport.action_summary && renderReport.action_summary.length > 0 ? (
-                  <div className="rounded-3xl border border-slate-200 bg-slate-950 p-5 text-white">
+                  <div className="market-mainline-dark-block">
                     <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-cyan-300">
                       行动摘要
                     </div>
@@ -757,7 +761,7 @@ const MarketLeadersPage: React.FC = () => {
                         return null;
                       }
                       return (
-                        <div key={section.key} className={`rounded-3xl border border-slate-200 p-5 ${section.tone}`}>
+                        <div key={section.key} className={`market-mainline-muted-block ${section.tone}`}>
                           <div className="mb-3 text-xs font-semibold uppercase tracking-[0.18em]">
                             {section.label}
                           </div>
@@ -770,7 +774,7 @@ const MarketLeadersPage: React.FC = () => {
                   </div>
                 ) : null}
 
-                <div className="rounded-3xl border border-slate-200 bg-white/70 p-4">
+                <div className="market-mainline-muted-block">
                   <button
                     type="button"
                     className="flex w-full items-center justify-between text-left"
@@ -783,11 +787,7 @@ const MarketLeadersPage: React.FC = () => {
                     <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${showRawOutput ? 'rotate-180' : ''}`} />
                   </button>
                   {showRawOutput ? (
-                    <div className="mt-4 market-stream-shell">
-                      <div className="market-stream-rail">
-                        <span className="market-stream-rail-label">RAW</span>
-                        <span className="market-stream-rail-label">SOURCE</span>
-                      </div>
+                    <div className="mt-4">
                       <div
                         className={`market-stream-panel ${streamKind === 'json' ? 'market-stream-json' : 'market-stream-report'}`}
                       >
@@ -798,21 +798,19 @@ const MarketLeadersPage: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <div className="market-stream-shell">
-                <div className="market-stream-rail">
-                  <span className="market-stream-rail-label">LIVE</span>
-                  <span className="market-stream-rail-label">OUTPUT</span>
-                </div>
+              <div
+                className={`market-stream-panel ${streamKind === 'json' ? 'market-stream-json' : 'market-stream-report'}`}
+              >
                 <div
-                  className={`market-stream-panel ${streamKind === 'json' ? 'market-stream-json' : 'market-stream-report'}`}
+                  className="min-h-[12rem]"
                 >
                   {streamContent}
                 </div>
               </div>
             )}
-          </Card>
+          </section>
 
-          <Card className="border border-slate-200/80 bg-white/92" padding="lg">
+          <section className="market-mainline-surface">
             <button
               type="button"
               className="flex w-full items-center justify-between text-left"
@@ -829,19 +827,19 @@ const MarketLeadersPage: React.FC = () => {
               <div className="mt-4 space-y-4">
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">System Prompt</p>
-                  <pre className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
+                  <pre className="overflow-x-auto rounded-[1.25rem] bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
                     {displayReport?.debug_input?.system_prompt || '当前还没有 system prompt。'}
                   </pre>
                 </div>
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">User Prompt</p>
-                  <pre className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
+                  <pre className="overflow-x-auto rounded-[1.25rem] bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
                     {displayReport?.debug_input?.user_prompt || '当前还没有 user prompt。'}
                   </pre>
                 </div>
                 <div>
                   <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">Evidence Pack</p>
-                  <pre className="overflow-x-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
+                  <pre className="overflow-x-auto rounded-[1.25rem] bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
                     {displayReport?.debug_input?.evidence_pack
                       ? prettyJson(displayReport.debug_input.evidence_pack)
                       : '当前还没有 evidence pack。'}
@@ -849,7 +847,7 @@ const MarketLeadersPage: React.FC = () => {
                 </div>
               </div>
             ) : null}
-          </Card>
+          </section>
         </div>
       </main>
     </div>

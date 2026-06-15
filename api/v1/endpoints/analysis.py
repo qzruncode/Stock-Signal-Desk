@@ -589,9 +589,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             try:
                 result = AnalysisResultResponse.model_validate(task.result)
             except Exception:
-                report_payload = task.result.get("report")
-                if report_payload is None:
-                    report_payload = task.result
+                report_payload = task.result
                 result = AnalysisResultResponse(
                     query_id=task.task_id,
                     stock_code=task.stock_code,
@@ -615,6 +613,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
             progress=task.progress,
             result=result,
             error=task.error,
+            message=task.message,
             stock_name=task.stock_name,
             original_query=task.original_query,
             selection_source=task.selection_source,
@@ -714,6 +713,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
                 ),
                 error=None,
+                message=None,
             )
 
     except Exception as e:

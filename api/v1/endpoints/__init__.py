@@ -13,6 +13,7 @@ __all__ = [
     "auth",
     "batch",
     "history",
+    "industry_cycle",
     "prompts",
     "stock_info",
     "system_config",

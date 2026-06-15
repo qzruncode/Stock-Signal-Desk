@@ -22,7 +22,7 @@ from fastapi import APIRouter, Query, HTTPException
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-CACHE_KEY = "stock_info:v1"
+CACHE_KEY = "stock_info:v2"
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +147,16 @@ def _fetch_from_em(symbol: str) -> dict:
     try:
         df = ak.stock_individual_info_em(symbol=symbol, timeout=10)
         if df is not None and not df.empty:
+            item_col = 'item' if 'item' in df.columns else (df.columns[0] if len(df.columns) >= 1 else None)
+            value_col = 'value' if 'value' in df.columns else (df.columns[1] if len(df.columns) >= 2 else None)
+            if item_col is None or value_col is None:
+                logger.warning(f"[StockInfo] EM unexpected columns for {symbol}: {list(df.columns)}")
+                return result
             # Map item→value pairs to dict
             info_map: dict[str, str] = {}
             for _, row in df.iterrows():
-                item = str(row.get('item', ''))
-                value = str(row.get('value', ''))
+                item = str(row.get(item_col, ''))
+                value = str(row.get(value_col, ''))
                 info_map[item] = value
 
             # Company info fields — serve as fallback when cninfo is unavailable
@@ -183,11 +188,44 @@ def _fetch_from_em(symbol: str) -> dict:
     return result
 
 
+def _fetch_from_ths_business(symbol: str) -> dict:
+    """Fetch business intro from THS.
+
+    This is a strong fallback for main business / products / scope when cninfo
+    is unavailable or incomplete.
+    """
+    import time as _time
+    import akshare as ak
+
+    t0 = _time.time()
+    result: dict = {}
+
+    try:
+        df = ak.stock_zyjs_ths(symbol=_normalize_symbol(symbol))
+        if df is not None and not df.empty:
+            row = df.iloc[0]
+            result = {
+                'main_business': str(row.get('主营业务', '') or '') or None,
+                'business_scope': str(row.get('经营范围', '') or '') or None,
+                'product_type': str(row.get('产品类型', '') or '') or None,
+                'product_name': str(row.get('产品名称', '') or '') or None,
+                '_ths_business_ok': True,
+            }
+            logger.info(f"[StockInfo] THS business OK for {symbol}: {_time.time() - t0:.1f}s")
+        else:
+            logger.warning(f"[StockInfo] THS business returned empty for {symbol}")
+    except Exception as e:
+        logger.warning(f"[StockInfo] THS business failed for {symbol}: {e}")
+
+    return result
+
+
 def _fetch_all(symbol: str) -> dict:
     """Fetch stock info from all sources and merge with fallback chain.
 
     Fallback strategy:
       Company info:  CNINFO ──fail──▶ EM (行业/简称/上市时间)
+      Main business: CNINFO ──fail/weak──▶ THS 主营介绍
       Shares/PE/PB:  EM     ──fail──▶ (none; realtime quote has pe/pb already)
     """
     import time as _time
@@ -197,13 +235,18 @@ def _fetch_all(symbol: str) -> dict:
     # cninfo is primary for company info (more reliable, richer data)
     cninfo_data = _fetch_from_cninfo(symbol)
 
+    # THS is a good backup for 主营业务 / 产品结构
+    ths_business_data = _fetch_from_ths_business(symbol)
+
     # EM is primary for shares/valuation, secondary for company info
     em_data = _fetch_from_em(symbol)
 
     # Merge: EM as base (shares + valuation + company fallback),
-    #         cninfo overrides (takes priority for company fields)
+    #        THS supplements business fields,
+    #        cninfo overrides company fields when available
     result: dict = {'symbol': symbol}
     result.update(em_data)       # EM: shares, valuation, company fallback
+    result.update(ths_business_data)  # THS: business fallback
     result.update(cninfo_data)   # cninfo: overrides company fields, adds profile/business
 
     result['_fetched_at'] = datetime.now().isoformat()
@@ -211,6 +254,7 @@ def _fetch_all(symbol: str) -> dict:
 
     logger.info(f"[StockInfo] total {_time.time() - t0:.1f}s for {symbol} "
                 f"(cninfo={cninfo_data.get('_cninfo_ok', False)}, "
+                f"ths_business={ths_business_data.get('_ths_business_ok', False)}, "
                 f"em={em_data.get('_em_ok', False)})")
     return result
 

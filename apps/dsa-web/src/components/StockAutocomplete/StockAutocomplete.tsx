@@ -5,7 +5,7 @@
  * Supports keyboard navigation, IME input method, graceful degradation
  */
 
-import { Component, useRef, useEffect, useState } from 'react';
+import { Component, useRef, useEffect, useState, useId } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -122,8 +122,10 @@ function StockAutocompleteInner({
   } = useAutocomplete(index);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const prevValueRef = useRef(value);
   const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number; width: string } | null>(null);
+  const listboxId = useId();
 
   const updateDropdownPosition = () => {
     if (!inputRef.current) {
@@ -170,6 +172,28 @@ function StockAutocompleteInner({
   }, [isOpen]);
 
   useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      const suggestionList = document.getElementById(listboxId);
+      const insideInput = rootRef.current?.contains(target ?? null);
+      const insideSuggestions = suggestionList?.contains(target ?? null);
+
+      if (insideInput || insideSuggestions) {
+        return;
+      }
+
+      closeSuggestions();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [closeSuggestions, isOpen, listboxId]);
+
+  useEffect(() => {
     if (!autocompleteError) {
       return;
     }
@@ -201,6 +225,7 @@ function StockAutocompleteInner({
           onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete');
         } else {
           // Submit directly
+          closeSuggestions();
           onSubmit(value);
         }
         break;
@@ -240,7 +265,7 @@ function StockAutocompleteInner({
   }
 
   return (
-    <div className="relative stock-autocomplete">
+    <div ref={rootRef} className="relative stock-autocomplete">
       <input
         ref={inputRef}
         type="text"
@@ -269,7 +294,7 @@ function StockAutocompleteInner({
         role="combobox"
         aria-expanded={isOpen}
         aria-haspopup="listbox"
-        aria-controls="suggestions-list"
+        aria-controls={listboxId}
       />
 
       {/* Loading indicator */}
@@ -282,6 +307,7 @@ function StockAutocompleteInner({
       {/* Suggestion dropdown list */}
       {isOpen && dropdownStyle && createPortal(
         <SuggestionsList
+          id={listboxId}
           suggestions={suggestions}
           highlightedIndex={highlightedIndex}
           onSelect={(s) => {

@@ -160,6 +160,7 @@ export interface TaskStatus {
   taskId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   progress?: number;
+  message?: string;
   result?: AnalysisResult;
   error?: string;
   stockName?: string;

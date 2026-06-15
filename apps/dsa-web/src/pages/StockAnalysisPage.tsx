@@ -7,6 +7,7 @@ import {
   ArrowUp,
   BarChart3,
   Building2,
+  ChevronDown,
   Clock,
   DollarSign,
   FileText,
@@ -16,10 +17,11 @@ import {
   Users,
 } from 'lucide-react';
 import { StockAutocomplete } from '../components/StockAutocomplete';
-import { Select } from '../components/common';
+import { Badge, Button, InlineAlert, Select } from '../components/common';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
+import { analysisApi } from '../api/analysis';
 import {
   announcementsApi,
   type AnnouncementsResponse,
@@ -27,6 +29,9 @@ import {
   type FinancialsResponse,
   financialStatementsApi,
   type FinancialStatementsResponse,
+  industryCycleApi,
+  type IndustryCycleReportTaskAccepted,
+  type IndustryCycleResponse,
   newsApi,
   type NewsResponse,
   riskEventsApi,
@@ -42,6 +47,7 @@ import {
   valuationApi,
   type ValuationRatiosResponse,
 } from '../api/financials';
+import { useTaskStream } from '../hooks/useTaskStream';
 import KLineChartPanel from '../components/KLineChartPanel';
 import FinancialPanel from '../components/FinancialPanel';
 import FinancialStatementsPanel from '../components/FinancialStatementsPanel';
@@ -93,6 +99,309 @@ function formatSourceChain(sources?: string[]): string {
   return sources?.filter(Boolean).join(' / ') || '-';
 }
 
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value ?? '');
+  }
+}
+
+function pickDebugInputField<T = unknown>(
+  debugInput: IndustryCycleResponse['debug_input'] | null | undefined,
+  snakeKey: 'system_prompt' | 'user_prompt' | 'evidence_pack',
+  camelKey: 'systemPrompt' | 'userPrompt' | 'evidencePack',
+): T | undefined {
+  if (!debugInput || typeof debugInput !== 'object') {
+    return undefined;
+  }
+  const value = debugInput as Record<string, unknown>;
+  return (value[snakeKey] as T | undefined) ?? (value[camelKey] as T | undefined);
+}
+
+function detectStreamKind(text: string): 'json' | 'report' {
+  const trimmed = text.trim();
+  return trimmed.startsWith('{') || trimmed.startsWith('[') ? 'json' : 'report';
+}
+
+function formatStreamText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  if (detectStreamKind(trimmed) !== 'json') return trimmed;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return trimmed;
+  }
+}
+
+function renderParagraphs(text: string): React.ReactNode {
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return null;
+  return (
+    <div className="space-y-4">
+      {paragraphs.map((paragraph, index) => (
+        <p key={`${index}-${paragraph.slice(0, 16)}`} className="text-sm leading-7 text-slate-700">
+          {paragraph}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function formatEvidenceSectionLabel(key: string): string {
+  const labels: Record<string, string> = {
+    analysis_framework: '判定框架',
+    market_mainline_report: '市场主线报告',
+    market_mainline_evidence: '市场主线证据',
+    stock_focus_snapshot: '个股聚焦摘要',
+    stock_profile: '公司资料',
+    mainline_context: '主线上下文',
+    company_specific_evidence: '个股直接证据',
+    industry_beta_evidence: '行业 Beta 证据',
+    supporting_judgement: '辅助判断',
+  };
+  if (labels[key]) return labels[key];
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function isEvidenceNoiseString(value: string): boolean {
+  const text = value.trim();
+  if (!text) return true;
+  return [
+    'HTTPConnectionPool(',
+    'Read timed out',
+    'RemoteDisconnected',
+    '请求失败',
+    '服务降级',
+    '暂时不可用',
+  ].some((token) => text.includes(token));
+}
+
+function sanitizeEvidenceValue(value: unknown): unknown {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    if (isEvidenceNoiseString(text)) return null;
+    return text;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const cleaned = value
+      .map((item) => sanitizeEvidenceValue(item))
+      .filter((item) => item != null && (!(Array.isArray(item)) || item.length > 0) && (!(typeof item === 'object' && item !== null) || Object.keys(item as Record<string, unknown>).length > 0));
+    return cleaned.length > 0 ? cleaned : null;
+  }
+  if (typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    const omitKeys = new Set([
+      '_cached',
+      '_fetched_at',
+      'errors',
+      'error',
+      'source_chain',
+      'news_errors',
+      'research_errors',
+      'social_errors',
+      'news_source_chain',
+      'research_source_chain',
+      'report_pending',
+    ]);
+    const cleanedEntries = Object.entries(source)
+      .filter(([key]) => !omitKeys.has(key))
+      .map(([key, item]) => [key, sanitizeEvidenceValue(item)] as const)
+      .filter(([, item]) => item != null && (!(Array.isArray(item)) || item.length > 0) && (!(typeof item === 'object' && item !== null) || Object.keys(item as Record<string, unknown>).length > 0));
+    if (cleanedEntries.length === 0) return null;
+    return Object.fromEntries(cleanedEntries);
+  }
+  return null;
+}
+
+function sanitizePromptText(text: string | undefined): string {
+  if (!text) return '-';
+  return text
+    .replace(/HTTPConnectionPool\([^\n]+/g, '[已省略数据源请求错误详情]')
+    .replace(/Read timed out\.?/g, '[已省略超时详情]')
+    .replace(/请求失败[:：][^\n"]+/g, '请求失败：[已省略详情]')
+    .replace(/RemoteDisconnected[^\n"]*/g, '[已省略连接中断详情]');
+}
+
+function shouldSuppressEvidenceSection(key: string, value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (key === 'market_mainline_evidence' || key === 'mainline_context' || key === 'market_mainline_report') {
+    const current = Array.isArray(record.currentThemes) ? record.currentThemes : Array.isArray(record.current_themes) ? record.current_themes : Array.isArray(record.current_mainlines) ? record.current_mainlines : [];
+    const next = Array.isArray(record.nextThemes) ? record.nextThemes : Array.isArray(record.next_themes) ? record.next_themes : Array.isArray(record.future_mainlines) ? record.future_mainlines : [];
+    const policy = Array.isArray(record.policyWatchlist) ? record.policyWatchlist : Array.isArray(record.policy_watchlist) ? record.policy_watchlist : [];
+    const marketStage = record.marketStage ?? record.market_stage;
+    const description = typeof marketStage === 'object' && marketStage
+      ? String((marketStage as Record<string, unknown>).description || (marketStage as Record<string, unknown>).label || '')
+      : '';
+    if (current.length === 0 && next.length === 0 && policy.length === 0 && isEvidenceNoiseString(description)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isScalarLike(value: unknown): boolean {
+  return ['string', 'number', 'boolean'].includes(typeof value);
+}
+
+function renderEvidencePackCards(evidencePack: Record<string, unknown> | undefined): React.ReactNode {
+  const cleanedEvidencePack = sanitizeEvidenceValue(evidencePack) as Record<string, unknown> | null;
+  if (!cleanedEvidencePack || Object.keys(cleanedEvidencePack).length === 0) {
+    return <span className="text-sm text-slate-400">暂无证据输入</span>;
+  }
+
+  const sectionOrder = [
+    'stock_focus_snapshot',
+    'stock_profile',
+    'company_specific_evidence',
+    'industry_beta_evidence',
+    'mainline_context',
+    'supporting_judgement',
+    'analysis_framework',
+    'market_mainline_report',
+    'market_mainline_evidence',
+  ];
+  const sections = Object.entries(cleanedEvidencePack)
+    .filter(([key, value]) => !['symbol', 'stock_name', 'industry_name', 'generated_at'].includes(key) && !shouldSuppressEvidenceSection(key, value))
+    .sort(([left], [right]) => {
+      const leftIndex = sectionOrder.indexOf(left);
+      const rightIndex = sectionOrder.indexOf(right);
+      return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+    });
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-3 lg:grid-cols-2">
+        {sections.map(([key, value]) => (
+          <div key={key} className="min-w-0 overflow-hidden market-mainline-muted-block">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h4 className="min-w-0 break-words text-sm font-semibold text-slate-900">{formatEvidenceSectionLabel(key)}</h4>
+              <span className="max-w-[40%] truncate rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-500">{key}</span>
+            </div>
+            {isScalarLike(value) ? (
+              <div className="rounded-[1.25rem] border border-cyan-100 bg-white px-4 py-3 text-sm leading-7 text-slate-700">
+                {String(value)}
+              </div>
+            ) : (
+              <div className="min-w-0 market-stream-panel market-stream-json max-h-[22rem] overflow-auto rounded-[1.25rem]">
+                <pre className="market-stream-pre whitespace-pre-wrap break-words">{prettyJson(value)}</pre>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <details className="market-mainline-muted-block">
+        <summary className="cursor-pointer text-sm font-medium text-slate-700">查看完整原始 JSON</summary>
+        <div className="mt-4">
+          <div className="min-w-0 market-stream-panel market-stream-json max-h-[28rem] overflow-auto rounded-[1.25rem]">
+            <pre className="market-stream-pre whitespace-pre-wrap break-words">{prettyJson(cleanedEvidencePack)}</pre>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function readStockFocusSnapshot(
+  displayData: IndustryCycleResponse | IndustryCycleDraft | null,
+  evidencePack?: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const fromDisplay = (displayData?.industry_cycle?.evidence as Record<string, unknown> | undefined)?.stock_focus_snapshot;
+  if (fromDisplay && typeof fromDisplay === 'object') {
+    return fromDisplay as Record<string, unknown>;
+  }
+
+  const topLevel = evidencePack?.stock_focus_snapshot;
+  if (topLevel && typeof topLevel === 'object') {
+    return topLevel as Record<string, unknown>;
+  }
+
+  const companySpecific = evidencePack?.company_specific_evidence;
+  if (companySpecific && typeof companySpecific === 'object') {
+    const nested = (companySpecific as Record<string, unknown>).stock_focus_snapshot;
+    if (nested && typeof nested === 'object') {
+      return nested as Record<string, unknown>;
+    }
+  }
+
+  return null;
+}
+
+function renderStringList(items: string[] | undefined, emptyText: string): React.ReactNode {
+  if (!items || items.length === 0) {
+    return <p className="text-sm text-slate-400">{emptyText}</p>;
+  }
+  return (
+    <div className="flex flex-wrap gap-2">
+      {items.map((item) => (
+        <span key={item} className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600">
+          {item}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function renderDetectorChecklist(
+  title: string,
+  detector: IndustryCycleResponse['industry_cycle']['mainline_detector'] | Partial<IndustryCycleResponse['industry_cycle']['mainline_detector']> | undefined,
+): React.ReactNode {
+  const checklist = Array.isArray(detector?.checklist) ? detector.checklist : [];
+  return (
+    <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+        <Badge variant={detector?.passed ? 'success' : 'default'}>
+          {detector?.passed ? '通过' : '待确认'}
+        </Badge>
+      </div>
+      {detector?.conclusion ? (
+        <p className="mb-2 text-sm leading-6 text-slate-600">{detector.conclusion}</p>
+      ) : null}
+      {detector?.failed_reason ? (
+        <p className="mb-2 text-sm leading-6 text-amber-700">{detector.failed_reason}</p>
+      ) : null}
+      {checklist.length > 0 ? (
+        <div className="space-y-1.5">
+          {checklist.map((item, index) => (
+            <div key={`${item.item}-${index}`} className="rounded-xl bg-slate-50/80 px-3 py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-sm font-medium text-slate-900">{item.item}</p>
+                <span className={cn(
+                  'rounded-full px-2.5 py-0.5 text-xs font-medium',
+                  item.passed ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500',
+                )}>
+                  {item.passed ? '通过' : '未过'}
+                </span>
+              </div>
+              {item.reason ? <p className="mt-2 text-sm leading-6 text-slate-600">{item.reason}</p> : null}
+              {item.source ? <p className="mt-1 text-xs text-slate-400">{item.source}</p> : null}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm text-slate-400">模型正在补充判定器明细…</p>
+      )}
+    </div>
+  );
+}
+
 function DataItem({
   label,
   value,
@@ -139,7 +448,7 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
 
   return (
     <div className="space-y-4">
-      <div className={cn('rounded-2xl border p-6 shadow-sm', changeBg)}>
+      <div className={cn('stock-analysis-hero p-6', changeBg)}>
         <div className="flex items-start justify-between">
           <div>
             <div className="flex items-center gap-2">
@@ -165,7 +474,7 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <div className="stock-analysis-panel">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
           <BarChart3 className="h-4 w-4 text-cyan-600" />交易数据
         </h3>
@@ -179,7 +488,7 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <div className="stock-analysis-panel">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
           <TrendingUp className="h-4 w-4 text-cyan-600" />价格区间
         </h3>
@@ -193,7 +502,7 @@ function RealtimeQuotePanel({ quote }: { quote: RealtimeQuote }) {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <div className="stock-analysis-panel">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
           <DollarSign className="h-4 w-4 text-cyan-600" />市值与估值
         </h3>
@@ -218,7 +527,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
   return (
     <div className="space-y-4">
       {/* 公司概况 */}
-      <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+      <div className="stock-analysis-panel">
         <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
           <Building2 className="h-4 w-4 text-cyan-600" />公司概况
         </h3>
@@ -240,7 +549,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 
       {/* 股本信息 */}
       {(info.total_shares != null || info.circ_shares != null) && (
-        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <div className="stock-analysis-panel">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
             <BarChart3 className="h-4 w-4 text-cyan-600" />股本信息
           </h3>
@@ -258,7 +567,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 
       {/* 估值指标 (PE/PB) */}
       {(info.pe_dynamic != null || info.pe_static != null || info.pb_ratio != null) && (
-        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <div className="stock-analysis-panel">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
             <TrendingUp className="h-4 w-4 text-cyan-600" />估值指标
           </h3>
@@ -281,7 +590,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 
       {/* 主营业务 */}
       {info.main_business && (
-        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <div className="stock-analysis-panel">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
             <FileText className="h-4 w-4 text-cyan-600" />主营业务
           </h3>
@@ -291,7 +600,7 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 
       {/* 公司简介 */}
       {info.profile && (
-        <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+        <div className="stock-analysis-panel">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
             <Info className="h-4 w-4 text-cyan-600" />公司简介
           </h3>
@@ -311,7 +620,7 @@ function ValuationRatiosPanel({ valuation }: { valuation: ValuationRatiosRespons
   const industry = valuation.industry_average;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+    <div className="stock-analysis-panel">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
         <Percent className="h-4 w-4 text-cyan-600" />估值指标
         {valuation.trade_date && (
@@ -371,7 +680,7 @@ function PriceOverdraftPanel({ valuation }: { valuation: ValuationRatiosResponse
   const meta = statusMeta[signal.status] || statusMeta.uncertain;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+    <div className="stock-analysis-panel">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-700">
           <AlertTriangle className="h-4 w-4 text-cyan-600" />股价透支判定
@@ -447,7 +756,7 @@ function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderSt
   const changeDown = countChange < 0;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+    <div className="stock-analysis-panel">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
         <Users className="h-4 w-4 text-cyan-600" />股东结构
         {shareholder.holder_report_date && (
@@ -520,11 +829,400 @@ function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderSt
   );
 }
 
+type IndustryCycleTaskPayload = {
+  phase?: string;
+  stream_text?: string;
+  report_draft?: IndustryCycleDraft;
+  report?: IndustryCycleResponse;
+  debug_input?: IndustryCycleResponse['debug_input'];
+};
+
+type IndustryCycleDraft = Partial<Omit<IndustryCycleResponse, 'industry_cycle'>> & {
+  industry_cycle?: Partial<IndustryCycleResponse['industry_cycle']> | null;
+};
+
+function mergeIndustryCycleTaskOverlay(
+  current: IndustryCycleResponse | null,
+  payload: IndustryCycleTaskPayload,
+): IndustryCycleResponse | null {
+  if (payload.report) {
+    return payload.report;
+  }
+  if (!current) {
+    return null;
+  }
+  return {
+    symbol: current.symbol,
+    industry_cycle: current.industry_cycle,
+    report_pending: true,
+    llm_used: current.llm_used ?? false,
+    model_used: current.model_used ?? null,
+    raw_stream_output: payload.stream_text || current.raw_stream_output || '',
+    raw_response: payload.stream_text || current.raw_response || '',
+    debug_input: payload.debug_input || current.debug_input || null,
+    _fetched_at: current._fetched_at,
+    _cached: false,
+    fallback_used: current.fallback_used ?? false,
+  };
+}
+
+function isIndustryCycleResponseLike(value: unknown): value is IndustryCycleResponse {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const payload = value as Record<string, unknown>;
+  return 'industry_cycle' in payload || 'report_pending' in payload || 'raw_stream_output' in payload;
+}
+
+function readIndustryCycleTaskPayload(value: unknown): IndustryCycleTaskPayload {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+  const payload = value as Record<string, unknown>;
+  const nested = payload.report && typeof payload.report === 'object'
+    ? readIndustryCycleTaskPayload(payload.report)
+    : {};
+  return {
+    phase: (payload.phase as string | undefined) ?? nested.phase ?? undefined,
+    stream_text:
+      (payload.stream_text as string | undefined)
+      ?? (payload.streamText as string | undefined)
+      ?? nested.stream_text
+      ?? undefined,
+    report_draft:
+      (payload.report_draft as IndustryCycleDraft | undefined)
+      ?? (payload.reportDraft as IndustryCycleDraft | undefined)
+      ?? nested.report_draft
+      ?? undefined,
+    report:
+      (isIndustryCycleResponseLike(payload.report) ? payload.report : undefined)
+      ?? nested.report
+      ?? undefined,
+    debug_input:
+      ((payload.debug_input as IndustryCycleResponse['debug_input']) ?? (payload.debugInput as IndustryCycleResponse['debug_input']))
+      ?? nested.debug_input
+      ?? undefined,
+  };
+}
+
+function mergeIndustryCycleDraft(
+  previous: IndustryCycleDraft | null,
+  nextDraft?: IndustryCycleDraft | null,
+): IndustryCycleDraft | null {
+  if (!nextDraft) {
+    return previous;
+  }
+  if (!previous) {
+    return nextDraft;
+  }
+
+  const previousStream = previous.raw_stream_output || previous.raw_response || '';
+  const nextStream = nextDraft.raw_stream_output || nextDraft.raw_response || '';
+  const previousCycle = previous.industry_cycle ?? null;
+  const nextCycle = nextDraft.industry_cycle ?? null;
+  const previousEvidence = previousCycle?.evidence;
+  const nextEvidence = nextCycle?.evidence;
+  const mergedCycle = (previousCycle || nextCycle ? {
+    ...(previousCycle ?? {}),
+    ...(nextCycle ?? {}),
+    evidence: previousEvidence || nextEvidence ? {
+      ...(previousEvidence ?? {}),
+      ...(nextEvidence ?? {}),
+      market_mainline: nextEvidence?.market_mainline ?? previousEvidence?.market_mainline,
+      sector_snapshot: nextEvidence?.sector_snapshot ?? previousEvidence?.sector_snapshot,
+      fund_flow: nextEvidence?.fund_flow ?? previousEvidence?.fund_flow,
+      peer_group: nextEvidence?.peer_group ?? previousEvidence?.peer_group,
+      valuation_snapshot: nextEvidence?.valuation_snapshot ?? previousEvidence?.valuation_snapshot,
+      sentiment_snapshot: nextEvidence?.sentiment_snapshot ?? previousEvidence?.sentiment_snapshot,
+      risk_snapshot: nextEvidence?.risk_snapshot ?? previousEvidence?.risk_snapshot,
+      data_quality: nextEvidence?.data_quality ?? previousEvidence?.data_quality,
+      financial_snapshot: nextEvidence?.financial_snapshot ?? previousEvidence?.financial_snapshot,
+      driver_signals: nextEvidence?.driver_signals ?? previousEvidence?.driver_signals,
+    } : undefined,
+    catalysts: nextCycle?.catalysts ?? previousCycle?.catalysts,
+    risks: nextCycle?.risks ?? previousCycle?.risks,
+    observation_points: nextCycle?.observation_points ?? previousCycle?.observation_points,
+    mainline_detector: nextCycle?.mainline_detector ?? previousCycle?.mainline_detector,
+    industry_beta_detector: nextCycle?.industry_beta_detector ?? previousCycle?.industry_beta_detector,
+  } : null) as IndustryCycleDraft['industry_cycle'];
+
+  return {
+    ...previous,
+    ...nextDraft,
+    raw_stream_output: nextStream.length >= previousStream.length ? (nextDraft.raw_stream_output || nextDraft.raw_response) : previous.raw_stream_output,
+    raw_response: nextStream.length >= previousStream.length ? (nextDraft.raw_response || nextDraft.raw_stream_output) : previous.raw_response,
+    debug_input: nextDraft.debug_input ?? previous.debug_input,
+    industry_cycle: mergedCycle,
+  };
+}
+
+function IndustryCyclePanel({
+  data,
+  draft,
+  debugInput,
+  loading,
+  isGenerating,
+  streamText,
+  streamPhase,
+  taskMessage,
+  taskError,
+  onRegenerate,
+}: {
+  data: IndustryCycleResponse | null;
+  draft: IndustryCycleDraft | null;
+  debugInput: IndustryCycleResponse['debug_input'];
+  loading: boolean;
+  isGenerating: boolean;
+  streamText: string;
+  streamPhase: string | null;
+  taskMessage: string | null;
+  taskError: string | null;
+  onRegenerate: () => void;
+}) {
+  const [showRawInput, setShowRawInput] = useState(true);
+  const [showRawOutput, setShowRawOutput] = useState(false);
+  const displayData = mergeIndustryCycleDraft(data, draft) as IndustryCycleResponse | IndustryCycleDraft | null;
+  const activeDebugInput = debugInput || draft?.debug_input || displayData?.debug_input || null;
+  const activeEvidencePack = pickDebugInputField<Record<string, unknown>>(activeDebugInput, 'evidence_pack', 'evidencePack');
+  const stockFocusSnapshot = readStockFocusSnapshot(displayData, activeEvidencePack);
+  const stockFocusView = typeof stockFocusSnapshot?.focus_view === 'string' ? stockFocusSnapshot.focus_view : '';
+  const businessBindingStrength = typeof stockFocusSnapshot?.business_binding_strength === 'string' ? stockFocusSnapshot.business_binding_strength : '';
+  const financeState = typeof stockFocusSnapshot?.finance_state === 'string' ? stockFocusSnapshot.finance_state : '';
+  const holderState = typeof stockFocusSnapshot?.holder_state === 'string' ? stockFocusSnapshot.holder_state : '';
+  const tradingState = typeof stockFocusSnapshot?.trading_state === 'string' ? stockFocusSnapshot.trading_state : '';
+  const directEvidenceStrength = typeof stockFocusSnapshot?.direct_evidence_strength === 'string' ? stockFocusSnapshot.direct_evidence_strength : '';
+
+  if (loading && !displayData && !isGenerating) {
+    return (
+      <div className="flex h-40 items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
+          <span className="text-sm text-slate-400">正在加载行业周期报告...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const displayText = String(
+    isGenerating
+      ? streamText
+      : (displayData?.raw_stream_output || displayData?.raw_response || streamText || ''),
+  ).trim();
+  const streamKind = detectStreamKind(displayText);
+  const formattedDisplayText = formatStreamText(displayText);
+  const streamStatsText = formattedDisplayText ? `${formattedDisplayText.length.toLocaleString()} 字符` : '等待首个分片';
+  const cycle = displayData?.industry_cycle;
+  const streamContent = cycle ? (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white">
+          {cycle.analysis_status || '观察'}
+        </span>
+        <span className="rounded-full bg-cyan-50 px-3 py-1 text-xs font-medium text-cyan-700">
+          受益级别 {cycle.beneficiary_level || '待模型确认'}
+        </span>
+        <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
+          周期阶段 {cycle.cycle_phase || '待模型确认'}
+        </span>
+        <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600">
+          景气分 {typeof cycle.prosperity_score === 'number' ? `${cycle.prosperity_score}/10` : '待模型确认'}
+        </span>
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-2">
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">受益路径</p>
+          <p className="text-sm leading-6 text-slate-700">{cycle.beneficiary_reason || '模型正在生成受益路径…'}</p>
+        </div>
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">景气判断</p>
+          <p className="text-sm leading-6 text-slate-700">{cycle.prosperity_judgement || '模型正在生成景气判断…'}</p>
+        </div>
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">核心逻辑</p>
+          <p className="text-sm leading-6 text-slate-700">{cycle.core_logic || '模型正在补充核心逻辑…'}</p>
+        </div>
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">阶段说明</p>
+          <p className="text-sm leading-6 text-slate-700">{cycle.cycle_phase_reason || '模型正在补充阶段说明…'}</p>
+          {cycle.killer_reason ? (
+            <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">{cycle.killer_reason}</p>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="grid gap-2 lg:grid-cols-3">
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">催化</p>
+          {renderStringList(cycle.catalysts, '模型正在补充催化…')}
+        </div>
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">风险</p>
+          {renderStringList(cycle.risks, '模型正在补充风险…')}
+        </div>
+        <div className="rounded-[1.25rem] border border-slate-100 bg-white/85 px-4 py-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">观察点</p>
+          {renderStringList(cycle.observation_points, '模型正在补充观察点…')}
+        </div>
+      </div>
+
+      <div className="grid gap-2 xl:grid-cols-2">
+        {renderDetectorChecklist('主线属性判定器', cycle.mainline_detector)}
+        {renderDetectorChecklist('行业 Beta 判定器', cycle.industry_beta_detector)}
+      </div>
+    </div>
+  ) : !formattedDisplayText
+    ? <span className="text-slate-400">模型已启动，等待首个分片返回...</span>
+    : streamKind === 'json'
+      ? <pre className="market-stream-pre whitespace-pre-wrap break-words">{formattedDisplayText}</pre>
+      : renderParagraphs(formattedDisplayText);
+
+  return (
+    <div className="space-y-4">
+      {taskError ? (
+        <InlineAlert
+          title="行业周期模型研判失败"
+          variant="danger"
+          message={taskError}
+          action={(
+            <Button variant="outline" size="sm" onClick={onRegenerate}>
+              重新生成
+            </Button>
+          )}
+        />
+      ) : null}
+
+      <section className="market-mainline-surface market-mainline-status">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <p className="text-sm font-medium text-slate-900">
+              {isGenerating ? (taskMessage || `模型正在生成中${streamPhase ? `：${streamPhase}` : ''}`) : '当前展示最新行业周期模型输出'}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              页面展示清洗后的证据输入和模型实时输出，重点先看个股，再看行业背景。
+            </p>
+            {stockFocusView ? (
+              <p className="mt-3 text-sm leading-7 text-slate-600">
+                {stockFocusView}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-2 text-xs text-slate-500">
+              <span className={`h-2 w-2 rounded-full ${isGenerating ? 'bg-cyan-500 shadow-[0_0_0_4px_rgba(34,211,238,0.12)]' : 'bg-slate-300'}`} />
+              {isGenerating ? '实时推送中' : '空闲'}
+            </span>
+            {displayData?.model_used ? <Badge variant="info">{displayData.model_used}</Badge> : null}
+            {displayData?._cached ? <Badge variant="default">缓存</Badge> : null}
+            {isGenerating ? <Badge variant="warning">SSE 推送中</Badge> : null}
+            {!isGenerating ? (
+              <Button variant="outline" size="sm" onClick={onRegenerate}>
+                重新生成
+              </Button>
+            ) : null}
+          </div>
+        </div>
+          {stockFocusSnapshot ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+            {businessBindingStrength ? <Badge variant="warning">主营绑定 {businessBindingStrength}</Badge> : null}
+            {financeState ? <Badge variant="default">财务状态 {financeState}</Badge> : null}
+            {holderState ? <Badge variant="default">股东状态 {holderState}</Badge> : null}
+            {tradingState ? <Badge variant="info">交易状态 {tradingState}</Badge> : null}
+            {directEvidenceStrength ? <Badge variant="success">直接证据 {directEvidenceStrength}</Badge> : null}
+            </div>
+          ) : null}
+        </section>
+
+      <section className="market-mainline-surface space-y-4">
+        <div>
+          <span className="label-uppercase">Streaming Output</span>
+          <h2 className="mt-1 text-2xl font-semibold text-slate-950">模型实时输出</h2>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600">
+            <span className={`h-2 w-2 rounded-full ${isGenerating ? 'bg-cyan-500 shadow-[0_0_0_4px_rgba(34,211,238,0.12)]' : 'bg-slate-300'}`} />
+            {cycle ? '结构化报告输出' : streamKind === 'json' ? '原始 JSON 输出' : '原始报告输出'}
+          </span>
+          <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500">
+            {streamStatsText}
+          </span>
+          {streamPhase ? (
+            <span className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-medium text-cyan-700">
+              {streamPhase}
+            </span>
+          ) : null}
+        </div>
+        <div className={`market-stream-panel ${(cycle || streamKind === 'report') ? 'market-stream-report' : 'market-stream-json'}`}>
+          <div className="min-h-[12rem] max-h-[34rem] overflow-auto">
+            {streamContent}
+          </div>
+        </div>
+      </section>
+
+      <section className="market-mainline-surface">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between text-left"
+          onClick={() => setShowRawInput((value) => !value)}
+        >
+          <div>
+            <span className="label-uppercase">Input Evidence</span>
+            <h3 className="mt-1 text-lg font-semibold text-slate-900">原始输入证据包</h3>
+          </div>
+          <ChevronDown className={cn('h-4 w-4 text-slate-400 transition-transform', showRawInput ? 'rotate-180' : '')} />
+        </button>
+        {showRawInput ? (
+          <div className="mt-4">
+            {renderEvidencePackCards(activeEvidencePack)}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="market-mainline-surface">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between text-left"
+          onClick={() => setShowRawOutput((value) => !value)}
+        >
+          <div>
+            <span className="label-uppercase">Trace</span>
+            <h3 className="mt-1 text-lg font-semibold text-slate-900">调试信息</h3>
+          </div>
+          <ChevronDown className={cn('h-4 w-4 text-slate-400 transition-transform', showRawOutput ? 'rotate-180' : '')} />
+        </button>
+        {showRawOutput ? (
+          <div className="mt-4 grid gap-4">
+            <div className="market-mainline-muted-block">
+              <p className="mb-2 text-xs font-medium text-slate-400">System Prompt</p>
+            <div className="min-w-0 market-stream-panel market-stream-json max-h-[18rem] overflow-auto rounded-[1.25rem]">
+                <pre className="market-stream-pre whitespace-pre-wrap break-words">{sanitizePromptText(pickDebugInputField(activeDebugInput, 'system_prompt', 'systemPrompt') || '-')}</pre>
+              </div>
+            </div>
+            <div className="market-mainline-muted-block">
+              <p className="mb-2 text-xs font-medium text-slate-400">User Prompt</p>
+              <div className="min-w-0 market-stream-panel market-stream-json max-h-[18rem] overflow-auto rounded-[1.25rem]">
+                <pre className="market-stream-pre whitespace-pre-wrap break-words">{sanitizePromptText(pickDebugInputField(activeDebugInput, 'user_prompt', 'userPrompt') || '-')}</pre>
+              </div>
+            </div>
+            <div className="market-mainline-muted-block">
+              <p className="mb-2 text-xs font-medium text-slate-400">Raw Output</p>
+              <div className="min-w-0 market-stream-panel market-stream-json max-h-[22rem] overflow-auto rounded-[1.25rem]">
+                <pre className="market-stream-pre whitespace-pre-wrap break-words">{displayData?.raw_stream_output || displayData?.raw_response || formattedDisplayText || '-'}</pre>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'shareholder' | 'news' | 'risk' | 'announcements' | 'sentiment' | 'research' | 'social';
+type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'industry-cycle' | 'shareholder' | 'news' | 'risk' | 'announcements' | 'sentiment' | 'research' | 'social';
+const INDUSTRY_CYCLE_ACTIVE_TASK_STORAGE_KEY = 'industry-cycle-active-task-id';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -579,6 +1277,18 @@ const StockAnalysisPage: React.FC = () => {
   // --- Social sentiment state ---
   const [social, setSocial] = useState<SocialSentimentResponse | null>(null);
   const [socialLoading, setSocialLoading] = useState(false);
+
+  // --- Industry cycle state ---
+  const [industryCycle, setIndustryCycle] = useState<IndustryCycleResponse | null>(null);
+  const [industryCycleLoading, setIndustryCycleLoading] = useState(false);
+  const [industryCycleTaskError, setIndustryCycleTaskError] = useState<string | null>(null);
+  const [industryCycleActiveTaskId, setIndustryCycleActiveTaskId] = useState<string | null>(null);
+  const [industryCycleStreamText, setIndustryCycleStreamText] = useState('');
+  const [industryCycleStreamPhase, setIndustryCycleStreamPhase] = useState<string | null>(null);
+  const [industryCycleTaskMessage, setIndustryCycleTaskMessage] = useState<string | null>(null);
+  const [industryCycleGenerating, setIndustryCycleGenerating] = useState(false);
+  const [industryCycleDebugInput, setIndustryCycleDebugInput] = useState<IndustryCycleResponse['debug_input']>(null);
+  const [industryCycleDraft, setIndustryCycleDraft] = useState<IndustryCycleDraft | null>(null);
 
   // --- Tab mode ---
   const [mode, setMode] = useState<AnalysisMode>('overview');
@@ -647,6 +1357,28 @@ const StockAnalysisPage: React.FC = () => {
   useEffect(() => {
     if (mode === 'social' && selectedSymbol) {
       void fetchSocial(selectedSymbol);
+    }
+  }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (mode === 'industry-cycle' && selectedSymbol) {
+      void (async () => {
+        setIndustryCycleLoading(true);
+        try {
+          const resumed = await resumeIndustryCycleTask(selectedSymbol);
+          if (resumed) {
+            return;
+          }
+          const latest = await industryCycleApi.getIndustryCycleReport(selectedSymbol);
+          setIndustryCycle(latest);
+          setIndustryCycleDebugInput(latest.debug_input || null);
+          if (latest.report_pending || !latest.industry_cycle) {
+            await startIndustryCycleGeneration(selectedSymbol, false);
+          }
+        } finally {
+          setIndustryCycleLoading(false);
+        }
+      })();
     }
   }, [mode, selectedSymbol]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -827,10 +1559,225 @@ const StockAnalysisPage: React.FC = () => {
     }
   }, []);
 
+  const fetchIndustryCycle = useCallback(async (symbol: string) => {
+    setIndustryCycleLoading(true);
+    try {
+      const result = await industryCycleApi.getIndustryCycleReport(symbol);
+      setIndustryCycle(result);
+      setIndustryCycleDebugInput(result.debug_input || null);
+      setIndustryCycleDraft(null);
+    } catch {
+      setIndustryCycle(null);
+      setIndustryCycleDebugInput(null);
+      setIndustryCycleDraft(null);
+    } finally {
+      setIndustryCycleLoading(false);
+    }
+  }, []);
+
+  const rememberIndustryCycleTask = useCallback((taskId: string | null) => {
+    if (typeof window === 'undefined') return;
+    if (taskId) {
+      window.localStorage.setItem(INDUSTRY_CYCLE_ACTIVE_TASK_STORAGE_KEY, taskId);
+    } else {
+      window.localStorage.removeItem(INDUSTRY_CYCLE_ACTIVE_TASK_STORAGE_KEY);
+    }
+  }, []);
+
+  const applyIndustryCycleTaskState = useCallback((
+    payload: IndustryCycleTaskPayload,
+    message: string | null,
+    taskId: string,
+    status: 'pending' | 'processing' | 'completed' | 'failed',
+  ) => {
+    setIndustryCycleActiveTaskId(taskId);
+    rememberIndustryCycleTask(taskId);
+    setIndustryCycleGenerating(status === 'pending' || status === 'processing');
+    setIndustryCycleTaskMessage(message);
+    setIndustryCycleStreamPhase(payload.phase ?? (status === 'pending' ? 'queued' : status));
+    if (typeof payload.stream_text === 'string') {
+      setIndustryCycleStreamText((current) => (payload.stream_text!.length >= current.length ? payload.stream_text! : current));
+    }
+    if (payload.report_draft) {
+      setIndustryCycleDraft((current) => mergeIndustryCycleDraft(current, payload.report_draft));
+    }
+    if (payload.debug_input) {
+      setIndustryCycleDebugInput(payload.debug_input);
+    }
+    if (payload.report) {
+      setIndustryCycle(payload.report);
+      setIndustryCycleDebugInput(payload.report.debug_input || null);
+      setIndustryCycleDraft(null);
+    } else if (payload.debug_input || payload.stream_text) {
+      setIndustryCycle((current) => mergeIndustryCycleTaskOverlay(current, payload));
+    }
+  }, [rememberIndustryCycleTask]);
+
+  const hydrateIndustryCycleTask = useCallback(async (taskId: string) => {
+    try {
+      const status = await analysisApi.getStatus(taskId);
+      const payload = readIndustryCycleTaskPayload(status.result);
+      if (status.status === 'pending' || status.status === 'processing') {
+        applyIndustryCycleTaskState(payload, status.message || '行业周期任务进行中', taskId, status.status);
+        return true;
+      }
+      if (status.status === 'completed') {
+        if (payload.report) {
+          setIndustryCycle(payload.report);
+          setIndustryCycleDebugInput(payload.report.debug_input || null);
+          setIndustryCycleDraft(null);
+        } else if (payload.debug_input || payload.stream_text) {
+          setIndustryCycle((current) => mergeIndustryCycleTaskOverlay(current, payload));
+          if (payload.report_draft) {
+            setIndustryCycleDraft((current) => mergeIndustryCycleDraft(current, payload.report_draft));
+          }
+        }
+        setIndustryCycleTaskError(null);
+        setIndustryCycleGenerating(false);
+        setIndustryCycleActiveTaskId(null);
+        rememberIndustryCycleTask(null);
+        setIndustryCycleStreamPhase('completed');
+        setIndustryCycleTaskMessage('行业周期模型分析完成');
+        if (typeof payload.stream_text === 'string') {
+          setIndustryCycleStreamText(payload.stream_text);
+        }
+        return false;
+      }
+      setIndustryCycleTaskError(status.error || '行业周期模型分析失败');
+      setIndustryCycleGenerating(false);
+      setIndustryCycleActiveTaskId(null);
+      rememberIndustryCycleTask(null);
+      setIndustryCycleStreamPhase('failed');
+      return false;
+    } catch {
+      return false;
+    }
+  }, [applyIndustryCycleTaskState, rememberIndustryCycleTask]);
+
+  const resumeIndustryCycleTask = useCallback(async (symbol: string): Promise<boolean> => {
+    if (typeof window !== 'undefined') {
+      const rememberedTaskId = window.localStorage.getItem(INDUSTRY_CYCLE_ACTIVE_TASK_STORAGE_KEY);
+      if (rememberedTaskId) {
+        setIndustryCycleActiveTaskId(rememberedTaskId);
+        setIndustryCycleGenerating(true);
+        setIndustryCycleStreamPhase('reconnecting');
+        setIndustryCycleTaskMessage('正在恢复行业周期任务');
+        const resumed = await hydrateIndustryCycleTask(rememberedTaskId);
+        if (resumed) {
+          return true;
+        }
+      }
+    }
+
+    try {
+      const tasksResponse = await analysisApi.getTasks({ status: 'pending,processing', limit: 50 });
+      const match = tasksResponse.tasks.find(
+        (task) => task.stockCode === symbol && task.reportType === 'industry_cycle_report',
+      );
+      if (!match) {
+        return false;
+      }
+      return hydrateIndustryCycleTask(match.taskId);
+    } catch {
+      return false;
+    }
+  }, [hydrateIndustryCycleTask]);
+
+  const startIndustryCycleGeneration = useCallback(async (symbol: string, force: boolean = true) => {
+    setIndustryCycleTaskError(null);
+    setIndustryCycleGenerating(true);
+    setIndustryCycle(null);
+    setIndustryCycleStreamText('');
+    setIndustryCycleStreamPhase('queued');
+    setIndustryCycleTaskMessage('任务已提交，等待服务端处理');
+    setIndustryCycleDebugInput(null);
+    setIndustryCycleDraft(null);
+    try {
+      const task: IndustryCycleReportTaskAccepted = await industryCycleApi.createIndustryCycleReportTask(symbol, force);
+      setIndustryCycleActiveTaskId(task.task_id);
+      rememberIndustryCycleTask(task.task_id);
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : '行业周期模型任务提交失败';
+      setIndustryCycleTaskError(message);
+      setIndustryCycleGenerating(false);
+      setIndustryCycleActiveTaskId(null);
+      rememberIndustryCycleTask(null);
+    }
+  }, [rememberIndustryCycleTask]);
+
+  useEffect(() => {
+    if (!industryCycleActiveTaskId) {
+      return;
+    }
+    const intervalId = window.setInterval(() => {
+      void hydrateIndustryCycleTask(industryCycleActiveTaskId);
+    }, 5000);
+    return () => window.clearInterval(intervalId);
+  }, [hydrateIndustryCycleTask, industryCycleActiveTaskId]);
+
+  useTaskStream({
+    enabled: Boolean(industryCycleActiveTaskId),
+    onTaskStarted: (task) => {
+      if (task.taskId !== industryCycleActiveTaskId) return;
+      setIndustryCycleGenerating(true);
+      setIndustryCycleStreamPhase('started');
+      setIndustryCycleTaskMessage(task.message || '任务已启动');
+    },
+    onTaskProgress: (task) => {
+      if (task.taskId !== industryCycleActiveTaskId) return;
+      const payload = readIndustryCycleTaskPayload(task.result);
+      applyIndustryCycleTaskState(payload, task.message || null, task.taskId, task.status);
+    },
+    onTaskCompleted: (task) => {
+      if (task.taskId !== industryCycleActiveTaskId) return;
+      const payload = readIndustryCycleTaskPayload(task.result);
+      if (payload.report) {
+        setIndustryCycle(payload.report);
+        setIndustryCycleDraft(null);
+      } else if (payload.debug_input || payload.stream_text) {
+        setIndustryCycle((current) => mergeIndustryCycleTaskOverlay(current, payload));
+        if (payload.report_draft) {
+          setIndustryCycleDraft((current) => mergeIndustryCycleDraft(current, payload.report_draft));
+        }
+      }
+      if (typeof payload.stream_text === 'string') {
+        setIndustryCycleStreamText(payload.stream_text);
+      }
+      setIndustryCycleTaskError(null);
+      setIndustryCycleGenerating(false);
+      setIndustryCycleActiveTaskId(null);
+      rememberIndustryCycleTask(null);
+      setIndustryCycleStreamPhase('completed');
+      setIndustryCycleTaskMessage(task.message || '行业周期模型分析完成');
+      if (selectedSymbol) {
+        void fetchIndustryCycle(selectedSymbol);
+      }
+    },
+    onTaskFailed: (task) => {
+      if (task.taskId !== industryCycleActiveTaskId) return;
+      setIndustryCycleTaskError(task.error || task.message || '行业周期模型分析失败');
+      setIndustryCycleGenerating(false);
+      setIndustryCycleActiveTaskId(null);
+      rememberIndustryCycleTask(null);
+      setIndustryCycleStreamPhase('failed');
+      setIndustryCycleTaskMessage(task.message || task.error || '行业周期模型分析失败');
+    },
+  });
+
   // --- Handlers ---
   const handleStockSelect = useCallback((code: string) => {
     setSearchValue(code);
     setSearchParams({ symbol: code });
+    setIndustryCycle(null);
+    setIndustryCycleActiveTaskId(null);
+    rememberIndustryCycleTask(null);
+    setIndustryCycleGenerating(false);
+    setIndustryCycleTaskError(null);
+    setIndustryCycleStreamText('');
+    setIndustryCycleStreamPhase(null);
+    setIndustryCycleTaskMessage(null);
+    setIndustryCycleDebugInput(null);
+    setIndustryCycleDraft(null);
     void fetchQuote(code);
     void fetchStockInfo(code);
     void fetchFinancials(code);
@@ -838,10 +1785,10 @@ const StockAnalysisPage: React.FC = () => {
     void fetchValuation(code);
     void fetchShareholder(code);
     // K-line, news, announcements will be fetched by useEffect when mode is selected
-  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials, fetchFinancialStatements, fetchValuation, fetchShareholder]);
+  }, [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials, fetchFinancialStatements, fetchValuation, fetchShareholder, rememberIndustryCycleTask]);
 
   return (
-    <div className="flex h-[calc(100vh-2rem)] w-full flex-col gap-4 overflow-hidden">
+    <div className="stock-analysis-page flex min-h-full w-full flex-col gap-4">
       {/* Header */}
       <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -849,25 +1796,28 @@ const StockAnalysisPage: React.FC = () => {
           <h1 className="text-2xl font-semibold text-slate-950">个股分析</h1>
           <p className="mt-0.5 text-sm text-slate-500">多维度股票数据分析与诊断</p>
         </div>
-        <div className="flex gap-2 sm:w-auto">
-          <div className="w-full sm:w-72">
+        <div className="stock-analysis-toolbar">
+          <div className="min-w-0 flex-1 sm:flex-none sm:w-72">
             <StockAutocomplete
               value={searchValue}
               onChange={setSearchValue}
               onSubmit={handleStockSelect}
               placeholder="搜索股票代码或名称..."
               showSuggestionsOnFocus
+              className="stock-analysis-input"
             />
           </div>
-          <div className="w-36 shrink-0">
+          <div className="w-[9.5rem] shrink-0 sm:w-36">
             <Select
               value={mode}
               onChange={(v) => setMode(v as AnalysisMode)}
+              className="stock-analysis-select"
               options={[
                 { value: 'overview', label: '行情概览' },
                 { value: 'kline', label: 'K线分析' },
                 { value: 'financials', label: '财报分析' },
                 { value: 'valuation', label: '估值分析' },
+                { value: 'industry-cycle', label: '行业周期' },
                 { value: 'shareholder', label: '股东结构' },
                 { value: 'news', label: '相关新闻' },
                 { value: 'risk', label: '风险事件' },
@@ -883,7 +1833,7 @@ const StockAnalysisPage: React.FC = () => {
 
       {/* Main content */}
       {selectedSymbol ? (
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <main className="min-h-0 min-w-0 flex-1">
           {mode === 'overview' ? (
             <div className="space-y-6">
               {quoteLoading ? (
@@ -1155,6 +2105,23 @@ const StockAnalysisPage: React.FC = () => {
                 </div>
               )}
             </div>
+          ) : mode === 'industry-cycle' ? (
+            <IndustryCyclePanel
+              data={industryCycle}
+              draft={industryCycleDraft}
+              debugInput={industryCycleDebugInput}
+              loading={industryCycleLoading}
+              isGenerating={industryCycleGenerating}
+              streamText={industryCycleStreamText}
+              streamPhase={industryCycleStreamPhase}
+              taskMessage={industryCycleTaskMessage}
+              taskError={industryCycleTaskError}
+              onRegenerate={() => {
+                if (selectedSymbol) {
+                  void startIndustryCycleGeneration(selectedSymbol, true);
+                }
+              }}
+            />
           ) : mode === 'social' ? (
             <div className="space-y-6">
               {socialLoading ? (

@@ -11,6 +11,8 @@ import { Badge } from '../common';
 import { cn } from '../../utils/cn';
 
 export interface SuggestionsListProps {
+  /** Element id for aria-controls wiring */
+  id?: string;
   /** Suggestion list */
   suggestions: StockSuggestion[];
   /** Highlighted index */
@@ -24,6 +26,7 @@ export interface SuggestionsListProps {
 }
 
 export function SuggestionsList({
+  id,
   suggestions,
   highlightedIndex,
   onSelect,
@@ -36,13 +39,13 @@ export function SuggestionsList({
 
   return (
     <ul
-      id="suggestions-list"
-      className="z-[100] border-x border-b rounded-b-lg rounded-t-none max-h-60 overflow-auto"
+      id={id}
+      className="z-[100] max-h-60 overflow-auto rounded-[1.2rem] p-1.5"
       style={{
         ...style,
-        backgroundColor: 'hsl(var(--card) / 0.85)',
-        borderColor: 'var(--border-accent)',
-        boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3), -4px 0 15px -3px rgba(0, 0, 0, 0.2), 4px 0 15px -3px rgba(0, 0, 0, 0.2)'
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96))',
+        boxShadow: 'inset 0 0 0 1px rgba(34,211,238,0.32), 0 22px 38px -28px rgba(15,23,42,0.28)',
+        backdropFilter: 'blur(14px)',
       }}
       role="listbox"
     >
@@ -52,10 +55,13 @@ export function SuggestionsList({
           role="option"
           aria-selected={index === highlightedIndex}
           className={cn(
-            "px-4 py-1 cursor-pointer flex items-center justify-between",
+            "rounded-[1rem] px-4 py-2 cursor-pointer flex items-center justify-between",
             "hover:bg-[var(--autocomplete-hover-bg)]/25",
             index === highlightedIndex && "bg-[var(--autocomplete-hover-bg)]/25"
           )}
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           onClick={() => onSelect(suggestion)}
           onMouseEnter={() => onMouseEnter(index)}
         >

@@ -231,6 +231,7 @@ class TaskStatus(BaseModel):
         None, 
         description="错误信息（仅在 failed 时存在）"
     )
+    message: Optional[str] = Field(None, description="任务状态消息")
     stock_name: Optional[str] = Field(None, description="股票名称")
     original_query: Optional[str] = Field(None, description="用户原始输入")
     selection_source: Optional[str] = Field(
