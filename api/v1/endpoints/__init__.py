@@ -12,6 +12,7 @@ __all__ = [
     "analysis",
     "auth",
     "batch",
+    "buy_decision",
     "history",
     "industry_cycle",
     "prompts",

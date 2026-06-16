@@ -17,6 +17,7 @@ def __getattr__(name: str):
     """延迟导入：仅在通过 src.services.X 访问时才加载对应子模块。"""
     _lazy_map = {
         "AnalysisService": "src.services.analysis_service",
+        "BuyDecisionWorkbenchService": "src.services.buy_decision_workbench_service",
         "HistoryService": "src.services.history_service",
     }
     if name in _lazy_map:
@@ -28,5 +29,6 @@ def __getattr__(name: str):
 
 __all__ = [
     "AnalysisService",
+    "BuyDecisionWorkbenchService",
     "HistoryService",
 ]
