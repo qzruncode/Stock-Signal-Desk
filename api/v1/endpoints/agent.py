@@ -36,7 +36,7 @@ MAX_REACT_ITERATIONS = 10
 LLM_ARRAY_LIMIT = 8
 LLM_SERIES_LIMIT = 30
 
-# Shared tool registry (22 tools)
+# Shared tool registry (23 tools)
 _registry = ToolRegistry()
 
 SYSTEM_PROMPT = """\

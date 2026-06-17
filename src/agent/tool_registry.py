@@ -328,6 +328,37 @@ class ToolRegistry:
             category="data",
         ))
 
+        # --- get_stock_business ---
+        def _exec_get_stock_business(symbol: str) -> Any:
+            from api.v1.endpoints.stock_info import get_stock_business
+            return get_stock_business(symbol=self._resolve_symbol(symbol), force=False)
+
+        self._add(ToolDef(
+            name="get_stock_business",
+            description=(
+                "获取个股业务深度分析数据，返回内容包括：\n"
+                "1. 主营业务介绍（主营/经营范围/产品类型）\n"
+                "2. 主营构成（按行业/产品/地区拆分的营收、成本、利润、毛利率）\n"
+                "3. 机构一致盈利预测（未来 3 年 EPS、净利润）\n"
+                "4. 财务摘要（关键指标 + 增长率趋势）\n"
+                "5. 近期事件（公告 + 新闻）\n"
+                "6. LLM 业务动向分析（公司动态、业务趋势、机构观点、关键判断）\n"
+                "数据按交易日缓存，首次调用较慢（~77s），同日内复用缓存。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
+                    },
+                },
+                "required": ["symbol"],
+            },
+            executor=_exec_get_stock_business,
+            category="data",
+        ))
+
     # ===================================================================
     # 6. 财务类 (financials)
     # ===================================================================
