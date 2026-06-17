@@ -646,6 +646,113 @@ def format_llm_input(
     return f"[系统提示词]\n{system_prompt}\n\n[用户输入]\n{user_prompt}"
 
 
+# ---------------------------------------------------------------------------
+# Environment analysis helpers
+# ---------------------------------------------------------------------------
+
+def _fetch_macro_data() -> dict:
+    """Fetch recent macro indicators (PMI, CPI, PPI) for environment analysis.
+
+    Calls akshare directly via the project's existing fetcher functions (macro.py),
+    takes the last 3 records (newest). Non-fatal on failure.
+    """
+    result = {}
+    try:
+        from api.v1.endpoints.macro import INDICATOR_FETCHERS
+
+        for key, indicator_name in [('pmi', 'PMI'), ('cpi', 'CPI'), ('ppi', 'PPI')]:
+            try:
+                fetcher = INDICATOR_FETCHERS.get(indicator_name)
+                if not fetcher:
+                    continue
+                records = fetcher()
+                if records:
+                    # fetcher returns oldest-first; take last 3 (newest)
+                    result[key] = list(reversed(records[-3:]))
+            except Exception as e:
+                logger.warning(f"[Env] macro {indicator_name} fetch failed: {e}")
+    except Exception as e:
+        logger.warning(f"[Env] macro fetchers init failed: {e}")
+    return result
+
+
+def _build_environment_prompt(
+    symbol: str,
+    intro: dict,
+    events: dict,
+    macro_data: dict,
+) -> tuple[str, str, str]:
+    """Build system + user prompt for LLM environment analysis."""
+    announcements_text = '\n'.join(
+        f"  - [{a['date']}] [{a['type']}] {a['title']}"
+        for a in events.get('announcements', [])[:15]
+    )
+    news_text = '\n'.join(
+        f"  - [{n['time']}] [{n['source']}] {n['title']}" + (f"\n    {n['content'][:100]}" if n.get('content') else "")
+        for n in events.get('news', [])[:10]
+    )
+
+    def _fmt_macro(records: list[dict]) -> str:
+        if not records:
+            return '暂无'
+        return ', '.join(f"{r['period']}: {r['value']}" for r in records if r.get('value') is not None) or '暂无'
+
+    system_prompt = """你是一个资深A股行业分析师，擅长从宏观环境和外部因素中判断对公司业务的影响。
+请用中文回答，输出严格的 JSON 格式（不要用 markdown 代码块包裹）。
+分析要简洁有力，每个维度不超过3句话。"""
+
+    user_prompt = f"""请分析 {symbol}（{intro.get('main_business', '未知')}）所处的外部环境。
+
+【公司所处行业】
+- 主营业务：{intro.get('main_business', '未知')}
+- 产品类型：{intro.get('product_type', '未知')}
+
+【近期行业相关新闻/公告】
+{news_text or '暂无'}
+
+【近期公司公告】
+{announcements_text or '暂无'}
+
+【宏观经济数据】
+- PMI（近3月）：{_fmt_macro(macro_data.get('pmi', []))}
+- CPI（近3月）：{_fmt_macro(macro_data.get('cpi', []))}
+- PPI（近3月）：{_fmt_macro(macro_data.get('ppi', []))}
+
+请严格按以下 JSON 格式输出（不要输出其他内容）：
+{{
+  "policy": {{ "signal": "利好或利空或中性", "summary": "政策环境分析", "factors": ["关键信号1", "关键信号2"] }},
+  "technology": {{ "signal": "...", "summary": "...", "factors": [...] }},
+  "demand": {{ "signal": "...", "summary": "...", "factors": [...] }},
+  "supply_competition": {{ "signal": "...", "summary": "...", "factors": [...] }},
+  "macro_context": "宏观背景总结（1-2句话）"
+}}"""
+
+    return system_prompt, user_prompt, format_llm_input(system_prompt, user_prompt)
+
+
+def _parse_environment_analysis(response_text: str, model_used: str, llm_input: str) -> dict:
+    """Parse LLM JSON response for environment analysis.
+
+    Falls back to raw_text if JSON parsing fails.
+    """
+    base = {'llm_used': True, 'model': model_used, 'llm_input': llm_input}
+
+    # Strip markdown code fences if present
+    cleaned = response_text.strip()
+    if cleaned.startswith('```'):
+        lines = cleaned.split('\n')
+        # Remove first and last lines if they are fences
+        if lines[0].startswith('```') and lines[-1].strip() == '```':
+            cleaned = '\n'.join(lines[1:-1])
+
+    try:
+        parsed = json.loads(cleaned)
+        return {**base, **parsed}
+    except json.JSONDecodeError:
+        logger.warning(f"[Env] JSON parse failed, falling back to raw text")
+        return {**base, 'raw_text': response_text}
+
+
 def _build_business_prompt(
     symbol: str,
     intro: dict,
@@ -819,6 +926,33 @@ def get_stock_business(
         symbol, intro, composition, profit_forecast, financial_summary, events,
     )
 
+    # Environment analysis
+    environment_analysis = {'llm_used': False}
+    try:
+        from src.analyzer import get_analyzer
+        from src.ai_caller import call_ai_structured
+
+        analyzer = get_analyzer()
+        if getattr(analyzer, "is_available", lambda: False)():
+            macro_data = _fetch_macro_data()
+            env_sys, env_usr, env_input = _build_environment_prompt(
+                symbol, intro, events, macro_data,
+            )
+            env_response, env_model, _usage = call_ai_structured(
+                analyzer,
+                system_prompt=env_sys,
+                user_prompt=env_usr,
+                call_type="business_analysis",
+                temperature=0.3,
+                max_tokens=2048,
+                response_validator=lambda _text: None,
+                stream=False,
+            )
+            environment_analysis = _parse_environment_analysis(env_response, env_model, env_input)
+            logger.info(f"[Business] Env analysis OK for {symbol}: model={env_model}")
+    except Exception as e:
+        logger.warning(f"[Business] Env analysis failed for {symbol}: {e}")
+
     data = {
         'symbol': symbol,
         'intro': intro,
@@ -827,6 +961,7 @@ def get_stock_business(
         'financial_summary': financial_summary,
         'events': events,
         'llm_analysis': llm_analysis,
+        'environment_analysis': environment_analysis,
         '_fetched_at': datetime.now().isoformat(),
         '_cached': False,
     }
@@ -871,6 +1006,16 @@ async def get_stock_business_stream(
                     _enqueue("analysis_start", {"cached": True})
                     _enqueue("analysis_chunk", {"text": analysis.get('analysis', '')})
                     _enqueue("analysis_done", cached)
+                    # Environment analysis from cache
+                    env_analysis = cached.get('environment_analysis')
+                    if env_analysis and env_analysis.get('llm_used'):
+                        _enqueue("env_analysis_start", {})
+                        env_text = env_analysis.get('macro_context', '')
+                        if env_text:
+                            _enqueue("env_analysis_chunk", {"text": env_text})
+                        _enqueue("env_analysis_done", cached)
+                    else:
+                        _enqueue("env_analysis_done", cached)
                     return
 
             _enqueue("connected", {"message": "Connected", "cached": False})
@@ -967,9 +1112,45 @@ async def get_stock_business_stream(
                 '_fetched_at': datetime.now().isoformat(),
                 '_cached': False,
             }
+            _enqueue("analysis_done", data)
+
+            # --- Environment analysis ---
+            try:
+                _enqueue("env_analysis_start", {})
+
+                macro_data = _fetch_macro_data()
+                env_sys, env_usr, env_input = _build_environment_prompt(
+                    symbol, intro, events, macro_data,
+                )
+
+                env_text = ""
+
+                def _on_env_text(delta: str, full_text: str):
+                    _enqueue("env_analysis_chunk", {"text": delta})
+
+                env_response, env_model, _env_usage = call_ai_structured(
+                    analyzer,
+                    system_prompt=env_sys,
+                    user_prompt=env_usr,
+                    call_type="business_analysis",
+                    temperature=0.3,
+                    max_tokens=2048,
+                    response_validator=lambda _text: None,
+                    stream=True,
+                    stream_text_callback=_on_env_text,
+                )
+
+                env_analysis = _parse_environment_analysis(env_response, env_model, env_input)
+                data['environment_analysis'] = env_analysis
+                logger.info(f"[Business SSE] Env analysis OK for {symbol}: model={env_model}")
+
+            except Exception as e:
+                logger.warning(f"[Business SSE] Env analysis failed for {symbol}: {e}")
+                data['environment_analysis'] = {'llm_used': False, 'error': str(e)}
+
             data = _sanitize(data)
             _business_cache_put(symbol, data)
-            _enqueue("analysis_done", data)
+            _enqueue("env_analysis_done", data)
 
         except Exception as e:
             logger.exception(f"[Business SSE] failed for {symbol}: {e}")

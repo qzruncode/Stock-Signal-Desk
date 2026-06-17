@@ -14,6 +14,7 @@ import {
   Clock,
   DollarSign,
   FileText,
+  Globe,
   Info,
   LoaderCircle,
   Percent,
@@ -27,6 +28,7 @@ import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
 import { type BusinessResponse } from '../api/business';
+import EnvironmentAnalysisCard from '../components/EnvironmentAnalysisCard';
 import {
   announcementsApi,
   type AnnouncementsResponse,
@@ -378,6 +380,11 @@ function BusinessAnalysisPanel({ business }: { business: BusinessResponse }) {
         </div>
       )}
 
+      {/* Environment Analysis */}
+      {business.environment_analysis?.llm_used && (
+        <EnvironmentAnalysisCard analysis={business.environment_analysis} />
+      )}
+
       {/* Business Intro */}
       {(intro.main_business || intro.business_scope || intro.product_type || intro.product_name) && (
         <div className="stock-analysis-panel">
@@ -515,7 +522,7 @@ function BusinessAnalysisPanel({ business }: { business: BusinessResponse }) {
 }
 
 function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
-  const { phase, progressEvents, streamingText, business, isCached, error, startStream } = useBusinessStream();
+  const { phase, progressEvents, streamingText, envStreamingText, business, isCached, error, startStream } = useBusinessStream();
 
   useEffect(() => {
     if (symbol) startStream(symbol);
@@ -554,6 +561,58 @@ function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
   }
 
   if (phase === 'analyzing' || (phase === 'done' && !business)) {
+    // If business data already received (analysis_done) but env analysis still in progress,
+    // show business analysis card + env placeholder/streaming, then the rest below
+    if (business) {
+      const envCard = envStreamingText ? (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <Globe className="h-4 w-4 text-cyan-600" />外部环境分析
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+          </h3>
+          <div className="prose prose-slate prose-sm max-w-none
+            prose-p:text-sm prose-p:leading-relaxed prose-p:text-slate-600">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{envStreamingText}</ReactMarkdown>
+          </div>
+        </div>
+      ) : (
+        <div className="stock-analysis-panel">
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <LoaderCircle className="h-4 w-4 animate-spin text-cyan-500" />
+            AI 正在分析外部环境...
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="space-y-6">
+          {/* Business LLM analysis */}
+          {business.llm_analysis?.llm_used && business.llm_analysis?.analysis && (
+            <div className="stock-analysis-panel">
+              <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <Activity className="h-4 w-4 text-cyan-600" />业务动向分析
+              </h3>
+              <div className="prose prose-slate prose-sm max-w-none
+                prose-headings:text-slate-800 prose-headings:font-semibold
+                prose-h3:text-sm prose-h3:mt-4 prose-h3:mb-2
+                prose-p:text-sm prose-p:leading-relaxed prose-p:text-slate-600
+                prose-strong:text-slate-800 prose-strong:font-semibold
+                prose-li:text-sm prose-li:text-slate-600
+                prose-ul:space-y-1">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {business.llm_analysis.analysis}
+                </ReactMarkdown>
+              </div>
+            </div>
+          )}
+          {/* Environment analysis placeholder / streaming */}
+          {envCard}
+          {/* Remaining business panels */}
+          <BusinessAnalysisPanel business={{ ...business, llm_analysis: { llm_used: false } }} />
+        </div>
+      );
+    }
+
     return (
       <div className="space-y-6">
         {progressEvents.length > 0 && (

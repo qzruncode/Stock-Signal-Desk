@@ -15,6 +15,7 @@ export interface UseBusinessStreamResult {
   phase: BusinessStreamPhase;
   progressEvents: BusinessProgressEvent[];
   streamingText: string;
+  envStreamingText: string;
   business: BusinessResponse | null;
   isCached: boolean;
   error: string | null;
@@ -26,6 +27,7 @@ export function useBusinessStream(): UseBusinessStreamResult {
   const [phase, setPhase] = useState<BusinessStreamPhase>('idle');
   const [progressEvents, setProgressEvents] = useState<BusinessProgressEvent[]>([]);
   const [streamingText, setStreamingText] = useState('');
+  const [envStreamingText, setEnvStreamingText] = useState('');
   const [business, setBusiness] = useState<BusinessResponse | null>(null);
   const [isCached, setIsCached] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +45,7 @@ export function useBusinessStream(): UseBusinessStreamResult {
     setPhase('connecting');
     setProgressEvents([]);
     setStreamingText('');
+    setEnvStreamingText('');
     setBusiness(null);
     setIsCached(false);
     setError(null);
@@ -77,6 +80,21 @@ export function useBusinessStream(): UseBusinessStreamResult {
     es.addEventListener('analysis_done', (e) => {
       const data: BusinessResponse = JSON.parse(e.data);
       setBusiness(data);
+      // Don't set phase to done yet — environment analysis may follow
+    });
+
+    es.addEventListener('env_analysis_start', () => {
+      // Environment analysis phase started
+    });
+
+    es.addEventListener('env_analysis_chunk', (e) => {
+      const data = JSON.parse(e.data);
+      setEnvStreamingText(prev => prev + data.text);
+    });
+
+    es.addEventListener('env_analysis_done', (e) => {
+      const data: BusinessResponse = JSON.parse(e.data);
+      setBusiness(data);
       setPhase('done');
       es.close();
     });
@@ -107,5 +125,5 @@ export function useBusinessStream(): UseBusinessStreamResult {
 
   useEffect(() => () => abort(), [abort]);
 
-  return { phase, progressEvents, streamingText, business, isCached, error, startStream, abort };
+  return { phase, progressEvents, streamingText, envStreamingText, business, isCached, error, startStream, abort };
 }

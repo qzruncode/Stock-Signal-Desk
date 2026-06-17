@@ -65,6 +65,27 @@ export interface LlmAnalysis {
   error?: string;
 }
 
+export type EnvironmentSignal = '利好' | '利空' | '中性';
+
+export interface EnvironmentDimension {
+  signal: EnvironmentSignal;
+  summary: string;
+  factors: string[];
+}
+
+export interface EnvironmentAnalysis {
+  policy: EnvironmentDimension;
+  technology: EnvironmentDimension;
+  demand: EnvironmentDimension;
+  supply_competition: EnvironmentDimension;
+  macro_context: string;
+  llm_used: boolean;
+  model?: string;
+  raw_text?: string;
+  llm_input?: string;
+  error?: string;
+}
+
 export interface BusinessResponse {
   symbol: string;
   intro: BusinessIntro;
@@ -76,6 +97,7 @@ export interface BusinessResponse {
     news: { title: string; content: string; source: string; time: string }[];
   };
   llm_analysis: LlmAnalysis;
+  environment_analysis?: EnvironmentAnalysis;
   _fetched_at?: string;
   _cached?: boolean;
 }
