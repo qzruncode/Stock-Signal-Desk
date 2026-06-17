@@ -479,7 +479,7 @@ const MarketLeadersPage: React.FC = () => {
   }, [formattedDisplayText, streamKind]);
 
   return (
-    <div className="market-mainline-page flex min-h-[calc(100vh-2rem)] w-full flex-col gap-4 lg:h-[calc(100vh-2rem)] lg:overflow-hidden">
+    <div className="market-mainline-page flex min-h-[calc(100vh-2rem)] w-full flex-col gap-4">
       <div className="flex shrink-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Model Stream</p>
@@ -498,7 +498,7 @@ const MarketLeadersPage: React.FC = () => {
         </div>
       </div>
 
-      <main className="min-h-0 min-w-0 flex-1 overflow-visible">
+      <main className="min-w-0 flex-1">
         {error ? (
           <InlineAlert
             title="加载失败"
