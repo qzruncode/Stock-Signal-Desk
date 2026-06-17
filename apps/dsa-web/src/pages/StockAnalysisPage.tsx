@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { useSearchParams } from 'react-router-dom';
 import {
   Activity,
@@ -7,19 +9,24 @@ import {
   ArrowUp,
   BarChart3,
   Building2,
+  CheckCircle2,
+  ChevronRight,
   Clock,
   DollarSign,
   FileText,
   Info,
+  LoaderCircle,
   Percent,
   TrendingUp,
   Users,
 } from 'lucide-react';
 import { StockAutocomplete } from '../components/StockAutocomplete';
-import { Badge, Button, InlineAlert, Select } from '../components/common';
+import { Select } from '../components/common';
+import { useBusinessStream } from '../hooks';
 import { quotesApi, type RealtimeQuote } from '../api/quotes';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
+import { type BusinessResponse } from '../api/business';
 import {
   announcementsApi,
   type AnnouncementsResponse,
@@ -306,6 +313,309 @@ function StockInfoPanel({ info }: { info: StockInfo }) {
 }
 
 // ---------------------------------------------------------------------------
+// BusinessAnalysisPanel — 业务分析
+// ---------------------------------------------------------------------------
+
+function BusinessAnalysisPanel({ business }: { business: BusinessResponse }) {
+  const [inputExpanded, setInputExpanded] = useState(false);
+  const intro = business.intro;
+  const composition = business.composition;
+
+  // Get latest report date
+  const latestReportDate = composition.length > 0
+    ? composition.reduce((max, item) => item.report_date > max ? item.report_date : max, '')
+    : '';
+
+  // Filter by latest report date
+  const latestComposition = composition.filter(item => item.report_date === latestReportDate);
+
+  // Group by category type
+  const byIndustry = latestComposition.filter(item => item.category_type === '按行业分类');
+  const byProduct = latestComposition.filter(item => item.category_type === '按产品分类');
+  const byRegion = latestComposition.filter(item => item.category_type === '按地区分类');
+
+  return (
+    <div className="space-y-6">
+      {/* LLM Business Analysis */}
+      {business.llm_analysis?.llm_used && business.llm_analysis?.analysis && (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <Activity className="h-4 w-4 text-cyan-600" />业务动向分析
+            {business.llm_analysis.model && (
+              <span className="ml-auto text-xs font-normal text-slate-400">
+                {business.llm_analysis.model.replace('openai/', '')}
+              </span>
+            )}
+          </h3>
+          <div className="prose prose-slate prose-sm max-w-none
+            prose-headings:text-slate-800 prose-headings:font-semibold
+            prose-h3:text-sm prose-h3:mt-4 prose-h3:mb-2
+            prose-p:text-sm prose-p:leading-relaxed prose-p:text-slate-600
+            prose-strong:text-slate-800 prose-strong:font-semibold
+            prose-li:text-sm prose-li:text-slate-600
+            prose-ul:space-y-1">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {business.llm_analysis.analysis}
+            </ReactMarkdown>
+          </div>
+          {business.llm_analysis.llm_input && (
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                onClick={() => setInputExpanded(!inputExpanded)}
+                className="flex w-full items-center gap-1.5 text-left text-xs text-slate-400 transition-colors hover:text-slate-600"
+              >
+                <ChevronRight className={cn('h-3 w-3 transition-transform', inputExpanded && 'rotate-90')} />
+                分析输入数据
+              </button>
+              {inputExpanded && (
+                <pre className="mt-2 max-h-96 overflow-auto rounded-lg bg-slate-50 p-3 font-mono text-xs leading-relaxed text-slate-500 whitespace-pre-wrap">
+                  {business.llm_analysis.llm_input}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Business Intro */}
+      {(intro.main_business || intro.business_scope || intro.product_type || intro.product_name) && (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <FileText className="h-4 w-4 text-cyan-600" />业务概况
+          </h3>
+          <div className="space-y-3">
+            {intro.main_business && (
+              <div>
+                <p className="text-xs font-medium text-slate-400">主营业务</p>
+                <p className="text-sm leading-relaxed text-slate-600">{intro.main_business}</p>
+              </div>
+            )}
+            {intro.product_type && (
+              <div>
+                <p className="text-xs font-medium text-slate-400">产品类型</p>
+                <p className="text-sm leading-relaxed text-slate-600">{intro.product_type}</p>
+              </div>
+            )}
+            {intro.product_name && (
+              <div>
+                <p className="text-xs font-medium text-slate-400">产品名称</p>
+                <p className="text-sm leading-relaxed text-slate-600">{intro.product_name}</p>
+              </div>
+            )}
+            {intro.business_scope && (
+              <div>
+                <p className="text-xs font-medium text-slate-400">经营范围</p>
+                <p className="text-sm leading-relaxed text-slate-600 line-clamp-4">{intro.business_scope}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Business Composition - By Industry */}
+      {byIndustry.length > 0 && (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <BarChart3 className="h-4 w-4 text-cyan-600" />主营构成 — 按行业
+            {latestReportDate && (
+              <span className="ml-auto text-xs font-normal text-slate-400">{latestReportDate}</span>
+            )}
+          </h3>
+          <div className="space-y-2">
+            {byIndustry.map((item, index) => (
+              <div key={`${item.business_name}-${index}`} className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-slate-50 pb-2 text-xs">
+                <span className="font-medium text-slate-700">{item.business_name}</span>
+                <span className="tabular-nums text-slate-600">
+                  {item.revenue != null ? formatAmount(item.revenue) : '-'}
+                </span>
+                <span className="tabular-nums font-semibold text-slate-900">
+                  {item.revenue_pct != null ? `${(item.revenue_pct * 100).toFixed(2)}%` : '-'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Business Composition - By Product */}
+      {byProduct.length > 0 && (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <BarChart3 className="h-4 w-4 text-cyan-600" />主营构成 — 按产品
+            {latestReportDate && (
+              <span className="ml-auto text-xs font-normal text-slate-400">{latestReportDate}</span>
+            )}
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[48rem] table-fixed">
+              <colgroup>
+                <col className="w-[30%]" />
+                <col className="w-[18%]" />
+                <col className="w-[18%]" />
+                <col className="w-[18%]" />
+                <col className="w-[16%]" />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-slate-100 text-xs text-slate-400">
+                  <th className="pb-2 text-left font-medium">产品</th>
+                  <th className="pb-2 text-right font-medium">收入</th>
+                  <th className="pb-2 text-right font-medium">收入占比</th>
+                  <th className="pb-2 text-right font-medium">毛利率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {byProduct.map((item, index) => (
+                  <tr key={`${item.business_name}-${index}`} className="border-b border-slate-50 text-xs">
+                    <td className="py-2 pr-4 font-medium text-slate-700">{item.business_name}</td>
+                    <td className="py-2 text-right tabular-nums text-slate-600">
+                      {item.revenue != null ? formatAmount(item.revenue) : '-'}
+                    </td>
+                    <td className="py-2 text-right tabular-nums font-semibold text-slate-900">
+                      {item.revenue_pct != null ? `${(item.revenue_pct * 100).toFixed(2)}%` : '-'}
+                    </td>
+                    <td className="py-2 text-right tabular-nums text-slate-600">
+                      {item.gross_margin != null ? `${(item.gross_margin * 100).toFixed(2)}%` : '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Business Composition - By Region */}
+      {byRegion.length > 0 && (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <BarChart3 className="h-4 w-4 text-cyan-600" />主营构成 — 按地区
+            {latestReportDate && (
+              <span className="ml-auto text-xs font-normal text-slate-400">{latestReportDate}</span>
+            )}
+          </h3>
+          <div className="space-y-2">
+            {byRegion.map((item, index) => (
+              <div key={`${item.business_name}-${index}`} className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-slate-50 pb-2 text-xs">
+                <span className="font-medium text-slate-700">{item.business_name}</span>
+                <span className="tabular-nums text-slate-600">
+                  {item.revenue != null ? formatAmount(item.revenue) : '-'}
+                </span>
+                <span className="tabular-nums font-semibold text-slate-900">
+                  {item.revenue_pct != null ? `${(item.revenue_pct * 100).toFixed(2)}%` : '-'}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
+  const { phase, progressEvents, streamingText, business, isCached, error, startStream } = useBusinessStream();
+
+  useEffect(() => {
+    if (symbol) startStream(symbol);
+  }, [symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (error) {
+    return (
+      <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/50 p-8 text-center">
+        <p className="text-sm font-medium text-red-600">{error}</p>
+      </div>
+    );
+  }
+
+  if (phase === 'connecting' || phase === 'fetching') {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 text-sm text-slate-500">
+          <LoaderCircle className="h-4 w-4 animate-spin text-cyan-500" />
+          正在获取业务数据（含AI分析，请耐心等待）...
+        </div>
+        {progressEvents.length > 0 && (
+          <div className="stock-analysis-panel">
+            <div className="space-y-2">
+              {progressEvents.map((p, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  <span className="text-slate-600">{p.label}</span>
+                  <span className="ml-auto text-slate-400">{p.step}/{p.total}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (phase === 'analyzing' || (phase === 'done' && !business)) {
+    return (
+      <div className="space-y-6">
+        {progressEvents.length > 0 && (
+          <div className="stock-analysis-panel">
+            <div className="space-y-2">
+              {progressEvents.map((p, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  <span className="text-slate-600">{p.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {streamingText && (
+          <div className="stock-analysis-panel">
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+              <Activity className="h-4 w-4 text-cyan-600" />业务动向分析
+              {phase === 'analyzing' && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-cyan-400" />}
+            </h3>
+            <div className="prose prose-slate prose-sm max-w-none
+              prose-headings:text-slate-800 prose-headings:font-semibold
+              prose-h3:text-sm prose-h3:mt-4 prose-h3:mb-2
+              prose-p:text-sm prose-p:leading-relaxed prose-p:text-slate-600
+              prose-strong:text-slate-800 prose-strong:font-semibold
+              prose-li:text-sm prose-li:text-slate-600
+              prose-ul:space-y-1">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {streamingText}
+              </ReactMarkdown>
+            </div>
+          </div>
+        )}
+        {!streamingText && phase === 'analyzing' && (
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <LoaderCircle className="h-4 w-4 animate-spin text-cyan-500" />
+            AI 正在分析业务动向...
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (business) {
+    return (
+      <>
+        <BusinessAnalysisPanel business={business} />
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-400">
+          <Clock className="h-3 w-3" />
+          <span>
+            数据获取时间: {business._fetched_at ? new Date(business._fetched_at).toLocaleString('zh-CN') : '-'}
+            {isCached || business._cached ? ' · 缓存' : ' · 实时'}
+          </span>
+        </div>
+      </>
+    );
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Valuation + shareholder panels
 // ---------------------------------------------------------------------------
 
@@ -526,7 +836,7 @@ function ShareholderStructurePanel({ shareholder }: { shareholder: ShareholderSt
 // Main Page
 // ---------------------------------------------------------------------------
 
-type AnalysisMode = 'overview' | 'kline' | 'financials' | 'valuation' | 'industry-cycle' | 'shareholder' | 'news' | 'risk' | 'announcements' | 'sentiment' | 'research' | 'social';
+type AnalysisMode = 'overview' | 'kline' | 'financials' | 'business' | 'valuation' | 'industry-cycle' | 'shareholder' | 'news' | 'risk' | 'announcements' | 'sentiment' | 'research' | 'social';
 
 const StockAnalysisPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -871,6 +1181,7 @@ const StockAnalysisPage: React.FC = () => {
                 { value: 'overview', label: '行情概览' },
                 { value: 'kline', label: 'K线分析' },
                 { value: 'financials', label: '财报分析' },
+                { value: 'business', label: '业务分析' },
                 { value: 'valuation', label: '估值分析' },
                 { value: 'industry-cycle', label: '买入判断' },
                 { value: 'shareholder', label: '股东结构' },
@@ -994,6 +1305,16 @@ const StockAnalysisPage: React.FC = () => {
                       <span>数据源: {financialStatements.source}</span>
                     </>
                   )}
+                </div>
+              )}
+            </div>
+          ) : mode === 'business' ? (
+            <div className="space-y-6">
+              {selectedSymbol ? (
+                <BusinessAnalysisPanelStreaming symbol={selectedSymbol} />
+              ) : (
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <p className="text-sm text-slate-400">请选择一只股票</p>
                 </div>
               )}
             </div>
