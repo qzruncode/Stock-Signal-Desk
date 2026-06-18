@@ -753,6 +753,347 @@ def _parse_environment_analysis(response_text: str, model_used: str, llm_input: 
         return {**base, 'raw_text': response_text}
 
 
+# ---------------------------------------------------------------------------
+# Track quality analysis helpers
+# ---------------------------------------------------------------------------
+
+def _fetch_peer_data(industry: str, target_symbol: str, max_peers: int = 3) -> list[dict]:
+    """Fetch key financial metrics for industry peer companies.
+
+    Gets peer list from stock_board_industry_cons_em, then fetches
+    stock_financial_abstract for up to max_peers companies (excluding target).
+    Returns compact list of peer snapshots.
+    """
+    if not industry:
+        return []
+    try:
+        import akshare as ak
+        import pandas as pd
+
+        df = ak.stock_board_industry_cons_em(symbol=industry)
+        if df is None or df.empty:
+            return []
+
+        code_col = None
+        name_col = None
+        for c in df.columns:
+            cl = c.lower()
+            if '代码' in c or 'code' in cl:
+                code_col = c
+            if '名称' in c or 'name' in cl:
+                name_col = c
+        if code_col is None:
+            return []
+
+        peers = []
+        for _, row in df.iterrows():
+            code = str(row.get(code_col, '')).strip()
+            if not code or code == target_symbol:
+                continue
+            name = str(row.get(name_col, '')).strip() if name_col else code
+            if 'ST' in name.upper():
+                continue
+            peers.append((code, name))
+            if len(peers) >= max_peers:
+                break
+
+        results = []
+        for code, name in peers:
+            try:
+                fin_df = ak.stock_financial_abstract(symbol=code)
+                if fin_df is None or fin_df.empty:
+                    results.append({'name': name, 'symbol': code})
+                    continue
+
+                period_cols = [c for c in fin_df.columns if c not in ('选项', '指标')]
+                period_cols.sort(reverse=True)
+
+                snapshot: dict = {'name': name, 'symbol': code}
+
+                for _, frow in fin_df.iterrows():
+                    if str(frow.get('选项', '')) != '常用指标':
+                        continue
+                    metric = str(frow.get('指标', ''))
+                    if metric == '营业总收入' and period_cols:
+                        vals = [_safe_float(frow.get(p)) for p in period_cols[:3] if _safe_float(frow.get(p)) is not None]
+                        if len(vals) >= 2 and vals[1] and vals[1] != 0:
+                            snapshot['revenue_growth'] = round((vals[0] - vals[1]) / abs(vals[1]) * 100, 1)
+                    elif metric == '毛利率' and period_cols:
+                        recent = [_safe_float(frow.get(p)) for p in period_cols[:3]]
+                        valid = [v for v in recent if v is not None]
+                        if len(valid) >= 2:
+                            if valid[0] > valid[-1] + 1:
+                                snapshot['gross_margin_trend'] = '上升'
+                            elif valid[0] < valid[-1] - 1:
+                                snapshot['gross_margin_trend'] = '下降'
+                            else:
+                                snapshot['gross_margin_trend'] = '稳定'
+                    elif metric == '归母净利润' and period_cols:
+                        vals = [_safe_float(frow.get(p)) for p in period_cols[:3] if _safe_float(frow.get(p)) is not None]
+                        if len(vals) >= 2 and vals[1] and vals[1] != 0:
+                            snapshot['net_profit_growth'] = round((vals[0] - vals[1]) / abs(vals[1]) * 100, 1)
+
+                results.append(snapshot)
+            except Exception as e:
+                logger.warning(f"[Track] peer {code} financial fetch failed: {e}")
+                results.append({'name': name, 'symbol': code})
+
+        return results
+
+    except Exception as e:
+        logger.warning(f"[Track] peer data fetch failed for industry={industry}: {e}")
+        return []
+
+
+def _get_stock_industry(symbol: str) -> str:
+    """Get stock's industry name from individual info."""
+    try:
+        import akshare as ak
+        df = ak.stock_individual_info_em(symbol=_normalize_symbol(symbol), timeout=10)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                item = str(row.iloc[0]) if len(row) > 0 else ''
+                value = str(row.iloc[1]) if len(row) > 1 else ''
+                if '行业' in item:
+                    return value
+    except Exception as e:
+        logger.warning(f"[Track] industry lookup failed for {symbol}: {e}")
+    return ''
+
+
+def _build_track_quality_prompt(
+    symbol: str,
+    intro: dict,
+    industry: str,
+    peer_data: list[dict],
+    financial_summary: dict,
+    profit_forecast: list[dict],
+    events: dict,
+) -> tuple[str, str, str]:
+    """Build system + user prompt for LLM track quality analysis."""
+    peer_text = '\n'.join(
+        f"  - {p['name']}({p['symbol']}): "
+        f"营收增速={p.get('revenue_growth', 'N/A')}%, "
+        f"毛利率趋势={p.get('gross_margin_trend', 'N/A')}, "
+        f"净利润增速={p.get('net_profit_growth', 'N/A')}%"
+        for p in peer_data
+    ) if peer_data else '暂无同行数据'
+
+    announcements_text = '\n'.join(
+        f"  - [{a['date']}] [{a['type']}] {a['title']}"
+        for a in events.get('announcements', [])[:10]
+    )
+    news_text = '\n'.join(
+        f"  - [{n['time']}] [{n['source']}] {n['title']}"
+        for n in events.get('news', [])[:8]
+    )
+
+    growth_text = _build_growth_text(financial_summary)
+
+    forecast_text = '\n'.join(
+        f"  - {f['analyst']}: 2026E EPS={f['eps_2026']}, 2027E={f['eps_2027']}, 2028E={f['eps_2028']}"
+        for f in profit_forecast[:5]
+    ) if profit_forecast else '暂无预测数据'
+
+    system_prompt = """你是一个资深A股行业研究员，擅长判断行业赛道的质量。
+请用中文回答，输出严格的 JSON 格式（不要用 markdown 代码块包裹）。
+分析要简洁有力，每个维度不超过3句话，evidence 中要有数据支撑。"""
+
+    user_prompt = f"""请评估 {symbol}（{industry or '未知行业'}）所处行业赛道的质量。
+
+【公司主营业务】
+{intro.get('main_business', '未知')}
+
+【近期增长趋势】
+{growth_text or '暂无'}
+
+【机构盈利预测】
+{forecast_text}
+
+【同行业可比公司数据】
+{peer_text}
+
+【近期新闻/公告信号】
+{news_text or '暂无'}
+{announcements_text or '暂无'}
+
+请从以下 3 个维度评估赛道质量：
+
+1. **行业周期位置**（cycle_position）：行业处于上升期/平稳期/下行期？依据是什么？
+2. **未来空间**（growth_potential）：未来3年增长空间是否明确？驱动力是什么？
+3. **竞争格局**（competition_intensity）：是格局良好/竞争一般/严重内卷？毛利率和同行数据是否支撑？
+
+请严格按以下 JSON 格式输出（不要输出其他内容）：
+{{
+  "cycle_position": {{ "verdict": "上升期或平稳期或下行期", "evidence": "判断依据..." }},
+  "growth_potential": {{ "verdict": "空间明确或增长一般或空间有限", "evidence": "..." }},
+  "competition_intensity": {{ "verdict": "格局良好或竞争一般或严重内卷", "evidence": "..." }},
+  "overall_verdict": "一句话总结赛道质量"
+}}"""
+
+    return system_prompt, user_prompt, format_llm_input(system_prompt, user_prompt)
+
+
+def _parse_track_quality_analysis(response_text: str, model_used: str, llm_input: str, peer_data: list[dict]) -> dict:
+    """Parse LLM JSON response for track quality analysis."""
+    base = {'llm_used': True, 'model': model_used, 'llm_input': llm_input, 'peer_snapshot': peer_data}
+
+    cleaned = response_text.strip()
+    if cleaned.startswith('```'):
+        lines = cleaned.split('\n')
+        if lines[0].startswith('```') and lines[-1].strip() == '```':
+            cleaned = '\n'.join(lines[1:-1])
+
+    try:
+        parsed = json.loads(cleaned)
+        return {**base, **parsed}
+    except json.JSONDecodeError:
+        logger.warning("[Track] JSON parse failed, falling back to raw text")
+        return {**base, 'raw_text': response_text}
+
+
+def _build_catalyst_prompt(
+    symbol: str,
+    intro: dict,
+    profit_forecast: list[dict],
+    financial_summary: dict,
+    events: dict,
+    environment_analysis: dict | None,
+    track_quality: dict | None,
+) -> tuple[str, str, str]:
+    """Build system + user prompt for LLM catalyst analysis.
+
+    Returns (system_prompt, user_prompt, llm_input_text).
+    """
+    announcements_text = '\n'.join(
+        f"  - [{a['date']}] [{a['type']}] {a['title']}"
+        for a in events.get('announcements', [])[:15]
+    ) or '暂无公告'
+    news_text = '\n'.join(
+        f"  - [{n['time']}] [{n['source']}] {n['title']}"
+        for n in events.get('news', [])[:10]
+    ) or '暂无新闻'
+
+    forecast_text = '\n'.join(
+        f"  - {f['analyst']}({f['researcher']}): "
+        f"2026E EPS={f['eps_2026']}, 2027E={f['eps_2027']}, 2028E={f['eps_2028']}"
+        for f in profit_forecast[:8]
+    ) if profit_forecast else '暂无机构预测数据'
+
+    growth_text = _build_growth_text(financial_summary)
+
+    # Extract environment summary
+    env_summary = ''
+    if environment_analysis and environment_analysis.get('llm_used'):
+        dims = []
+        for key, label in [('policy', '政策'), ('technology', '技术'), ('demand', '需求'), ('supply_competition', '供给')]:
+            dim = environment_analysis.get(key, {})
+            if dim.get('signal'):
+                dims.append(f"{label}: {dim['signal']}")
+        if dims:
+            env_summary = '、'.join(dims)
+        if environment_analysis.get('overall_verdict'):
+            env_summary += f"；综合: {environment_analysis['overall_verdict']}"
+
+    # Extract track quality summary
+    track_summary = ''
+    if track_quality and track_quality.get('llm_used'):
+        parts = []
+        for key, label in [('cycle_position', '周期'), ('growth_potential', '空间'), ('competition_intensity', '竞争')]:
+            dim = track_quality.get(key, {})
+            if dim.get('verdict'):
+                parts.append(f"{label}={dim['verdict']}")
+        if parts:
+            track_summary = '、'.join(parts)
+        if track_quality.get('overall_verdict'):
+            track_summary += f"；综合: {track_quality['overall_verdict']}"
+
+    system_prompt = """你是一个资深A股策略分析师，擅长判断个股未来 6-12 个月的催化剂。
+
+催化剂是指能够驱动股价出现趋势性行情的具体事件或条件变化，包括但不限于：
+- 业绩催化：财报超预期、业绩预告、盈利拐点
+- 政策催化：产业政策落地、补贴发放、监管放松
+- 事件催化：重大合同、产品发布、并购重组、股权激励
+- 行业催化：行业景气度上行、供需拐点、技术突破
+- 资金催化：纳入指数、大股东增持、回购计划
+
+请严格基于提供的信息分析，不要编造不存在的事件。对于推断性催化，需标注置信度。
+
+输出格式为 JSON（不要包含 markdown 代码块标记）：
+{
+  "overall_assessment": "催化充分/催化一般/催化不足",
+  "summary": "一句话概括未来6-12个月催化情况（不超过40字）",
+  "catalysts": [
+    {
+      "type": "业绩催化/政策催化/事件催化/行业催化/资金催化",
+      "description": "具体描述催化事件",
+      "timeframe": "预计触发时间范围，如 2026Q3、2026年下半年",
+      "confidence": "高/中/低",
+      "impact": "重大/中等/有限"
+    }
+  ],
+  "key_dates": ["需要关注的关键日期或时间窗口"],
+  "risks": ["催化可能落空的风险点"]
+}"""
+
+    user_prompt = f"""请分析 {symbol} 未来 6-12 个月的催化剂情况。
+
+【公司基本面】
+- 主营业务：{intro.get('main_business', '未知')}
+- 产品类型：{intro.get('product_type', '未知')}
+
+【机构盈利预测】
+{forecast_text}
+
+【财务增长趋势】
+{growth_text}
+
+【近期公告】
+{announcements_text}
+
+【近期新闻】
+{news_text}
+
+【外部环境评估】
+{env_summary or '暂无外部环境分析'}
+
+【赛道质量评估】
+{track_summary or '暂无赛道质量分析'}
+
+请基于以上信息，判断未来 6-12 个月该公司是否有足够的催化剂驱动股价表现。
+重点回答：
+1. 有哪些具体的催化事件可以期待？
+2. 这些催化的时间窗口和确定性如何？
+3. 催化落空的主要风险是什么？"""
+
+    return system_prompt, user_prompt, format_llm_input(system_prompt, user_prompt)
+
+
+def _parse_catalyst_analysis(response_text: str, model_used: str, llm_input: str) -> dict:
+    """Parse LLM JSON response for catalyst analysis."""
+    base = {'llm_used': True, 'model': model_used, 'llm_input': llm_input}
+
+    cleaned = response_text.strip()
+    if cleaned.startswith('```'):
+        lines = cleaned.split('\n')
+        if lines[0].startswith('```') and lines[-1].strip() == '```':
+            cleaned = '\n'.join(lines[1:-1])
+
+    try:
+        parsed = json.loads(cleaned)
+        # Ensure catalysts is a list
+        if 'catalysts' not in parsed or not isinstance(parsed['catalysts'], list):
+            parsed['catalysts'] = []
+        if 'key_dates' not in parsed or not isinstance(parsed['key_dates'], list):
+            parsed['key_dates'] = []
+        if 'risks' not in parsed or not isinstance(parsed['risks'], list):
+            parsed['risks'] = []
+        return {**base, **parsed}
+    except json.JSONDecodeError:
+        logger.warning("[Catalyst] JSON parse failed, falling back to raw text")
+        return {**base, 'raw_text': response_text}
+
+
 def _build_business_prompt(
     symbol: str,
     intro: dict,
@@ -942,7 +1283,7 @@ def get_stock_business(
                 analyzer,
                 system_prompt=env_sys,
                 user_prompt=env_usr,
-                call_type="business_analysis",
+                call_type="environment_analysis",
                 temperature=0.3,
                 max_tokens=2048,
                 response_validator=lambda _text: None,
@@ -953,6 +1294,34 @@ def get_stock_business(
     except Exception as e:
         logger.warning(f"[Business] Env analysis failed for {symbol}: {e}")
 
+    # Track quality analysis
+    track_quality = {'llm_used': False}
+    try:
+        from src.analyzer import get_analyzer
+        from src.ai_caller import call_ai_structured
+
+        analyzer = get_analyzer()
+        if getattr(analyzer, "is_available", lambda: False)():
+            industry = _get_stock_industry(symbol)
+            peer_data = _fetch_peer_data(industry, symbol, max_peers=3)
+            track_sys, track_usr, track_input = _build_track_quality_prompt(
+                symbol, intro, industry, peer_data, financial_summary, profit_forecast, events,
+            )
+            track_response, track_model, _usage = call_ai_structured(
+                analyzer,
+                system_prompt=track_sys,
+                user_prompt=track_usr,
+                call_type="track_quality",
+                temperature=0.3,
+                max_tokens=2048,
+                response_validator=lambda _text: None,
+                stream=False,
+            )
+            track_quality = _parse_track_quality_analysis(track_response, track_model, track_input, peer_data)
+            logger.info(f"[Business] Track analysis OK for {symbol}: model={track_model}")
+    except Exception as e:
+        logger.warning(f"[Business] Track analysis failed for {symbol}: {e}")
+
     data = {
         'symbol': symbol,
         'intro': intro,
@@ -962,6 +1331,7 @@ def get_stock_business(
         'events': events,
         'llm_analysis': llm_analysis,
         'environment_analysis': environment_analysis,
+        'track_quality': track_quality,
         '_fetched_at': datetime.now().isoformat(),
         '_cached': False,
     }
@@ -1016,6 +1386,16 @@ async def get_stock_business_stream(
                         _enqueue("env_analysis_done", cached)
                     else:
                         _enqueue("env_analysis_done", cached)
+                    # Track quality from cache
+                    track_analysis = cached.get('track_quality')
+                    if track_analysis and track_analysis.get('llm_used'):
+                        _enqueue("track_analysis_start", {})
+                        track_text = track_analysis.get('overall_verdict', '')
+                        if track_text:
+                            _enqueue("track_analysis_chunk", {"text": track_text})
+                        _enqueue("track_analysis_done", cached)
+                    else:
+                        _enqueue("track_analysis_done", cached)
                     return
 
             _enqueue("connected", {"message": "Connected", "cached": False})
@@ -1132,7 +1512,7 @@ async def get_stock_business_stream(
                     analyzer,
                     system_prompt=env_sys,
                     user_prompt=env_usr,
-                    call_type="business_analysis",
+                    call_type="environment_analysis",
                     temperature=0.3,
                     max_tokens=2048,
                     response_validator=lambda _text: None,
@@ -1151,6 +1531,44 @@ async def get_stock_business_stream(
             data = _sanitize(data)
             _business_cache_put(symbol, data)
             _enqueue("env_analysis_done", data)
+
+            # --- Track quality analysis ---
+            try:
+                _enqueue("track_analysis_start", {})
+
+                industry = _get_stock_industry(symbol)
+                peer_data = _fetch_peer_data(industry, symbol, max_peers=3)
+
+                track_sys, track_usr, track_input = _build_track_quality_prompt(
+                    symbol, intro, industry, peer_data, financial_summary, profit_forecast, events,
+                )
+
+                def _on_track_text(delta: str, full_text: str):
+                    _enqueue("track_analysis_chunk", {"text": delta})
+
+                track_response, track_model, _track_usage = call_ai_structured(
+                    analyzer,
+                    system_prompt=track_sys,
+                    user_prompt=track_usr,
+                    call_type="track_quality",
+                    temperature=0.3,
+                    max_tokens=2048,
+                    response_validator=lambda _text: None,
+                    stream=True,
+                    stream_text_callback=_on_track_text,
+                )
+
+                track_analysis = _parse_track_quality_analysis(track_response, track_model, track_input, peer_data)
+                data['track_quality'] = track_analysis
+                logger.info(f"[Business SSE] Track analysis OK for {symbol}: model={track_model}")
+
+            except Exception as e:
+                logger.warning(f"[Business SSE] Track analysis failed for {symbol}: {e}")
+                data['track_quality'] = {'llm_used': False, 'error': str(e)}
+
+            data = _sanitize(data)
+            _business_cache_put(symbol, data)
+            _enqueue("track_analysis_done", data)
 
         except Exception as e:
             logger.exception(f"[Business SSE] failed for {symbol}: {e}")
