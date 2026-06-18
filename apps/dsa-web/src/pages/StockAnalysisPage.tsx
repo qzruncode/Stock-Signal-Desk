@@ -20,6 +20,7 @@ import {
   Percent,
   TrendingUp,
   Users,
+  Zap,
 } from 'lucide-react';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { Select } from '../components/common';
@@ -29,6 +30,8 @@ import { klineApi, type KlineResponse } from '../api/kline';
 import { stockInfoApi, type StockInfo } from '../api/stockInfo';
 import { type BusinessResponse } from '../api/business';
 import EnvironmentAnalysisCard from '../components/EnvironmentAnalysisCard';
+import TrackQualityCard from '../components/TrackQualityCard';
+import CatalystCard from '../components/CatalystCard';
 import {
   announcementsApi,
   type AnnouncementsResponse,
@@ -338,6 +341,21 @@ function BusinessAnalysisPanel({ business }: { business: BusinessResponse }) {
 
   return (
     <div className="space-y-6">
+      {/* Catalyst Analysis */}
+      {business.catalyst_analysis?.llm_used && (
+        <CatalystCard analysis={business.catalyst_analysis} />
+      )}
+
+      {/* Track Quality */}
+      {business.track_quality?.llm_used && (
+        <TrackQualityCard analysis={business.track_quality} />
+      )}
+
+      {/* Environment Analysis */}
+      {business.environment_analysis?.llm_used && (
+        <EnvironmentAnalysisCard analysis={business.environment_analysis} />
+      )}
+
       {/* LLM Business Analysis */}
       {business.llm_analysis?.llm_used && business.llm_analysis?.analysis && (
         <div className="stock-analysis-panel">
@@ -378,11 +396,6 @@ function BusinessAnalysisPanel({ business }: { business: BusinessResponse }) {
             </div>
           )}
         </div>
-      )}
-
-      {/* Environment Analysis */}
-      {business.environment_analysis?.llm_used && (
-        <EnvironmentAnalysisCard analysis={business.environment_analysis} />
       )}
 
       {/* Business Intro */}
@@ -522,7 +535,7 @@ function BusinessAnalysisPanel({ business }: { business: BusinessResponse }) {
 }
 
 function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
-  const { phase, progressEvents, streamingText, envStreamingText, business, isCached, error, startStream } = useBusinessStream();
+  const { phase, progressEvents, streamingText, envStreamingText, trackStreamingText, catalystStreamingText, business, isCached, error, startStream } = useBusinessStream();
 
   useEffect(() => {
     if (symbol) startStream(symbol);
@@ -561,9 +574,48 @@ function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
   }
 
   if (phase === 'analyzing' || (phase === 'done' && !business)) {
-    // If business data already received (analysis_done) but env analysis still in progress,
-    // show business analysis card + env placeholder/streaming, then the rest below
+    // If business data already received (analysis_done) but further analysis still in progress
     if (business) {
+      const catalystCard = catalystStreamingText ? (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <Zap className="h-4 w-4 text-amber-500" />催化分析
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-amber-400" />
+          </h3>
+          <div className="prose prose-slate prose-sm max-w-none
+            prose-p:text-sm prose-p:leading-relaxed prose-p:text-slate-600">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{catalystStreamingText}</ReactMarkdown>
+          </div>
+        </div>
+      ) : (
+        <div className="stock-analysis-panel">
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <LoaderCircle className="h-4 w-4 animate-spin text-amber-500" />
+            AI 正在分析催化因素...
+          </div>
+        </div>
+      );
+
+      const trackCard = trackStreamingText ? (
+        <div className="stock-analysis-panel">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+            <TrendingUp className="h-4 w-4 text-cyan-600" />赛道质量评估
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+          </h3>
+          <div className="prose prose-slate prose-sm max-w-none
+            prose-p:text-sm prose-p:leading-relaxed prose-p:text-slate-600">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{trackStreamingText}</ReactMarkdown>
+          </div>
+        </div>
+      ) : (
+        <div className="stock-analysis-panel">
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <LoaderCircle className="h-4 w-4 animate-spin text-cyan-500" />
+            AI 正在评估赛道质量...
+          </div>
+        </div>
+      );
+
       const envCard = envStreamingText ? (
         <div className="stock-analysis-panel">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
@@ -575,18 +627,24 @@ function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{envStreamingText}</ReactMarkdown>
           </div>
         </div>
-      ) : (
+      ) : !trackStreamingText ? (
         <div className="stock-analysis-panel">
           <div className="flex items-center gap-2 text-sm text-slate-500">
             <LoaderCircle className="h-4 w-4 animate-spin text-cyan-500" />
             AI 正在分析外部环境...
           </div>
         </div>
-      );
+      ) : null;
 
       return (
         <div className="space-y-6">
-          {/* Business LLM analysis */}
+          {/* Catalyst analysis placeholder / streaming */}
+          {catalystCard}
+          {/* Track quality placeholder / streaming */}
+          {trackCard}
+          {/* Environment analysis placeholder / streaming */}
+          {envCard}
+          {/* Business LLM analysis (already completed) */}
           {business.llm_analysis?.llm_used && business.llm_analysis?.analysis && (
             <div className="stock-analysis-panel">
               <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
@@ -605,10 +663,8 @@ function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
               </div>
             </div>
           )}
-          {/* Environment analysis placeholder / streaming */}
-          {envCard}
           {/* Remaining business panels */}
-          <BusinessAnalysisPanel business={{ ...business, llm_analysis: { llm_used: false } }} />
+          <BusinessAnalysisPanel business={{ ...business, llm_analysis: { llm_used: false }, environment_analysis: undefined, track_quality: undefined, catalyst_analysis: undefined }} />
         </div>
       );
     }
