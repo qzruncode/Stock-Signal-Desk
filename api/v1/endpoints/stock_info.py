@@ -1322,6 +1322,33 @@ def get_stock_business(
     except Exception as e:
         logger.warning(f"[Business] Track analysis failed for {symbol}: {e}")
 
+    # Catalyst analysis
+    catalyst_analysis = {'llm_used': False}
+    try:
+        from src.analyzer import get_analyzer
+        from src.ai_caller import call_ai_structured
+
+        analyzer = get_analyzer()
+        if getattr(analyzer, "is_available", lambda: False)():
+            cat_sys, cat_usr, cat_input = _build_catalyst_prompt(
+                symbol, intro, profit_forecast, financial_summary, events,
+                environment_analysis, track_quality,
+            )
+            cat_response, cat_model, _usage = call_ai_structured(
+                analyzer,
+                system_prompt=cat_sys,
+                user_prompt=cat_usr,
+                call_type="catalyst_analysis",
+                temperature=0.3,
+                max_tokens=2048,
+                response_validator=lambda _text: None,
+                stream=False,
+            )
+            catalyst_analysis = _parse_catalyst_analysis(cat_response, cat_model, cat_input)
+            logger.info(f"[Business] Catalyst analysis OK for {symbol}: model={cat_model}")
+    except Exception as e:
+        logger.warning(f"[Business] Catalyst analysis failed for {symbol}: {e}")
+
     data = {
         'symbol': symbol,
         'intro': intro,
@@ -1332,6 +1359,7 @@ def get_stock_business(
         'llm_analysis': llm_analysis,
         'environment_analysis': environment_analysis,
         'track_quality': track_quality,
+        'catalyst_analysis': catalyst_analysis,
         '_fetched_at': datetime.now().isoformat(),
         '_cached': False,
     }
@@ -1396,6 +1424,24 @@ async def get_stock_business_stream(
                         _enqueue("track_analysis_done", cached)
                     else:
                         _enqueue("track_analysis_done", cached)
+
+                    # Catalyst analysis from cache
+                    catalyst = cached.get('catalyst_analysis')
+                    if catalyst and catalyst.get('llm_used'):
+                        _enqueue("catalyst_analysis_start", {})
+                        catalyst_text = catalyst.get('summary', '')
+                        if not catalyst_text:
+                            parts = []
+                            if catalyst.get('overall_assessment'):
+                                parts.append(f"**{catalyst['overall_assessment']}**")
+                            for cat in catalyst.get('catalysts', []):
+                                parts.append(f"- [{cat.get('type', '')}] {cat.get('description', '')}（{cat.get('timeframe', '')}，置信度: {cat.get('confidence', '')}）")
+                            catalyst_text = '\n'.join(parts)
+                        if catalyst_text:
+                            _enqueue("catalyst_analysis_chunk", {"text": catalyst_text})
+                        _enqueue("catalyst_analysis_done", cached)
+                    else:
+                        _enqueue("catalyst_analysis_done", cached)
                     return
 
             _enqueue("connected", {"message": "Connected", "cached": False})
@@ -1569,6 +1615,42 @@ async def get_stock_business_stream(
             data = _sanitize(data)
             _business_cache_put(symbol, data)
             _enqueue("track_analysis_done", data)
+
+            # --- Catalyst analysis ---
+            try:
+                _enqueue("catalyst_analysis_start", {})
+
+                cat_sys, cat_usr, cat_input = _build_catalyst_prompt(
+                    symbol, intro, profit_forecast, financial_summary, events,
+                    data.get('environment_analysis'), data.get('track_quality'),
+                )
+
+                def _on_catalyst_text(delta: str, full_text: str):
+                    _enqueue("catalyst_analysis_chunk", {"text": delta})
+
+                cat_response, cat_model, _cat_usage = call_ai_structured(
+                    analyzer,
+                    system_prompt=cat_sys,
+                    user_prompt=cat_usr,
+                    call_type="catalyst_analysis",
+                    temperature=0.3,
+                    max_tokens=2048,
+                    response_validator=lambda _text: None,
+                    stream=True,
+                    stream_text_callback=_on_catalyst_text,
+                )
+
+                catalyst_analysis = _parse_catalyst_analysis(cat_response, cat_model, cat_input)
+                data['catalyst_analysis'] = catalyst_analysis
+                logger.info(f"[Business SSE] Catalyst analysis OK for {symbol}: model={cat_model}")
+
+            except Exception as e:
+                logger.warning(f"[Business SSE] Catalyst analysis failed for {symbol}: {e}")
+                data['catalyst_analysis'] = {'llm_used': False, 'error': str(e)}
+
+            data = _sanitize(data)
+            _business_cache_put(symbol, data)
+            _enqueue("catalyst_analysis_done", data)
 
         except Exception as e:
             logger.exception(f"[Business SSE] failed for {symbol}: {e}")
