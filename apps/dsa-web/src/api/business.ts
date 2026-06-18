@@ -86,6 +86,53 @@ export interface EnvironmentAnalysis {
   error?: string;
 }
 
+export interface PeerSnapshot {
+  name: string;
+  symbol: string;
+  revenue_growth: number | null;
+  gross_margin_trend: string;
+  net_profit_growth: number | null;
+}
+
+export interface TrackDimension {
+  verdict: string;
+  evidence: string;
+}
+
+export interface TrackQualityAnalysis {
+  cycle_position: TrackDimension;
+  growth_potential: TrackDimension;
+  competition_intensity: TrackDimension;
+  overall_verdict: string;
+  peer_snapshot: PeerSnapshot[];
+  llm_used: boolean;
+  model?: string;
+  raw_text?: string;
+  llm_input?: string;
+  error?: string;
+}
+
+export interface CatalystItem {
+  type: string;
+  description: string;
+  timeframe: string;
+  confidence: '高' | '中' | '低';
+  impact: '重大' | '中等' | '有限';
+}
+
+export interface CatalystAnalysis {
+  overall_assessment: '催化充分' | '催化一般' | '催化不足';
+  summary: string;
+  catalysts: CatalystItem[];
+  key_dates: string[];
+  risks: string[];
+  llm_used: boolean;
+  model?: string;
+  raw_text?: string;
+  llm_input?: string;
+  error?: string;
+}
+
 export interface BusinessResponse {
   symbol: string;
   intro: BusinessIntro;
@@ -98,6 +145,8 @@ export interface BusinessResponse {
   };
   llm_analysis: LlmAnalysis;
   environment_analysis?: EnvironmentAnalysis;
+  track_quality?: TrackQualityAnalysis;
+  catalyst_analysis?: CatalystAnalysis;
   _fetched_at?: string;
   _cached?: boolean;
 }
