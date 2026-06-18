@@ -16,6 +16,8 @@ export interface UseBusinessStreamResult {
   progressEvents: BusinessProgressEvent[];
   streamingText: string;
   envStreamingText: string;
+  trackStreamingText: string;
+  catalystStreamingText: string;
   business: BusinessResponse | null;
   isCached: boolean;
   error: string | null;
@@ -28,6 +30,8 @@ export function useBusinessStream(): UseBusinessStreamResult {
   const [progressEvents, setProgressEvents] = useState<BusinessProgressEvent[]>([]);
   const [streamingText, setStreamingText] = useState('');
   const [envStreamingText, setEnvStreamingText] = useState('');
+  const [trackStreamingText, setTrackStreamingText] = useState('');
+  const [catalystStreamingText, setCatalystStreamingText] = useState('');
   const [business, setBusiness] = useState<BusinessResponse | null>(null);
   const [isCached, setIsCached] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +50,8 @@ export function useBusinessStream(): UseBusinessStreamResult {
     setProgressEvents([]);
     setStreamingText('');
     setEnvStreamingText('');
+    setTrackStreamingText('');
+    setCatalystStreamingText('');
     setBusiness(null);
     setIsCached(false);
     setError(null);
@@ -80,7 +86,6 @@ export function useBusinessStream(): UseBusinessStreamResult {
     es.addEventListener('analysis_done', (e) => {
       const data: BusinessResponse = JSON.parse(e.data);
       setBusiness(data);
-      // Don't set phase to done yet — environment analysis may follow
     });
 
     es.addEventListener('env_analysis_start', () => {
@@ -93,6 +98,35 @@ export function useBusinessStream(): UseBusinessStreamResult {
     });
 
     es.addEventListener('env_analysis_done', (e) => {
+      const data: BusinessResponse = JSON.parse(e.data);
+      setBusiness(data);
+    });
+
+    es.addEventListener('track_analysis_start', () => {
+      // Track quality analysis phase started
+    });
+
+    es.addEventListener('track_analysis_chunk', (e) => {
+      const data = JSON.parse(e.data);
+      setTrackStreamingText(prev => prev + data.text);
+    });
+
+    es.addEventListener('track_analysis_done', (e) => {
+      const data: BusinessResponse = JSON.parse(e.data);
+      setBusiness(data);
+      // Catalyst phase follows; terminal handling moves to catalyst_analysis_done
+    });
+
+    es.addEventListener('catalyst_analysis_start', () => {
+      // Catalyst analysis phase started
+    });
+
+    es.addEventListener('catalyst_analysis_chunk', (e) => {
+      const data = JSON.parse(e.data);
+      setCatalystStreamingText(prev => prev + data.text);
+    });
+
+    es.addEventListener('catalyst_analysis_done', (e) => {
       const data: BusinessResponse = JSON.parse(e.data);
       setBusiness(data);
       setPhase('done');
@@ -109,7 +143,7 @@ export function useBusinessStream(): UseBusinessStreamResult {
           setError('分析失败');
         }
       } else {
-        setError('连接错误');
+        setError('连接中断');
       }
       setPhase('error');
       es.close();
@@ -125,5 +159,5 @@ export function useBusinessStream(): UseBusinessStreamResult {
 
   useEffect(() => () => abort(), [abort]);
 
-  return { phase, progressEvents, streamingText, envStreamingText, business, isCached, error, startStream, abort };
+  return { phase, progressEvents, streamingText, envStreamingText, trackStreamingText, catalystStreamingText, business, isCached, error, startStream, abort };
 }
