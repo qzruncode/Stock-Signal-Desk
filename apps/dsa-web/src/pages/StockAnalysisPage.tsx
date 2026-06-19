@@ -58,7 +58,7 @@ import KLineChartPanel from '../components/KLineChartPanel';
 import FinancialPanel from '../components/FinancialPanel';
 import FinancialStatementsPanel from '../components/FinancialStatementsPanel';
 import { AnnouncementsPanel, NewsPanel, ResearchPanel, RiskEventsPanel, SentimentPanel, SocialSentimentPanel } from '../components/NewsAnnouncementPanel';
-import BuyDecisionWorkbench from '../components/buyDecision/BuyDecisionWorkbench';
+import { BuyCriteriaPanel } from '../components/buyCriteria/BuyCriteriaPanel';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 
@@ -1597,7 +1597,7 @@ const StockAnalysisPage: React.FC = () => {
               )}
             </div>
           ) : mode === 'industry-cycle' ? (
-            <BuyDecisionWorkbench symbol={selectedSymbol} />
+            <BuyCriteriaPanel symbol={selectedSymbol} />
           ) : mode === 'social' ? (
             <div className="space-y-6">
               {socialLoading ? (
