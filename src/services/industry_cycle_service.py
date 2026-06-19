@@ -17,40 +17,6 @@ INDUSTRY_CYCLE_CACHE_KEY = "stocks:industry_cycle:v1"
 INDUSTRY_CYCLE_REPORT_CACHE_KEY = "stocks:industry_cycle:report:v1"
 INDUSTRY_CYCLE_STOCK_FLOW_CACHE_KEY = "stocks:industry_cycle:stock_flow:v1"
 
-_THEME_KEYWORD_HINTS: dict[str, tuple[str, ...]] = {
-    "科技成长": (
-        "半导体", "芯片", "算力", "服务器", "光模块", "人工智能", "ai", "软件", "云计算",
-        "机器人", "消费电子", "电子", "pcb", "cpo", "存储", "先进封装", "设备",
-    ),
-    "AI科技链": (
-        "半导体", "芯片", "算力", "服务器", "光模块", "人工智能", "ai", "软件", "云计算",
-        "机器人", "消费电子", "电子", "pcb", "cpo", "存储", "先进封装", "设备",
-    ),
-    "资源重估": (
-        "黄金", "铜", "铝", "白银", "稀土", "煤炭", "石油", "天然气", "钢铁", "化工", "化肥",
-        "有色", "矿业", "锂", "钴",
-    ),
-    "电力设备与能源基础设施": (
-        "电力", "电网", "特高压", "储能", "光伏", "风电", "逆变器", "电池", "充电桩",
-        "变压器", "能源", "电源", "设备",
-    ),
-    "创新药": (
-        "创新药", "医药", "生物", "医疗", "器械", "cro", "制药", "疫苗", "诊断",
-    ),
-    "军工与低空安全": (
-        "军工", "低空", "航空", "航天", "卫星", "发动机", "雷达", "导弹", "无人机",
-    ),
-    "出海制造": (
-        "汽车", "整车", "零部件", "家电", "船舶", "工程机械", "制造", "出海", "跨境", "机床",
-    ),
-    "金融地产": (
-        "银行", "保险", "券商", "地产", "房地产", "多元金融",
-    ),
-    "消费复苏": (
-        "白酒", "啤酒", "食品", "饮料", "乳业", "零售", "旅游", "酒店", "免税", "消费",
-    ),
-}
-
 _DRIVER_KEYWORDS = {
     "policy": ("政策", "补贴", "专项", "规划", "意见", "指导", "支持"),
     "technology": ("技术", "创新", "迭代", "突破", "验证", "国产化", "替代", "升级"),
@@ -60,7 +26,6 @@ _DRIVER_KEYWORDS = {
 
 _CATALYST_KEYWORDS = ("订单", "招标", "扩产", "量产", "政策", "补贴", "新品", "投产", "装机", "回购")
 _PRICE_WAR_KEYWORDS = ("价格战", "内卷", "降价", "竞争加剧", "同质化", "低价抢单")
-_CONCEPT_ONLY_KEYWORDS = ("概念", "题材", "映射", "蹭热点", "蹭概念")
 _THREE_YEAR_SPACE_KEYWORDS = ("三年", "3年", "空间", "成长", "渗透率提升", "国产替代", "长期")
 _FADING_STAGE_KEYWORDS = ("退潮", "高位分歧", "主升后段", "降温")
 
@@ -390,8 +355,10 @@ def _build_evidence_insufficient_report(
                 "market_mainline": {
                     "report_pending": bool(_as_dict(evidence_pack.get("mainline_context")).get("report_pending")),
                     "market_stage": _as_dict(_as_dict(evidence_pack.get("mainline_context")).get("market_stage")),
-                    "matched_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
-                    "matched_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                    "report_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
+                    "report_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                    "matched_current_mainlines": [],
+                    "matched_future_mainlines": [],
                     "current_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("current_theme_evidence")),
                     "future_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("future_theme_evidence")),
                 },
@@ -433,26 +400,6 @@ def _compact_text(value: Any) -> str:
 def _contains_any(text: str, keywords: tuple[str, ...] | list[str]) -> bool:
     haystack = _compact_text(text)
     return any(_compact_text(word) in haystack for word in keywords if _compact_text(word))
-
-
-def _extract_business_keywords(industry_name: str, main_business: str) -> list[str]:
-    base = f"{industry_name} {main_business}"
-    tokens = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,10}", base)
-    stopwords = {"公司", "业务", "产品", "服务", "系统", "解决方案", "相关", "以及", "主要", "从事"}
-    seen: set[str] = set()
-    result: list[str] = []
-    for token in tokens:
-        normalized = token.strip()
-        if not normalized or normalized in stopwords:
-            continue
-        lowered = normalized.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        result.append(normalized)
-        if len(result) >= 12:
-            break
-    return result
 
 
 def _summarize_text_items(
@@ -1117,82 +1064,6 @@ def _fallback_sector_item_from_flow(flow_item: Optional[dict[str, Any]]) -> Opti
     }
 
 
-def _match_mainlines(
-    report: dict[str, Any],
-    industry_name: str,
-    main_business: str,
-    news_items: list[dict[str, Any]],
-    research_items: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    corpus = " ".join([
-        industry_name,
-        main_business,
-        *[f"{item.get('title', '')} {item.get('summary', '')}" for item in news_items[:12]],
-        *[f"{item.get('title', '')} {item.get('industry', '')} {item.get('rating', '')}" for item in research_items[:12]],
-    ])
-    business_keywords = _extract_business_keywords(industry_name, main_business)
-
-    def _score_theme(theme: dict[str, Any]) -> tuple[float, list[str]]:
-        theme_name = _normalize_text(theme.get("name"))
-        branches = theme.get("branches") or []
-        evidence = theme.get("evidence") or []
-        theme_text = " ".join([
-            theme_name,
-            _normalize_text(theme.get("reason")),
-            _normalize_text(theme.get("focus")),
-            " ".join(str(x) for x in branches),
-            " ".join(str(x) for x in evidence),
-        ])
-
-        score = 0.0
-        reasons: list[str] = []
-        if _contains_any(theme_text, [industry_name]):
-            score += 8
-            reasons.append("主线文本直接命中所属行业")
-        hint_words = _THEME_KEYWORD_HINTS.get(theme_name, ())
-        if hint_words and _contains_any(corpus, hint_words):
-            score += 5
-            reasons.append("主营/资讯与该主线的行业关键词高度重合")
-        overlap = [kw for kw in business_keywords if _contains_any(theme_text, [kw])]
-        if overlap:
-            score += min(4.0, 1.2 * len(overlap))
-            reasons.append(f"主营关键词命中: {', '.join(overlap[:4])}")
-        branch_hits = [branch for branch in branches if _contains_any(corpus, [str(branch)])]
-        if branch_hits:
-            score += min(5.0, 2.0 * len(branch_hits))
-            reasons.append(f"命中主线分支: {', '.join(map(str, branch_hits[:3]))}")
-        if _contains_any(corpus, [theme_name]):
-            score += 3
-            reasons.append("主营/资讯中出现主线叙事名称")
-        return score, reasons
-
-    current_matches: list[dict[str, Any]] = []
-    for theme in report.get("current_mainlines") or []:
-        score, reasons = _score_theme(theme)
-        if score >= 5:
-            current_matches.append({
-                "name": theme.get("name"),
-                "rank": theme.get("rank"),
-                "stage": theme.get("stage"),
-                "score": round(score, 1),
-                "reason": "；".join(reasons) or "命中当前主线叙事",
-            })
-    current_matches.sort(key=lambda item: (-float(item.get("score") or 0), int(item.get("rank") or 99)))
-
-    future_matches: list[dict[str, Any]] = []
-    for theme in report.get("future_mainlines") or []:
-        score, reasons = _score_theme(theme)
-        if score >= 5:
-            future_matches.append({
-                "name": theme.get("name"),
-                "stage_hint": theme.get("stage_hint"),
-                "score": round(score, 1),
-                "reason": "；".join(reasons) or "命中候选主线叙事",
-            })
-    future_matches.sort(key=lambda item: -float(item.get("score") or 0))
-    return current_matches, future_matches
-
-
 def _build_driver_signals(texts: list[str]) -> dict[str, list[str]]:
     joined = " ".join(texts)
     signals: dict[str, list[str]] = {}
@@ -1544,8 +1415,10 @@ def _build_streaming_industry_cycle_draft(
                 "market_mainline": {
                     "report_pending": bool(mainline_context.get("report_pending")),
                     "market_stage": _as_dict(mainline_context.get("market_stage")),
-                    "matched_current_mainlines": _list_of_dicts(mainline_context.get("current_mainlines")),
-                    "matched_future_mainlines": _list_of_dicts(mainline_context.get("future_mainlines")),
+                    "report_current_mainlines": _list_of_dicts(mainline_context.get("current_mainlines")),
+                    "report_future_mainlines": _list_of_dicts(mainline_context.get("future_mainlines")),
+                    "matched_current_mainlines": [],
+                    "matched_future_mainlines": [],
                     "current_theme_detail": _first_dict(mainline_context.get("current_theme_evidence")),
                     "future_theme_detail": _first_dict(mainline_context.get("future_theme_evidence")),
                 },
@@ -1576,27 +1449,12 @@ def _build_streaming_industry_cycle_draft(
 
 def _infer_beneficiary_level(
     *,
-    industry_name: str,
-    main_business: str,
     matched_current: Optional[dict[str, Any]],
     matched_future: Optional[dict[str, Any]],
-    current_theme_detail: Optional[dict[str, Any]],
-    concept_only_detected: bool,
 ) -> tuple[str, str]:
-    current_theme_detail = _as_dict(current_theme_detail)
-    components = _as_list(current_theme_detail.get("components"))
-    business_keywords = _extract_business_keywords(industry_name, main_business)
-    overlap = [kw for kw in business_keywords if _contains_any(" ".join(str(x) for x in components), [kw])]
-    direct_hit = bool(main_business and (industry_name and _contains_any(main_business, [industry_name]) or overlap))
-    if matched_current and len(overlap) >= 2:
-        return "核心受益", f"主营关键词与主线分支重合度高：{', '.join(overlap[:4])}"
-    if matched_current and direct_hit:
-        return "直接受益", "主营业务与行业主叙事存在直接受益路径。"
     if matched_current or matched_future:
-        return "边际受益", "能映射到行业叙事，但主营受益链条还不够硬。"
-    if concept_only_detected:
-        return "概念映射", "更多停留在题材映射，主营受益与产业验证不足。"
-    return "待验证", "尚未建立清晰的主营受益路径。"
+        return "待验证", "本地不再用关键词判断主营受益路径，需要由模型结合主营、产品、公告、研报和市场主线报告综合确认。"
+    return "待验证", "本地不再用关键词做主线映射，尚未建立模型确认后的主营受益路径。"
 
 
 def _infer_cycle_phase(
@@ -1645,6 +1503,11 @@ class IndustryCycleService:
 
     def get_report(self, symbol: str, *, force: bool = False) -> dict[str, Any]:
         code = _normalize_symbol(symbol)
+        if force:
+            payload = self.analyze(code, force=True)
+            payload["report_pending"] = False
+            _report_cache_put(code, payload)
+            return payload
         if not force:
             cached = _report_cache_get(code)
             if _is_usable_report_payload(cached):
@@ -1781,8 +1644,10 @@ class IndustryCycleService:
                             "market_mainline": {
                                 "report_pending": bool(_as_dict(evidence_pack.get("mainline_context")).get("report_pending")),
                                 "market_stage": _as_dict(_as_dict(evidence_pack.get("mainline_context")).get("market_stage")),
-                                "matched_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
-                                "matched_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                                "report_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
+                                "report_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                                "matched_current_mainlines": [],
+                                "matched_future_mainlines": [],
                                 "current_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("current_theme_evidence")),
                                 "future_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("future_theme_evidence")),
                             },
@@ -2634,6 +2499,8 @@ class IndustryCycleService:
                         "market_mainline": {
                             "report_pending": True,
                             "market_stage": {},
+                            "report_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
+                            "report_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
                             "matched_current_mainlines": [],
                             "matched_future_mainlines": [],
                             "current_theme_detail": {},
@@ -2673,16 +2540,12 @@ class IndustryCycleService:
         fallback_payload: dict[str, Any] = {}
         fallback_cycle: dict[str, Any] = {}
         if not _list_of_dicts(mainline_detector.get("checklist")) or not _list_of_dicts(industry_beta_detector.get("checklist")):
-            cached_fallback = _cache_get(symbol)
-            if cached_fallback:
-                fallback_payload = cached_fallback
-            else:
-                try:
-                    fallback_payload = self._build_payload(symbol, force=False)
-                    _cache_put(symbol, fallback_payload)
-                except Exception:
-                    logger.exception("industry cycle detector fallback build failed for %s", symbol)
-                    fallback_payload = {}
+            try:
+                fallback_payload = self._build_payload(symbol, force=False)
+                _cache_put(symbol, fallback_payload)
+            except Exception:
+                logger.exception("industry cycle detector fallback build failed for %s", symbol)
+                fallback_payload = {}
             fallback_cycle = _as_dict(fallback_payload.get("industry_cycle"))
             mainline_detector = _merge_detector_with_fallback(
                 mainline_detector,
@@ -2694,6 +2557,7 @@ class IndustryCycleService:
             )
         market_report = _as_dict(evidence_bundle.get("market_report"))
         market_evidence = _as_dict(evidence_bundle.get("market_evidence"))
+        parsed_market_mainline = _as_dict(_as_dict(parsed.get("evidence")).get("market_mainline"))
         current_theme_detail = _first_dict(market_evidence.get("current_themes"))
         future_theme_detail = _first_dict(market_evidence.get("next_themes"))
         stock_info = _as_dict(evidence_bundle.get("stock_info"))
@@ -2705,6 +2569,12 @@ class IndustryCycleService:
             news_items=_list_of_dicts(evidence_bundle.get("news_data", {}).get("items") if isinstance(evidence_bundle.get("news_data"), dict) else []),
             research_items=_list_of_dicts(evidence_bundle.get("research_data", {}).get("items") if isinstance(evidence_bundle.get("research_data"), dict) else []),
         )
+        parsed_incomplete = not (
+            _normalize_text(parsed.get("analysis_status"))
+            and _normalize_text(parsed.get("beneficiary_level"))
+            and _normalize_text(parsed.get("cycle_phase"))
+        )
+        format_error_reason = "模型输出格式异常，未能稳定解析为完整 JSON。"
 
         final_payload = {
             "symbol": symbol,
@@ -2712,15 +2582,15 @@ class IndustryCycleService:
             "industry_cycle": {
                 "stock_name": evidence_pack.get("stock_name") or symbol,
                 "industry_name": evidence_pack.get("industry_name") or "",
-                "analysis_status": parsed.get("analysis_status"),
-                "beneficiary_level": parsed.get("beneficiary_level"),
-                "beneficiary_reason": parsed.get("beneficiary_reason"),
-                "cycle_phase": parsed.get("cycle_phase"),
-                "cycle_phase_reason": parsed.get("cycle_phase_reason"),
-                "prosperity_score": parsed.get("prosperity_score"),
-                "prosperity_judgement": parsed.get("prosperity_judgement"),
-                "core_logic": stock_focus_summary or parsed.get("core_logic"),
-                "killer_reason": parsed.get("killer_reason"),
+                "analysis_status": _normalize_text(parsed.get("analysis_status")) or "观察",
+                "beneficiary_level": _normalize_text(parsed.get("beneficiary_level")) or "待验证",
+                "beneficiary_reason": _normalize_text(parsed.get("beneficiary_reason")) or "模型输出格式异常，主营受益路径需结合原始输出复核。",
+                "cycle_phase": _normalize_text(parsed.get("cycle_phase")) or "观察期",
+                "cycle_phase_reason": _normalize_text(parsed.get("cycle_phase_reason")) or "模型输出格式异常，周期阶段需结合原始输出复核。",
+                "prosperity_score": parsed.get("prosperity_score") or 0,
+                "prosperity_judgement": _normalize_text(parsed.get("prosperity_judgement")) or "模型已返回文本，但结构化解析不完整，请结合原始输出查看。",
+                "core_logic": stock_focus_summary or _normalize_text(parsed.get("core_logic")) or "模型输出格式异常，当前降级为仅展示证据包和原始输出。",
+                "killer_reason": parsed.get("killer_reason") or (format_error_reason if parsed_incomplete else None),
                 "observation_window": parsed.get("observation_window") or "未来 6-12 个月",
                 "catalysts": [str(item) for item in _as_list(parsed.get("catalysts")) if str(item).strip()],
                 "risks": [str(item) for item in _as_list(parsed.get("risks")) if str(item).strip()],
@@ -2742,8 +2612,10 @@ class IndustryCycleService:
                     "market_mainline": {
                         "report_pending": bool(market_report.get("report_pending")),
                         "market_stage": _as_dict(market_evidence.get("market_stage")),
-                        "matched_current_mainlines": _list_of_dicts(market_report.get("current_mainlines")),
-                        "matched_future_mainlines": _list_of_dicts(market_report.get("future_mainlines")),
+                        "report_current_mainlines": _list_of_dicts(market_report.get("current_mainlines")),
+                        "report_future_mainlines": _list_of_dicts(market_report.get("future_mainlines")),
+                        "matched_current_mainlines": _list_of_dicts(parsed_market_mainline.get("matched_current_mainlines")),
+                        "matched_future_mainlines": _list_of_dicts(parsed_market_mainline.get("matched_future_mainlines")),
                         "current_theme_detail": current_theme_detail,
                         "future_theme_detail": future_theme_detail,
                     },
@@ -2769,7 +2641,7 @@ class IndustryCycleService:
             },
             "_fetched_at": datetime.now().isoformat(),
             "_cached": False,
-            "fallback_used": bool((evidence_bundle.get("market_report") or {}).get("report_pending")),
+            "fallback_used": bool((evidence_bundle.get("market_report") or {}).get("report_pending")) or parsed_incomplete,
         }
         if _report_has_conflicting_conclusion(final_payload):
             if not fallback_payload:
@@ -2870,13 +2742,8 @@ class IndustryCycleService:
         news_items = news_data.get("items") or []
         risk_items = risk_data.get("items") or []
         research_items = research_data.get("items") or []
-        current_matches, future_matches = _match_mainlines(
-            market_report,
-            industry_name,
-            main_business,
-            news_items,
-            research_items,
-        )
+        current_matches: list[dict[str, Any]] = []
+        future_matches: list[dict[str, Any]] = []
 
         driver_texts = [
             main_business,
@@ -2887,7 +2754,6 @@ class IndustryCycleService:
         driver_signals = _build_driver_signals(driver_texts)
         driver_pass = bool(driver_signals)
         price_war_detected = _contains_any(" ".join(driver_texts), _PRICE_WAR_KEYWORDS)
-        concept_only_detected = _contains_any(" ".join(driver_texts), _CONCEPT_ONLY_KEYWORDS)
 
         sentiment_score = _safe_float(sentiment_data.get("sentiment_score")) or 0.0
         social_score = _safe_float(social_data.get("overall_score")) or 0.0
@@ -2910,12 +2776,8 @@ class IndustryCycleService:
         future_theme_detail = _pick_theme_detail(market_evidence.get("next_themes") or [], matched_future)
         current_stage = _normalize_text((matched_current or {}).get("stage"))
         beneficiary_level, beneficiary_reason = _infer_beneficiary_level(
-            industry_name=industry_name,
-            main_business=main_business,
             matched_current=matched_current,
             matched_future=matched_future,
-            current_theme_detail=current_theme_detail,
-            concept_only_detected=concept_only_detected,
         )
         valuation_signal = (valuation_data or {}).get("price_overdraft_signal") or {}
         valuation_status = _normalize_text(valuation_signal.get("status"))
@@ -2938,7 +2800,7 @@ class IndustryCycleService:
                 "passed": bool(matched_current),
                 "reason": (
                     f"命中当前主线“{matched_current['name']}”，阶段 {matched_current.get('stage')}"
-                    if matched_current else "未在当前市场主线报告中找到明确映射"
+                    if matched_current else "本地不再用关键词匹配市场主线，需由模型基于市场主线报告与公司主营资料判断"
                 ),
                 "source": "市场主线报告 / 证据层",
             },
@@ -2950,11 +2812,11 @@ class IndustryCycleService:
             },
             {
                 "item": "不是单纯蹭概念",
-                "passed": beneficiary_level not in {"概念映射", "待验证"} and not (concept_only_detected and positive_research == 0),
+                "passed": False,
                 "reason": (
                     f"受益级别为“{beneficiary_level}”，{beneficiary_reason}"
                     if beneficiary_level not in {"概念映射", "待验证"}
-                    else "更像概念映射，主营受益链条和产业验证还不够硬"
+                    else "本地不再用关键词判断是否蹭概念，需要由模型结合主营、公告、研报和市场主线报告确认"
                 ),
                 "source": "主营业务 / 主线分支 / 新闻 / 研报",
             },
@@ -3170,6 +3032,8 @@ class IndustryCycleService:
                     "market_mainline": {
                         "report_pending": bool(market_report.get("report_pending")),
                         "market_stage": market_evidence.get("market_stage") or {},
+                        "report_current_mainlines": _list_of_dicts(market_report.get("current_mainlines")),
+                        "report_future_mainlines": _list_of_dicts(market_report.get("future_mainlines")),
                         "matched_current_mainlines": current_matches[:3],
                         "matched_future_mainlines": future_matches[:3],
                         "current_theme_detail": current_theme_detail or {},
