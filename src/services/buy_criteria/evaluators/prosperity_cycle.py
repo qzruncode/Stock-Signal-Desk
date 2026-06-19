@@ -39,11 +39,6 @@ def _fmt_pct(value: Any) -> str:
     return "缺失" if num is None else f"{num:.2f}%"
 
 
-def _fmt_num(value: Any) -> str:
-    num = _safe_float(value)
-    return "缺失" if num is None else f"{num:.2f}"
-
-
 def _revenue_trend_summary(items: list[dict[str, Any]]) -> str:
     recent = [
         {
