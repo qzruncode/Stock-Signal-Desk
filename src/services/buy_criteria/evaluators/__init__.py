@@ -6,8 +6,10 @@ from src.services.buy_criteria.evaluators.growth_space import GrowthSpaceEvaluat
 from src.services.buy_criteria.evaluators.competition_landscape import CompetitionLandscapeEvaluator
 from src.services.buy_criteria.evaluators.growth_drivers import GrowthDriversEvaluator
 from src.services.buy_criteria.evaluators.catalyst_events import CatalystEventsEvaluator
+from src.services.buy_criteria.evaluators.valuation_level import ValuationLevelEvaluator
+from src.services.buy_criteria.evaluators.fatal_risks import FatalRisksEvaluator
 
-# Ordered list — determines execution sequence (will be expanded in Task 8)
+# Ordered list — determines execution sequence
 EVALUATOR_CLASSES = [
     MainlinePositionEvaluator,
     ProsperityCycleEvaluator,
@@ -15,4 +17,6 @@ EVALUATOR_CLASSES = [
     CompetitionLandscapeEvaluator,
     GrowthDriversEvaluator,
     CatalystEventsEvaluator,
+    ValuationLevelEvaluator,
+    FatalRisksEvaluator,
 ]
