@@ -482,8 +482,8 @@ class TestGrowthSpaceEvidence:
 
 
 class TestCompetitionLandscapeEvidence:
-    def test_collect_data_uses_valuation_financials_sectors_news(self):
-        """Verify competition_landscape extracts margin/sector/price-war evidence from raw data."""
+    def test_collect_data_uses_raw_margin_sector_news(self):
+        """Verify competition_landscape uses raw margin/sector/news data for LLM judgment."""
         evaluator = CompetitionLandscapeEvaluator()
         stock_info = {
             "symbol": "300502.SZ",
@@ -494,10 +494,7 @@ class TestCompetitionLandscapeEvidence:
         valuation = {
             "gross_margin": 49.16,
             "net_margin": 38.2,
-            "industry_average": {
-                "gross_margin": 35.0,
-                "net_margin": 22.0,
-            },
+            "industry_average": {"gross_margin": 35.0, "net_margin": 22.0},
         }
         financials = {
             "items": [
@@ -507,23 +504,16 @@ class TestCompetitionLandscapeEvidence:
                 {"report_date": "2025-06-30", "gross_margin": 43.8},
             ]
         }
-        sectors = {
-            "items": [
-                {"name": "半导体", "change_pct": 3.2},
-                {"name": "通信设备", "change_pct": 2.1},
-                {"name": "计算机设备", "change_pct": 1.8},
-            ],
-        }
-        news = {
-            "items": [
-                {
-                    "publish_time": "2026-05-10",
-                    "source": "第一财经",
-                    "title": "光模块行业景气，订单持续增长",
-                    "summary": "行业需求旺盛，毛利率稳步提升。",
-                },
-            ],
-        }
+        sectors = {"items": [
+            {"name": "半导体", "change_pct": 3.2},
+            {"name": "通信设备", "change_pct": 2.1},
+            {"name": "计算机设备", "change_pct": 1.8},
+        ]}
+        news = {"items": [
+            {"publish_time": "2026-05-10", "source": "第一财经",
+             "title": "光模块行业景气，订单持续增长",
+             "summary": "行业需求旺盛，毛利率稳步提升。"},
+        ]}
 
         with patch(
             "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
@@ -540,89 +530,33 @@ class TestCompetitionLandscapeEvidence:
         ):
             evidence = evaluator.collect_data("300502.SZ", stock_info)
 
-        # Verify raw data structure
+        # Verify raw data — raw lists, no keyword filtering
         assert "margin_data" in evidence.raw_data
         assert "margin_trend" in evidence.raw_data
         assert "sector_ranking" in evidence.raw_data
-        assert "price_war_signals" in evidence.raw_data
+        assert "competition_news" in evidence.raw_data
         assert evidence.raw_data["margin_data"]["gross_margin"] == 49.16
         assert evidence.raw_data["margin_data"]["industry_avg_gross_margin"] == 35.0
         assert len(evidence.raw_data["margin_trend"]["items"]) == 4
         assert len(evidence.raw_data["sector_ranking"]["items"]) == 3
-        assert evidence.raw_data["price_war_signals"]["count"] == 0
+        assert len(evidence.raw_data["competition_news"]) == 1
 
-        # Verify summary format
+        # Verify summary — raw news shown for LLM to judge
         assert "## 毛利率数据" in evidence.data_summary
         assert "当前毛利率：49.16%" in evidence.data_summary
         assert "行业平均毛利率：35.0%" in evidence.data_summary
         assert "最近4季度毛利率趋势" in evidence.data_summary
         assert "## 行业板块竞争格局" in evidence.data_summary
         assert "板块共3个行业参与排名" in evidence.data_summary
-        assert "## 价格战信号" in evidence.data_summary
-        assert "近6个月未发现明显价格战/内卷信号" in evidence.data_summary
+        assert "竞争相关新闻" in evidence.data_summary
         assert "## 判断约束" in evidence.data_summary
-        assert "内卷风险高" in evidence.data_summary
-        assert "数据获取不完整" not in evidence.data_summary
-
-    def test_collect_data_detects_price_war_keywords(self):
-        """Verify price war keyword detection from news."""
-        evaluator = CompetitionLandscapeEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "测试公司",
-            "industry": "测试行业",
-        }
-        news = {
-            "items": [
-                {
-                    "publish_time": "2026-04-01",
-                    "source": "证券时报",
-                    "title": "行业价格战加剧，企业降价促销",
-                    "summary": "多家企业宣布降价策略，毛利率持续下滑。",
-                },
-                {
-                    "publish_time": "2026-05-15",
-                    "source": "财联社",
-                    "title": "行业内卷严重，头部企业也难以幸免",
-                    "summary": "竞争白热化，价格下探成为常态。",
-                },
-                {
-                    "publish_time": "2026-06-01",
-                    "source": "新华网",
-                    "title": "行业平稳发展，无异常",
-                    "summary": "行业运行正常。",
-                },
-            ],
-        }
-
-        with patch(
-            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
-            return_value={},
-        ), patch(
-            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_financials",
-            return_value={"items": []},
-        ), patch(
-            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_sector_list",
-            return_value={"items": []},
-        ), patch(
-            "src.services.buy_criteria.evaluators.competition_landscape.DataService.search_news",
-            return_value=news,
-        ):
-            evidence = evaluator.collect_data("000001.SZ", stock_info)
-
-        assert evidence.raw_data["price_war_signals"]["count"] == 2
-        assert "发现2条价格战/内卷相关报道" in evidence.data_summary
-        assert "行业价格战加剧" in evidence.data_summary
-        assert "行业内卷严重" in evidence.data_summary
+        # Raw approach — no keyword-filtered "未发现" messages
+        assert "未发现明显价格战" not in evidence.data_summary
 
     def test_collect_data_no_industry_cycle_dependency(self):
         """Ensure competition_landscape does not call IndustryCycleService."""
         evaluator = CompetitionLandscapeEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "平安银行",
-            "industry": "银行业",
-        }
+        stock_info = {"symbol": "000001.SZ", "name": "测试", "industry": "测试"}
 
         with patch(
             "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
@@ -639,21 +573,20 @@ class TestCompetitionLandscapeEvidence:
         ):
             evidence = evaluator.collect_data("000001.SZ", stock_info)
 
+        assert "margin_data" in evidence.raw_data
+        assert "margin_trend" in evidence.raw_data
+        assert "sector_ranking" in evidence.raw_data
+        assert "competition_news" in evidence.raw_data
         # No old references
         assert "industry_cycle" not in evidence.raw_data
-        assert "industry_cycle_error" not in evidence.raw_data
         assert "concentration_cr5" not in evidence.raw_data
         assert "competition_intensity" not in evidence.raw_data
-        assert "peer_comparison" not in evidence.raw_data
+        assert "price_war_signals" not in evidence.raw_data
 
     def test_collect_data_handles_exceptions_gracefully(self):
-        """Ensure evaluator handles data source failures gracefully."""
+        """Verify graceful degradation when all data sources fail."""
         evaluator = CompetitionLandscapeEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "平安银行",
-            "industry": "银行业",
-        }
+        stock_info = {"symbol": "000001.SZ", "name": "测试", "industry": "测试"}
 
         with patch(
             "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
@@ -663,92 +596,52 @@ class TestCompetitionLandscapeEvidence:
             side_effect=Exception("timeout"),
         ), patch(
             "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_sector_list",
-            side_effect=Exception("service unavailable"),
+            side_effect=Exception("service down"),
         ), patch(
             "src.services.buy_criteria.evaluators.competition_landscape.DataService.search_news",
-            side_effect=Exception("dns failure"),
+            side_effect=Exception("network error"),
         ):
             evidence = evaluator.collect_data("000001.SZ", stock_info)
 
-        # Should not crash
         assert "## 毛利率数据" in evidence.data_summary
         assert "## 行业板块竞争格局" in evidence.data_summary
-        assert "板块排名数据缺失" in evidence.data_summary
-        assert "## 价格战信号" in evidence.data_summary
-        assert "近6个月未发现明显价格战/内卷信号" in evidence.data_summary
+        assert "## 竞争相关新闻" in evidence.data_summary
+        assert "## 判断约束" in evidence.data_summary
+        assert "无新闻数据" in evidence.data_summary
 
 
 class TestCatalystEventsEvidence:
-    def test_collect_data_uses_announcements_news_and_research(self):
-        """Verify catalyst_events extracts catalyst events from announcements, news, and research."""
+    def test_collect_data_uses_raw_announcements_news_and_research(self):
+        """Verify catalyst_events passes raw data to LLM for judgment."""
         evaluator = CatalystEventsEvaluator()
-        stock_info = {
-            "symbol": "300502.SZ",
-            "name": "新易盛",
-            "industry": "通信设备",
-        }
-        announcements = {
-            "items": [
-                {
-                    "title": "公司将于2026年7月召开年度股东大会",
-                    "publish_time": "2026-06-15",
-                    "event_label": "股东大会",
-                    "severity": "low",
-                },
-                {
-                    "title": "1.6T光模块产品量产发布",
-                    "publish_time": "2026-06-10",
-                    "event_label": "产品发布",
-                    "severity": "medium",
-                },
-                {
-                    "title": "日常经营公告",
-                    "publish_time": "2026-05-20",
-                    "event_label": "一般公告",
-                    "severity": "low",
-                },
-            ],
-        }
-        news = {
-            "items": [
-                {
-                    "publish_time": "2026-06-01",
-                    "source": "证券时报",
-                    "title": "光通信峰会将于8月在上海召开",
-                    "summary": "行业年度峰会聚焦1.6T光模块技术。",
-                },
-                {
-                    "publish_time": "2026-05-15",
-                    "source": "第一财经",
-                    "title": "新易盛与头部云厂商签约合作",
-                    "summary": "签订长期供货协议。",
-                },
-                {
-                    "publish_time": "2026-04-01",
-                    "source": "新华网",
-                    "title": "光模块行业日常资讯",
-                    "summary": "行业运行正常。",
-                },
-            ],
-        }
-        research = {
-            "items": [
-                {
-                    "publish_date": "2026-05-20",
-                    "org": "中信证券",
-                    "rating": "买入",
-                    "title": "1.6T量产在即，业绩拐点将至",
-                    "summary": "新一代产品进入量产阶段，预计下季度业绩超预期。",
-                },
-                {
-                    "publish_date": "2026-03-10",
-                    "org": "华泰证券",
-                    "rating": "增持",
-                    "title": "光模块行业深度报告",
-                    "summary": "行业景气度持续。",
-                },
-            ],
-        }
+        stock_info = {"symbol": "300502.SZ", "name": "新易盛", "industry": "通信设备"}
+        announcements = {"items": [
+            {"publish_time": "2026-06-15", "title": "公司将于2026年7月召开年度股东大会",
+             "event_label": "股东大会", "severity": "low"},
+            {"publish_time": "2026-06-10", "title": "1.6T光模块产品量产发布",
+             "event_label": "产品发布", "severity": "medium"},
+            {"publish_time": "2026-05-20", "title": "日常经营公告",
+             "event_label": "一般公告", "severity": "low"},
+        ]}
+        news = {"items": [
+            {"publish_time": "2026-06-01", "source": "证券时报",
+             "title": "光通信峰会将于8月在上海召开",
+             "summary": "行业年度峰会聚焦1.6T光模块技术。"},
+            {"publish_time": "2026-05-15", "source": "第一财经",
+             "title": "新易盛与头部云厂商签约合作",
+             "summary": "签订长期供货协议。"},
+            {"publish_time": "2026-04-01", "source": "新华网",
+             "title": "光模块行业日常资讯",
+             "summary": "行业运行正常。"},
+        ]}
+        research = {"items": [
+            {"publish_date": "2026-05-20", "org": "中信证券", "rating": "买入",
+             "title": "1.6T量产在即，业绩拐点将至",
+             "summary": "新一代产品进入量产阶段，预计下季度业绩超预期。"},
+            {"publish_date": "2026-03-10", "org": "华泰证券", "rating": "增持",
+             "title": "光模块行业深度报告",
+             "summary": "行业景气度持续。"},
+        ]}
 
         with patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_risk_events",
@@ -762,93 +655,66 @@ class TestCatalystEventsEvidence:
         ):
             evidence = evaluator.collect_data("300502.SZ", stock_info)
 
-        # Verify raw data structure
-        assert "announcement_catalysts" in evidence.raw_data
-        assert "news_catalysts" in evidence.raw_data
-        assert "research_catalysts" in evidence.raw_data
-        assert evidence.raw_data["announcement_catalysts"]["count"] == 2
-        assert evidence.raw_data["news_catalysts"]["count"] == 2
-        assert evidence.raw_data["research_catalysts"]["count"] == 1
+        # Verify raw data — raw lists, no keyword filtering
+        assert "announcement_events" in evidence.raw_data
+        assert "news_events" in evidence.raw_data
+        assert "research_events" in evidence.raw_data
+        assert len(evidence.raw_data["announcement_events"]) == 3
+        assert len(evidence.raw_data["news_events"]) == 3
+        assert len(evidence.raw_data["research_events"]) == 2
 
-        # Verify summary format
-        assert "## 公告催化事件" in evidence.data_summary
-        assert "## 新闻催化线索" in evidence.data_summary
-        assert "## 研报催化线索" in evidence.data_summary
+        # Verify summary — raw data shown for LLM to judge
+        assert "公告事件" in evidence.data_summary
+        assert "新闻线索" in evidence.data_summary
+        assert "研报表述" in evidence.data_summary
         assert "## 判断约束" in evidence.data_summary
-        assert "1.6T光模块产品量产发布" in evidence.data_summary
+        assert "公司将于2026年7月召开年度股东大会" in evidence.data_summary
         assert "光通信峰会将于8月在上海召开" in evidence.data_summary
         assert "1.6T量产在即" in evidence.data_summary
-        assert "数据获取不完整" not in evidence.data_summary
-
-        # Verify no old references
-        assert "catalyst_error" not in evidence.raw_data
-        assert "risk_events" not in evidence.raw_data
+        # Raw approach — no keyword-filtered "未找到" messages
+        assert "未找到催化事件" not in evidence.data_summary
 
     def test_collect_data_no_catalysts_found(self):
-        """When no catalyst keywords match, show appropriate messages."""
+        """Verify empty data shows appropriate fallback."""
         evaluator = CatalystEventsEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "平安银行",
-            "industry": "银行业",
-        }
+        stock_info = {"symbol": "000001.SZ", "name": "平安银行", "industry": "银行业"}
 
         with patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_risk_events",
             return_value={"items": [
-                {"title": "日常公告", "publish_time": "2026-06-01", "event_label": "一般", "severity": "low"},
+                {"publish_time": "2026-06-01", "title": "日常公告",
+                 "event_label": "一般", "severity": "low"},
             ]},
         ), patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.search_news",
             return_value={"items": [
-                {"publish_time": "2026-06-01", "source": "新华网", "title": "银行日常资讯", "summary": "运行正常"},
+                {"publish_time": "2026-06-01", "source": "新华网",
+                 "title": "银行日常资讯", "summary": "运行正常"},
             ]},
         ), patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_research_report",
             return_value={"items": [
-                {"publish_date": "2026-05-01", "org": "某券商", "rating": "中性", "title": "银行行业报告", "summary": "平稳"},
+                {"publish_date": "2026-05-01", "org": "某券商", "rating": "中性",
+                 "title": "银行业报告", "summary": "平稳"},
             ]},
         ):
             evidence = evaluator.collect_data("000001.SZ", stock_info)
 
-        assert "近90天公告中未找到催化事件" in evidence.data_summary
-        assert "近180天新闻中未找到催化线索" in evidence.data_summary
-        assert "研报中未找到催化线索" in evidence.data_summary
-        assert "至少一个具体催化才判为通过" in evidence.data_summary
-
-    def test_collect_data_no_industry_cycle_dependency(self):
-        """Ensure catalyst_events does not reference old catalyst/risk cross-references."""
-        evaluator = CatalystEventsEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "平安银行",
-            "industry": "银行业",
-        }
-
-        with patch(
-            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_risk_events",
-            return_value={"items": []},
-        ), patch(
-            "src.services.buy_criteria.evaluators.catalyst_events.DataService.search_news",
-            return_value={"items": []},
-        ), patch(
-            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_research_report",
-            return_value={"items": []},
-        ):
-            evidence = evaluator.collect_data("000001.SZ", stock_info)
-
+        # Raw data present
+        assert "announcement_events" in evidence.raw_data
+        assert "news_events" in evidence.raw_data
+        assert "research_events" in evidence.raw_data
         # No old references
-        assert "catalyst" not in evidence.raw_data or "catalyst_error" not in evidence.raw_data
-        assert "risk_events" not in evidence.raw_data
+        assert "announcement_catalysts" not in evidence.raw_data
+        assert "news_catalysts" not in evidence.raw_data
+        assert "research_catalysts" not in evidence.raw_data
+        # Raw approach shows actual content, no "未找到" messages
+        assert "未找到催化事件" not in evidence.data_summary
 
     def test_collect_data_handles_exceptions_gracefully(self):
-        """Ensure evaluator handles data source failures gracefully."""
+        """Verify graceful degradation when all data sources fail."""
         evaluator = CatalystEventsEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "平安银行",
-            "industry": "银行业",
-        }
+        stock_info = {"symbol": "000001.SZ", "name": "平安银行", "industry": "银行业"}
 
         with patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_risk_events",
@@ -862,16 +728,13 @@ class TestCatalystEventsEvidence:
         ):
             evidence = evaluator.collect_data("000001.SZ", stock_info)
 
-        # Should not crash, should show fallback messages
-        assert "## 公告催化事件" in evidence.data_summary
-        assert "## 新闻催化线索" in evidence.data_summary
-        assert "## 研报催化线索" in evidence.data_summary
-        assert "近90天公告中未找到催化事件" in evidence.data_summary
-        assert "近180天新闻中未找到催化线索" in evidence.data_summary
-        assert "研报中未找到催化线索" in evidence.data_summary
-
-
-# ── Unit Tests: BaseCriterionEvaluator with mocked LLM ──────────────────
+        assert "公告事件" in evidence.data_summary
+        assert "新闻线索" in evidence.data_summary
+        assert "研报表述" in evidence.data_summary
+        assert "## 判断约束" in evidence.data_summary
+        assert "无公告数据" in evidence.data_summary
+        assert "无新闻数据" in evidence.data_summary
+        assert "无研报数据" in evidence.data_summary
 
 
 class TestBaseEvaluatorWithMockedLLM:

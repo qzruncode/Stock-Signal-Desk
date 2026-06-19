@@ -11,11 +11,6 @@ from src.services.buy_criteria.prompts.rubrics import COMPETITION_LANDSCAPE
 
 logger = logging.getLogger(__name__)
 
-PRICE_WAR_KEYWORDS = [
-    "降价", "价格战", "促销", "内卷", "毛利率下滑", "降价促销",
-    "恶性竞争", "价格下探", "让利", "价格竞争",
-]
-
 
 def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     """Ensure value is a list of dicts."""
@@ -71,24 +66,21 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         except Exception as exc:
             logger.warning("[competition] sectors failed: %s", exc)
 
-        # Price war signals — news keyword search from last 180 days
+        # Price war signals — raw news for LLM to judge competition intensity
         try:
             news = ds.search_news(symbol, days=180)
-            news_items = _list_of_dicts(news.get("items"))[:20]
-            price_war_items = [
-                {"title": n.get("title"), "source": n.get("source"), "time": n.get("publish_time")}
+            news_items = _list_of_dicts(news.get("items"))[:15]
+            raw["competition_news"] = [
+                {
+                    "title": n.get("title"),
+                    "summary": (n.get("summary") or "")[:200],
+                    "source": n.get("source"),
+                    "time": n.get("publish_time"),
+                }
                 for n in news_items
-                if any(
-                    kw in (n.get("title") or "") + (n.get("summary") or "")
-                    for kw in PRICE_WAR_KEYWORDS
-                )
             ]
-            raw["price_war_signals"] = {
-                "items": price_war_items[:5],
-                "count": len(price_war_items),
-            }
         except Exception as exc:
-            logger.warning("[competition] price war search failed: %s", exc)
+            logger.warning("[competition] news failed: %s", exc)
 
         # Build summary
         lines = ["## 毛利率数据"]
@@ -114,21 +106,20 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         else:
             lines.append("- 板块排名数据缺失")
 
-        lines.extend(["", "## 价格战信号"])
-        pw = raw.get("price_war_signals", {})
-        if pw.get("count", 0) > 0:
-            lines.append(f"- 发现{pw['count']}条价格战/内卷相关报道：")
-            for item in pw.get("items", [])[:5]:
-                title = (item.get("title") or "")[:160]
-                lines.append(f"  - [{item.get('time', '?')}] {item.get('source', '?')}：{title}")
+        lines.extend(["", "## 竞争相关新闻（请自行判断是否涉及价格战/内卷/过度竞争）"])
+        cn = raw.get("competition_news", [])
+        if cn:
+            for item in cn[:10]:
+                lines.append(f"- [{item.get('time', '?')}] {item.get('source', '?')}：{item.get('title', '')[:160]}；{item.get('summary', '')}")
         else:
-            lines.append("- 近6个月未发现明显价格战/内卷信号")
+            lines.append("- 无新闻数据")
 
         lines.extend([
             "",
             "## 判断约束",
-            "- 毛利率连续下滑 + 价格战信号 = 内卷风险高。",
-            "- 毛利率稳定/提升 + 无明显价格战信号 = 竞争格局健康。",
+            "- 毛利率连续下滑 + 新闻中有价格战/内卷/利润压缩描述 = 内卷风险高。",
+            "- 毛利率稳定/提升 + 新闻中无恶性竞争信号 = 竞争格局健康。",
+            "- 请基于新闻实际内容判断，不要因为不含'降价'等关键词就忽略竞争加剧的信号。",
         ])
 
         summary = "\n".join(lines)

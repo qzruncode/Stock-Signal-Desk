@@ -27,15 +27,11 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
         ds = DataService()
         raw: dict[str, Any] = {}
 
-        # Extract catalyst events from announcements (risk events endpoint aggregates announcements)
+        # Announcements — raw data for LLM to judge catalyst potential
         try:
             announcements = ds.get_risk_events(symbol, days=90)
             ann_items = _list_of_dicts(announcements.get("items"))[:10]
-            catalyst_keywords = [
-                "发布", "召开", "投产", "量产", "签约", "中标",
-                "股东大会", "财报", "业绩", "扩产", "投产仪式",
-            ]
-            catalyst_items = [
+            raw["announcement_events"] = [
                 {
                     "title": a.get("title", ""),
                     "date": a.get("publish_time"),
@@ -43,112 +39,87 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
                     "severity": a.get("severity"),
                 }
                 for a in ann_items
-                if any(kw in (a.get("title") or "") for kw in catalyst_keywords)
             ]
-            raw["announcement_catalysts"] = {
-                "items": catalyst_items[:5],
-                "count": len(catalyst_items),
-            }
         except Exception as exc:
             logger.warning("[catalyst] announcements failed: %s", exc)
-            raw["announcement_catalysts"] = {"items": [], "count": 0, "error": str(exc)}
+            raw["announcement_events"] = []
 
-        # Extract catalyst clues from news
+        # News — raw data for LLM to judge catalyst clues
         try:
             news = ds.search_news(symbol, days=180)
-            news_items = _list_of_dicts(news.get("items"))[:20]
-            news_catalyst_keywords = [
-                "展会", "峰会", "发布会", "论坛", "大会", "投产",
-                "量产", "签约", "中标", "战略合作", "订单", "招标",
-            ]
-            news_catalyst_items = [
+            news_items = _list_of_dicts(news.get("items"))[:15]
+            raw["news_events"] = [
                 {
                     "title": n.get("title", ""),
                     "source": n.get("source"),
                     "time": n.get("publish_time"),
-                    "summary": (n.get("summary") or "")[:150],
+                    "summary": (n.get("summary") or "")[:200],
                 }
                 for n in news_items
-                if any(kw in (n.get("title") or "") for kw in news_catalyst_keywords)
             ]
-            raw["news_catalysts"] = {
-                "items": news_catalyst_items[:8],
-                "count": len(news_catalyst_items),
-            }
         except Exception as exc:
             logger.warning("[catalyst] news failed: %s", exc)
-            raw["news_catalysts"] = {"items": [], "count": 0, "error": str(exc)}
+            raw["news_events"] = []
 
-        # Extract业绩拐点/技术迭代 catalyst clues from research reports
+        # Research reports — raw data for LLM to judge catalyst clues
         try:
             research = ds.get_research_report(symbol, days=365)
             research_items = _list_of_dicts(research.get("items"))[:10]
-            research_catalyst_keywords = [
-                "拐点", "超预期", "量产", "突破", "新一代",
-                "发布", "投产", "业绩", "目标价",
-            ]
-            research_catalyst_items = [
+            raw["research_events"] = [
                 {
                     "title": r.get("title", ""),
                     "org": r.get("org"),
                     "date": r.get("publish_date"),
                     "rating": r.get("rating"),
-                    "summary": (r.get("summary") or "")[:150],
+                    "summary": (r.get("summary") or "")[:200],
                 }
                 for r in research_items
-                if any(
-                    kw in ((r.get("title") or "") + (r.get("summary") or ""))
-                    for kw in research_catalyst_keywords
-                )
             ]
-            raw["research_catalysts"] = {
-                "items": research_catalyst_items[:5],
-                "count": len(research_catalyst_items),
-            }
         except Exception as exc:
             logger.warning("[catalyst] research failed: %s", exc)
-            raw["research_catalysts"] = {"items": [], "count": 0, "error": str(exc)}
+            raw["research_events"] = []
 
-        # Build summary for LLM prompt
+        # Build summary for LLM prompt — show raw data
         lines = [
-            "## 公告催化事件",
+            "## 公告事件（请自行判断是否涉及可预见的催化事件，如业绩发布、投产、扩产等）",
         ]
-        ac = raw.get("announcement_catalysts", {})
-        if ac.get("items"):
-            for item in ac["items"][:5]:
+        ae = raw.get("announcement_events", [])
+        if ae:
+            for item in ae[:8]:
                 lines.append(
-                    f"- [{item.get('date', '?')}] [{item.get('label', '?')}] {item.get('title', '')[:160]}"
+                    f"- [{item.get('date', '?')}] [{item.get('label', '?')}] {item.get('title', '')[:180]}"
                 )
         else:
-            lines.append("- 近90天公告中未找到催化事件")
+            lines.append("- 无公告数据")
 
-        lines.extend(["", "## 新闻催化线索"])
-        nc = raw.get("news_catalysts", {})
-        if nc.get("items"):
-            for item in nc["items"][:8]:
+        lines.extend(["", "## 新闻线索（请自行判断是否涉及展会、签约、战略合作、政策窗口等催化）"])
+        ne = raw.get("news_events", [])
+        if ne:
+            for item in ne[:10]:
                 lines.append(
                     f"- [{item.get('time', '?')}] {item.get('source', '?')}："
-                    f"{item.get('title', '')[:140]}；{item.get('summary', '')}"
+                    f"{item.get('title', '')[:160]}；{item.get('summary', '')}"
                 )
         else:
-            lines.append("- 近180天新闻中未找到催化线索")
+            lines.append("- 无新闻数据")
 
-        lines.extend(["", "## 研报催化线索"])
-        rc = raw.get("research_catalysts", {})
-        if rc.get("items"):
-            for item in rc["items"][:5]:
+        lines.extend(["", "## 研报表述（请自行判断是否涉及业绩拐点、技术迭代、产品发布等催化）"])
+        re_ = raw.get("research_events", [])
+        if re_:
+            for item in re_[:8]:
                 lines.append(
                     f"- [{item.get('date', '?')}] {item.get('org', '?')} [{item.get('rating', '?')}]"
-                    f"：{item.get('title', '')[:120]}；{item.get('summary', '')}"
+                    f"：{item.get('title', '')[:140]}；{item.get('summary', '')}"
                 )
         else:
-            lines.append("- 研报中未找到催化线索")
+            lines.append("- 无研报数据")
 
         lines.extend([
             "",
             "## 判断约束",
-            "- 关注未来 6-12 个月内可预见的催化事件（如已知展会、政策窗口、业绩拐点、技术迭代）。",
+            "- 关注未来 6-12 个月内可预见的催化事件（如已知展会、政策窗口、业绩拐点、技术迭代、产品发布）。",
             "- 已完全消化的事件（利好出尽）不算有效催化。",
+            "- 请基于公告/新闻/研报的实际内容判断，不要因为标题不含关键词就忽略催化信号。",
             "- 至少一个具体催化才判为通过。",
         ])
         summary = "\n".join(lines)
