@@ -97,21 +97,19 @@ export function CriterionCard({ criterionName, index, status, result }: Criterio
             <p className="text-[13px] text-slate-400">前置准则未通过，未评估</p>
           )}
 
-          {/* Collapsible data details (only when result exists) */}
-          {result && (status === 'pass' || status === 'fail') && (
+          {/* Collapsible: show the actual prompt sent to LLM */}
+          {result && (status === 'pass' || status === 'fail') && result.prompt_text && (
             <div className="mt-2 border-t border-slate-100 pt-2">
               <button
                 onClick={() => setDataExpanded(!dataExpanded)}
                 className="flex items-center gap-1 text-xs text-cyan-600 hover:text-cyan-700 transition-colors"
               >
                 {dataExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                查看底层数据明细
+                查看模型输入
               </button>
               {dataExpanded && (
-                <div className="mt-2 rounded-xl bg-slate-50 p-3 text-xs text-slate-600 font-mono leading-relaxed max-h-64 overflow-y-auto">
-                  <pre className="whitespace-pre-wrap break-all">
-                    {JSON.stringify(result.evidence.raw_data, null, 2)}
-                  </pre>
+                <div className="mt-2 rounded-xl bg-slate-50 p-3 text-xs text-slate-600 font-mono leading-relaxed max-h-96 overflow-y-auto">
+                  <pre className="whitespace-pre-wrap">{result.prompt_text}</pre>
                 </div>
               )}
             </div>

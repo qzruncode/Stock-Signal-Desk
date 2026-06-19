@@ -27,6 +27,7 @@ export interface CriterionResult {
   passed: boolean;
   verdict: string;
   evidence: CriterionEvidence;
+  prompt_text: string;
   analyzed_at: string;
 }
 

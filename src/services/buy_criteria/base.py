@@ -28,6 +28,7 @@ class CriterionResult:
     passed: bool
     verdict: str
     evidence: CriterionEvidence = field(default_factory=CriterionEvidence)
+    prompt_text: str = ""
     analyzed_at: str = ""
 
     def __post_init__(self):
@@ -45,6 +46,7 @@ class CriterionResult:
                 "raw_data": self.evidence.raw_data,
                 "data_summary": self.evidence.data_summary,
             },
+            "prompt_text": self.prompt_text,
             "analyzed_at": self.analyzed_at,
         }
 
@@ -99,6 +101,7 @@ class BaseCriterionEvaluator(ABC):
                 passed=False,
                 verdict=f"{self.criterion_name}评估失败：{error_msg or 'LLM 未返回有效判断'}",
                 evidence=evidence,
+                prompt_text=user_prompt,
             )
 
         passed = result.get("passed", False)
@@ -113,6 +116,7 @@ class BaseCriterionEvaluator(ABC):
             passed=bool(passed),
             verdict=verdict,
             evidence=evidence,
+            prompt_text=user_prompt,
         )
 
     def _call_llm(self, user_prompt: str, *, attempt: int) -> tuple[Optional[dict[str, Any]], str]:
