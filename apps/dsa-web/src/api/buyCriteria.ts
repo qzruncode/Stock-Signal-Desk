@@ -76,6 +76,6 @@ export const buyCriteriaApi = {
   /** Get the SSE URL for criteria analysis. */
   getCriteriaStreamUrl(symbol: string): string {
     const base = apiClient.defaults.baseURL || '';
-    return `${base}/api/v1/stocks/buy-decision/criteria/analyze?symbol=${encodeURIComponent(symbol)}`;
+    return `${base}/api/v1/stocks/criteria/analyze?symbol=${encodeURIComponent(symbol)}`;
   },
 };
