@@ -59,10 +59,6 @@ class DataService:
         from api.v1.endpoints.macro import get_macro_indicator
         return get_macro_indicator(indicator=indicator, months=months)
 
-    def get_industry_cycle_report(self, symbol: str) -> dict[str, Any]:
-        from src.services.industry_cycle_service import IndustryCycleService
-        return IndustryCycleService().get_report(symbol=symbol)
-
     def get_market_mainline_report(self) -> dict[str, Any]:
         from src.services.market_theme_service import MarketThemeService
         return MarketThemeService().get_model_report(force=False)
