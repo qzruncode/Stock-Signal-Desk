@@ -16,6 +16,7 @@ from src.services.buy_criteria.base import (
 from src.services.buy_criteria.evaluators import EVALUATOR_CLASSES
 from src.services.buy_criteria.evaluators.growth_drivers import GrowthDriversEvaluator
 from src.services.buy_criteria.evaluators.growth_space import GrowthSpaceEvaluator
+from src.services.buy_criteria.evaluators.competition_landscape import CompetitionLandscapeEvaluator
 from src.services.buy_criteria.evaluators.mainline_position import MainlinePositionEvaluator
 from src.services.buy_criteria.evaluators.prosperity_cycle import ProsperityCycleEvaluator
 from src.services.buy_criteria.orchestrator import CriterionOrchestrator, _format_sse
@@ -479,6 +480,203 @@ class TestGrowthSpaceEvidence:
         assert "industry_beta_detector" not in evidence.raw_data
         assert "industry_cycle_error" not in evidence.raw_data
         assert "数据获取不完整" not in evidence.data_summary
+
+
+class TestCompetitionLandscapeEvidence:
+    def test_collect_data_uses_valuation_financials_sectors_news(self):
+        """Verify competition_landscape extracts margin/sector/price-war evidence from raw data."""
+        evaluator = CompetitionLandscapeEvaluator()
+        stock_info = {
+            "symbol": "300502.SZ",
+            "name": "新易盛",
+            "industry": "通信设备",
+            "main_business": "光模块",
+        }
+        valuation = {
+            "gross_margin": 49.16,
+            "net_margin": 38.2,
+            "industry_average": {
+                "gross_margin": 35.0,
+                "net_margin": 22.0,
+            },
+        }
+        financials = {
+            "items": [
+                {"report_date": "2026-03-31", "gross_margin": 49.16},
+                {"report_date": "2025-12-31", "gross_margin": 47.5},
+                {"report_date": "2025-09-30", "gross_margin": 45.2},
+                {"report_date": "2025-06-30", "gross_margin": 43.8},
+            ]
+        }
+        sectors = {
+            "items": [
+                {"name": "半导体", "change_pct": 3.2},
+                {"name": "通信设备", "change_pct": 2.1},
+                {"name": "计算机设备", "change_pct": 1.8},
+            ],
+        }
+        news = {
+            "items": [
+                {
+                    "publish_time": "2026-05-10",
+                    "source": "第一财经",
+                    "title": "光模块行业景气，订单持续增长",
+                    "summary": "行业需求旺盛，毛利率稳步提升。",
+                },
+            ],
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
+            return_value=valuation,
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_financials",
+            return_value=financials,
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_sector_list",
+            return_value=sectors,
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.search_news",
+            return_value=news,
+        ):
+            evidence = evaluator.collect_data("300502.SZ", stock_info)
+
+        # Verify raw data structure
+        assert "margin_data" in evidence.raw_data
+        assert "margin_trend" in evidence.raw_data
+        assert "sector_ranking" in evidence.raw_data
+        assert "price_war_signals" in evidence.raw_data
+        assert evidence.raw_data["margin_data"]["gross_margin"] == 49.16
+        assert evidence.raw_data["margin_data"]["industry_avg_gross_margin"] == 35.0
+        assert len(evidence.raw_data["margin_trend"]["items"]) == 4
+        assert len(evidence.raw_data["sector_ranking"]["items"]) == 3
+        assert evidence.raw_data["price_war_signals"]["count"] == 0
+
+        # Verify summary format
+        assert "## 毛利率数据" in evidence.data_summary
+        assert "当前毛利率：49.16%" in evidence.data_summary
+        assert "行业平均毛利率：35.0%" in evidence.data_summary
+        assert "最近4季度毛利率趋势" in evidence.data_summary
+        assert "## 行业板块竞争格局" in evidence.data_summary
+        assert "板块共3个行业参与排名" in evidence.data_summary
+        assert "## 价格战信号" in evidence.data_summary
+        assert "近6个月未发现明显价格战/内卷信号" in evidence.data_summary
+        assert "## 判断约束" in evidence.data_summary
+        assert "内卷风险高" in evidence.data_summary
+        assert "数据获取不完整" not in evidence.data_summary
+
+    def test_collect_data_detects_price_war_keywords(self):
+        """Verify price war keyword detection from news."""
+        evaluator = CompetitionLandscapeEvaluator()
+        stock_info = {
+            "symbol": "000001.SZ",
+            "name": "测试公司",
+            "industry": "测试行业",
+        }
+        news = {
+            "items": [
+                {
+                    "publish_time": "2026-04-01",
+                    "source": "证券时报",
+                    "title": "行业价格战加剧，企业降价促销",
+                    "summary": "多家企业宣布降价策略，毛利率持续下滑。",
+                },
+                {
+                    "publish_time": "2026-05-15",
+                    "source": "财联社",
+                    "title": "行业内卷严重，头部企业也难以幸免",
+                    "summary": "竞争白热化，价格下探成为常态。",
+                },
+                {
+                    "publish_time": "2026-06-01",
+                    "source": "新华网",
+                    "title": "行业平稳发展，无异常",
+                    "summary": "行业运行正常。",
+                },
+            ],
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
+            return_value={},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_financials",
+            return_value={"items": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_sector_list",
+            return_value={"items": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.search_news",
+            return_value=news,
+        ):
+            evidence = evaluator.collect_data("000001.SZ", stock_info)
+
+        assert evidence.raw_data["price_war_signals"]["count"] == 2
+        assert "发现2条价格战/内卷相关报道" in evidence.data_summary
+        assert "行业价格战加剧" in evidence.data_summary
+        assert "行业内卷严重" in evidence.data_summary
+
+    def test_collect_data_no_industry_cycle_dependency(self):
+        """Ensure competition_landscape does not call IndustryCycleService."""
+        evaluator = CompetitionLandscapeEvaluator()
+        stock_info = {
+            "symbol": "000001.SZ",
+            "name": "平安银行",
+            "industry": "银行业",
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
+            return_value={},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_financials",
+            return_value={"items": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_sector_list",
+            return_value={"items": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.search_news",
+            return_value={"items": []},
+        ):
+            evidence = evaluator.collect_data("000001.SZ", stock_info)
+
+        # No old references
+        assert "industry_cycle" not in evidence.raw_data
+        assert "industry_cycle_error" not in evidence.raw_data
+        assert "concentration_cr5" not in evidence.raw_data
+        assert "competition_intensity" not in evidence.raw_data
+        assert "peer_comparison" not in evidence.raw_data
+
+    def test_collect_data_handles_exceptions_gracefully(self):
+        """Ensure evaluator handles data source failures gracefully."""
+        evaluator = CompetitionLandscapeEvaluator()
+        stock_info = {
+            "symbol": "000001.SZ",
+            "name": "平安银行",
+            "industry": "银行业",
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_valuation_ratios",
+            side_effect=Exception("network error"),
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_financials",
+            side_effect=Exception("timeout"),
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.get_sector_list",
+            side_effect=Exception("service unavailable"),
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape.DataService.search_news",
+            side_effect=Exception("dns failure"),
+        ):
+            evidence = evaluator.collect_data("000001.SZ", stock_info)
+
+        # Should not crash
+        assert "## 毛利率数据" in evidence.data_summary
+        assert "## 行业板块竞争格局" in evidence.data_summary
+        assert "板块排名数据缺失" in evidence.data_summary
+        assert "## 价格战信号" in evidence.data_summary
+        assert "近6个月未发现明显价格战/内卷信号" in evidence.data_summary
 
 
 # ── Unit Tests: BaseCriterionEvaluator with mocked LLM ──────────────────

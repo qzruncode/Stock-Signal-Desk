@@ -11,6 +11,18 @@ from src.services.buy_criteria.prompts.rubrics import COMPETITION_LANDSCAPE
 
 logger = logging.getLogger(__name__)
 
+PRICE_WAR_KEYWORDS = [
+    "降价", "价格战", "促销", "内卷", "毛利率下滑", "降价促销",
+    "恶性竞争", "价格下探", "让利", "价格竞争",
+]
+
+
+def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
+    """Ensure value is a list of dicts."""
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    return []
+
 
 class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
     criterion_id = "competition_landscape"
@@ -21,45 +33,105 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         ds = DataService()
         raw: dict[str, Any] = {}
 
-        # Industry cycle report (has concentration, margin data)
-        try:
-            report = ds.get_industry_cycle_report(symbol)
-            raw["industry_cycle"] = {
-                "concentration_cr5": report.get("concentration_cr5") or report.get("cr5"),
-                "concentration_hhi": report.get("hhi"),
-                "gross_margin_trend": report.get("gross_margin_trend") or report.get("margin_trend"),
-                "competition_intensity": report.get("competition_intensity"),
-                "price_war_signals": report.get("price_war_signals"),
-                "peer_comparison": report.get("peer_comparison"),
-            }
-        except Exception as exc:
-            logger.warning("[competition] industry_cycle failed: %s", exc)
-            raw["industry_cycle_error"] = str(exc)
-
-        # Valuation (for margin data)
+        # Margin data — current vs industry average
         try:
             valuation = ds.get_valuation_ratios(symbol)
-            raw["valuation"] = {
+            industry_avg = valuation.get("industry_average") or {}
+            raw["margin_data"] = {
                 "gross_margin": valuation.get("gross_margin"),
                 "net_margin": valuation.get("net_margin"),
-                "industry_average": valuation.get("industry_average", {}),
+                "industry_avg_gross_margin": industry_avg.get("gross_margin"),
+                "industry_avg_net_margin": industry_avg.get("net_margin"),
             }
         except Exception as exc:
             logger.warning("[competition] valuation failed: %s", exc)
 
-        # Build summary
-        parts = []
-        ic = raw.get("industry_cycle", {})
-        if ic.get("concentration_cr5") is not None:
-            parts.append(f"行业CR5：{ic['concentration_cr5']}%")
-        if ic.get("gross_margin_trend"):
-            parts.append(f"毛利率趋势：{ic['gross_margin_trend']}")
-        if ic.get("competition_intensity"):
-            parts.append(f"竞争烈度：{ic['competition_intensity']}")
-        if ic.get("price_war_signals"):
-            parts.append(f"价格战信号：{ic['price_war_signals']}")
+        # Margin trend — last 4 quarters from financials
+        try:
+            financials = ds.get_financials(symbol, periods=4, force=True)
+            items = _list_of_dicts(financials.get("items"))[:4]
+            raw["margin_trend"] = {
+                "items": [
+                    {"date": item.get("report_date"), "gross_margin": item.get("gross_margin")}
+                    for item in items
+                ],
+            }
+        except Exception as exc:
+            logger.warning("[competition] financials failed: %s", exc)
 
-        summary = "；".join(parts) if parts else "数据获取不完整"
+        # Sector ranking — industry concentration signals
+        try:
+            sectors = ds.get_sector_list("industry")
+            raw["sector_ranking"] = {
+                "items": [
+                    {"name": s["name"], "rank": i + 1, "change_pct": s.get("change_pct")}
+                    for i, s in enumerate(_list_of_dicts(sectors.get("items"))[:30])
+                ],
+            }
+        except Exception as exc:
+            logger.warning("[competition] sectors failed: %s", exc)
+
+        # Price war signals — news keyword search from last 180 days
+        try:
+            news = ds.search_news(symbol, days=180)
+            news_items = _list_of_dicts(news.get("items"))[:20]
+            price_war_items = [
+                {"title": n.get("title"), "source": n.get("source"), "time": n.get("publish_time")}
+                for n in news_items
+                if any(
+                    kw in (n.get("title") or "") + (n.get("summary") or "")
+                    for kw in PRICE_WAR_KEYWORDS
+                )
+            ]
+            raw["price_war_signals"] = {
+                "items": price_war_items[:5],
+                "count": len(price_war_items),
+            }
+        except Exception as exc:
+            logger.warning("[competition] price war search failed: %s", exc)
+
+        # Build summary
+        lines = ["## 毛利率数据"]
+        md = raw.get("margin_data", {})
+        if md.get("gross_margin") is not None:
+            lines.append(f"- 当前毛利率：{md['gross_margin']}%")
+        if md.get("industry_avg_gross_margin") is not None:
+            lines.append(f"- 行业平均毛利率：{md['industry_avg_gross_margin']}%")
+
+        mt = raw.get("margin_trend", {})
+        if mt.get("items"):
+            trend_parts = []
+            for item in mt["items"]:
+                gm = item.get("gross_margin")
+                val = f"{gm}%" if gm is not None else "?"
+                trend_parts.append(val)
+            lines.append(f"- 最近4季度毛利率趋势：{' → '.join(trend_parts)}")
+
+        lines.extend(["", "## 行业板块竞争格局"])
+        sr = raw.get("sector_ranking", {})
+        if sr.get("items"):
+            lines.append(f"- 板块共{len(sr['items'])}个行业参与排名")
+        else:
+            lines.append("- 板块排名数据缺失")
+
+        lines.extend(["", "## 价格战信号"])
+        pw = raw.get("price_war_signals", {})
+        if pw.get("count", 0) > 0:
+            lines.append(f"- 发现{pw['count']}条价格战/内卷相关报道：")
+            for item in pw.get("items", [])[:5]:
+                title = (item.get("title") or "")[:160]
+                lines.append(f"  - [{item.get('time', '?')}] {item.get('source', '?')}：{title}")
+        else:
+            lines.append("- 近6个月未发现明显价格战/内卷信号")
+
+        lines.extend([
+            "",
+            "## 判断约束",
+            "- 毛利率连续下滑 + 价格战信号 = 内卷风险高。",
+            "- 毛利率稳定/提升 + 无明显价格战信号 = 竞争格局健康。",
+        ])
+
+        summary = "\n".join(lines)
         return CriterionEvidence(raw_data=raw, data_summary=summary)
 
     def get_rubric(self) -> str:
