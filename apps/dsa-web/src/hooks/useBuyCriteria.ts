@@ -1,12 +1,11 @@
 // apps/dsa-web/src/hooks/useBuyCriteria.ts
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
+import { CRITERIA_ORDER, buyCriteriaApi } from '../api/buyCriteria';
+import type {
   AnalysisCompleteEvent,
   CriterionId,
   CriterionResult,
   CriterionStatus,
-  CRITERIA_ORDER,
-  buyCriteriaApi,
 } from '../api/buyCriteria';
 
 // ── Types ────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ const STATUS_CONFIG: Record<CriterionStatus, { border: string; bg: string; iconC
 
 const NUM_LABELS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧'];
 
-export function CriterionCard({ criterionId, criterionName, index, status, result }: CriterionCardProps) {
+export function CriterionCard({ criterionName, index, status, result }: CriterionCardProps) {
   const [dataExpanded, setDataExpanded] = useState(false);
   const config = STATUS_CONFIG[status];
 

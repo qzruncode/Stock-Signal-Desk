@@ -49,14 +49,14 @@ export function BuyCriteriaPanel({ symbol }: BuyCriteriaPanelProps) {
       )}
 
       <div className="space-y-3">
-        {CRITERIA_ORDER.map((c) => {
+        {CRITERIA_ORDER.map((c, idx) => {
           const cs = state.criteria[c.id];
           return (
             <CriterionCard
               key={c.id}
               criterionId={c.id}
               criterionName={c.name}
-              index={c.index}
+              index={idx}
               status={cs.status}
               result={cs.result}
             />
