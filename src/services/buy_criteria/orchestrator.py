@@ -34,6 +34,8 @@ class CriterionOrchestrator:
 
     def run(self, symbol: str) -> list[CriterionResult]:
         """Run all evaluators. Returns list of results (may be partial if early-terminated)."""
+        from src.services.buy_criteria.data_service import _clear_cache
+        _clear_cache()
         stock_info = _get_stock_info_safe(symbol)
         results: list[CriterionResult] = []
 
@@ -66,6 +68,8 @@ class CriterionOrchestrator:
 
         def _worker():
             try:
+                from src.services.buy_criteria.data_service import _clear_cache
+                _clear_cache()
                 stock_info_data = _get_stock_info_safe(symbol)
                 results: list[CriterionResult] = []
 

@@ -2,9 +2,9 @@
 """Unified data-fetching wrapper for criterion evaluators.
 
 Wraps existing endpoint functions so evaluators don't import endpoints directly.
-Adds per-request caching: within a single symbol analysis, each endpoint is
-called at most once. Different DataService instances (different symbols or
-different requests) are independent.
+Uses a module-level cache so that ALL DataService instances in the same
+process/request share cached results. Within a single analysis run, each
+endpoint is called at most once regardless of how many evaluators need it.
 """
 from __future__ import annotations
 
@@ -13,17 +13,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache shared by all DataService instances.
+# Key: "endpoint_name:symbol:args", Value: result dict.
+_REQUEST_CACHE: dict[str, Any] = {}
+
+
+def _clear_cache() -> None:
+    """Clear the request cache. Call at the start of each new analysis request."""
+    _REQUEST_CACHE.clear()
+
 
 class DataService:
-    """Provides data to evaluators with per-request caching."""
-
-    def __init__(self) -> None:
-        self._cache: dict[str, Any] = {}
+    """Provides data to evaluators with cross-instance request caching."""
 
     def _cached_call(self, cache_key: str, factory) -> Any:
-        if cache_key not in self._cache:
-            self._cache[cache_key] = factory()
-        return self._cache[cache_key]
+        if cache_key not in _REQUEST_CACHE:
+            _REQUEST_CACHE[cache_key] = factory()
+        return _REQUEST_CACHE[cache_key]
 
     def get_stock_info(self, symbol: str) -> dict[str, Any]:
         from api.v1.endpoints.stock_info import get_stock_info
