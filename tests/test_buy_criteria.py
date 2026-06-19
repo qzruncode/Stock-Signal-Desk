@@ -14,6 +14,7 @@ from src.services.buy_criteria.base import (
     _parse_verdict_json,
 )
 from src.services.buy_criteria.evaluators import EVALUATOR_CLASSES
+from src.services.buy_criteria.evaluators.growth_drivers import GrowthDriversEvaluator
 from src.services.buy_criteria.evaluators.growth_space import GrowthSpaceEvaluator
 from src.services.buy_criteria.evaluators.mainline_position import MainlinePositionEvaluator
 from src.services.buy_criteria.evaluators.prosperity_cycle import ProsperityCycleEvaluator
@@ -256,6 +257,125 @@ class TestProsperityCycleEvidence:
 
         assert "未匹配到板块排名数据" in evidence.data_summary
         assert "行业板块排名未匹配" in evidence.data_summary
+
+
+class TestGrowthDriversEvidence:
+    def test_collect_data_uses_news_and_research(self):
+        """Verify growth_drivers extracts policy/tech/demand evidence from raw data."""
+        evaluator = GrowthDriversEvaluator()
+        stock_info = {
+            "symbol": "300502.SZ",
+            "name": "新易盛",
+            "industry": "通信设备",
+            "main_business": "光模块",
+        }
+        news = {
+            "items": [
+                {
+                    "publish_time": "2026-05-10",
+                    "source": "新华社",
+                    "title": "工信部发布光通信产业发展指导意见",
+                    "summary": "支持光通信技术升级和产业化。",
+                },
+                {
+                    "publish_time": "2026-06-01",
+                    "source": "第一财经",
+                    "title": "光模块订单旺盛，厂商扩产",
+                    "summary": "多家光模块厂商订单增长，产能供不应求。",
+                },
+            ],
+        }
+        research = {
+            "items": [
+                {
+                    "publish_date": "2026-04-15",
+                    "org": "中信证券",
+                    "title": "1.6T光模块技术迭代加速",
+                    "summary": "新一代1.6T产品进入量产阶段，技术突破显著。",
+                },
+            ],
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.growth_drivers.DataService.search_news",
+            return_value=news,
+        ), patch(
+            "src.services.buy_criteria.evaluators.growth_drivers.DataService.get_research_report",
+            return_value=research,
+        ):
+            evidence = evaluator.collect_data("300502.SZ", stock_info)
+
+        # Verify new data structure
+        assert "policy_evidence" in evidence.raw_data
+        assert "tech_evidence" in evidence.raw_data
+        assert "demand_evidence" in evidence.raw_data
+        assert evidence.raw_data["policy_evidence"]["count"] == 1
+        assert evidence.raw_data["tech_evidence"]["count"] == 1
+        assert evidence.raw_data["demand_evidence"]["count"] == 1
+
+        # Verify summary format
+        assert "## 政策驱动证据" in evidence.data_summary
+        assert "## 技术驱动证据" in evidence.data_summary
+        assert "## 需求驱动证据" in evidence.data_summary
+        assert "## 判断约束" in evidence.data_summary
+        assert "工信部发布光通信产业发展指导意见" in evidence.data_summary
+        assert "1.6T光模块技术迭代加速" in evidence.data_summary
+        assert "光模块订单旺盛" in evidence.data_summary
+        assert "数据获取不完整" not in evidence.data_summary
+
+    def test_collect_data_no_industry_cycle_dependency(self):
+        """Ensure growth_drivers does not call IndustryCycleService."""
+        evaluator = GrowthDriversEvaluator()
+        stock_info = {
+            "symbol": "000001.SZ",
+            "name": "平安银行",
+            "industry": "银行业",
+            "main_business": "银行业务",
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.growth_drivers.DataService.search_news",
+            return_value={"items": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.growth_drivers.DataService.get_research_report",
+            return_value={"items": []},
+        ):
+            evidence = evaluator.collect_data("000001.SZ", stock_info)
+
+        # No old references
+        assert "industry_cycle" not in evidence.raw_data
+        assert "sentiment" not in evidence.raw_data
+        assert "policy_drivers" not in evidence.raw_data
+        assert "tech_drivers" not in evidence.raw_data
+        assert "demand_drivers" not in evidence.raw_data
+        # Empty evidence shows appropriate messages
+        assert "未发现政策相关报道" in evidence.data_summary
+        assert "未发现技术突破相关描述" in evidence.data_summary
+        assert "未发现需求/订单增长线索" in evidence.data_summary
+
+    def test_collect_data_handles_exceptions_gracefully(self):
+        """Ensure evaluator handles data source failures gracefully."""
+        evaluator = GrowthDriversEvaluator()
+        stock_info = {
+            "symbol": "000001.SZ",
+            "name": "平安银行",
+            "industry": "银行业",
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.growth_drivers.DataService.search_news",
+            side_effect=Exception("network error"),
+        ), patch(
+            "src.services.buy_criteria.evaluators.growth_drivers.DataService.get_research_report",
+            side_effect=Exception("timeout"),
+        ):
+            evidence = evaluator.collect_data("000001.SZ", stock_info)
+
+        # Should not crash, should show fallback messages
+        assert "## 政策驱动证据" in evidence.data_summary
+        assert "## 技术驱动证据" in evidence.data_summary
+        assert "## 需求驱动证据" in evidence.data_summary
+        assert "未发现政策相关报道" in evidence.data_summary
 
 
 class TestGrowthSpaceEvidence:
