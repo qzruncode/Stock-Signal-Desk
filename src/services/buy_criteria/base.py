@@ -123,6 +123,14 @@ class BaseCriterionEvaluator(ABC):
         from src.storage import persist_llm_usage
 
         system_prompt = "你是一个专业的A股行业分析师。请严格按照判定标准进行分析，并以JSON格式返回结果。"
+
+        # Custom validator that handles markdown code fences — the default
+        # json.loads validator in call_ai_structured rejects fenced JSON.
+        def _fence_aware_validator(text: str) -> None:
+            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip())
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+            json.loads(cleaned)
+
         try:
             analyzer = get_analyzer()
             response_text, model_used, usage = call_ai_structured(
@@ -132,6 +140,7 @@ class BaseCriterionEvaluator(ABC):
                 call_type=f"buy_criteria_{self.criterion_id}",
                 temperature=0.2,
                 max_tokens=2048,
+                response_validator=_fence_aware_validator,
             )
             persist_llm_usage(usage, model_used, f"buy_criteria_{self.criterion_id}")
             parsed = _parse_verdict_json(response_text)
