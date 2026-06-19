@@ -84,10 +84,12 @@ class BaseCriterionEvaluator(ABC):
         evidence = self.collect_data(symbol, stock_info)
         user_prompt = self.build_user_prompt(stock_info, evidence)
 
-        result = self._call_llm(user_prompt, attempt=0)
+        result, error_msg = self._call_llm(user_prompt, attempt=0)
         if result is None:
             # Retry once
-            result = self._call_llm(user_prompt, attempt=1)
+            result, retry_error = self._call_llm(user_prompt, attempt=1)
+            if retry_error:
+                error_msg = retry_error
 
         if result is None:
             return CriterionResult(
@@ -95,7 +97,7 @@ class BaseCriterionEvaluator(ABC):
                 criterion_name=self.criterion_name,
                 index=self.index,
                 passed=False,
-                verdict=f"{self.criterion_name}评估失败：LLM 无法返回有效判断。",
+                verdict=f"{self.criterion_name}评估失败：{error_msg or 'LLM 未返回有效判断'}",
                 evidence=evidence,
             )
 
@@ -113,8 +115,9 @@ class BaseCriterionEvaluator(ABC):
             evidence=evidence,
         )
 
-    def _call_llm(self, user_prompt: str, *, attempt: int) -> Optional[dict[str, Any]]:
-        """Call LLM and parse JSON response. Returns None on failure."""
+    def _call_llm(self, user_prompt: str, *, attempt: int) -> tuple[Optional[dict[str, Any]], str]:
+        """Call LLM and parse JSON response. Returns (result, error_message).
+        On success, error_message is empty. On failure, result is None."""
         from src.ai_caller import call_ai_structured
         from src.analyzer import get_analyzer
         from src.storage import persist_llm_usage
@@ -131,13 +134,20 @@ class BaseCriterionEvaluator(ABC):
                 max_tokens=2048,
             )
             persist_llm_usage(usage, model_used, f"buy_criteria_{self.criterion_id}")
-            return _parse_verdict_json(response_text)
+            parsed = _parse_verdict_json(response_text)
+            if parsed is None:
+                return None, f"LLM 返回内容无法解析为 JSON（模型: {model_used}）"
+            return parsed, ""
         except Exception as exc:
+            err_msg = f"{type(exc).__name__}: {exc}"
+            # Truncate very long errors
+            if len(err_msg) > 200:
+                err_msg = err_msg[:200] + "…"
             logger.warning(
                 "[buy_criteria] LLM call failed for %s (attempt %d): %s",
-                self.criterion_id, attempt, exc,
+                self.criterion_id, attempt, err_msg,
             )
-            return None
+            return None, err_msg
 
 
 def _parse_verdict_json(raw_text: str) -> Optional[dict[str, Any]]:

@@ -77,7 +77,15 @@ export function CriterionCard({ criterionName, index, status, result }: Criterio
             <p className="text-[13px] text-slate-600 leading-relaxed">{result.verdict}</p>
           )}
           {status === 'fail' && result && (
-            <p className="text-[13px] text-slate-600 leading-relaxed">{result.verdict}</p>
+            <div className={result.verdict.includes('评估失败')
+              ? 'rounded-lg bg-amber-50 border border-amber-200 p-2.5 text-[13px] text-amber-800 leading-relaxed'
+              : 'text-[13px] text-slate-600 leading-relaxed'
+            }>
+              {result.verdict.includes('评估失败') && (
+                <span className="font-medium mr-1">⚠️ 技术错误：</span>
+              )}
+              {result.verdict}
+            </div>
           )}
           {status === 'running' && (
             <p className="text-[13px] text-slate-400">正在采集数据并分析...</p>

@@ -94,7 +94,7 @@ class TestBaseEvaluatorWithMockedLLM:
         mock_evidence = CriterionEvidence(raw_data={}, data_summary="test data")
 
         with patch.object(evaluator, "collect_data", return_value=mock_evidence):
-            with patch.object(evaluator, "_call_llm", return_value={"passed": True, "verdict": "核心主线，资金持续流入"}):
+            with patch.object(evaluator, "_call_llm", return_value=({"passed": True, "verdict": "核心主线，资金持续流入"}, "")):
                 result = evaluator.evaluate("300308", {"symbol": "300308", "name": "中际旭创", "industry": "通信设备"})
 
         assert result.passed is True
@@ -106,7 +106,7 @@ class TestBaseEvaluatorWithMockedLLM:
         mock_evidence = CriterionEvidence(raw_data={}, data_summary="test data")
 
         with patch.object(evaluator, "collect_data", return_value=mock_evidence):
-            with patch.object(evaluator, "_call_llm", return_value={"passed": False, "verdict": "非主线"}):
+            with patch.object(evaluator, "_call_llm", return_value=({"passed": False, "verdict": "非主线"}, "")):
                 result = evaluator.evaluate("300308", {"symbol": "300308", "name": "中际旭创", "industry": "通信设备"})
 
         assert result.passed is False
@@ -116,7 +116,7 @@ class TestBaseEvaluatorWithMockedLLM:
         mock_evidence = CriterionEvidence(raw_data={}, data_summary="test data")
 
         with patch.object(evaluator, "collect_data", return_value=mock_evidence):
-            with patch.object(evaluator, "_call_llm", return_value=None):
+            with patch.object(evaluator, "_call_llm", return_value=(None, "All LLM models failed")):
                 result = evaluator.evaluate("300308", {"symbol": "300308", "name": "中际旭创", "industry": "通信设备"})
 
         assert result.passed is False
