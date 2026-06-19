@@ -262,8 +262,8 @@ class TestProsperityCycleEvidence:
 
 
 class TestGrowthDriversEvidence:
-    def test_collect_data_uses_news_and_research(self):
-        """Verify growth_drivers extracts policy/tech/demand evidence from raw data."""
+    def test_collect_data_uses_raw_news_and_research(self):
+        """Verify growth_drivers passes raw news/research to LLM for judgment."""
         evaluator = GrowthDriversEvaluator()
         stock_info = {
             "symbol": "300502.SZ",
@@ -307,15 +307,15 @@ class TestGrowthDriversEvidence:
         ):
             evidence = evaluator.collect_data("300502.SZ", stock_info)
 
-        # Verify new data structure
-        assert "policy_evidence" in evidence.raw_data
-        assert "tech_evidence" in evidence.raw_data
-        assert "demand_evidence" in evidence.raw_data
-        assert evidence.raw_data["policy_evidence"]["count"] == 1
-        assert evidence.raw_data["tech_evidence"]["count"] == 1
-        assert evidence.raw_data["demand_evidence"]["count"] == 1
+        # Verify raw data structure — raw lists, no keyword filtering
+        assert "policy_news" in evidence.raw_data
+        assert "tech_research" in evidence.raw_data
+        assert "demand_news" in evidence.raw_data
+        assert len(evidence.raw_data["policy_news"]) == 2
+        assert len(evidence.raw_data["tech_research"]) == 1
+        assert len(evidence.raw_data["demand_news"]) == 2
 
-        # Verify summary format
+        # Verify summary includes raw content for LLM to judge
         assert "## 政策驱动证据" in evidence.data_summary
         assert "## 技术驱动证据" in evidence.data_summary
         assert "## 需求驱动证据" in evidence.data_summary
@@ -323,7 +323,8 @@ class TestGrowthDriversEvidence:
         assert "工信部发布光通信产业发展指导意见" in evidence.data_summary
         assert "1.6T光模块技术迭代加速" in evidence.data_summary
         assert "光模块订单旺盛" in evidence.data_summary
-        assert "数据获取不完整" not in evidence.data_summary
+        # Raw approach tells LLM to judge, not keyword-filtered "未发现"
+        assert "未发现政策相关报道" not in evidence.data_summary
 
     def test_collect_data_no_industry_cycle_dependency(self):
         """Ensure growth_drivers does not call IndustryCycleService."""
@@ -344,25 +345,20 @@ class TestGrowthDriversEvidence:
         ):
             evidence = evaluator.collect_data("000001.SZ", stock_info)
 
+        # Raw data keys present (empty lists, no keyword filtering)
+        assert "policy_news" in evidence.raw_data
+        assert "tech_research" in evidence.raw_data
+        assert "demand_news" in evidence.raw_data
         # No old references
         assert "industry_cycle" not in evidence.raw_data
-        assert "sentiment" not in evidence.raw_data
         assert "policy_drivers" not in evidence.raw_data
         assert "tech_drivers" not in evidence.raw_data
-        assert "demand_drivers" not in evidence.raw_data
-        # Empty evidence shows appropriate messages
-        assert "未发现政策相关报道" in evidence.data_summary
-        assert "未发现技术突破相关描述" in evidence.data_summary
-        assert "未发现需求/订单增长线索" in evidence.data_summary
+        assert "未发现政策相关报道" not in evidence.data_summary
 
     def test_collect_data_handles_exceptions_gracefully(self):
-        """Ensure evaluator handles data source failures gracefully."""
+        """Verify graceful degradation when all data sources fail."""
         evaluator = GrowthDriversEvaluator()
-        stock_info = {
-            "symbol": "000001.SZ",
-            "name": "平安银行",
-            "industry": "银行业",
-        }
+        stock_info = {"symbol": "000001.SZ", "name": "测试", "industry": "测试", "main_business": "测试"}
 
         with patch(
             "src.services.buy_criteria.evaluators.growth_drivers.DataService.search_news",
@@ -373,11 +369,13 @@ class TestGrowthDriversEvidence:
         ):
             evidence = evaluator.collect_data("000001.SZ", stock_info)
 
-        # Should not crash, should show fallback messages
+        # Still produces valid summary even with all sources failing
         assert "## 政策驱动证据" in evidence.data_summary
         assert "## 技术驱动证据" in evidence.data_summary
         assert "## 需求驱动证据" in evidence.data_summary
-        assert "未发现政策相关报道" in evidence.data_summary
+        assert "## 判断约束" in evidence.data_summary
+        assert "无新闻数据" in evidence.data_summary
+        assert "无研报数据" in evidence.data_summary
 
 
 class TestGrowthSpaceEvidence:

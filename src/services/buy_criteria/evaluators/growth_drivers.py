@@ -11,19 +11,6 @@ from src.services.buy_criteria.prompts.rubrics import GROWTH_DRIVERS
 
 logger = logging.getLogger(__name__)
 
-POLICY_KEYWORDS = [
-    "政策", "规划", "部委", "发改委", "工信部", "国务院", "中央",
-    "补贴", "支持", "指导意见", "行动方案", "十四五", "专项",
-]
-
-TECH_KEYWORDS = [
-    "技术突破", "技术迭代", "新一代", "量产", "商用", "升级", "创新",
-]
-
-DEMAND_KEYWORDS = [
-    "订单", "出货", "装机", "销量", "需求", "产能", "扩产", "供不应求",
-]
-
 
 def _list_of_dicts(value: Any) -> list[dict]:
     """Ensure value is a list of dicts."""
@@ -41,116 +28,97 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
         ds = DataService()
         raw: dict[str, Any] = {}
 
-        # Policy drivers — search news from the last 6 months for policy keywords
+        # Policy drivers — raw news for LLM to judge policy relevance
         try:
             news = ds.search_news(symbol, days=180)
-            news_items = _list_of_dicts(news.get("items"))[:20]
-            policy_items = [
+            news_items = _list_of_dicts(news.get("items"))[:15]
+            raw["policy_news"] = [
                 {
                     "title": n.get("title"),
+                    "summary": (n.get("summary") or "")[:200],
                     "source": n.get("source"),
                     "time": n.get("publish_time"),
                 }
                 for n in news_items
-                if any(
-                    kw in (n.get("title") or "") + (n.get("summary") or "")
-                    for kw in POLICY_KEYWORDS
-                )
             ]
-            raw["policy_evidence"] = {
-                "items": policy_items[:5],
-                "count": len(policy_items),
-            }
         except Exception as exc:
-            logger.warning("[drivers] news failed: %s", exc)
+            logger.warning("[drivers] policy news failed: %s", exc)
 
-        # Tech drivers — extract tech-related descriptions from research reports
+        # Tech drivers — raw research reports for LLM to judge tech relevance
         try:
             research = ds.get_research_report(symbol, days=365)
             research_items = _list_of_dicts(research.get("items"))[:10]
-            tech_items = [
+            raw["tech_research"] = [
                 {
                     "title": r.get("title"),
                     "org": r.get("org"),
                     "date": r.get("publish_date"),
-                    "summary": (r.get("summary") or "")[:200],
+                    "summary": (r.get("summary") or "")[:300],
                 }
                 for r in research_items
-                if any(
-                    kw in (r.get("title") or "") + (r.get("summary") or "")
-                    for kw in TECH_KEYWORDS
-                )
             ]
-            raw["tech_evidence"] = {
-                "items": tech_items[:5],
-                "count": len(tech_items),
-            }
         except Exception as exc:
-            logger.warning("[drivers] research failed: %s", exc)
+            logger.warning("[drivers] tech research failed: %s", exc)
 
-        # Demand drivers — extract demand/order clues from news
+        # Demand drivers — raw news for LLM to judge demand relevance
         try:
-            demand_items = [
+            demand_news = ds.search_news(symbol, days=180)
+            demand_items = _list_of_dicts(demand_news.get("items"))[:15]
+            raw["demand_news"] = [
                 {
                     "title": n.get("title"),
+                    "summary": (n.get("summary") or "")[:200],
                     "source": n.get("source"),
                     "time": n.get("publish_time"),
                 }
-                for n in news_items
-                if any(
-                    kw in (n.get("title") or "") + (n.get("summary") or "")
-                    for kw in DEMAND_KEYWORDS
-                )
+                for n in demand_items
             ]
-            raw["demand_evidence"] = {
-                "items": demand_items[:5],
-                "count": len(demand_items),
-            }
         except Exception as exc:
-            logger.warning("[drivers] demand extraction failed: %s", exc)
+            logger.warning("[drivers] demand news failed: %s", exc)
 
-        # Build summary
+        # Build summary — show raw data for LLM to judge
         lines = [
-            "## 政策驱动证据",
+            "## 政策驱动证据（近6个月新闻，请自行判断是否涉及国家级/部委级产业政策）",
         ]
-        pe = raw.get("policy_evidence", {})
-        if pe.get("items"):
-            for item in pe["items"][:5]:
+        pn = raw.get("policy_news", [])
+        if pn:
+            for item in pn[:10]:
                 lines.append(
-                    f"- [{item.get('time', '?')}] {item.get('source', '?')}：{item.get('title', '')[:180]}"
+                    f"- [{item.get('time', '?')}] {item.get('source', '?')}：{item.get('title', '')[:160]}；{item.get('summary', '')}"
                 )
         else:
-            lines.append("- 近6个月新闻中未发现政策相关报道")
+            lines.append("- 无新闻数据")
         lines.extend([
             "",
-            "## 技术驱动证据",
+            "## 技术驱动证据（近1年研报，请自行判断是否涉及技术突破/迭代）",
         ])
-        te = raw.get("tech_evidence", {})
-        if te.get("items"):
-            for item in te["items"][:5]:
+        tr = raw.get("tech_research", [])
+        if tr:
+            for item in tr[:8]:
                 lines.append(
-                    f"- [{item.get('date', '?')}] {item.get('org', '?')}：{item.get('title', '')[:120]}；{item.get('summary', '')}"
+                    f"- [{item.get('date', '?')}] {item.get('org', '?')}：{item.get('title', '')[:140]}；{item.get('summary', '')}"
                 )
         else:
-            lines.append("- 研报中未发现技术突破相关描述")
+            lines.append("- 无研报数据")
         lines.extend([
             "",
-            "## 需求驱动证据",
+            "## 需求驱动证据（近6个月新闻，请自行判断是否涉及订单/出货/需求增长）",
         ])
-        de = raw.get("demand_evidence", {})
-        if de.get("items"):
-            for item in de["items"][:5]:
+        dn = raw.get("demand_news", [])
+        if dn:
+            for item in dn[:10]:
                 lines.append(
-                    f"- [{item.get('time', '?')}] {item.get('source', '?')}：{item.get('title', '')[:180]}"
+                    f"- [{item.get('time', '?')}] {item.get('source', '?')}：{item.get('title', '')[:160]}；{item.get('summary', '')}"
                 )
         else:
-            lines.append("- 新闻中未发现需求/订单增长线索")
+            lines.append("- 无新闻数据")
         lines.extend([
             "",
             "## 判断约束",
-            "- 仅基于上方实际证据判断，不得编造政策/技术/需求线索。",
-            "- 如果某一类驱动力证据充足（有具体政策文件/技术突破报道/订单增长数据），则该类驱动成立。",
+            "- 请基于上方原始新闻和研报内容，自行判断是否存在政策/技术/需求驱动。",
+            "- 不要因为新闻标题不含关键词就忽略实际内容中的驱动信号。",
             "- 三类驱动至少有一种明确成立才判为通过。",
+            "- 纯概念炒作（有题材但无实质政策/技术/需求落地）不算驱动成立。",
         ])
         summary = "\n".join(lines)
         return CriterionEvidence(raw_data=raw, data_summary=summary)
