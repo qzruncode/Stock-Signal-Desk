@@ -269,25 +269,6 @@ class TestGrowthSpaceEvidence:
             "product_type": "光互联产品",
             "product_name": "光互联产品",
         }
-        cycle_payload = {
-            "report_pending": False,
-            "industry_cycle": {
-                "analysis_status": "分支主线",
-                "cycle_phase": "发酵期",
-                "core_logic": "公司主营光模块，受益于算力资本开支。",
-                "catalysts": ["1.6T产能释放"],
-                "observation_points": ["观察订单兑现"],
-                "industry_beta_detector": {
-                    "passed": True,
-                    "conclusion": "行业 beta 成立。",
-                    "checklist": [
-                        {"item": "未来 3 年空间明确", "passed": True, "reason": "研报覆盖充分"},
-                        {"item": "有政策 / 技术 / 需求 / 供给变化驱动", "passed": True, "reason": "算力需求驱动"},
-                    ],
-                },
-                "evidence": {"driver_signals": {"demand": ["算力需求"]}},
-            },
-        }
         financials = {
             "items": [
                 {"report_date": "2026-03-31", "revenue_yoy": 105.76, "revenue_qoq": 0.01, "net_profit_yoy": 76.8, "gross_margin": 49.16},
@@ -324,9 +305,6 @@ class TestGrowthSpaceEvidence:
         }
 
         with patch(
-            "src.services.buy_criteria.evaluators.growth_space.DataService.get_industry_cycle_report",
-            return_value=cycle_payload,
-        ), patch(
             "src.services.buy_criteria.evaluators.growth_space.DataService.get_financials",
             return_value=financials,
         ), patch(
@@ -338,10 +316,48 @@ class TestGrowthSpaceEvidence:
         ):
             evidence = evaluator.collect_data("300502.SZ", stock_info)
 
-        assert "未来3年空间项：True；研报覆盖充分" in evidence.data_summary
+        # Verify no old industry_cycle/beta_detector references in output
+        assert "行业β结论" not in evidence.data_summary
+        assert "行业周期与空间证据" not in evidence.data_summary
+        assert "未来3年空间项" not in evidence.data_summary
+        assert "驱动因素项" not in evidence.data_summary
+
+        # Verify new data sources are present
         assert "2026-03-31：营收同比 105.76%" in evidence.data_summary
         assert "山西证券 买入：1.6T环比上量将加快" in evidence.data_summary
         assert "第一财经 [一般资讯] 资金从消费流向AI" in evidence.data_summary
+        assert "盈利预测汇总" in evidence.data_summary
+        assert "增速预测线索" in evidence.data_summary
+        assert "数据获取不完整" not in evidence.data_summary
+
+    def test_collect_data_no_industry_cycle_dependency(self):
+        """Ensure growth_space does not call IndustryCycleService or beta_detector."""
+        evaluator = GrowthSpaceEvaluator()
+        stock_info = {
+            "symbol": "000001.SZ",
+            "name": "平安银行",
+            "industry": "银行业",
+            "main_business": "银行业务",
+            "product_type": "金融服务",
+            "product_name": "银行服务",
+        }
+
+        with patch(
+            "src.services.buy_criteria.evaluators.growth_space.DataService.get_financials",
+            return_value={"items": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.growth_space.DataService.get_research_report",
+            return_value={"items": [], "data_time": None, "is_stale": True},
+        ), patch(
+            "src.services.buy_criteria.evaluators.growth_space.DataService.search_news",
+            return_value={"items": [], "data_time": None, "is_stale": True},
+        ) as mock_news:
+            evidence = evaluator.collect_data("000001.SZ", stock_info)
+
+        # Confirm no industry_cycle call was made
+        assert "industry_cycle" not in evidence.raw_data
+        assert "industry_beta_detector" not in evidence.raw_data
+        assert "industry_cycle_error" not in evidence.raw_data
         assert "数据获取不完整" not in evidence.data_summary
 
 
