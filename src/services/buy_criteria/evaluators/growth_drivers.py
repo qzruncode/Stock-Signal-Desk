@@ -28,21 +28,24 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
         ds = DataService()
         raw: dict[str, Any] = {}
 
-        # Policy drivers — raw news for LLM to judge policy relevance
+        # Fetch news once — reuse for both policy and demand evidence
+        news_items: list[dict] = []
         try:
             news = ds.search_news(symbol, days=180)
             news_items = _list_of_dicts(news.get("items"))[:15]
-            raw["policy_news"] = [
-                {
-                    "title": n.get("title"),
-                    "summary": (n.get("summary") or "")[:200],
-                    "source": n.get("source"),
-                    "time": n.get("publish_time"),
-                }
-                for n in news_items
-            ]
         except Exception as exc:
-            logger.warning("[drivers] policy news failed: %s", exc)
+            logger.warning("[drivers] news failed: %s", exc)
+
+        # Policy drivers — raw news for LLM to judge policy relevance
+        raw["policy_news"] = [
+            {
+                "title": n.get("title"),
+                "summary": (n.get("summary") or "")[:200],
+                "source": n.get("source"),
+                "time": n.get("publish_time"),
+            }
+            for n in news_items
+        ]
 
         # Tech drivers — raw research reports for LLM to judge tech relevance
         try:
@@ -60,21 +63,16 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
         except Exception as exc:
             logger.warning("[drivers] tech research failed: %s", exc)
 
-        # Demand drivers — raw news for LLM to judge demand relevance
-        try:
-            demand_news = ds.search_news(symbol, days=180)
-            demand_items = _list_of_dicts(demand_news.get("items"))[:15]
-            raw["demand_news"] = [
-                {
-                    "title": n.get("title"),
-                    "summary": (n.get("summary") or "")[:200],
-                    "source": n.get("source"),
-                    "time": n.get("publish_time"),
-                }
-                for n in demand_items
-            ]
-        except Exception as exc:
-            logger.warning("[drivers] demand news failed: %s", exc)
+        # Demand drivers — same news items as policy
+        raw["demand_news"] = [
+            {
+                "title": n.get("title"),
+                "summary": (n.get("summary") or "")[:200],
+                "source": n.get("source"),
+                "time": n.get("publish_time"),
+            }
+            for n in news_items
+        ]
 
         # Build summary — show raw data for LLM to judge
         lines = [
