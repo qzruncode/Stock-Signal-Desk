@@ -71,12 +71,54 @@ export const CRITERIA_ORDER: { id: CriterionId; name: string }[] = [
   { id: 'fatal_risks', name: '致命风险' },
 ];
 
+// ── Cached record response ─────────────────────────────────────────────
+
+export interface CachedCriteriaResponse {
+  id: number;
+  symbol: string;
+  trade_date: string;
+  stock_name: string | null;
+  final_decision: '可买入' | '不可买入';
+  passed_count: number;
+  failed_count: number;
+  not_evaluated_count: number;
+  stopped_at: string | null;
+  summary: string;
+  results: CriterionResult[];
+  created_at: string;
+}
+
 // ── API ─────────────────────────────────────────────────────────────────
 
 export const buyCriteriaApi = {
-  /** Get the SSE URL for criteria analysis. */
-  getCriteriaStreamUrl(symbol: string): string {
+  /** Get the SSE URL for criteria analysis, optionally including pre-fetched data. */
+  getCriteriaStreamUrl(
+    symbol: string,
+    preFetchedData?: Record<string, unknown>,
+  ): string {
     const base = apiClient.defaults.baseURL || '';
-    return `${base}/api/v1/stocks/criteria/analyze?symbol=${encodeURIComponent(symbol)}`;
+    let url = `${base}/api/v1/stocks/criteria/analyze?symbol=${encodeURIComponent(symbol)}`;
+    if (preFetchedData) {
+      const json = JSON.stringify(preFetchedData);
+      const encoded = btoa(encodeURIComponent(json).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16))))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '');
+      url += `&pre_fetched=${encodeURIComponent(encoded)}`;
+    }
+    return url;
+  },
+
+  /** Fetch cached buy criteria result for today (or a specific date). */
+  getCached: async (
+    symbol: string,
+    targetDate?: string,
+  ): Promise<CachedCriteriaResponse> => {
+    let url = `/api/v1/stocks/criteria/cached/${encodeURIComponent(symbol)}`;
+    if (targetDate) {
+      url += `?date=${encodeURIComponent(targetDate)}`;
+    }
+    const { data } = await apiClient.get<CachedCriteriaResponse>(url);
+    return data;
   },
 };

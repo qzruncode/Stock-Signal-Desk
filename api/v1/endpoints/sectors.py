@@ -32,21 +32,54 @@ def _cache_key(sector_type: str) -> str:
     return f"{CACHE_KEY}:{sector_type}:{datetime.now().strftime('%Y%m%d')}"
 
 
-def _cache_get(sector_type: str) -> tuple[list[dict], str] | tuple[None, None]:
-    """Return (items, fetched_at) from cache, or (None, None) on miss."""
+def _cache_get(sector_type: str) -> tuple[list[dict], str, bool] | tuple[None, None, bool]:
+    """Return (items, fetched_at, is_fallback) from cache, or (None, None, False) on miss.
+
+    Falls back to the most recent non-empty cache entry when today's cache
+    is empty or missing. This handles the case where the EM API is temporarily
+    down and we've cached empty data.
+    """
     try:
         from src.storage import DatabaseManager
-        key = _cache_key(sector_type)
-        raw = DatabaseManager.get_instance().get_kline_snapshot(key)
-        if raw and isinstance(raw, dict) and 'items' in raw:
+        db = DatabaseManager.get_instance()
+        today_key = _cache_key(sector_type)
+
+        # Try today's cache first
+        raw = db.get_kline_snapshot(today_key)
+        if raw and isinstance(raw, dict) and 'items' in raw and raw.get('items'):
             ts = raw.get('ts', '')
-            logger.info(f"[Sectors] cache HIT {key}: {len(raw['items'])} items")
-            return raw['items'], ts
-        else:
-            logger.info(f"[Sectors] cache MISS {key}")
+            logger.info(f"[Sectors] cache HIT {today_key}: {len(raw['items'])} items")
+            return raw['items'], ts, False
+
+        # Today's cache miss or empty — find most recent non-empty entry
+        try:
+            from sqlalchemy import select, desc
+            from src.storage import KlineSnapshot
+            prefix = f"{CACHE_KEY}:{sector_type}:"
+            with db.get_session() as session:
+                rows = session.execute(
+                    select(KlineSnapshot)
+                    .where(KlineSnapshot.code.like(prefix + "%"))
+                    .order_by(desc(KlineSnapshot.code))
+                ).scalars().all()
+                for row in rows:
+                    try:
+                        data = json.loads(row.data or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    items = data.get("items") if isinstance(data, dict) else None
+                    if items and isinstance(items, list) and len(items) > 0:
+                        ts = data.get("ts", "")
+                        logger.info(
+                            f"[Sectors] cache FALLBACK {row.code}: {len(items)} items (today key={today_key})")
+                        return items, ts, True
+        except Exception as e:
+            logger.debug(f"[Sectors] fallback query failed: {e}")
+
+        logger.info(f"[Sectors] cache MISS {today_key} (no valid fallback)")
     except Exception as e:
         logger.warning(f"[Sectors] cache read error: {e}")
-    return None, None
+    return None, None, False
 
 
 def _cache_put(sector_type: str, data: list[dict], fetched_at: str) -> None:
@@ -278,7 +311,7 @@ def get_sector_list(
     fetched_at = datetime.now().isoformat()
 
     if not force:
-        cached_items, cached_ts = _cache_get(sector_type)
+        cached_items, cached_ts, is_fallback = _cache_get(sector_type)
         if cached_items is not None:
             for item in cached_items:
                 item['_cached'] = True
@@ -304,7 +337,7 @@ def get_sector_list(
 
             return {"type": sector_type, "items": cached_items,
                     "_fetched_at": cached_ts or fetched_at, "_cached": True,
-                    "data_time": (cached_ts or fetched_at)[:10], "is_stale": False, "fallback_used": True}
+                    "data_time": (cached_ts or fetched_at)[:10], "is_stale": is_fallback, "fallback_used": is_fallback}
 
     if sector_type == "industry":
         items = _fetch_industry()
@@ -313,7 +346,10 @@ def get_sector_list(
     else:
         items = []
 
-    _cache_put(sector_type, items, fetched_at)
+    # Don't cache empty results — would poison the cache during API outages
+    if items:
+        _cache_put(sector_type, items, fetched_at)
+
     return {"type": sector_type, "items": items,
             "_fetched_at": fetched_at, "_cached": False,
             "data_time": _sector_data_time(), "is_stale": False, "fallback_used": False}

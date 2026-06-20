@@ -59,8 +59,17 @@ class BaseCriterionEvaluator(ABC):
     index: int = -1
 
     @abstractmethod
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
-        """Collect data needed for this criterion. Must not call LLM."""
+    def collect_data(
+        self,
+        symbol: str,
+        stock_info: dict[str, Any],
+        pre_fetched_data: dict[str, Any] | None = None,
+    ) -> CriterionEvidence:
+        """Collect data needed for this criterion. Must not call LLM.
+
+        If ``pre_fetched_data`` is provided, the evaluator should prefer it
+        over re-fetching from external sources.
+        """
         ...
 
     @abstractmethod
@@ -69,21 +78,20 @@ class BaseCriterionEvaluator(ABC):
         ...
 
     def build_user_prompt(self, stock_info: dict[str, Any], evidence: CriterionEvidence) -> str:
-        """Build the user prompt. Override for custom structure."""
-        symbol = stock_info.get("symbol", "")
-        stock_name = stock_info.get("name", stock_info.get("short_name", ""))
-        industry = stock_info.get("industry", "")
-        return (
-            f"你是一个A股行业分析师。请基于以下数据，判断【{self.criterion_name}】是否满足条件。\n\n"
-            f"## 判定标准\n{self.get_rubric()}\n\n"
-            f"## 股票信息\n股票: {stock_name} ({symbol})\n行业: {industry}\n\n"
-            f"## 数据\n{evidence.data_summary}\n\n"
-            f'## 请返回 JSON\n{{"passed": true/false, "verdict": "2-3句话的定性判断"}}'
-        )
+        """Build the user prompt. Rubric is self-contained (role + criteria + JSON format).
 
-    def evaluate(self, symbol: str, stock_info: dict[str, Any]) -> CriterionResult:
+        data_summary may contain ## 股票信息 which the rubric references — no duplication.
+        """
+        return f"{self.get_rubric()}\n\n{evidence.data_summary}\n\n"
+
+    def evaluate(
+        self,
+        symbol: str,
+        stock_info: dict[str, Any],
+        pre_fetched_data: dict[str, Any] | None = None,
+    ) -> CriterionResult:
         """Full evaluation: collect_data → LLM → result. Handles retry."""
-        evidence = self.collect_data(symbol, stock_info)
+        evidence = self.collect_data(symbol, stock_info, pre_fetched_data)
         user_prompt = self.build_user_prompt(stock_info, evidence)
 
         result, error_msg = self._call_llm(user_prompt, attempt=0)

@@ -77,7 +77,8 @@ run.sh
 verify_*.py
 
 # ignore tool workspace
-.claude/
+.claude/auto-resume
+.claude/settings.local.json
 .superpowers/
 
 # ignore build output

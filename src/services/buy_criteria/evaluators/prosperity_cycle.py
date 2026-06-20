@@ -21,54 +21,20 @@ def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _safe_float(value: Any) -> float | None:
+FIELD_LABELS = {
+    "report_date": "报告期",
+    "revenue_yoy": "营收同比",
+    "revenue_qoq": "营收环比",
+    "gross_margin": "毛利率",
+    "net_profit_yoy": "净利润同比",
+}
+
+
+def _fmt_raw(value: Any) -> str:
+    """Return raw value as string, or 'null' if None/empty. No calculation, no formatting."""
     if value is None:
-        return None
-    if isinstance(value, str):
-        value = value.strip().replace(",", "").replace("%", "")
-        if not value or value.lower() in {"none", "nan", "-", "false"}:
-            return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _fmt_pct(value: Any) -> str:
-    num = _safe_float(value)
-    return "缺失" if num is None else f"{num:.2f}%"
-
-
-def _revenue_trend_summary(items: list[dict[str, Any]]) -> str:
-    recent = [
-        {
-            "date": item.get("report_date"),
-            "revenue_yoy": _safe_float(item.get("revenue_yoy")),
-        }
-        for item in items
-    ]
-    values = [item["revenue_yoy"] for item in recent if item["revenue_yoy"] is not None]
-    if len(values) < 3:
-        return "营收同比样本不足，不能单独判断连续趋势。"
-    chronological = list(reversed(values[:3]))
-    if all(value >= 15 for value in values[:3]):
-        return "最近3期营收同比均不低于15%，具备高位增长特征。"
-    if chronological[0] < chronological[1] < chronological[2]:
-        return "最近3期营收同比逐期改善。"
-    if chronological[0] > chronological[1] > chronological[2]:
-        return "最近3期营收同比连续走弱。"
-    return "最近3期营收同比有波动，需要结合行业与公司订单证据确认。"
-
-
-def _compact_financial_item(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "report_date": item.get("report_date"),
-        "revenue": item.get("revenue"),
-        "revenue_yoy": item.get("revenue_yoy"),
-        "revenue_qoq": item.get("revenue_qoq"),
-        "gross_margin": item.get("gross_margin"),
-        "net_profit_yoy": item.get("net_profit_yoy") or item.get("parent_net_profit_yoy"),
-    }
+        return "null"
+    return str(value)
 
 
 class ProsperityCycleEvaluator(BaseCriterionEvaluator):
@@ -76,7 +42,7 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
     criterion_name = "景气上行周期"
     index = 1
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
+    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -89,157 +55,112 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
             "product_name": stock_info.get("product_name"),
         }
 
-        # Sector ranking and fund flow — raw data from endpoints.
+        # ---- Company financials: 8 periods for cycle trend analysis ----
         try:
-            sectors = ds.get_sector_list("industry")
-            industry = stock_info.get("industry", "")
-            items_raw = sectors.get("items") or []
-            # Sort by change_pct desc (nulls last) and assign rank
-            items_sorted = sorted(
-                items_raw,
-                key=lambda s: (s.get("change_pct") is not None, s.get("change_pct") or 0),
-                reverse=True,
-            )
-            for i, s in enumerate(items_sorted, 1):
-                s["rank"] = i
-            raw["sector_data"] = {
-                "items": [
-                    {"name": s["name"], "rank": s.get("rank"), "change_pct": s.get("change_pct")}
-                    for s in items_sorted[:20]
-                ],
-                "target_industry": None,
-            }
-            for s in items_sorted:
-                if s.get("name") == industry:
-                    raw["sector_data"]["target_industry"] = {
-                        "name": s["name"], "rank": s.get("rank"),
-                        "change_pct": s.get("change_pct"), "total_amount": s.get("total_amount"),
-                    }
-                    break
-        except Exception as exc:
-            logger.warning("[prosperity] sector_list failed: %s", exc)
-
-        try:
-            fund_flow = ds.get_sector_flow_industry()
-            raw["fund_flow"] = {
-                "inflow": [
-                    {"name": f["name"], "net_flow": f.get("main_net_inflow"), "change_pct": f.get("pct_chg")}
-                    for f in (fund_flow or [])[:10]
-                ],
-                "outflow": [
-                    {"name": f["name"], "net_flow": f.get("main_net_inflow"), "change_pct": f.get("pct_chg")}
-                    for f in (fund_flow or [])[-10:]
-                ],
-            }
-        except Exception as exc:
-            logger.warning("[prosperity] sector_flow failed: %s", exc)
-
-        # Company financial growth gives concrete revenue/profit trend evidence.
-        try:
-            financials = ds.get_financials(symbol, periods=4, force=True)
-            items = [_compact_financial_item(item) for item in _list_of_dicts(financials.get("items"))[:4]]
+            financials = ds.get_financials(symbol, periods=8, force=True)
             raw["financials"] = {
-                "items": items,
-                "trend_summary": _revenue_trend_summary(items),
+                "items": _list_of_dicts(financials.get("items"))[:8],
                 "_cached": financials.get("_cached"),
             }
         except Exception as exc:
             logger.warning("[prosperity] financials failed: %s", exc)
             raw["financials_error"] = str(exc)
 
-        # Macro PMI is a broad auxiliary signal, not a substitute for industry PMI.
+        # ---- Industry news: search by specific business/product keywords ----
+        # Priority: industry-level supply-demand signals > company-specific news
+        industry = stock_info.get("industry", "")
+        main_business = stock_info.get("main_business", "")
+        product_type = stock_info.get("product_type", "")
+        # Clean keywords: strip punctuation, keep core terms
+        def _clean_kw(text: str) -> list[str]:
+            if not text:
+                return []
+            cleaned = text.strip().rstrip("。，、；：")
+            parts = [p.strip().rstrip("。，、；：") for p in cleaned.replace("的研发", "").replace("的生产和销售", "").replace("生产和销售", "").replace("和", ",").split(",") if p.strip()]
+            return [p for p in parts if len(p) >= 2]
+        # Search order: core business/product terms (industry-level) first, then industry, then company name
+        core_terms = _clean_kw(main_business) + _clean_kw(product_type)
+        search_keywords = core_terms[:]
+        if industry:
+            search_keywords.append(industry)
+        # Deduplicate
+        seen = set()
+        search_keywords = [k for k in search_keywords if not (k in seen or seen.add(k))]
+        for keyword in search_keywords:
+            try:
+                industry_news = ds.search_news(keyword, days=90)
+                news_items = _list_of_dicts(industry_news.get("items"))[:10]
+                if news_items:
+                    raw["industry_news"] = {
+                        "keyword": keyword,
+                        "items": news_items,
+                    }
+                    break  # Found relevant news with specific keyword
+            except Exception as exc:
+                logger.warning("[prosperity] news search '%s' failed: %s", keyword, exc)
+        if "industry_news" not in raw:
+            raw["industry_news"] = {"keyword": search_keywords[0] if search_keywords else "", "items": []}
+
+        # ---- Macro PMI — demoted to economic context ----
         try:
             pmi = ds.get_macro_indicator("PMI", months=6)
-            raw["macro_pmi"] = {
-                "latest": pmi.get("latest"),
-                "trend": pmi.get("trend"),
-                "history": _list_of_dicts(pmi.get("history"))[-6:],
-                "data_time": pmi.get("data_time"),
-                "is_stale": pmi.get("is_stale"),
-            }
+            raw["macro_pmi"] = pmi
         except Exception as exc:
             logger.warning("[prosperity] PMI failed: %s", exc)
             raw["macro_pmi_error"] = str(exc)
 
-        # Build summary
+        # ---- Build summary: only fields the rubric needs, no noise ----
         profile = raw["stock_profile"]
-        industry = profile.get("industry", "")
-        target = raw.get("sector_data", {}).get("target_industry")
-        financial_items = _list_of_dicts(_as_dict(raw.get("financials")).get("items"))
+        fin_items = _list_of_dicts(_as_dict(raw.get("financials")).get("items"))
+        news_items = _list_of_dicts(_as_dict(raw.get("industry_news")).get("items"))
         pmi = _as_dict(raw.get("macro_pmi"))
         pmi_latest = _as_dict(pmi.get("latest"))
-        gaps: list[str] = []
-        if not financial_items:
-            gaps.append("最近财务增速缺失")
-        if not pmi_latest:
-            gaps.append("PMI缺失")
-        elif pmi.get("is_stale"):
-            gaps.append("宏观PMI数据可能过期")
-        if not target:
-            gaps.append("行业板块排名未匹配")
-        gaps.append("细分行业PMI/产能利用率暂无直接数据")
 
         lines = [
-            "## 公司与行业",
-            f"- 股票：{profile.get('name') or symbol} ({profile.get('symbol') or symbol})",
-            f"- 所属行业：{profile.get('industry') or '缺失'}",
-            f"- 主营业务：{profile.get('main_business') or '缺失'}",
-            f"- 产品：{profile.get('product_type') or '缺失'} / {profile.get('product_name') or '缺失'}",
+            "## 股票信息",
+            f"股票: {_fmt_raw(profile.get('name') or symbol)} ({_fmt_raw(profile.get('symbol') or symbol)})",
+            f"行业: {_fmt_raw(profile.get('industry'))}",
+            f"主营业务: {_fmt_raw(profile.get('main_business'))}",
+            f"产品: {_fmt_raw(profile.get('product_type'))} / {_fmt_raw(profile.get('product_name'))}",
             "",
-            "## 行业板块与资金流",
         ]
-        if target:
-            lines.append(f"- 本行业[{target['name']}]：板块排名第{target.get('rank', '?')}名，涨跌幅{target.get('change_pct', '?')}%")
-        else:
-            lines.append(f"- 本行业[{industry}]：未匹配到板块排名数据")
-        top5 = raw.get("sector_data", {}).get("items", [])[:5]
-        if top5:
-            top5_str = '; '.join(f'{s["name"]} (#{s["rank"]})' for s in top5)
-            lines.append(f"- 板块前5名：{top5_str}")
-        else:
-            lines.append("- 板块前5名：缺失")
-        lines.append("")
 
-        ff = raw.get("fund_flow", {})
-        if ff.get("inflow"):
-            inflow3 = ff["inflow"][:3]
-            inflow3_str = '; '.join(f'{f["name"]} (+{f["net_flow"]})' for f in inflow3)
-            lines.append(f"- 资金净流入前3：{inflow3_str}")
-        else:
-            lines.append("- 资金流数据：缺失")
-        lines.append("")
-
-        lines.extend([
-            "## 公司财务增速",
-            f"- 趋势摘要：{_as_dict(raw.get('financials')).get('trend_summary') or '缺失'}",
-        ])
-        if financial_items:
-            for item in financial_items:
-                lines.append(
-                    "- "
-                    f"{item.get('report_date') or '未知报告期'}："
-                    f"营收同比 {_fmt_pct(item.get('revenue_yoy'))}，"
-                    f"营收环比 {_fmt_pct(item.get('revenue_qoq'))}，"
-                    f"净利润同比 {_fmt_pct(item.get('net_profit_yoy'))}，"
-                    f"毛利率 {_fmt_pct(item.get('gross_margin'))}"
+        # ---- 财务数据：只取 rubric 判断需要的字段 ----
+        FIN_FIELDS = ["report_date", "revenue_yoy", "revenue_qoq", "gross_margin", "net_profit_yoy"]
+        lines.append("## 财务数据（最近8个季度）")
+        if fin_items:
+            for item in fin_items:
+                kvs = ", ".join(
+                    f"{FIELD_LABELS.get(k, k)}: {_fmt_raw(item.get(k))}" for k in FIN_FIELDS
                 )
+                lines.append(f"- {kvs}")
         else:
-            lines.append("- 缺失")
-        lines.extend([
-            "",
-            "## PMI与产能利用率",
-            f"- 宏观PMI最新值：{pmi_latest.get('value') or pmi_latest.get('current') or pmi_latest.get('pmi') or '缺失'}；趋势：{pmi.get('trend') or '缺失'}；日期：{pmi.get('data_time') or '缺失'}；是否过期：{pmi.get('is_stale')}",
-            "- 细分行业PMI：缺失",
-            "- 产能利用率：缺失",
-            "",
-            "## 数据缺口",
-            *[f"- {gap}" for gap in gaps],
-            "",
-            "## 判断约束",
-            "- 不要因为PMI或产能利用率缺失，就忽略已提供的板块排名、资金流和公司营收增速证据。",
-            "- 如果营收增速、板块排名、资金流结论相互矛盾，需要在 verdict 里说明矛盾点。",
-            "- 单日板块涨跌和资金流只能辅助判断，不得单独判定景气上行。",
-        ])
+            lines.append("- null")
+        lines.append("")
+
+        # ---- 新闻数据：只取标题、内容、时间、标签 ----
+        lines.append("## 行业新闻/研报（近90天）")
+        if news_items:
+            for n in news_items:
+                title = n.get("title", "")
+                content = n.get("summary") or n.get("content") or n.get("event_label", "")
+                tags = n.get("tags", [])
+                pub_time = n.get("publish_time", "")
+                tag_str = f" [{', '.join(tags)}]" if tags else ""
+                lines.append(f"- {_fmt_raw(title)}{tag_str}")
+                if content:
+                    lines.append(f"  内容: {_fmt_raw(content)}")
+                if pub_time:
+                    lines.append(f"  时间: {_fmt_raw(pub_time)}")
+        else:
+            lines.append(f"- 行业「{industry}」无相关新闻")
+        lines.append("")
+
+        # ---- PMI：只取最新值和趋势 ----
+        lines.append("## 宏观PMI（辅助参考）")
+        pmi_val = pmi_latest.get("value") or pmi_latest.get("current") or pmi_latest.get("pmi")
+        lines.append(f"- 最新值: {_fmt_raw(pmi_val)}, 趋势: {_fmt_raw(pmi.get('trend'))}, 日期: {_fmt_raw(pmi.get('data_time'))}")
+        lines.append("")
 
         summary = "\n".join(lines)
         return CriterionEvidence(raw_data=raw, data_summary=summary)

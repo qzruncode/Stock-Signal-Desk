@@ -336,6 +336,55 @@ class AnalysisHistory(Base):
         }
 
 
+class BuyCriteriaRecord(Base):
+    """
+    买入判断分析结果记录（按交易日持久化）
+
+    每只股票每个交易日一条记录，保存 8 个 evaluator 的完整结果。
+    """
+    __tablename__ = 'buy_criteria_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(10), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    stock_name = Column(String(50))
+
+    # 汇总结论
+    final_decision = Column(String(10), nullable=False)  # 可买入/不可买入
+    passed_count = Column(Integer)
+    failed_count = Column(Integer)
+    not_evaluated_count = Column(Integer)
+    stopped_at = Column(String(30))
+    summary = Column(Text)
+
+    # 各 evaluator 结果（JSON 序列化 List[CriterionResult.to_dict()]）
+    results_json = Column(Text, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('symbol', 'trade_date', name='uq_buy_criteria_symbol_date'),
+        Index('ix_buy_criteria_date', 'trade_date'),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        import json as _json
+        return {
+            'id': self.id,
+            'symbol': self.symbol,
+            'trade_date': self.trade_date.isoformat() if self.trade_date else None,
+            'stock_name': self.stock_name,
+            'final_decision': self.final_decision,
+            'passed_count': self.passed_count,
+            'failed_count': self.failed_count,
+            'not_evaluated_count': self.not_evaluated_count,
+            'stopped_at': self.stopped_at,
+            'summary': self.summary,
+            'results': _json.loads(self.results_json),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class MarketMainlineReport(Base):
     """市场主线结构化研判报告。"""
 
@@ -2210,6 +2259,79 @@ class DatabaseManager:
                 .limit(1)
             ).scalars().first()
             return result
+
+    # ── Buy Criteria Records ──────────────────────────────────────────────
+
+    def save_buy_criteria_record(
+        self,
+        symbol: str,
+        trade_date,
+        stock_name: str,
+        final_decision: str,
+        passed_count: int,
+        failed_count: int,
+        not_evaluated_count: int,
+        stopped_at: str | None,
+        summary: str,
+        results: list,
+    ) -> None:
+        """保存或更新买入判断记录（按 symbol+trade_date upsert）。"""
+        import json as _json
+
+        now = datetime.now()
+        record_data = {
+            "symbol": symbol,
+            "trade_date": trade_date,
+            "stock_name": stock_name,
+            "final_decision": final_decision,
+            "passed_count": passed_count,
+            "failed_count": failed_count,
+            "not_evaluated_count": not_evaluated_count,
+            "stopped_at": stopped_at,
+            "summary": summary,
+            "results_json": _json.dumps(results, ensure_ascii=False),
+            "created_at": now,
+        }
+
+        with self.session_scope() as session:
+            existing = session.execute(
+                select(BuyCriteriaRecord).where(
+                    BuyCriteriaRecord.symbol == symbol,
+                    BuyCriteriaRecord.trade_date == trade_date,
+                )
+            ).scalars().first()
+
+            if existing:
+                for key, value in record_data.items():
+                    setattr(existing, key, value)
+                existing.created_at = now
+                logger.info(
+                    "[storage] updated buy_criteria_record: %s @ %s", symbol, trade_date,
+                )
+            else:
+                record = BuyCriteriaRecord(**record_data)
+                session.add(record)
+                logger.info(
+                    "[storage] inserted buy_criteria_record: %s @ %s", symbol, trade_date,
+                )
+
+    def get_buy_criteria_record(
+        self,
+        symbol: str,
+        trade_date,
+    ) -> dict[str, Any] | None:
+        """按股票代码+交易日查询记录，返回 dict 或 None。"""
+        with self.get_session() as session:
+            record = session.execute(
+                select(BuyCriteriaRecord).where(
+                    BuyCriteriaRecord.symbol == symbol,
+                    BuyCriteriaRecord.trade_date == trade_date,
+                )
+            ).scalars().first()
+            if record:
+                session.expunge(record)
+                return record.to_dict()
+            return None
 
     def create_chat_conversation(
         self,

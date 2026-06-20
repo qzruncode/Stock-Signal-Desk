@@ -1,5 +1,5 @@
 // apps/dsa-web/src/components/buyCriteria/SummaryBar.tsx
-import { CheckCircle2, XCircle, Circle, RefreshCw, Play } from 'lucide-react';
+import { CheckCircle2, XCircle, Circle, RefreshCw, Play, Clock } from 'lucide-react';
 import { Button } from '../common/Button';
 import { cn } from '../../utils/cn';
 import { CRITERIA_ORDER } from '../../api/buyCriteria';
@@ -12,6 +12,8 @@ interface SummaryBarProps {
   finalDecision: '可买入' | '不可买入' | null;
   summary: string;
   isRunning: boolean;
+  isCached?: boolean;
+  cachedAt?: string | null;
   onStart: () => void;
   onRestart: () => void;
 }
@@ -23,6 +25,8 @@ export function SummaryBar({
   finalDecision,
   summary,
   isRunning,
+  isCached,
+  cachedAt,
   onStart,
   onRestart,
 }: SummaryBarProps) {
@@ -37,12 +41,25 @@ export function SummaryBar({
         {/* Left: stock info + counts */}
         <div className="flex items-center gap-4">
           <div>
-            <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
-              买入判定
+            <div className="flex items-center gap-2">
+              <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-slate-400">
+                买入判定
+              </div>
+              {isCached && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-600">
+                  <Clock className="h-3 w-3" />
+                  缓存
+                </span>
+              )}
             </div>
             <div className="text-lg font-bold text-slate-800 mt-0.5">
               {stockName || symbol}
             </div>
+            {cachedAt && (
+              <div className="text-[11px] text-slate-400 mt-0.5">
+                数据时间: {new Date(cachedAt).toLocaleString('zh-CN')}
+              </div>
+            )}
           </div>
 
           {hasResults && (
@@ -91,9 +108,14 @@ export function SummaryBar({
             </Button>
           )}
           {hasResults && !isRunning && (
-            <Button onClick={onRestart} variant="outline" size="sm">
+            <Button
+              onClick={onRestart}
+              variant="outline"
+              size="sm"
+              title={isCached ? '今日分析结果已缓存，点击重新分析' : undefined}
+            >
               <RefreshCw className="h-4 w-4 mr-1" />
-              重新分析
+              {isCached ? '重新分析' : '重新分析'}
             </Button>
           )}
         </div>

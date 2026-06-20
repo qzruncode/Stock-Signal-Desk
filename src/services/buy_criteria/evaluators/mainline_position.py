@@ -72,7 +72,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
     criterion_name = "市场主线属性"
     index = 0
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
+    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -129,22 +129,14 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
 
         # Sentiment
         try:
-            sentiment = ds.get_sentiment(symbol)
-            raw["sentiment"] = {
-                "score": sentiment.get("sentiment_score"),
-                "total_discussion": sentiment.get("total_discussion"),
-            }
+            raw["sentiment"] = ds.get_sentiment(symbol)
         except Exception as exc:
             logger.warning("[mainline] sentiment failed: %s", exc)
             raw["sentiment_error"] = str(exc)
 
         # Social sentiment
         try:
-            social = ds.get_social_sentiment(symbol)
-            raw["social_sentiment"] = {
-                "score": social.get("score") or social.get("social_score"),
-                "trend": social.get("trend"),
-            }
+            raw["social_sentiment"] = ds.get_social_sentiment(symbol)
         except Exception as exc:
             logger.warning("[mainline] social_sentiment failed: %s", exc)
 
@@ -180,11 +172,37 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             r = raw["target_industry_rank"]
             lines.append(f"- 行业[{r['name']}]板块排名第{r.get('rank', '?')}名，涨跌幅{r.get('change_pct', '?')}%")
             auxiliary_added = True
-        if raw.get("sentiment", {}).get("score") is not None:
-            lines.append(f"- 舆情情绪评分{raw['sentiment']['score']}，总讨论量{raw.get('sentiment', {}).get('total_discussion', '?')}")
+        s = raw.get("sentiment") or {}
+        if s.get("sentiment_score") is not None:
+            total = (s.get("positive_count") or 0) + (s.get("negative_count") or 0) + (s.get("neutral_count") or 0)
+            lines.append(
+                f"- 舆情情绪：评分{s['sentiment_score']}，"
+                f"共{total}条（乐观{s.get('positive_count', 0)} / 中性{s.get('neutral_count', 0)} / 悲观{s.get('negative_count', 0)}）"
+            )
+            # Inject raw sentiment items for context
+            sentiment_items = s.get("items") or []
+            if sentiment_items:
+                lines.append("")
+                lines.append("### 舆情明细（逐条）")
+                for item in sentiment_items[:20]:
+                    label_mark = {"positive": "乐观", "negative": "悲观", "neutral": "中性"}.get(item.get("label"), "?")
+                    score = item.get("sentiment_score")
+                    title = (item.get("title") or "")[:120]
+                    source = item.get("source", "")
+                    fin_tags = []
+                    if item.get("event_label"):
+                        fin_tags.append(item["event_label"])
+                    if item.get("importance"):
+                        fin_tags.append(item["importance"])
+                    tag_str = " " + " ".join(fin_tags) if fin_tags else ""
+                    lines.append(f"- [{label_mark} {score:+.3f}] {title}（{source}）{tag_str}")
             auxiliary_added = True
-        if raw.get("social_sentiment", {}).get("score") is not None:
-            lines.append(f"- 社交情绪评分{raw['social_sentiment']['score']}")
+        ss = raw.get("social_sentiment") or {}
+        if ss.get("overall_score") is not None:
+            lines.append(
+                f"- 社交情绪：评分{ss['overall_score']}，"
+                f"共{ss.get('total_discussion', 0)}条（乐观{ss.get('positive_count', 0)} / 中性{ss.get('neutral_count', 0)} / 悲观{ss.get('negative_count', 0)}）"
+            )
             auxiliary_added = True
         if not auxiliary_added:
             lines.append("- 缺失")

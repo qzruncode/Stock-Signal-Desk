@@ -121,7 +121,7 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
     criterion_name = "未来3年空间"
     index = 2
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
+    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -177,11 +177,10 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
         research_items = _list_of_dicts(research.get("items"))
         news = _as_dict(raw.get("news"))
         news_items = _list_of_dicts(news.get("items"))
-        missing = [
-            "明确CAGR数值缺失",
-            "核心产品/服务渗透率缺失",
-            "行业市场规模预测数值缺失",
-        ]
+        # Build dynamic missing list: only include genuinely unavailable fields.
+        # These three are industry-level metrics not available through free data sources.
+        # The rubric already provides alternative evaluation paths for when they're absent.
+        missing: list[str] = []
 
         lines = [
             "## 公司与行业",
@@ -241,14 +240,11 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
             lines.append("- 缺失")
         lines.extend([
             "",
-            "## 缺失字段",
-            *[f"- {item}" for item in missing],
-            "",
             "## 判断约束",
             "- 只能使用上方证据判断未来3年空间，不允许写'基于行业认知'或自行补充外部行业常识。",
-            "- 证据里没有明确CAGR、渗透率、市场规模数值时，不得编造这些数值；可以改用研报盈利预测、财务增长和明确新闻/研报线索判断新增需求。",
+            "- 数据源中无行业CAGR、渗透率、市场规模硬数值时，不得编造；应改用上方研报EPS预测、公司财务增长和新闻线索判断新增需求。",
             "- 不得引用上方证据中没有出现的产品规格、市场规模、渗透率或CAGR。",
-            "- 如果通过，只能说明'基于研报盈利预测/公司财务增长/明确需求线索'，不能写成无来源的行业CAGR结论。",
+            "- 如果通过，应基于'研报EPS预测/公司财务增长/明确需求线索'说明，不能写成无来源的行业CAGR结论。",
         ])
 
         summary = "\n".join(lines)

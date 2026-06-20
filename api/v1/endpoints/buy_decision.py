@@ -3,6 +3,11 @@
 
 from __future__ import annotations
 
+import base64
+import json
+from datetime import date as date_type
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query
 
 router = APIRouter()
@@ -16,10 +21,55 @@ router = APIRouter()
     summary="买入准则分析（SSE流）",
     description="顺序评估8项买入准则，通过SSE实时推送结果。任意一项不通过即终止。",
 )
-async def analyze_buy_criteria(symbol: str = Query(..., description="股票代码")):
+async def analyze_buy_criteria(
+    symbol: str = Query(..., description="股票代码"),
+    pre_fetched: str | None = Query(
+        None,
+        description="Base64url-encoded JSON of pre-fetched data (e.g. valuation)",
+    ),
+):
     """Stream criterion evaluation results via SSE."""
     if not symbol or not symbol.strip():
         raise HTTPException(status_code=400, detail="symbol is required")
 
+    pre_fetched_data: dict[str, Any] | None = None
+    if pre_fetched:
+        try:
+            padded = pre_fetched + "=" * (4 - len(pre_fetched) % 4)
+            decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
+            pre_fetched_data = json.loads(decoded)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid pre_fetched data: {exc}")
+
     from src.services.buy_criteria.orchestrator import CriterionOrchestrator
-    return CriterionOrchestrator.make_sse_endpoint(symbol.strip())
+    return CriterionOrchestrator.make_sse_endpoint(symbol.strip(), pre_fetched_data)
+
+
+# ── Cached Records ────────────────────────────────────────────────────────
+
+
+@router.get(
+    "/criteria/cached/{symbol}",
+    summary="查询今日买入判断缓存",
+    description="按股票代码+日期查询已保存的买入判断结果，默认今天。",
+)
+async def get_cached_buy_criteria(
+    symbol: str,
+    target_date: str | None = Query(None, description="日期 YYYY-MM-DD，默认今天"),
+):
+    """Return cached buy criteria results for a symbol + date."""
+    if not symbol or not symbol.strip():
+        raise HTTPException(status_code=400, detail="symbol is required")
+
+    try:
+        trade_date = date_type.fromisoformat(target_date) if target_date else date_type.today()
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {target_date}")
+
+    from src.storage import get_db
+
+    db = get_db()
+    record = db.get_buy_criteria_record(symbol.strip(), trade_date)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No cached record found")
+    return record

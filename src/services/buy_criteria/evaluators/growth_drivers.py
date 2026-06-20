@@ -24,7 +24,7 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
     criterion_name = "驱动因素"
     index = 4
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
+    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 

@@ -7,12 +7,25 @@ import { CriterionCard } from './CriterionCard';
 
 interface BuyCriteriaPanelProps {
   symbol: string;
+  /** Pre-fetched valuation data from the parent page (avoid re-fetch in evaluator). */
+  valuation?: unknown;
 }
 
-export function BuyCriteriaPanel({ symbol }: BuyCriteriaPanelProps) {
-  const { state, startAnalysis, stopAnalysis } = useBuyCriteria();
+export function BuyCriteriaPanel({ symbol, valuation }: BuyCriteriaPanelProps) {
+  const { state, startAnalysis, stopAnalysis, loadCached } = useBuyCriteria();
 
-  // Reset when symbol changes
+  const preFetchedData = valuation
+    ? { valuation } as Record<string, unknown>
+    : undefined;
+
+  // Auto-load cached result when symbol changes
+  useEffect(() => {
+    if (symbol) {
+      void loadCached(symbol);
+    }
+  }, [symbol, loadCached]);
+
+  // Reset when symbol changes (clear cached state)
   useEffect(() => {
     stopAnalysis();
   }, [symbol, stopAnalysis]);
@@ -38,8 +51,10 @@ export function BuyCriteriaPanel({ symbol }: BuyCriteriaPanelProps) {
         finalDecision={state.finalDecision}
         summary={state.analysisSummary}
         isRunning={state.isRunning}
-        onStart={() => startAnalysis(symbol)}
-        onRestart={() => startAnalysis(symbol)}
+        isCached={state.isCached}
+        cachedAt={state.cachedAt}
+        onStart={() => startAnalysis(symbol, preFetchedData)}
+        onRestart={() => startAnalysis(symbol, preFetchedData)}
       />
 
       {state.error && (

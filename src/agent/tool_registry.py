@@ -98,6 +98,7 @@ class ToolRegistry:
         self._register_news_sentiment_tools()
         self._register_macro_tools()
         self._register_search_fallback_tools()
+        self._register_buy_criteria_tools()
 
     def _resolve_symbol(self, value: str) -> str:
         """Resolve stock name/code into a normalized stock code when possible."""
@@ -1008,4 +1009,138 @@ class ToolRegistry:
             },
             executor=_exec_fetch_web_content,
             category="search",
+        ))
+
+    # ===================================================================
+    # 10. 买入判断类 (analysis)
+    # ===================================================================
+
+    def _register_buy_criteria_tools(self) -> None:
+        # --- get_buy_criteria_analysis ---
+        def _exec_get_buy_criteria_analysis(
+            symbol: str,
+            skip_cache: bool = False,
+        ) -> Any:
+            from datetime import date as date_type
+
+            resolved_symbol = self._resolve_symbol(symbol)
+
+            # ── Step 1: Check DB cache ────────────────────────────────────
+            if not skip_cache:
+                from src.storage import get_db
+
+                db = get_db()
+                cached = db.get_buy_criteria_record(resolved_symbol, date_type.today())
+
+                if cached is not None:
+                    logger.info(
+                        "[ToolRegistry] buy_criteria serving cached result for %s",
+                        resolved_symbol,
+                    )
+                    return {
+                        "symbol": cached["symbol"],
+                        "stock_name": cached.get("stock_name", ""),
+                        "trade_date": str(cached["trade_date"]),
+                        "cached": True,
+                        "final_decision": cached["final_decision"],
+                        "passed_count": cached["passed_count"],
+                        "failed_count": cached["failed_count"],
+                        "not_evaluated_count": cached["not_evaluated_count"],
+                        "stopped_at": cached["stopped_at"],
+                        "summary": cached["summary"],
+                        "criteria": [
+                            {
+                                "criterion_id": r["criterion_id"],
+                                "criterion_name": r["criterion_name"],
+                                "index": r["index"],
+                                "passed": r["passed"],
+                                "verdict": r["verdict"],
+                                "evidence": {
+                                    "data_summary": r.get("evidence", {}).get("data_summary", ""),
+                                },
+                                "analyzed_at": r.get("analyzed_at", ""),
+                            }
+                            for r in cached.get("results", [])
+                        ],
+                    }
+
+            # ── Step 2: No cache or skip — run fresh analysis ─────────────
+            logger.info(
+                "[ToolRegistry] buy_criteria running fresh analysis for %s",
+                resolved_symbol,
+            )
+            from src.services.buy_criteria.orchestrator import CriterionOrchestrator
+
+            results = CriterionOrchestrator().run(resolved_symbol)
+
+            passed_count = sum(1 for r in results if r.passed)
+            failed_count = sum(1 for r in results if not r.passed)
+            not_evaluated = 8 - len(results)
+            stopped_at = next((r.criterion_id for r in results if not r.passed), None)
+            final_decision = "可买入" if passed_count == 8 and failed_count == 0 else "不可买入"
+            summary_parts = [f"{passed_count}项通过"]
+            if failed_count:
+                summary_parts.append(f"{failed_count}项未通过")
+            summary = "，".join(summary_parts) + ("，可买入" if passed_count == 8 else "，不可买入")
+
+            from api.v1.endpoints.stock_info import get_stock_info
+            try:
+                stock_info = get_stock_info(resolved_symbol)
+                stock_name = stock_info.get("name", resolved_symbol)
+            except Exception:
+                stock_name = resolved_symbol
+
+            return {
+                "symbol": resolved_symbol,
+                "stock_name": stock_name,
+                "trade_date": date_type.today().isoformat(),
+                "cached": False,
+                "final_decision": final_decision,
+                "passed_count": passed_count,
+                "failed_count": failed_count,
+                "not_evaluated_count": not_evaluated,
+                "stopped_at": stopped_at,
+                "summary": summary,
+                "criteria": [
+                    {
+                        "criterion_id": r.criterion_id,
+                        "criterion_name": r.criterion_name,
+                        "index": r.index,
+                        "passed": r.passed,
+                        "verdict": r.verdict,
+                        "evidence": {
+                            "data_summary": r.evidence.data_summary,
+                        },
+                        "analyzed_at": r.analyzed_at,
+                    }
+                    for r in results
+                ],
+            }
+
+        self._add(ToolDef(
+            name="get_buy_criteria_analysis",
+            description=(
+                "对指定股票执行完整的 8 维度买入判断评分链，返回结构化分析报告。"
+                "8 个维度依次为：市场主线属性、景气上行周期、未来3年空间、竞争格局、"
+                "驱动因素、催化事件、估值水位、致命风险。"
+                "任何一维未通过则提前终止，最终结论为“可买入”或“不可买入”。"
+                "首次调用较慢（需调用 8 次 LLM），同日内自动缓存结果。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "股票代码，如 600519 或 贵州茅台",
+                    },
+                    "skip_cache": {
+                        "type": "boolean",
+                        "description": "是否跳过今日缓存强制重新分析，默认 false",
+                        "default": False,
+                    },
+                },
+                "required": ["symbol"],
+            },
+            executor=_exec_get_buy_criteria_analysis,
+            category="analysis",
         ))

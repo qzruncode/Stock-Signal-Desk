@@ -23,7 +23,7 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
     criterion_name = "催化事件"
     index = 5
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
+    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -34,8 +34,8 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
             raw["announcement_events"] = [
                 {
                     "title": a.get("title", ""),
-                    "date": a.get("publish_time"),
-                    "label": a.get("event_label"),
+                    "date": a.get("date") or a.get("publish_time"),
+                    "label": a.get("risk_label") or a.get("event_label"),
                     "severity": a.get("severity"),
                 }
                 for a in ann_items

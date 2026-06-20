@@ -1597,7 +1597,7 @@ const StockAnalysisPage: React.FC = () => {
               )}
             </div>
           ) : mode === 'industry-cycle' ? (
-            <BuyCriteriaPanel symbol={selectedSymbol} />
+            <BuyCriteriaPanel symbol={selectedSymbol} valuation={valuation ?? undefined} />
           ) : mode === 'social' ? (
             <div className="space-y-6">
               {socialLoading ? (

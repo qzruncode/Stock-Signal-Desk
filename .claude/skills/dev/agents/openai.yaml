@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dev"
+  short_description: "Human Plan first, implement after /dev approve."
+  default_prompt: "/dev 帮我实现一个需求，先输出 Human Plan 给我审核"

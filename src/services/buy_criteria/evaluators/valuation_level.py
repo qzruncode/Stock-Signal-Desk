@@ -17,36 +17,42 @@ class ValuationLevelEvaluator(BaseCriterionEvaluator):
     criterion_name = "估值水位"
     index = 6
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any]) -> CriterionEvidence:
+    def collect_data(
+        self,
+        symbol: str,
+        stock_info: dict[str, Any],
+        pre_fetched_data: dict[str, Any] | None = None,
+    ) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
-        # Valuation ratios (PE, PB, percentiles, PEG)
-        try:
-            valuation = ds.get_valuation_ratios(symbol)
-            raw["valuation"] = {
-                "pe_ttm": valuation.get("pe_ttm"),
-                "pb": valuation.get("pb"),
-                "peg": valuation.get("peg"),
-                "pe_percentile": valuation.get("pe_percentile") or valuation.get("pe_history_percentile"),
-                "pb_percentile": valuation.get("pb_percentile") or valuation.get("pb_history_percentile"),
-                "industry_average": valuation.get("industry_average"),
-                "valuation_status": valuation.get("valuation_status"),
-            }
-        except Exception as exc:
-            logger.warning("[valuation] valuation_ratios failed: %s", exc)
-            raw["valuation_error"] = str(exc)
+        # Prefer injected valuation data from frontend; fall back to DataService
+        if pre_fetched_data and "valuation" in pre_fetched_data:
+            valuation = pre_fetched_data["valuation"]
+        else:
+            try:
+                valuation = ds.get_valuation_ratios(symbol)
+            except Exception as exc:
+                logger.warning("[valuation] valuation_ratios failed: %s", exc)
+                raw["valuation_error"] = str(exc)
+                return CriterionEvidence(raw_data=raw, data_summary="数据获取失败")
 
-        # Price overdraft signal
-        try:
-            overdraft = ds.get_price_overdraft_signal(symbol)
-            raw["overdraft"] = {
-                "status": overdraft.get("status"),
-                "score": overdraft.get("score"),
-                "reasoning": overdraft.get("reasoning"),
-            }
-        except Exception as exc:
-            logger.warning("[valuation] overdraft failed: %s", exc)
+        pe_pctiles = valuation.get("pe_percentiles") or {}
+        raw["valuation"] = {
+            "pe_ttm": valuation.get("pe_ttm"),
+            "pb": valuation.get("pb"),
+            "peg": valuation.get("peg"),
+            # pe_percentiles is a dict {"5y": ..., "3y": ..., "1y": ...}; use 5y as primary
+            "pe_percentile": pe_pctiles.get("5y"),
+            "industry_average": valuation.get("industry_average"),
+        }
+        # Overdraft signal is already embedded in the valuation response
+        od = valuation.get("price_overdraft_signal") or {}
+        raw["overdraft"] = {
+            "status": od.get("status"),
+            "score": od.get("score"),
+            "reasoning": od.get("reasoning"),
+        }
 
         # Build summary
         parts = []
