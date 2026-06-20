@@ -1395,6 +1395,24 @@ class DatabaseManager:
             
             return list(results)
 
+    def get_latest_daily_date(self, code: str) -> Optional[date]:
+        """获取某只股票在 StockDaily 表中的最新日期。"""
+        from datetime import date as date_type
+        with self.get_session() as session:
+            result = session.execute(
+                select(func.max(StockDaily.date)).where(StockDaily.code == code)
+            ).scalar()
+            return result if isinstance(result, date_type) else None
+
+    def delete_stock_daily(self, code: str) -> int:
+        """删除某只股票的全部 StockDaily 日线数据。"""
+        with self.get_session() as session:
+            result = session.execute(
+                delete(StockDaily).where(StockDaily.code == code)
+            )
+            session.commit()
+            return result.rowcount
+
     def save_news_intel(
         self,
         code: str,

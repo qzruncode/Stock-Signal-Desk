@@ -3,20 +3,16 @@ import { ArrowLeft, Plus, Search, Settings, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
 import { Button, EmptyState, InlineAlert } from '../components/common';
+import AtrScreenerBar from '../components/AtrScreenerBar';
 import WatchlistManageDrawer from '../components/watchlist/WatchlistManageDrawer';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_COLORS, MARKET_LABELS } from '../utils/market';
-import {
-  loadWatchlistGroups,
-  saveWatchlistGroups,
-  type WatchlistGroup,
-} from '../utils/watchlistGroups';
+import { loadWatchlistGroups, saveWatchlistGroups, type WatchlistGroup } from '../utils/watchlistGroups';
 import { useTransientMessage } from '../hooks/useTransientMessage';
 import { useStockSuggest } from '../hooks/useStockSuggest';
 
 const DEFAULT_GROUP_ID = 'default';
 const DEFAULT_GROUP_NAME = '我的自选股';
-
 const WatchlistManagePage: React.FC = () => {
   const navigate = useNavigate();
 
@@ -27,7 +23,6 @@ const WatchlistManagePage: React.FC = () => {
 
   const [groups, setGroups] = useState<WatchlistGroup[]>([]);
   const [activeGroupId, setActiveGroupId] = useState<string>(DEFAULT_GROUP_ID);
-
   const [isAdding, setIsAdding] = useState(false);
   const [isBatchAdding, setIsBatchAdding] = useState(false);
   const [isBatchRemoving, setIsBatchRemoving] = useState(false);
@@ -411,6 +406,15 @@ const WatchlistManagePage: React.FC = () => {
           新建
         </button>
       </div>
+
+      {/* ATR Screener */}
+      <AtrScreenerBar
+        groups={groups}
+        onGroupsChange={setGroups}
+        onError={(msg) => setError(msg)}
+        onSuccess={holdMessage}
+        onGroupSelect={setActiveGroupId}
+      />
 
       {/* Search + add bar — fixed at top */}
       <div className="shrink-0 flex gap-2">

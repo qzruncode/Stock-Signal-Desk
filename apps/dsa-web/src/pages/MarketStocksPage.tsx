@@ -1,9 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Plus, Search, TrendingUp, X } from 'lucide-react';
+import { Activity, ArrowLeft, Plus, Search, Shield, TrendingUp, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
-import { stocksApi, type StockMetaItem, type SyncStatusResponse } from '../api/stocks';
+import { stocksApi, type StockMetaItem, type SyncStatusResponse, type KlineStatusResponse } from '../api/stocks';
+import { klineApi, type KlineResponse } from '../api/kline';
 import { EmptyState, InlineAlert } from '../components/common';
+import KLineChartPanel from '../components/KLineChartPanel';
 import { cn } from '../utils/cn';
 import { MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 import { useTransientMessage } from '../hooks/useTransientMessage';
@@ -127,12 +129,12 @@ const MarketStocksPage: React.FC = () => {
       const result = await stocksApi.sync();
       if (result.success) {
         const status = await loadSyncStatus();
-        if (status?.status === 'running') {
+        if (status?.status === 'running' || status?.status === 'syncing_kline') {
           pollRef.current = setInterval(async () => {
             try {
               const s = await stocksApi.syncStatus();
               setSyncStatus(s);
-              if (s.status !== 'running') {
+              if (s.status === 'success' || s.status === 'failed') {
                 if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
                 if (s.status === 'success') {
                   void loadStockList(1, stockSearch, stockMarket, false);
@@ -172,7 +174,59 @@ const MarketStocksPage: React.FC = () => {
 
   const watchlistCodes = useMemo(() => new Set(watchlistData?.codes || []), [watchlistData]);
 
-  const isSyncingActive = isSyncing || syncStatus?.status === 'running';
+  // K-line modal
+  const [klineModalStock, setKlineModalStock] = useState<{ code: string; name: string } | null>(null);
+  const [klineModalData, setKlineModalData] = useState<KlineResponse | null>(null);
+  const [klineModalLoading, setKlineModalLoading] = useState(false);
+  const [klineModalError, setKlineModalError] = useState<string | null>(null);
+
+  const openKlineModal = useCallback(async (stock: { code: string; name: string }) => {
+    setKlineModalStock(stock);
+    setKlineModalData(null);
+    setKlineModalError(null);
+    setKlineModalLoading(true);
+    try {
+      const result = await klineApi.getKline(stock.code, 250);
+      setKlineModalData(result);
+    } catch {
+      setKlineModalData(null);
+      setKlineModalError('获取 K 线数据失败');
+    } finally {
+      setKlineModalLoading(false);
+    }
+  }, []);
+
+  const closeKlineModal = useCallback(() => {
+    setKlineModalStock(null);
+    setKlineModalData(null);
+    setKlineModalLoading(false);
+    setKlineModalError(null);
+  }, []);
+
+  // Verification modal
+  const [verifyModalOpen, setVerifyModalOpen] = useState(false);
+  const [verifyData, setVerifyData] = useState<KlineStatusResponse | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+
+  const openVerifyModal = useCallback(async () => {
+    setVerifyModalOpen(true);
+    setVerifyLoading(true);
+    try {
+      const result = await stocksApi.getKlineStatus();
+      setVerifyData(result);
+    } catch {
+      setVerifyData(null);
+    } finally {
+      setVerifyLoading(false);
+    }
+  }, []);
+
+  const closeVerifyModal = useCallback(() => {
+    setVerifyModalOpen(false);
+    setVerifyData(null);
+  }, []);
+
+  const isSyncingActive = isSyncing || syncStatus?.status === 'running' || syncStatus?.status === 'syncing_kline';
 
   return (
     <div className="mx-auto flex h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col gap-4 overflow-hidden px-3 py-4 sm:px-5">
@@ -223,28 +277,41 @@ const MarketStocksPage: React.FC = () => {
               {syncStatus?.status === 'success'
                 ? `最近同步: ${syncStatus.finished_at ? new Date(syncStatus.finished_at).toLocaleString() : '-'}`
                 : syncStatus?.status === 'running'
-                  ? `同步中... ${syncStatus.progress}/${syncStatus.total || '...'}`
-                  : syncStatus?.status === 'failed'
-                    ? `同步失败: ${syncStatus.error || syncStatus.message}`
-                    : syncStatus?.status === 'idle' && syncStatus.total > 0
-                      ? `上次同步: ${syncStatus.finished_at ? new Date(syncStatus.finished_at).toLocaleString() : '-'}`
-                      : '尚未同步'}
+                  ? `同步股票列表中... ${syncStatus.progress}/${syncStatus.total || '...'}`
+                  : syncStatus?.status === 'syncing_kline'
+                    ? `同步 K 线历史... ${syncStatus.kline_progress}/${syncStatus.kline_total || '...'}`
+                    : syncStatus?.status === 'failed'
+                      ? `同步失败: ${syncStatus.error || syncStatus.message}`
+                      : syncStatus?.status === 'idle' && syncStatus.total > 0
+                        ? `上次同步: ${syncStatus.finished_at ? new Date(syncStatus.finished_at).toLocaleString() : '-'}`
+                        : '尚未同步'}
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          disabled={isSyncingActive}
-          onClick={handleSync}
-          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {isSyncingActive ? (
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-          ) : (
-            <TrendingUp className="h-4 w-4" />
-          )}
-          立即同步
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={openVerifyModal}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-indigo-300 hover:text-indigo-700"
+            title="验证 K 线数据完整性"
+          >
+            <Shield className="h-4 w-4" />
+            验证数据源
+          </button>
+          <button
+            type="button"
+            disabled={isSyncingActive}
+            onClick={handleSync}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {isSyncingActive ? (
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            ) : (
+              <TrendingUp className="h-4 w-4" />
+            )}
+            立即同步
+          </button>
+        </div>
       </div>
 
       {/* Search and filter bar — fixed at top */}
@@ -337,20 +404,30 @@ const MarketStocksPage: React.FC = () => {
                           </div>
                         )}
                       </div>
-                      {isInWatchlist ? (
-                        <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                          已添加
-                        </span>
-                      ) : (
+                      <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
-                          onClick={() => handleAddStock(stock.code)}
-                          className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
-                          title={`添加 ${stock.code}`}
+                          onClick={() => openKlineModal({ code: stock.code, name: stock.name })}
+                          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
+                          title={`查看 ${stock.code} K线`}
                         >
-                          <Plus className="h-3.5 w-3.5" />
+                          <Activity className="h-3.5 w-3.5" />
                         </button>
-                      )}
+                        {isInWatchlist ? (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                            已添加
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleAddStock(stock.code)}
+                            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
+                            title={`添加 ${stock.code}`}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -374,6 +451,107 @@ const MarketStocksPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* K-line modal overlay */}
+      {klineModalStock && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-8"
+          onClick={closeKlineModal}
+        >
+          <div
+            className="flex w-full max-w-3xl flex-col rounded-2xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">
+                  {klineModalStock.name}
+                  <span className="ml-2 font-mono text-sm font-normal text-slate-500">{klineModalStock.code}</span>
+                </h2>
+                <p className="text-xs text-slate-400">日线 · 前复权 · 近 250 个交易日</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeKlineModal}
+                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="关闭"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Modal body */}
+            <div className="min-h-0 flex-1 overflow-hidden px-4 py-4">
+              <KLineChartPanel
+                data={klineModalData}
+                loading={klineModalLoading}
+                error={klineModalError}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verification modal overlay */}
+      {verifyModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
+          onClick={closeVerifyModal}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">数据源验证结果</h2>
+              <button
+                type="button"
+                onClick={closeVerifyModal}
+                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {verifyLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo/20 border-t-indigo" />
+              </div>
+            ) : verifyData ? (
+              <div className="space-y-3 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">股票总数</span>
+                  <span className="font-semibold text-slate-900">{verifyData.total_stocks} 只</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">K 线数据</span>
+                  <span className="font-semibold text-emerald-600">
+                    {verifyData.stocks_with_kline} 只
+                    {verifyData.total_stocks > 0
+                      ? `（${((verifyData.stocks_with_kline / verifyData.total_stocks) * 100).toFixed(1)}%）`
+                      : ''}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">缺失数据</span>
+                  <span className={cn('font-semibold', verifyData.missing > 0 ? 'text-red-500' : 'text-emerald-600')}>
+                    {verifyData.missing} 只
+                  </span>
+                </div>
+                {verifyData.latest_trading_day && (
+                  <div className="flex justify-between border-t border-slate-100 pt-3">
+                    <span className="text-slate-500">最近交易日</span>
+                    <span className="font-medium text-slate-700">{verifyData.latest_trading_day}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-center text-sm text-red-500 py-4">获取验证数据失败</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,9 +1,9 @@
 ---
-name: code-governance-audit
-description: Project-local code governance audit. Use when the user asks to scan, audit, govern, review, or improve the whole project's engineering quality and wants a prioritized modification list rather than immediate code changes.
+name: code-audit
+description: Project-local code audit. Use when the user asks to scan, audit, govern, review, or improve the whole project's engineering quality and wants a prioritized modification list rather than immediate code changes.
 ---
 
-# Code Governance Audit
+# Code Audit
 
 Scan the project as a senior full-stack engineer and output a prioritized code governance modification list.
 

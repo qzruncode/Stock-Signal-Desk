@@ -1697,6 +1697,13 @@ class AkshareFetcher:
                     continue
 
                 market = self._classify_a_stock_market(code_str)
+
+                # 前置过滤：剔除北交所、ST 股
+                if market == 'bj':
+                    continue
+                if 'ST' in name_str.upper():
+                    continue
+
                 spot = spot_map.get(code_str)
 
                 item = {
@@ -1710,12 +1717,124 @@ class AkshareFetcher:
                 }
                 results.append(item)
 
-            logger.info("[StocksSync] 完成: %d 只 A 股", len(results))
+            logger.info("[StocksSync] 完成: %d 只 A 股（已过滤北交所、ST）", len(results))
             return results
 
         except Exception as e:
             logger.error("[StocksSync] 获取全 A 股列表失败: %s", e, exc_info=True)
             return None
+
+    def fetch_stock_kline_history(
+        self, code: str, days: int = 365
+    ) -> Optional[pd.DataFrame]:
+        """获取单只股票近 N 天日线历史（前复权）。
+
+        Args:
+            code: 股票代码（6 位数字）
+            days: 返回天数（默认 365，覆盖公式 250 天需求）
+
+        Returns:
+            包含 日期/开盘/收盘/最高/最低/成交量/成交额 等列的 DataFrame，失败返回 None
+        """
+        from datetime import timedelta
+        import akshare as ak
+
+        end_date = datetime.now().strftime("%Y%m%d")
+        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+
+        # East Money（主源）
+        try:
+            self._enforce_rate_limit()
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq",
+            )
+            if df is not None and not df.empty:
+                # 重命名列到 StockDaily 期望的格式
+                col_map = {
+                    '日期': 'date', '开盘': 'open', '收盘': 'close',
+                    '最高': 'high', '最低': 'low', '成交量': 'volume',
+                    '成交额': 'amount', '涨跌幅': 'pct_chg',
+                }
+                df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+                keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+                df = df[[c for c in keep_cols if c in df.columns]]
+                df = df.tail(days)
+                logger.debug(f"[K线历史] {code} 东财成功: {len(df)} 行")
+                return df
+        except Exception as e:
+            logger.debug(f"[K线历史] {code} 东财失败: {e}")
+
+        # Sina（降级源）
+        try:
+            self._enforce_rate_limit()
+            from .utils import normalize_stock_code
+            norm = normalize_stock_code(code)
+            if norm.startswith(('68', '30', '00', '002', '003')):
+                prefix = 'sz'
+            elif norm.startswith('60'):
+                prefix = 'sh'
+            elif norm.startswith(('8', '4', '9')):
+                prefix = 'bj'
+            else:
+                prefix = 'sh'
+            sina_symbol = f"{prefix}{norm}"
+            df = ak.stock_zh_a_daily(
+                symbol=sina_symbol, start_date=start_date,
+                end_date=end_date, adjust="qfq",
+            )
+            if df is not None and not df.empty:
+                rename_map = {
+                    'date': 'date', 'open': 'open', 'high': 'high',
+                    'low': 'low', 'close': 'close', 'volume': 'volume',
+                    'amount': 'amount',
+                }
+                df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+                if '收盘' in df.columns and 'close' not in df.columns:
+                    df = df.rename(columns={'收盘': 'close', '开盘': 'open', '最高': 'high', '最低': 'low'})
+                keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
+                df = df[[c for c in keep_cols if c in df.columns]]
+                if 'close' in df.columns and 'pct_chg' not in df.columns:
+                    df['pct_chg'] = df['close'].pct_change() * 100
+                df = df.tail(days)
+                logger.debug(f"[K线历史] {code} 新浪成功: {len(df)} 行")
+                return df
+        except Exception as e:
+            logger.debug(f"[K线历史] {code} 新浪失败: {e}")
+
+        return None
+
+    def fetch_stock_kline_batch(
+        self, codes: List[str], days: int = 365, workers: int = 5
+    ) -> Dict[str, Optional[pd.DataFrame]]:
+        """批量获取多只股票的 K 线历史，并发拉取。
+
+        Args:
+            codes: 股票代码列表
+            days: 每只股票获取天数
+            workers: 并发线程数（默认 5）
+
+        Returns:
+            {code: DataFrame or None} 映射
+        """
+        import concurrent.futures
+
+        # 创建低 rate limit 的临时 fetcher（0.3s 间隔，同步专用）
+        batch_fetcher = AkshareFetcher(sleep_min=0.3, sleep_max=0.5)
+
+        results: Dict[str, Optional[pd.DataFrame]] = {}
+
+        def _fetch_one(code: str) -> tuple:
+            df = batch_fetcher.fetch_stock_kline_history(code, days=days)
+            return code, df
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_fetch_one, code): code for code in codes}
+            for future in concurrent.futures.as_completed(futures):
+                code, df = future.result()
+                results[code] = df
+
+        return results
 
     @staticmethod
     def _classify_a_stock_market(code: str) -> str:

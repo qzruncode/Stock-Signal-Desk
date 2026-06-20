@@ -1,4 +1,0 @@
-interface:
-  display_name: "Project Map"
-  short_description: "Maintain docs and build an interactive flowchart"
-  default_prompt: "Use /project-map init, /project-map update, /project-map visualize, or /project-map check."

@@ -24,13 +24,30 @@ export interface StocksListResponse {
 }
 
 export interface SyncStatusResponse {
-  status: 'idle' | 'running' | 'success' | 'failed';
+  status: 'idle' | 'running' | 'syncing_kline' | 'success' | 'failed';
   progress: number;
   total: number;
+  kline_progress: number;
+  kline_total: number;
   started_at: string | null;
   finished_at: string | null;
   message: string;
   error: string | null;
+}
+
+export interface AtrScreenerKlinesResponse {
+  codes: string[];
+  klines: Record<string, Array<[string, number, number, number, number]>>;
+  total_stocks: number;
+  qualified_stocks: number;
+  elapsed_ms: number;
+}
+
+export interface KlineStatusResponse {
+  total_stocks: number;
+  stocks_with_kline: number;
+  missing: number;
+  latest_trading_day: string | null;
 }
 
 export const stocksApi = {
@@ -56,6 +73,19 @@ export const stocksApi = {
 
   async count(): Promise<{ total: number }> {
     const response = await apiClient.get<{ total: number }>('/api/v1/stocks/count');
+    return response.data;
+  },
+
+  async getAtrScreenerKlines(): Promise<AtrScreenerKlinesResponse> {
+    const response = await apiClient.get<AtrScreenerKlinesResponse>(
+      '/api/v1/stocks/atr-screener/klines',
+      { timeout: 120000 },
+    );
+    return response.data;
+  },
+
+  async getKlineStatus(): Promise<KlineStatusResponse> {
+    const response = await apiClient.get<KlineStatusResponse>('/api/v1/stocks/kline-status');
     return response.data;
   },
 };

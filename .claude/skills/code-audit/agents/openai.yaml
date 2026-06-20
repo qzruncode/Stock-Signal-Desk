@@ -1,4 +1,4 @@
 interface:
-  display_name: "Code Governance Audit"
+  display_name: "Code Audit"
   short_description: "Scan the project and produce a prioritized governance modification list."
   default_prompt: "扫描当前项目代码，输出代码治理修改清单"

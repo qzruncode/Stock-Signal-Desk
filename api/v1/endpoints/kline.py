@@ -2,9 +2,11 @@
 """K-line data endpoints with multi-source fallback and caching.
 
 Data source fallback chain (daily qfq only):
-  1. East Money (akshare.stock_zh_a_hist)
-  2. Sina Finance (akshare.stock_zh_a_daily)
-  3. Tencent Finance (akshare.stock_zh_a_hist_tx)
+  1. StockDaily (local DB, synced from batch sync)
+  2. KlineSnapshot cache
+  3. East Money (akshare.stock_zh_a_hist)
+  4. Sina Finance (akshare.stock_zh_a_daily)
+  5. Tencent Finance (akshare.stock_zh_a_hist_tx)
 """
 
 from __future__ import annotations
@@ -53,6 +55,47 @@ def _latest_kline_cache_key(symbol: str, count: int) -> str:
 def _history_kline_cache_key(symbol: str, start_date: str, end_date: str) -> str:
     """Build cache key for date-range K-line requests."""
     return f"kline:history:{symbol}:{start_date}:{end_date}"
+
+
+def _get_kline_from_stock_daily(symbol: str, count: int) -> list[dict] | None:
+    """Read K-line data from StockDaily table (local DB)."""
+    try:
+        from src.storage import DatabaseManager
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            from sqlalchemy import select, desc
+            from src.storage import StockDaily
+            rows = (
+                session.execute(
+                    select(StockDaily)
+                    .where(StockDaily.code == symbol)
+                    .order_by(desc(StockDaily.date))
+                    .limit(count)
+                )
+                .scalars()
+                .all()
+            )
+            if not rows:
+                return None
+            # Convert to records (oldest first for chart display)
+            records = []
+            for row in reversed(rows):
+                records.append({
+                    'date': row.date.isoformat() if hasattr(row.date, 'isoformat') else str(row.date),
+                    'open': row.open,
+                    'high': row.high,
+                    'low': row.low,
+                    'close': row.close,
+                    'volume': row.volume,
+                    'amount': row.amount,
+                    'pct_chg': row.pct_chg,
+                    '_source': 'stock_daily',
+                })
+            logger.info(f"[K线本地] {symbol} 命中 StockDaily: {len(records)} 条")
+            return records
+    except Exception as e:
+        logger.debug(f"[K线本地] 读取 StockDaily 失败: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -283,19 +326,35 @@ def get_kline(
     count: int = Query(DEFAULT_COUNT, ge=1, le=1000, description="返回条数"),
     use_cache: bool = Query(True, description="是否使用缓存"),
 ):
-    """获取日线K线数据（前复权）。非交易时段优先缓存，交易时段实时拉取。"""
+    """获取日线K线数据（前复权）。优先本地 StockDaily，其次缓存，最后外部 API。"""
     cache_key = _latest_kline_cache_key(symbol, count)
+
+    # 1. Try StockDaily (local DB)
+    records = _get_kline_from_stock_daily(symbol, count)
+    if records:
+        now_ts = datetime.now().isoformat()
+        return {
+            'symbol': symbol, 'source': 'stock_daily',
+            'count': len(records), 'data': records,
+            '_fetched_at': now_ts, '_cached': True,
+            'data_time': _kline_data_time(records),
+            'is_stale': _kline_is_stale(records),
+            'fallback_used': False,
+        }
+
+    # 2. Try KlineSnapshot cache (non-trading hours)
     if use_cache and not _is_trading_hours():
         cached = _get_kline_from_cache(cache_key)
         if cached:
             logger.info(f"[K线缓存] 命中 {symbol}")
             cached['_cached'] = True
-            records = cached.get('data') or []
-            cached.setdefault('data_time', _kline_data_time(records))
-            cached.setdefault('is_stale', _kline_is_stale(records))
+            recs = cached.get('data') or []
+            cached.setdefault('data_time', _kline_data_time(recs))
+            cached.setdefault('is_stale', _kline_is_stale(recs))
             cached.setdefault('fallback_used', cached.get('source') != KLINE_SOURCE_EM if cached.get('source') else False)
             return cached
 
+    # 3. Fetch from external APIs
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=count * 2)).strftime("%Y%m%d")
 
