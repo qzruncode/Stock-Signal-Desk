@@ -192,13 +192,23 @@ const BatchRunDetailPage: React.FC = () => {
     }
   }, [activeView, filteredResults, selectedCode]);
 
-  const handleCreatePassedGroup = useCallback(() => {
-    if (passedCodes.length === 0) return;
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const handleCreatePassedGroup = useCallback(async () => {
+    if (passedCodes.length === 0 || isCreatingGroup) return;
     const targetName = groupName.trim() || defaultGroupName;
-    const group = upsertWatchlistGroup(targetName, passedCodes);
-    setGroupName(group.name);
-    setActionMessage(`已创建股票池分组「${group.name}」，共 ${group.codes.length} 只。`);
-  }, [defaultGroupName, groupName, passedCodes]);
+    setIsCreatingGroup(true);
+    setError(null);
+    setActionMessage(null);
+    try {
+      const group = await upsertWatchlistGroup(targetName, passedCodes, 'batch');
+      setGroupName(group.name);
+      setActionMessage(`已创建股票池分组「${group.name}」，共 ${group.codes.length} 只。`);
+    } catch (err) {
+      setError(getParsedApiError(err));
+    } finally {
+      setIsCreatingGroup(false);
+    }
+  }, [defaultGroupName, groupName, isCreatingGroup, passedCodes]);
 
   return (
     <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col bg-base sm:h-[calc(100vh-2rem)]">
@@ -331,10 +341,10 @@ const BatchRunDetailPage: React.FC = () => {
                           variant="secondary"
                           size="sm"
                           onClick={handleCreatePassedGroup}
-                          disabled={passedCodes.length === 0}
+                          disabled={passedCodes.length === 0 || isCreatingGroup}
                         >
                           <FolderPlus className="h-4 w-4" />
-                          建股票池 ({passedCodes.length})
+                          {isCreatingGroup ? '入库中…' : `建股票池 (${passedCodes.length})`}
                         </Button>
                       </div>
                     </div>

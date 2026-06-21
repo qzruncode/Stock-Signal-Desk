@@ -35,19 +35,24 @@ export interface SyncStatusResponse {
   error: string | null;
 }
 
-export interface AtrScreenerKlinesResponse {
-  codes: string[];
-  klines: Record<string, Array<[string, number, number, number, number]>>;
-  total_stocks: number;
-  qualified_stocks: number;
-  elapsed_ms: number;
-}
-
 export interface KlineStatusResponse {
   total_stocks: number;
   stocks_with_kline: number;
   missing: number;
   latest_trading_day: string | null;
+}
+
+export interface KlineBatchResponse {
+  results: Record<string, Array<[string, number, number, number, number]>>;
+}
+
+export interface FundamentalFilterResponse {
+  data: Record<string, {
+    revenue_ttm: number | null;
+    deducted_profit_ttm: number | null;
+    debt_ratio: number | null;
+    report_date: string | null;
+  }>;
 }
 
 export const stocksApi = {
@@ -76,16 +81,26 @@ export const stocksApi = {
     return response.data;
   },
 
-  async getAtrScreenerKlines(): Promise<AtrScreenerKlinesResponse> {
-    const response = await apiClient.get<AtrScreenerKlinesResponse>(
-      '/api/v1/stocks/atr-screener/klines',
-      { timeout: 120000 },
+  async getKlineStatus(): Promise<KlineStatusResponse> {
+    const response = await apiClient.get<KlineStatusResponse>('/api/v1/stocks/kline-status');
+    return response.data;
+  },
+
+  async getKlineBatch(codes: string[], count: number = 250): Promise<KlineBatchResponse> {
+    const response = await apiClient.post<KlineBatchResponse>(
+      '/api/v1/stocks/kline/batch',
+      { codes, count },
+      { timeout: 30000 },
     );
     return response.data;
   },
 
-  async getKlineStatus(): Promise<KlineStatusResponse> {
-    const response = await apiClient.get<KlineStatusResponse>('/api/v1/stocks/kline-status');
+  async fundamentalFilter(codes: string[]): Promise<FundamentalFilterResponse> {
+    const response = await apiClient.post<FundamentalFilterResponse>(
+      '/api/v1/stocks/fundamental-filter',
+      { codes },
+      { timeout: 240000 }, // 4min > backend 3min timeout, leave margin for slow fetches
+    );
     return response.data;
   },
 };

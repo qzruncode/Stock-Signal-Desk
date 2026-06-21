@@ -31,6 +31,6 @@ Finish with a short summary of root cause, changed files, verification result, a
 
 ## `/bug replan`
 
-Rewrite the bug fix Human Plan using the user's feedback or `/plan check` suggestions.
+Rewrite the bug fix Human Plan using the user's feedback or `/plan-check` suggestions.
 
 After outputting the revised Human Plan, wait for feedback or `/bug approve`.

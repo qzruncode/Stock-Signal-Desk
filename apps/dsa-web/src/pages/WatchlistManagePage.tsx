@@ -1,13 +1,19 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Plus, Search, Settings, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, Plus, Search, Settings, X, Zap } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
 import { Button, EmptyState, InlineAlert } from '../components/common';
-import AtrScreenerBar from '../components/AtrScreenerBar';
+import AtrScreenerDialog from '../components/AtrScreenerDialog';
 import WatchlistManageDrawer from '../components/watchlist/WatchlistManageDrawer';
 import { cn } from '../utils/cn';
 import { classifyStock, MARKET_COLORS, MARKET_LABELS } from '../utils/market';
-import { loadWatchlistGroups, saveWatchlistGroups, type WatchlistGroup } from '../utils/watchlistGroups';
+import {
+  deleteWatchlistGroup,
+  updateWatchlistGroup,
+  upsertWatchlistGroup,
+  type WatchlistGroup,
+} from '../utils/watchlistGroups';
+import { useWatchlistGroups } from '../hooks/useWatchlistGroups';
 import { useTransientMessage } from '../hooks/useTransientMessage';
 import { useStockSuggest } from '../hooks/useStockSuggest';
 
@@ -21,7 +27,7 @@ const WatchlistManagePage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const { message: successMsg, showMessage: holdMessage } = useTransientMessage();
 
-  const [groups, setGroups] = useState<WatchlistGroup[]>([]);
+  const { groups } = useWatchlistGroups();
   const [activeGroupId, setActiveGroupId] = useState<string>(DEFAULT_GROUP_ID);
   const [isAdding, setIsAdding] = useState(false);
   const [isBatchAdding, setIsBatchAdding] = useState(false);
@@ -39,6 +45,7 @@ const WatchlistManagePage: React.FC = () => {
   } = useStockSuggest();
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [screenerOpen, setScreenerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [batchInput, setBatchInput] = useState('');
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
@@ -58,19 +65,8 @@ const WatchlistManagePage: React.FC = () => {
 
   useEffect(() => {
     document.title = '自选分组管理 - Stock-Signal-Desk';
-    const loaded = loadWatchlistGroups();
-    setGroups(loaded);
     void loadWatchlist();
   }, [loadWatchlist]);
-
-  const groupsInitialized = useRef(false);
-  useEffect(() => {
-    if (!groupsInitialized.current) {
-      groupsInitialized.current = true;
-      return;
-    }
-    saveWatchlistGroups(groups);
-  }, [groups]);
 
   // Ensure activeGroupId is valid
   useEffect(() => {
@@ -96,12 +92,10 @@ const WatchlistManagePage: React.FC = () => {
     return activeGroup.codes;
   }, [activeGroup]);
 
-  const displayStocks = useMemo(() => {
-    return displayCodes.map((code) => {
-      const { market, marketLabel } = classifyStock(code);
-      return { code, market, marketLabel };
-    });
-  }, [displayCodes]);
+  const displayStocks = useMemo(
+    () => displayCodes.map((code) => ({ code, ...classifyStock(code) })),
+    [displayCodes],
+  );
 
   const watchlistCodes = useMemo(() => new Set(watchlist?.codes || []), [watchlist]);
 
@@ -121,16 +115,9 @@ const WatchlistManagePage: React.FC = () => {
     try {
       const result = await watchlistApi.add([code]);
       setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-
       // If in a custom group, also add to that group
-      if (activeGroup && activeGroup.id !== DEFAULT_GROUP_ID) {
-        setGroups((prev) =>
-          prev.map((g) =>
-            g.id === activeGroup.id && !g.codes.includes(code)
-              ? { ...g, codes: [...g.codes, code] }
-              : g,
-          ),
-        );
+      if (activeGroup && activeGroup.id !== DEFAULT_GROUP_ID && !activeGroup.codes.includes(code)) {
+        await updateWatchlistGroup(activeGroup.id, { codes: [...activeGroup.codes, code] });
       }
       clearSuggest();
       holdMessage(`已添加 ${code}`);
@@ -147,150 +134,160 @@ const WatchlistManagePage: React.FC = () => {
     if (activeGroup.id === DEFAULT_GROUP_ID) {
       // Default group: remove from API (syncs to stocks page) + custom groups
       setRemovingCodes((prev) => new Set(prev).add(code));
-      void watchlistApi.remove([code])
-        .then((result) => {
+      void (async () => {
+        try {
+          const result = await watchlistApi.remove([code]);
           setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-          // Also remove from custom groups
-          setGroups((prev) =>
-            prev.map((g) => ({
-              ...g,
-              codes: g.codes.filter((c) => c !== code),
-            })),
+          // Also remove from any custom group that contains it
+          await Promise.all(
+            groups
+              .filter((g) => g.codes.includes(code))
+              .map((g) => updateWatchlistGroup(g.id, { codes: g.codes.filter((c) => c !== code) })),
           );
           holdMessage(`已移除 ${code}`);
-        })
-        .catch((err: unknown) => {
+        } catch (err: unknown) {
           setError(err instanceof Error ? err.message : '移除失败');
-        })
-        .finally(() => {
+        } finally {
           setRemovingCodes((prev) => {
             const next = new Set(prev);
             next.delete(code);
             return next;
           });
-        });
+        }
+      })();
     } else {
       // Custom group: remove from group only
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.id === activeGroup.id
-            ? { ...g, codes: g.codes.filter((c) => c !== code) }
-            : g,
-        ),
-      );
-      holdMessage(`已从分组移除 ${code}`);
+      void (async () => {
+        try {
+          await updateWatchlistGroup(activeGroup.id, { codes: activeGroup.codes.filter((c) => c !== code) });
+          holdMessage(`已从分组移除 ${code}`);
+        } catch (err: unknown) {
+          setError(err instanceof Error ? err.message : '移除失败');
+        }
+      })();
     }
-  }, [activeGroup, holdMessage]);
+  }, [activeGroup, groups, holdMessage]);
 
   // --- Group management ---
-  const handleCreateGroup = useCallback(() => {
+  const handleCreateGroup = useCallback(async () => {
     const name = newGroupName.trim();
     if (!name) return;
-    const newGroup: WatchlistGroup = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      name,
-      codes: [],
-    };
-    setGroups((prev) => [...prev, newGroup]);
-    setActiveGroupId(newGroup.id);
-    setNewGroupName('');
-    holdMessage(`已创建分组「${name}」`);
-  }, [holdMessage, newGroupName]);
-
-  const handleDeleteGroup = useCallback(() => {
-    if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID) return;
-    setGroups((prev) => prev.filter((g) => g.id !== activeGroup.id));
-    setActiveGroupId(DEFAULT_GROUP_ID);
-    holdMessage(`已删除分组「${activeGroup.name}」`);
-  }, [activeGroup, holdMessage]);
-
-  const handleRenameGroup = useCallback((name: string) => {
-    if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID || !name.trim()) return;
-    setGroups((prev) =>
-      prev.map((g) => (g.id === activeGroup.id ? { ...g, name: name.trim() } : g)),
-    );
-    holdMessage(`已重命名为「${name.trim()}」`);
-  }, [activeGroup, holdMessage]);
-
-  // --- Sync watchlist: on mount, sync default group codes into custom groups ---
-  const syncWatchlistRef = useRef(false);
-  useEffect(() => {
-    if (syncWatchlistRef.current || isLoading || !watchlist || groups.length === 0) return;
-    syncWatchlistRef.current = true;
-    // Clean orphaned API codes: in API but not in any group (default + custom)
-    const allCodeSet = new Set<string>();
-    for (const c of watchlist.codes) allCodeSet.add(c);
-    for (const g of groups) {
-      for (const c of g.codes) allCodeSet.add(c);
+    if (groups.some((g) => g.name === name)) {
+      setError(`分组名称「${name}」已存在`);
+      return;
     }
-    const orphans = watchlist.codes.filter((c) => !allCodeSet.has(c));
-    if (orphans.length === 0) return;
-    void watchlistApi.remove(orphans)
-      .then((result) => {
-        setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-      })
-      .catch(() => { /* ignore */ });
-  }, [isLoading, watchlist, groups]);
+    try {
+      const created = await upsertWatchlistGroup(name, []);
+      setActiveGroupId(created.id);
+      setNewGroupName('');
+      holdMessage(`已创建分组「${name}」`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '创建分组失败');
+    }
+  }, [groups, holdMessage, newGroupName]);
+
+  const handleQuickAddGroup = useCallback(async () => {
+    const existing = new Set(groups.map((g) => g.name));
+    let n = groups.length + 1;
+    let name = `分组${n}`;
+    while (existing.has(name)) {
+      n += 1;
+      name = `分组${n}`;
+    }
+    try {
+      const created = await upsertWatchlistGroup(name, []);
+      setActiveGroupId(created.id);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '创建分组失败');
+    }
+  }, [groups]);
+
+  const handleDeleteGroup = useCallback(async () => {
+    if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID) return;
+    const name = activeGroup.name;
+    try {
+      await deleteWatchlistGroup(activeGroup.id);
+      setActiveGroupId(DEFAULT_GROUP_ID);
+      holdMessage(`已删除分组「${name}」`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '删除分组失败');
+    }
+  }, [activeGroup, holdMessage]);
+
+  const handleRenameGroup = useCallback(async (name: string) => {
+    if (!activeGroup || activeGroup.id === DEFAULT_GROUP_ID || !name.trim()) return;
+    const trimmed = name.trim();
+    try {
+      await updateWatchlistGroup(activeGroup.id, { name: trimmed });
+      holdMessage(`已重命名为「${trimmed}」`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : '重命名失败');
+    }
+  }, [activeGroup, holdMessage]);
 
   const handleBatchAdd = useCallback(() => {
     const codes = batchInput.split(/[\n,，\s]+/).filter(Boolean);
     if (codes.length === 0 || !activeGroup) return;
     setIsBatchAdding(true);
-    void watchlistApi.add(codes)
-      .then((result) => {
+    void (async () => {
+      try {
+        const result = await watchlistApi.add(codes);
         setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
         if (activeGroup.id !== DEFAULT_GROUP_ID) {
-          setGroups((prev) =>
-            prev.map((g) =>
-              g.id === activeGroup.id
-                ? { ...g, codes: Array.from(new Set([...g.codes, ...codes])) }
-                : g,
-            ),
-          );
+          await updateWatchlistGroup(activeGroup.id, {
+            codes: Array.from(new Set([...activeGroup.codes, ...codes])),
+          });
         }
         setBatchInput('');
         holdMessage(`已批量添加 ${codes.length} 只股票`);
-      })
-      .catch((err: unknown) => {
+      } catch (err: unknown) {
         setError(err instanceof Error ? err.message : '批量添加失败');
-      })
-      .finally(() => setIsBatchAdding(false));
+      } finally {
+        setIsBatchAdding(false);
+      }
+    })();
   }, [activeGroup, batchInput, holdMessage]);
 
   const handleBatchRemove = useCallback(() => {
     if (selectedCodes.size === 0 || !activeGroup) return;
     const codes = Array.from(selectedCodes);
+    const removeSet = new Set(codes);
     if (activeGroup.id === DEFAULT_GROUP_ID) {
       setIsBatchRemoving(true);
-      void watchlistApi.remove(codes)
-        .then((result) => {
+      void (async () => {
+        try {
+          const result = await watchlistApi.remove(codes);
           setWatchlist({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-          setGroups((prev) =>
-            prev.map((g) => ({
-              ...g,
-              codes: g.codes.filter((c) => !codes.includes(c)),
-            })),
+          await Promise.all(
+            groups
+              .filter((g) => g.codes.some((c) => removeSet.has(c)))
+              .map((g) => updateWatchlistGroup(g.id, { codes: g.codes.filter((c) => !removeSet.has(c)) })),
           );
           setSelectedCodes(new Set());
           holdMessage(`已移除 ${codes.length} 只股票`);
-        })
-        .catch((err: unknown) => {
+        } catch (err: unknown) {
           setError(err instanceof Error ? err.message : '批量移除失败');
-        })
-        .finally(() => setIsBatchRemoving(false));
+        } finally {
+          setIsBatchRemoving(false);
+        }
+      })();
     } else {
-      const removeSet = new Set(codes);
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.id === activeGroup.id
-            ? { ...g, codes: g.codes.filter((c) => !removeSet.has(c)) }
-            : g,
-        ),
-      );
-      setSelectedCodes(new Set());
-      holdMessage(`已从分组移出 ${codes.length} 只股票`);
+      setIsBatchRemoving(true);
+      void (async () => {
+        try {
+          await updateWatchlistGroup(activeGroup.id, {
+            codes: activeGroup.codes.filter((c) => !removeSet.has(c)),
+          });
+          setSelectedCodes(new Set());
+          holdMessage(`已从分组移出 ${codes.length} 只股票`);
+        } catch (err: unknown) {
+          setError(err instanceof Error ? err.message : '批量移除失败');
+        } finally {
+          setIsBatchRemoving(false);
+        }
+      })();
     }
-  }, [activeGroup, holdMessage, selectedCodes]);
+  }, [activeGroup, groups, holdMessage, selectedCodes]);
 
   const toggleSelect = useCallback((code: string) => {
     setSelectedCodes((prev) => {
@@ -345,7 +342,9 @@ const WatchlistManagePage: React.FC = () => {
       </div>
 
       {/* Group tab bar — fixed at top */}
-      <div className="shrink-0 flex items-center gap-1.5 overflow-x-auto rounded-2xl border border-slate-200 bg-white/88 px-3 py-2 shadow-sm">
+      <div className="shrink-0 flex items-center justify-between gap-2 rounded-2xl border border-slate-200 bg-white/88 px-3 py-2 shadow-sm">
+        {/* Left: group tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto">
         {/* Default group tab */}
         <button
           type="button"
@@ -388,32 +387,33 @@ const WatchlistManagePage: React.FC = () => {
             </span>
           </button>
         ))}
+        {/* + 新建 group button */}
         <button
           type="button"
-          onClick={() => {
-            const name = `分组${groups.length + 1}`;
-            const newGroup: WatchlistGroup = {
-              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-              name,
-              codes: [],
-            };
-            setGroups((prev) => [...prev, newGroup]);
-            setActiveGroupId(newGroup.id);
-          }}
+          onClick={handleQuickAddGroup}
           className="flex shrink-0 items-center gap-1 rounded-xl border border-dashed border-slate-300 px-3 py-2 text-sm text-slate-400 transition hover:border-cyan-300 hover:text-cyan-600"
         >
           <Plus className="h-4 w-4" />
           新建
         </button>
+        </div>
+        {/* Right: screening button (independent feature) */}
+        <button
+          type="button"
+          onClick={() => setScreenerOpen(true)}
+          className="flex shrink-0 items-center gap-1 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-medium text-orange-600 transition hover:border-orange-300 hover:bg-orange-100"
+          title="ATR 相对波动率选股"
+        >
+          <Zap className="h-4 w-4" />
+          筛选
+        </button>
       </div>
 
-      {/* ATR Screener */}
-      <AtrScreenerBar
-        groups={groups}
-        onGroupsChange={setGroups}
-        onError={(msg) => setError(msg)}
-        onSuccess={holdMessage}
+      {/* ATR Screener Dialog */}
+      <AtrScreenerDialog
+        onError={(msg) => setError(msg)} onSuccess={holdMessage}
         onGroupSelect={setActiveGroupId}
+        isOpen={screenerOpen} onClose={() => setScreenerOpen(false)}
       />
 
       {/* Search + add bar — fixed at top */}

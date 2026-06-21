@@ -10,3 +10,5 @@ export type {
   UseTaskStreamOptions,
   UseTaskStreamResult,
 } from './useTaskStream';
+export { useWatchlistGroups } from './useWatchlistGroups';
+export type { UseWatchlistGroupsResult } from './useWatchlistGroups';

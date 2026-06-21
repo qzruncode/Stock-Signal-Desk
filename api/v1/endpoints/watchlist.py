@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from api.deps import get_system_config_service
 from api.v1.schemas.common import ErrorResponse
+from src.storage import DatabaseManager, WatchlistGroupNameConflict
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigValidationError,
@@ -19,6 +21,17 @@ from src.services.system_config_service import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class WatchlistGroupUpsertRequest(BaseModel):
+    name: str
+    codes: List[str] = []
+    source: Optional[str] = "manual"
+
+
+class WatchlistGroupPatchRequest(BaseModel):
+    name: Optional[str] = None
+    codes: Optional[List[str]] = None
 
 
 def _load_stock_list(service: SystemConfigService) -> tuple[List[str], str, str]:
@@ -182,4 +195,115 @@ def remove_from_watchlist(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "Failed to remove stocks from watchlist"},
+        )
+
+
+# ── Watchlist Groups（自选股自定义分组）──────────────────────────────────
+
+
+@router.get(
+    "/groups",
+    summary="List custom watchlist groups",
+    responses={500: {"model": ErrorResponse}},
+)
+def list_watchlist_groups():
+    """Return all custom watchlist groups (excludes the default STOCK_LIST group)."""
+    try:
+        db = DatabaseManager.get_instance()
+        return {"groups": db.list_watchlist_groups()}
+    except Exception as exc:
+        logger.error("Failed to list watchlist groups: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "Failed to list watchlist groups"},
+        )
+
+
+@router.post(
+    "/groups",
+    summary="Create or update a watchlist group (upsert by name)",
+    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def upsert_watchlist_group(body: WatchlistGroupUpsertRequest):
+    """Create a group, or replace an existing group's codes when the name matches."""
+    try:
+        db = DatabaseManager.get_instance()
+        return db.upsert_watchlist_group(body.name, body.codes, body.source or "manual")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": str(exc)},
+        )
+    except Exception as exc:
+        logger.error("Failed to upsert watchlist group: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "Failed to save watchlist group"},
+        )
+
+
+@router.patch(
+    "/groups/{group_id}",
+    summary="Update a watchlist group's name or codes",
+    responses={
+        400: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+def patch_watchlist_group(group_id: str, body: WatchlistGroupPatchRequest):
+    """Rename a group and/or replace its codes."""
+    try:
+        db = DatabaseManager.get_instance()
+        group = db.update_watchlist_group(group_id, name=body.name, codes=body.codes)
+        if group is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": "Watchlist group not found"},
+            )
+        return group
+    except WatchlistGroupNameConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "name_conflict", "message": f"分组名称已存在: {exc}"},
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": str(exc)},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to update watchlist group: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "Failed to update watchlist group"},
+        )
+
+
+@router.delete(
+    "/groups/{group_id}",
+    summary="Delete a watchlist group",
+    responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def delete_watchlist_group(group_id: str):
+    """Delete a custom watchlist group by id."""
+    try:
+        db = DatabaseManager.get_instance()
+        deleted = db.delete_watchlist_group(group_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": "Watchlist group not found"},
+            )
+        return {"deleted": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to delete watchlist group: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "Failed to delete watchlist group"},
         )

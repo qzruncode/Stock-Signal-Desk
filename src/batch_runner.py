@@ -262,6 +262,8 @@ class BatchRunner:
         template_name: str = "默认",
         template_id: str = "",
         triggered_by: str = "manual",
+        analysis_mode: str = "template",
+        force_refresh: bool = False,
         control: Optional[BatchRunControl] = None,
         on_progress: Optional[Callable[[BatchRunState], None]] = None,
     ) -> BatchRunState:
@@ -273,6 +275,8 @@ class BatchRunner:
             template_name: 模板名称
             template_id: 模板 ID
             triggered_by: 触发来源 (manual/scheduled)
+            analysis_mode: 分析模式 (template/buy_criteria)
+            force_refresh: 买入判断模式下是否绕过当日缓存重新分析
             on_progress: 每完成一只股票时回调
 
         Returns:
@@ -284,12 +288,14 @@ class BatchRunner:
         started_at = datetime.now(timezone.utc)
 
         logger.info(
-            "Batch run started: run_id=%s stocks=%d template=%s",
-            run_id, len(stock_codes), template_name,
+            "Batch run started: run_id=%s stocks=%d template=%s mode=%s",
+            run_id, len(stock_codes), template_name, analysis_mode,
         )
 
         # Save initial batch record
-        _save_batch_run_start(run_id, triggered_by, template_id, template_name, stock_codes)
+        _save_batch_run_start(
+            run_id, triggered_by, template_id, template_name, stock_codes, analysis_mode,
+        )
 
         return self._execute(
             run_id=run_id,
@@ -301,6 +307,8 @@ class BatchRunner:
             existing_results=None,
             control=control,
             on_progress=on_progress,
+            analysis_mode=analysis_mode,
+            force_refresh=force_refresh,
         )
 
     def resume(
@@ -310,6 +318,8 @@ class BatchRunner:
         stock_codes: List[str],
         system_prompt: str,
         template_name: str = "默认",
+        analysis_mode: str = "template",
+        force_refresh: bool = False,
         started_at: Optional[datetime] = None,
         existing_results: Optional[Dict[str, dict]] = None,
         control: Optional[BatchRunControl] = None,
@@ -328,12 +338,13 @@ class BatchRunner:
             started_at = datetime.now(timezone.utc)
 
         logger.info(
-            "Batch run resumed: run_id=%s total=%d completed=%d pending=%d template=%s",
+            "Batch run resumed: run_id=%s total=%d completed=%d pending=%d template=%s mode=%s",
             run_id,
             len(stock_codes),
             len(completed_codes),
             len(pending_stock_codes),
             template_name,
+            analysis_mode,
         )
 
         _save_batch_run_resume_start(run_id, stock_codes, existing_results)
@@ -348,6 +359,8 @@ class BatchRunner:
             existing_results=existing_results,
             control=control,
             on_progress=on_progress,
+            analysis_mode=analysis_mode,
+            force_refresh=force_refresh,
         )
 
     def _execute(
@@ -362,6 +375,8 @@ class BatchRunner:
         existing_results: Optional[Dict[str, dict]],
         control: Optional[BatchRunControl],
         on_progress: Optional[Callable[[BatchRunState], None]],
+        analysis_mode: str = "template",
+        force_refresh: bool = False,
     ) -> BatchRunState:
         if control is None:
             control = BatchRunControl()
@@ -409,6 +424,7 @@ class BatchRunner:
                     future = pool.submit(
                         self._analyze_one,
                         analyzer, system_prompt, code, stock_name, state,
+                        analysis_mode, force_refresh,
                     )
                     futures[future] = code
 
@@ -434,13 +450,17 @@ class BatchRunner:
             return state
 
         # Generate aggregated MD
-        report_path = _write_aggregated_report(run_id, state, template_name, started_at)
+        report_path = _write_aggregated_report(
+            run_id, state, template_name, started_at, analysis_mode=analysis_mode,
+        )
 
         # Save final batch record
         _save_batch_run_end(run_id, state, started_at, report_path)
 
         # Send notification
-        _send_batch_notification(run_id, state, template_name, report_path)
+        _send_batch_notification(
+            run_id, state, template_name, report_path, analysis_mode=analysis_mode,
+        )
 
         logger.info(
             "Batch run complete: run_id=%s ok=%d fail=%d",
@@ -455,9 +475,15 @@ class BatchRunner:
         stock_code: str,
         stock_name: str,
         state: BatchRunState,
+        analysis_mode: str = "template",
+        force_refresh: bool = False,
     ) -> tuple:
         """Analyze one stock, respecting the concurrency semaphore."""
         with self._semaphore:
+            if analysis_mode == "buy_criteria":
+                return self._analyze_one_criteria(
+                    stock_code, stock_name, state, force_refresh,
+                )
             try:
                 state.start_stock(stock_code, stock_name)
                 text, model, _usage = call_ai_for_stock(
@@ -473,6 +499,27 @@ class BatchRunner:
             except Exception as exc:
                 logger.exception("AI call failed for %s(%s)", stock_name, stock_code)
                 return False, str(exc), "", None
+
+    def _analyze_one_criteria(
+        self,
+        stock_code: str,
+        stock_name: str,
+        state: BatchRunState,
+        force_refresh: bool,
+    ) -> tuple:
+        """Run buy-criteria (8-step) screening for one stock in a batch."""
+        try:
+            state.start_stock(stock_code, stock_name)
+            from src.services.buy_criteria.orchestrator import CriterionOrchestrator
+
+            summary = CriterionOrchestrator().analyze_for_batch(
+                stock_code, reuse_cache=not force_refresh,
+            )
+            text = _format_criteria_detail(stock_code, stock_name, summary)
+            return True, text, "buy_criteria", _criteria_decision_meta(summary)
+        except Exception as exc:
+            logger.exception("Criteria analysis failed for %s(%s)", stock_name, stock_code)
+            return False, str(exc), "", None
 
 
 def _lookup_stock_name(code: str) -> str:
@@ -501,11 +548,88 @@ def _with_batch_decision_schema(system_prompt: str) -> str:
     return f"{base}\n\n{BATCH_DECISION_SCHEMA_INSTRUCTION}".strip()
 
 
+_CRITERIA_NUM_LABELS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+
+
+def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
+    """Map a buy-criteria batch summary onto the shared decision_meta shape."""
+    final = summary.get("final_decision") or "不可买入"
+    decision = "buy" if final == "可买入" else "reject"
+    total = summary.get("total", 8)
+    passed = summary.get("passed_count", 0)
+
+    if decision == "buy":
+        reason = f"{passed}/{total} 项全部通过"
+    else:
+        stopped_name = summary.get("stopped_at_name") or "?"
+        verdict = _one_line(summary.get("stopped_verdict") or "", limit=70)
+        idx = next(
+            (c.get("index") for c in summary.get("criteria", []) if not c.get("passed")),
+            None,
+        )
+        pos = f"第{idx + 1}项·" if isinstance(idx, int) else ""
+        reason = f"卡在{pos}{stopped_name}：{verdict}" if verdict else f"卡在{pos}{stopped_name}"
+
+    if summary.get("from_cache"):
+        reason = f"{reason}（缓存）"
+
+    return {
+        "decision": decision,
+        "decision_label": final,
+        "decision_reason": reason,
+        "decision_source": "buy_criteria",
+    }
+
+
+def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> str:
+    """Build the readable per-stock criteria detail shown in the batch detail view."""
+    label = (
+        f"{stock_name}({stock_code})"
+        if stock_name and stock_name != stock_code
+        else stock_code
+    )
+    final = summary.get("final_decision") or "不可买入"
+    passed = summary.get("passed_count", 0)
+    failed = summary.get("failed_count", 0)
+    not_eval = summary.get("not_evaluated_count", 0)
+    cache_mark = "（缓存复用）" if summary.get("from_cache") else ""
+
+    lines = [
+        f"# {label} 买入判断",
+        "",
+        f"**最终结论**: {final}{cache_mark}",
+        f"通过 {passed} / 未通过 {failed} / 未评估 {not_eval}",
+        "",
+        "## 逐项结果",
+        "",
+    ]
+    for c in summary.get("criteria", []):
+        idx = c.get("index")
+        num = (
+            _CRITERIA_NUM_LABELS[idx]
+            if isinstance(idx, int) and 0 <= idx < len(_CRITERIA_NUM_LABELS)
+            else "-"
+        )
+        mark = "✅ 通过" if c.get("passed") else "❌ 未通过"
+        name = c.get("criterion_name") or c.get("criterion_id") or ""
+        verdict = (c.get("verdict") or "").strip()
+        line = f"{num} {name}  {mark}"
+        if verdict:
+            line += f" — {verdict}"
+        lines.append(line)
+    if not_eval > 0:
+        lines.append("")
+        lines.append(f"（前置准则未通过，剩余 {not_eval} 项未评估）")
+
+    return "\n".join(lines)
+
+
 def _write_aggregated_report(
     run_id: str,
     state: BatchRunState,
     template_name: str,
     started_at: datetime,
+    analysis_mode: str = "template",
 ) -> str:
     """Write aggregated MD report and return the file path."""
     BATCH_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -514,6 +638,22 @@ def _write_aggregated_report(
     filename = f"batch_{ts}_{run_id[:8]}.md"
     filepath = BATCH_REPORTS_DIR / filename
 
+    if analysis_mode == "buy_criteria":
+        content = _build_criteria_report_content(state, template_name, started_at)
+    else:
+        content = _build_template_report_content(state, template_name, started_at)
+
+    filepath.write_text(content, encoding="utf-8")
+    logger.info("Batch report saved: %s", filepath)
+    return str(filepath)
+
+
+def _build_template_report_content(
+    state: BatchRunState,
+    template_name: str,
+    started_at: datetime,
+) -> str:
+    """Build the template-mode aggregated report (buy/watch/reject/unknown)."""
     result_items = _get_result_items(state)
     failed_items = [(code, result) for code, result in result_items if not result.get("success")]
     summary_items = _get_stock_decision_summaries(result_items)
@@ -587,10 +727,84 @@ def _write_aggregated_report(
             lines.append(f"- **{code}**: {reason}")
         lines.append("")
 
-    content = "\n".join(lines)
-    filepath.write_text(content, encoding="utf-8")
-    logger.info("Batch report saved: %s", filepath)
-    return str(filepath)
+    return "\n".join(lines)
+
+
+def _build_criteria_report_content(
+    state: BatchRunState,
+    template_name: str,
+    started_at: datetime,
+) -> str:
+    """Build the buy-criteria-mode aggregated report (8/8 通过 / 卡点).
+
+    Keeps the ``## 筛选通过股票`` heading with a bare-code first column so the
+    frontend can extract passed codes and build a watchlist group.
+    """
+    result_items = _get_result_items(state)
+    failed_items = [(code, result) for code, result in result_items if not result.get("success")]
+    summary_items = _get_stock_decision_summaries(result_items)
+    passed_items = [item for item in summary_items if item["decision"] == "buy"]
+    rejected_items = [item for item in summary_items if item["decision"] != "buy"]
+    success_rate = (state.success / state.total * 100) if state.total else 0
+
+    lines = [
+        "# 买入判断筛选汇总",
+        "",
+        f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- **筛选方式**: 买入判断（8 步硬筛，任一步不通过即淘汰）",
+        f"- **股票数量**: {state.total}",
+        f"- **完成率**: {state.completed}/{state.total}",
+        f"- **分析成功率**: {success_rate:.1f}%",
+        f"- **筛选通过(8/8)**: {len(passed_items)}",
+        f"- **未通过**: {len(rejected_items)}",
+        f"- **分析失败**: {len(failed_items)}",
+        "",
+        "---",
+        "",
+        "## 统计概览",
+        "",
+        "| 指标 | 数值 |",
+        "| --- | ---: |",
+        f"| 总股票数 | {state.total} |",
+        f"| 已完成 | {state.completed} |",
+        f"| 分析成功 | {state.success} |",
+        f"| 分析失败 | {state.failed} |",
+        f"| 筛选通过(8/8) | {len(passed_items)} |",
+        f"| 未通过 | {len(rejected_items)} |",
+        f"| 分析成功率 | {success_rate:.1f}% |",
+        "",
+    ]
+
+    lines.extend(["## 筛选通过股票", ""])
+    if passed_items:
+        lines.extend([
+            "| 股票 | 结论 | 摘要 |",
+            "| --- | --- | --- |",
+        ])
+        for item in passed_items:
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
+    else:
+        lines.append("本次筛选没有 8 项全部通过的股票。")
+    lines.append("")
+
+    if rejected_items:
+        lines.extend(["## 未通过股票", ""])
+        lines.extend([
+            "| 股票 | 结论 | 卡点与理由 |",
+            "| --- | --- | --- |",
+        ])
+        for item in rejected_items:
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
+        lines.append("")
+
+    if failed_items:
+        lines.extend(["## 分析失败", ""])
+        for code, result in failed_items:
+            reason = _one_line(result.get("text") or "未知错误", limit=100)
+            lines.append(f"- **{code}**: {reason}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def _get_result_items(state: BatchRunState) -> List[tuple[str, dict]]:
@@ -862,12 +1076,15 @@ def _send_batch_notification(
     state: BatchRunState,
     template_name: str,
     report_path: str,
+    analysis_mode: str = "template",
 ):
     """Send WeChat notification about completed batch run."""
     try:
         from src.notification import get_notification_service
 
-        content = _build_batch_notification_content(run_id, state, template_name, report_path)
+        content = _build_batch_notification_content(
+            run_id, state, template_name, report_path, analysis_mode=analysis_mode,
+        )
         service = get_notification_service()
         service.send(content)
         logger.info("Batch notification sent: run_id=%s", run_id)
@@ -880,8 +1097,73 @@ def _build_batch_notification_content(
     state: BatchRunState,
     template_name: str,
     report_path: str,
+    analysis_mode: str = "template",
 ) -> str:
     """Build batch completion notification markdown content."""
+    if analysis_mode == "buy_criteria":
+        return _build_criteria_notification_content(state, template_name, report_path)
+    return _build_template_notification_content(state, template_name, report_path)
+
+
+def _build_criteria_notification_content(
+    state: BatchRunState,
+    template_name: str,
+    report_path: str,
+) -> str:
+    """Build buy-criteria batch completion notification content."""
+    from datetime import datetime
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report_name = Path(report_path).name
+
+    result_items = _get_result_items(state)
+    failed_items = [(code, result) for code, result in result_items if not result.get("success")]
+    summary_items = _get_stock_decision_summaries(result_items)
+    passed_items = [item for item in summary_items if item["decision"] == "buy"]
+    rejected_items = [item for item in summary_items if item["decision"] != "buy"]
+    success_rate = (state.success / state.total * 100) if state.total else 0
+
+    lines = [
+        "## 买入判断筛选汇总",
+        "",
+        f"> 筛选方式: **买入判断（8 步硬筛）**",
+        f"> 时间: {now}",
+        f"> 完成: **{state.completed}/{state.total}**",
+        f"> 分析成功: **{state.success}** | 分析失败: **{state.failed}** | 分析成功率: **{success_rate:.1f}%**",
+        f"> 筛选通过(8/8): **{len(passed_items)}** | 未通过: **{len(rejected_items)}**",
+        f"> 报告: `{report_name}`",
+        "",
+        "### 筛选通过股票",
+        "",
+    ]
+    if passed_items:
+        lines.append("| 股票 | 结论 | 摘要 |")
+        lines.append("| --- | --- | --- |")
+        for item in passed_items:
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
+    else:
+        lines.append("本次筛选没有 8 项全部通过的股票。")
+    lines.append("")
+
+    if failed_items:
+        lines.append("### 分析失败")
+        lines.append("")
+        for code, result in failed_items[:20]:
+            lines.append(f"- **{code}**: {_one_line(result.get('text') or '未知错误', limit=80)}")
+        if len(failed_items) > 20:
+            lines.append(f"- 另有 {len(failed_items) - 20} 项失败，请查看完整报告。")
+        lines.append("")
+
+    lines.append(f"*买入判断筛选完成于 {now}*")
+    return "\n".join(lines)
+
+
+def _build_template_notification_content(
+    state: BatchRunState,
+    template_name: str,
+    report_path: str,
+) -> str:
+    """Build template-mode batch completion notification markdown content."""
     from datetime import datetime
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -984,6 +1266,7 @@ def _save_batch_run_start(
     template_id: str,
     template_name: str,
     stock_codes: List[str],
+    analysis_mode: str = "template",
 ):
     try:
         db = DatabaseManager.get_instance()
@@ -1000,6 +1283,7 @@ def _save_batch_run_start(
             results_json="[]",
             stock_codes_json=json.dumps(stock_codes, ensure_ascii=False),
             status="running",
+            analysis_mode=analysis_mode,
         )
         with db.get_session() as session:
             session.add(record)

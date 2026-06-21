@@ -15,15 +15,20 @@ export interface BatchRunItem {
   results_json: string | null;
   stock_codes_json: string | null;
   status: string;
+  analysis_mode: string | null;
 }
 
 export interface BatchRunListResponse {
   runs: BatchRunItem[];
 }
 
+export type BatchAnalysisMode = 'template' | 'buy_criteria';
+
 export interface BatchRunTriggerRequest {
   stock_codes: string[];
   template_id: string;
+  analysis_mode?: BatchAnalysisMode;
+  force_refresh?: boolean;
 }
 
 export interface BatchRunProgress {

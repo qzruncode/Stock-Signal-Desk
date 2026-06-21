@@ -33,6 +33,6 @@ Finish with a short summary of changes and verification.
 
 ## `/dev replan`
 
-Rewrite the Human Plan using the user's feedback or `/plan check` suggestions.
+Rewrite the Human Plan using the user's feedback or `/plan-check` suggestions.
 
 After outputting the revised Human Plan, wait for feedback or `/dev approve`.

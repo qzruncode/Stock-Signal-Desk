@@ -15,6 +15,7 @@ export * from './Badge';
 export * from './StatusDot';
 export * from './Tooltip';
 export * from './ConfirmDialog';
+export * from './Modal';
 export * from '../layout/Shell';
 export * from '../theme/ThemeProvider';
 export * from './ParticleBackground';

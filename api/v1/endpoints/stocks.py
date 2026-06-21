@@ -458,70 +458,6 @@ def get_stock_count():
 
 
 @router.get(
-    "/atr-screener/klines",
-    summary="Get batch kline data for ATR screener",
-)
-def get_atr_screener_klines():
-    """Return all active stocks' daily OHLCV data from local DB for frontend ATR calculation.
-
-    Returns compact format: { codes: [...], klines: { code: [[date, o, h, l, c], ...] } }
-    Only includes stocks with >= 251 trading days of data.
-    """
-    import time
-    from sqlalchemy import select
-
-    t0 = time.time()
-    db = DatabaseManager.get_instance()
-
-    # Get all active stock codes
-    with db.get_session() as session:
-        codes = [
-            row[0]
-            for row in session.execute(
-                select(StockMeta.code).where(StockMeta.status == "active").order_by(StockMeta.code)
-            ).all()
-        ]
-
-    if not codes:
-        return {"codes": [], "klines": {}, "elapsed_ms": int((time.time() - t0) * 1000)}
-
-    # Read all StockDaily data in one query — much faster than per-stock requests
-    with db.get_session() as session:
-        rows = session.execute(
-            select(StockDaily.code, StockDaily.date, StockDaily.open, StockDaily.high,
-                   StockDaily.low, StockDaily.close)
-            .where(StockDaily.code.in_(codes))
-            .order_by(StockDaily.code, StockDaily.date)
-        ).all()
-
-    # Group by code, convert to compact arrays [date_str, o, h, l, c]
-    klines: dict[str, list] = {c: [] for c in codes}
-    for row in rows:
-        date_str = row[1].isoformat() if hasattr(row[1], 'isoformat') else str(row[1])[:10]
-        klines[row[0]].append([date_str, row[2], row[3], row[4], row[5]])
-
-    # Filter: only include stocks with >= 251 bars (need 250 + 1 for REF(C,1))
-    result_klines = {}
-    result_codes = []
-    for code in codes:
-        data = klines[code]
-        if len(data) >= 251:
-            result_klines[code] = data
-            result_codes.append(code)
-
-    elapsed = int((time.time() - t0) * 1000)
-    logger.info(f"[ATR Screener] Batch klines loaded: {len(result_codes)} stocks, {elapsed}ms")
-
-    return {
-        "codes": result_codes,
-        "klines": result_klines,
-        "total_stocks": len(codes),
-        "qualified_stocks": len(result_codes),
-        "elapsed_ms": elapsed,
-    }
-
-
-@router.get(
     "/kline-status",
     summary="验证 K 线数据完整性",
 )
@@ -539,3 +475,309 @@ def get_kline_status():
         "missing": (total_stocks or 0) - (stocks_with_kline or 0),
         "latest_trading_day": str(latest_trading_day) if latest_trading_day else None,
     }
+
+
+@router.post(
+    "/kline/batch",
+    summary="Get batch kline data for specified stock codes",
+)
+def get_kline_batch(body: dict):
+    """Return daily OHLCV data from local DB for specified stock codes.
+
+    Request body: { "codes": ["000001", "000002", ...], "count": 250 }
+    Returns: { "results": { "000001": [[date, o, h, l, c], ...], ... } }
+    Only returns data for codes that exist in DB; missing codes get empty arrays.
+    """
+    import time
+    from sqlalchemy import select
+
+    codes: list[str] = body.get("codes", [])
+    count: int = body.get("count", 250)
+
+    if not codes:
+        return {"results": {}}
+
+    # Cap batch size to prevent abuse
+    codes = codes[:100]
+
+    t0 = time.time()
+    db = DatabaseManager.get_instance()
+
+    with db.get_session() as session:
+        rows = session.execute(
+            select(StockDaily.code, StockDaily.date, StockDaily.open, StockDaily.high,
+                   StockDaily.low, StockDaily.close)
+            .where(StockDaily.code.in_(codes))
+            .order_by(StockDaily.code, StockDaily.date)
+        ).all()
+
+    # Group by code, convert to compact arrays [date_str, o, h, l, c]
+    klines: dict[str, list] = {c: [] for c in codes}
+    for row in rows:
+        date_str = row[1].isoformat() if hasattr(row[1], 'isoformat') else str(row[1])[:10]
+        klines[row[0]].append([date_str, row[2], row[3], row[4], row[5]])
+
+    # Trim to most recent `count` bars per stock
+    results = {}
+    for code in codes:
+        data = klines[code]
+        if len(data) > count:
+            data = data[-count:]
+        results[code] = data
+
+    elapsed = int((time.time() - t0) * 1000)
+    logger.info(f"[kline/batch] {len(codes)} codes, {elapsed}ms")
+
+    return {"results": results}
+
+
+# ========================================================================
+# Fundamental filter endpoint (Phase 3 screening)
+# ========================================================================
+
+_FUNDAMENTAL_CACHE_TTL_DAYS = 30
+_FUNDAMENTAL_BATCH_SIZE = 20
+_FUNDAMENTAL_BATCH_INTERVAL = 0.2
+_FUNDAMENTAL_TIMEOUT_SECONDS = 180  # 3 minutes
+
+
+def _compute_ttm_value(
+    statements: dict,
+    field: str,
+) -> float | None:
+    """Compute TTM value from financial statements.
+
+    Strategy:
+    - If latest report is annual (12-31), use that value directly.
+    - Otherwise, sum the last 4 quarters.
+    - Returns None if data is insufficient.
+    """
+    # Try income_statement first, then cashflow, then balance_sheet
+    for section in ('income_statement', 'cashflow', 'balance_sheet'):
+        items = statements.get(section) or []
+        if not items:
+            continue
+
+        # Sort by report_date descending
+        sorted_items = sorted(
+            items,
+            key=lambda x: x.get('report_date') or '',
+            reverse=True,
+        )
+
+        latest = sorted_items[0]
+        latest_date = latest.get('report_date') or ''
+
+        # If latest is annual (ends with 12-31), use it directly
+        if latest_date.endswith('12-31'):
+            val = latest.get(field)
+            if val is not None:
+                return float(val)
+
+        # Otherwise sum last 4 quarters
+        values = []
+        for item in sorted_items[:4]:
+            v = item.get(field)
+            if v is not None:
+                values.append(float(v))
+
+        if len(values) >= 4:
+            return sum(values)
+        # Insufficient data
+        return None
+
+    return None
+
+
+def _fetch_and_compute_fundamentals(
+    code: str,
+    db: DatabaseManager,
+) -> dict | None:
+    """Fetch financial statements, compute criteria fields, upsert stock_meta.
+
+    Returns dict with computed fields, or None if fetch failed.
+    """
+    # Import financials functions (they're private in financials.py module)
+    try:
+        from api.v1.endpoints import financials as fin_mod
+    except ImportError:
+        logger.warning(f"[fundamental-filter] Cannot import financials module for {code}")
+        return None
+
+    normalize_symbol = getattr(fin_mod, '_normalize_symbol', None) or (lambda s: s.strip())
+    fetch_ths_triple = getattr(fin_mod, '_fetch_from_ths_triple', None)
+    fetch_em_statements = getattr(fin_mod, '_fetch_financial_statements_em', None)
+
+    if fetch_ths_triple is None:
+        logger.warning(f"[fundamental-filter] _fetch_from_ths_triple not available for {code}")
+        return None
+
+    symbol = normalize_symbol(code)
+
+    # Try THS triple first
+    statements = None
+    try:
+        statements = fetch_ths_triple(symbol, periods=8)
+    except Exception as e:
+        logger.warning(f"[fundamental-filter] THS triple failed for {code}: {e}")
+        if fetch_em_statements:
+            try:
+                statements = fetch_em_statements(symbol)
+            except Exception as e2:
+                logger.warning(f"[fundamental-filter] EM also failed for {code}: {e2}")
+
+    if not statements:
+        return None
+
+    # Extract latest balance sheet item for ratio fields
+    bs_items = (statements.get('balance_sheet') or [])
+    latest_bs = None
+    for item in sorted(bs_items, key=lambda x: x.get('report_date') or '', reverse=True):
+        if item.get('total_assets') and item.get('total_assets') > 0:
+            latest_bs = item
+            break
+
+    if not latest_bs:
+        return None
+
+    total_assets = latest_bs.get('total_assets', 0)
+    total_liabilities = latest_bs.get('total_liabilities', 0)
+
+    # Compute debt_ratio only
+    debt_ratio = (total_liabilities / total_assets * 100) if total_assets else None
+
+    # Compute TTM values: revenue and deducted_profit only
+    revenue_ttm = _compute_ttm_value(statements, 'revenue')
+    deducted_profit_ttm = _compute_ttm_value(statements, 'deducted_net_profit')
+
+    # Get latest report date
+    all_dates = []
+    for section in ('balance_sheet', 'income_statement'):
+        for item in (statements.get(section) or []):
+            d = item.get('report_date')
+            if d:
+                all_dates.append(d)
+    latest_report = max(all_dates) if all_dates else None
+
+    now = datetime.now()
+
+    # Cache valid when 3 key fields are present
+    key_fields_complete = (
+        revenue_ttm is not None
+        and deducted_profit_ttm is not None
+        and debt_ratio is not None
+    )
+
+    # Upsert into stock_meta — only 3 fields
+    def _write(session):
+        from sqlalchemy import select as sa_select
+        existing = session.execute(
+            sa_select(StockMeta).where(StockMeta.code == code)
+        ).scalars().first()
+        if existing:
+            existing.revenue_ttm = revenue_ttm
+            existing.deducted_profit_ttm = deducted_profit_ttm
+            existing.debt_ratio = debt_ratio
+            existing.report_date = latest_report
+            if key_fields_complete:
+                existing.financial_fetched_at = now
+        else:
+            logger.warning(f"[fundamental-filter] StockMeta not found for {code}, skipping")
+        return True
+
+    try:
+        db._run_write_transaction(f"fundamental_filter[{code}]", _write)
+    except Exception as e:
+        logger.warning(f"[fundamental-filter] DB upsert failed for {code}: {e}")
+        return None
+
+    return {
+        'revenue_ttm': revenue_ttm,
+        'deducted_profit_ttm': deducted_profit_ttm,
+        'debt_ratio': debt_ratio,
+        'report_date': latest_report,
+    }
+
+
+@router.post(
+    "/fundamental-filter",
+    summary="基本面 2 筛：返回原始财务数据供前端过滤",
+)
+def fundamental_filter(body: dict):
+    """对给定股票代码列表拉取财务数据。
+
+    先查 stock_meta 缓存（30 天内且关键字段完整），未缓存的调用 akshare 拉取财务报表。
+    返回每只股票的原始财务数据，由前端进行条件过滤。
+    """
+    import time
+    from sqlalchemy import select as sa_select
+
+    codes: list[str] = body.get("codes", [])[:200]  # cap at 200
+
+    if not codes:
+        return {"data": {}}
+
+    db = DatabaseManager.get_instance()
+    ttl_cutoff = datetime.now() - timedelta(days=_FUNDAMENTAL_CACHE_TTL_DAYS)
+
+    data: dict[str, dict] = {}
+
+    timeout_at = time.time() + _FUNDAMENTAL_TIMEOUT_SECONDS
+    codes_to_fetch: list[str] = []
+
+    # Step 1: Load stock_meta for all codes (batch read)
+    with db.get_session() as session:
+        rows = session.execute(
+            sa_select(StockMeta).where(StockMeta.code.in_(codes))
+        ).scalars().all()
+
+        meta_map: dict[str, StockMeta] = {r.code: r for r in rows}
+
+    # Step 2: Return cached data if valid
+    for code in codes:
+        meta = meta_map.get(code)
+        if meta and meta.financial_fetched_at and meta.financial_fetched_at >= ttl_cutoff:
+            data[code] = {
+                'revenue_ttm': meta.revenue_ttm,
+                'deducted_profit_ttm': meta.deducted_profit_ttm,
+                'operating_cf_ttm': meta.operating_cf_ttm,
+                'net_profit_ttm': meta.net_profit_ttm,
+                'debt_ratio': meta.debt_ratio,
+                'interest_bearing_debt_ratio': meta.interest_bearing_debt_ratio,
+                'cash_debt_ratio': meta.cash_debt_ratio,
+                'report_date': meta.report_date,
+            }
+        else:
+            codes_to_fetch.append(code)
+
+    logger.info(f"[fundamental-filter] {len(codes) - len(codes_to_fetch)} cached, {len(codes_to_fetch)} to fetch")
+
+    # Step 3: Fetch uncached codes in batches (5/batch, 0.5s interval)
+    idx = 0
+    timed_out = False
+    while idx < len(codes_to_fetch):
+        if time.time() >= timeout_at:
+            timed_out = True
+            for code in codes_to_fetch[idx:]:
+                data[code] = {}
+            break
+
+        batch = codes_to_fetch[idx:idx + _FUNDAMENTAL_BATCH_SIZE]
+        idx += _FUNDAMENTAL_BATCH_SIZE
+
+        for code in batch:
+            computed = _fetch_and_compute_fundamentals(code, db)
+            if computed:
+                data[code] = computed
+            else:
+                data[code] = {}
+
+        if idx < len(codes_to_fetch):
+            time.sleep(_FUNDAMENTAL_BATCH_INTERVAL)
+
+    if timed_out:
+        logger.warning(f"[fundamental-filter] Timeout after processing {len(data)} codes")
+
+    logger.info(f"[fundamental-filter] done: {len(data)} stocks returned")
+
+    return {"data": data}

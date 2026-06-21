@@ -167,6 +167,18 @@ class StockMeta(Base):
     circulating_market_cap = Column(Float)  # 流通市值（元）
     pe_ttm = Column(Float)  # 市盈率 TTM
     pb = Column(Float)  # 市净率
+    amount_today = Column(Float)  # 今日成交额（元）
+
+    # 财务指标（基本面 2 筛，从财务报表计算后写入）
+    revenue_ttm = Column(Float)  # 营业收入 TTM（元）
+    deducted_profit_ttm = Column(Float)  # 扣非净利润 TTM（元）
+    operating_cf_ttm = Column(Float)  # 经营现金流 TTM（元）
+    net_profit_ttm = Column(Float)  # 净利润 TTM（元）
+    debt_ratio = Column(Float)  # 资产负债率（%）
+    interest_bearing_debt_ratio = Column(Float)  # 有息负债率（%）
+    cash_debt_ratio = Column(Float)  # 货币资金/短期债务
+    financial_fetched_at = Column(DateTime)  # 财务数据拉取时间
+    report_date = Column(String(20))  # 最新财报报告期
 
     # 同步时间戳
     last_sync_at = Column(DateTime, default=datetime.now)
@@ -195,6 +207,16 @@ class StockMeta(Base):
             'circulating_market_cap': self.circulating_market_cap,
             'pe_ttm': self.pe_ttm,
             'pb': self.pb,
+            'amount_today': self.amount_today,
+            'revenue_ttm': self.revenue_ttm,
+            'deducted_profit_ttm': self.deducted_profit_ttm,
+            'operating_cf_ttm': self.operating_cf_ttm,
+            'net_profit_ttm': self.net_profit_ttm,
+            'debt_ratio': self.debt_ratio,
+            'interest_bearing_debt_ratio': self.interest_bearing_debt_ratio,
+            'cash_debt_ratio': self.cash_debt_ratio,
+            'financial_fetched_at': self.financial_fetched_at.isoformat() if self.financial_fetched_at else None,
+            'report_date': self.report_date,
             'last_sync_at': self.last_sync_at.isoformat() if self.last_sync_at else None,
         }
 
@@ -952,6 +974,7 @@ class BatchRun(Base):
     results_json = Column(Text, default='[]')
     stock_codes_json = Column(Text, default='[]')
     status = Column(String(32), nullable=False, default='completed')
+    analysis_mode = Column(String(32), default='template')  # template / buy_criteria
 
     __table_args__ = (
         Index('ix_batch_runs_started', 'started_at'),
@@ -1059,6 +1082,43 @@ class MacroIndicator(Base):
         UniqueConstraint('indicator', 'period', name='uix_macro_indicator_period'),
         Index('ix_macro_indicator_period', 'indicator', 'period'),
     )
+
+
+class WatchlistGroup(Base):
+    """自选股自定义分组（持久化到数据库，替代前端 localStorage）。
+
+    默认分组「我的自选股」仍由系统配置 STOCK_LIST 托管，不写入本表。
+    本表仅存储用户自定义分组与筛选/批量产出的分组，按 name 唯一。
+    """
+
+    __tablename__ = 'watchlist_groups'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(64), nullable=False, unique=True, index=True)
+    codes_json = Column(Text, nullable=False, default='[]')
+    source = Column(String(16), nullable=False, default='manual')  # manual/screener/batch
+    sort_order = Column(Integer, nullable=False, default=0, index=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        try:
+            codes = json.loads(self.codes_json or '[]')
+        except Exception:
+            codes = []
+        if not isinstance(codes, list):
+            codes = []
+        return {
+            'id': str(self.id),
+            'name': self.name,
+            'codes': [str(c) for c in codes],
+            'source': self.source,
+            'sortOrder': self.sort_order,
+        }
+
+
+class WatchlistGroupNameConflict(Exception):
+    """分组名称与已有分组冲突。"""
 
 
 class DatabaseManager:
@@ -1204,6 +1264,10 @@ class DatabaseManager:
                     conn.exec_driver_sql(
                         "ALTER TABLE batch_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
                     )
+                if "analysis_mode" not in columns:
+                    conn.exec_driver_sql(
+                        "ALTER TABLE batch_runs ADD COLUMN analysis_mode TEXT DEFAULT 'template'"
+                    )
                 if conn.exec_driver_sql(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='chat_conversations'"
                 ).fetchone():
@@ -1227,6 +1291,25 @@ class DatabaseManager:
                         logger.info("迁移: 重建 kline_snapshot 表（移除 period/adjust 列）")
                         conn.exec_driver_sql("DROP TABLE kline_snapshot")
                         KlineSnapshot.__table__.create(bind=conn, checkfirst=True)
+                # 2026-06: stock_meta 新增财务指标字段
+                if conn.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='stock_meta'"
+                ).fetchone():
+                    stock_meta_cols = {
+                        row[1]
+                        for row in conn.exec_driver_sql("PRAGMA table_info(stock_meta)").fetchall()
+                    }
+                    for col_name in (
+                        'revenue_ttm', 'deducted_profit_ttm', 'operating_cf_ttm',
+                        'net_profit_ttm', 'debt_ratio', 'interest_bearing_debt_ratio',
+                        'cash_debt_ratio', 'financial_fetched_at', 'report_date',
+                        'amount_today',
+                    ):
+                        if col_name not in stock_meta_cols:
+                            logger.info("迁移: stock_meta 新增列 %s", col_name)
+                            conn.exec_driver_sql(
+                                f"ALTER TABLE stock_meta ADD COLUMN {col_name}"
+                            )
         except Exception:
             logger.exception("Failed to ensure compatible SQLite schema")
 
@@ -2351,6 +2434,136 @@ class DatabaseManager:
                 return record.to_dict()
             return None
 
+    # ── Watchlist Groups（自选股自定义分组）──────────────────────────────
+
+    @staticmethod
+    def _clean_group_codes(codes: Optional[List[Any]]) -> List[str]:
+        """去重并清洗分组成员代码，保持原始顺序。"""
+        cleaned: List[str] = []
+        seen: set[str] = set()
+        for code in (codes or []):
+            value = str(code).strip()
+            if value and value not in seen:
+                seen.add(value)
+                cleaned.append(value)
+        return cleaned
+
+    def list_watchlist_groups(self) -> List[Dict[str, Any]]:
+        """列出全部自定义分组（按 sort_order、id 升序）。"""
+        with self.get_session() as session:
+            rows = session.execute(
+                select(WatchlistGroup).order_by(
+                    WatchlistGroup.sort_order.asc(),
+                    WatchlistGroup.id.asc(),
+                )
+            ).scalars().all()
+            return [row.to_dict() for row in rows]
+
+    def upsert_watchlist_group(
+        self,
+        name: str,
+        codes: Optional[List[Any]] = None,
+        source: str = 'manual',
+    ) -> Dict[str, Any]:
+        """按 name 创建或更新分组（同名即更新 codes）。"""
+        clean_name = (name or '').strip()
+        if not clean_name:
+            raise ValueError('分组名称不能为空')
+        codes_json = json.dumps(self._clean_group_codes(codes), ensure_ascii=False)
+        clean_source = (source or 'manual').strip() or 'manual'
+
+        def _write(session: Session) -> Dict[str, Any]:
+            existing = session.execute(
+                select(WatchlistGroup).where(WatchlistGroup.name == clean_name)
+            ).scalars().first()
+            if existing is not None:
+                existing.codes_json = codes_json
+                existing.source = clean_source
+                existing.updated_at = datetime.now()
+                session.flush()
+                return existing.to_dict()
+            max_order = session.execute(
+                select(func.max(WatchlistGroup.sort_order))
+            ).scalar()
+            row = WatchlistGroup(
+                name=clean_name,
+                codes_json=codes_json,
+                source=clean_source,
+                sort_order=int(max_order or 0) + 1,
+            )
+            session.add(row)
+            session.flush()
+            return row.to_dict()
+
+        return self._run_write_transaction(
+            f"upsert_watchlist_group[{clean_name}]",
+            _write,
+        )
+
+    def update_watchlist_group(
+        self,
+        group_id: Any,
+        *,
+        name: Optional[str] = None,
+        codes: Optional[List[Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """按 id 更新分组的名称 / 成员。分组不存在返回 None。
+
+        改名撞到其它分组的名称时抛 WatchlistGroupNameConflict。
+        """
+        try:
+            gid = int(group_id)
+        except (TypeError, ValueError):
+            return None
+
+        def _write(session: Session) -> Optional[Dict[str, Any]]:
+            row = session.get(WatchlistGroup, gid)
+            if row is None:
+                return None
+            if name is not None:
+                clean_name = name.strip()
+                if not clean_name:
+                    raise ValueError('分组名称不能为空')
+                dup = session.execute(
+                    select(WatchlistGroup).where(
+                        WatchlistGroup.name == clean_name,
+                        WatchlistGroup.id != gid,
+                    )
+                ).scalars().first()
+                if dup is not None:
+                    raise WatchlistGroupNameConflict(clean_name)
+                row.name = clean_name
+            if codes is not None:
+                row.codes_json = json.dumps(
+                    self._clean_group_codes(codes), ensure_ascii=False
+                )
+            row.updated_at = datetime.now()
+            session.flush()
+            return row.to_dict()
+
+        return self._run_write_transaction(
+            f"update_watchlist_group[{gid}]",
+            _write,
+        )
+
+    def delete_watchlist_group(self, group_id: Any) -> bool:
+        """按 id 删除分组。删除成功返回 True，不存在返回 False。"""
+        try:
+            gid = int(group_id)
+        except (TypeError, ValueError):
+            return False
+
+        def _write(session: Session) -> bool:
+            result = session.execute(
+                delete(WatchlistGroup).where(WatchlistGroup.id == gid)
+            )
+            return (result.rowcount or 0) > 0
+
+        return self._run_write_transaction(
+            f"delete_watchlist_group[{gid}]",
+            _write,
+        )
+
     def create_chat_conversation(
         self,
         conversation_id: str,
@@ -3355,6 +3568,7 @@ def _batch_run_to_dict(row: BatchRun) -> Dict[str, Any]:
         "results_json": row.results_json,
         "stock_codes_json": row.stock_codes_json,
         "status": row.status,
+        "analysis_mode": row.analysis_mode or "template",
     }
 
 

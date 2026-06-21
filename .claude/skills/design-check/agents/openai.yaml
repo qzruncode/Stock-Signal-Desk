@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design Check"
+  short_description: "Review frontend plans for visual quality and usability."
+  default_prompt: "/design-check 审查当前前端 Human Plan"

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { batchApi, type BatchRunItem, type BatchSchedule } from '../api/batch';
+import { batchApi, type BatchAnalysisMode, type BatchRunItem, type BatchSchedule } from '../api/batch';
 import { promptsApi, type PromptTemplateItem } from '../api/prompts';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 
@@ -40,7 +40,7 @@ interface BatchState {
   // Actions
   loadTemplates: () => Promise<void>;
   setSelectedTemplateId: (id: string) => void;
-  triggerBatchRun: (stockCodes: string[]) => Promise<boolean>;
+  triggerBatchRun: (stockCodes: string[], options?: { analysisMode?: BatchAnalysisMode; forceRefresh?: boolean }) => Promise<boolean>;
   resumeBatchRun: (runId: string, stockCodes: string[]) => Promise<boolean>;
   pauseBatchRun: () => Promise<boolean>;
   continueBatchRun: () => Promise<boolean>;
@@ -105,18 +105,22 @@ export const useBatchStore = create<BatchState>((set, get) => ({
 
   setSelectedTemplateId: (id) => set({ selectedTemplateId: id }),
 
-  triggerBatchRun: async (stockCodes) => {
+  triggerBatchRun: async (stockCodes, options) => {
+    const analysisMode: BatchAnalysisMode = options?.analysisMode ?? 'template';
+    const forceRefresh = options?.forceRefresh ?? false;
     const { selectedTemplateId, loadTemplates } = get();
     let templateId = selectedTemplateId;
 
-    if (!templateId) {
-      await loadTemplates();
-      templateId = get().selectedTemplateId;
-    }
+    if (analysisMode === 'template') {
+      if (!templateId) {
+        await loadTemplates();
+        templateId = get().selectedTemplateId;
+      }
 
-    if (!templateId) {
-      set({ error: { title: '缺少模板', message: '请先选择提示词模板', rawMessage: '请先选择提示词模板', category: 'missing_params' } });
-      return false;
+      if (!templateId) {
+        set({ error: { title: '缺少模板', message: '请先选择提示词模板', rawMessage: '请先选择提示词模板', category: 'missing_params' } });
+        return false;
+      }
     }
 
     if (stockCodes.length === 0) {
@@ -127,7 +131,9 @@ export const useBatchStore = create<BatchState>((set, get) => ({
     try {
       const result = await batchApi.triggerRun({
         stock_codes: stockCodes,
-        template_id: templateId,
+        template_id: analysisMode === 'template' ? templateId : '',
+        analysis_mode: analysisMode,
+        force_refresh: forceRefresh,
       });
       set({
         error: null,

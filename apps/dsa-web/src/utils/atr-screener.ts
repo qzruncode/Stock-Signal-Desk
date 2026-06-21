@@ -26,6 +26,18 @@ export const SCREEN_GROUP_NAME = '高波动股';
 /** K-line bar: [date_str, open, high, low, close] */
 export type KlineCompact = [string, number, number, number, number];
 
+/** Convert KlineBar[] (API response format) to KlineCompact[] (calculation format) */
+export function klineBarsToCompact(
+  bars: Array<{ date: string; open: number; high: number; low: number; close: number }>,
+): KlineCompact[] {
+  const result: KlineCompact[] = new Array(bars.length);
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    result[i] = [b.date, b.open, b.high, b.low, b.close];
+  }
+  return result;
+}
+
 export interface AtrScreenResult {
   /** 符合条件的股票代码列表 */
   matchedCodes: string[];
@@ -61,11 +73,12 @@ export function calculateAtrForStock(
   lookbackDays = LOOKBACK_DAYS,
   threshold = VOLATILITY_THRESHOLD,
 ): AtrStockDetail | null {
-  if (klines.length < lookbackDays + 1) {
+  if (klines.length < lookbackDays) {
     return null;
   }
 
   const n = klines.length;
+  const atrStartIdx = atrPeriod - 1; // first valid ATR index (13)
 
   // Step 1: Calculate True Range for each day (from index 1 onwards, needs REF(C,1))
   const tr: number[] = new Array(n);
@@ -95,13 +108,15 @@ export function calculateAtrForStock(
 
   // Step 3: Calculate ATR relative volatility (%)
   const atrPct: number[] = new Array(n);
-  for (let i = atrPeriod - 1; i < n; i++) {
+  for (let i = atrStartIdx; i < n; i++) {
     const close = klines[i][4];
     atrPct[i] = close > 0 ? (atr[i] / close) * 100 : 0;
   }
 
   // Step 4: Check condition over the last `lookbackDays`
-  const startIdx = n - lookbackDays;
+  // When data is limited (n=250), clamp startIdx to avoid atrPct=0 days
+  const startIdx = Math.max(n - lookbackDays, atrStartIdx);
+  const actualLookbackDays = n - startIdx;
   let qualifiedDays = 0;
   for (let i = startIdx; i < n; i++) {
     if (atrPct[i] > threshold) {
@@ -109,7 +124,7 @@ export function calculateAtrForStock(
     }
   }
 
-  const qualifiedRatio = (qualifiedDays / lookbackDays) * 100;
+  const qualifiedRatio = (qualifiedDays / actualLookbackDays) * 100;
   const currentAtrPct = atrPct[n - 1];
   const matched = qualifiedRatio >= REQUIRED_RATIO;
 
@@ -155,4 +170,44 @@ export function runAtrScreener(
     stockDetails,
     totalAnalyzed: stockDetails.length,
   };
+}
+
+// ─── Phase 3: Fundamental screening ───
+
+/**
+ * Result of fundamental screening
+ */
+export interface FundamentalData {
+  revenue_ttm: number | null;
+  deducted_profit_ttm: number | null;
+  debt_ratio: number | null;
+  report_date: string | null;
+}
+
+/**
+ * Fundamental filter thresholds (Phase 3 2筛)
+ */
+const FUNDAMENTAL_THRESHOLDS = {
+  revenue_ttm_min: 500_000_000,       // 营收TTM > 5亿
+  deducted_profit_ttm_min: 0,         // 扣非净利润TTM > 0
+  debt_ratio_max: 70.0,               // 资产负债率 < 70%
+};
+
+/**
+ * Check 3 fundamental criteria for a single stock.
+ * Returns true if all conditions pass, false otherwise.
+ */
+export function checkFundamentalCriteria(data: FundamentalData): boolean {
+  const t = FUNDAMENTAL_THRESHOLDS;
+
+  // 1. 营收TTM > 5亿
+  if (data.revenue_ttm == null || data.revenue_ttm <= t.revenue_ttm_min) return false;
+
+  // 2. 扣非净利润TTM > 0
+  if (data.deducted_profit_ttm == null || data.deducted_profit_ttm <= t.deducted_profit_ttm_min) return false;
+
+  // 3. 资产负债率 < 70%
+  if (data.debt_ratio == null || data.debt_ratio >= t.debt_ratio_max) return false;
+
+  return true;
 }

@@ -31,7 +31,9 @@ router = APIRouter(tags=["batch"])
 
 class BatchRunTriggerRequest(BaseModel):
     stock_codes: list[str] = Field(..., description="股票代码列表")
-    template_id: str = Field(..., description="提示词模板 ID")
+    template_id: str = Field("", description="提示词模板 ID（模板分析模式必填）")
+    analysis_mode: str = Field("template", description="分析模式：template / buy_criteria")
+    force_refresh: bool = Field(False, description="买入判断模式下是否绕过当日缓存重新分析")
 
 
 class BatchRunItem(BaseModel):
@@ -49,6 +51,7 @@ class BatchRunItem(BaseModel):
     results_json: Optional[str] = None
     stock_codes_json: Optional[str] = None
     status: str = "completed"
+    analysis_mode: Optional[str] = "template"
 
 
 class BatchRunListResponse(BaseModel):
@@ -86,11 +89,8 @@ _running_lock = threading.Lock()
 
 @router.post("/run", status_code=202)
 async def trigger_batch_run(request: BatchRunTriggerRequest):
-    """手动触发跑批。每只股票一次 AI 调用，3 只并发。"""
-    store = get_prompt_template_store()
-    template = store.get(request.template_id)
-    if template is None:
-        raise HTTPException(status_code=404, detail="模板不存在")
+    """手动触发跑批。模板模式每股一次 AI 调用；买入判断模式每股跑 8 步硬筛。"""
+    analysis_mode = request.analysis_mode if request.analysis_mode in ("template", "buy_criteria") else "template"
 
     config = get_config()
     if not request.stock_codes:
@@ -104,17 +104,32 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
     if _is_batch_running():
         raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
 
-    runner = BatchRunner()
+    if analysis_mode == "buy_criteria":
+        template_id = ""
+        template_name = "买入判断筛选"
+        system_prompt = ""
+    else:
+        store = get_prompt_template_store()
+        template = store.get(request.template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="模板不存在")
+        template_id = template["id"]
+        template_name = template["name"]
+        system_prompt = template["content"]
+
+    runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
     control = BatchRunControl()
 
     try:
         _start_batch_thread(
             lambda on_progress: runner.run(
                 stock_codes=stock_codes,
-                system_prompt=template["content"],
-                template_name=template["name"],
-                template_id=template["id"],
+                system_prompt=system_prompt,
+                template_name=template_name,
+                template_id=template_id,
                 triggered_by="manual",
+                analysis_mode=analysis_mode,
+                force_refresh=request.force_refresh,
                 control=control,
                 on_progress=on_progress,
             ),
@@ -124,7 +139,7 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
         _mark_batch_stopped()
         raise HTTPException(status_code=500, detail=f"启动跑批失败: {exc}")
 
-    return {"message": "跑批已启动", "stock_count": len(stock_codes), "template_name": template["name"]}
+    return {"message": "跑批已启动", "stock_count": len(stock_codes), "template_name": template_name}
 
 
 @router.get("/runs", response_model=BatchRunListResponse)
@@ -170,11 +185,18 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
     if run.get("completed_at"):
         raise HTTPException(status_code=400, detail="跑批已完成，无需续跑")
 
-    store = get_prompt_template_store()
-    template_id = run.get("template_id") or ""
-    template = store.get(template_id)
-    if template is None:
-        raise HTTPException(status_code=404, detail="模板不存在，无法续跑")
+    analysis_mode = run.get("analysis_mode") or "template"
+    if analysis_mode == "buy_criteria":
+        template_name = run.get("template_name") or "买入判断筛选"
+        system_prompt = ""
+    else:
+        store = get_prompt_template_store()
+        template_id = run.get("template_id") or ""
+        template = store.get(template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="模板不存在，无法续跑")
+        template_name = template["name"]
+        system_prompt = template["content"]
 
     stock_codes = _resolve_resume_stock_codes(run, request.stock_codes)
     if not stock_codes:
@@ -185,7 +207,7 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
         stock_codes,
     )
     pending_count = len([code for code in stock_codes if code not in existing_results])
-    runner = BatchRunner()
+    runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
     control = BatchRunControl()
 
     try:
@@ -193,8 +215,9 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
             lambda on_progress: runner.resume(
                 run_id=run_id,
                 stock_codes=stock_codes,
-                system_prompt=template["content"],
-                template_name=template["name"],
+                system_prompt=system_prompt,
+                template_name=template_name,
+                analysis_mode=analysis_mode,
                 started_at=_parse_started_at(run.get("started_at")),
                 existing_results=existing_results,
                 control=control,
@@ -210,7 +233,7 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
         "message": "续跑已启动",
         "stock_count": len(stock_codes),
         "pending_count": pending_count,
-        "template_name": template["name"],
+        "template_name": template_name,
     }
 
 
@@ -308,6 +331,7 @@ async def notify_batch_run(run_id: str):
             state,
             run.get("template_name") or "-",
             report_path,
+            analysis_mode=run.get("analysis_mode") or "template",
         )
         get_notification_service().send(content)
     except Exception as exc:
@@ -351,6 +375,7 @@ def _regenerate_batch_report_for_run(run: dict) -> tuple[str, BatchRunState]:
         state,
         run.get("template_name") or "-",
         started_at,
+        analysis_mode=run.get("analysis_mode") or "template",
     )
     return report_path, state
 
@@ -411,21 +436,29 @@ def resume_incomplete_batches_on_startup() -> bool:
         if len(existing_results) == 0 or len(existing_results) >= len(stock_codes):
             continue
 
-        store = get_prompt_template_store()
-        template = store.get(run.get("template_id") or "")
-        if template is None:
-            logger.warning("Cannot auto-resume batch %s: template missing", run.get("run_id"))
-            continue
+        analysis_mode = run.get("analysis_mode") or "template"
+        if analysis_mode == "buy_criteria":
+            template_name = run.get("template_name") or "买入判断筛选"
+            system_prompt = ""
+        else:
+            store = get_prompt_template_store()
+            template = store.get(run.get("template_id") or "")
+            if template is None:
+                logger.warning("Cannot auto-resume batch %s: template missing", run.get("run_id"))
+                continue
+            template_name = template["name"]
+            system_prompt = template["content"]
 
-        runner = BatchRunner()
+        runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
         control = BatchRunControl()
         run_id = run["run_id"]
         _start_batch_thread(
-            lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, template=template, run=run: runner.resume(
+            lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, system_prompt=system_prompt, template_name=template_name, analysis_mode=analysis_mode, run=run: runner.resume(
                 run_id=run_id,
                 stock_codes=stock_codes,
-                system_prompt=template["content"],
-                template_name=template["name"],
+                system_prompt=system_prompt,
+                template_name=template_name,
+                analysis_mode=analysis_mode,
                 started_at=_parse_started_at(run.get("started_at")),
                 existing_results=existing_results,
                 control=control,

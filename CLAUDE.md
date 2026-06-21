@@ -4,10 +4,12 @@ This file is intentionally compatible with Claude Code and Codex. Follow it when
 
 ## Project Skills
 
+- Use `.claude/skills/idea` when the user invokes `/idea` or has a vague thought, problem, or goal that needs to become a concrete requirement before `/dev`.
 - Use `.claude/skills/dev` when the user invokes `/dev`, asks for a short Human Plan before implementation, or wants Human Plan approval followed by AI-only Execution Plan execution.
 - Use `.claude/skills/bug-fix` when the user invokes `/bug` for an identified bug and wants a Human Plan before approved implementation.
-- Use `.claude/skills/plan-check` when the user invokes `/plan check` or asks to review a `/dev` or `/bug` Human Plan before implementation.
-- Use `.claude/skills/code-audit` when the user asks to scan the project and produce a prioritized code governance modification list.
+- Use `.claude/skills/plan-check` when the user invokes `/plan-check` or asks to review a Human Plan before implementation.
+- Use `.claude/skills/design-check` when the user invokes `/design-check` or asks to review frontend design, visual quality, UI consistency, or interaction quality before implementation.
+- Use `.claude/skills/audit` when the user invokes `/audit` or asks to review AI-written code and produce an approved follow-up fix plan.
 
 ## Code Rules
 

@@ -3,7 +3,7 @@ import { ArrowLeft, GitBranch, GripVertical, Layers3, Plus, Save, Trash2 } from 
 import { useNavigate } from 'react-router-dom';
 import { promptsApi, type PromptTemplateItem } from '../api/prompts';
 import { Button, EmptyState, InlineAlert } from '../components/common';
-import { loadWatchlistGroups } from '../utils/watchlistGroups';
+import { useWatchlistGroups } from '../hooks/useWatchlistGroups';
 import { cn } from '../utils/cn';
 import { loadJsonFromStorage, saveJsonToStorage } from '../utils/storage';
 
@@ -60,7 +60,7 @@ const WorkflowBuilderPage: React.FC = () => {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const groups = useMemo(() => loadWatchlistGroups(), []);
+  const { groups } = useWatchlistGroups();
 
   useEffect(() => {
     document.title = '工作流编排 - Stock-Signal-Desk';

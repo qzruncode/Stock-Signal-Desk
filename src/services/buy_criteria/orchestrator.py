@@ -55,6 +55,76 @@ class CriterionOrchestrator:
 
         return results
 
+    def analyze_for_batch(
+        self,
+        symbol: str,
+        *,
+        reuse_cache: bool = True,
+    ) -> dict[str, Any]:
+        """Run (or reuse cached) buy-criteria analysis for one stock in a batch.
+
+        Unlike :meth:`make_sse_endpoint`, this is a blocking call that returns a
+        normalized summary dict so the batch runner can map it onto a per-stock
+        result. When ``reuse_cache`` is True and today's record exists, it is
+        reused without any LLM call.
+        """
+        trade_date = date_type.today()
+
+        if reuse_cache:
+            from src.storage import get_db
+
+            try:
+                cached = get_db().get_buy_criteria_record(symbol, trade_date)
+            except Exception as exc:
+                logger.warning("[buy_criteria] cache lookup failed for %s: %s", symbol, exc)
+                cached = None
+            if cached is not None:
+                logger.info("[buy_criteria] batch reusing cached result for %s", symbol)
+                return self._build_batch_summary(cached.get("results", []), from_cache=True)
+
+        results = self.run(symbol, save_to_db=True)
+        return self._build_batch_summary(
+            [r.to_dict() for r in results], from_cache=False
+        )
+
+    @staticmethod
+    def _build_batch_summary(
+        result_dicts: list[dict[str, Any]],
+        *,
+        from_cache: bool,
+    ) -> dict[str, Any]:
+        """Normalize a list of criterion result dicts into a batch summary."""
+        total = len(EVALUATOR_CLASSES)
+        criteria = [
+            {
+                "criterion_id": r.get("criterion_id"),
+                "criterion_name": r.get("criterion_name"),
+                "index": r.get("index"),
+                "passed": bool(r.get("passed")),
+                "verdict": str(r.get("verdict") or ""),
+            }
+            for r in result_dicts
+        ]
+        passed_count = sum(1 for c in criteria if c["passed"])
+        failed_count = sum(1 for c in criteria if not c["passed"])
+        not_evaluated = max(0, total - len(criteria))
+        stopped = next((c for c in criteria if not c["passed"]), None)
+        final_decision = (
+            "可买入" if passed_count == total and failed_count == 0 else "不可买入"
+        )
+        return {
+            "final_decision": final_decision,
+            "passed_count": passed_count,
+            "failed_count": failed_count,
+            "not_evaluated_count": not_evaluated,
+            "total": total,
+            "stopped_at": stopped["criterion_id"] if stopped else None,
+            "stopped_at_name": stopped["criterion_name"] if stopped else None,
+            "stopped_verdict": stopped["verdict"] if stopped else "",
+            "criteria": criteria,
+            "from_cache": from_cache,
+        }
+
     def _run_evaluators(
         self,
         symbol: str,

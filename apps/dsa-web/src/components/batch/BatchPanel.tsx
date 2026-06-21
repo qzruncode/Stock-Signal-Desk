@@ -4,9 +4,10 @@ import { BarChart3, ChevronDown, ChevronRight, Clock, FileText, Loader2, Pause, 
 import { useNavigate } from 'react-router-dom';
 import { systemConfigApi } from '../../api/systemConfig';
 import { useBatchStore } from '../../stores/batchStore';
+import type { BatchAnalysisMode } from '../../api/batch';
 import type { PromptTemplateItem } from '../../api/prompts';
 import { cn } from '../../utils/cn';
-import { loadWatchlistGroups, WATCHLIST_GROUPS_UPDATED_EVENT, type WatchlistGroup } from '../../utils/watchlistGroups';
+import { useWatchlistGroups } from '../../hooks/useWatchlistGroups';
 import { Button, ApiErrorAlert } from '../common';
 import BatchScheduleDialog from './BatchScheduleDialog';
 
@@ -54,19 +55,10 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
     () => (stockCodesProp && stockCodesProp.length > 0 ? stockCodesProp : configStockCodes),
     [stockCodesProp, configStockCodes],
   );
-  const [watchlistGroups, setWatchlistGroups] = useState<WatchlistGroup[]>([]);
+  const { groups: watchlistGroups } = useWatchlistGroups();
   const [selectedGroupId, setSelectedGroupId] = useState('all');
-
-  useEffect(() => {
-    const syncGroups = () => setWatchlistGroups(loadWatchlistGroups());
-    syncGroups();
-    window.addEventListener('storage', syncGroups);
-    window.addEventListener(WATCHLIST_GROUPS_UPDATED_EVENT, syncGroups);
-    return () => {
-      window.removeEventListener('storage', syncGroups);
-      window.removeEventListener(WATCHLIST_GROUPS_UPDATED_EVENT, syncGroups);
-    };
-  }, []);
+  const [analysisMode, setAnalysisMode] = useState<BatchAnalysisMode>('template');
+  const [forceRefresh, setForceRefresh] = useState(false);
 
   const stockCodes = useMemo(() => {
     if (stockCodesProp && stockCodesProp.length > 0) return baseStockCodes;
@@ -156,14 +148,14 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
   }, []);
 
   const handleTrigger = useCallback(async () => {
-    if (selectedTemplateId) {
+    if (analysisMode === 'template' && selectedTemplateId) {
       setSelectedTemplateId(selectedTemplateId);
     }
-    const ok = await triggerBatchRun(stockCodes);
+    const ok = await triggerBatchRun(stockCodes, { analysisMode, forceRefresh });
     if (ok) {
       setCollapsed(false);
     }
-  }, [selectedTemplateId, setSelectedTemplateId, triggerBatchRun, stockCodes]);
+  }, [analysisMode, forceRefresh, selectedTemplateId, setSelectedTemplateId, triggerBatchRun, stockCodes]);
 
   const handleOpenSchedule = useCallback(() => {
     if (schedule) {
@@ -246,26 +238,67 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
 
               <div className="space-y-1">
                 <label className="text-[10px] font-medium text-muted-text uppercase tracking-wider">
-                  提示词模板
+                  分析模式
                 </label>
-                {isLoadingTemplates ? (
-                  <div className="h-9 animate-pulse rounded-lg bg-hover/50" />
-                ) : templates.length === 0 ? (
-                  <p className="text-xs text-muted-text">暂无模板</p>
-                ) : (
-                  <select
-                    value={selectedTemplateId}
-                    onChange={(e) => handleTemplateChange(e.target.value)}
-                    className="w-full rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-foreground focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
-                  >
-                    {templates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name}{t.is_default ? ' (默认)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <div className="grid grid-cols-2 gap-1 rounded-lg border border-subtle bg-surface p-1">
+                  {([
+                    { value: 'template', label: '模板分析' },
+                    { value: 'buy_criteria', label: '买入判断筛选' },
+                  ] as { value: BatchAnalysisMode; label: string }[]).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setAnalysisMode(opt.value)}
+                      disabled={isRunning}
+                      className={cn(
+                        'h-8 rounded-md text-xs font-medium transition-colors',
+                        analysisMode === opt.value
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-muted-text hover:bg-hover hover:text-foreground',
+                        isRunning && 'opacity-50',
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              {analysisMode === 'template' ? (
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-muted-text uppercase tracking-wider">
+                    提示词模板
+                  </label>
+                  {isLoadingTemplates ? (
+                    <div className="h-9 animate-pulse rounded-lg bg-hover/50" />
+                  ) : templates.length === 0 ? (
+                    <p className="text-xs text-muted-text">暂无模板</p>
+                  ) : (
+                    <select
+                      value={selectedTemplateId}
+                      onChange={(e) => handleTemplateChange(e.target.value)}
+                      className="w-full rounded-lg border border-subtle bg-surface px-3 py-2 text-xs text-foreground focus:border-primary/40 focus:outline-none focus:ring-1 focus:ring-primary/20"
+                    >
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}{t.is_default ? ' (默认)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              ) : (
+                <label className="flex items-center gap-2 text-xs text-muted-text">
+                  <input
+                    type="checkbox"
+                    checked={forceRefresh}
+                    onChange={(e) => setForceRefresh(e.target.checked)}
+                    disabled={isRunning}
+                    className="h-3.5 w-3.5 rounded border-subtle text-primary focus:ring-primary/20"
+                  />
+                  强制重新分析（忽略当日缓存）
+                </label>
+              )}
 
               {!stockCodesProp && watchlistGroups.length > 0 && (
                 <div className="space-y-1">
@@ -299,7 +332,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                   className="flex-1"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  跑批 ({stockCodes.length} 只)
+                  {analysisMode === 'buy_criteria' ? '买入判断筛选' : '跑批'} ({stockCodes.length} 只)
                 </Button>
                 <Button
                   type="button"
@@ -370,7 +403,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                   <div className="max-h-[200px] overflow-y-auto space-y-1">
                     {runs.map((run) => {
                       const canOpenReport = hasPersistedResults(run);
-                      const canResume = canResumeRun(run);
+                      const canResume = canResumeRun(run) && run.analysis_mode !== 'buy_criteria';
                       const statusText = run.status === 'stopped'
                         ? '已终止'
                         : run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分';
