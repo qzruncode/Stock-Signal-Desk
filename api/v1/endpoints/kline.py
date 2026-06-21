@@ -163,14 +163,13 @@ def _fetch_kline_sina(symbol: str, start_date: str, end_date: str):
 
     from data_provider.utils import normalize_stock_code
     code = normalize_stock_code(symbol)
-    if code.startswith(('68', '30', '00', '002', '003')):
-        prefix = 'sz'
-    elif code.startswith(('60',)):
+    # Shanghai: 60xx, 68xx(科创板), 5xx(ETF), 90xx(B股); Shenzhen: 00xx, 30xx(创业板)
+    if code.startswith(('6', '5', '90')):
         prefix = 'sh'
     elif code.startswith(('8', '4', '9')):
         prefix = 'bj'
     else:
-        prefix = 'sh'
+        prefix = 'sz'
     sina_symbol = f"{prefix}{code}"
 
     t0 = time.time()
@@ -207,14 +206,13 @@ def _fetch_kline_tencent(symbol: str, start_date: str, end_date: str):
 
     from data_provider.utils import normalize_stock_code
     code = normalize_stock_code(symbol)
-    if code.startswith(('68', '30', '00', '002', '003')):
-        prefix = 'sz'
-    elif code.startswith(('60',)):
+    # Shanghai: 60xx, 68xx(科创板), 5xx(ETF), 90xx(B股); Shenzhen: 00xx, 30xx(创业板)
+    if code.startswith(('6', '5', '90')):
         prefix = 'sh'
     elif code.startswith(('8', '4', '9')):
         prefix = 'bj'
     else:
-        prefix = 'sh'
+        prefix = 'sz'
     tx_symbol = f"{prefix}{code}"
 
     t0 = time.time()
@@ -316,6 +314,30 @@ def _save_kline_to_cache(cache_key: str, symbol: str, data: list, source: str) -
         logger.debug(f"[K线缓存] 写入失败: {e}")
 
 
+def _save_to_stock_daily(symbol: str, data: list) -> None:
+    """将外部 API 返回的 K 线数据同步写入 stock_daily，供验证数据源和增量同步使用。"""
+    if not data:
+        return
+    try:
+        import pandas as pd
+        from src.storage import DatabaseManager
+        df = pd.DataFrame(data)
+        required = ['date', 'open', 'close']
+        if not all(c in df.columns for c in required):
+            return
+        # Ensure pct_chg exists (some sources may omit it)
+        if 'pct_chg' not in df.columns and 'close' in df.columns:
+            df['pct_chg'] = df['close'].pct_change() * 100
+        # Ensure amount exists
+        if 'amount' not in df.columns:
+            df['amount'] = 0.0
+        db = DatabaseManager.get_instance()
+        db.save_daily_data(df, symbol, source="api_fallback")
+        logger.debug(f"[K线-stock_daily] 写入 {symbol} {len(df)} 条")
+    except Exception as e:
+        logger.debug(f"[K线-stock_daily] 写入失败 {symbol}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -365,6 +387,7 @@ def get_kline(
 
     now_ts = datetime.now().isoformat()
     _save_kline_to_cache(cache_key, symbol, records, source)
+    _save_to_stock_daily(symbol, records)
 
     return {
         'symbol': symbol, 'source': source,
@@ -408,6 +431,7 @@ def get_history_data(
 
     now_ts = datetime.now().isoformat()
     _save_kline_to_cache(cache_key, symbol, records, source)
+    _save_to_stock_daily(symbol, records)
 
     return {
         'symbol': symbol, 'source': source,

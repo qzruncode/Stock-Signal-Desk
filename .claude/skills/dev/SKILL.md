@@ -30,3 +30,9 @@ For simple work, implement directly.
 For complex work, create an internal AI-readable plan and execute it step by step.
 
 Finish with a short summary of changes and verification.
+
+## `/dev replan`
+
+Rewrite the Human Plan using the user's feedback or `/plan check` suggestions.
+
+After outputting the revised Human Plan, wait for feedback or `/dev approve`.

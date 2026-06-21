@@ -1770,14 +1770,13 @@ class AkshareFetcher:
             self._enforce_rate_limit()
             from .utils import normalize_stock_code
             norm = normalize_stock_code(code)
-            if norm.startswith(('68', '30', '00', '002', '003')):
-                prefix = 'sz'
-            elif norm.startswith('60'):
+            # Shanghai: 60xx, 68xx(科创板), 5xx(ETF), 90xx(B股); Shenzhen: 00xx, 30xx(创业板)
+            if norm.startswith(('6', '5', '90')):
                 prefix = 'sh'
             elif norm.startswith(('8', '4', '9')):
                 prefix = 'bj'
             else:
-                prefix = 'sh'
+                prefix = 'sz'
             sina_symbol = f"{prefix}{norm}"
             df = ak.stock_zh_a_daily(
                 symbol=sina_symbol, start_date=start_date,
@@ -1801,6 +1800,41 @@ class AkshareFetcher:
                 return df
         except Exception as e:
             logger.debug(f"[K线历史] {code} 新浪失败: {e}")
+
+        # Tencent（降级源）
+        try:
+            self._enforce_rate_limit()
+            from .utils import normalize_stock_code
+            norm = normalize_stock_code(code)
+            if norm.startswith(('6', '5', '90')):
+                prefix = 'sh'
+            elif norm.startswith(('8', '4', '9')):
+                prefix = 'bj'
+            else:
+                prefix = 'sz'
+            tx_symbol = f"{prefix}{norm}"
+            df = ak.stock_zh_a_hist_tx(
+                symbol=tx_symbol, start_date=start_date,
+                end_date=end_date, adjust="qfq",
+            )
+            if df is not None and not df.empty:
+                rename_map = {
+                    'date': 'date', 'open': 'open', 'high': 'high',
+                    'low': 'low', 'close': 'close', 'volume': 'volume',
+                    'amount': 'amount',
+                }
+                df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+                if '收盘' in df.columns and 'close' not in df.columns:
+                    df = df.rename(columns={'收盘': 'close', '开盘': 'open', '最高': 'high', '最低': 'low'})
+                keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount']
+                df = df[[c for c in keep_cols if c in df.columns]]
+                if 'close' in df.columns and 'pct_chg' not in df.columns:
+                    df['pct_chg'] = df['close'].pct_change() * 100
+                df = df.tail(days)
+                logger.debug(f"[K线历史] {code} 腾讯成功: {len(df)} 行")
+                return df
+        except Exception as e:
+            logger.debug(f"[K线历史] {code} 腾讯失败: {e}")
 
         return None
 
@@ -1840,13 +1874,13 @@ class AkshareFetcher:
     def _classify_a_stock_market(code: str) -> str:
         """根据股票代码判断 A 股市场分类"""
         code = code.strip()
-        if code.startswith('688'):
+        if code.startswith('68'):        # 科创板: 688xxx, 689xxx(CDR)
             return 'kcb'
         if code.startswith(('300', '301')):
             return 'cyb'
         if code.startswith(('8', '9')) and len(code) == 6:
             return 'bj'
-        if code.startswith(('600', '601', '603', '605')):
+        if code.startswith('60'):        # 沪市主板: 600xxx-609xxx
             return 'sh'
         if code.startswith(('000', '001', '002', '003')):
             return 'sz'

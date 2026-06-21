@@ -295,6 +295,7 @@ def _run_sync():
                     _set_sync_state(kline_progress=progress_offset)
 
         # Sequential incremental fetch (usually just a few days of data)
+        inc_fetcher = AF(sleep_min=0.3, sleep_max=0.5)
         for code in incremental_codes:
             try:
                 latest_date = db.get_latest_daily_date(code)
@@ -305,21 +306,11 @@ def _run_sync():
                 start_date_str = (latest_date + timedelta(days=1)).strftime("%Y%m%d")
                 end_date_str = today.strftime("%Y%m%d")
 
-                fetcher._enforce_rate_limit()
-                import akshare as ak
-                df = ak.stock_zh_a_hist(
-                    symbol=code, period="daily",
-                    start_date=start_date_str, end_date=end_date_str, adjust="qfq",
+                inc_fetcher._enforce_rate_limit()
+                df = inc_fetcher.fetch_stock_kline_history(
+                    code, days=max(60, (today - latest_date).days + 5),
                 )
                 if df is not None and not df.empty:
-                    col_map = {
-                        '日期': 'date', '开盘': 'open', '收盘': 'close',
-                        '最高': 'high', '最低': 'low', '成交量': 'volume',
-                        '成交额': 'amount', '涨跌幅': 'pct_chg',
-                    }
-                    df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-                    keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
-                    df = df[[c for c in keep_cols if c in df.columns]]
                     db.save_daily_data(df, code, "akshare")
                     kline_incremental += 1
                 else:

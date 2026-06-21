@@ -28,3 +28,9 @@ Implement the approved bug fix plan.
 Apply the fix, verify the original bug is resolved, and check the closest regression risk.
 
 Finish with a short summary of root cause, changed files, verification result, and remaining risk.
+
+## `/bug replan`
+
+Rewrite the bug fix Human Plan using the user's feedback or `/plan check` suggestions.
+
+After outputting the revised Human Plan, wait for feedback or `/bug approve`.

@@ -6,6 +6,7 @@ This file is intentionally compatible with Claude Code and Codex. Follow it when
 
 - Use `.claude/skills/dev` when the user invokes `/dev`, asks for a short Human Plan before implementation, or wants Human Plan approval followed by AI-only Execution Plan execution.
 - Use `.claude/skills/bug-fix` when the user invokes `/bug` for an identified bug and wants a Human Plan before approved implementation.
+- Use `.claude/skills/plan-check` when the user invokes `/plan check` or asks to review a `/dev` or `/bug` Human Plan before implementation.
 - Use `.claude/skills/code-audit` when the user asks to scan the project and produce a prioritized code governance modification list.
 
 ## Code Rules
