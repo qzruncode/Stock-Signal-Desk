@@ -403,7 +403,7 @@ export const BatchPanel: React.FC<BatchPanelProps> = ({
                   <div className="max-h-[200px] overflow-y-auto space-y-1">
                     {runs.map((run) => {
                       const canOpenReport = hasPersistedResults(run);
-                      const canResume = canResumeRun(run) && run.analysis_mode !== 'buy_criteria';
+                      const canResume = canResumeRun(run);
                       const statusText = run.status === 'stopped'
                         ? '已终止'
                         : run.completed_at ? new Date(run.completed_at).toLocaleDateString('zh') : '部分';
