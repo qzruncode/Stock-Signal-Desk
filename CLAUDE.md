@@ -10,6 +10,8 @@ This file is intentionally compatible with Claude Code and Codex. Follow it when
 - Use `.claude/skills/plan-check` when the user invokes `/plan-check` or asks to review a Human Plan before implementation.
 - Use `.claude/skills/design-check` when the user invokes `/design-check` or asks to review frontend design, visual quality, UI consistency, or interaction quality before implementation.
 - Use `.claude/skills/audit` when the user invokes `/audit` or asks to review AI-written code and produce an approved follow-up fix plan.
+- Use `.claude/skills/code-scan` when the user invokes `/code-scan` or asks to scan the current project for concrete code problems and produce a Human Plan.
+- Use `.claude/skills/arch-check` when the user invokes `/arch-check` or asks whether the project is reinventing wheels or diverging from mature business/code/architecture solutions.
 
 ## Code Rules
 
