@@ -1,4 +1,4 @@
 interface:
   display_name: "Audit"
-  short_description: "Review AI-written code, then fix after approval."
+  short_description: "Review AI-written code against baseline, then fix after approval."
   default_prompt: "/audit 审查刚刚 AI 写的代码"

@@ -9,10 +9,11 @@ description: Project-local frontend design and UX review. Use when the user invo
 
 Review the current Human Plan or proposed frontend change from a product designer and frontend engineer perspective before implementation.
 
-Before judging the plan, inspect the existing page, components, styles, layout patterns, and interaction patterns that the change would touch.
+Before judging the plan, inspect the Requirement Baseline and the existing page, components, styles, layout patterns, and interaction patterns that the change would touch.
 
 Check:
 
+- baseline fit: whether the design keeps the original user goal, user path, and confirmed behavior intact
 - visual fit: whether the change matches the existing product style, spacing, density, typography, color, and component patterns
 - interaction fit: whether the user path is clear, efficient, and not mentally heavy
 - information design: whether the page shows the right information hierarchy, avoids clutter, and keeps key decisions easy to scan
@@ -26,6 +27,7 @@ Check:
 Output:
 
 - conclusion: 可执行 / 需要重写设计方案
+- baseline fit
 - existing UI fit
 - interaction concerns
 - visual concerns

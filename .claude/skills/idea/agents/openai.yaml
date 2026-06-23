@@ -1,4 +1,4 @@
 interface:
   display_name: "Idea"
-  short_description: "Turn fuzzy thoughts into requirement Human Plans."
+  short_description: "Turn fuzzy thoughts into baseline-backed Human Plans."
   default_prompt: "/idea 我有个想法，帮我梳理成可落地需求："

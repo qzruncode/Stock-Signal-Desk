@@ -26,20 +26,21 @@ Look for:
 
 If there are many issues, report the most serious ones first.
 
-Human Plan focuses on:
+Human Plan must include:
 
-- overall code health judgment
-- highest priority problems
-- affected files or modules
-- why each problem matters
-- suggested fix direction
-- risk and verification approach
-- recommended next `/dev` target
+- Requirement Baseline: overall code health judgment, selected problem scope, and why these fixes matter
+- Confirmed Decisions: priority order or scope already approved by the human
+- Current Plan: highest priority problems, affected files/modules, suggested fix direction, risk, verification approach, and recommended next `/dev` target
+- Changes Since Last Plan: what changed in this revision
+- Unchanged Scope: what must stay the same
+- Needs Reconfirmation: anything that changes the selected problem scope or priority
 
 After outputting the Human Plan, wait for feedback.
 
 ## `/code-scan replan`
 
 Rewrite the code scan Human Plan using the user's feedback.
+
+Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
 
 After outputting the revised Human Plan, wait for feedback. The agreed Human Plan should be ready to feed into `/dev`.

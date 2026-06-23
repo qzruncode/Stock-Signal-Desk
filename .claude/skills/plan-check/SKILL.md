@@ -22,6 +22,9 @@ If the plan would change code, inspect the existing code that the plan would tou
 
 Check:
 
+- baseline preservation: whether the plan preserves the Requirement Baseline and confirmed decisions
+- replan delta: whether changes since the previous plan are explicit
+- reconfirmation: whether baseline-changing ideas are marked as `Needs Reconfirmation`
 - plan type fit: whether the plan contains the right information for its type and next step
 - existing foundation: whether the project already has pages, components, hooks, services, APIs, utilities, state flows, or data structures that should be reused
 - integration fit: whether the new logic fits into existing module boundaries, naming, contracts, state ownership, and data flow
@@ -42,6 +45,9 @@ Output:
 
 - plan type
 - conclusion: 可执行 / 需要重写 Human Plan
+- baseline fit
+- replan delta
+- needs reconfirmation
 - existing code fit
 - architecture concerns
 - code impact concerns

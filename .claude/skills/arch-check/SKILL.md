@@ -28,15 +28,14 @@ Check:
 - scalability and maintainability
 - where this project reinvents wheels or diverges from mature solutions
 
-Human Plan focuses on:
+Human Plan must include:
 
-- current business/code/architecture problem
-- local code evidence
-- mature reference projects, libraries, products, or patterns found through GitHub/network research
-- recommended direction
-- migration path
-- risk and verification approach
-- recommended next `/dev` target
+- Requirement Baseline: current business/code/architecture problem, local evidence, and why mature-solution alignment matters
+- Confirmed Decisions: reference direction or migration scope already approved by the human
+- Current Plan: mature reference projects/libraries/products/patterns, recommended direction, migration path, risk, verification approach, and recommended next `/dev` target
+- Changes Since Last Plan: what changed in this revision
+- Unchanged Scope: what must stay the same
+- Needs Reconfirmation: anything that changes the business goal, mature-solution direction, or migration scope
 
 Include links or repository names for external references used.
 
@@ -45,5 +44,7 @@ After outputting the Human Plan, wait for feedback.
 ## `/arch-check replan`
 
 Rewrite the mature-solution Human Plan using the user's feedback.
+
+Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
 
 After outputting the revised Human Plan, wait for feedback. The agreed Human Plan should be ready to feed into `/dev`.

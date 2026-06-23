@@ -22,19 +22,21 @@ Work by clarifying:
 - smallest useful version
 - open decisions
 
-Human Plan focuses on:
+Human Plan must include:
 
-- problem framing
-- possible approaches
-- recommended direction
-- concrete requirement draft
-- open questions
-- suggested next step
+- Requirement Baseline: original user intent, problem framing, desired outcome, user value, and non-negotiable behavior
+- Confirmed Decisions: choices already made by the human
+- Current Plan: possible approaches, recommended direction, concrete requirement draft, open questions, and suggested next step
+- Changes Since Last Plan: what changed in this revision
+- Unchanged Scope: what must stay the same
+- Needs Reconfirmation: anything that changes the baseline or user goal
 
 After outputting the Human Plan, wait for feedback.
 
 ## `/idea replan`
 
 Rewrite the idea Human Plan using the user's feedback.
+
+Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
 
 After outputting the revised Human Plan, wait for feedback. The agreed Human Plan should be ready to feed into `/dev`.

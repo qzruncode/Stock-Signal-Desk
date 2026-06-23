@@ -95,3 +95,5 @@ todo*.md
 services/rsshub/node_modules/
 services/rsshub/logs/
 services/rsshub/app/
+
+docs

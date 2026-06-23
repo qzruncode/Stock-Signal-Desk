@@ -13,6 +13,7 @@ Focus on whether the change actually fits the approved Human Plan and the existi
 
 Check:
 
+- baseline match: implemented behavior still matches the Requirement Baseline and confirmed decisions
 - plan match: implemented behavior matches the approved Human Plan
 - existing code fit: code reuses existing components, hooks, services, utilities, contracts, and patterns where appropriate
 - architecture fit: layering, module boundaries, dependency direction, abstraction ownership
@@ -30,7 +31,12 @@ Output:
 - main risks
 - code issues
 - missing verification
-- Human Plan for required fixes, if follow-up changes are needed
+- Human Plan for required fixes, if follow-up changes are needed:
+  - Requirement Baseline: original approved baseline and confirmed decisions the code must still satisfy
+  - Current Plan: required follow-up fixes
+  - Changes Since Last Plan: what the audit fix plan changes
+  - Unchanged Scope: what must stay the same
+  - Needs Reconfirmation: anything that would change the Requirement Baseline
 
 After outputting the audit result and fix Human Plan, wait for feedback or `/audit approve`.
 
@@ -43,5 +49,7 @@ Apply only the approved follow-up fixes, verify them, and finish with a short su
 ## `/audit replan`
 
 Rewrite the audit fix Human Plan using the user's feedback.
+
+Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
 
 After outputting the revised Human Plan, wait for feedback or `/audit approve`.

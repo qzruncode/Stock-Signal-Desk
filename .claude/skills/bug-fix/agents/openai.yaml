@@ -1,4 +1,4 @@
 interface:
   display_name: "Bug Fix"
-  short_description: "Human-readable bug fix plan first, implement after approval."
+  short_description: "Baseline-backed bug fix plan first, implement after approval."
   default_prompt: "/bug 这个问题已经定位，先给修复 Human Plan："
