@@ -5,6 +5,8 @@ description: Use when the user invokes /code-scan or asks to find bugs, ineffici
 
 # Code Scan
 
+All scan conclusions, issue descriptions, evidence, priorities, Human Plan content, replan content, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, error messages, and quoted source text.
+
 ## Canonical Plan
 
 Use one canonical Human Plan file as the source of truth.

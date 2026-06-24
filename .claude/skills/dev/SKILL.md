@@ -5,6 +5,8 @@ description: Use when the user invokes /dev with a requirement or an accepted Hu
 
 # Dev
 
+All generated Human Plans, replan content, implementation summaries, verification results, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, and any user text that must remain verbatim.
+
 ## Canonical Plan
 
 Use one canonical Human Plan file as the source of truth for the whole workflow.

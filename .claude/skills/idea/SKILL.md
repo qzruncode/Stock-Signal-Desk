@@ -5,6 +5,8 @@ description: Use when the user invokes /idea or has a fuzzy thought, vague probl
 
 # Idea
 
+All generated plans, summaries, decisions, questions, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, and any user text that must remain verbatim.
+
 ## Canonical Plan
 
 Use one canonical Human Plan file as the source of truth for the whole workflow.

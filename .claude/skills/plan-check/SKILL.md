@@ -5,6 +5,8 @@ description: Use when the user invokes /plan-check or asks for architectural and
 
 # Plan Check
 
+All review conclusions, risks, evidence, required changes, reconfirmation items, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, and quoted source text.
+
 ## Canonical Plan
 
 Review one canonical Human Plan file. Never create a replacement plan.

@@ -5,6 +5,8 @@ description: Use when the user invokes /arch-check or asks whether current busin
 
 # Arch Check
 
+All local analysis, external-solution comparisons, recommendations, Human Plan content, replan content, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, repository names, links, and quoted source text.
+
 ## Canonical Plan
 
 Use one canonical Human Plan file as the source of truth.

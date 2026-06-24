@@ -5,6 +5,8 @@ description: Use when the user invokes /bug after a concrete bug and its affecte
 
 # Bug Fix
 
+All generated Human Plans, root-cause explanations, replan content, fix summaries, verification results, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, error messages, and any user text that must remain verbatim.
+
 ## Canonical Plan
 
 Use one canonical Human Plan file as the source of truth for the whole workflow.

@@ -5,6 +5,8 @@ description: Use when the user invokes /design-check or a proposed frontend chan
 
 # Design Check
 
+All design conclusions, interaction and visual concerns, required changes, reconfirmation items, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, component names, visible text that must be exact, and quoted source text.
+
 ## Canonical Plan
 
 Review the same canonical Human Plan already used by the workflow. Never create a design plan.

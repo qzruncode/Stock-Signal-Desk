@@ -5,6 +5,8 @@ description: Use when the user invokes /audit or asks to review completed AI-wri
 
 # Audit
 
+All audit conclusions, findings, evidence, fix plans, replan content, verification results, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, error messages, and quoted source text.
+
 ## Canonical Plan
 
 Audit the same canonical Human Plan used for approval and implementation. Never create a separate audit plan.
