@@ -7,11 +7,18 @@ description: Use when the user invokes /audit or asks to review completed AI-wri
 
 所有产出使用简体中文。代码标识、路径、API 名称、错误信息和引用原文不翻译。
 
+## 源码写入门禁
+
+- 只有明确调用 `/audit approve [Plan Ref]` 时才允许修改项目源码。
+- `/audit [Plan Ref]` 只能审查代码并更新审查结论。
+- `/audit replan [Plan Ref]` 只能更新 Human Plan。
+- 审计发现问题后不得立即修复，必须等待 replan、检查和 approve。
+
 ## `/audit [Plan Ref]`
 
 只审查当前 Plan 已批准并已实现的版本。深入检查代码，但输出按严重程度压缩，只保留需要人类决策或必须修复的问题。
 
-如果 Plan Ref 的版本不是当前 Version，或当前版本没有 approval、implementation 记录，停止处理。
+如果 Plan Ref 的版本不是当前 Version，或 Delivery Status 没有当前 Version 的 approval、implementation 记录，停止处理。
 
 检查：
 
@@ -34,16 +41,16 @@ description: Use when the user invokes /audit or asks to review completed AI-wri
 
 不罗列无关的小问题，不重复完整 Human Plan。
 
-通过时更新 Delivery Status 的 Audit 为 `通过`。需要修复时更新为 `需要修复`，进入 `/audit replan <Plan Ref>`。
+通过时把 Status 设为 `complete`，并在 Delivery Status 记录当前 Version 的 Audit 为 `通过`。需要修复时把 Status 设为 `audit-fixes-required`，记录当前 Version 的 Audit 为 `需要修复`，进入 `/audit replan <Plan Ref>`。
 
 ## `/audit replan [Plan Ref]`
 
 在同一文件中把 Current Plan 更新为精简修复方案，增加 Version，仅纳入确认要修的审计问题。
 
-保留 Requirement Baseline，不复制完整审计报告。之后重新执行 `/plan-check` 和必要的 `/design-check`。
+设置 Owner Skill 为 `audit`、Status 为 `review-pending`，清空当前版本的 Review Status 和 Delivery Status。保留 Requirement Baseline，不复制完整审计报告。之后重新执行 `/plan-check` 和必要的 `/design-check`。
 
 ## `/audit approve [Plan Ref]`
 
-只执行当前 audit-fix 版本。要求 Status 为 `ready-for-approval`、Needs Reconfirmation 为空，并通过当前版本所需检查。
+只执行当前 audit-fix 版本。要求 Owner Skill 为 `audit`、Status 为 `ready-for-approval`、Needs Reconfirmation 为空，并且 Review Status 中当前 Version 已通过所需检查。
 
-修复后简要更新 Delivery Status，再次执行 `/audit <Plan Ref>`。
+修复后把 Status 设为 `implemented`，在 Delivery Status 记录当前 Version 的 approval、implementation 和简短验证结果，再次执行 `/audit <Plan Ref>`。

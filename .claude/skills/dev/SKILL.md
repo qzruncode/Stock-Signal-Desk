@@ -7,6 +7,13 @@ description: Use when the user invokes /dev with a requirement or an accepted Hu
 
 所有产出使用简体中文。代码标识、路径、API 名称和必须保留的用户原文不翻译。
 
+## 源码写入门禁
+
+- 只有明确调用 `/dev approve [Plan Ref]` 时才允许修改项目源码。
+- `/dev xxx` 和 `/dev replan [Plan Ref]` 只能读取代码并创建或更新 Human Plan。
+- 不得把需求描述中的“实现”“修改”“开发”等词视为执行批准。
+- 输出 Human Plan 后立即停止，等待检查、replan 或 approve。
+
 ## Human Plan
 
 Human Plan 的唯一目标是让人快速判断：需求是否准确、方向是否合理、范围是否可控。
@@ -18,7 +25,7 @@ Human Plan 的唯一目标是让人快速判断：需求是否准确、方向是
 - Current Plan 只描述业务方向、影响范围、用户行为、现有代码融入方式、关键边界和验收结果。
 - 方案过大时拆分为多个可独立审核、开发和验证的阶段。
 
-Plan 文件只包含：Plan ID、Version、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
 
 如果 Plan Ref 的版本不是当前 Version，停止处理。每次输出都返回当前 Plan Ref。
 
@@ -28,6 +35,10 @@ Plan 文件只包含：Plan ID、Version、Status、Frontend Impact、Requiremen
 
 如果来自 `/idea`、`/code-scan` 或 `/arch-check`，继续使用同一个 Plan ID 和文件。增加 Version，更新 Current Plan，不新建开发 Plan。
 
+如果没有 Plan Ref，创建 `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md`。
+
+设置 Owner Skill 为 `dev`、Status 为 `review-pending`，并把当前版本的 Review Status 和 Delivery Status 重置为待处理。
+
 输出后等待 `/plan-check <Plan Ref>`；Frontend Impact 为 `yes` 或 `unknown` 时，再执行 `/design-check <Plan Ref>`。
 
 ## `/dev replan [Plan Ref]`
@@ -36,15 +47,18 @@ Plan 文件只包含：Plan ID、Version、Status、Frontend Impact、Requiremen
 
 增加 Version，填写简短的 Changes Since Last Plan，重置 Review Status。不得借 replan 扩大需求或改写 Requirement Baseline。
 
+保持 Owner Skill 为 `dev`，Status 重置为 `review-pending`，当前版本不得沿用旧版本的检查、批准或交付结果。
+
 ## `/dev approve [Plan Ref]`
 
 只执行当前版本。执行前确认：
 
 - Status 为 `ready-for-approval`
+- Owner Skill 为 `dev`
 - Needs Reconfirmation 为空
-- 当前版本 `/plan-check` 已通过
-- 有前端影响时，当前版本 `/design-check` 已通过
+- Review Status 记录当前 Version 的 `/plan-check` 已通过
+- 有前端影响时，Review Status 记录当前 Version 的 `/design-check` 已通过
 
 复杂任务可以生成 AI 内部执行计划，但不得写回 Human Plan，也不得改变已批准范围。
 
-完成后只在 Delivery Status 记录简短结果，并进入 `/audit <Plan Ref>`。
+完成后把 Status 设为 `implemented`，在 Delivery Status 记录当前 Version 的 approval、implementation 和简短验证结果，并进入 `/audit <Plan Ref>`。

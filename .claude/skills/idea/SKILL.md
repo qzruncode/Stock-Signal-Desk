@@ -7,6 +7,8 @@ description: Use when the user invokes /idea or has a fuzzy thought, vague probl
 
 所有产出使用简体中文。代码标识、路径、API 名称和必须保留的用户原文不翻译。
 
+禁止修改项目源码，只允许创建或更新 Human Plan。
+
 ## Human Plan
 
 Human Plan 用于让人快速审核，不是给 AI 执行的技术清单。
@@ -20,7 +22,7 @@ Human Plan 用于让人快速审核，不是给 AI 执行的技术清单。
 
 Plan 文件固定为：
 
-- Plan ID、Version、Status、Frontend Impact
+- Plan ID、Version、Owner Skill、Status、Frontend Impact
 - Requirement Baseline
 - Confirmed Decisions
 - Current Plan
@@ -33,11 +35,13 @@ Plan 文件固定为：
 
 Revision Notes 每个版本只保留一句变化摘要；多轮后合并较早记录。
 
+Review Status 只保留当前版本的 `plan-check` 和 `design-check` 结果；Delivery Status 只保留当前版本的 approval、implementation 和 audit 结果，结果必须标明 Version。
+
 如果 Plan Ref 的版本不是当前 Version，停止处理。每次输出都返回当前 Plan Ref。
 
 ## `/idea xxx`
 
-创建 `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md`，把模糊想法整理为简短需求：
+创建 `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md`，设置 Owner Skill 为 `idea`、Status 为 `draft`，把模糊想法整理为简短需求：
 
 - 要解决的问题和目标用户
 - 当前痛点和预期结果
@@ -51,4 +55,4 @@ Revision Notes 每个版本只保留一句变化摘要；多轮后合并较早�
 
 在同一文件中更新 Current Plan，增加 Version，保留 Requirement Baseline，并简要填写 Changes Since Last Plan。
 
-待确认的目标变化放入 Needs Reconfirmation。需求确认后进入 `/dev <Plan Ref>`。
+保持 Owner Skill 为 `idea`、Status 为 `draft`。待确认的目标变化放入 Needs Reconfirmation。需求确认后进入 `/dev <Plan Ref>`。

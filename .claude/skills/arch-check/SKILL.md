@@ -7,6 +7,8 @@ description: Use when the user invokes /arch-check or asks whether current busin
 
 所有产出使用简体中文。代码标识、路径、API 名称、仓库名称、链接和引用原文不翻译。
 
+禁止修改项目源码，只允许研究现有代码并创建或更新 Human Plan。
+
 ## `/arch-check`
 
 先检查本地代码，再使用可用的网络或 GitHub MCP 查找成熟方案。内部可以广泛研究，Human Plan 只保留最终有用的判断。
@@ -22,7 +24,9 @@ description: Use when the user invokes /arch-check or asks whether current busin
 
 外部参考保留必要链接，但不复制大段资料。
 
-创建一个简洁 Plan 文件，只包含：Plan ID、Version、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+创建一个简洁 Plan 文件，只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+
+Owner Skill 设置为 `arch-check`，Status 设置为 `draft`。
 
 聊天中只返回摘要、Plan Ref 和下一步。
 
@@ -30,4 +34,4 @@ description: Use when the user invokes /arch-check or asks whether current busin
 
 根据人类反馈更新推荐方向和实施范围，增加 Version，只记录本轮变化。
 
-如果 Plan Ref 的版本不是当前 Version，停止处理。不重复外部调研，不修改代码。确认后进入 `/dev <Plan Ref>`。
+如果 Plan Ref 的版本不是当前 Version，停止处理。保持 Owner Skill 为 `arch-check`、Status 为 `draft`。不重复外部调研，不修改代码。确认后进入 `/dev <Plan Ref>`。

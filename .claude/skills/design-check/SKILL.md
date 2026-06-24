@@ -7,11 +7,15 @@ description: Use when the user invokes /design-check or a proposed frontend chan
 
 所有产出使用简体中文。代码标识、路径、组件名和必须保持准确的界面文案不翻译。
 
+禁止修改项目源码，只允许读取代码并更新当前 Plan 的 Review Status。
+
 ## `/design-check [Plan Ref]`
 
-必须先通过当前版本 `/plan-check`。深入检查现有页面和设计体系，但只输出阻塞实施的设计问题。
+必须先确认 Review Status 中当前 Version 的 `/plan-check` 已通过。深入检查现有页面和设计体系，但只输出阻塞实施的设计问题。
 
 如果 Plan Ref 的版本不是当前 Version，停止处理。Needs Reconfirmation 不为空时不得判定通过。
+
+Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`；否则停止检查。
 
 检查：
 
@@ -30,8 +34,8 @@ description: Use when the user invokes /design-check or a proposed frontend chan
 - Current Plan 必须补充或修改的设计要求
 - 需要人类重新确认的事项
 
-通过时不要复述完整 Plan。无前端影响时标记 `不适用`。
+通过时不要复述完整 Plan。Frontend Impact 为 `unknown` 时先判断并更新为 `yes` 或 `no`；只有确认无前端影响时才能标记 `不适用`。
 
-结果覆盖写入当前 Plan 的 Review Status，不创建新 Plan，不追加长篇检查记录，不直接修改 Current Plan。
+结果覆盖写入当前 Plan 的 Review Status，并标明当前 Version；不创建新 Plan，不追加长篇检查记录，不直接修改 Current Plan。
 
-需要调整时返回当前阶段对应的 replan；通过或不适用时将 Status 设为 `ready-for-approval`。
+需要调整时将 Status 设为 `replan-required`，并根据 Owner Skill 返回 `/dev replan`、`/bug-fix replan` 或 `/audit replan`；通过或不适用时将 Status 设为 `ready-for-approval`。
