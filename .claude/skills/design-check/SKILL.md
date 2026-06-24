@@ -5,47 +5,33 @@ description: Use when the user invokes /design-check or a proposed frontend chan
 
 # Design Check
 
-All design conclusions, interaction and visual concerns, required changes, reconfirmation items, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, component names, visible text that must be exact, and quoted source text.
-
-## Canonical Plan
-
-Review the same canonical Human Plan already used by the workflow. Never create a design plan.
-
-- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never review a different version.
-- Require a passing `/plan-check` entry for the current version before reviewing design.
-- Read the current version, Requirement Baseline, previous reviews, and existing frontend code.
-- Bind the result to the exact Plan ID and current version.
-- Append the result to `Review Ledger`; do not edit Plan Versions or earlier entries.
-- End the response with the same Plan Ref.
-
-If a legacy plan lacks Plan ID and version metadata, add the canonical metadata and ledgers while preserving its existing content as version 1.
+所有产出使用简体中文。代码标识、路径、组件名和必须保持准确的界面文案不翻译。
 
 ## `/design-check [Plan Ref]`
 
-If there is no frontend or user-interaction impact, append a `not-applicable` result for the current version. Do not use `not-applicable` when Frontend Impact is `yes`.
+必须先通过当前版本 `/plan-check`。深入检查现有页面和设计体系，但只输出阻塞实施的设计问题。
 
-Otherwise inspect the affected pages, components, styles, layout, and interaction patterns. Check:
+如果 Plan Ref 的版本不是当前 Version，停止处理。Needs Reconfirmation 不为空时不得判定通过。
 
-- visual consistency, hierarchy, spacing, density, typography, color, and control patterns
-- clarity and efficiency of the user path
-- information priority and scanability
-- loading, empty, error, disabled, success, long-running, and partial-data states
-- desktop and mobile behavior
-- component reuse and consistency with similar features
-- accessibility and focus behavior
-- risk of one-off CSS, fragile layout, nested cards, awkward spacing, or inconsistent controls
+检查：
 
-Append a Review Ledger entry containing:
+- 页面信息层级和核心用户路径
+- 与现有组件、样式和相似页面的一致性
+- 交互效率、状态反馈和可理解性
+- loading、empty、error、disabled、success 和部分数据状态
+- 桌面端与移动端响应式行为
+- 可访问性、键盘和焦点行为
+- 一次性 CSS、脆弱布局、重复组件和视觉混乱风险
 
-- reviewer: `/design-check`
-- reviewed version
-- result: `pass`, `replan-required`, or `not-applicable`
-- existing-UI fit
-- interaction and visual concerns
-- required replan changes
-- items needing human reconfirmation
+输出只包含：
 
-Set status to `replan-required` when the result fails. Set it to `ready-for-approval` on `pass` or `not-applicable`.
+- 结论：`通过`、`需要 replan` 或 `不适用`
+- 阻塞体验的关键问题
+- Current Plan 必须补充或修改的设计要求
+- 需要人类重新确认的事项
 
-Do not rewrite the plan or edit production code. A `replan-required` result returns to the originating skill's `replan` command, which appends the next version to the same file.
+通过时不要复述完整 Plan。无前端影响时标记 `不适用`。
+
+结果覆盖写入当前 Plan 的 Review Status，不创建新 Plan，不追加长篇检查记录，不直接修改 Current Plan。
+
+需要调整时返回当前阶段对应的 replan；通过或不适用时将 Status 设为 `ready-for-approval`。

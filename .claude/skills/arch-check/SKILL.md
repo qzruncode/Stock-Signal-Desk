@@ -5,35 +5,29 @@ description: Use when the user invokes /arch-check or asks whether current busin
 
 # Arch Check
 
-All local analysis, external-solution comparisons, recommendations, Human Plan content, replan content, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, repository names, links, and quoted source text.
-
-## Canonical Plan
-
-Use one canonical Human Plan file as the source of truth.
-
-- Create `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md` on the first check, regardless of length.
-- Keep the same Plan ID when the recommendation moves into `/dev`.
-- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
-- End every response with `Plan Ref: <path>#v<current-version>`.
-- Never rewrite earlier versions or ledger entries. Replan by appending a version.
-- Keep Original Request and Requirement Baseline unchanged unless the human explicitly confirms an append-only baseline amendment.
-- Reviews bind to exact versions; new versions require fresh reviews.
-
-The file must carry Plan ID, version/stage/status metadata, Original Request, Requirement Baseline, Baseline Amendments, Plan Versions, Review Ledger, Approval Ledger, Execution Ledger, and Audit Ledger. Each version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
-
-If a legacy plan lacks this structure, add the metadata and ledgers without changing its content; preserve the existing plan as version 1.
+所有产出使用简体中文。代码标识、路径、API 名称、仓库名称、链接和引用原文不翻译。
 
 ## `/arch-check`
 
-Inspect local code first, then use available network or GitHub MCP tools to compare the relevant business workflow, product behavior, code, framework usage, data flow, architecture, reliability, and security design with mature solutions.
+先检查本地代码，再使用可用的网络或 GitHub MCP 查找成熟方案。内部可以广泛研究，Human Plan 只保留最终有用的判断。
 
-Create version 1 with stage `arch-check` and status `draft`. Store the check request verbatim. Record local evidence, relevant external references, the recommended direction, how it translates into this project, migration risk, and verification.
+不要输出调研流水账或大量候选方案。只写：
 
-Do not edit code. Return the Plan Ref. The human may use `/arch-check replan <Plan Ref>` or `/dev <Plan Ref>` so implementation continues in the same file.
+- 当前项目的具体问题和本地证据
+- 最相关的成熟方案或参考
+- 为什么适合当前项目
+- 推荐方向和关键取舍
+- 一个可进入 `/dev` 的实施范围
+- 风险和验收结果
+
+外部参考保留必要链接，但不复制大段资料。
+
+创建一个简洁 Plan 文件，只包含：Plan ID、Version、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+
+聊天中只返回摘要、Plan Ref 和下一步。
 
 ## `/arch-check replan [Plan Ref]`
 
-Read the canonical plan and human feedback. Append a new version in the same file.
+根据人类反馈更新推荐方向和实施范围，增加 Version，只记录本轮变化。
 
-Preserve the accepted problem and reference direction. Record recommendation or migration-scope changes explicitly, put unconfirmed changes under `Needs Reconfirmation`, and set status to `draft`. Do not implement changes.
+如果 Plan Ref 的版本不是当前 Version，停止处理。不重复外部调研，不修改代码。确认后进入 `/dev <Plan Ref>`。

@@ -5,54 +5,45 @@ description: Use when the user invokes /audit or asks to review completed AI-wri
 
 # Audit
 
-All audit conclusions, findings, evidence, fix plans, replan content, verification results, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, error messages, and quoted source text.
-
-## Canonical Plan
-
-Audit the same canonical Human Plan used for approval and implementation. Never create a separate audit plan.
-
-- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
-- Read Original Request, Requirement Baseline, all amendments, the approved version, approval entry, and execution entry.
-- Bind audit findings to the exact Plan ID and implemented version.
-- Append findings to `Audit Ledger`; do not rewrite prior versions or ledgers.
-- If fixes are needed, `/audit replan` appends the next version in the same file.
-- End every response with the same Plan Ref.
-
-If a legacy plan lacks Plan ID and version metadata, add the canonical metadata and ledgers while preserving its existing content as version 1.
+所有产出使用简体中文。代码标识、路径、API 名称、错误信息和引用原文不翻译。
 
 ## `/audit [Plan Ref]`
 
-Before auditing, require status `implemented` and confirm that `Approval Ledger` and `Execution Ledger` both refer to the current Plan ID and current version. If they do not, stop.
+只审查当前 Plan 已批准并已实现的版本。深入检查代码，但输出按严重程度压缩，只保留需要人类决策或必须修复的问题。
 
-Inspect actual code changes and relevant existing code. Check:
+如果 Plan Ref 的版本不是当前 Version，或当前版本没有 approval、implementation 记录，停止处理。
 
-- baseline and approved-plan compliance
-- reuse of existing components, hooks, services, utilities, contracts, and patterns
-- layering, ownership, dependency direction, abstraction, duplication, and maintainability
-- behavior, edge cases, compatibility, and regression risk
-- frontend rendering, state, data fetching, responsiveness, and style consistency
-- backend contracts, validation, errors, async flow, and external dependencies
-- schema, query, consistency, idempotency, cache, storage, and stale-data behavior
-- authentication, input safety, secrets, retries, timeouts, fallback, and availability
-- verification completeness
+检查：
 
-Append an Audit Ledger entry with result `pass` or `fixes required`, findings, evidence, and missing verification.
+- Requirement Baseline 和批准方案是否真正实现
+- 新代码是否复用并融入现有结构
+- 正确性、边界情况、兼容性和回归
+- 架构、抽象、重复、复杂度和维护性
+- 前端性能、交互、响应式和样式一致性
+- 后端契约、校验、错误处理和异步流程
+- 数据一致性、缓存、存储、幂等和过期数据
+- 安全、重试、超时、降级和可用性
+- 验证是否充分
 
-If it passes, set status to `complete`. If fixes are required, set status to `audit-fixes-required`, keep the same Plan ID, and suggest `/audit replan <Plan Ref>`.
+输出只包含：
+
+- 结论：`通过` 或 `需要修复`
+- 按严重程度排列的阻塞问题
+- 缺失的必要验证
+- 下一步
+
+不罗列无关的小问题，不重复完整 Human Plan。
+
+通过时更新 Delivery Status 的 Audit 为 `通过`。需要修复时更新为 `需要修复`，进入 `/audit replan <Plan Ref>`。
 
 ## `/audit replan [Plan Ref]`
 
-Append a new version with stage `audit-fix` and status `review-pending`. Preserve the original baseline and decisions. Convert accepted audit findings into a focused fix plan, and put any scope or behavior change under `Needs Reconfirmation`.
+在同一文件中把 Current Plan 更新为精简修复方案，增加 Version，仅纳入确认要修的审计问题。
 
-The new version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
-
-The new version must repeat `/plan-check` and, when relevant, `/design-check`.
+保留 Requirement Baseline，不复制完整审计报告。之后重新执行 `/plan-check` 和必要的 `/design-check`。
 
 ## `/audit approve [Plan Ref]`
 
-Implement only the current audit-fix version.
+只执行当前 audit-fix 版本。要求 Status 为 `ready-for-approval`、Needs Reconfirmation 为空，并通过当前版本所需检查。
 
-Require status `ready-for-approval`, an empty `Needs Reconfirmation`, a passing `/plan-check` for the exact version, and a passing `/design-check` when frontend behavior is involved.
-
-Append approval, set status to `approved`, implement, append execution results, and set status to `implemented`. Do not create a new plan. Finish by running `/audit <Plan Ref>` again until the Audit Ledger records `pass`.
+修复后简要更新 Delivery Status，再次执行 `/audit <Plan Ref>`。

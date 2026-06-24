@@ -5,48 +5,41 @@ description: Use when the user invokes /plan-check or asks for architectural and
 
 # Plan Check
 
-All review conclusions, risks, evidence, required changes, reconfirmation items, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, and quoted source text.
-
-## Canonical Plan
-
-Review one canonical Human Plan file. Never create a replacement plan.
-
-- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never review a different version.
-- Read the current version, Original Request, Requirement Baseline, Baseline Amendments, previous version, and existing Review Ledger.
-- Inspect the existing code affected by the current version.
-- Bind the result to the exact `Plan ID` and current version.
-- Append the result to `Review Ledger`; do not edit Plan Versions, baseline, or earlier ledger entries.
-- End the response with the same `Plan Ref`.
-
-If a legacy plan lacks Plan ID and version metadata, add the canonical metadata and ledgers while preserving its existing content as version 1.
+所有产出使用简体中文。代码标识、路径、API 名称和引用原文不翻译。
 
 ## `/plan-check [Plan Ref]`
 
-Check whether the current version:
+深入检查当前版本，但只输出人类需要处理的结论，不展示完整分析过程。
 
-- preserves the original requirement, baseline amendments, and confirmed decisions
-- explicitly accounts for changes from the previous version
-- uses existing pages, components, hooks, services, APIs, utilities, state flows, and data structures
-- integrates with current module boundaries, contracts, ownership, and dependency direction
-- avoids duplicate logic, parallel systems, unnecessary abstractions, and unrelated rewrites
-- covers user-visible behavior, edge cases, compatibility, and regression surface
-- covers runtime, rendering, request, async, cache, storage, schema, query, migration, consistency, security, and reliability impact where relevant
-- is specific enough to implement without guessing
+如果 Plan Ref 的版本不是当前 Version，停止处理。
 
-Append a Review Ledger entry containing:
+Needs Reconfirmation 不为空时不得判定通过。
 
-- reviewer: `/plan-check`
-- reviewed version
-- result: `pass` or `replan required`
-- baseline fit
-- existing-code and architecture fit
-- system and behavior impact
-- required replan changes
-- items needing human reconfirmation
+检查：
 
-Set status to `replan-required` when the result fails. On pass, set status to `design-review-pending` when Frontend Impact is `yes` or `unknown`; otherwise set it to `ready-for-approval`.
+- Requirement Baseline 和已确认决策是否被保留
+- 方案是否真正复用并融入现有代码结构
+- 是否重复造轮子、创建平行逻辑或错误抽象
+- 对模块、接口、状态、数据、缓存、存储和依赖方向的影响
+- 用户行为、边界情况、兼容性和回归风险
+- 性能、安全、可靠性和数据一致性风险
+- 是否具体到可以执行，又没有陷入代码实现细节
 
-If any required change alters the baseline, mark it for human reconfirmation instead of treating it as an ordinary implementation suggestion.
+输出只包含：
 
-Do not rewrite the plan or edit production code. A `replan-required` result must be handled by the originating skill's `replan` command, which creates the next version in the same file.
+- 结论：`通过` 或 `需要 replan`
+- 阻塞执行的关键问题
+- 必须修改的 Plan 内容
+- 需要人类重新确认的事项
+
+通过时只写简短结论，不重复复述 Plan。非阻塞建议不写入 Human Plan。
+
+将结果更新到当前 Plan 的 Review Status，不创建新 Plan，不追加长篇 Review Ledger，不修改 Current Plan。
+
+需要调整时，返回当前阶段对应的 replan：
+
+- development：`/dev replan <Plan Ref>`
+- bug-fix：`/bug replan <Plan Ref>`
+- audit-fix：`/audit replan <Plan Ref>`
+
+通过后，有前端影响则进入 `/design-check <Plan Ref>`，否则 Status 设为 `ready-for-approval`。

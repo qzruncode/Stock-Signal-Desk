@@ -5,51 +5,50 @@ description: Use when the user invokes /idea or has a fuzzy thought, vague probl
 
 # Idea
 
-All generated plans, summaries, decisions, questions, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, and any user text that must remain verbatim.
+所有产出使用简体中文。代码标识、路径、API 名称和必须保留的用户原文不翻译。
 
-## Canonical Plan
+## Human Plan
 
-Use one canonical Human Plan file as the source of truth for the whole workflow.
+Human Plan 用于让人快速审核，不是给 AI 执行的技术清单。
 
-- Create `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md` on the first invocation, regardless of plan length.
-- Keep the same file and `Plan ID` through idea, development, checks, approval, implementation, and audit.
-- Resolve the plan from an explicit path first. Otherwise use the single unambiguous `Plan Ref` in the current conversation. Never guess between multiple plans.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
-- End every response with `Plan Ref: <path>#v<current-version>`.
-- Never rewrite an earlier version or ledger entry. Add a new version for every replan or stage transition.
-- Keep `Original Request` and `Requirement Baseline` unchanged. A baseline change requires explicit human confirmation and an append-only entry under `Baseline Amendments`.
-- Reviews and approvals apply only to the exact version they name. A new version invalidates earlier review and approval results.
+- 一个需求只维护一个 Plan 文件和 Plan ID。
+- Plan 文件只保留当前方案，不累计完整旧版本。
+- Replan 更新当前方案并增加版本号，只记录本轮变化。
+- Requirement Baseline 未经人类明确确认不得改变。
+- 不写代码片段、逐文件改动、底层实现步骤、测试命令或长篇分析。
+- 内容无法保持简洁时，拆分需求，只规划当前可审核阶段。
 
-The file must contain:
+Plan 文件固定为：
 
-- Plan ID, Current Version, Current Stage, Status, Frontend Impact
-- Original Request
+- Plan ID、Version、Status、Frontend Impact
 - Requirement Baseline
-- Baseline Amendments
-- Plan Versions
-- Review Ledger
-- Approval Ledger
-- Execution Ledger
-- Audit Ledger
+- Confirmed Decisions
+- Current Plan
+- Changes Since Last Plan
+- Unchanged Scope
+- Needs Reconfirmation
+- Review Status
+- Delivery Status
+- Revision Notes
 
-Each plan version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
+Revision Notes 每个版本只保留一句变化摘要；多轮后合并较早记录。
 
-If a legacy plan lacks this structure, add the metadata and ledgers without changing its content; preserve the existing plan as version 1.
+如果 Plan Ref 的版本不是当前 Version，停止处理。每次输出都返回当前 Plan Ref。
 
 ## `/idea xxx`
 
-Create version 1 with stage `idea` and status `draft`. Store the user's original wording verbatim, then clarify:
+创建 `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md`，把模糊想法整理为简短需求：
 
-- the real problem and target user
-- current pain and desired outcome
-- possible directions and tradeoffs
-- smallest useful scope
-- open decisions
+- 要解决的问题和目标用户
+- 当前痛点和预期结果
+- 推荐方向和关键取舍
+- 最小可用范围
+- 已确认与待确认决策
 
-Do not write code. Write the complete plan to the canonical file and return only a short summary, the Plan Ref, and the suggested next command.
+不要写代码。聊天中只返回简短摘要、Plan Ref 和下一步。
 
 ## `/idea replan [Plan Ref]`
 
-Read the complete canonical plan and human feedback. Append a new version in the same file.
+在同一文件中更新 Current Plan，增加 Version，保留 Requirement Baseline，并简要填写 Changes Since Last Plan。
 
-Preserve the baseline and confirmed decisions. Put any unconfirmed baseline change under `Needs Reconfirmation`. Set status to `draft`. When the requirement is accepted, suggest `/dev <Plan Ref>` so development continues on the same plan.
+待确认的目标变化放入 Needs Reconfirmation。需求确认后进入 `/dev <Plan Ref>`。

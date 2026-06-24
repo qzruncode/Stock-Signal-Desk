@@ -5,35 +5,28 @@ description: Use when the user invokes /code-scan or asks to find bugs, ineffici
 
 # Code Scan
 
-All scan conclusions, issue descriptions, evidence, priorities, Human Plan content, replan content, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, error messages, and quoted source text.
-
-## Canonical Plan
-
-Use one canonical Human Plan file as the source of truth.
-
-- Create `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md` on the first scan, regardless of length.
-- Keep the same Plan ID when the selected findings move into `/dev`.
-- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
-- End every response with `Plan Ref: <path>#v<current-version>`.
-- Never rewrite earlier versions or ledger entries. Replan by appending a version.
-- Keep Original Request and Requirement Baseline unchanged unless the human explicitly confirms an append-only baseline amendment.
-- Reviews bind to exact versions; new versions require fresh reviews.
-
-The file must carry Plan ID, version/stage/status metadata, Original Request, Requirement Baseline, Baseline Amendments, Plan Versions, Review Ledger, Approval Ledger, Execution Ledger, and Audit Ledger. Each version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
-
-If a legacy plan lacks this structure, add the metadata and ledgers without changing its content; preserve the existing plan as version 1.
+所有产出使用简体中文。代码标识、路径、API 名称、错误信息和引用原文不翻译。
 
 ## `/code-scan`
 
-Scan the current project without editing code. Look across correctness, duplication, efficiency, structure, abstraction, async flow, state, cache, frontend performance, backend contracts, data consistency, security, reliability, and deployment risk.
+扫描项目但不修改代码。内部可以全面检查，Human Plan 只保留最值得优先处理的一组问题。
 
-Create version 1 with stage `code-scan` and status `draft`. Store the scan request verbatim. Prioritize the most serious evidence-backed issues and record affected files, impact, recommended direction, risk, and verification.
+不要输出完整问题库存。只写：
 
-Return the Plan Ref. The human may use `/code-scan replan <Plan Ref>` to adjust priorities or `/dev <Plan Ref>` to continue the selected work in the same file.
+- 最严重的问题及证据
+- 对用户、系统或维护成本的影响
+- 推荐优先级
+- 一个可进入 `/dev` 的连贯修复范围
+- 验收结果
+
+如果问题很多，选择最严重、最相关的一组，其余只做一句简短说明或暂不输出。
+
+创建一个简洁 Plan 文件，只包含：Plan ID、Version、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+
+聊天中只返回摘要、Plan Ref 和下一步。
 
 ## `/code-scan replan [Plan Ref]`
 
-Read the canonical plan and human feedback. Append a new version in the same file.
+根据人类反馈调整优先级和当前修复范围，增加 Version，只记录本轮变化。
 
-Preserve the selected problem baseline. Record priority or scope changes explicitly, put unconfirmed changes under `Needs Reconfirmation`, and set status to `draft`. Do not implement fixes.
+如果 Plan Ref 的版本不是当前 Version，停止处理。不扩写完整扫描报告，不修改代码。确认后进入 `/dev <Plan Ref>`。

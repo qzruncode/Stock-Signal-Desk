@@ -5,54 +5,46 @@ description: Use when the user invokes /dev with a requirement or an accepted Hu
 
 # Dev
 
-All generated Human Plans, replan content, implementation summaries, verification results, and next-step guidance must be written in Simplified Chinese. Preserve code identifiers, file paths, API names, and any user text that must remain verbatim.
+所有产出使用简体中文。代码标识、路径、API 名称和必须保留的用户原文不翻译。
 
-## Canonical Plan
+## Human Plan
 
-Use one canonical Human Plan file as the source of truth for the whole workflow.
+Human Plan 的唯一目标是让人快速判断：需求是否准确、方向是否合理、范围是否可控。
 
-- Create `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md` only when no Plan Ref exists.
-- When a Plan Ref exists, continue that exact file and `Plan ID`; never create a separate development plan.
-- Resolve the plan from an explicit path first. Otherwise use the single unambiguous Plan Ref in the current conversation. Never guess between multiple plans.
-- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
-- End every response with `Plan Ref: <path>#v<current-version>`.
-- Never rewrite an earlier version or ledger entry. Add a new version for every replan or stage transition.
-- Keep `Original Request` and `Requirement Baseline` unchanged. A baseline change requires explicit human confirmation and an append-only `Baseline Amendments` entry.
-- Reviews and approvals apply only to the exact version they name. A new version invalidates earlier results.
+- 沿用已有 Plan Ref；没有时才创建新 Plan。
+- 文件只保留当前方案和简短版本摘要，不追加完整旧 Plan。
+- Requirement Baseline、Confirmed Decisions 和 Unchanged Scope 不得静默改变。
+- 不写代码实现、逐文件修改、类名函数名清单、测试命令或 AI 执行步骤。
+- Current Plan 只描述业务方向、影响范围、用户行为、现有代码融入方式、关键边界和验收结果。
+- 方案过大时拆分为多个可独立审核、开发和验证的阶段。
 
-The file must carry Plan ID, version/stage/status metadata, Original Request, Requirement Baseline, Baseline Amendments, Plan Versions, Review Ledger, Approval Ledger, Execution Ledger, and Audit Ledger. Each version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
+Plan 文件只包含：Plan ID、Version、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
 
-If a legacy plan lacks this structure, add the metadata and ledgers without changing its content; preserve the existing plan as version 1.
+如果 Plan Ref 的版本不是当前 Version，停止处理。每次输出都返回当前 Plan Ref。
 
 ## `/dev xxx`
 
-If `xxx` contains a Plan Ref, read the full file and append a new version with stage `development` and status `review-pending`. Preserve the upstream baseline, decisions, scope, and business direction.
+读取需求或 Plan Ref，检查现有代码后生成当前开发 Human Plan。
 
-If no Plan Ref exists, create the canonical file and version 1 with stage `development` and status `review-pending`. Store the original request verbatim.
+如果来自 `/idea`、`/code-scan` 或 `/arch-check`，继续使用同一个 Plan ID 和文件。增加 Version，更新 Current Plan，不新建开发 Plan。
 
-The current version must describe the goal, business behavior, affected existing structure, reuse and integration direction, user-visible behavior, key edge cases, data/API impact, and verification approach. Do not include low-level construction noise that prevents human review.
-
-Set `Frontend Impact` to `yes`, `no`, or `unknown`. Return the Plan Ref and require `/plan-check <Plan Ref>`, followed by `/design-check <Plan Ref>` when frontend impact is `yes` or `unknown`.
+输出后等待 `/plan-check <Plan Ref>`；Frontend Impact 为 `yes` 或 `unknown` 时，再执行 `/design-check <Plan Ref>`。
 
 ## `/dev replan [Plan Ref]`
 
-Read the canonical plan and all current-version review entries. Append a new version in the same file that applies accepted feedback.
+读取当前 Plan 和检查建议，只更新需要调整的部分。
 
-Do not mutate earlier versions. Preserve the baseline and confirmed decisions. Put any unconfirmed baseline change under `Needs Reconfirmation`. Set status to `review-pending`. The new version must be checked again.
+增加 Version，填写简短的 Changes Since Last Plan，重置 Review Status。不得借 replan 扩大需求或改写 Requirement Baseline。
 
 ## `/dev approve [Plan Ref]`
 
-Implement only the current version of the canonical plan.
+只执行当前版本。执行前确认：
 
-Before editing code, verify:
+- Status 为 `ready-for-approval`
+- Needs Reconfirmation 为空
+- 当前版本 `/plan-check` 已通过
+- 有前端影响时，当前版本 `/design-check` 已通过
 
-- the referenced version is still current
-- status is `ready-for-approval`
-- `Needs Reconfirmation` is empty
-- `/plan-check` passed for that exact version
-- `/design-check` passed for that exact version when frontend impact is `yes`
-- `/design-check` passed or was marked not applicable for that exact version when frontend impact is `unknown`
+复杂任务可以生成 AI 内部执行计划，但不得写回 Human Plan，也不得改变已批准范围。
 
-If any condition fails, do not implement. Report the missing step with the same Plan Ref.
-
-Append approval to `Approval Ledger`, set status to `approved`, implement without silently changing scope, then append changed files and verification results to `Execution Ledger` and set status to `implemented`. Do not create another Human Plan or change the approved version during implementation. Finish by suggesting `/audit <Plan Ref>`.
+完成后只在 Delivery Status 记录简短结果，并进入 `/audit <Plan Ref>`。
