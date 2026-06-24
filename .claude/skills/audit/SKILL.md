@@ -21,6 +21,8 @@ If a legacy plan lacks Plan ID and version metadata, add the canonical metadata 
 
 ## `/audit [Plan Ref]`
 
+Before auditing, require status `implemented` and confirm that `Approval Ledger` and `Execution Ledger` both refer to the current Plan ID and current version. If they do not, stop.
+
 Inspect actual code changes and relevant existing code. Check:
 
 - baseline and approved-plan compliance
@@ -35,11 +37,11 @@ Inspect actual code changes and relevant existing code. Check:
 
 Append an Audit Ledger entry with result `pass` or `fixes required`, findings, evidence, and missing verification.
 
-If it passes, set status to `complete`. If fixes are required, set status to `audit fixes required`, keep the same Plan ID, and suggest `/audit replan <Plan Ref>`.
+If it passes, set status to `complete`. If fixes are required, set status to `audit-fixes-required`, keep the same Plan ID, and suggest `/audit replan <Plan Ref>`.
 
 ## `/audit replan [Plan Ref]`
 
-Append a new version with stage `audit-fix` and status `review pending`. Preserve the original baseline and decisions. Convert accepted audit findings into a focused fix plan, and put any scope or behavior change under `Needs Reconfirmation`.
+Append a new version with stage `audit-fix` and status `review-pending`. Preserve the original baseline and decisions. Convert accepted audit findings into a focused fix plan, and put any scope or behavior change under `Needs Reconfirmation`.
 
 The new version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
 
@@ -49,6 +51,6 @@ The new version must repeat `/plan-check` and, when relevant, `/design-check`.
 
 Implement only the current audit-fix version.
 
-Require an empty `Needs Reconfirmation`, a passing `/plan-check` for the exact version, and a passing or not-applicable `/design-check` when frontend behavior is involved.
+Require status `ready-for-approval`, an empty `Needs Reconfirmation`, a passing `/plan-check` for the exact version, and a passing `/design-check` when frontend behavior is involved.
 
 Append approval, set status to `approved`, implement, append execution results, and set status to `implemented`. Do not create a new plan. Finish by running `/audit <Plan Ref>` again until the Audit Ledger records `pass`.

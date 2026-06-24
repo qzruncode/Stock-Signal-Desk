@@ -24,9 +24,9 @@ If a legacy plan lacks this structure, add the metadata and ledgers without chan
 
 ## `/dev xxx`
 
-If `xxx` contains a Plan Ref, read the full file and append a new version with stage `development` and status `review pending`. Preserve the upstream baseline, decisions, scope, and business direction.
+If `xxx` contains a Plan Ref, read the full file and append a new version with stage `development` and status `review-pending`. Preserve the upstream baseline, decisions, scope, and business direction.
 
-If no Plan Ref exists, create the canonical file and version 1 with stage `development` and status `review pending`. Store the original request verbatim.
+If no Plan Ref exists, create the canonical file and version 1 with stage `development` and status `review-pending`. Store the original request verbatim.
 
 The current version must describe the goal, business behavior, affected existing structure, reuse and integration direction, user-visible behavior, key edge cases, data/API impact, and verification approach. Do not include low-level construction noise that prevents human review.
 
@@ -36,7 +36,7 @@ Set `Frontend Impact` to `yes`, `no`, or `unknown`. Return the Plan Ref and requ
 
 Read the canonical plan and all current-version review entries. Append a new version in the same file that applies accepted feedback.
 
-Do not mutate earlier versions. Preserve the baseline and confirmed decisions. Put any unconfirmed baseline change under `Needs Reconfirmation`. Set status to `review pending`. The new version must be checked again.
+Do not mutate earlier versions. Preserve the baseline and confirmed decisions. Put any unconfirmed baseline change under `Needs Reconfirmation`. Set status to `review-pending`. The new version must be checked again.
 
 ## `/dev approve [Plan Ref]`
 
@@ -45,9 +45,11 @@ Implement only the current version of the canonical plan.
 Before editing code, verify:
 
 - the referenced version is still current
+- status is `ready-for-approval`
 - `Needs Reconfirmation` is empty
 - `/plan-check` passed for that exact version
-- `/design-check` passed or was marked not applicable for that exact version when frontend impact is `yes` or `unknown`
+- `/design-check` passed for that exact version when frontend impact is `yes`
+- `/design-check` passed or was marked not applicable for that exact version when frontend impact is `unknown`
 
 If any condition fails, do not implement. Report the missing step with the same Plan Ref.
 

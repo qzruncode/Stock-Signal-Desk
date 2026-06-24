@@ -26,7 +26,7 @@ If a legacy plan lacks this structure, add the metadata and ledgers without chan
 
 The bug is already located. Read supplied diagnosis, evidence, and any Plan Ref.
 
-Create version 1 with stage `bug-fix`, or append a bug-fix version to the referenced plan. Set status to `review pending`. Store a new original request verbatim, or preserve the existing one. Record expected behavior, broken behavior, established root cause and evidence, affected existing code, fix direction, regression surface, and verification approach.
+Create version 1 with stage `bug-fix`, or append a bug-fix version to the referenced plan. Set status to `review-pending`. Store a new original request verbatim, or preserve the existing one. Record expected behavior, broken behavior, established root cause and evidence, affected existing code, fix direction, regression surface, and verification approach.
 
 Do not edit code. Return the Plan Ref and require `/plan-check <Plan Ref>`, followed by `/design-check <Plan Ref>` when frontend behavior is affected.
 
@@ -34,12 +34,12 @@ Do not edit code. Return the Plan Ref and require `/plan-check <Plan Ref>`, foll
 
 Read the canonical plan and all current-version reviews. Append a new version in the same file.
 
-Keep the fix limited to the identified bug. Preserve expected behavior and confirmed scope. Put behavior changes or unrelated cleanup under `Needs Reconfirmation`. Set status to `review pending`. The new version must be checked again.
+Keep the fix limited to the identified bug. Preserve expected behavior and confirmed scope. Put behavior changes or unrelated cleanup under `Needs Reconfirmation`. Set status to `review-pending`. The new version must be checked again.
 
 ## `/bug approve [Plan Ref]`
 
 Implement only the current version.
 
-Require an empty `Needs Reconfirmation`, a passing `/plan-check` for the exact version, and a passing or not-applicable `/design-check` for that version when frontend behavior is affected.
+Require status `ready-for-approval`, an empty `Needs Reconfirmation`, a passing `/plan-check` for the exact version, and a passing `/design-check` for that version when frontend behavior is affected.
 
 Append approval to `Approval Ledger`, set status to `approved`, apply only the approved fix, then append changed files plus verification results to `Execution Ledger` and set status to `implemented`. Do not create another plan or broaden the fix during implementation. Finish by suggesting `/audit <Plan Ref>`.

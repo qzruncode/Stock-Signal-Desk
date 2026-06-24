@@ -21,7 +21,7 @@ If a legacy plan lacks Plan ID and version metadata, add the canonical metadata 
 
 ## `/design-check [Plan Ref]`
 
-If there is no frontend or user-interaction impact, append a `not applicable` result for the current version.
+If there is no frontend or user-interaction impact, append a `not-applicable` result for the current version. Do not use `not-applicable` when Frontend Impact is `yes`.
 
 Otherwise inspect the affected pages, components, styles, layout, and interaction patterns. Check:
 
@@ -38,12 +38,12 @@ Append a Review Ledger entry containing:
 
 - reviewer: `/design-check`
 - reviewed version
-- result: `pass`, `replan required`, or `not applicable`
+- result: `pass`, `replan-required`, or `not-applicable`
 - existing-UI fit
 - interaction and visual concerns
 - required replan changes
 - items needing human reconfirmation
 
-Set status to `replan required` when the result fails. Set it to `ready for approval` on `pass` or `not applicable`.
+Set status to `replan-required` when the result fails. Set it to `ready-for-approval` on `pass` or `not-applicable`.
 
-Do not rewrite the plan or edit production code. A `replan required` result returns to the originating skill's `replan` command, which appends the next version to the same file.
+Do not rewrite the plan or edit production code. A `replan-required` result returns to the originating skill's `replan` command, which appends the next version to the same file.

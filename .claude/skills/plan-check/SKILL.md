@@ -43,8 +43,8 @@ Append a Review Ledger entry containing:
 - required replan changes
 - items needing human reconfirmation
 
-Set status to `replan required` when the result fails. On pass, set status to `design review pending` when Frontend Impact is `yes` or `unknown`; otherwise set it to `ready for approval`.
+Set status to `replan-required` when the result fails. On pass, set status to `design-review-pending` when Frontend Impact is `yes` or `unknown`; otherwise set it to `ready-for-approval`.
 
 If any required change alters the baseline, mark it for human reconfirmation instead of treating it as an ordinary implementation suggestion.
 
-Do not rewrite the plan or edit production code. A `replan required` result must be handled by the originating skill's `replan` command, which creates the next version in the same file.
+Do not rewrite the plan or edit production code. A `replan-required` result must be handled by the originating skill's `replan` command, which creates the next version in the same file.
