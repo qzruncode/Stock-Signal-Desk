@@ -1,4 +1,4 @@
 interface:
   display_name: "Audit"
   short_description: "Audit and loop fixes on the same canonical plan."
-  default_prompt: "/audit 审查刚刚 AI 写的代码"
+  default_prompt: "/audit <Plan Ref>"

@@ -7,7 +7,7 @@ description: Use when the user invokes /code-scan or asks to find bugs, ineffici
 
 所有产出使用简体中文。代码标识、路径、API 名称、错误信息和引用原文不翻译。
 
-禁止修改项目源码，只允许扫描代码并创建或更新 Human Plan。
+禁止修改项目源码和其他项目文件，只允许扫描代码并写入 `docs/human-plans/` 下的当前 Human Plan。
 
 ## `/code-scan`
 
@@ -27,10 +27,14 @@ description: Use when the user invokes /code-scan or asks to find bugs, ineffici
 
 Owner Skill 设置为 `code-scan`，Status 设置为 `draft`。
 
-聊天中只返回摘要、Plan Ref 和下一步。
+凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。新建 Plan 不要求输入 Plan Ref。
+
+写入后必须在聊天中直接展示简洁的 Requirement Baseline、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref，然后停止。不得只显示预览入口或只说已生成。
 
 ## `/code-scan replan [Plan Ref]`
 
 根据人类反馈调整优先级和当前修复范围，增加 Version，只记录本轮变化。
 
-如果 Plan Ref 的版本不是当前 Version，停止处理。保持 Owner Skill 为 `code-scan`、Status 为 `draft`。不扩写完整扫描报告，不修改代码。确认后进入 `/dev <Plan Ref>`。
+只在用户明确调用 `/code-scan replan <当前 Plan Ref>` 时更新；普通自然语言反馈不得触发写入。要求 Owner Skill 为 `code-scan`、Status 为 `draft`。
+
+保持 Owner Skill 为 `code-scan`、Status 为 `draft`。不扩写完整扫描报告，不修改代码。重新展示 Human Plan 后停止；确认后只返回 `/dev <当前 Plan Ref>`，等待用户显式调用。

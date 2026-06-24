@@ -7,7 +7,7 @@ description: Use when the user invokes /idea or has a fuzzy thought, vague probl
 
 所有产出使用简体中文。代码标识、路径、API 名称和必须保留的用户原文不翻译。
 
-禁止修改项目源码，只允许创建或更新 Human Plan。
+禁止修改项目源码和其他项目文件，只允许写入 `docs/human-plans/` 下的当前 Human Plan。
 
 ## Human Plan
 
@@ -37,7 +37,9 @@ Revision Notes 每个版本只保留一句变化摘要；多轮后合并较早�
 
 Review Status 只保留当前版本的 `plan-check` 和 `design-check` 结果；Delivery Status 只保留当前版本的 approval、implementation 和 audit 结果，结果必须标明 Version。
 
-如果 Plan Ref 的版本不是当前 Version，停止处理。每次输出都返回当前 Plan Ref。
+凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。新建 Plan 不要求输入 Plan Ref。每次输出都返回当前 Plan Ref。
+
+写入 Plan 文件后，必须在聊天中直接展示简洁的 Requirement Baseline、Confirmed Decisions、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref。不得只显示预览入口或只说已生成。
 
 ## `/idea xxx`
 
@@ -49,10 +51,12 @@ Review Status 只保留当前版本的 `plan-check` 和 `design-check` 结果；
 - 最小可用范围
 - 已确认与待确认决策
 
-不要写代码。聊天中只返回简短摘要、Plan Ref 和下一步。
+不要写代码。完整展示 Human Plan 后停止，并给出 Plan Ref 和下一步。
 
 ## `/idea replan [Plan Ref]`
 
 在同一文件中更新 Current Plan，增加 Version，保留 Requirement Baseline，并简要填写 Changes Since Last Plan。
 
-保持 Owner Skill 为 `idea`、Status 为 `draft`。待确认的目标变化放入 Needs Reconfirmation。需求确认后进入 `/dev <Plan Ref>`。
+只在用户明确调用 `/idea replan <当前 Plan Ref>` 时更新；普通自然语言反馈不得触发写入。要求 Owner Skill 为 `idea`、Status 为 `draft`。
+
+保持 Owner Skill 为 `idea`、Status 为 `draft`。待确认的目标变化放入 Needs Reconfirmation。重新展示 Human Plan 后停止；需求确认后只返回 `/dev <当前 Plan Ref>`，等待用户显式调用。
