@@ -1,42 +1,53 @@
 ---
 name: idea
-description: Project-local idea shaping workflow. Use when the user invokes /idea or has a fuzzy thought, vague problem, product concern, or goal and needs a human-readable requirement Human Plan before /dev.
+description: Use when the user invokes /idea or has a fuzzy thought, vague problem, product concern, or goal that is not yet a concrete requirement.
 ---
 
 # Idea
 
+## Canonical Plan
+
+Use one canonical Human Plan file as the source of truth for the whole workflow.
+
+- Create `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md` on the first invocation, regardless of plan length.
+- Keep the same file and `Plan ID` through idea, development, checks, approval, implementation, and audit.
+- Resolve the plan from an explicit path first. Otherwise use the single unambiguous `Plan Ref` in the current conversation. Never guess between multiple plans.
+- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
+- End every response with `Plan Ref: <path>#v<current-version>`.
+- Never rewrite an earlier version or ledger entry. Add a new version for every replan or stage transition.
+- Keep `Original Request` and `Requirement Baseline` unchanged. A baseline change requires explicit human confirmation and an append-only entry under `Baseline Amendments`.
+- Reviews and approvals apply only to the exact version they name. A new version invalidates earlier review and approval results.
+
+The file must contain:
+
+- Plan ID, Current Version, Current Stage, Status, Frontend Impact
+- Original Request
+- Requirement Baseline
+- Baseline Amendments
+- Plan Versions
+- Review Ledger
+- Approval Ledger
+- Execution Ledger
+- Audit Ledger
+
+Each plan version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
+
+If a legacy plan lacks this structure, add the metadata and ledgers without changing its content; preserve the existing plan as version 1.
+
 ## `/idea xxx`
 
-Help the human turn a vague thought or problem into a concrete, discussable, implementable requirement Human Plan.
+Create version 1 with stage `idea` and status `draft`. Store the user's original wording verbatim, then clarify:
 
-Do not write code.
-
-Work by clarifying:
-
-- the real problem
-- target user or workflow
-- current pain
-- desired outcome
-- possible solution directions
-- tradeoffs
-- smallest useful version
+- the real problem and target user
+- current pain and desired outcome
+- possible directions and tradeoffs
+- smallest useful scope
 - open decisions
 
-Human Plan must include:
+Do not write code. Write the complete plan to the canonical file and return only a short summary, the Plan Ref, and the suggested next command.
 
-- Requirement Baseline: original user intent, problem framing, desired outcome, user value, and non-negotiable behavior
-- Confirmed Decisions: choices already made by the human
-- Current Plan: possible approaches, recommended direction, concrete requirement draft, open questions, and suggested next step
-- Changes Since Last Plan: what changed in this revision
-- Unchanged Scope: what must stay the same
-- Needs Reconfirmation: anything that changes the baseline or user goal
+## `/idea replan [Plan Ref]`
 
-After outputting the Human Plan, wait for feedback.
+Read the complete canonical plan and human feedback. Append a new version in the same file.
 
-## `/idea replan`
-
-Rewrite the idea Human Plan using the user's feedback.
-
-Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
-
-After outputting the revised Human Plan, wait for feedback. The agreed Human Plan should be ready to feed into `/dev`.
+Preserve the baseline and confirmed decisions. Put any unconfirmed baseline change under `Needs Reconfirmation`. Set status to `draft`. When the requirement is accepted, suggest `/dev <Plan Ref>` so development continues on the same plan.

@@ -1,55 +1,54 @@
 ---
 name: audit
-description: Project-local post-implementation code audit. Use when the user invokes /audit to review AI-written code and produce a human-readable fix plan before approved follow-up changes.
+description: Use when the user invokes /audit or asks to review completed AI-written changes against the approved requirement, existing codebase, and engineering quality.
 ---
 
 # Audit
 
-## `/audit`
+## Canonical Plan
 
-Review the code written by AI after implementation.
+Audit the same canonical Human Plan used for approval and implementation. Never create a separate audit plan.
 
-Focus on whether the change actually fits the approved Human Plan and the existing codebase.
+- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
+- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
+- Read Original Request, Requirement Baseline, all amendments, the approved version, approval entry, and execution entry.
+- Bind audit findings to the exact Plan ID and implemented version.
+- Append findings to `Audit Ledger`; do not rewrite prior versions or ledgers.
+- If fixes are needed, `/audit replan` appends the next version in the same file.
+- End every response with the same Plan Ref.
 
-Check:
+If a legacy plan lacks Plan ID and version metadata, add the canonical metadata and ledgers while preserving its existing content as version 1.
 
-- baseline match: implemented behavior still matches the Requirement Baseline and confirmed decisions
-- plan match: implemented behavior matches the approved Human Plan
-- existing code fit: code reuses existing components, hooks, services, utilities, contracts, and patterns where appropriate
-- architecture fit: layering, module boundaries, dependency direction, abstraction ownership
-- code quality: duplication, complexity, naming, file size, component/service split, maintainability
-- behavior correctness: user-visible behavior, edge cases, backward compatibility, regression surface
-- frontend quality: render cost, state ownership, data fetching, responsive behavior, style consistency
-- backend quality: API contract, validation, error handling, async/task flow, external dependency handling
-- data safety: schema/query impact, consistency, idempotency, stale data, cache/storage behavior
-- security and reliability: auth boundary, input safety, secrets, retries, timeouts, fallback behavior
-- verification: whether the right checks were run and whether gaps remain
+## `/audit [Plan Ref]`
 
-Output:
+Inspect actual code changes and relevant existing code. Check:
 
-- conclusion: 通过 / 需要返工
-- main risks
-- code issues
-- missing verification
-- Human Plan for required fixes, if follow-up changes are needed:
-  - Requirement Baseline: original approved baseline and confirmed decisions the code must still satisfy
-  - Current Plan: required follow-up fixes
-  - Changes Since Last Plan: what the audit fix plan changes
-  - Unchanged Scope: what must stay the same
-  - Needs Reconfirmation: anything that would change the Requirement Baseline
+- baseline and approved-plan compliance
+- reuse of existing components, hooks, services, utilities, contracts, and patterns
+- layering, ownership, dependency direction, abstraction, duplication, and maintainability
+- behavior, edge cases, compatibility, and regression risk
+- frontend rendering, state, data fetching, responsiveness, and style consistency
+- backend contracts, validation, errors, async flow, and external dependencies
+- schema, query, consistency, idempotency, cache, storage, and stale-data behavior
+- authentication, input safety, secrets, retries, timeouts, fallback, and availability
+- verification completeness
 
-After outputting the audit result and fix Human Plan, wait for feedback or `/audit approve`.
+Append an Audit Ledger entry with result `pass` or `fixes required`, findings, evidence, and missing verification.
 
-## `/audit approve`
+If it passes, set status to `complete`. If fixes are required, set status to `audit fixes required`, keep the same Plan ID, and suggest `/audit replan <Plan Ref>`.
 
-Implement the approved audit fix plan.
+## `/audit replan [Plan Ref]`
 
-Apply only the approved follow-up fixes, verify them, and finish with a short summary of changed files, verification result, and remaining risk.
+Append a new version with stage `audit-fix` and status `review pending`. Preserve the original baseline and decisions. Convert accepted audit findings into a focused fix plan, and put any scope or behavior change under `Needs Reconfirmation`.
 
-## `/audit replan`
+The new version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
 
-Rewrite the audit fix Human Plan using the user's feedback.
+The new version must repeat `/plan-check` and, when relevant, `/design-check`.
 
-Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
+## `/audit approve [Plan Ref]`
 
-After outputting the revised Human Plan, wait for feedback or `/audit approve`.
+Implement only the current audit-fix version.
+
+Require an empty `Needs Reconfirmation`, a passing `/plan-check` for the exact version, and a passing or not-applicable `/design-check` when frontend behavior is involved.
+
+Append approval, set status to `approved`, implement, append execution results, and set status to `implemented`. Do not create a new plan. Finish by running `/audit <Plan Ref>` again until the Audit Ledger records `pass`.

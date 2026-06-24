@@ -1,36 +1,49 @@
 ---
 name: design-check
-description: Project-local frontend design and UX review. Use when the user invokes /design-check or asks to review whether a Human Plan or page change will produce ugly UI, poor interaction, inconsistent style, or hard-to-use frontend behavior.
+description: Use when the user invokes /design-check or a proposed frontend change needs visual, interaction, consistency, responsive, or usability review before implementation.
 ---
 
 # Design Check
 
-## `/design-check`
+## Canonical Plan
 
-Review the current Human Plan or proposed frontend change from a product designer and frontend engineer perspective before implementation.
+Review the same canonical Human Plan already used by the workflow. Never create a design plan.
 
-Before judging the plan, inspect the Requirement Baseline and the existing page, components, styles, layout patterns, and interaction patterns that the change would touch.
+- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
+- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never review a different version.
+- Require a passing `/plan-check` entry for the current version before reviewing design.
+- Read the current version, Requirement Baseline, previous reviews, and existing frontend code.
+- Bind the result to the exact Plan ID and current version.
+- Append the result to `Review Ledger`; do not edit Plan Versions or earlier entries.
+- End the response with the same Plan Ref.
 
-Check:
+If a legacy plan lacks Plan ID and version metadata, add the canonical metadata and ledgers while preserving its existing content as version 1.
 
-- baseline fit: whether the design keeps the original user goal, user path, and confirmed behavior intact
-- visual fit: whether the change matches the existing product style, spacing, density, typography, color, and component patterns
-- interaction fit: whether the user path is clear, efficient, and not mentally heavy
-- information design: whether the page shows the right information hierarchy, avoids clutter, and keeps key decisions easy to scan
-- responsive behavior: whether desktop and mobile layouts remain usable
-- state design: loading, empty, error, disabled, success, long-running, and partial-data states
-- component reuse: whether existing UI components or patterns should be reused instead of inventing a new look
-- page consistency: whether similar pages or features will feel like one product
-- accessibility: readable text, usable controls, keyboard/focus behavior where relevant
-- implementation risk: whether the plan is likely to create one-off CSS, fragile layout, nested cards, awkward spacing, or inconsistent controls
+## `/design-check [Plan Ref]`
 
-Output:
+If there is no frontend or user-interaction impact, append a `not applicable` result for the current version.
 
-- conclusion: 可执行 / 需要重写设计方案
-- baseline fit
-- existing UI fit
-- interaction concerns
-- visual concerns
-- concrete design replan suggestions
+Otherwise inspect the affected pages, components, styles, layout, and interaction patterns. Check:
 
-If the plan is likely to produce ugly, inconsistent, or hard-to-use UI, mark it as `需要重写设计方案` and say what the next Human Plan should change.
+- visual consistency, hierarchy, spacing, density, typography, color, and control patterns
+- clarity and efficiency of the user path
+- information priority and scanability
+- loading, empty, error, disabled, success, long-running, and partial-data states
+- desktop and mobile behavior
+- component reuse and consistency with similar features
+- accessibility and focus behavior
+- risk of one-off CSS, fragile layout, nested cards, awkward spacing, or inconsistent controls
+
+Append a Review Ledger entry containing:
+
+- reviewer: `/design-check`
+- reviewed version
+- result: `pass`, `replan required`, or `not applicable`
+- existing-UI fit
+- interaction and visual concerns
+- required replan changes
+- items needing human reconfirmation
+
+Set status to `replan required` when the result fails. Set it to `ready for approval` on `pass` or `not applicable`.
+
+Do not rewrite the plan or edit production code. A `replan required` result returns to the originating skill's `replan` command, which appends the next version to the same file.

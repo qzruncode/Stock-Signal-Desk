@@ -1,56 +1,50 @@
 ---
 name: plan-check
-description: Project-local Human Plan review. Use when the user invokes /plan-check or asks to review a Human Plan before implementation.
+description: Use when the user invokes /plan-check or asks for architectural and code-impact review of a Human Plan before implementation.
 ---
 
 # Plan Check
 
-## `/plan-check`
+## Canonical Plan
 
-Review the current Human Plan as an architect before implementation.
+Review one canonical Human Plan file. Never create a replacement plan.
 
-First identify what kind of Human Plan it is:
+- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
+- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never review a different version.
+- Read the current version, Original Request, Requirement Baseline, Baseline Amendments, previous version, and existing Review Ledger.
+- Inspect the existing code affected by the current version.
+- Bind the result to the exact `Plan ID` and current version.
+- Append the result to `Review Ledger`; do not edit Plan Versions, baseline, or earlier ledger entries.
+- End the response with the same `Plan Ref`.
 
-- idea plan: turns a vague thought into a concrete requirement
-- implementation plan: prepares a product/code change for `/dev`
-- bug fix plan: prepares a fix for an already identified bug
-- audit fix plan: prepares follow-up fixes after `/audit`
-- code scan plan: prioritizes existing code problems for later `/dev`
-- mature-solution plan: compares current business/code/architecture with proven solutions
+If a legacy plan lacks Plan ID and version metadata, add the canonical metadata and ledgers while preserving its existing content as version 1.
 
-If the plan would change code, inspect the existing code that the plan would touch. The review must compare the plan against current project structure, not only against the written requirement. For early idea plans, focus on whether the problem and requirement are concrete enough to become a later `/dev` Human Plan.
+## `/plan-check [Plan Ref]`
 
-Check:
+Check whether the current version:
 
-- baseline preservation: whether the plan preserves the Requirement Baseline and confirmed decisions
-- replan delta: whether changes since the previous plan are explicit
-- reconfirmation: whether baseline-changing ideas are marked as `Needs Reconfirmation`
-- plan type fit: whether the plan contains the right information for its type and next step
-- existing foundation: whether the project already has pages, components, hooks, services, APIs, utilities, state flows, or data structures that should be reused
-- integration fit: whether the new logic fits into existing module boundaries, naming, contracts, state ownership, and data flow
-- duplication risk: whether the plan creates parallel logic instead of extending or reusing existing code
-- abstraction fit: whether shared behavior belongs in an existing abstraction or needs a small new one
-- system impact: affected modules, pages, APIs, jobs, data flow, state, cache, and storage
-- architecture fit: layering, module boundaries, dependency direction, abstraction ownership
-- code impact: reuse, duplication, component/service split, complexity, maintainability
-- behavior impact: user-visible changes, edge cases, backward compatibility, regression surface
-- runtime impact: performance, request volume, rendering cost, async behavior, failure handling
-- data impact: schema, query, migration, idempotency, consistency, stale data risk
-- safety impact: validation, auth boundary, secrets, injection, unsafe file/network access
-- execution risk: whether the plan can be implemented without guessing or broad unrelated rewrites
-- prioritization quality: for scan/audit plans, whether the most serious issues are selected first and supported by evidence
-- reference quality: for mature-solution plans, whether external references are relevant and translated into this project's context
+- preserves the original requirement, baseline amendments, and confirmed decisions
+- explicitly accounts for changes from the previous version
+- uses existing pages, components, hooks, services, APIs, utilities, state flows, and data structures
+- integrates with current module boundaries, contracts, ownership, and dependency direction
+- avoids duplicate logic, parallel systems, unnecessary abstractions, and unrelated rewrites
+- covers user-visible behavior, edge cases, compatibility, and regression surface
+- covers runtime, rendering, request, async, cache, storage, schema, query, migration, consistency, security, and reliability impact where relevant
+- is specific enough to implement without guessing
 
-Output:
+Append a Review Ledger entry containing:
 
-- plan type
-- conclusion: 可执行 / 需要重写 Human Plan
+- reviewer: `/plan-check`
+- reviewed version
+- result: `pass` or `replan required`
 - baseline fit
-- replan delta
-- needs reconfirmation
-- existing code fit
-- architecture concerns
-- code impact concerns
-- concrete replan suggestions
+- existing-code and architecture fit
+- system and behavior impact
+- required replan changes
+- items needing human reconfirmation
 
-If the plan ignores existing code that should be reused, mark it as `需要重写 Human Plan` and say exactly which existing structure the next plan should build on.
+Set status to `replan required` when the result fails. On pass, set status to `design review pending` when Frontend Impact is `yes` or `unknown`; otherwise set it to `ready for approval`.
+
+If any required change alters the baseline, mark it for human reconfirmation instead of treating it as an ordinary implementation suggestion.
+
+Do not rewrite the plan or edit production code. A `replan required` result must be handled by the originating skill's `replan` command, which creates the next version in the same file.

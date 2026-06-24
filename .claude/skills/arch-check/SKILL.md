@@ -1,50 +1,37 @@
 ---
 name: arch-check
-description: Project-local mature-solution check with external GitHub research. Use when the user invokes /arch-check or asks whether the project is reinventing wheels, missing mature business/code/architecture solutions, or diverging from proven open-source patterns.
+description: Use when the user invokes /arch-check or asks whether current business logic, product behavior, code, or architecture is reinventing wheels or diverging from mature solutions.
 ---
 
 # Arch Check
 
+## Canonical Plan
+
+Use one canonical Human Plan file as the source of truth.
+
+- Create `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md` on the first check, regardless of length.
+- Keep the same Plan ID when the recommendation moves into `/dev`.
+- Resolve an explicit Plan Ref first. Otherwise use the single unambiguous Plan Ref in the current conversation.
+- If the referenced version differs from `Current Version`, stop and report a stale Plan Ref. Never silently switch versions.
+- End every response with `Plan Ref: <path>#v<current-version>`.
+- Never rewrite earlier versions or ledger entries. Replan by appending a version.
+- Keep Original Request and Requirement Baseline unchanged unless the human explicitly confirms an append-only baseline amendment.
+- Reviews bind to exact versions; new versions require fresh reviews.
+
+The file must carry Plan ID, version/stage/status metadata, Original Request, Requirement Baseline, Baseline Amendments, Plan Versions, Review Ledger, Approval Ledger, Execution Ledger, and Audit Ledger. Each version must contain `Confirmed Decisions`, `Current Plan`, `Changes Since Previous Version`, `Unchanged Scope`, and `Needs Reconfirmation`.
+
+If a legacy plan lacks this structure, add the metadata and ledgers without changing its content; preserve the existing plan as version 1.
+
 ## `/arch-check`
 
-Inspect the current project and produce a Human Plan based on mature solutions.
+Inspect local code first, then use available network or GitHub MCP tools to compare the relevant business workflow, product behavior, code, framework usage, data flow, architecture, reliability, and security design with mature solutions.
 
-Do not edit code.
+Create version 1 with stage `arch-check` and status `draft`. Store the check request verbatim. Record local evidence, relevant external references, the recommended direction, how it translates into this project, migration risk, and verification.
 
-Use local code first, then use available network/GitHub MCP tools to inspect mature open-source solutions or references relevant to the business, product, code, or architecture problem.
+Do not edit code. Return the Plan Ref. The human may use `/arch-check replan <Plan Ref>` or `/dev <Plan Ref>` so implementation continues in the same file.
 
-Check:
+## `/arch-check replan [Plan Ref]`
 
-- business workflow: whether the product logic can follow a mature workflow instead of custom ad hoc rules
-- code implementation: whether existing libraries, patterns, or framework features solve what the code is hand-rolling
-- product behavior: whether mature products handle the same user problem more clearly
-- frontend/backend boundaries
-- module layering and dependency direction
-- API and service contracts
-- state, task, cache, and data flow
-- database/schema/query architecture
-- async, retry, fallback, and reliability design
-- security boundaries
-- scalability and maintainability
-- where this project reinvents wheels or diverges from mature solutions
+Read the canonical plan and human feedback. Append a new version in the same file.
 
-Human Plan must include:
-
-- Requirement Baseline: current business/code/architecture problem, local evidence, and why mature-solution alignment matters
-- Confirmed Decisions: reference direction or migration scope already approved by the human
-- Current Plan: mature reference projects/libraries/products/patterns, recommended direction, migration path, risk, verification approach, and recommended next `/dev` target
-- Changes Since Last Plan: what changed in this revision
-- Unchanged Scope: what must stay the same
-- Needs Reconfirmation: anything that changes the business goal, mature-solution direction, or migration scope
-
-Include links or repository names for external references used.
-
-After outputting the Human Plan, wait for feedback.
-
-## `/arch-check replan`
-
-Rewrite the mature-solution Human Plan using the user's feedback.
-
-Preserve the Requirement Baseline unless the user explicitly changes it. Show what changed since the previous plan and what still stays the same.
-
-After outputting the revised Human Plan, wait for feedback. The agreed Human Plan should be ready to feed into `/dev`.
+Preserve the accepted problem and reference direction. Record recommendation or migration-scope changes explicitly, put unconfirmed changes under `Needs Reconfirmation`, and set status to `draft`. Do not implement changes.
