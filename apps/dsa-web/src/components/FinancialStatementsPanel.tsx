@@ -4,7 +4,7 @@ import type {
   BalanceSheetItem,
   IncomeStatementItem,
   CashflowItem,
-} from '../api/financials';
+} from '../api/financialStatements';
 import { cn } from '../utils/cn';
 
 // ---------------------------------------------------------------------------

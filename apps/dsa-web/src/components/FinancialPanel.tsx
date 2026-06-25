@@ -1,6 +1,6 @@
 import React from 'react';
 import { Calculator } from 'lucide-react';
-import type { FinancialItem } from '../api/financials';
+import type { FinancialItem } from '../api/financialsCore';
 import { cn } from '../utils/cn';
 
 // ---------------------------------------------------------------------------

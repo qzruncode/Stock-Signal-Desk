@@ -1,7 +1,12 @@
 import React from 'react';
 import { AlertTriangle, CheckCircle2, FileQuestion, Megaphone, Newspaper, Smile, Frown, FileText, TrendingUp } from 'lucide-react';
 import { cn } from '../utils/cn';
-import { type NewsResponse, type AnnouncementsResponse, type SentimentResponse, type ResearchReportResponse, type SocialSentimentResponse, type RiskEventsResponse } from '../api/financials';
+import { type NewsResponse } from '../api/news';
+import { type AnnouncementsResponse } from '../api/announcements';
+import { type SentimentResponse } from '../api/sentiment';
+import { type ResearchReportResponse } from '../api/researchReports';
+import { type SocialSentimentResponse } from '../api/socialSentiment';
+import { type RiskEventsResponse } from '../api/riskEvents';
 
 // ---------------------------------------------------------------------------
 // Formatters

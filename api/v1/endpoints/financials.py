@@ -15,6 +15,7 @@ and per-share metrics. Per-day cache since financial data changes quarterly.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -22,6 +23,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Query
 
 logger = logging.getLogger(__name__)
@@ -4099,72 +4101,59 @@ def _content_is_stale(items: list[dict], max_age_days: int, keys: list[str]) -> 
     return parsed < (datetime.now() - timedelta(days=max_age_days))
 
 
-def _fetch_social_sentiment(symbol: str, days: int) -> dict:
-    """获取社交媒体讨论热度和情绪。
+def _resolve_post_publish_time(update_time: str, now: datetime | None = None) -> datetime | None:
+    """Parse East Money guba post timestamp.
 
-    数据源:
-      1. 东方财富股吧 — 帖子列表 (标题+阅读+评论)
-      2. 东方财富千股千评 — 每日评分趋势
-      3. jieba 分词 + 金融情绪词典 — NLP 情绪分析
+    Format examples: ``"06-01 08:00"`` (no year) or ``"2025-12-31"`` (with year).
+
+    For year-less timestamps we anchor to the current year. If the resulting
+    datetime appears to be in the future, only roll back to the previous year
+    when the offset exceeds 12 hours — this prevents clock skew on Jan/early-Jan
+    from pushing recent posts back a full year.
     """
-    import time as _time
-    import re as _re
-    import requests as _requests
-    import akshare as ak
+    if now is None:
+        now = datetime.now()
+    date_match = re.match(r'(\d{2})-(\d{2})\s+(\d{2}):(\d{2})', update_time)
+    if date_match:
+        month, day, hour, minute = date_match.groups()
+        try:
+            pub_dt = datetime(now.year, int(month), int(day), int(hour), int(minute))
+        except ValueError:
+            return None
+        if pub_dt - now > timedelta(hours=12):
+            pub_dt = pub_dt.replace(year=now.year - 1)
+        return pub_dt
+    return _parse_date(update_time)
 
-    t0 = _time.time()
-    code = _normalize_symbol(symbol)
+
+async def _fetch_guba_posts_async(
+    client: httpx.AsyncClient,
+    code: str,
+    cutoff: datetime,
+    headers: dict,
+) -> tuple[list[dict], list[str]]:
+    items: list[dict] = []
     errors: list[str] = []
-    cutoff = datetime.now() - timedelta(days=days)
-
-    def _is_recent(d) -> bool:
-        if d is None:
-            return True
-        return d >= cutoff
-
-    # ----------------------------------------------------------------
-    # 1. 东方财富股吧帖子
-    # ----------------------------------------------------------------
-    guba_items: list[dict] = []
     try:
         url = f"https://guba.eastmoney.com/list,{code},1,f.html"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        }
-        r = _requests.get(url, headers=headers, timeout=15)
+        r = await client.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
-            # 提取帖子: 阅读数、评论数、post_id、标题、更新时间
             pattern = (
                 r'<div class="read">(\d+)</div>.*?'
                 r'<div class="reply">(\d+)</div>.*?'
                 r'<a data-postid="(\d+)" href="/news,\w+,(\d+)\.html">(.*?)</a>.*?'
                 r'<div class="update">(.*?)</div>'
             )
-            posts = _re.findall(pattern, r.text, _re.DOTALL)
+            posts = re.findall(pattern, r.text, re.DOTALL)
             for p in posts:
                 read_count, reply_count, post_id, _, title, update_time = p
                 title = _safe_str(title)
+                pub_dt = _resolve_post_publish_time(update_time)
 
-                # 解析日期 (格式: "06-01 08:00" 或 "2025-12-31")
-                date_match = _re.match(r'(\d{2})-(\d{2})\s+(\d{2}):(\d{2})', update_time)
-                if date_match:
-                    month, day, hour, minute = date_match.groups()
-                    year = datetime.now().year
-                    pub_dt = datetime(year, int(month), int(day), int(hour), int(minute))
-                    if pub_dt > datetime.now():
-                        pub_dt = pub_dt.replace(year=year - 1)
-                else:
-                    pub_dt = _parse_date(update_time)
-
-                # 股吧帖子本来就少，不过滤时间，全部返回
-                # if pub_dt and pub_dt < cutoff:
-                #     continue
-
-                # NLP 情绪分析
                 score = _classify_sentiment(title)
                 label = "positive" if score > 0.01 else ("negative" if score < -0.01 else "neutral")
 
-                guba_items.append({
+                items.append({
                     "title": title,
                     "content": "",
                     "source": "股吧",
@@ -4175,16 +4164,22 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
                     "label": label,
                     "publish_time": pub_dt.isoformat() if pub_dt else None,
                 })
-            logger.info(f"[SocialSentiment] Guba OK for {code}: {len(guba_items)} posts")
+            logger.info(f"[SocialSentiment] Guba OK for {code}: {len(items)} posts")
     except Exception as exc:
         errors.append(f"股吧: {exc}")
         logger.warning(f"[SocialSentiment] Guba failed for {code}: {exc}")
+    _ = cutoff
+    return items, errors
 
-    # ----------------------------------------------------------------
-    # 2. 千股千评历史评分
-    # ----------------------------------------------------------------
+
+async def _fetch_diagnose_score_trend_async(
+    client: httpx.AsyncClient,
+    code: str,
+    cutoff: datetime,
+) -> tuple[list[dict], float | None, list[str]]:
     score_trend: list[dict] = []
     current_score: float | None = None
+    errors: list[str] = []
     try:
         url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
         params = {
@@ -4196,7 +4191,7 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
             "sortColumns": "DIAGNOSE_DATE",
             "sortTypes": "1",
         }
-        r = _requests.get(url, params=params, timeout=15)
+        r = await client.get(url, params=params, timeout=15)
         data = r.json()
         if data.get("result") and data["result"].get("data"):
             rows = data["result"]["data"]
@@ -4216,17 +4211,58 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
                 current_score = _safe_float(rows[-1].get("TOTAL_SCORE"))
     except Exception as exc:
         errors.append(f"千股千评: {exc}")
+    return score_trend, current_score, errors
 
-    # ----------------------------------------------------------------
-    # 3. 聚合统计
-    # ----------------------------------------------------------------
+
+async def _fetch_social_sentiment(symbol: str, days: int) -> dict:
+    """获取社交媒体讨论热度和情绪。
+
+    数据源:
+      1. 东方财富股吧 — 帖子列表 (标题+阅读+评论)
+      2. 东方财富千股千评 — 每日评分趋势
+      3. jieba 分词 + 金融情绪词典 — NLP 情绪分析
+    """
+    import time as _time
+
+    t0 = _time.time()
+    code = _normalize_symbol(symbol)
+    cutoff = datetime.now() - timedelta(days=days)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    }
+
+    async with httpx.AsyncClient() as client:
+        guba_task = _fetch_guba_posts_async(client, code, cutoff, headers)
+        score_task = _fetch_diagnose_score_trend_async(client, code, cutoff)
+        results = await asyncio.gather(guba_task, score_task, return_exceptions=True)
+
+    errors: list[str] = []
+    guba_items: list[dict] = []
+    score_trend: list[dict] = []
+    current_score: float | None = None
+
+    guba_result = results[0]
+    if isinstance(guba_result, Exception):
+        errors.append(f"股吧: {guba_result}")
+        logger.warning(f"[SocialSentiment] Guba task crashed for {code}: {guba_result}")
+    else:
+        guba_items, guba_errors = guba_result
+        errors.extend(guba_errors)
+
+    score_result = results[1]
+    if isinstance(score_result, Exception):
+        errors.append(f"千股千评: {score_result}")
+        logger.warning(f"[SocialSentiment] Diagnose task crashed for {code}: {score_result}")
+    else:
+        score_trend, current_score, score_errors = score_result
+        errors.extend(score_errors)
+
     all_items = guba_items
 
     positive_count = sum(1 for i in all_items if i["label"] == "positive")
     negative_count = sum(1 for i in all_items if i["label"] == "negative")
     neutral_count = sum(1 for i in all_items if i["label"] == "neutral")
 
-    # 热度趋势 (按日统计)
     daily_counts: dict[str, dict] = {}
     for item in all_items:
         date_str = (item.get("publish_time") or "")[:10]
@@ -4240,7 +4276,6 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
             daily["read_total"] += item.get("read_count", 0)
             daily["reply_total"] += item.get("reply_count", 0)
 
-    # 加入千股千评评分
     for st in score_trend:
         if st["date"] in daily_counts:
             daily_counts[st["date"]]["score"] = st["score"]
@@ -4250,7 +4285,6 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
                 "read_total": 0, "reply_total": 0, "score": st["score"],
             }
 
-    # 总体情绪
     total = positive_count + negative_count + neutral_count
     if total > 0:
         overall_score = round(((positive_count - negative_count) / total) * 100, 1)
@@ -4291,7 +4325,7 @@ def _fetch_social_sentiment(symbol: str, days: int) -> dict:
 
 
 @router.get("/social-sentiment", summary="获取社交媒体情绪")
-def get_social_sentiment(
+async def get_social_sentiment(
     symbol: str = Query(..., description="股票代码"),
     days: int = Query(90, ge=1, le=90, description="查询最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
@@ -4316,6 +4350,6 @@ def get_social_sentiment(
         if cached:
             cached["_cached"] = True
             return cached
-    data = _fetch_social_sentiment(symbol, days)
+    data = await _fetch_social_sentiment(symbol, days)
     _daily_cache_put(SOCIAL_SENTIMENT_CACHE_KEY, symbol, data, cache_part)
     return data
