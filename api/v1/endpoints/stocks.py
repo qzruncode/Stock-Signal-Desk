@@ -95,16 +95,16 @@ def _run_sync():
         delisted = 0
         delisted_codes_count = 0
         added, updated = 0, 0
-        stocks = None
+        skip_phase_one = False
 
         if already_synced_today:
+            skip_phase_one = True
             # Check if ALL active stocks have K-line data
             with db.get_session() as session:
                 active_count = session.query(func.count(StockMeta.id)).filter(StockMeta.status == "active").scalar()
                 stock_with_data = session.query(func.count(func.distinct(StockDaily.code))).scalar()
             if stock_with_data < active_count:
                 logger.info("[StocksSync] K 线数据不完整 (%d/%d)，强制执行 K 线同步", stock_with_data, active_count)
-                already_synced_today = False
             else:
                 logger.info("[StocksSync] 今日已同步，跳过 Phase 1 和 K 线阶段")
                 with db.get_session() as session:
@@ -120,9 +120,10 @@ def _run_sync():
                 logger.info("[StocksSync] 同步完成（跳过）")
                 return
 
-        # At this point, either Phase 1 ran OR we forced through from already_synced_today
-        # If already_synced_today was true but we forced through, load stocks from DB
-        if stocks is None:
+        # At this point, either we still need to run Phase 1, OR we forced through
+        # from already_synced_today (today's list sync done, but K-line incomplete).
+        # In the forced-through case, load existing stocks from DB and skip Phase 1.
+        if skip_phase_one:
             with db.get_session() as session:
                 stocks = [
                     {"code": row.code, "name": row.name}
@@ -211,21 +212,8 @@ def _run_sync():
         # Phase 2: Incremental K-line sync — batch concurrent for speed
         kline_total = len(stocks)
         kline_incremental = 0
-        kline_skipped = kline_total  # All skipped when already synced today
+        kline_skipped = kline_total
         kline_failed = 0
-
-        if already_synced_today:
-            # Today already synced — skip K-line phase entirely
-            logger.info("[StocksSync] 今日已同步，跳过 K 线阶段")
-            _set_sync_state(
-                status="success",
-                progress=kline_total,
-                kline_progress=kline_total,
-                finished_at=_utc_now_iso(),
-                message=f"同步完成: 今日已同步，跳过列表和 K 线更新",
-            )
-            logger.info("[StocksSync] 同步完成（跳过）")
-            return
 
         active_codes = [s["code"] for s in stocks]
         today = _get_latest_trading_day()
@@ -265,14 +253,14 @@ def _run_sync():
         progress_offset = skip_count  # Skipped stocks count as progress
         _set_sync_state(kline_progress=progress_offset)
 
+        from data_provider.akshare_fetcher import AkshareFetcher as AF
+        batch_fetcher = AF(sleep_min=0.3, sleep_max=0.5)
+        inc_fetcher = AF(sleep_min=0.3, sleep_max=0.5)
+
         # Batch full fetch with concurrent threads + real-time progress
         if full_fetch_codes:
             import concurrent.futures
             logger.info("[StocksSync] K线全量并发拉取 %d 只股票", len(full_fetch_codes))
-
-            # Create low rate limit fetcher for batch
-            from data_provider.akshare_fetcher import AkshareFetcher as AF
-            batch_fetcher = AF(sleep_min=0.3, sleep_max=0.5)
 
             def _fetch_one(code: str) -> tuple:
                 df = batch_fetcher.fetch_stock_kline_history(code, days=365)
@@ -295,7 +283,6 @@ def _run_sync():
                     _set_sync_state(kline_progress=progress_offset)
 
         # Sequential incremental fetch (usually just a few days of data)
-        inc_fetcher = AF(sleep_min=0.3, sleep_max=0.5)
         for code in incremental_codes:
             try:
                 latest_date = db.get_latest_daily_date(code)
