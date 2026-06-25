@@ -100,14 +100,15 @@ export const batchApi = {
     return response.data.runs;
   },
 
-  async getRunDetail(runId: string): Promise<BatchRunItem> {
-    const response = await apiClient.get<BatchRunItem>(`/api/v1/batch/runs/${runId}`);
+  async getRunDetail(runId: string, signal?: AbortSignal): Promise<BatchRunItem> {
+    const response = await apiClient.get<BatchRunItem>(`/api/v1/batch/runs/${runId}`, { signal });
     return response.data;
   },
 
-  async getRunReport(runId: string): Promise<string> {
+  async getRunReport(runId: string, signal?: AbortSignal): Promise<string> {
     const response = await apiClient.get<string>(`/api/v1/batch/runs/${runId}/report.md`, {
       responseType: 'text',
+      signal,
     });
     return response.data;
   },

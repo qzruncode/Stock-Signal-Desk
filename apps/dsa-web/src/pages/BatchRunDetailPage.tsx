@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Bell, FileText, FolderPlus, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { batchApi, type BatchRunItem } from '../api/batch';
@@ -78,22 +78,27 @@ const BatchRunDetailPage: React.FC = () => {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [groupName, setGroupName] = useState('');
   const [resultSearch, setResultSearch] = useState('');
+  const abortRef = useRef<AbortController | null>(null);
 
   const loadRun = useCallback(async () => {
     if (!runId) return;
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setIsLoading(true);
     setError(null);
     setActionMessage(null);
     try {
       const [data, report] = await Promise.all([
-        batchApi.getRunDetail(runId),
-        batchApi.getRunReport(runId).catch(() => ''),
+        batchApi.getRunDetail(runId, ctrl.signal),
+        batchApi.getRunReport(runId, ctrl.signal).catch(() => ''),
       ]);
       setRun(data);
       setSummaryMd(report);
       const first = parseBatchResults(data.results_json)[0];
       setSelectedCode((current) => current || first?.code || null);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(getParsedApiError(err));
     } finally {
       setIsLoading(false);
@@ -103,6 +108,7 @@ const BatchRunDetailPage: React.FC = () => {
   useEffect(() => {
     document.title = '跑批详情 - Stock-Signal-Desk';
     void loadRun();
+    return () => { abortRef.current?.abort(); };
   }, [loadRun]);
 
   const handleRegenerateReport = useCallback(async () => {

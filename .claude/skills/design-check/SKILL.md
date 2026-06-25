@@ -7,41 +7,37 @@ description: Use when the user invokes /design-check or a proposed frontend chan
 
 所有产出使用简体中文。代码标识、路径、组件名和必须保持准确的界面文案不翻译。
 
-禁止修改项目源码和其他项目文件，只允许读取代码，并在 `docs/human-plans/` 下的当前 Plan 中更新 Frontend Impact、Review Status 与 Status。
+只允许读取项目，并在当前 Plan 中更新 Frontend Impact、Review Status、Status 和确实需要人类决策的 Needs Reconfirmation。禁止修改其他字段或项目文件。
 
-每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符。只提示，不代用户执行下一步。
+Owner Skill 决定后续命令前缀：`dev` 对应 `/dev`，`bug-fix` 对应 `/bug-fix`，`audit` 对应 `/audit`。
 
 ## `/design-check [Plan Ref]`
 
-必须先确认 Review Status 中当前 Version 的 `/plan-check` 已通过；未通过时停止检查并返回当前阶段的正确下一步。深入检查现有页面和设计体系，但只输出阻塞实施的设计问题。
+Plan Ref 必须是 `<Plan 文件路径>@v<Version>` 且匹配当前 Version，否则停止且不写入。
 
-Plan Ref 固定为 `<Plan 文件路径>@v<Version>`。缺少版本或与文件中的当前 Version 不一致时停止处理。Needs Reconfirmation 不为空时不得判定通过。
+按以下顺序检查前置状态：
 
-Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`，Status 必须是 `review-pending`；否则停止检查，并返回当前阶段的正确下一步。
+1. Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`。
+2. Status 为 `reconfirmation-pending` 时停止检查：理解正确返回对应 Owner 的 `confirm`，理解不正确返回对应 Owner 的 `replan`。
+3. Needs Reconfirmation 非空时停止检查，返回对应 Owner 的 `replan`。
+4. Status 必须是 `review-pending`，且当前 Version 的 plan-check 已通过；否则返回当前合法下一步。
 
-检查：
+检查当前版本是否覆盖：
 
-- 页面信息层级和核心用户路径
-- 与现有组件、样式和相似页面的一致性
-- 交互效率、状态反馈和可理解性
-- loading、empty、error、disabled、success 和部分数据状态
-- 桌面端与移动端响应式行为
-- 可访问性、键盘和焦点行为
-- 一次性 CSS、脆弱布局、重复组件和视觉混乱风险
+- 页面信息层级和核心用户路径。
+- 与现有组件、样式和相似页面的一致性。
+- 交互效率、状态反馈和可理解性。
+- loading、empty、error、disabled、success 和部分数据状态。
+- 桌面端与移动端响应式行为。
+- 可访问性、键盘和焦点行为。
+- 一次性 CSS、脆弱布局、重复组件和视觉混乱风险。
 
-输出只包含：
+输出仅包含结论、阻塞体验问题、必须修改的设计要求和需要人类决策的事项。Frontend Impact 为 `unknown` 时先判断为 `yes` 或 `no`；确认无前端影响时可判定不适用。
 
-- 结论：`通过`、`需要 replan` 或 `不适用`
-- 阻塞体验的关键问题
-- Current Plan 必须补充或修改的设计要求
-- 需要人类重新确认的事项
+## 结果
 
-通过时不要复述完整 Plan。Frontend Impact 为 `unknown` 时先判断并更新为 `yes` 或 `no`；只有确认无前端影响时才能标记 `不适用`。
+- 需要 AI 调整且无需人类决策：记录当前 Version 结果，把 Status 设为 `replan-required`，返回对应 Owner 的 `replan`。
+- 需要人类决策：把明确决策点写入 Needs Reconfirmation，不得替人作答或只写在聊天中；Status 设为 `replan-required`，返回对应 Owner 的 `replan`，后续必须经过该 Owner 的 Reconfirmation。
+- 通过或不适用：记录当前 Version 结果，Status 设为 `ready-for-approval`，返回对应 Owner 的 `approve`。
 
-结果覆盖写入当前 Plan 的 Review Status，并标明当前 Version；不创建新 Plan，不追加长篇检查记录，不修改 Requirement Baseline、Confirmed Decisions、Current Plan、Unchanged Scope 或 Delivery Status。
-
-需要调整时将 Status 设为 `replan-required`，并根据 Owner Skill 返回 `/dev replan <当前 Plan Ref>`、`/bug-fix replan <当前 Plan Ref>` 或 `/audit replan <当前 Plan Ref>`。
-
-通过或不适用时将 Status 设为 `ready-for-approval`，并按 Owner Skill 返回 `/dev approve <当前 Plan Ref>`、`/bug-fix approve <当前 Plan Ref>` 或 `/audit approve <当前 Plan Ref>`。
-
-更新 Plan、展示结论和当前 Plan Ref 后停止，不得自动调用下一技能。
+展示结论、真实 Plan Ref 和完整下一步命令后停止，不得自动调用下一技能。

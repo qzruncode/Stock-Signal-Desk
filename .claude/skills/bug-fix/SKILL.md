@@ -7,60 +7,70 @@ description: Use when the user invokes /bug-fix after a concrete bug and its aff
 
 所有产出使用简体中文。代码标识、路径、API 名称、错误信息和必须保留的用户原文不翻译。
 
-## 源码写入门禁
+## 权限
 
-- 只有当前用户消息去除首尾空白后，仅包含 `/bug-fix approve <当前 Plan Ref>` 时，才允许修改项目源码。
-- `/bug-fix xxx` 和 `/bug-fix replan [Plan Ref]` 只能读取代码、定位影响并创建或更新 Human Plan。
-- 即使用户描述中包含“修复”“解决”“直接改”等词，只要命令不是 `approve`，也不得修改源码。
-- 用户对问题的回答以及“好”“可以”“就这样”“按这个做”等自然语言都只是 Plan 反馈，不是 approve。
-- 普通自然语言反馈也不得自动更新 Plan；只有明确的 `/bug-fix replan <当前 Plan Ref>` 才能重写 Plan。
-- 在收到新的、明确的 `/bug-fix approve <当前 Plan Ref>` 消息前，只允许写入 `docs/human-plans/` 下的当前 Plan 文件，禁止其他写入。
-- 输出 Human Plan 后立即停止，等待检查、replan 或 approve。
+- `/bug-fix xxx`、`/bug-fix replan` 和 `/bug-fix confirm` 只允许读取项目并写入当前 Human Plan。
+- 只有当前消息精确为 `/bug-fix approve <当前 Plan Ref>` 时才允许修改源码。
+- 自然语言中的“修复”“直接改”“可以”“按这个做”等都不是 approve。
+- approve 前除当前 Plan 外禁止任何写入；输出 Plan 后必须停止。
 
-## Human Plan
+## Plan 约束
 
-Bug Human Plan 只帮助人确认修复是否准确，不展开调试过程或代码实现。
+- 一个已定位问题始终使用同一个 Plan 文件和 Plan ID，不接管其他 Owner 的 Plan。
+- Human Plan 只描述预期行为、异常行为、已确认根因、修复方向、影响范围、回归风险和验收结果。
+- 不夹带重构、优化或其他事项，不写代码、逐文件改动或执行步骤。
+- 固定字段为：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+- Owner Skill 为 `bug-fix`；Status 只使用 `review-pending`、`replan-required`、`reconfirmation-pending`、`ready-for-approval` 或 `implemented`。
+- Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
+- Plan Ref 固定为 `<Plan 文件路径>@v<Version>`。引用版本不一致时停止且不写入，并返回当前 Plan Ref。
+- 任一命令的 Owner、Status 或前置条件不满足时停止且不写入，并根据当前 Plan 返回合法下一步。
 
-- 一个 Bug 只维护一个 Plan 文件；已有 Bug Plan 只能通过 replan 更新。
-- 只保留当前修复方案，不累计完整旧版本。
-- 只处理已定位 Bug，不夹带重构、优化或其他问题。
-- 内容只包含预期行为、异常行为、已确认根因、修复方向、影响范围、回归风险和验收结果。
-- 不写代码片段、逐文件改动、调试日志全文或执行步骤。
-- 不在生成 Plan 前发起会让流程继续执行的交互式提问；不确定项写入 Needs Reconfirmation。
-- 用户补充待确认信息时，要求使用 `/bug-fix replan <当前 Plan Ref>`；更新并重新展示 Human Plan 后停止，仍需重新检查和显式 approve。
+## Reconfirmation
 
-Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能直接更新正式 Plan：
 
-Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
+- 使用当前消息中的人类答复，不从更早对话猜测。
+- 在 Needs Reconfirmation 中保留相关用户原文、AI 理解和拟应用变化。
+- 不清除确认项，不修改正式 Plan，不增加 Version，不恢复检查状态。
+- Status 设为 `reconfirmation-pending`，完整展示待提交 Replan 后停止。
 
-凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。新建 Bug Plan 不要求输入 Plan Ref。每次输出都返回当前 Plan Ref。
+当前消息没有可用于对应确认项的答复时，不写入任何内容，只展示待确认事项并要求用户在 `/bug-fix replan <当前 Plan Ref>` 后补充答复。
 
-写入 Plan 文件后，必须在聊天中直接展示简洁的 Requirement Baseline、Confirmed Decisions、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref。不得只显示预览入口、只说已生成，或在展示前进入实现。
-
-每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符；有多个合法选择时说明用途，无需继续时说明结束。只提示，不代用户执行下一步。
+理解不正确时继续 `/bug-fix replan <当前 Plan Ref>` 修正待提交 Replan。只有精确的 `/bug-fix confirm <当前 Plan Ref>` 才能提交；自然语言肯定不算 confirm。未经 confirm，不得 check 或 approve。
 
 ## `/bug-fix xxx`
 
-为已定位 Bug 生成简短 Human Plan，不修改代码。
+为已定位问题创建 Version 1 的简洁 Human Plan。设置 Owner Skill 为 `bug-fix`，重置 Review Status 和 Delivery Status。
 
-创建 `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md`，从 Version 1 开始。若命令携带已有 Plan Ref，停止并根据其 Owner Skill 和 Status 返回正确的 replan 命令，不得接管或覆盖其他 Plan。
+命令中出现已有 Plan Ref 时不得接管该 Plan；停止且根据其 Owner Skill 和 Status 返回合法下一步。
 
-设置 Owner Skill 为 `bug-fix`、Status 为 `review-pending`，并把当前版本的 Review Status 和 Delivery Status 重置为待处理。
-
-完整展示 Human Plan 后停止，下一步只允许执行 `/plan-check <当前 Plan Ref>`，等待用户显式调用。不得自动执行 check。
+Needs Reconfirmation 为空时 Status 设为 `review-pending`，下一步只允许 `/plan-check <当前 Plan Ref>`；非空时 Status 设为 `replan-required`，下一步只允许 `/bug-fix replan <当前 Plan Ref>` 并要求补充对应答复。直接展示 Plan 和真实 Plan Ref 后停止。
 
 ## `/bug-fix replan [Plan Ref]`
 
-在同一文件中更新当前修复方案，增加 Version，只记录本轮变化。
+要求 Owner Skill 为 `bug-fix`，Status 为 `review-pending`、`replan-required`、`reconfirmation-pending` 或 `ready-for-approval`。
 
-只在用户明确调用 `/bug-fix replan <当前 Plan Ref>` 时更新。要求 Owner Skill 为 `bug-fix`，Status 为 `review-pending`、`replan-required` 或 `ready-for-approval`。
+- Needs Reconfirmation 为空：只调整当前修复范围，增加 Version，记录变化，重置 Review Status 和 Delivery Status，Status 设为 `review-pending`。
+- Needs Reconfirmation 非空：按 Reconfirmation 协议准备或修正待提交 Replan，Version 不变。
 
-保持 Owner Skill 为 `bug-fix`，Status 重置为 `review-pending`，当前版本的 Review Status 和 Delivery Status 都重置为待处理。不得改变预期行为或扩大 Bug 范围；必要变化放入 Needs Reconfirmation。重新展示 Human Plan 后停止。
+不得改变预期行为或扩大事项范围。展示当前 Plan、真实 Plan Ref 和合法下一步后停止。
+
+## `/bug-fix confirm [Plan Ref]`
+
+仅当当前消息精确为 `/bug-fix confirm <当前 Plan Ref>` 时执行。要求 Owner Skill 为 `bug-fix`、Status 为 `reconfirmation-pending`，并存在对应当前 Version 的待提交 Replan。
+
+提交待提交 Replan，清除已解决的确认项，增加 Version 并记录变化，重置 Review Status 和 Delivery Status。仍有未解决项时 Status 设为 `replan-required`，下一步继续 `/bug-fix replan <新 Plan Ref>`；全部解决后 Status 设为 `review-pending`，下一步进入 `/plan-check <新 Plan Ref>`。confirm 只提交 Replan，不代表修复批准。
 
 ## `/bug-fix approve [Plan Ref]`
 
-仅当当前用户消息去除首尾空白后只包含 `/bug-fix approve <当前 Plan Ref>` 时执行当前版本。要求 Owner Skill 为 `bug-fix`、Status 为 `ready-for-approval`、Needs Reconfirmation 为空，Review Status 中当前 Version 的 `/plan-check` 已通过，并且有前端影响时当前 Version 的 `/design-check` 已通过。
+仅当当前消息精确为 `/bug-fix approve <当前 Plan Ref>` 时执行。要求：
 
-源码写入前再次核对 Requirement Baseline、Current Plan 和 Unchanged Scope。发现根因不成立、需要扩大范围或改变已批准方案时不得自行处理；停止执行，把事项写入 Needs Reconfirmation，将 Status 设为 `replan-required`，并返回 `/bug-fix replan <当前 Plan Ref>`。不得保留未完成的本轮源码改动。
+- Owner Skill 为 `bug-fix`，Status 为 `ready-for-approval`。
+- Needs Reconfirmation 为空。
+- 当前 Version 的 plan-check 已通过。
+- Frontend Impact 为 `yes` 时，当前 Version 的 design-check 已通过；为 `no` 时已标记不适用。
+- Frontend Impact 不得为 `unknown`。
 
-完成后把 Status 设为 `implemented`，在 Delivery Status 记录当前 Version 的 approval、implementation、根因和验证结果。返回 `/audit <当前 Plan Ref>` 后停止，等待用户显式调用。
+执行前再次核对 Requirement Baseline、Current Plan 和 Unchanged Scope。若根因不成立或实现需要新增决策、改变基线或扩大范围，停止写入并仅撤销本轮产生的未完成改动，把决策点写入 Needs Reconfirmation，Status 设为 `replan-required`，下一步返回 `/bug-fix replan <当前 Plan Ref>`。
+
+完成后 Status 设为 `implemented`，在 Delivery Status 记录当前 Version 的 approval、implementation、根因和验证结果。返回 `/audit <当前 Plan Ref>` 后停止。

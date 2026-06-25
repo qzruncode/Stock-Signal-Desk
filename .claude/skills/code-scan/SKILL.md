@@ -7,38 +7,47 @@ description: Use when the user invokes /code-scan or asks to find bugs, ineffici
 
 所有产出使用简体中文。代码标识、路径、API 名称、错误信息和引用原文不翻译。
 
-禁止修改项目源码和其他项目文件，只允许扫描代码并写入 `docs/human-plans/` 下的当前 Human Plan。
+只允许扫描代码并写入 `docs/human-plans/` 下的当前 Human Plan，禁止修改其他项目文件。
+
+## Plan 约束
+
+- 一个扫描范围始终使用同一个 Plan 文件和 Plan ID。
+- Human Plan 只保留最严重、最相关且能形成一个开发范围的问题，不输出完整问题库存。
+- 固定字段为：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+- Owner Skill 为 `code-scan`；Status 只使用 `draft` 或 `reconfirmation-pending`；Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
+- Plan Ref 固定为 `<Plan 文件路径>@v<Version>`。引用版本不一致时停止且不写入，并返回当前 Plan Ref。
+- 任一命令的 Owner、Status 或前置条件不满足时停止且不写入，并根据当前 Plan 返回合法下一步。
+
+## Reconfirmation
+
+Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能直接更新正式 Plan：
+
+- 使用当前消息中的人类答复，不从更早对话猜测。
+- 在 Needs Reconfirmation 中保留相关用户原文、AI 理解和拟应用变化。
+- 不清除确认项，不修改正式 Plan，不增加 Version。
+- Status 设为 `reconfirmation-pending`，完整展示待提交 Replan 后停止。
+
+当前消息没有可用于对应确认项的答复时，不写入任何内容，只展示待确认事项并要求用户在 `/code-scan replan <当前 Plan Ref>` 后补充答复。
+
+理解不正确时继续 `/code-scan replan <当前 Plan Ref>` 修正待提交 Replan。只有精确的 `/code-scan confirm <当前 Plan Ref>` 才能提交；自然语言肯定不算 confirm。未经 confirm，不得进入 `/dev`。
 
 ## `/code-scan`
 
-扫描项目但不修改代码。内部可以全面检查，Human Plan 只保留最值得优先处理的一组问题。
+扫描当前项目，选择最值得优先处理的一组问题。Human Plan 只写证据、影响、优先级、连贯修复范围、边界和验收结果。设置 Version 为 1、Status 为 `draft`。
 
-不要输出完整问题库存。只写：
-
-- 最严重的问题及证据
-- 对用户、系统或维护成本的影响
-- 推荐优先级
-- 一个可进入 `/dev` 的连贯修复范围
-- 验收结果
-
-如果问题很多，选择最严重、最相关的一组，其余只做一句简短说明或暂不输出。
-
-创建一个简洁 Plan 文件，只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
-
-Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
-
-Owner Skill 设置为 `code-scan`，Status 设置为 `draft`。
-
-凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。新建 Plan 不要求输入 Plan Ref。
-
-写入后必须在聊天中直接展示简洁的 Requirement Baseline、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref，然后停止。不得只显示预览入口或只说已生成。
-
-每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符；有多个合法选择时说明用途，无需继续时说明结束。只提示，不代用户执行下一步。
+直接展示 Requirement Baseline、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref。若有待确认事项，下一步返回带真实 Plan Ref 的 `/code-scan replan`；否则同时说明可 `/dev <当前 Plan Ref>` 或继续 `/code-scan replan <当前 Plan Ref>`。随后停止。
 
 ## `/code-scan replan [Plan Ref]`
 
-根据人类反馈调整优先级和当前修复范围，增加 Version，只记录本轮变化。
+要求 Owner Skill 为 `code-scan`，Status 为 `draft` 或 `reconfirmation-pending`。
 
-只在用户明确调用 `/code-scan replan <当前 Plan Ref>` 时更新；普通自然语言反馈不得触发写入。要求 Owner Skill 为 `code-scan`、Status 为 `draft`。
+- Needs Reconfirmation 为空：按人类反馈调整优先级或修复范围，增加 Version，Status 保持 `draft`。
+- Needs Reconfirmation 非空：按 Reconfirmation 协议准备或修正待提交 Replan，Version 不变。
 
-保持 Owner Skill 为 `code-scan`、Status 为 `draft`。不扩写完整扫描报告，不修改代码。重新展示 Human Plan 后停止；确认后下一步只允许执行 `/dev <当前 Plan Ref>`，等待用户显式调用。
+不重新输出完整扫描报告。展示当前 Plan、真实 Plan Ref 和合法下一步后停止。
+
+## `/code-scan confirm [Plan Ref]`
+
+仅当当前消息精确为 `/code-scan confirm <当前 Plan Ref>` 时执行。要求 Owner Skill 为 `code-scan`、Status 为 `reconfirmation-pending`，并存在对应当前 Version 的待提交 Replan。
+
+提交待提交 Replan，清除已解决的确认项，增加 Version 并记录变化。仍有未解决项时 Status 设为 `draft`，下一步继续 `/code-scan replan <新 Plan Ref>`；全部解决后 Status 设为 `draft`，下一步进入 `/dev <新 Plan Ref>`。confirm 只提交 Replan，不代表开发批准。

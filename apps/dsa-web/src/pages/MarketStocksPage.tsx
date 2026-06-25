@@ -41,6 +41,13 @@ const MarketStocksPage: React.FC = () => {
   // Sentinel for infinite scroll
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
+  // Refs for latest filter values (used by polling interval to avoid stale closure)
+  const stockSearchRef = useRef(stockSearch);
+  const stockMarketRef = useRef(stockMarket);
+
+  useEffect(() => { stockSearchRef.current = stockSearch; }, [stockSearch]);
+  useEffect(() => { stockMarketRef.current = stockMarket; }, [stockMarket]);
+
   const loadSyncStatus = useCallback(async () => {
     try {
       const status = await stocksApi.syncStatus();
@@ -89,12 +96,12 @@ const MarketStocksPage: React.FC = () => {
         if (s.status === 'success' || s.status === 'failed') {
           if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
           if (s.status === 'success') {
-            void loadStockList(1, stockSearch, stockMarket, false);
+            void loadStockList(1, stockSearchRef.current, stockMarketRef.current, false);
           }
         }
       } catch { /* ignore */ }
     }, 2000);
-  }, [loadStockList, stockSearch, stockMarket]);
+  }, [loadStockList]);
 
   useEffect(() => {
     document.title = '全市场股票 - Stock-Signal-Desk';
@@ -120,7 +127,7 @@ const MarketStocksPage: React.FC = () => {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('focus', onFocus);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loadSyncStatus, startPolling, loadStockList, loadWatchlist]);
 
   // Infinite scroll observer
   useEffect(() => {

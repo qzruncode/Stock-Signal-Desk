@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ExternalLink, RefreshCw, Rss, Clock } from 'lucide-react';
 import { rssApi, type RssFeedResponse, type RssSourceOption } from '../api/rss';
 import { cn } from '../utils/cn';
@@ -194,8 +194,13 @@ const RssPage: React.FC = () => {
     else setCategory('');
   }, [currentSource]);
 
+  const abortRef = useRef<AbortController | null>(null);
+
   // 获取数据
   const fetchFeeds = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     setLoading(true);
     setError(null);
     try {
@@ -205,12 +210,13 @@ const RssPage: React.FC = () => {
       if (currentSource?.requires_uid && uid) params.uid = uid;
       if (currentSource?.requires_type && subType) params.type = subType;
       if (currentSource?.requires_category && category) params.category = category;
-      const result = await rssApi.getFeeds(params as Parameters<typeof rssApi.getFeeds>[0]);
+      const result = await rssApi.getFeeds(params as Parameters<typeof rssApi.getFeeds>[0], ctrl.signal);
       setFeedData(result);
       if (result.errors?.length) {
         setError(result.errors.join('; '));
       }
     } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       const msg =
         (err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message ||
         (err as Error).message ||
@@ -227,8 +233,10 @@ const RssPage: React.FC = () => {
     if (sources.length > 0) {
       void fetchFeeds();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, stockCode, keyword, uid, subType, category, sources.length]);
+  }, [fetchFeeds, sources.length]);
+
+  // Abort in-flight requests on unmount
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   // 输入防抖
   const [stockInput, setStockInput] = useState('');

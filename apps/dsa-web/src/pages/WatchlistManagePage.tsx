@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Plus, Search, Settings, X, Zap } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
@@ -26,14 +26,12 @@ const WatchlistManagePage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { message: successMsg, showMessage: holdMessage } = useTransientMessage();
-
   const { groups } = useWatchlistGroups();
   const [activeGroupId, setActiveGroupId] = useState<string>(DEFAULT_GROUP_ID);
   const [isAdding, setIsAdding] = useState(false);
   const [isBatchAdding, setIsBatchAdding] = useState(false);
   const [isBatchRemoving, setIsBatchRemoving] = useState(false);
   const [removingCodes, setRemovingCodes] = useState<Set<string>>(new Set());
-
   const {
     inputRef: suggestInputRef,
     containerRef: suggestContainerRef,
@@ -43,20 +41,22 @@ const WatchlistManagePage: React.FC = () => {
     clear: clearSuggest,
     handleInputChange,
   } = useStockSuggest();
-
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [screenerOpen, setScreenerOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [batchInput, setBatchInput] = useState('');
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
-
+  const abortRef = useRef<AbortController | null>(null);
   const loadWatchlist = useCallback(async () => {
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
     setIsLoading(true);
     setError(null);
     try {
-      const result = await watchlistApi.get();
+      const result = await watchlistApi.get(abortRef.current.signal);
       setWatchlist(result);
     } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : '加载自选股失败');
     } finally {
       setIsLoading(false);
@@ -66,6 +66,7 @@ const WatchlistManagePage: React.FC = () => {
   useEffect(() => {
     document.title = '自选分组管理 - Stock-Signal-Desk';
     void loadWatchlist();
+    return () => { abortRef.current?.abort(); };
   }, [loadWatchlist]);
 
   // Ensure activeGroupId is valid
@@ -297,7 +298,6 @@ const WatchlistManagePage: React.FC = () => {
       return next;
     });
   }, []);
-
   // rename state for drawer
   const [renameValue, setRenameValue] = useState('');
   useEffect(() => {

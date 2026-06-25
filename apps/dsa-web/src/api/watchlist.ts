@@ -23,8 +23,8 @@ export interface WatchlistRemoveResponse {
 }
 
 export const watchlistApi = {
-  async get(): Promise<WatchlistResponse> {
-    const response = await apiClient.get<WatchlistResponse>('/api/v1/watchlist');
+  async get(signal?: AbortSignal): Promise<WatchlistResponse> {
+    const response = await apiClient.get<WatchlistResponse>('/api/v1/watchlist', { signal });
     return response.data;
   },
 

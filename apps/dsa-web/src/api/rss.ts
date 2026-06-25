@@ -51,9 +51,9 @@ export const rssApi = {
     uid?: string;
     limit?: number;
     force?: boolean;
-  }): Promise<RssFeedResponse> {
+  }, signal?: AbortSignal): Promise<RssFeedResponse> {
     return apiClient
-      .get('/api/v1/rss/feeds', { params, timeout: 30000 })
+      .get('/api/v1/rss/feeds', { params, timeout: 30000, signal })
       .then((r) => r.data);
   },
 
