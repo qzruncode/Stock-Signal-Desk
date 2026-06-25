@@ -40,8 +40,14 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return undefined;
-          if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/react-router-dom/')) {
+          if (id.includes('/react-dom/')) {
+            return 'vendor-react-dom';
+          }
+          if (id.includes('/react/') || id.includes('/scheduler/')) {
             return 'vendor-react';
+          }
+          if (id.includes('/react-router-dom/') || id.includes('/react-router/')) {
+            return 'vendor-router';
           }
           if (id.includes('/react-markdown/') || id.includes('/remark-gfm/') || id.includes('/remove-markdown/')) {
             return 'vendor-markdown';
