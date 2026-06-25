@@ -32,9 +32,13 @@ Human Plan 的唯一目标是让人快速判断：需求是否准确、方向是
 
 Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
 
+Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
+
 凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。直接创建 Plan 不要求输入 Plan Ref。每次输出都返回当前 Plan Ref。
 
 写入 Plan 文件后，必须在聊天中直接展示简洁的 Requirement Baseline、Confirmed Decisions、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref。不得只显示预览入口、只说已生成，或在展示前进入实现。
+
+每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符；有多个合法选择时说明用途，无需继续时说明结束。只提示，不代用户执行下一步。
 
 ## `/dev xxx`
 
@@ -44,11 +48,13 @@ Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impac
 
 如果没有 Plan Ref，创建 `docs/human-plans/HP-YYYYMMDD-HHMM-<topic>.md`。
 
+用户显式执行 `/dev <Plan Ref>`，即确认来源 Plan 当前版本的 Requirement Baseline、Confirmed Decisions 和 Unchanged Scope。开发规划只能在该基线上补充代码影响和实施边界，不得重新解释或改写需求。
+
 接收已有 Plan 时要求 Owner Skill 为 `idea`、`code-scan` 或 `arch-check`，Status 为 `draft`，Needs Reconfirmation 为空；否则停止并返回原 Owner Skill 的 replan 命令。直接创建开发 Plan 时从 Version 1 开始。
 
 设置 Owner Skill 为 `dev`、Status 为 `review-pending`，并把当前版本的 Review Status 和 Delivery Status 重置为待处理。
 
-完整展示 Human Plan 后停止，只返回 `/plan-check <当前 Plan Ref>`，等待用户显式调用。不得自动执行 check。
+完整展示 Human Plan 后停止，下一步只允许执行 `/plan-check <当前 Plan Ref>`，等待用户显式调用。不得自动执行 check。
 
 ## `/dev replan [Plan Ref]`
 

@@ -9,13 +9,15 @@ description: Use when the user invokes /design-check or a proposed frontend chan
 
 禁止修改项目源码和其他项目文件，只允许读取代码，并在 `docs/human-plans/` 下的当前 Plan 中更新 Frontend Impact、Review Status 与 Status。
 
+每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符。只提示，不代用户执行下一步。
+
 ## `/design-check [Plan Ref]`
 
-必须先确认 Review Status 中当前 Version 的 `/plan-check` 已通过。深入检查现有页面和设计体系，但只输出阻塞实施的设计问题。
+必须先确认 Review Status 中当前 Version 的 `/plan-check` 已通过；未通过时停止检查并返回当前阶段的正确下一步。深入检查现有页面和设计体系，但只输出阻塞实施的设计问题。
 
 Plan Ref 固定为 `<Plan 文件路径>@v<Version>`。缺少版本或与文件中的当前 Version 不一致时停止处理。Needs Reconfirmation 不为空时不得判定通过。
 
-Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`，Status 必须是 `review-pending`；否则停止检查。
+Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`，Status 必须是 `review-pending`；否则停止检查，并返回当前阶段的正确下一步。
 
 检查：
 
@@ -42,4 +44,4 @@ Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`，Status 必须是 `review-p
 
 通过或不适用时将 Status 设为 `ready-for-approval`，并按 Owner Skill 返回 `/dev approve <当前 Plan Ref>`、`/bug-fix approve <当前 Plan Ref>` 或 `/audit approve <当前 Plan Ref>`。
 
-更新 Plan、展示结论、当前 Plan Ref 和唯一下一步命令后停止。不得自动调用下一技能。
+更新 Plan、展示结论和当前 Plan Ref 后停止，不得自动调用下一技能。

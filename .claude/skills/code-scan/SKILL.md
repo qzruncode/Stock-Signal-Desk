@@ -25,11 +25,15 @@ description: Use when the user invokes /code-scan or asks to find bugs, ineffici
 
 创建一个简洁 Plan 文件，只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
 
+Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
+
 Owner Skill 设置为 `code-scan`，Status 设置为 `draft`。
 
 凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。新建 Plan 不要求输入 Plan Ref。
 
 写入后必须在聊天中直接展示简洁的 Requirement Baseline、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref，然后停止。不得只显示预览入口或只说已生成。
+
+每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符；有多个合法选择时说明用途，无需继续时说明结束。只提示，不代用户执行下一步。
 
 ## `/code-scan replan [Plan Ref]`
 
@@ -37,4 +41,4 @@ Owner Skill 设置为 `code-scan`，Status 设置为 `draft`。
 
 只在用户明确调用 `/code-scan replan <当前 Plan Ref>` 时更新；普通自然语言反馈不得触发写入。要求 Owner Skill 为 `code-scan`、Status 为 `draft`。
 
-保持 Owner Skill 为 `code-scan`、Status 为 `draft`。不扩写完整扫描报告，不修改代码。重新展示 Human Plan 后停止；确认后只返回 `/dev <当前 Plan Ref>`，等待用户显式调用。
+保持 Owner Skill 为 `code-scan`、Status 为 `draft`。不扩写完整扫描报告，不修改代码。重新展示 Human Plan 后停止；确认后下一步只允许执行 `/dev <当前 Plan Ref>`，等待用户显式调用。

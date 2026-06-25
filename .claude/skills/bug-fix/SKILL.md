@@ -31,9 +31,13 @@ Bug Human Plan 只帮助人确认修复是否准确，不展开调试过程或�
 
 Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
 
+Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
+
 凡命令引用已有 Plan，Plan Ref 固定为 `<Plan 文件路径>@v<Version>`；缺少版本或与文件中的当前 Version 不一致时停止处理。新建 Bug Plan 不要求输入 Plan Ref。每次输出都返回当前 Plan Ref。
 
 写入 Plan 文件后，必须在聊天中直接展示简洁的 Requirement Baseline、Confirmed Decisions、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref。不得只显示预览入口、只说已生成，或在展示前进入实现。
+
+每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符；有多个合法选择时说明用途，无需继续时说明结束。只提示，不代用户执行下一步。
 
 ## `/bug-fix xxx`
 
@@ -43,7 +47,7 @@ Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impac
 
 设置 Owner Skill 为 `bug-fix`、Status 为 `review-pending`，并把当前版本的 Review Status 和 Delivery Status 重置为待处理。
 
-完整展示 Human Plan 后停止，只返回 `/plan-check <当前 Plan Ref>`，等待用户显式调用。不得自动执行 check。
+完整展示 Human Plan 后停止，下一步只允许执行 `/plan-check <当前 Plan Ref>`，等待用户显式调用。不得自动执行 check。
 
 ## `/bug-fix replan [Plan Ref]`
 
@@ -55,7 +59,7 @@ Plan 文件只包含：Plan ID、Version、Owner Skill、Status、Frontend Impac
 
 ## `/bug-fix approve [Plan Ref]`
 
-仅当当前用户消息去除首尾空白后只包含 `/bug-fix approve <当前 Plan Ref>` 时执行当前版本。要求 Owner Skill 为 `bug-fix`、Status 为 `ready-for-approval`、Needs Reconfirmation 为空，并且 Review Status 中当前 Version 已通过所需检查。
+仅当当前用户消息去除首尾空白后只包含 `/bug-fix approve <当前 Plan Ref>` 时执行当前版本。要求 Owner Skill 为 `bug-fix`、Status 为 `ready-for-approval`、Needs Reconfirmation 为空，Review Status 中当前 Version 的 `/plan-check` 已通过，并且有前端影响时当前 Version 的 `/design-check` 已通过。
 
 源码写入前再次核对 Requirement Baseline、Current Plan 和 Unchanged Scope。发现根因不成立、需要扩大范围或改变已批准方案时不得自行处理；停止执行，把事项写入 Needs Reconfirmation，将 Status 设为 `replan-required`，并返回 `/bug-fix replan <当前 Plan Ref>`。不得保留未完成的本轮源码改动。
 

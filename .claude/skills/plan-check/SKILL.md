@@ -9,6 +9,8 @@ description: Use when the user invokes /plan-check or asks for architectural and
 
 禁止修改项目源码和其他项目文件，只允许读取代码，并在 `docs/human-plans/` 下的当前 Plan 中更新 Review Status 与 Status。
 
+每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符。只提示，不代用户执行下一步。
+
 ## `/plan-check [Plan Ref]`
 
 深入检查当前版本，但只输出人类需要处理的结论，不展示完整分析过程。
@@ -50,8 +52,8 @@ Review Status 必须记录本次结果对应的 Version；旧 Version 的结果�
 
 需要 replan 时把 Status 设为 `replan-required`。
 
-通过后，有前端影响或 Frontend Impact 为 `unknown` 时保持 Status 为 `review-pending`，只返回 `/design-check <当前 Plan Ref>`。
+通过后，有前端影响或 Frontend Impact 为 `unknown` 时保持 Status 为 `review-pending`，下一步只允许执行 `/design-check <当前 Plan Ref>`。
 
 Frontend Impact 为 `no` 时，把当前 Version 的 design-check 标记为 `不适用`，Status 设为 `ready-for-approval`，并按 Owner Skill 返回 `/dev approve <当前 Plan Ref>`、`/bug-fix approve <当前 Plan Ref>` 或 `/audit approve <当前 Plan Ref>`。
 
-更新 Plan、展示结论、当前 Plan Ref 和唯一下一步命令后停止。不得自动调用下一技能。
+更新 Plan、展示结论和当前 Plan Ref 后停止，不得自动调用下一技能。

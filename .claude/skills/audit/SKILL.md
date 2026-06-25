@@ -17,6 +17,8 @@ description: Use when the user invokes /audit or asks to review completed AI-wri
 - 在收到新的、明确的 `/audit approve <当前 Plan Ref>` 消息前，只允许写入 `docs/human-plans/` 下的当前 Plan 文件，禁止其他写入。
 - 审计发现问题后不得立即修复，必须等待 replan、检查和 approve。
 
+每次停止前，根据当前 Plan 的 Owner Skill、Status、Needs Reconfirmation 和本技能流程说明下一步，并给出当前允许执行的完整命令。命令必须带入真实 Plan Ref，不留占位符；有多个合法选择时说明用途，无需继续时说明结束。只提示，不代用户执行下一步。
+
 ## `/audit [Plan Ref]`
 
 只审查当前 Plan 已批准并已实现的版本。深入检查代码，但输出按严重程度压缩，只保留需要人类决策或必须修复的问题。
@@ -46,7 +48,7 @@ Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`。
 
 不罗列无关的小问题，不重复完整 Human Plan。
 
-通过时把 Status 设为 `complete`，并在 Delivery Status 记录当前 Version 的 Audit 为 `通过`。需要修复时把 Status 设为 `audit-fixes-required`，记录当前 Version 的 Audit 为 `需要修复`，只返回 `/audit replan <当前 Plan Ref>`。
+通过时把 Status 设为 `complete`，并在 Delivery Status 记录当前 Version 的 Audit 为 `通过`。需要修复时把 Status 设为 `audit-fixes-required`，记录当前 Version 的 Audit 为 `需要修复`，下一步只允许执行 `/audit replan <当前 Plan Ref>`。
 
 更新 Plan、展示结论、当前 Plan Ref 和唯一下一步后停止，不得自动 replan 或修复。
 
@@ -54,15 +56,15 @@ Owner Skill 必须是 `dev`、`bug-fix` 或 `audit`。
 
 在同一文件中把 Current Plan 更新为精简修复方案，增加 Version，仅纳入确认要修的审计问题。
 
-只在用户明确调用 `/audit replan <当前 Plan Ref>` 时更新。要求 Status 为 `audit-fixes-required` 或 `replan-required`；前者还必须有当前 Version 的 Audit `需要修复` 记录。
+只在用户明确调用 `/audit replan <当前 Plan Ref>` 时更新。首次创建修复计划要求 Status 为 `audit-fixes-required`，并有当前 Version 的 Audit `需要修复` 记录；后续调整要求 Owner Skill 为 `audit`，Status 为 `review-pending`、`replan-required` 或 `ready-for-approval`。
 
 设置 Owner Skill 为 `audit`、Status 为 `review-pending`，清空新版本的 Review Status 和 Delivery Status。保留 Requirement Baseline、Confirmed Decisions 和 Unchanged Scope，不复制完整审计报告。
 
-写入后必须在聊天中直接展示简洁的 Requirement Baseline、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref，只返回 `/plan-check <当前 Plan Ref>` 后停止。不得只显示预览入口、根据自然语言反馈直接修复或自动执行 check。
+写入后必须在聊天中直接展示简洁的 Requirement Baseline、Current Plan、Unchanged Scope、Needs Reconfirmation、Status 和 Plan Ref，下一步只允许执行 `/plan-check <当前 Plan Ref>`。随后停止，不得只显示预览入口、根据自然语言反馈直接修复或自动执行 check。
 
 ## `/audit approve [Plan Ref]`
 
-仅当当前用户消息去除首尾空白后只包含 `/audit approve <当前 Plan Ref>` 时执行当前 audit-fix 版本。要求 Owner Skill 为 `audit`、Status 为 `ready-for-approval`、Needs Reconfirmation 为空，并且 Review Status 中当前 Version 已通过所需检查。
+仅当当前用户消息去除首尾空白后只包含 `/audit approve <当前 Plan Ref>` 时执行当前 audit-fix 版本。要求 Owner Skill 为 `audit`、Status 为 `ready-for-approval`、Needs Reconfirmation 为空，Review Status 中当前 Version 的 `/plan-check` 已通过，并且有前端影响时当前 Version 的 `/design-check` 已通过。
 
 源码写入前再次核对 Requirement Baseline、Current Plan 和 Unchanged Scope。发现修复需要新增决策、扩大范围或改变已批准方案时不得自行处理；停止执行，把事项写入 Needs Reconfirmation，将 Status 设为 `replan-required`，并返回 `/audit replan <当前 Plan Ref>`。不得保留未完成的本轮源码改动。
 
