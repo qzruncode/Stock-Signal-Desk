@@ -80,9 +80,29 @@ const MarketStocksPage: React.FC = () => {
     } catch { /* ignore */ }
   }, []);
 
+  const startPolling = useCallback(() => {
+    if (pollRef.current) return;
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await stocksApi.syncStatus();
+        setSyncStatus(s);
+        if (s.status === 'success' || s.status === 'failed') {
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+          if (s.status === 'success') {
+            void loadStockList(1, stockSearch, stockMarket, false);
+          }
+        }
+      } catch { /* ignore */ }
+    }, 2000);
+  }, [loadStockList, stockSearch, stockMarket]);
+
   useEffect(() => {
     document.title = '全市场股票 - Stock-Signal-Desk';
-    void loadSyncStatus();
+    void loadSyncStatus().then((status) => {
+      if (status?.status === 'running' || status?.status === 'syncing_kline') {
+        startPolling();
+      }
+    });
     void loadStockList(1, '', '', false);
     void loadWatchlist();
 
@@ -130,18 +150,7 @@ const MarketStocksPage: React.FC = () => {
       if (result.success) {
         const status = await loadSyncStatus();
         if (status?.status === 'running' || status?.status === 'syncing_kline') {
-          pollRef.current = setInterval(async () => {
-            try {
-              const s = await stocksApi.syncStatus();
-              setSyncStatus(s);
-              if (s.status === 'success' || s.status === 'failed') {
-                if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-                if (s.status === 'success') {
-                  void loadStockList(1, stockSearch, stockMarket, false);
-                }
-              }
-            } catch { /* ignore */ }
-          }, 2000);
+          startPolling();
         }
       }
     } catch (err: unknown) {
@@ -149,7 +158,7 @@ const MarketStocksPage: React.FC = () => {
     } finally {
       setIsSyncing(false);
     }
-  }, [isSyncing, loadSyncStatus, stockSearch, stockMarket, loadStockList]);
+  }, [isSyncing, loadSyncStatus, startPolling]);
 
   const handleStockSearch = useCallback((value: string) => {
     setStockSearch(value);
