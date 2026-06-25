@@ -16,6 +16,7 @@ import logging
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from typing import Any, Callable, Iterable, Optional
 
@@ -27,6 +28,10 @@ from src.llm.generation_params import apply_litellm_generation_params
 from src.storage import DatabaseManager, persist_llm_usage
 
 logger = logging.getLogger(__name__)
+
+# Auto-trigger guard: prevent duplicate report generation tasks across instances
+_report_generation_lock = threading.Lock()
+_report_generation_triggered = False
 
 _CACHE_PREFIX = "market_theme_analysis:v3"
 _JSON_MARKER = "__MARKET_THEME_JSON__="
@@ -288,6 +293,19 @@ class MarketThemeService:
             latest["llm_used"] = bool(latest.get("llm_used"))
             latest.setdefault("model_used", None)
             return latest
+
+        # No report in DB — auto-trigger generation so next call gets real data
+        global _report_generation_triggered
+        if not _report_generation_triggered:
+            with _report_generation_lock:
+                if not _report_generation_triggered:
+                    try:
+                        self.submit_model_report_task(force=True)
+                        _report_generation_triggered = True
+                        logger.info("[MarketTheme] Auto-triggered market mainline report generation")
+                    except Exception:
+                        logger.exception("[MarketTheme] Failed to auto-trigger report generation")
+
         payload = self._build_minimal_model_report()
         payload["_cached"] = False
         payload["llm_used"] = False
