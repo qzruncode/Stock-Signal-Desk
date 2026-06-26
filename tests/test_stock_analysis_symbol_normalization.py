@@ -25,7 +25,7 @@ def disable_auth():
 
 
 def test_stock_info_accepts_ts_code_suffix(client, monkeypatch):
-    from api.v1.endpoints import stock_info
+    from api.v1.endpoints.stock_info import profile as stock_info_profile
 
     seen = {}
 
@@ -37,8 +37,8 @@ def test_stock_info_accepts_ts_code_suffix(client, monkeypatch):
         seen["em"] = symbol
         return {"_em_ok": True}
 
-    monkeypatch.setattr(stock_info, "_fetch_from_cninfo", fake_cninfo)
-    monkeypatch.setattr(stock_info, "_fetch_from_em", fake_em)
+    monkeypatch.setattr(stock_info_profile, "_fetch_from_cninfo", fake_cninfo)
+    monkeypatch.setattr(stock_info_profile, "_fetch_from_em", fake_em)
 
     response = client.get("/api/v1/stocks/info", params={"symbol": "300850.SZ", "force": True})
 

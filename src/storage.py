@@ -448,7 +448,7 @@ class MarketMainlineReport(Base):
                     payload.setdefault("evidence_digest", raw_payload.get("evidence_digest"))
                     payload.setdefault("debug_input", raw_payload.get("debug_input"))
             except Exception:
-                pass
+                logger.debug("payload 迁移失败", exc_info=True)
         payload.setdefault("id", self.id)
         payload.setdefault("report_key", self.report_key)
         payload.setdefault("as_of_date", self.as_of_date)
@@ -2094,7 +2094,7 @@ class DatabaseManager:
                             try:
                                 rec["extra"] = json.loads(r.extra_json)
                             except Exception:
-                                pass
+                                logger.debug("extra_json 解析失败", exc_info=True)
                         result.append(rec)
                     return result
         except Exception:

@@ -506,7 +506,7 @@ def _calc_bond_spread(db, country: str) -> float | None:
             if v10 is not None and v2 is not None:
                 return round(v10 - v2, 4)
     except Exception:
-        pass
+        logger.debug("计算利差失败", exc_info=True)
     return None
 
 
@@ -909,7 +909,7 @@ def _macro_cache_get(prefix: str) -> dict | None:
         if raw:
             return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
-        pass
+        logger.warning("读取宏观缓存失败", exc_info=True)
     return None
 
 
@@ -919,7 +919,7 @@ def _macro_cache_put(prefix: str, data: dict) -> None:
         DatabaseManager.get_instance().save_kline_snapshot(
             _macro_cache_key(prefix), json.dumps(data, ensure_ascii=False))
     except Exception:
-        pass
+        logger.warning("写入宏观缓存失败", exc_info=True)
 
 
 

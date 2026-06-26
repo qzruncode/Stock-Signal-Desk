@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from api.v1.endpoints import stocks
+from api.v1.endpoints.stocks import sync as stocks
 
 
 class _DeferredThread:

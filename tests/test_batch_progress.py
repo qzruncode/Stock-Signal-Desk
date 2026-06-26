@@ -1,7 +1,7 @@
 import threading
 
-from api.v1.endpoints import batch
-from api.v1.endpoints.batch import (
+from api.v1.endpoints import batches
+from api.v1.endpoints.batches.helpers import (
     _build_partial_report_from_run,
     _resolve_auto_resume_stock_codes,
     _resolve_resume_stock_codes,
@@ -83,7 +83,7 @@ def test_batch_abort_marks_all_work_completed_and_failed():
 
 
 def test_current_batch_route_is_registered_before_dynamic_run_detail_route():
-    paths = [route.path for route in batch.router.routes]
+    paths = [route.path for route in batches.router.routes]
 
     assert paths.index("/runs/current") < paths.index("/runs/{run_id}")
 

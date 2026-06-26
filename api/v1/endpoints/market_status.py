@@ -80,7 +80,7 @@ def _cache_get() -> dict | None:
         if raw:
             return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
-        pass
+        logger.warning("读取市场状态缓存失败", exc_info=True)
     return None
 
 
@@ -90,7 +90,7 @@ def _cache_put(data: dict) -> None:
         DatabaseManager.get_instance().save_kline_snapshot(
             _cache_key(), json.dumps(data, ensure_ascii=False))
     except Exception:
-        pass
+        logger.warning("写入市场状态缓存失败", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
