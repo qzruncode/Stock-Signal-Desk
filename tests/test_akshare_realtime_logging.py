@@ -74,11 +74,16 @@ def akshare_fetcher(monkeypatch):
     return fetcher
 
 
+# ── Realtime quote tests ────────────────────────────────────────────────
+# NOTE: realtime functions now live in data_provider.fetchers.realtime, so
+# monkeypatch paths target that module instead of data_provider.akshare_fetcher.
+
+
 def test_sina_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fetcher):
     breaker = _DummyCircuitBreaker()
-    monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
+    monkeypatch.setattr("data_provider.fetchers.realtime.get_realtime_circuit_breaker", lambda: breaker)
     monkeypatch.setattr(
-        "data_provider.akshare_fetcher.requests.get",
+        "data_provider.fetchers.realtime.requests.get",
         lambda *args, **kwargs: _DummyResponse(200, _make_sina_payload()),
     )
 
@@ -95,12 +100,12 @@ def test_sina_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fetche
 
 def test_sina_realtime_remote_disconnect_logs_category(caplog, monkeypatch, akshare_fetcher):
     breaker = _DummyCircuitBreaker()
-    monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
+    monkeypatch.setattr("data_provider.fetchers.realtime.get_realtime_circuit_breaker", lambda: breaker)
 
     def _raise_disconnect(*args, **kwargs):
         raise requests.exceptions.ConnectionError("Remote end closed connection without response")
 
-    monkeypatch.setattr("data_provider.akshare_fetcher.requests.get", _raise_disconnect)
+    monkeypatch.setattr("data_provider.fetchers.realtime.requests.get", _raise_disconnect)
 
     with caplog.at_level(logging.INFO):
         quote = akshare_fetcher._get_stock_realtime_quote_sina("601006")
@@ -111,14 +116,14 @@ def test_sina_realtime_remote_disconnect_logs_category(caplog, monkeypatch, aksh
     assert source_key == "akshare_sina"
     assert "category=remote_disconnect" in message
     assert f"endpoint={SINA_REALTIME_ENDPOINT}" in caplog.text
-    assert "新浪 实时行情接口失败:" in caplog.text
+    assert "新浪实时行情失败:" in caplog.text
 
 
 def test_tencent_realtime_http_status_logs_endpoint(caplog, monkeypatch, akshare_fetcher):
     breaker = _DummyCircuitBreaker()
-    monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
+    monkeypatch.setattr("data_provider.fetchers.realtime.get_realtime_circuit_breaker", lambda: breaker)
     monkeypatch.setattr(
-        "data_provider.akshare_fetcher.requests.get",
+        "data_provider.fetchers.realtime.requests.get",
         lambda *args, **kwargs: _DummyResponse(503, "service unavailable"),
     )
 
@@ -136,9 +141,9 @@ def test_tencent_realtime_http_status_logs_endpoint(caplog, monkeypatch, akshare
 
 def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fetcher):
     breaker = _DummyCircuitBreaker()
-    monkeypatch.setattr("data_provider.akshare_fetcher.get_realtime_circuit_breaker", lambda: breaker)
+    monkeypatch.setattr("data_provider.fetchers.realtime.get_realtime_circuit_breaker", lambda: breaker)
     monkeypatch.setattr(
-        "data_provider.akshare_fetcher.requests.get",
+        "data_provider.fetchers.realtime.requests.get",
         lambda *args, **kwargs: _DummyResponse(200, _make_tencent_payload()),
     )
 
@@ -153,21 +158,14 @@ def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fet
     assert "[实时行情-腾讯] 601006 大秦铁路:" in caplog.text
 
 
+# ── Hot stock tests (instance-level, no module-path changes needed) ─────
+
+
 def test_hot_stocks_uses_eastmoney_hot_ranking_when_available(monkeypatch, akshare_fetcher):
-    fake_akshare = SimpleNamespace()
-    monkeypatch.setitem(sys.modules, "akshare", fake_akshare)
     monkeypatch.setattr(
-        akshare_fetcher,
-        "_get_eastmoney_hot_stocks",
-        lambda _ak, n: [
-            {
-                "rank": 1,
-                "code": "SZ000066",
-                "name": "中国长城",
-                "price": 21.8,
-                "change_pct": 9.99,
-                "source": "东方财富人气榜",
-            }
+        "data_provider.fetchers.market._get_eastmoney_hot_stocks",
+        lambda _ak, n, *a, **kw: [
+            {"rank": 1, "code": "SZ000066", "name": "中国长城", "price": 21.8, "change_pct": 9.99, "source": "东方财富人气榜"},
         ],
     )
 
@@ -180,94 +178,38 @@ def test_hot_stocks_uses_eastmoney_hot_ranking_when_available(monkeypatch, aksha
 def test_hot_stocks_falls_back_to_xueqiu_when_primary_sources_empty(monkeypatch, akshare_fetcher):
     call_order = []
 
-    def _eastmoney(_ak, _n):
+    def _eastmoney(_ak, n, *a, **kw):
         call_order.append("eastmoney_hot")
         return None
 
-    def _up(_ak, _n):
+    def _up(_ak, n, *a, **kw):
         call_order.append("eastmoney_hot_up")
         return []
 
-    def _xueqiu(_ak, _n):
+    def _xueqiu(_ak, n, *a, **kw):
         call_order.append("xueqiu")
-        return [
-            {
-                "rank": 1,
-                "code": "SH600004",
-                "name": "华夏银行",
-                "price": 7.21,
-                "change_pct": None,
-                "source": "雪球关注榜",
-            }
-        ]
 
-    monkeypatch.setattr(akshare_fetcher, "_get_eastmoney_hot_stocks", _eastmoney)
-    monkeypatch.setattr(akshare_fetcher, "_get_eastmoney_hot_up_stocks", _up)
-    monkeypatch.setattr(akshare_fetcher, "_get_xueqiu_hot_stocks", _xueqiu)
+        return [{"rank": 1, "code": "SH600004", "name": "华夏银行", "price": 7.21, "change_pct": None, "source": "雪球关注榜"}]
+
+    monkeypatch.setattr("data_provider.fetchers.market._get_eastmoney_hot_stocks", _eastmoney)
+    monkeypatch.setattr("data_provider.fetchers.market._get_eastmoney_hot_up_stocks", _up)
+    monkeypatch.setattr("data_provider.fetchers.market._get_xueqiu_hot_stocks", _xueqiu)
 
     result = akshare_fetcher.get_hot_stocks(5)
 
     assert call_order == ["eastmoney_hot", "eastmoney_hot_up", "xueqiu"]
-    assert result == [
-        {
-            "rank": 1,
-            "code": "SH600004",
-            "name": "华夏银行",
-            "price": 7.21,
-            "change_pct": None,
-            "source": "雪球关注榜",
-        }
-    ]
+    assert result == [{"rank": 1, "code": "SH600004", "name": "华夏银行", "price": 7.21, "change_pct": None, "source": "雪球关注榜"}]
 
 
 def test_limit_up_pool_zero_pads_first_seal_times_before_sorting(monkeypatch, akshare_fetcher):
     df = pd.DataFrame(
         [
-            {
-                "代码": "000002",
-                "名称": "午后股",
-                "涨跌幅": 10.0,
-                "最新价": 12.3,
-                "成交额": 1,
-                "换手率": 2,
-                "封板资金": 3,
-                "首次封板时间": 141354,
-                "最后封板时间": 141500,
-                "炸板次数": 0,
-                "涨停统计": "1/1",
-                "连板数": 1,
-                "所属行业": "地产",
-            },
-            {
-                "代码": "000001",
-                "名称": "竞价股",
-                "涨跌幅": 10.0,
-                "最新价": 10.0,
-                "成交额": 1,
-                "换手率": 2,
-                "封板资金": 3,
-                "首次封板时间": 92500,
-                "最后封板时间": 93000,
-                "炸板次数": 0,
-                "涨停统计": "1/1",
-                "连板数": 1,
-                "所属行业": "计算机",
-            },
-            {
-                "代码": "000003",
-                "名称": "早盘股",
-                "涨跌幅": 10.0,
-                "最新价": 11.0,
-                "成交额": 1,
-                "换手率": 2,
-                "封板资金": 3,
-                "首次封板时间": 101500,
-                "最后封板时间": 102000,
-                "炸板次数": 0,
-                "涨停统计": "1/1",
-                "连板数": 1,
-                "所属行业": "电子",
-            },
+            {"代码": "000002", "名称": "午后股", "涨跌幅": 10.0, "最新价": 12.3, "成交额": 1, "换手率": 2, "封板资金": 3,
+             "首次封板时间": 141354, "最后封板时间": 141500, "炸板次数": 0, "涨停统计": "1/1", "连板数": 1, "所属行业": "地产"},
+            {"代码": "000001", "名称": "竞价股", "涨跌幅": 10.0, "最新价": 10.0, "成交额": 1, "换手率": 2, "封板资金": 3,
+             "首次封板时间": 92500, "最后封板时间": 93000, "炸板次数": 0, "涨停统计": "1/1", "连板数": 1, "所属行业": "计算机"},
+            {"代码": "000003", "名称": "早盘股", "涨跌幅": 10.0, "最新价": 11.0, "成交额": 1, "换手率": 2, "封板资金": 3,
+             "首次封板时间": 101500, "最后封板时间": 102000, "炸板次数": 0, "涨停统计": "1/1", "连板数": 1, "所属行业": "电子"},
         ]
     )
     fake_akshare = SimpleNamespace(stock_zt_pool_em=lambda date: df)
