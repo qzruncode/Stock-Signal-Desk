@@ -1,0 +1,4 @@
+interface:
+  display_name: "Design"
+  short_description: "Design interaction and visual experience plans."
+  default_prompt: "使用 $design 基于当前项目需求，为这个页面或交互设计良好的交互体验和视觉体验 Human Plan："

@@ -20,6 +20,16 @@ description: Use when the user invokes /bug-fix after a concrete bug and its aff
 - Human Plan 只描述预期行为、异常行为、已确认根因、修复方向、影响范围、回归风险和验收结果。
 - 不夹带重构、优化或其他事项，不写代码、逐文件改动或执行步骤。
 - 固定字段为：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+- Human Plan 是人类与 AI 的修复需求对齐凭据，不是排查记录或实现说明。
+- 固定字段必须保留；不适用字段写 `无`，不要为了填字段展开解释。
+- Plan 只回答：现在什么行为错了、修完应是什么行为、明确不做什么、怎么验收。
+- Current Plan 就是最终修复需求提示词：loop 多轮后，人类和 AI 已达成一致，AI 可按它执行。
+- 禁止写文件路径、函数名、行号、内部实现步骤、测试命令或技术排查过程，除非这些本身就是用户要审核的需求。
+- approve 后 AI 可以在内部拆解技术执行步骤；这些步骤不写回 Human Plan，除非出现新的需求决策。
+- Changes Since Last Plan 只写本轮需求变化一句话，不保留多轮历史。
+- Needs Reconfirmation 只写当前未解决的人类决策问题，不写分析过程或完整 replan 草稿。
+- Review Status、Delivery Status 和 Revision Notes 只写短状态，不写检查报告。
+- 聊天输出只展示短摘要、真实 Plan Ref 和下一步命令，不重复完整 Plan。
 - Owner Skill 为 `bug-fix`；Status 只使用 `review-pending`、`replan-required`、`reconfirmation-pending`、`ready-for-approval` 或 `implemented`。
 - Frontend Impact 只使用 `yes`、`no` 或 `unknown`。
 - Plan Ref 固定为 `<Plan 文件路径>@v<Version>`。引用版本不一致时停止且不写入，并返回当前 Plan Ref。
@@ -30,9 +40,9 @@ description: Use when the user invokes /bug-fix after a concrete bug and its aff
 Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能直接更新正式 Plan：
 
 - 使用当前消息中的人类答复，不从更早对话猜测。
-- 在 Needs Reconfirmation 中保留相关用户原文、AI 理解和拟应用变化。
+- 在 Needs Reconfirmation 中用短句保留人类问题、AI 理解和拟变更点。
 - 不清除确认项，不修改正式 Plan，不增加 Version，不恢复检查状态。
-- Status 设为 `reconfirmation-pending`，完整展示待提交 Replan 后停止。
+- Status 设为 `reconfirmation-pending`，只展示待提交 Replan 的理解摘要和拟变更点后停止。
 
 当前消息没有可用于对应确认项的答复时，不写入任何内容，只展示待确认事项并要求用户在 `/bug-fix replan <当前 Plan Ref>` 后补充答复。
 
@@ -44,7 +54,7 @@ Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能�
 
 命令中出现已有 Plan Ref 时不得接管该 Plan；停止且根据其 Owner Skill 和 Status 返回合法下一步。
 
-Needs Reconfirmation 为空时 Status 设为 `review-pending`，下一步只允许 `/plan-check <当前 Plan Ref>`；非空时 Status 设为 `replan-required`，下一步只允许 `/bug-fix replan <当前 Plan Ref>` 并要求补充对应答复。直接展示 Plan 和真实 Plan Ref 后停止。
+Needs Reconfirmation 为空时 Status 设为 `review-pending`，下一步只允许 `/plan-check <当前 Plan Ref>`；非空时 Status 设为 `replan-required`，下一步只允许 `/bug-fix replan <当前 Plan Ref>` 并要求补充对应答复。只展示短摘要、真实 Plan Ref 和下一步命令后停止。
 
 ## `/bug-fix replan [Plan Ref]`
 
@@ -53,7 +63,7 @@ Needs Reconfirmation 为空时 Status 设为 `review-pending`，下一步只允�
 - Needs Reconfirmation 为空：只调整当前修复范围，增加 Version，记录变化，重置 Review Status 和 Delivery Status，Status 设为 `review-pending`。
 - Needs Reconfirmation 非空：按 Reconfirmation 协议准备或修正待提交 Replan，Version 不变。
 
-不得改变预期行为或扩大事项范围。展示当前 Plan、真实 Plan Ref 和合法下一步后停止。
+不得改变预期行为或扩大事项范围。展示短摘要、真实 Plan Ref 和合法下一步后停止。
 
 ## `/bug-fix confirm [Plan Ref]`
 

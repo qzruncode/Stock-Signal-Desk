@@ -1,0 +1,4 @@
+interface:
+  display_name: "Batch Code Scan"
+  short_description: "Scan once into a complete plan inventory."
+  default_prompt: "使用 $batch-code-scan 一次扫描当前项目，生成完整问题库存和多个可并行推进的 draft Human Plan。"

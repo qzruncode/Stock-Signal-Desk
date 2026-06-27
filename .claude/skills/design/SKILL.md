@@ -1,0 +1,79 @@
+---
+name: design
+description: Use when the user invokes /design or asks a senior product designer to understand the current project requirements, then design a good interaction and visual experience for a frontend page, workflow, state model, or usability-focused Human Plan before implementation and design-check review.
+---
+
+# Design
+
+所有产出使用简体中文。代码标识、路径、组件名和必须保持准确的界面文案不翻译。
+
+只允许研究当前项目需求、现有前端、相似页面和用户目标，并写入 `docs/human-plans/` 下的当前 Human Plan。禁止修改源码、样式、资源或其他项目文件。输出 Plan 后必须停止，不得自动进入 `/design-check` 或 `/dev`。
+
+## 定位
+
+作为资深产品设计师，先理解当前项目要解决什么业务问题、服务什么用户、已有界面承载了哪些业务和数据，再设计清楚的交互体验和视觉体验。现有界面只作为业务、数据、入口和组件能力参考，不作为视觉审美约束；如果现有页面很丑，应主动提出更好的视觉方向。`/design` 不负责实现；通过 `/design-check` 后，再由 `/dev <Plan Ref>` 接管开发。
+
+## Plan 约束
+
+- 一个设计事项始终使用同一个 Plan 文件和 Plan ID。
+- Human Plan 面向人类审核，不写代码、逐文件改动、测试命令或 AI 执行步骤。
+- Current Plan 只保留项目需求理解、设计目标、用户路径、信息层级、关键交互、视觉体验方向、页面状态、响应式要求、文案原则、复用边界和验收结果。
+- 固定字段为：Plan ID、Version、Owner Skill、Status、Frontend Impact、Requirement Baseline、Confirmed Decisions、Current Plan、Changes Since Last Plan、Unchanged Scope、Needs Reconfirmation、Review Status、Delivery Status、Revision Notes。
+- Human Plan 是人类与 AI 的体验需求对齐凭据，不是设计规范文档或实现计划。
+- 固定字段必须保留；不适用字段写 `无`，不要为了填字段展开解释。
+- Plan 只回答：用户要完成什么、体验应变成什么样、明确不做什么、怎么验收。
+- Current Plan 就是最终体验需求提示词：loop 多轮后，人类和 AI 已达成一致，AI 可按它执行。
+- 只写会影响用户体验和人类取舍的设计结论；审美分析、竞品展开、组件实现和代码细节不进入 Plan。
+- AI 后续执行时可自行推导技术步骤；Human Plan 只保存双方对齐后的体验需求契约。
+- Changes Since Last Plan 只写本轮需求变化一句话，不保留多轮历史。
+- Needs Reconfirmation 只写当前未解决的人类决策问题，不写分析过程或完整 replan 草稿。
+- Review Status、Delivery Status 和 Revision Notes 只写短状态，不写检查报告。
+- 聊天输出只展示短摘要、真实 Plan Ref 和下一步命令，不重复完整 Plan。
+- Owner Skill 为 `design`；Status 只使用 `review-pending`、`replan-required`、`reconfirmation-pending` 或 `draft`。
+- Frontend Impact 固定为 `yes`。如果需求不是前端页面或交互体验，停止并建议使用更合适的技能。
+- Plan Ref 固定为 `<Plan 文件路径>@v<Version>`。引用版本不一致时停止且不写入，并返回当前 Plan Ref。
+- 任一命令的 Owner、Status 或前置条件不满足时停止且不写入，并根据当前 Plan 返回合法下一步。
+
+## Reconfirmation
+
+Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能直接更新正式 Plan：
+
+- 使用当前消息中的人类答复，不从更早对话猜测。
+- 在 Needs Reconfirmation 中用短句保留人类问题、AI 理解和拟变更点。
+- 不清除确认项，不修改正式 Plan，不增加 Version，不恢复检查状态。
+- Status 设为 `reconfirmation-pending`，只展示待提交 Replan 的理解摘要和拟变更点后停止。
+
+当前消息没有可用于对应确认项的答复时，不写入任何内容，只展示待确认事项并要求用户在 `/design replan <当前 Plan Ref>` 后补充答复。
+
+理解不正确时继续 `/design replan <当前 Plan Ref>` 修正待提交 Replan。只有精确的 `/design confirm <当前 Plan Ref>` 才能提交；自然语言肯定不算 confirm。未经 confirm，不得进入 `/design-check` 或 `/dev`。
+
+## `/design xxx`
+
+读取用户目标、当前项目需求和现有前端结构，生成简洁设计 Human Plan。必须考虑：
+
+- 当前项目的业务目标、真实使用场景、目标用户和核心任务。
+- 用户进入页面后应该先看到什么、怎么理解、怎么完成关键操作。
+- 信息层级、视觉重点、可扫描性、操作密度和阅读节奏。
+- 布局、间距、对齐、颜色、字体层级、图标、按钮和视觉状态的体验方向。
+- 现有页面的业务入口、数据字段、状态和组件能力；不要照抄现有丑样式。
+- 视觉方向应服务当前需求，可重建布局、层级、色彩、密度和组件呈现。
+- loading、empty、error、disabled、success、部分数据、权限不足和长内容状态。
+- 桌面端、移动端、键盘、焦点和可访问性。
+- 哪些设计边界不变，哪些决策需要人类确认。
+
+Needs Reconfirmation 为空时 Status 设为 `review-pending`，下一步只允许 `/design-check <当前 Plan Ref>`。Needs Reconfirmation 非空时 Status 设为 `replan-required`，下一步只允许 `/design replan <当前 Plan Ref>` 并要求补充对应答复。只展示短摘要、真实 Plan Ref 和下一步命令后停止。
+
+## `/design replan [Plan Ref]`
+
+要求 Owner Skill 为 `design`，Status 为 `review-pending`、`replan-required`、`reconfirmation-pending` 或 `draft`。
+
+- Needs Reconfirmation 为空：按人类反馈调整设计方案，增加 Version，记录变化，重置 Review Status 和 Delivery Status，Status 设为 `review-pending`。
+- Needs Reconfirmation 非空：按 Reconfirmation 协议准备或修正待提交 Replan，Version 不变。
+
+不得借 replan 扩大 Requirement Baseline。展示短摘要、真实 Plan Ref 和合法下一步后停止。
+
+## `/design confirm [Plan Ref]`
+
+仅当当前消息精确为 `/design confirm <当前 Plan Ref>` 时执行。要求 Owner Skill 为 `design`、Status 为 `reconfirmation-pending`，并存在对应当前 Version 的待提交 Replan。
+
+提交待提交 Replan，清除已解决的确认项，增加 Version 并记录变化，重置 Review Status 和 Delivery Status。仍有未解决项时 Status 设为 `replan-required`，下一步继续 `/design replan <新 Plan Ref>`；全部解决后 Status 设为 `review-pending`，下一步进入 `/design-check <新 Plan Ref>`。confirm 只提交 Replan，不代表开发批准。
