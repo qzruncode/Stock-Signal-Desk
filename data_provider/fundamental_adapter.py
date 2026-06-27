@@ -73,13 +73,15 @@ def _safe_datetime(value: Any) -> Optional[datetime]:
         return None
     try:
         parsed = pd.to_datetime(value)
-    except Exception:
+    except (ValueError, TypeError):
+        logger.warning("[Fundamental] _safe_datetime parse failed for value type=%s", type(value).__name__)
         return None
     if pd.isna(parsed):
         return None
     try:
         return parsed.to_pydatetime()
-    except Exception:
+    except (ValueError, TypeError):
+        logger.warning("[Fundamental] _safe_datetime to_pydatetime failed for value=%s", value)
         return None
 
 

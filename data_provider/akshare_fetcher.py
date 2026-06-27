@@ -282,9 +282,9 @@ class AkshareFetcher:
             try:
                 eastmoney_patch()
             except Exception:
-                logger.debug("[StocksSync] eastmoney_patch 应用失败（非致命）", exc_info=True)
+                logger.warning("[StocksSync] eastmoney_patch 应用失败（非致命）", exc_info=True)
         except Exception:
-            pass
+            logger.warning("[StocksSync] get_all_a_stocks outer guard failed", exc_info=True)
         return _fetch_all_a_stocks(enforce_rate_limit=self._enforce_rate_limit)
 
     # ── Kline history (convenience) ────────────────────────────────────

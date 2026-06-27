@@ -33,7 +33,7 @@ def _business_cache_get(symbol: str) -> dict | None:
         if raw:
             return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
-        pass
+        logger.warning("[StockBusiness] _business_cache_get failed for symbol=%s", symbol, exc_info=True)
     return None
 
 
@@ -43,7 +43,7 @@ def _business_cache_put(symbol: str, data: dict) -> None:
         DatabaseManager.get_instance().save_kline_snapshot(
             _business_cache_key(symbol), json.dumps(data, ensure_ascii=False))
     except Exception:
-        pass
+        logger.warning("[StockBusiness] _business_cache_put failed for symbol=%s", symbol, exc_info=True)
 
 
 def _sanitize(obj):
@@ -112,14 +112,14 @@ def _fetch_recent_events(symbol: str) -> dict:
             if df_news is not None and not df_news.empty:
                 news = _sanitize(df_news.to_dict('records'))
         except Exception:
-            pass
+            logger.warning("[StockBusiness] stock_news failed for symbol=%s", symbol, exc_info=True)
         # Get announcements
         try:
             df_ann = ak.stock_notice_report(symbol=symbol)
             if df_ann is not None and not df_ann.empty:
                 announcements = _sanitize(df_ann.to_dict('records'))
         except Exception:
-            pass
+            logger.warning("[StockBusiness] stock_notice_report failed for symbol=%s", symbol, exc_info=True)
     except Exception as exc:
         logger.warning("[StockBusiness] news/announcements failed for %s: %s", symbol, exc)
     return {"news": news, "announcements": announcements}
@@ -154,7 +154,7 @@ def _fetch_macro_data() -> dict:
                 if records:
                     result[key] = records[-3:]
             except Exception:
-                pass
+                logger.warning("[StockBusiness] _fetch_macro_data fetcher failed for indicator=%s", indicator_name, exc_info=True)
     except ImportError:
         pass
     return result
@@ -255,7 +255,7 @@ def _get_stock_industry(symbol: str) -> str:
             if meta and meta.industry:
                 return meta.industry
     except Exception:
-        pass
+        logger.warning("[StockBusiness] DB industry lookup failed for symbol=%s", symbol, exc_info=True)
     from src.data.stock_mapping import STOCK_SECTOR_MAP, STOCK_NAME_MAP
     name = STOCK_NAME_MAP.get(_normalize_symbol(symbol), "")
     sector = STOCK_SECTOR_MAP.get(_normalize_symbol(symbol), "")

@@ -423,6 +423,7 @@ def _cache_get(key: str) -> Optional[dict]:
         data = db.get_kline_snapshot(key)
         return data
     except Exception:
+        logger.warning("[RSS] _cache_get failed for key=%s", key, exc_info=True)
         return None
 
 

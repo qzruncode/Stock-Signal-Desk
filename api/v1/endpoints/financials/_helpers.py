@@ -124,7 +124,8 @@ def _parse_date(val) -> Optional[datetime]:
     try:
         import pandas as pd
         parsed = pd.to_datetime(val)
-    except Exception:
+    except (ValueError, TypeError):
+        logger.warning("[Financials] _parse_date pd.to_datetime failed for value=%s", val)
         return None
     if parsed is None:
         return None
@@ -132,7 +133,8 @@ def _parse_date(val) -> Optional[datetime]:
         if pd.isna(parsed):
             return None
         return parsed.to_pydatetime()
-    except Exception:
+    except (ValueError, TypeError):
+        logger.warning("[Financials] _parse_date to_pydatetime failed for value=%s", val)
         return None
 
 

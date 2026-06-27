@@ -1215,6 +1215,7 @@ def _extract_json_object_from_text(text: str) -> Optional[str]:
         json.loads(candidate)
         return candidate
     except Exception:
+        logger.error("[IndustryCycle] _extract_exact_json_segment failed", exc_info=True)
         return None
 
 
@@ -1324,6 +1325,7 @@ def _extract_partial_json_string_field(raw_text: str, field_name: str) -> Option
         )
         return repaired.strip() or None
     except Exception:
+        logger.error("[IndustryCycle] _repair_malformed_json failed", exc_info=True)
         return None
 
 

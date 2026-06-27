@@ -80,7 +80,7 @@ def _cache_get(symbol: str) -> dict | None:
         if raw:
             return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
-        pass
+        logger.warning("[StockInfo] _cache_get failed for symbol=%s", symbol, exc_info=True)
     return None
 
 
@@ -90,7 +90,7 @@ def _cache_put(symbol: str, data: dict) -> None:
         DatabaseManager.get_instance().save_kline_snapshot(
             _cache_key(symbol), json.dumps(data, ensure_ascii=False))
     except Exception:
-        pass
+        logger.warning("[StockInfo] _cache_put failed for symbol=%s", symbol, exc_info=True)
 
 
 def _fetch_from_cninfo(symbol: str) -> dict:

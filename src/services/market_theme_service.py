@@ -1053,6 +1053,7 @@ class MarketThemeService:
             )
             return repaired.strip() or None
         except Exception:
+            logger.error("[MarketTheme] _repair_malformed_json failed", exc_info=True)
             return None
 
     def _build_streaming_report_draft(self, raw_text: str) -> dict[str, Any]:
