@@ -1,25 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Activity, ArrowLeft, Plus, Search, Shield, TrendingUp, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
-import { stocksApi, type StockMetaItem, type SyncStatusResponse, type KlineStatusResponse } from '../api/stocks';
+import { stocksApi, type StockMetaItem, type KlineStatusResponse } from '../api/stocks';
 import { klineApi, type KlineResponse } from '../api/kline';
 import { EmptyState, InlineAlert } from '../components/common';
 import KLineChartPanel from '../components/KLineChartPanel';
 import { cn } from '../utils/cn';
 import { MARKET_LABELS, MARKET_COLORS } from '../utils/market';
 import { useTransientMessage } from '../hooks/useTransientMessage';
+import { useStockSyncPolling } from '../hooks/useStockSyncPolling';
+import { useStockVisibilityRefresh } from '../hooks/useStockVisibilityRefresh';
+import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
 
 const PAGE_SIZE = 50;
 
 const MarketStocksPage: React.FC = () => {
   const navigate = useNavigate();
-
-  // Sync status
-  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Stock list state
   const [allStocks, setAllStocks] = useState<StockMetaItem[]>([]);
@@ -37,24 +34,6 @@ const MarketStocksPage: React.FC = () => {
   // Alerts
   const [error, setError] = useState<string | null>(null);
   const { message: successMsg, showMessage: showSuccessMessage } = useTransientMessage();
-
-  // Sentinel for infinite scroll
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-
-  // Refs for latest filter values (used by polling interval to avoid stale closure)
-  const stockSearchRef = useRef(stockSearch);
-  const stockMarketRef = useRef(stockMarket);
-
-  useEffect(() => { stockSearchRef.current = stockSearch; }, [stockSearch]);
-  useEffect(() => { stockMarketRef.current = stockMarket; }, [stockMarket]);
-
-  const loadSyncStatus = useCallback(async () => {
-    try {
-      const status = await stocksApi.syncStatus();
-      setSyncStatus(status);
-      return status;
-    } catch { return null; }
-  }, []);
 
   const loadStockList = useCallback(async (page: number, search: string, market: string, append: boolean) => {
     if (append) {
@@ -91,85 +70,29 @@ const MarketStocksPage: React.FC = () => {
     }
   }, []);
 
-  const startPolling = useCallback(() => {
-    if (pollRef.current) return;
-    pollRef.current = setInterval(async () => {
-      try {
-        const s = await stocksApi.syncStatus();
-        setSyncStatus(s);
-        if (s.status === 'success' || s.status === 'failed') {
-          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-          if (s.status === 'success') {
-            void loadStockList(1, stockSearchRef.current, stockMarketRef.current, false);
-          }
-        }
-      } catch { /* ignore */ }
-    }, 2000);
-  }, [loadStockList]);
+  const { syncStatus, syncError, handleSync, isSyncingActive } = useStockSyncPolling({
+    loadWatchlist,
+    loadStockList,
+    stockSearch,
+    stockMarket,
+  });
+
+  useStockVisibilityRefresh(loadWatchlist);
 
   useEffect(() => {
     document.title = '全市场股票 - Stock-Signal-Desk';
-    void loadSyncStatus().then((status) => {
-      if (status?.status === 'running' || status?.status === 'syncing_kline') {
-        startPolling();
-      }
-    });
     void loadStockList(1, '', '', false);
     void loadWatchlist();
+  }, [loadStockList, loadWatchlist]);
 
-    // Re-sync watchlist when returning from portfolio page
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible') void loadWatchlist();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    // Also listen for focus in case of same-tab navigation
-    const onFocus = () => void loadWatchlist();
-    window.addEventListener('focus', onFocus);
-
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('focus', onFocus);
-    };
-  }, [loadSyncStatus, startPolling, loadStockList, loadWatchlist]);
-
-  // Infinite scroll observer
-  useEffect(() => {
-    if (!sentinelRef.current) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loadingMore && !stockLoading) {
-          void loadStockList(stockPage + 1, stockSearch, stockMarket, true);
-        }
-      },
-      { threshold: 0.1 },
-    );
-    observer.observe(sentinelRef.current);
-    return () => observer.disconnect();
-  }, [hasMore, loadingMore, stockLoading, stockPage, stockSearch, stockMarket, loadStockList]);
-
-  const handleSync = useCallback(async () => {
-    if (isSyncing) return;
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    setIsSyncing(true);
-    setSyncError(null);
-    try {
-      const result = await stocksApi.sync();
-      if (result.success) {
-        const status = await loadSyncStatus();
-        if (status?.status === 'running' || status?.status === 'syncing_kline') {
-          startPolling();
-        }
-      }
-    } catch (err: unknown) {
-      setSyncError(err instanceof Error ? err.message : '同步启动失败');
-    } finally {
-      setIsSyncing(false);
-    }
-  }, [isSyncing, loadSyncStatus, startPolling]);
+  const { sentinelRef } = useInfiniteScroll({
+    hasMore,
+    loadingMore,
+    loading: stockLoading,
+    onLoadMore: () => {
+      loadStockList(stockPage + 1, stockSearch, stockMarket, true);
+    },
+  });
 
   const handleStockSearch = useCallback((value: string) => {
     setStockSearch(value);
@@ -245,8 +168,6 @@ const MarketStocksPage: React.FC = () => {
     setVerifyModalOpen(false);
     setVerifyData(null);
   }, []);
-
-  const isSyncingActive = isSyncing || syncStatus?.status === 'running' || syncStatus?.status === 'syncing_kline';
 
   return (
     <div className="mx-auto flex h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col gap-4 overflow-hidden px-3 py-4 sm:px-5">

@@ -1,23 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { Select } from '../components/common';
-import { macroApi } from '../api/macro';
-import type {
-  IndexDataResponse,
-  BondYieldResponse,
-  IndicatorResponse,
-  SectorFlowResponse,
-  MarketBreadthResponse,
-} from '../types/macro';
-import { INDICATOR_OPTIONS } from '../types/macro';
+import { useMacroData, type MacroDimension } from '../hooks/useMacroData';
 import IndexPanelContent from '../components/macroData/IndexPanelContent';
 import BondPanelContent from '../components/macroData/BondPanelContent';
 import IndicatorPanelContent from '../components/macroData/IndicatorPanelContent';
 import SectorFlowPanelContent from '../components/macroData/SectorFlowPanelContent';
 import MarketBreadthPanelContent from '../components/macroData/MarketBreadthPanelContent';
-
-// ---- Page ----
-
-type MacroDimension = 'index' | 'bond' | 'indicator' | 'sector_flow' | 'market_breadth';
 
 const DIMENSION_OPTIONS: { value: MacroDimension; label: string }[] = [
   { value: 'index', label: '大盘指数' },
@@ -36,176 +24,23 @@ const DEFAULT_INDICATOR_MONTHS = 12;
 const MacroDataPage: React.FC = () => {
   const [dimension, setDimension] = useState<MacroDimension>('index');
 
-  // Index data
+  // Config state passed to the hook
   const [indexCode, setIndexCode] = useState(DEFAULT_INDEX);
   const [days, setDays] = useState(DEFAULT_DAYS);
-  const [indexData, setIndexData] = useState<IndexDataResponse | null>(null);
-  const [indexLoading, setIndexLoading] = useState(false);
-  const [indexError, setIndexError] = useState<string | null>(null);
-
-  // Bond yield
   const [bondCountry, setBondCountry] = useState(DEFAULT_BOND_COUNTRY);
   const [bondTerm, setBondTerm] = useState(DEFAULT_BOND_TERM);
-  const [bondData, setBondData] = useState<BondYieldResponse | null>(null);
-  const [bondLoading, setBondLoading] = useState(false);
-  const [bondError, setBondError] = useState<string | null>(null);
-
-  // Macro indicator - flat layout, all indicators at once
   const [indicatorMonths] = useState(DEFAULT_INDICATOR_MONTHS);
-  const [indicators, setIndicators] = useState<Record<string, IndicatorResponse>>({});
-  const [indicatorsLoading, setIndicatorsLoading] = useState(false);
-  const [indicatorsError, setIndicatorsError] = useState<string | null>(null);
-
-  // Sector fund flow
   const [sectorFlowType, setSectorFlowType] = useState('industry');
-  const [sectorFlowData, setSectorFlowData] = useState<SectorFlowResponse | null>(null);
-  const [sectorFlowLoading, setSectorFlowLoading] = useState(false);
-  const [sectorFlowError, setSectorFlowError] = useState<string | null>(null);
 
-  // Market breadth
-  const [marketBreadthData, setMarketBreadthData] = useState<MarketBreadthResponse | null>(null);
-  const [marketBreadthLoading, setMarketBreadthLoading] = useState(false);
-  const [marketBreadthError, setMarketBreadthError] = useState<string | null>(null);
-
-  // AbortController for cancelling in-flight requests on unmount or re-fetch
-  const abortRef = useRef<AbortController | null>(null);
-  const getSignal = useCallback(() => {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    return ctrl.signal;
-  }, []);
-
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
-
-  const fetchIndexData = useCallback(async () => {
-    const signal = getSignal();
-    setIndexLoading(true);
-    setIndexError(null);
-    setIndexData(null);
-    try {
-      const result = await macroApi.getIndexData(indexCode, days, signal);
-      setIndexData(result);
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg = (err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message || (err as Error)?.message || '获取数据失败';
-      setIndexError(msg);
-      setIndexData(null);
-    } finally {
-      setIndexLoading(false);
-    }
-  }, [indexCode, days, getSignal]);
-
-  const fetchBondYield = useCallback(async () => {
-    const signal = getSignal();
-    setBondLoading(true);
-    setBondError(null);
-    setBondData(null);
-    try {
-      const result = await macroApi.getBondYield(bondCountry, bondTerm, signal);
-      setBondData(result);
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg = (err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message || (err as Error)?.message || '获取数据失败';
-      setBondError(msg);
-      setBondData(null);
-    } finally {
-      setBondLoading(false);
-    }
-  }, [bondCountry, bondTerm, getSignal]);
-
-  const fetchAllIndicators = useCallback(async () => {
-    const signal = getSignal();
-    setIndicatorsLoading(true);
-    setIndicatorsError(null);
-    const results: Record<string, IndicatorResponse> = {};
-    await Promise.allSettled(
-      Object.keys(INDICATOR_OPTIONS).map(async (key) => {
-        try {
-          const result = await macroApi.getIndicator(key, indicatorMonths, signal);
-          results[key] = result;
-        } catch {
-          results[key] = {
-            indicator: key,
-            indicator_name: key,
-            latest: { period: '', value: null },
-            history: [],
-            trend: '-',
-            _fetched_at: new Date().toISOString(),
-            _cached: false,
-            source: '-',
-            errors: ['获取失败'],
-          };
-        }
-      }),
-    );
-    setIndicators(results);
-    setIndicatorsLoading(false);
-  }, [indicatorMonths, getSignal]);
-
-  const fetchSectorFlow = useCallback(async () => {
-    const signal = getSignal();
-    setSectorFlowLoading(true);
-    setSectorFlowError(null);
-    setSectorFlowData(null);
-    try {
-      const result = await macroApi.getSectorFlow(sectorFlowType, 10, signal);
-      setSectorFlowData(result);
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg = (err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message || (err as Error)?.message || '获取数据失败';
-      setSectorFlowError(msg);
-      setSectorFlowData(null);
-    } finally {
-      setSectorFlowLoading(false);
-    }
-  }, [sectorFlowType, getSignal]);
-
-  const fetchMarketBreadth = useCallback(async () => {
-    const signal = getSignal();
-    setMarketBreadthLoading(true);
-    setMarketBreadthError(null);
-    setMarketBreadthData(null);
-    try {
-      const result = await macroApi.getMarketBreadth(signal);
-      setMarketBreadthData(result);
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg = (err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message || (err as Error)?.message || '获取数据失败';
-      setMarketBreadthError(msg);
-      setMarketBreadthData(null);
-    } finally {
-      setMarketBreadthLoading(false);
-    }
-  }, [getSignal]);
-
-  useEffect(() => {
-    void fetchIndexData();
-  }, [fetchIndexData]);
-
-  useEffect(() => {
-    if (dimension === 'bond') {
-      void fetchBondYield();
-    }
-  }, [dimension, fetchBondYield]);
-
-  useEffect(() => {
-    if (dimension === 'indicator') {
-      void fetchAllIndicators();
-    }
-  }, [dimension, fetchAllIndicators]);
-
-  useEffect(() => {
-    if (dimension === 'sector_flow') {
-      void fetchSectorFlow();
-    }
-  }, [dimension, fetchSectorFlow]);
-
-  useEffect(() => {
-    if (dimension === 'market_breadth') {
-      void fetchMarketBreadth();
-    }
-  }, [dimension, fetchMarketBreadth]);
+  const {
+    indexData, indexLoading, indexError,
+    bondData, bondLoading, bondError,
+    indicators, indicatorsLoading, indicatorsError,
+    sectorFlowData, sectorFlowLoading, sectorFlowError,
+    marketBreadthData, marketBreadthLoading, marketBreadthError,
+  } = useMacroData({
+    dimension, indexCode, days, bondCountry, bondTerm, indicatorMonths, sectorFlowType,
+  });
 
   const renderContent = () => {
     switch (dimension) {

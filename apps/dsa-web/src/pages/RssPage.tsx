@@ -1,7 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ExternalLink, RefreshCw, Rss, Clock } from 'lucide-react';
 import { rssApi, type RssFeedResponse, type RssSourceOption } from '../api/rss';
 import { cn } from '../utils/cn';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useRssFeeds } from '../hooks/useRssFeeds';
 
 // ── 分组定义 ──────────────────────────────────────────────
 
@@ -157,14 +159,14 @@ function formatTime(iso: string): string {
 const RssPage: React.FC = () => {
   const [sources, setSources] = useState<RssSourceOption[]>([]);
   const [source, setSource] = useState('wallstreetcn');
-  const [stockCode, setStockCode] = useState('');
+  const [stockInput, setStockInput] = useState('');
   const [keyword, setKeyword] = useState('');
   const [uid, setUid] = useState('');
   const [subType, setSubType] = useState('');
   const [category, setCategory] = useState('');
-  const [feedData, setFeedData] = useState<RssFeedResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  // 输入防抖
+  const debouncedStockCode = useDebouncedValue(stockInput.trim(), 500);
 
   // 加载源列表
   useEffect(() => {
@@ -184,66 +186,28 @@ const RssPage: React.FC = () => {
   // 切换源时重置条件参数并设置默认值
   useEffect(() => {
     if (!currentSource) return;
-    setStockCode('');
-    setStockInput('');
-    setKeyword('');
-    setUid('');
-    if (currentSource.default_type) setSubType(currentSource.default_type);
-    else setSubType('');
-    if (currentSource.default_category) setCategory(currentSource.default_category);
-    else setCategory('');
+    (() => {
+      setStockInput('');
+      setKeyword('');
+      setUid('');
+      if (currentSource.default_type) setSubType(currentSource.default_type);
+      else setSubType('');
+      if (currentSource.default_category) setCategory(currentSource.default_category);
+      else setCategory('');
+    })();
   }, [currentSource]);
 
-  const abortRef = useRef<AbortController | null>(null);
-
   // 获取数据
-  const fetchFeeds = useCallback(async () => {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setLoading(true);
-    setError(null);
-    try {
-      const params: Record<string, unknown> = { source, limit: 30 };
-      if (currentSource?.requires_stock && stockCode) params.stock_code = stockCode;
-      if (currentSource?.requires_keyword && keyword) params.keyword = keyword;
-      if (currentSource?.requires_uid && uid) params.uid = uid;
-      if (currentSource?.requires_type && subType) params.type = subType;
-      if (currentSource?.requires_category && category) params.category = category;
-      const result = await rssApi.getFeeds(params as Parameters<typeof rssApi.getFeeds>[0], ctrl.signal);
-      setFeedData(result);
-      if (result.errors?.length) {
-        setError(result.errors.join('; '));
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      const msg =
-        (err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message ||
-        (err as Error).message ||
-        '获取 RSS 数据失败';
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, [source, stockCode, keyword, uid, subType, category, currentSource]);
-
-  // 自动加载
-  useEffect(() => {
-    // 仅在有源配置后自动加载
-    if (sources.length > 0) {
-      void fetchFeeds();
-    }
-  }, [fetchFeeds, sources.length]);
-
-  // Abort in-flight requests on unmount
-  useEffect(() => () => { abortRef.current?.abort(); }, []);
-
-  // 输入防抖
-  const [stockInput, setStockInput] = useState('');
-  useEffect(() => {
-    const timer = setTimeout(() => setStockCode(stockInput.trim()), 500);
-    return () => clearTimeout(timer);
-  }, [stockInput]);
+  const { feedData, loading, error, fetchFeeds } = useRssFeeds({
+    source,
+    stockCode: debouncedStockCode,
+    keyword,
+    uid,
+    subType,
+    category,
+    currentSource,
+    sourcesLength: sources.length,
+  });
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
