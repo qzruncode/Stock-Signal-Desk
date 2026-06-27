@@ -226,13 +226,7 @@ def _build_index_response(index_code: str, records: list[dict], cached: bool, so
 # Background refresh lock
 # ---------------------------------------------------------------------------
 
-_lock = None
-
-def _get_lock():
-    global _lock
-    if _lock is None:
-        _lock = threading.Lock()
-    return _lock
+_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +259,7 @@ def get_index_data(
 
     if records:
         # 有历史数据但非今日，返回并后台刷新
-        lock = _get_lock()
+        lock = _lock
         if lock.acquire(blocking=False):
             def _bg_refresh():
                 try:
@@ -414,7 +408,7 @@ def get_bond_yield(
         )
 
     if history:
-        lock = _get_lock()
+        lock = _lock
         if lock.acquire(blocking=False):
             def _bg_refresh():
                 try:
@@ -726,7 +720,7 @@ def get_macro_indicator(
 
     if records:
         trend = _trend_label(records)
-        lock = _get_lock()
+        lock = _lock
         if lock.acquire(blocking=False):
             def _bg_refresh():
                 try:

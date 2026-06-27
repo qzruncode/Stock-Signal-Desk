@@ -287,7 +287,7 @@ def _fetch_concept() -> list[dict]:
 # Endpoint
 # ---------------------------------------------------------------------------
 
-_lock = None
+_lock = threading.Lock()
 
 
 @router.get("/sectors", summary="获取行业/概念板块列表")
@@ -317,9 +317,6 @@ def get_sector_list(
                 item['_cached'] = True
 
             # Background refresh (same pattern as market_status)
-            global _lock
-            if _lock is None:
-                _lock = threading.Lock()
             if _lock.acquire(blocking=False):
                 def _bg_refresh():
                     try:

@@ -170,7 +170,7 @@ def _fetch_all(symbol: str) -> dict:
     return merged
 
 
-_lock = None
+_lock = threading.Lock()
 
 
 @router.get("/info", summary="获取个股基本资料")
@@ -179,10 +179,6 @@ def get_stock_info(
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """Get basic stock profile from combined sources with cache."""
-    global _lock
-    if _lock is None:
-        _lock = threading.Lock()
-
     normalized = _normalize_symbol(symbol)
 
     if not force:

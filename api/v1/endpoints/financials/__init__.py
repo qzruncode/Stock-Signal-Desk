@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Background-refresh locks (lazily initialised, same pattern as original)
-_lock: Optional[threading.Lock] = None
-_fins_lock: Optional[threading.Lock] = None
+_lock = threading.Lock()
+_fins_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # /financials
@@ -79,9 +79,6 @@ def get_financials(
         if cached:
             cached['_cached'] = True
 
-            global _lock
-            if _lock is None:
-                _lock = threading.Lock()
             if _lock.acquire(blocking=False):
                 def _bg_refresh():
                     try:
@@ -195,9 +192,6 @@ def get_financial_statements(
             cached['_cached'] = True
 
             # Background refresh — keep cache warm, same pattern as stock_info and financials
-            global _fins_lock
-            if _fins_lock is None:
-                _fins_lock = threading.Lock()
             if _fins_lock.acquire(blocking=False):
                 def _bg_refresh():
                     try:

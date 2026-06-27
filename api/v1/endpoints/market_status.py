@@ -223,7 +223,7 @@ def _fetch_all() -> dict:
 # Endpoint
 # ---------------------------------------------------------------------------
 
-_lock = None
+_lock = threading.Lock()
 
 
 @router.get("/status", summary="获取市场整体状态")
@@ -254,9 +254,6 @@ def get_market_status(
             cached.setdefault('is_stale', _market_status_is_stale(cached))
             cached.setdefault('fallback_used', True)
 
-            global _lock
-            if _lock is None:
-                _lock = threading.Lock()
             if _lock.acquire(blocking=False):
                 def _bg():
                     try:
