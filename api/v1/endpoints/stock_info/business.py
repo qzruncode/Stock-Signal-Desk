@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from typing import AsyncGenerator, Optional
@@ -615,6 +616,7 @@ async def get_stock_business_stream(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         queue: asyncio.Queue = asyncio.Queue()
+        cancel_event = threading.Event()
 
         def _worker():
             """Run analysis in a thread, enqueueing events."""
@@ -656,6 +658,9 @@ async def get_stock_business_stream(
                     api_key=api_key,
                 )
 
+                if cancel_event.is_set():
+                    return
+
                 _business_cache_put(normalized, result)
 
                 queue.put_nowait(("complete", {
@@ -676,10 +681,16 @@ async def get_stock_business_stream(
         thread = threading.Thread(target=_worker, daemon=True)
         thread.start()
 
-        while True:
-            event_type, data = await queue.get()
-            if event_type is None:
-                break
-            yield _enqueue(event_type, data)
+        try:
+            while True:
+                event_type, data = await queue.get()
+                if event_type is None:
+                    break
+                yield _enqueue(event_type, data)
+        except asyncio.CancelledError:
+            logger.debug("[StockBusiness] Client disconnected, cancelling worker")
+            raise
+        finally:
+            cancel_event.set()
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
