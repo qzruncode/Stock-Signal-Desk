@@ -47,7 +47,7 @@ def test_macro_index_route_returns_cached_db_payload(client, monkeypatch):
                 }
             ]
 
-    monkeypatch.setattr(macro, "_get_db", lambda: _FakeDb())
+    monkeypatch.setattr("api.v1.endpoints.macro._index.get_db", lambda: _FakeDb())
 
     response = client.get("/api/v1/macro/index", params={"index_code": "000001", "days": 5})
 
