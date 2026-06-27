@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, TYPE_CHECKING, Tuple, Callable, TypeVar
@@ -1132,13 +1133,16 @@ class DatabaseManager:
     """
     
     _instance: Optional['DatabaseManager'] = None
+    _instance_lock = threading.Lock()
     _initialized: bool = False
-    
+
     def __new__(cls, *args, **kwargs):
-        """单例模式实现"""
+        """单例模式实现（double-checked locking）"""
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
     
     def __init__(self, db_url: Optional[str] = None):
@@ -1705,6 +1709,7 @@ class DatabaseManager:
                 payload = json.loads(row.payload or "{}")
                 return payload if isinstance(payload, dict) else None
             except Exception:
+                logger.warning("[Storage] 快照 payload JSON 解析失败", exc_info=True)
                 return None
 
     def save_quote_snapshot(self, code: str, data_json: str) -> None:

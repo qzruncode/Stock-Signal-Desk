@@ -72,7 +72,9 @@ const MarketStocksPage: React.FC = () => {
       setStockTotal(result.total);
       setStockPage(result.page);
       setHasMore(result.page < result.total_pages);
-    } catch { /* ignore */ }
+    } catch {
+      setError('加载股票列表失败');
+    }
     finally {
       setStockLoading(false);
       setLoadingMore(false);
@@ -84,7 +86,9 @@ const MarketStocksPage: React.FC = () => {
     try {
       const result = await watchlistApi.get();
       setWatchlistData(result);
-    } catch { /* ignore */ }
+    } catch {
+      console.error('加载自选股列表失败');
+    }
   }, []);
 
   const startPolling = useCallback(() => {

@@ -16,6 +16,7 @@ import logging
 import os
 import secrets
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -37,16 +38,7 @@ _session_secret: Optional[bytes] = None
 _password_hash_salt: Optional[bytes] = None
 _password_hash_stored: Optional[bytes] = None
 _rate_limit: dict[str, Tuple[int, float]] = {}
-_rate_limit_lock = None
-
-
-def _get_lock():
-    """Lazy init threading lock for rate limit dict."""
-    global _rate_limit_lock
-    if _rate_limit_lock is None:
-        import threading
-        _rate_limit_lock = threading.Lock()
-    return _rate_limit_lock
+_rate_limit_lock = threading.Lock()
 
 
 def _ensure_env_loaded() -> None:
@@ -386,9 +378,8 @@ def get_client_ip(request) -> str:
 
 def check_rate_limit(ip: str) -> bool:
     """Return True if under limit, False if rate limited."""
-    lock = _get_lock()
     now = time.time()
-    with lock:
+    with _rate_limit_lock:
         expired_keys = [k for k, (_, ts) in _rate_limit.items() if now - ts > RATE_LIMIT_WINDOW_SEC]
         for k in expired_keys:
             del _rate_limit[k]
@@ -401,9 +392,8 @@ def check_rate_limit(ip: str) -> bool:
 
 def record_login_failure(ip: str) -> None:
     """Record a failed login attempt for rate limiting."""
-    lock = _get_lock()
     now = time.time()
-    with lock:
+    with _rate_limit_lock:
         if ip in _rate_limit:
             count, first_ts = _rate_limit[ip]
             if now - first_ts > RATE_LIMIT_WINDOW_SEC:
@@ -416,8 +406,7 @@ def record_login_failure(ip: str) -> None:
 
 def clear_rate_limit(ip: str) -> None:
     """Clear rate limit for IP after successful login."""
-    lock = _get_lock()
-    with lock:
+    with _rate_limit_lock:
         _rate_limit.pop(ip, None)
 
 

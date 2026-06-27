@@ -1653,7 +1653,7 @@ class AkshareFetcher:
             try:
                 eastmoney_patch()
             except Exception:
-                pass
+                logger.debug("[StocksSync] eastmoney_patch 应用失败（非致命）", exc_info=True)
 
             logger.info("[StocksSync] Step 1: 获取 A 股代码名称列表...")
 
@@ -2138,7 +2138,7 @@ class AkshareFetcher:
             if pd.isna(value):
                 return ""
         except TypeError:
-            pass
+            pass  # pd.isna may raise TypeError for non-scalar types; treat as non-empty
 
         text = str(value).strip()
         if not text or text.lower() in {"nan", "nat", "none", "null", "-", "--"}:

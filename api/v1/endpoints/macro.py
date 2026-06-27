@@ -1110,6 +1110,7 @@ def _fetch_market_breadth_data() -> dict:
                         if hsgt_total > 0:
                             flat = round(total * hsgt_flat / hsgt_total)
                 except Exception:
+                    logger.warning("[Macro-市场宽度-北向资金平盘] 计算异常", exc_info=True)
                     pass
             flat_count = max(0, flat)
         except Exception as e:

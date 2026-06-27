@@ -705,7 +705,7 @@ class SystemConfigService:
                 try:
                     litellm.register_model({model_name: pricing})
                 except Exception:
-                    pass
+                    logger.warning("[LLM] 注册自定义模型定价失败: %s", model_name, exc_info=True)
 
             started_at = time.perf_counter()
             response = call_litellm_with_param_recovery(

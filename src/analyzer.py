@@ -10,6 +10,7 @@ A股自选股智能分析系统 - AI分析层
 3. 解析 LLM 响应为结构化 AnalysisResult
 """
 
+import contextlib
 import json
 import logging
 import math
@@ -2253,12 +2254,13 @@ class GeminiAnalyzer:
                             cache_recovery=False,
                             logger=logger,
                         )
-                        _stream_text, _stream_usage = self._consume_litellm_stream(
-                            stream_response,
-                            model=model,
-                            progress_callback=stream_progress_callback,
-                            text_callback=stream_text_callback,
-                        )
+                        with contextlib.closing(stream_response):
+                            _stream_text, _stream_usage = self._consume_litellm_stream(
+                                stream_response,
+                                model=model,
+                                progress_callback=stream_progress_callback,
+                                text_callback=stream_text_callback,
+                            )
                     except _LiteLLMStreamError as exc:
                         if exc.partial_received:
                             logger.warning(

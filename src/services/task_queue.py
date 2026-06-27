@@ -187,12 +187,20 @@ class AnalysisTaskQueue:
     @property
     def executor(self) -> ThreadPoolExecutor:
         """懒加载线程池"""
-        if self._executor is None:
+        self._ensure_executor()
+        return self._executor
+
+    def _ensure_executor(self) -> None:
+        """线程安全地创建 executor（_data_lock 保护）"""
+        if self._executor is not None:
+            return
+        with self._data_lock:
+            if self._executor is not None:
+                return
             self._executor = ThreadPoolExecutor(
                 max_workers=self._max_workers,
                 thread_name_prefix="analysis_task_"
             )
-        return self._executor
 
     @property
     def max_workers(self) -> int:
