@@ -631,17 +631,17 @@ async def get_stock_business_stream(
 
                 queue.put_nowait(("progress", {"stage": "data_ready", "message": "数据获取完成，开始 LLM 分析..."}))
 
-                def _on_text(delta: str, full_text: str):
-                    queue.put_nowait(("business_text", {"delta": delta}))
+                def _on_text(text: str):
+                    queue.put_nowait(("business_text", {"delta": text}))
 
-                def _on_env_text(delta: str, full_text: str):
-                    queue.put_nowait(("environment_text", {"delta": delta}))
+                def _on_env_text(text: str):
+                    queue.put_nowait(("environment_text", {"delta": text}))
 
-                def _on_track_text(delta: str, full_text: str):
-                    queue.put_nowait(("track_quality_text", {"delta": delta}))
+                def _on_track_text(text: str):
+                    queue.put_nowait(("track_quality_text", {"delta": text}))
 
-                def _on_catalyst_text(delta: str, full_text: str):
-                    queue.put_nowait(("catalyst_text", {"delta": delta}))
+                def _on_catalyst_text(text: str):
+                    queue.put_nowait(("catalyst_text", {"delta": text}))
 
                 result = _generate_llm_business_analysis(
                     symbol=normalized,
@@ -689,8 +689,17 @@ async def get_stock_business_stream(
                 yield _enqueue(event_type, data)
         except asyncio.CancelledError:
             logger.debug("[StockBusiness] Client disconnected, cancelling worker")
+            cancel_event.set()
+            logger.info("[StockBusiness] Worker cancel_event set after disconnect")
+            raise
+        except Exception:
+            logger.exception("[StockBusiness] Unexpected error in event generator, cancelling worker")
+            cancel_event.set()
+            logger.info("[StockBusiness] Worker cancel_event set after generator error")
             raise
         finally:
-            cancel_event.set()
+            if not cancel_event.is_set():
+                cancel_event.set()
+                logger.info("[StockBusiness] Worker cancel_event set in finally")
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
