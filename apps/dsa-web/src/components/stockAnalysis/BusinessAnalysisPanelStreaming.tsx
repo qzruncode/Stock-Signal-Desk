@@ -13,7 +13,7 @@ import {
 import { useBusinessStream } from '../../hooks';
 import { BusinessAnalysisPanel } from './BusinessAnalysisPanel';
 
-export function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
+export default function BusinessAnalysisPanelStreaming({ symbol }: { symbol: string }) {
   const {
     phase,
     progressEvents,

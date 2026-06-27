@@ -1,11 +1,12 @@
 import type React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { AssistantRuntimeProvider, useThreadRuntime } from '@assistant-ui/react';
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
 import type { ExportedMessageRepository } from '@assistant-ui/core';
 import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
-import { Thread } from '../components/assistant-ui/thread';
+
+const Thread = lazy(() => import('../components/assistant-ui/thread'));
 import { ThreadListSidebar } from '../components/assistant-ui/threadlist-sidebar';
 import { useAssistantTools } from '../hooks/useAssistantTools';
 import { cn } from '../utils/cn';
@@ -378,11 +379,24 @@ const ChatLayout: React.FC<{
         ) : null}
 
         <div className="min-h-0 flex-1">
-          <Thread />
+          <Suspense fallback={<ChatLoadingFallback />}>
+            <Thread />
+          </Suspense>
         </div>
       </div>
     </div>
   );
 };
+
+function ChatLoadingFallback() {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center">
+      <div className="flex flex-col items-center gap-3">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <p className="text-sm text-muted-foreground">正在加载 AI 投研助手...</p>
+      </div>
+    </div>
+  );
+}
 
 export default ChatHomePage;

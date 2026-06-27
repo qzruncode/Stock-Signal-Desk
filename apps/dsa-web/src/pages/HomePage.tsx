@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   FileText,
@@ -13,15 +13,16 @@ import { ConfirmDialog, InlineAlert } from '../components/common';
 import { BatchPanel } from '../components/batch';
 import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
-import HomeAnalysisCanvas from '../components/home/HomeAnalysisCanvas';
 import HomeSidebar from '../components/home/HomeSidebar';
-import { ReportMarkdown } from '../components/report';
 import { TemplateManager } from '../components/templates/TemplateManager';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
 import type { AnalysisReport, TaskInfo, TaskStatus } from '../types/analysis';
 import type { SetupStatusResponse } from '../types/systemConfig';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
+
+const HomeAnalysisCanvas = lazy(() => import('../components/home/HomeAnalysisCanvas'));
+const ReportMarkdown = lazy(() => import('../components/report/ReportMarkdown'));
 
 const HomePage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -435,20 +436,22 @@ const HomePage: React.FC = () => {
                 />
               </div>
 
-              <HomeAnalysisCanvas
-                error={error}
-                onClearError={clearError}
-                isLoadingTaskStatus={isLoadingTaskStatus}
-                taskPreviewReport={taskPreviewReport}
-                isLoadingReport={isLoadingReport}
-                pendingAutoSelectCode={pendingAutoSelectCode}
-                selectedReport={selectedReport}
-                isAnalyzing={isAnalyzing}
-                onReanalyze={handleReanalyze}
-                onOpenMarkdownDrawer={openMarkdownDrawer}
-                reanalyzeLabel={reportText.reanalyze}
-                fullReportLabel={reportText.fullReport}
-              />
+              <Suspense fallback={<HomeAnalysisFallback />}>
+                <HomeAnalysisCanvas
+                  error={error}
+                  onClearError={clearError}
+                  isLoadingTaskStatus={isLoadingTaskStatus}
+                  taskPreviewReport={taskPreviewReport}
+                  isLoadingReport={isLoadingReport}
+                  pendingAutoSelectCode={pendingAutoSelectCode}
+                  selectedReport={selectedReport}
+                  isAnalyzing={isAnalyzing}
+                  onReanalyze={handleReanalyze}
+                  onOpenMarkdownDrawer={openMarkdownDrawer}
+                  reanalyzeLabel={reportText.reanalyze}
+                  fullReportLabel={reportText.fullReport}
+                />
+              </Suspense>
             </div>
           </section>
 
@@ -475,13 +478,15 @@ const HomePage: React.FC = () => {
       </div>
 
       {markdownDrawerOpen && selectedReport?.meta.id ? (
-        <ReportMarkdown
-          recordId={selectedReport.meta.id}
-          stockName={selectedReport.meta.stockName || ''}
-          stockCode={selectedReport.meta.stockCode}
-          reportLanguage={reportLanguage}
-          onClose={closeMarkdownDrawer}
-        />
+        <Suspense fallback={null}>
+          <ReportMarkdown
+            recordId={selectedReport.meta.id}
+            stockName={selectedReport.meta.stockName || ''}
+            stockCode={selectedReport.meta.stockCode}
+            reportLanguage={reportLanguage}
+            onClose={closeMarkdownDrawer}
+          />
+        </Suspense>
       ) : null}
 
       <ConfirmDialog
@@ -511,5 +516,16 @@ const HomePage: React.FC = () => {
     </div>
   );
 };
+
+function HomeAnalysisFallback() {
+  return (
+    <div className="flex items-center justify-center py-12">
+      <div className="flex flex-col items-center gap-3">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+        <p className="text-sm text-slate-400">加载分析面板...</p>
+      </div>
+    </div>
+  );
+}
 
 export default HomePage;

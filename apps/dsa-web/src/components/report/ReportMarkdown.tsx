@@ -21,7 +21,7 @@ interface ReportMarkdownProps {
  * Markdown report drawer component
  * Uses common Drawer component to display full Markdown format analysis report
  */
-export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
+const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
   recordId,
   stockName,
   stockCode,
@@ -230,3 +230,5 @@ export const ReportMarkdown: React.FC<ReportMarkdownProps> = ({
     </Drawer>
   );
 };
+
+export default ReportMarkdown;

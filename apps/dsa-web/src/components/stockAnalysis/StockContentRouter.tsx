@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import KLineChartPanel from '../KLineChartPanel';
 import FinancialStatementsPanel from '../FinancialStatementsPanel';
 import {
@@ -13,7 +13,8 @@ import { BuyCriteriaPanel } from '../buyCriteria/BuyCriteriaPanel';
 import { DataSection } from './DataSection';
 import { ValuationRatiosPanel, PriceOverdraftPanel } from './ValuationPanels';
 import { ShareholderStructurePanel } from './ShareholderStructurePanel';
-import { BusinessAnalysisPanelStreaming } from './BusinessAnalysisPanelStreaming';
+
+const BusinessAnalysisPanelStreaming = lazy(() => import('./BusinessAnalysisPanelStreaming'));
 import type { AnalysisMode } from '../../hooks/useStockAnalysisData';
 import type { KlineResponse } from '../../api/kline';
 import type { FinancialStatementsResponse } from '../../api/financialStatements';
@@ -79,7 +80,9 @@ export const StockContentRouter: React.FC<StockContentRouterProps> = (props) => 
     case 'business':
       return (
         <div className="space-y-6">
-          <BusinessAnalysisPanelStreaming symbol={selectedSymbol} />
+          <Suspense fallback={<BusinessLoadingFallback />}>
+            <BusinessAnalysisPanelStreaming symbol={selectedSymbol} />
+          </Suspense>
         </div>
       );
     case 'valuation':
@@ -171,4 +174,13 @@ export const StockContentRouter: React.FC<StockContentRouterProps> = (props) => 
         />
       );
   }
+}
+
+function BusinessLoadingFallback() {
+  return (
+    <div className="flex items-center gap-2 text-sm text-slate-500">
+      <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+      正在加载业务分析模块...
+    </div>
+  );
 };

@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { historyApi } from '../../../api/history';
-import { ReportMarkdown } from '../ReportMarkdown';
+import ReportMarkdown from '../ReportMarkdown';
 
 vi.mock('../../../api/history', () => ({
   historyApi: {

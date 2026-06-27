@@ -36,7 +36,7 @@ import { cn } from '../../utils/cn';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
 
-export const Thread: FC = () => {
+const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
       <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-[radial-gradient(circle_at_50%_0%,hsl(var(--primary)/0.08),transparent_34%),linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pt-16 pb-5 sm:gap-6 sm:px-4 sm:pt-6 sm:pb-6 lg:px-6">
@@ -349,3 +349,5 @@ const Composer: FC = () => (
     </ComposerPrimitive.Root>
   </div>
 );
+
+export default Thread;
