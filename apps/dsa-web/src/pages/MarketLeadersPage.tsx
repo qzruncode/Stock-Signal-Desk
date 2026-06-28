@@ -1,36 +1,9 @@
-import React, { useMemo, useState } from 'react';
-import { ChevronDown, Flame, Radio } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { Flame, Radio } from 'lucide-react';
 import { Badge, Button, InlineAlert, Loading } from '../components/common';
+import { RawInputPanel, RawOutputPanel } from '../components/market';
+import { renderReportParagraphs } from '../utils/marketMainlineRender';
 import { useMarketMainlineTask } from '../hooks/useMarketMainlineTask';
-import { prettyJson } from '../utils/marketMainlineFormat';
-
-function renderReportParagraphs(text: string): React.ReactNode {
-  const normalized = text
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-
-  const paragraphs = normalized.length > 0
-    ? normalized
-    : text
-      .split('\n')
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean);
-
-  if (paragraphs.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="space-y-5">
-      {paragraphs.map((paragraph, index) => (
-        <p key={`${index}-${paragraph.slice(0, 16)}`} className="market-stream-paragraph">
-          {paragraph}
-        </p>
-      ))}
-    </div>
-  );
-}
 
 const MarketLeadersPage: React.FC = () => {
   const {
@@ -50,9 +23,6 @@ const MarketLeadersPage: React.FC = () => {
     loadLatest,
     startGeneration,
   } = useMarketMainlineTask();
-
-  const [showRawInput, setShowRawInput] = useState(false);
-  const [showRawOutput, setShowRawOutput] = useState(false);
 
   const streamContent = useMemo(() => {
     if (!formattedDisplayText) {
@@ -362,80 +332,20 @@ const MarketLeadersPage: React.FC = () => {
                   </div>
                 ) : null}
 
-                <div className="market-mainline-muted-block">
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between text-left"
-                    onClick={() => setShowRawOutput((value) => !value)}
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">查看原始流输出</p>
-                      <p className="mt-1 text-xs text-slate-500">保留模型原始返回，便于核对结构化渲染</p>
-                    </div>
-                    <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${showRawOutput ? 'rotate-180' : ''}`} />
-                  </button>
-                  {showRawOutput ? (
-                    <div className="mt-4">
-                      <div
-                        className={`market-stream-panel ${streamKind === 'json' ? 'market-stream-json' : 'market-stream-report'}`}
-                      >
-                        {streamContent}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                <RawOutputPanel formattedDisplayText={formattedDisplayText} streamKind={streamKind} />
               </div>
             ) : (
               <div
                 className={`market-stream-panel ${streamKind === 'json' ? 'market-stream-json' : 'market-stream-report'}`}
               >
-                <div
-                  className="min-h-[12rem]"
-                >
+                <div className="min-h-[12rem]">
                   {streamContent}
                 </div>
               </div>
             )}
           </section>
 
-          <section className="market-mainline-surface">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between text-left"
-              onClick={() => setShowRawInput((value) => !value)}
-            >
-              <div>
-                <p className="text-sm font-semibold text-slate-900">查看模型原始输入</p>
-                <p className="mt-1 text-xs text-slate-500">包括 system prompt、user prompt 和 evidence pack</p>
-              </div>
-              <ChevronDown className={`h-4 w-4 text-slate-500 transition-transform ${showRawInput ? 'rotate-180' : ''}`} />
-            </button>
-
-            {showRawInput ? (
-              <div className="mt-4 space-y-4">
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">System Prompt</p>
-                  <pre className="overflow-x-auto rounded-[1.25rem] bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
-                    {debugInput?.system_prompt || '当前还没有 system prompt。'}
-                  </pre>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">User Prompt</p>
-                  <pre className="overflow-x-auto rounded-[1.25rem] bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
-                    {debugInput?.user_prompt || '当前还没有 user prompt。'}
-                  </pre>
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-slate-500">Evidence Pack</p>
-                  <pre className="overflow-x-auto rounded-[1.25rem] bg-slate-50 p-4 text-xs leading-6 text-slate-700 whitespace-pre-wrap">
-                    {debugInput?.evidence_pack
-                      ? prettyJson(debugInput.evidence_pack)
-                      : '当前还没有 evidence pack。'}
-                  </pre>
-                </div>
-              </div>
-            ) : null}
-          </section>
+          <RawInputPanel debugInput={debugInput} />
         </div>
       </main>
     </div>

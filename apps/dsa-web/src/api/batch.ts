@@ -18,6 +18,15 @@ export interface BatchRunItem {
   analysis_mode: string | null;
 }
 
+export interface BatchResultItem {
+  code: string;
+  success: boolean;
+  model: string;
+  text: string;
+  summary: string;
+  decision?: string;
+}
+
 export interface BatchRunListResponse {
   runs: BatchRunItem[];
 }

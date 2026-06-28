@@ -1,177 +1,26 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowLeft, Plus, Search, Shield, TrendingUp, X } from 'lucide-react';
+import React from 'react';
+import { ArrowLeft, Shield, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
-import { stocksApi, type StockMetaItem, type KlineStatusResponse } from '../api/stocks';
-import { klineApi, type KlineResponse } from '../api/kline';
 import { EmptyState, InlineAlert } from '../components/common';
-import KLineChartPanel from '../components/KLineChartPanel';
-import { cn } from '../utils/cn';
-import { MARKET_LABELS, MARKET_COLORS } from '../utils/market';
-import { useTransientMessage } from '../hooks/useTransientMessage';
-import { useStockSyncPolling } from '../hooks/useStockSyncPolling';
-import { useStockVisibilityRefresh } from '../hooks/useStockVisibilityRefresh';
-import { useInfiniteScroll } from '../hooks/useInfiniteScroll';
-
-const PAGE_SIZE = 50;
+import { StockCard, StockSearchBar, KlineModal, VerifyModal } from '../components/market';
+import { useMarketStocks } from '../hooks/useMarketStocks';
+import { useKlineModal } from '../hooks/useKlineModal';
+import { useVerifyModal } from '../hooks/useVerifyModal';
 
 const MarketStocksPage: React.FC = () => {
   const navigate = useNavigate();
+  const {
+    allStocks, stockTotal, stockSearch, stockMarket, stockLoading, loadingMore, hasMore,
+    error, successMsg, syncStatus, syncError, isSyncingActive, sentinelRef, watchlistCodes,
+    handleStockSearch, handleMarketFilter, handleAddStock, handleSync,
+  } = useMarketStocks();
 
-  // Stock list state
-  const [allStocks, setAllStocks] = useState<StockMetaItem[]>([]);
-  const [stockTotal, setStockTotal] = useState(0);
-  const [stockPage, setStockPage] = useState(1);
-  const [hasMore, setHasMore] = useState(true);
-  const [stockSearch, setStockSearch] = useState('');
-  const [stockMarket, setStockMarket] = useState('');
-  const [stockLoading, setStockLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-
-  // Watchlist data for "已添加" badge
-  const [watchlistData, setWatchlistData] = useState<WatchlistResponse | null>(null);
-
-  // Alerts
-  const [error, setError] = useState<string | null>(null);
-  const { message: successMsg, showMessage: showSuccessMessage } = useTransientMessage();
-
-  const loadStockList = useCallback(async (page: number, search: string, market: string, append: boolean) => {
-    if (append) {
-      setLoadingMore(true);
-    } else {
-      setStockLoading(true);
-    }
-    try {
-      const result = await stocksApi.list({ page, page_size: PAGE_SIZE, search: search || undefined, market: market || undefined });
-      if (append) {
-        setAllStocks((prev) => [...prev, ...result.items]);
-      } else {
-        setAllStocks(result.items);
-      }
-      setStockTotal(result.total);
-      setStockPage(result.page);
-      setHasMore(result.page < result.total_pages);
-    } catch {
-      setError('加载股票列表失败');
-    }
-    finally {
-      setStockLoading(false);
-      setLoadingMore(false);
-    }
-  }, []);
-
-  // Load watchlist for "已添加" badge
-  const loadWatchlist = useCallback(async () => {
-    try {
-      const result = await watchlistApi.get();
-      setWatchlistData(result);
-    } catch {
-      console.error('加载自选股列表失败');
-    }
-  }, []);
-
-  const { syncStatus, syncError, handleSync, isSyncingActive } = useStockSyncPolling({
-    loadWatchlist,
-    loadStockList,
-    stockSearch,
-    stockMarket,
-  });
-
-  useStockVisibilityRefresh(loadWatchlist);
-
-  useEffect(() => {
-    document.title = '全市场股票 - Stock-Signal-Desk';
-    void loadStockList(1, '', '', false);
-    void loadWatchlist();
-  }, [loadStockList, loadWatchlist]);
-
-  const { sentinelRef } = useInfiniteScroll({
-    hasMore,
-    loadingMore,
-    loading: stockLoading,
-    onLoadMore: () => {
-      loadStockList(stockPage + 1, stockSearch, stockMarket, true);
-    },
-  });
-
-  const handleStockSearch = useCallback((value: string) => {
-    setStockSearch(value);
-    void loadStockList(1, value, stockMarket, false);
-  }, [stockMarket, loadStockList]);
-
-  const handleMarketFilter = useCallback((value: string) => {
-    setStockMarket(value);
-    void loadStockList(1, stockSearch, value, false);
-  }, [stockSearch, loadStockList]);
-
-  const handleAddStock = useCallback(async (code: string) => {
-    setError(null);
-    try {
-      const result = await watchlistApi.add([code]);
-      setWatchlistData({ codes: result.codes, count: result.count, configVersion: result.configVersion });
-      showSuccessMessage(`已添加 ${code}`);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '添加失败');
-    }
-  }, [showSuccessMessage]);
-
-  const watchlistCodes = useMemo(() => new Set(watchlistData?.codes || []), [watchlistData]);
-
-  // K-line modal
-  const [klineModalStock, setKlineModalStock] = useState<{ code: string; name: string } | null>(null);
-  const [klineModalData, setKlineModalData] = useState<KlineResponse | null>(null);
-  const [klineModalLoading, setKlineModalLoading] = useState(false);
-  const [klineModalError, setKlineModalError] = useState<string | null>(null);
-
-  const openKlineModal = useCallback(async (stock: { code: string; name: string }) => {
-    setKlineModalStock(stock);
-    setKlineModalData(null);
-    setKlineModalError(null);
-    setKlineModalLoading(true);
-    try {
-      const result = await klineApi.getKline(stock.code, 250);
-      setKlineModalData(result);
-    } catch {
-      setKlineModalData(null);
-      setKlineModalError('获取 K 线数据失败');
-    } finally {
-      setKlineModalLoading(false);
-    }
-  }, []);
-
-  const closeKlineModal = useCallback(() => {
-    setKlineModalStock(null);
-    setKlineModalData(null);
-    setKlineModalLoading(false);
-    setKlineModalError(null);
-  }, []);
-
-  // Verification modal
-  const [verifyModalOpen, setVerifyModalOpen] = useState(false);
-  const [verifyData, setVerifyData] = useState<KlineStatusResponse | null>(null);
-  const [verifyLoading, setVerifyLoading] = useState(false);
-
-  const openVerifyModal = useCallback(async () => {
-    setVerifyModalOpen(true);
-    setVerifyLoading(true);
-    try {
-      const result = await stocksApi.getKlineStatus();
-      setVerifyData(result);
-    } catch {
-      setVerifyData(null);
-    } finally {
-      setVerifyLoading(false);
-    }
-  }, []);
-
-  const closeVerifyModal = useCallback(() => {
-    setVerifyModalOpen(false);
-    setVerifyData(null);
-  }, []);
+  const klineModal = useKlineModal();
+  const verifyModal = useVerifyModal();
 
   return (
     <div className="mx-auto flex h-[calc(100vh-2rem)] w-full max-w-[960px] flex-col gap-4 overflow-hidden px-3 py-4 sm:px-5">
-      {/* Header — fixed at top */}
+      {/* Header */}
       <div className="flex shrink-0 items-center gap-4">
         <button
           type="button"
@@ -188,21 +37,23 @@ const MarketStocksPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Alerts — fixed at top */}
-      <div className="shrink-0 space-y-2">
-        {error ? (
-          <InlineAlert variant="danger" title="操作失败" message={error} className="rounded-xl px-3 py-2 text-xs shadow-none" />
-        ) : null}
-        {successMsg ? (
-          <InlineAlert variant="success" title="操作成功" message={successMsg} className="rounded-xl px-3 py-2 text-xs shadow-none" />
-        ) : null}
-        {syncError ? (
-          <InlineAlert variant="danger" title="同步失败" message={syncError} className="rounded-xl px-3 py-2 text-xs shadow-none" />
-        ) : null}
-      </div>
+      {/* Alerts */}
+      {(error || successMsg || syncError) && (
+        <div className="shrink-0 space-y-2">
+          {error && (
+            <InlineAlert variant="danger" title="操作失败" message={error} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+          )}
+          {successMsg && (
+            <InlineAlert variant="success" title="操作成功" message={successMsg} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+          )}
+          {syncError && (
+            <InlineAlert variant="danger" title="同步失败" message={syncError} className="rounded-xl px-3 py-2 text-xs shadow-none" />
+          )}
+        </div>
+      )}
 
-      {/* Sync bar — fixed at top */}
-      <div className="shrink-0 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
+      {/* Sync bar */}
+      <div className="flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
         <div className="flex items-center gap-3">
           <TrendingUp className="h-5 w-5 text-indigo-600" />
           <div>
@@ -232,7 +83,7 @@ const MarketStocksPage: React.FC = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={openVerifyModal}
+            onClick={() => void verifyModal.show()}
             className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-indigo-300 hover:text-indigo-700"
             title="验证 K 线数据完整性"
           >
@@ -242,7 +93,7 @@ const MarketStocksPage: React.FC = () => {
           <button
             type="button"
             disabled={isSyncingActive}
-            onClick={handleSync}
+            onClick={() => void handleSync()}
             className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
           >
             {isSyncingActive ? (
@@ -255,42 +106,15 @@ const MarketStocksPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Search and filter bar — fixed at top */}
-      <div className="shrink-0 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            value={stockSearch}
-            onChange={(e) => handleStockSearch(e.target.value)}
-            placeholder="搜索股票代码或名称..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-8 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100"
-          />
-          {stockSearch && (
-            <button
-              type="button"
-              onClick={() => handleStockSearch('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          )}
-        </div>
-        <select
-          value={stockMarket}
-          onChange={(e) => handleMarketFilter(e.target.value)}
-          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-indigo-400 focus:outline-none"
-        >
-          <option value="">全部市场</option>
-          <option value="sh">沪市主板</option>
-          <option value="sz">深市主板</option>
-          <option value="cyb">创业板</option>
-          <option value="kcb">科创板</option>
-          <option value="bj">北交所</option>
-        </select>
-      </div>
+      {/* Search and filter bar */}
+      <StockSearchBar
+        search={stockSearch}
+        market={stockMarket}
+        onSearchChange={handleStockSearch}
+        onMarketChange={handleMarketFilter}
+      />
 
-      {/* Stock list — fills remaining space, only scrollable area */}
+      {/* Stock list */}
       <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white/88 shadow-sm">
         <div className="px-5 py-4">
           {stockLoading ? (
@@ -312,66 +136,16 @@ const MarketStocksPage: React.FC = () => {
           ) : (
             <>
               <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                {allStocks.map((stock) => {
-                  const isInWatchlist = watchlistCodes.has(stock.code);
-                  return (
-                    <div
-                      key={stock.code}
-                      className={cn(
-                        'flex items-center justify-between rounded-lg border px-3 py-2 text-xs transition',
-                        isInWatchlist
-                          ? 'border-emerald-200 bg-emerald-50/50'
-                          : 'border-slate-100 bg-white hover:border-indigo-200 hover:bg-indigo-50/30',
-                      )}
-                    >
-                      <div
-                        className="min-w-0 flex-1 cursor-pointer"
-                        onClick={() => navigate(`/analysis?symbol=${stock.code}`)}
-                        title={`查看 ${stock.code} 分析`}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono font-medium text-slate-700">{stock.code}</span>
-                          <span className={cn(
-                            'inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium',
-                            MARKET_COLORS[stock.market] || '',
-                          )}>
-                            {MARKET_LABELS[stock.market] || stock.market}
-                          </span>
-                        </div>
-                        <div className="mt-0.5 truncate text-slate-500">{stock.name}</div>
-                        {stock.pe_ttm != null && (
-                          <div className="mt-0.5 text-[10px] text-slate-400">
-                            PE: {stock.pe_ttm.toFixed(1)} | 市值: {stock.total_market_cap != null ? (stock.total_market_cap / 1e8).toFixed(1) + '亿' : '-'}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => openKlineModal({ code: stock.code, name: stock.name })}
-                          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
-                          title={`查看 ${stock.code} K线`}
-                        >
-                          <Activity className="h-3.5 w-3.5" />
-                        </button>
-                        {isInWatchlist ? (
-                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                            已添加
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleAddStock(stock.code)}
-                            className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
-                            title={`添加 ${stock.code}`}
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                {allStocks.map((stock) => (
+                  <StockCard
+                    key={stock.code}
+                    stock={stock}
+                    isInWatchlist={watchlistCodes.has(stock.code)}
+                    onViewKline={klineModal.open}
+                    onAddStock={handleAddStock}
+                    onNavigate={navigate}
+                  />
+                ))}
               </div>
 
               {/* Infinite scroll sentinel */}
@@ -393,106 +167,24 @@ const MarketStocksPage: React.FC = () => {
         </div>
       </div>
 
-      {/* K-line modal overlay */}
-      {klineModalStock && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-8"
-          onClick={closeKlineModal}
-        >
-          <div
-            className="flex w-full max-w-3xl flex-col rounded-2xl bg-white shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal header */}
-            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">
-                  {klineModalStock.name}
-                  <span className="ml-2 font-mono text-sm font-normal text-slate-500">{klineModalStock.code}</span>
-                </h2>
-                <p className="text-xs text-slate-400">日线 · 前复权 · 近 250 个交易日</p>
-              </div>
-              <button
-                type="button"
-                onClick={closeKlineModal}
-                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-                aria-label="关闭"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {/* Modal body */}
-            <div className="min-h-0 flex-1 overflow-hidden px-4 py-4">
-              <KLineChartPanel
-                data={klineModalData}
-                loading={klineModalLoading}
-                error={klineModalError}
-              />
-            </div>
-          </div>
-        </div>
+      {/* K-line modal */}
+      {klineModal.stock && (
+        <KlineModal
+          stock={klineModal.stock}
+          data={klineModal.data}
+          loading={klineModal.loading}
+          error={klineModal.error}
+          onClose={klineModal.close}
+        />
       )}
 
-      {/* Verification modal overlay */}
-      {verifyModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
-          onClick={closeVerifyModal}
-        >
-          <div
-            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-slate-900">数据源验证结果</h2>
-              <button
-                type="button"
-                onClick={closeVerifyModal}
-                className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            {verifyLoading ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo/20 border-t-indigo" />
-              </div>
-            ) : verifyData ? (
-              <div className="space-y-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">股票总数</span>
-                  <span className="font-semibold text-slate-900">{verifyData.total_stocks} 只</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">K 线数据</span>
-                  <span className="font-semibold text-emerald-600">
-                    {verifyData.stocks_with_kline} 只
-                    {verifyData.total_stocks > 0
-                      ? `（${((verifyData.stocks_with_kline / verifyData.total_stocks) * 100).toFixed(1)}%）`
-                      : ''}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">缺失数据</span>
-                  <span className={cn('font-semibold', verifyData.missing > 0 ? 'text-red-500' : 'text-emerald-600')}>
-                    {verifyData.missing} 只
-                  </span>
-                </div>
-                {verifyData.latest_trading_day && (
-                  <div className="flex justify-between border-t border-slate-100 pt-3">
-                    <span className="text-slate-500">最近交易日</span>
-                    <span className="font-medium text-slate-700">{verifyData.latest_trading_day}</span>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p className="text-center text-sm text-red-500 py-4">获取验证数据失败</p>
-            )}
-          </div>
-        </div>
-      )}
+      {/* Verification modal */}
+      <VerifyModal
+        open={verifyModal.open}
+        data={verifyModal.data}
+        loading={verifyModal.loading}
+        onClose={verifyModal.hide}
+      />
     </div>
   );
 };
