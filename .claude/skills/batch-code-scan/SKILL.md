@@ -11,7 +11,7 @@ description: Use when the user invokes /batch-code-scan or asks to scan the whol
 
 ## 目标
 
-一次扫描当前项目，形成完整问题库存，再把所有可行动问题按独立修复范围拆成多个短 Human Plan。每个 Plan 后续由用户手动在一个会话中执行 `/dev <Plan Ref>`，再继续 `/plan-check`、`/design-check`、`approve`、`/audit`。
+一次扫描当前项目，形成完整问题库存，再把所有可行动问题按独立修复范围拆成多个短 Human Plan。每个 Plan 后续由用户手动在一个会话中执行 `/dev <Plan Ref>`，再继续 `/plan-check`、`/design-check`、`approve`、`/audit`。需要并行处理多个 Plan 时，先执行 `/worktree <Plan Ref>`，再按其输出进入独立 worktree 继续 `/dev`。
 
 ## Plan 约束
 
@@ -44,7 +44,7 @@ description: Use when the user invokes /batch-code-scan or asks to scan the whol
 - 问题库存：每个问题的短标题、证据位置、严重级别、影响面、归属 Plan Ref。
 - 每个候选 Plan 的标题、包含的问题、严重级别、影响面、Plan Ref、是否适合并行。
 - 计划之间的依赖、冲突和建议执行顺序。
-- 下一步命令示例：对单个 Plan 使用 `/dev <Plan Ref>`；需要澄清时先用 `/batch-code-scan replan <Plan Ref>`。
+- 下一步命令示例：单会话处理使用 `/dev <Plan Ref>`；并行处理使用 `/worktree <Plan Ref>`；需要澄清时先用 `/batch-code-scan replan <Plan Ref>`。
 
 ## Reconfirmation
 
@@ -73,7 +73,7 @@ Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能�
 - 会互相冲突、共享同一抽象或依赖前置改造的计划在索引中标为串行。
 - 证据不足或需要人类判断的计划，把问题写入 Needs Reconfirmation。
 
-创建批次索引和所有候选 Plan 后，只展示索引摘要、每个真实 Plan Ref、建议并行分组和下一步命令。随后停止。
+创建批次索引和所有候选 Plan 后，只展示索引摘要、每个真实 Plan Ref、建议并行分组和下一步命令。并行分组里的每个 Plan 给出可直接复制的 `/worktree <Plan Ref>`。随后停止。
 
 如果发现已有未完成批次索引，先读取并复用它；除非用户明确要求刷新，或代码已在批次扫描后发生明显变化，不要重新全量扫描。
 
