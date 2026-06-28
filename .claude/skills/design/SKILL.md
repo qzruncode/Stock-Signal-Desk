@@ -1,6 +1,6 @@
 ---
 name: design
-description: Use when the user invokes /design or asks a senior product designer to understand the current project requirements, then design a good interaction and visual experience for a frontend page, workflow, state model, or usability-focused Human Plan before implementation and design-check review.
+description: Use when the user invokes /design or asks a senior product/UX/UI designer to translate product goals into a coherent frontend experience brief for a page, workflow, state model, or usability-focused Human Plan before implementation and design-check review.
 ---
 
 # Design
@@ -11,7 +11,7 @@ description: Use when the user invokes /design or asks a senior product designer
 
 ## 定位
 
-作为资深产品设计师，先理解当前项目要解决什么业务问题、服务什么用户、已有界面承载了哪些业务和数据，再设计清楚的交互体验和视觉体验。现有界面只作为业务、数据、入口和组件能力参考，不作为视觉审美约束；如果现有页面很丑，应主动提出更好的视觉方向。`/design` 不负责实现；通过 `/design-check` 后，再由 `/dev <Plan Ref>` 接管开发。
+作为资深产品/UX/UI 设计师，先理解业务目标、目标用户、核心任务和成功标准，再形成可执行的体验 brief。现有界面只作为业务事实、数据字段、入口关系和组件能力参考，不作为视觉审美约束。`/design` 不负责实现；通过 `/design-check` 后，再由 `/dev <Plan Ref>` 接管开发。
 
 ## Plan 约束
 
@@ -23,7 +23,9 @@ description: Use when the user invokes /design or asks a senior product designer
 - 固定字段必须保留；不适用字段写 `无`，不要为了填字段展开解释。
 - Plan 只回答：用户要完成什么、体验应变成什么样、明确不做什么、怎么验收。
 - Current Plan 就是最终体验需求提示词：loop 多轮后，人类和 AI 已达成一致，AI 可按它执行。
+- Current Plan 必须是资深设计师给执行团队的最终体验 brief，覆盖体验目标、核心任务流、信息架构、交互模型、视觉系统、状态体验和验收标准。
 - 只写会影响用户体验和人类取舍的设计结论；审美分析、竞品展开、组件实现和代码细节不进入 Plan。
+- 必须主动做专业设计判断；只有品牌命名、业务规则、数据口径、合规限制等人类拥有的信息才进入 Needs Reconfirmation。
 - AI 后续执行时可自行推导技术步骤；Human Plan 只保存双方对齐后的体验需求契约。
 - Changes Since Last Plan 只写本轮需求变化一句话，不保留多轮历史。
 - Needs Reconfirmation 只写当前未解决的人类决策问题，不写分析过程或完整 replan 草稿。
@@ -49,17 +51,20 @@ Needs Reconfirmation 非空时，`replan` 只能准备待提交 Replan，不能�
 
 ## `/design xxx`
 
-读取用户目标、当前项目需求和现有前端结构，生成简洁设计 Human Plan。必须考虑：
+读取用户目标、当前项目需求和现有前端结构，生成简洁设计 Human Plan。必须先形成设计主张，再落到体验要求。必须考虑：
 
-- 当前项目的业务目标、真实使用场景、目标用户和核心任务。
-- 用户进入页面后应该先看到什么、怎么理解、怎么完成关键操作。
-- 信息层级、视觉重点、可扫描性、操作密度和阅读节奏。
-- 布局、间距、对齐、颜色、字体层级、图标、按钮和视觉状态的体验方向。
-- 现有页面的业务入口、数据字段、状态和组件能力；不要照抄现有丑样式。
+- 业务目标、真实使用场景、目标用户、核心任务和成功标准。
+- 用户进入页面后的理解顺序、决策顺序和操作路径。
+- 信息架构、优先级、分组、密度、扫描路径和阅读节奏。
+- 交互模型、操作反馈、错误恢复、批量/快捷能力和感知性能。
+- 视觉系统方向：层级、对比、节奏、留白、色彩角色、字体层级、图标和控件表达。
+- 现有页面的业务入口、数据字段、状态和组件能力；不要照抄现有视觉表现。
 - 视觉方向应服务当前需求，可重建布局、层级、色彩、密度和组件呈现。
 - loading、empty、error、disabled、success、部分数据、权限不足和长内容状态。
 - 桌面端、移动端、键盘、焦点和可访问性。
 - 哪些设计边界不变，哪些决策需要人类确认。
+
+输出必须围绕目标体验展开：用户看到什么、如何理解、如何操作、如何获得反馈、如何判断任务完成。
 
 Needs Reconfirmation 为空时 Status 设为 `review-pending`，下一步只允许 `/design-check <当前 Plan Ref>`。Needs Reconfirmation 非空时 Status 设为 `replan-required`，下一步只允许 `/design replan <当前 Plan Ref>` 并要求补充对应答复。只展示短摘要、真实 Plan Ref 和下一步命令后停止。
 

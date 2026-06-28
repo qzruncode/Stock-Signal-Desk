@@ -1,6 +1,6 @@
 ---
 name: design-check
-description: Use when the user invokes /design-check or a proposed frontend change needs visual, interaction, consistency, responsive, or usability review before implementation.
+description: Use when the user invokes /design-check or a proposed frontend change needs senior UX/UI review for product fit, task flow, interaction model, visual system, responsive behavior, and usability before implementation.
 ---
 
 # Design Check
@@ -24,17 +24,19 @@ Plan Ref 必须是 `<Plan 文件路径>@v<Version>` 且匹配当前 Version，�
 
 检查当前版本是否覆盖：
 
-- 页面信息层级和核心用户路径。
-- 是否保留必要的业务入口、数据字段和状态，不把现有丑样式当成视觉约束。
-- 视觉层级、布局密度、间距、对齐、颜色、字体、图标和按钮体验。
-- 交互效率、状态反馈和可理解性。
+- 体验目标、目标用户、核心任务和成功标准。
+- 信息架构、页面层级、核心用户路径和关键决策点。
+- 是否保留必要的业务入口、数据字段和状态，不把现有视觉表现当成约束。
+- 是否形成完整体验方案：目标、路径、结构、交互、视觉、状态和验收完整。
+- 视觉系统方向、层级、密度、节奏、对比、控件表达和品牌感。
+- 交互模型、操作效率、状态反馈、错误恢复、快捷能力和感知性能。
 - loading、empty、error、disabled、success 和部分数据状态。
 - 桌面端与移动端响应式行为。
 - 可访问性、键盘和焦点行为。
 - 一次性 CSS、脆弱布局、重复组件和视觉混乱风险。
 - 站在体验需求层检查：人类是否能清楚知道 AI 准备交付什么体验、什么不交付、如何验收。
-- 检查 Current Plan 是否就是最终体验需求提示词；若它是设计规范、审美分析或组件实现清单，要求对应 Owner replan。
-- 不落入实现清单；如果 Plan 出现大量组件实现、样式代码、文件路径、函数名、行号或审美分析，要求对应 Owner replan 提升到体验需求层。
+- 检查 Current Plan 是否就是最终体验需求提示词；若主体偏离体验需求层，要求对应 Owner replan。
+- 如果 Needs Reconfirmation 包含可由设计师根据产品目标判断的体验选择，要求对应 Owner replan 直接作出设计决策；只保留人类掌握的业务、数据、合规或品牌决策。
 - 检查 Changes Since Last Plan、Needs Reconfirmation、Review Status 是否短状态；若它们像历史记录或检查报告，要求对应 Owner replan 压缩。
 - 保持一屏可审；如果 Plan 像设计规范全文、审美分析或长清单，要求对应 Owner replan 压缩。
 
