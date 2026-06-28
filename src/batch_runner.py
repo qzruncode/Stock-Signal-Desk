@@ -244,7 +244,7 @@ class BatchRunner:
             stock_codes=["600519", "000001"],
             system_prompt="...",
             template_name="默认",
-            on_progress=lambda state: print(state.completed),
+            on_progress=lambda state: logger.info("Completed: %s/%s", state.completed, state.total),
         )
     """
 
