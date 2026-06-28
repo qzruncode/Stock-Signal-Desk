@@ -11,7 +11,7 @@ description: Use when the user invokes /batch-code-scan or asks to scan the whol
 
 ## 目标
 
-一次扫描当前项目，形成完整问题库存，再把所有可行动问题按独立修复范围拆成多个短 Human Plan。每个 Plan 后续由用户手动在一个会话中执行 `/dev <Plan Ref>`，再继续 `/plan-check`、`/design-check`、`approve`、`/audit`。需要并行处理多个 Plan 时，先执行 `/worktree <Plan Ref>`，再按其输出进入独立 worktree 继续 `/dev`。
+一次扫描当前项目，形成完整问题库存，再把所有可行动问题按独立修复范围拆成多个短 Human Plan。每个 Plan 后续由用户手动在一个会话中执行 `/dev <Plan Ref>`，再继续 `/plan-check`、`/design-check`、`approve`、`/audit`。需要并行处理多个 Plan 时，先执行 `/worktree <Plan Ref>`，再按其输出进入独立 worktree 继续 `/dev <Plan Ref>`。
 
 ## Plan 约束
 

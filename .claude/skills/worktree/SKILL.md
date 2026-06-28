@@ -1,13 +1,13 @@
 ---
 name: worktree
-description: Use when the user invokes /worktree with a Plan Ref or needs a project-local git worktree paired one-to-one with a Human Plan so one plan can be executed in an isolated branch/session.
+description: Use when the user invokes /worktree with a Plan Ref or needs a project-local git worktree paired one-to-one with a Human Plan so one plan can be executed in an isolated branch/session with the required local workflow context available.
 ---
 
 # Worktree
 
 所有产出使用简体中文。代码标识、路径、分支名、命令和错误信息不翻译。
 
-这是操作型技能：只创建或复用 worktree，并写入 Plan 指针；不产出、不修改 Human Plan，不执行开发或检查。
+这是操作型技能：只创建或复用 worktree，并准备本地工作流上下文；不产出、不修改 Human Plan，不执行开发或检查。
 
 ## 命令
 
@@ -28,19 +28,15 @@ description: Use when the user invokes /worktree with a Plan Ref or needs a proj
 - 从当前 `HEAD` 创建 worktree；不复制未提交代码改动。
 - 不执行破坏性 git 操作。
 
-## Plan 指针
+## 本地上下文
 
-worktree 创建或复用后，在目标 worktree 写入：
+worktree 创建或复用后，使用相对符号链接准备本地上下文：
 
-```text
-.claude/worktree-plan-ref
-```
-
-文件内容为“从目标 worktree 根目录指向原 Plan 文件”的相对 `Plan Ref`，必须保留 `@v<Version>`。
-
-后续在该 worktree 内执行 loop 时，使用这个相对 `Plan Ref`。
-
-如果目标 worktree 缺少 `.claude/skills`，同步当前项目的 `.claude/skills`。不得同步产品代码改动。
+- 在目标 worktree 的同相对路径创建 Plan 文件符号链接，指向原 `Plan Ref` 文件；保留 `@v<Version>` 作为后续命令参数。
+- 如果目标 worktree 缺少 `.claude/skills`，创建指向当前项目 `.claude/skills` 的符号链接。
+- 如果当前项目存在 `.claude/settings.local.json`，在目标 worktree 创建同路径符号链接。
+- 已存在且指向相同目标时复用；已存在但不是同一目标时停止。
+- 不复制 Plan 文件、批次索引、产品代码改动、worktree 目录、缓存或日志。
 
 ## 输出
 
@@ -48,15 +44,15 @@ worktree 创建或复用后，在目标 worktree 写入：
 
 - Worktree 路径
 - 分支名
-- worktree 内 Plan Ref
 - 是否复用已有 worktree
+- Plan Ref
 - 下一步命令
 
 下一步命令格式：
 
 ```bash
 cd <Worktree 路径>
-/dev <worktree 内 Plan Ref>
+/dev <Plan Ref>
 ```
 
 输出后立即停止。
