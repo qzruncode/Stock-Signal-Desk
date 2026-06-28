@@ -52,6 +52,7 @@ from src.search_service import (
     get_search_service,
     reset_search_service,
 )
+from src.search_service._urls import extract_domain
 
 
 class _FakeResponse:
@@ -181,7 +182,7 @@ class TestAnspireSearchProvider(unittest.TestCase):
         ]
         
         for url, expected in test_cases:
-            result = AnspireSearchProvider._extract_domain(url)
+            result = extract_domain(url)
             self.assertEqual(result, expected, f"Failed for URL: {url}")
     
     @patch('src.search_service.requests')
