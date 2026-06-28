@@ -6,9 +6,6 @@ import {
   History,
   Menu,
 } from 'lucide-react';
-import { analysisApi } from '../api/analysis';
-import { systemConfigApi } from '../api/systemConfig';
-import { promptsApi, type PromptTemplateItem } from '../api/prompts';
 import { ConfirmDialog, InlineAlert } from '../components/common';
 import { BatchPanel } from '../components/batch';
 import { StockAutocomplete } from '../components/StockAutocomplete';
@@ -16,9 +13,14 @@ import { HistoryList } from '../components/history';
 import HomeSidebar from '../components/home/HomeSidebar';
 import { TemplateManager } from '../components/templates/TemplateManager';
 import { TaskPanel } from '../components/tasks';
-import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
-import type { AnalysisReport, TaskInfo, TaskStatus } from '../types/analysis';
-import type { SetupStatusResponse } from '../types/systemConfig';
+import {
+  useDashboardLifecycle,
+  useHomeDashboardState,
+  usePromptTemplates,
+  useSetupStatus,
+  useTaskStatusPreview,
+} from '../hooks';
+import type { TaskInfo } from '../types/analysis';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
 
 const HomeAnalysisCanvas = lazy(() => import('../components/home/HomeAnalysisCanvas'));
@@ -27,16 +29,17 @@ const ReportMarkdown = lazy(() => import('../components/report/ReportMarkdown'))
 const HomePage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
   const dashboardScrollRef = useRef<HTMLElement | null>(null);
 
-  // Prompt template state
-  const [templates, setTemplates] = useState<PromptTemplateItem[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState('');
-
-  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
-  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
-  const [selectedTaskStatus, setSelectedTaskStatus] = useState<TaskStatus | null>(null);
-  const [isLoadingTaskStatus, setIsLoadingTaskStatus] = useState(false);
+  const {
+    templates,
+    selectedTemplateId,
+    setSelectedTemplateId,
+    setTemplates,
+    selectedTemplate,
+  } = usePromptTemplates();
+  const { setupNeedsAction, setupMissingLabels } = useSetupStatus();
 
   const {
     query,
@@ -78,55 +81,20 @@ const HomePage: React.FC = () => {
     selectedIds,
   } = useHomeDashboardState();
 
+  const {
+    isLoadingTaskStatus,
+    taskPreviewReport,
+    selectTask,
+    clearSelectedTaskStatus,
+    updateSelectedTaskStatusFromTask,
+  } = useTaskStatusPreview(activeTasks);
+
   useEffect(() => {
     document.title = 'Stock-Signal-Desk';
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    systemConfigApi.getSetupStatus()
-      .then((status) => {
-        if (active) {
-          setSetupStatus(status);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setSetupStatus(null);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Load prompt templates
-  useEffect(() => {
-    let active = true;
-    promptsApi.getPromptTemplates().then((items) => {
-      if (!active) return;
-      setTemplates(items);
-      if (items.length > 0 && !selectedTemplateId) {
-        const defaultTemplate = items.find((t) => t.is_default);
-        setSelectedTemplateId(defaultTemplate?.id || items[0]?.id || '');
-      }
-    }).catch(() => {});
-    return () => { active = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
   const reportLanguage = normalizeReportLanguage(selectedReport?.meta.reportLanguage);
   const reportText = getReportText(reportLanguage);
-  const setupNeedsAction = setupStatus ? !setupStatus.isComplete : false;
-  const setupMissingLabels = useMemo(() => {
-    if (!setupStatus) {
-      return '';
-    }
-    const requiredNeedsAction = setupStatus.checks
-      .filter((check) => check.required && check.status === 'needs_action')
-      .map((check) => check.title);
-    return requiredNeedsAction.slice(0, 3).join('、');
-  }, [setupStatus]);
 
   useDashboardLifecycle({
     loadInitialHistory,
@@ -135,102 +103,28 @@ const HomePage: React.FC = () => {
     syncTaskUpdated,
     syncTaskFailed,
     removeTask,
-    onTaskAutoSelect: (task) => {
-      setSelectedTaskStatus((current) => (
-        current?.taskId === task.taskId
-          ? {
-              taskId: task.taskId,
-              status: task.status,
-              progress: task.progress,
-              error: task.error,
-              stockName: task.stockName,
-              originalQuery: task.originalQuery,
-              selectionSource: task.selectionSource,
-              promptTemplateId: task.promptTemplateId,
-              promptTemplateName: task.promptTemplateName,
-              conversation: task.conversation,
-            }
-          : current
-      ));
+    onTaskAutoSelect: (task: TaskInfo) => {
+      updateSelectedTaskStatusFromTask(task);
       void autoSelectByStockCode(task.stockCode);
     },
   });
 
-  const taskPreviewReport = useMemo<AnalysisReport | null>(() => {
-    if (!selectedTaskStatus) {
-      return null;
-    }
-
-    if (selectedTaskStatus.result?.report) {
-      return selectedTaskStatus.result.report;
-    }
-
-    const activeTask = activeTasks.find((task) => task.taskId === selectedTaskStatus.taskId);
-    const conversation = activeTask?.conversation || selectedTaskStatus.conversation;
-    if (!conversation) {
-      return null;
-    }
-
-    const response = conversation.response || '';
-    return {
-      meta: {
-        queryId: selectedTaskStatus.taskId,
-        stockCode: activeTask?.stockCode || '',
-        stockName: selectedTaskStatus.stockName || activeTask?.stockName || '',
-        reportType: 'conversation',
-        reportLanguage: 'zh',
-        createdAt: new Date().toISOString(),
-        modelUsed: conversation.modelUsed,
-      },
-      summary: {
-        analysisSummary: response || 'AI 正在生成输出',
-        operationAdvice: '',
-        trendPrediction: '',
-        sentimentScore: 50,
-      },
-      conversation,
-    };
-  }, [activeTasks, selectedTaskStatus]);
-
   const handleHistoryItemClick = useCallback((recordId: number) => {
-    setSelectedTaskStatus(null);
+    clearSelectedTaskStatus();
     setPendingAutoSelect(null);
     void selectHistoryItem(recordId);
     setSidebarOpen(false);
-  }, [selectHistoryItem, setPendingAutoSelect]);
+  }, [selectHistoryItem, setPendingAutoSelect, clearSelectedTaskStatus]);
 
   const handleTaskClick = useCallback((task: TaskInfo) => {
-    setPendingAutoSelect(task.stockCode);
-    setSelectedTaskStatus({
-      taskId: task.taskId,
-      status: task.status,
-      progress: task.progress,
-      error: task.error,
-      stockName: task.stockName,
-      originalQuery: task.originalQuery,
-      selectionSource: task.selectionSource,
-      promptTemplateId: task.promptTemplateId,
-      promptTemplateName: task.promptTemplateName,
-      conversation: task.conversation,
-    });
-    setIsLoadingTaskStatus(true);
-    void analysisApi.getStatus(task.taskId)
-      .then((status) => {
-        setSelectedTaskStatus(status);
-        if (status.result?.report || status.conversation?.response) {
-          setPendingAutoSelect(null);
-        }
-      })
-      .catch((err) => {
-        setPendingAutoSelect(null);
-        console.warn('加载任务对话失败:', err);
-      })
-      .finally(() => {
-        setIsLoadingTaskStatus(false);
-      });
-    dashboardScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    selectTask(
+      task,
+      setPendingAutoSelect,
+      () => setPendingAutoSelect(null),
+      dashboardScrollRef.current,
+    );
     setSidebarOpen(false);
-  }, [setPendingAutoSelect]);
+  }, [selectTask, setPendingAutoSelect]);
 
   const handleSubmitAnalysis = useCallback(
     (
@@ -268,11 +162,6 @@ const HomePage: React.FC = () => {
     void deleteSelectedHistory();
     setShowDeleteConfirm(false);
   }, [deleteSelectedHistory]);
-
-  const selectedTemplate = useMemo(
-    () => templates.find((template) => template.id === selectedTemplateId),
-    [selectedTemplateId, templates],
-  );
 
   const sidebarContent = useMemo(
     () => (
