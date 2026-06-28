@@ -1,73 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Bell, FileText, FolderPlus, Loader2, RefreshCw, Search, X } from 'lucide-react';
+import { ArrowLeft, Bell, FileText, Loader2, RefreshCw } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { batchApi, type BatchRunItem } from '../api/batch';
+import { batchApi } from '../api/batch';
 import { ApiErrorAlert, Button, EmptyState } from '../components/common';
+import { StatsCards, ViewTabs, SummaryView, DetailList, DetailView } from '../components/batch';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
-import { cn } from '../utils/cn';
+import { parseBatchResults, extractPassedCodesFromSummary } from '../utils/batch';
 import { upsertWatchlistGroup } from '../utils/watchlistGroups';
-
-interface BatchResultItem {
-  code: string;
-  success: boolean;
-  model: string;
-  text: string;
-  summary: string;
-  decision?: string;
-}
-
-function summarizeResult(text: string): string {
-  const compact = text
-    .split('\n')
-    .map((line) => line.replace(/^#+\s*/, '').trim())
-    .find((line) => line.length > 0) || '无摘要';
-  return compact.length > 88 ? `${compact.slice(0, 87)}...` : compact;
-}
-
-function parseBatchResults(raw: string | null | undefined): BatchResultItem[] {
-  if (!raw || raw === '[]' || raw === '{}') return [];
-  try {
-    const parsed = JSON.parse(raw) as Record<string, { success?: boolean; model?: string; text?: string; decision?: string }>;
-    return Object.entries(parsed)
-      .filter(([code, result]) => code !== '__all__' && result && typeof result === 'object')
-      .map(([code, result]) => {
-        const text = result.text || '';
-        return {
-          code,
-          success: Boolean(result.success),
-          model: result.model || '-',
-          text,
-          summary: summarizeResult(text),
-          decision: result.decision,
-        };
-      });
-  } catch {
-    return [];
-  }
-}
-
-function extractPassedCodesFromSummary(summaryMd: string): string[] {
-  const lines = summaryMd.split('\n');
-  const start = lines.findIndex((line) => /^##+\s+筛选通过股票/.test(line.trim()));
-  if (start < 0) return [];
-  const codes: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    const trimmed = line.trim();
-    if (/^##+\s+/.test(trimmed)) break;
-    if (!trimmed.startsWith('|') || trimmed.includes('---')) continue;
-    const cells = trimmed.split('|').map((cell) => cell.trim()).filter(Boolean);
-    const code = cells[0];
-    if (/^[A-Za-z0-9.]+$/.test(code) && code !== '股票') {
-      codes.push(code);
-    }
-  }
-  return Array.from(new Set(codes));
-}
 
 const BatchRunDetailPage: React.FC = () => {
   const navigate = useNavigate();
   const { runId = '' } = useParams();
-  const [run, setRun] = useState<BatchRunItem | null>(null);
+  const [run, setRun] = useState<Awaited<ReturnType<typeof batchApi.getRunDetail>> | null>(null);
   const [summaryMd, setSummaryMd] = useState('');
   const [activeView, setActiveView] = useState<'summary' | 'details'>('summary');
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
@@ -78,6 +22,7 @@ const BatchRunDetailPage: React.FC = () => {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [groupName, setGroupName] = useState('');
   const [resultSearch, setResultSearch] = useState('');
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const loadRun = useCallback(async () => {
@@ -198,7 +143,6 @@ const BatchRunDetailPage: React.FC = () => {
     }
   }, [activeView, filteredResults, selectedCode]);
 
-  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const handleCreatePassedGroup = useCallback(async () => {
     if (passedCodes.length === 0 || isCreatingGroup) return;
     const targetName = groupName.trim() || defaultGroupName;
@@ -235,23 +179,11 @@ const BatchRunDetailPage: React.FC = () => {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void handleRegenerateReport()}
-              isLoading={isRegenerating}
-              loadingText="生成中..."
-            >
+            <Button variant="secondary" size="sm" onClick={() => void handleRegenerateReport()} isLoading={isRegenerating} loadingText="生成中...">
               <FileText className="h-4 w-4" />
               重生成汇总
             </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => void handleNotifyRun()}
-              isLoading={isNotifying}
-              loadingText="发送中..."
-            >
+            <Button variant="secondary" size="sm" onClick={() => void handleNotifyRun()} isLoading={isNotifying} loadingText="发送中...">
               <Bell className="h-4 w-4" />
               发送通知
             </Button>
@@ -278,171 +210,39 @@ const BatchRunDetailPage: React.FC = () => {
             </div>
           ) : run && results.length > 0 ? (
             <>
-              <section className="grid gap-3 sm:grid-cols-5">
-                <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-text">股票数</p>
-                  <p className="mt-1 text-xl font-semibold text-foreground">{run.stock_count}</p>
-                </div>
-                <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-text">成功</p>
-                  <p className="mt-1 text-xl font-semibold text-emerald-600">{successCount}</p>
-                </div>
-                <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-text">失败</p>
-                  <p className="mt-1 text-xl font-semibold text-red-600">{failedCount}</p>
-                </div>
-                <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-text">成功率</p>
-                  <p className="mt-1 text-xl font-semibold text-foreground">{successRate}%</p>
-                </div>
-                <div className="rounded-lg border border-subtle bg-surface px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-text">筛选通过</p>
-                  <p className="mt-1 text-xl font-semibold text-cyan-700">{passedCodes.length}</p>
-                </div>
-              </section>
-
-              <div className="flex items-center gap-2 rounded-xl border border-subtle bg-surface p-1">
-                <button
-                  type="button"
-                  onClick={() => setActiveView('summary')}
-                  className={cn(
-                    'h-8 rounded-lg px-3 text-sm transition-colors',
-                    activeView === 'summary'
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-text hover:bg-hover hover:text-foreground',
-                  )}
-                >
-                  汇总 MD
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveView('details')}
-                  className={cn(
-                    'h-8 rounded-lg px-3 text-sm transition-colors',
-                    activeView === 'details'
-                      ? 'bg-primary/10 text-primary'
-                      : 'text-muted-text hover:bg-hover hover:text-foreground',
-                  )}
-                >
-                  单股明细
-                </button>
-              </div>
+              <StatsCards
+                run={run}
+                successCount={successCount}
+                failedCount={failedCount}
+                successRate={successRate}
+                passedCount={passedCodes.length}
+              />
+              <ViewTabs activeView={activeView} onChange={setActiveView} />
 
               {activeView === 'summary' ? (
-                <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-subtle bg-surface">
-                  <div className="border-b border-subtle px-5 py-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                      <div>
-                        <p className="text-sm font-semibold text-foreground">汇总统计 MD</p>
-                        <p className="text-xs text-muted-text">通知同源的统计报告，包含整体完成、成功率和失败项。</p>
-                      </div>
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                        <input
-                          value={groupName}
-                          onChange={(event) => setGroupName(event.target.value)}
-                          placeholder={defaultGroupName}
-                          className="h-9 min-w-[16rem] rounded-lg border border-subtle bg-background px-3 text-sm text-foreground outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
-                        />
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={handleCreatePassedGroup}
-                          disabled={passedCodes.length === 0 || isCreatingGroup}
-                        >
-                          <FolderPlus className="h-4 w-4" />
-                          {isCreatingGroup ? '入库中…' : `建股票池 (${passedCodes.length})`}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                  <pre className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words px-5 py-4 text-sm leading-7 text-secondary-text">
-                    {summaryMd || '暂无汇总报告'}
-                  </pre>
-                </section>
+                <SummaryView
+                  summaryMd={summaryMd}
+                  groupName={groupName}
+                  defaultGroupName={defaultGroupName}
+                  passedCodesLength={passedCodes.length}
+                  isCreatingGroup={isCreatingGroup}
+                  onGroupNameChange={setGroupName}
+                  onCreateGroup={handleCreatePassedGroup}
+                />
               ) : (
-              <section className="grid min-h-0 flex-1 grid-rows-[minmax(12rem,34%)_minmax(0,1fr)] overflow-hidden rounded-xl border border-subtle bg-surface lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-1">
-                <aside className="flex min-h-0 flex-col border-b border-subtle lg:border-b-0 lg:border-r">
-                  <div className="border-b border-subtle px-4 py-3">
-                    <p className="text-sm font-semibold text-foreground">单股结果</p>
-                    <p className="text-xs text-muted-text">
-                      {resultSearch.trim() ? `${filteredResults.length} / ${results.length} 条匹配` : `${results.length} 条已保存结果`}
-                    </p>
-                    <div className="relative mt-3">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-text" />
-                      <input
-                        value={resultSearch}
-                        onChange={(event) => setResultSearch(event.target.value)}
-                        placeholder="搜索代码、摘要、状态..."
-                        className="h-9 w-full rounded-lg border border-subtle bg-background pl-9 pr-9 text-sm text-foreground outline-none transition placeholder:text-muted-text/70 focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
-                      />
-                      {resultSearch && (
-                        <button
-                          type="button"
-                          onClick={() => setResultSearch('')}
-                          className="absolute right-1.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-text transition hover:bg-hover hover:text-foreground"
-                          aria-label="清空搜索"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  <div className="min-h-0 flex-1 overflow-y-auto">
-                    {filteredResults.length > 0 ? filteredResults.map((item) => (
-                      <button
-                        key={item.code}
-                        type="button"
-                        onClick={() => setSelectedCode(item.code)}
-                        className={cn(
-                          'flex w-full flex-col gap-1 border-b border-subtle px-4 py-3 text-left transition-colors hover:bg-hover/70',
-                          selectedResult?.code === item.code && 'bg-primary/10',
-                        )}
-                      >
-                        <span className="flex items-center justify-between gap-3">
-                          <span className="font-mono text-sm font-semibold text-foreground">{item.code}</span>
-                          <span className={cn(
-                            'rounded-full px-2 py-0.5 text-[10px]',
-                            item.success ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-600',
-                          )}
-                          >
-                            {item.success ? '成功' : '失败'}
-                          </span>
-                        </span>
-                        <span className="line-clamp-2 text-xs leading-5 text-muted-text">{item.summary}</span>
-                      </button>
-                    )) : (
-                      <div className="px-4 py-8 text-center text-sm text-muted-text">
-                        没有匹配的单股结果
-                      </div>
-                    )}
-                  </div>
-                </aside>
-
-                <article className="flex min-h-0 flex-col overflow-hidden">
-                  {selectedResult ? (
-                    <div className="flex h-full min-h-0 flex-col">
-                      <div className="border-b border-subtle px-5 py-4">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <FileText className="h-4 w-4 text-muted-text" />
-                          <h2 className="font-mono text-lg font-semibold text-foreground">{selectedResult.code}</h2>
-                          <span className={cn(
-                            'rounded-full px-2 py-0.5 text-xs',
-                            selectedResult.success ? 'bg-emerald-500/10 text-emerald-600' : 'bg-red-500/10 text-red-600',
-                          )}
-                          >
-                            {selectedResult.success ? '分析成功' : '分析失败'}
-                          </span>
-                          <span className="text-xs text-muted-text">{selectedResult.model}</span>
-                        </div>
-                        <p className="mt-2 text-sm text-muted-text">{selectedResult.summary}</p>
-                      </div>
-                      <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-4 text-sm leading-7 text-secondary-text">
-                        {selectedResult.text || '无输出'}
-                      </pre>
-                    </div>
-                  ) : null}
-                </article>
-              </section>
+                <section className="grid min-h-0 flex-1 grid-rows-[minmax(12rem,34%)_minmax(0,1fr)] overflow-hidden rounded-xl border border-subtle bg-surface lg:grid-cols-[320px_minmax(0,1fr)] lg:grid-rows-1">
+                  <DetailList
+                    results={results}
+                    filteredResults={filteredResults}
+                    selectedCode={selectedCode}
+                    resultSearch={resultSearch}
+                    onSearchChange={setResultSearch}
+                    onSelectCode={setSelectedCode}
+                  />
+                  <article className="flex min-h-0 flex-col overflow-hidden">
+                    <DetailView result={selectedResult} />
+                  </article>
+                </section>
               )}
             </>
           ) : (
