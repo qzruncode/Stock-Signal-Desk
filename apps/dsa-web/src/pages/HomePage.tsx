@@ -3,12 +3,10 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import {
   Bell,
   FileText,
-  History,
   Menu,
 } from 'lucide-react';
 import { ConfirmDialog, InlineAlert } from '../components/common';
 import { BatchPanel } from '../components/batch';
-import { StockAutocomplete } from '../components/StockAutocomplete';
 import { HistoryList } from '../components/history';
 import HomeSidebar from '../components/home/HomeSidebar';
 import { TemplateManager } from '../components/templates/TemplateManager';
@@ -90,7 +88,7 @@ const HomePage: React.FC = () => {
   } = useTaskStatusPreview(activeTasks);
 
   useEffect(() => {
-    document.title = 'Stock-Signal-Desk';
+    document.title = 'Stock Assistant';
   }, []);
 
   const reportLanguage = normalizeReportLanguage(selectedReport?.meta.reportLanguage);
@@ -209,7 +207,7 @@ const HomePage: React.FC = () => {
       data-testid="home-dashboard"
       className="relative flex min-h-[calc(100vh-1.5rem)] w-full flex-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-sm sm:min-h-[calc(100vh-2rem)]"
     >
-      <div className="relative grid min-h-0 w-full grid-cols-1 gap-0 lg:grid-cols-[23rem_minmax(0,1fr)] 2xl:grid-cols-[23rem_minmax(0,1fr)_24rem]">
+      <div className="relative grid min-h-0 w-full grid-cols-1 gap-0 lg:grid-cols-[23rem_minmax(0,1fr)]">
         <HomeSidebar
           query={query}
           onQueryChange={setQuery}
@@ -238,7 +236,7 @@ const HomePage: React.FC = () => {
               <Menu className="h-5 w-5" />
             </button>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Stock-Signal-Desk</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Stock Assistant</p>
               <h2 className="truncate text-lg font-semibold text-slate-950 sm:text-xl">选股通知工作台</h2>
             </div>
             <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
@@ -252,30 +250,6 @@ const HomePage: React.FC = () => {
               </span>
             </div>
           </header>
-
-          <div className="border-b border-slate-200 bg-white/64 px-3 py-3 lg:hidden">
-            <div className="flex min-w-0 gap-2">
-              <StockAutocomplete
-                value={query}
-                onChange={setQuery}
-                onSubmit={(stockCode, stockName, selectionSource) => {
-                  handleSubmitAnalysis(stockCode, stockName, selectionSource);
-                }}
-                placeholder="输入股票代码或名称，如 600519、贵州茅台、AAPL"
-                disabled={isAnalyzing}
-                className={inputError ? 'border-danger/50' : undefined}
-                showSuggestionsOnFocus
-              />
-              <button
-                type="button"
-                onClick={() => handleSubmitAnalysis()}
-                disabled={!query || isAnalyzing}
-                className="h-11 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white disabled:bg-slate-300"
-              >
-                分析
-              </button>
-            </div>
-          </div>
 
           {(inputError || duplicateError || setupNeedsAction) ? (
             <div className="space-y-2 border-b border-slate-200 bg-white/58 px-3 py-3 sm:px-5">
@@ -315,8 +289,8 @@ const HomePage: React.FC = () => {
             data-testid="home-dashboard-scroll"
             className="min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5"
           >
-            <div className="mx-auto flex w-full max-w-[1180px] flex-col gap-4">
-              <div className="grid gap-4 2xl:hidden">
+            <div className="mx-auto flex w-full max-w-full flex-col gap-4">
+              <div className="grid gap-4">
                 <BatchPanel
                   templates={templates}
                   selectedTemplateId={selectedTemplateId}
@@ -344,25 +318,6 @@ const HomePage: React.FC = () => {
           </section>
 
         </main>
-
-        <aside className="hidden min-h-0 border-l border-slate-200 bg-slate-50/86 p-4 backdrop-blur-xl 2xl:flex 2xl:flex-col 2xl:gap-4">
-          <BatchPanel
-            templates={templates}
-            selectedTemplateId={selectedTemplateId}
-            onTemplateChange={setSelectedTemplateId}
-          />
-          <div className="rounded-xl border border-slate-200 bg-white/84 p-4 text-sm text-slate-500 shadow-sm">
-            <div className="mb-2 flex items-center gap-2 font-medium text-slate-800">
-              <History className="h-4 w-4 text-amber-600" />
-              工作流
-            </div>
-            <div className="space-y-2 text-xs leading-5">
-              <p>1. 选择模板，发起实时分析。</p>
-              <p>2. 点击左侧任务查看完整 prompt 与 AI 回吐。</p>
-              <p>3. 结果写入历史后可继续通知与复盘。</p>
-            </div>
-          </div>
-        </aside>
       </div>
 
       {markdownDrawerOpen && selectedReport?.meta.id ? (

@@ -1,4 +1,4 @@
-# Stock Signal Desk
+# Stock Assistant
 
 A 股 / 港股 / 美股自选股 AI 分析工作台。项目由 FastAPI 后端和 React WebUI 组成，用于管理自选股、选择分析模板、发起单股或批量分析，并追踪任务输出与历史报告。
 

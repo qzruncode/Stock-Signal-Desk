@@ -125,12 +125,6 @@ export default function HomeSidebar(props: HomeSidebarProps) {
   return (
     <>
       <aside className="hidden min-h-0 border-r border-slate-200 bg-white/82 p-4 backdrop-blur-xl lg:flex lg:flex-col">
-        <div className="mb-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Signal Desk</p>
-          <h1 className="mt-1 text-2xl font-semibold text-slate-950">选股通知工作台</h1>
-          <p className="mt-2 text-sm text-slate-500">搜索股票，选择模板，追踪 AI 完整输入与输出。</p>
-        </div>
-
         <AnalyzeControl {...props} />
 
         <div className="mt-3 flex min-h-0 flex-1 flex-col">
@@ -146,10 +140,7 @@ export default function HomeSidebar(props: HomeSidebarProps) {
             onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-3 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-text">Signal Desk</p>
-                <h2 className="text-base font-semibold text-foreground">历史记录</h2>
-              </div>
+              <h2 className="text-base font-semibold text-foreground">工作台</h2>
               <button
                 type="button"
                 onClick={props.onCloseMobile}
@@ -158,7 +149,12 @@ export default function HomeSidebar(props: HomeSidebarProps) {
                 关闭
               </button>
             </div>
-            {props.sidebarContent}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <AnalyzeControl {...props} />
+              <div className="mt-3 flex min-h-0 flex-col">
+                {props.sidebarContent}
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

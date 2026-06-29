@@ -59,7 +59,7 @@ const WatchlistManagePage: React.FC = () => {
   const [screenerOpen, setScreenerOpen] = useState(false);
 
   useEffect(() => {
-    document.title = '自选分组管理 - Stock-Signal-Desk';
+    document.title = '自选分组管理 - Stock Assistant';
   }, []);
 
   if (isLoading) {

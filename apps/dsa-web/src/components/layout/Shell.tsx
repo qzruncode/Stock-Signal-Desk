@@ -16,8 +16,8 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
 
   const navItems = [
     { to: '/', label: 'AI 助手', icon: MessageSquare },
-    { to: '/dashboard', label: '工作台', icon: Home },
     { to: '/stocks', label: '全市场股票', icon: Search },
+    { to: '/dashboard', label: '工作台', icon: Home },
     { to: '/portfolio', label: '管理自选股', icon: Star },
     { to: '/analysis', label: '个股分析', icon: Zap },
     { to: '/rss', label: 'RSS 资讯', icon: Rss },
@@ -134,8 +134,8 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
             </div>
             {!collapsed ? (
               <div className="min-w-0">
-                <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Stock Signal</p>
-                <p className="truncate text-sm font-semibold text-foreground">Stock-Signal-Desk</p>
+                <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Stock Assistant</p>
+                <p className="truncate text-sm font-semibold text-foreground">Stock Assistant</p>
               </div>
             ) : null}
           </div>
@@ -211,8 +211,8 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
                     <BarChart3 className="h-[18px] w-[18px]" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Stock Signal</p>
-                    <p className="truncate text-sm font-semibold text-foreground">Stock-Signal-Desk</p>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Stock Assistant</p>
+                    <p className="truncate text-sm font-semibold text-foreground">Stock Assistant</p>
                   </div>
                 </div>
                 <button

@@ -78,7 +78,7 @@ export default function HomeAnalysisCanvas({
 
   return (
     <>
-      <div className="rounded-xl border border-slate-200 bg-white/88 p-4 shadow-sm">
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">

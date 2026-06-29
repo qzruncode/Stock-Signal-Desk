@@ -51,7 +51,7 @@ const BatchRunDetailPage: React.FC = () => {
   }, [runId]);
 
   useEffect(() => {
-    document.title = '跑批详情 - Stock-Signal-Desk';
+    document.title = '跑批详情 - Stock Assistant';
     void loadRun();
     return () => { abortRef.current?.abort(); };
   }, [loadRun]);

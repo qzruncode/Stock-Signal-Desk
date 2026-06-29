@@ -63,7 +63,7 @@ const WorkflowBuilderPage: React.FC = () => {
   const { groups } = useWatchlistGroups();
 
   useEffect(() => {
-    document.title = '工作流编排 - Stock-Signal-Desk';
+    document.title = '工作流编排 - Stock Assistant';
     promptsApi.getPromptTemplates()
       .then((items) => {
         setTemplates(items);

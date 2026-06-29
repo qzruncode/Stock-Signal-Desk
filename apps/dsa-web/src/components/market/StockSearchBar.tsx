@@ -1,5 +1,5 @@
 import React from 'react';
-import { Search, X } from 'lucide-react';
+import { ChevronDown, Search, X } from 'lucide-react';
 
 interface StockSearchBarProps {
   search: string;
@@ -18,34 +18,37 @@ const MARKET_OPTIONS = [
 ];
 
 export const StockSearchBar: React.FC<StockSearchBarProps> = ({ search, market, onSearchChange, onMarketChange }) => (
-  <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
-    <div className="relative min-w-[180px] flex-1">
-      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+  <div className="flex shrink-0 items-center gap-2 px-3 py-2 sm:px-4">
+    <div className="relative flex-1">
+      <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
       <input
         type="text"
         value={search}
         onChange={(e) => onSearchChange(e.target.value)}
-        placeholder="搜索股票代码或名称..."
-        className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-8 text-sm text-slate-800 placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-4 focus:ring-cyan-100"
+        placeholder="搜索代码或名称..."
+        className="w-full rounded-md border border-border bg-muted/50 py-1.5 pl-8 pr-7 text-xs text-foreground placeholder:text-muted-foreground/60 focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/10"
       />
       {search && (
         <button
           type="button"
           onClick={() => onSearchChange('')}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
         >
-          <X className="h-4 w-4" />
+          <X className="h-3.5 w-3.5" />
         </button>
       )}
     </div>
-    <select
-      value={market}
-      onChange={(e) => onMarketChange(e.target.value)}
-      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:border-cyan-400 focus:outline-none"
-    >
-      {MARKET_OPTIONS.map((opt) => (
-        <option key={opt.value} value={opt.value}>{opt.label}</option>
-      ))}
-    </select>
+    <div className="relative">
+      <select
+        value={market}
+        onChange={(e) => onMarketChange(e.target.value)}
+        className="h-8 appearance-none rounded-md border border-border bg-card px-2.5 pr-7 py-0 text-xs text-foreground focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/10"
+      >
+        {MARKET_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+    </div>
   </div>
 );

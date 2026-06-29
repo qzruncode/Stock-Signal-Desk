@@ -27,7 +27,7 @@ const SettingsPage: React.FC = () => {
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    document.title = '模型 API 配置 - Stock-Signal-Desk';
+    document.title = '模型 API 配置 - Stock Assistant';
   }, []);
 
   const fetchConfig = useCallback(async () => {

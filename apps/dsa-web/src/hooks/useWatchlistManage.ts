@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import axios from 'axios';
 import { watchlistApi, type WatchlistResponse } from '../api/watchlist';
 import { classifyStock } from '../utils/market';
 import {
@@ -55,6 +56,7 @@ export function useWatchlistManage() {
       setWatchlist(result);
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (axios.isCancel(err)) return;
       setError(err instanceof Error ? err.message : '加载自选股失败');
     } finally {
       setIsLoading(false);
