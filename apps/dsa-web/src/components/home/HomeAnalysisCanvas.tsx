@@ -38,7 +38,7 @@ export default function HomeAnalysisCanvas({
 
   if (isLoadingTaskStatus) {
     content = (
-      <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-2xl border border-[#dbe5ef] bg-white/82">
+      <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-xl border border-slate-200 bg-white/82">
         <DashboardStateBlock title="加载任务对话中..." loading />
       </div>
     );
@@ -50,7 +50,7 @@ export default function HomeAnalysisCanvas({
     );
   } else if (isLoadingReport || pendingAutoSelectCode) {
     content = (
-      <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-2xl border border-[#dbe5ef] bg-white/82">
+      <div className="flex min-h-[24rem] flex-col items-center justify-center rounded-xl border border-slate-200 bg-white/82">
         <DashboardStateBlock
           title={pendingAutoSelectCode ? `正在为 ${pendingAutoSelectCode} 生成分析报告...` : '加载报告中...'}
           loading
@@ -65,7 +65,7 @@ export default function HomeAnalysisCanvas({
     );
   } else {
     content = (
-      <div className="flex min-h-[26rem] items-center justify-center rounded-2xl border border-dashed border-[#cbd8e6] bg-white/70">
+      <div className="flex min-h-[26rem] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/70">
         <EmptyState
           title="开始分析"
           description="输入股票代码进行分析，或从任务控制台选择历史报告查看。"
@@ -78,7 +78,7 @@ export default function HomeAnalysisCanvas({
 
   return (
     <>
-      <div className="rounded-2xl border border-[#dbe5ef] bg-white/88 p-4 shadow-[0_12px_34px_rgba(15,23,42,0.08)]">
+      <div className="rounded-xl border border-slate-200 bg-white/88 p-4 shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">
@@ -90,7 +90,7 @@ export default function HomeAnalysisCanvas({
           {selectedReport ? (
             <div className="flex flex-wrap items-center gap-2">
               <Button
-                variant="home-action-ai"
+                variant="primary"
                 size="sm"
                 disabled={isAnalyzing || selectedReport.meta.id === undefined}
                 onClick={onReanalyze}
@@ -99,7 +99,7 @@ export default function HomeAnalysisCanvas({
                 {reanalyzeLabel}
               </Button>
               <Button
-                variant="home-action-ai"
+                variant="primary"
                 size="sm"
                 disabled={selectedReport.meta.id === undefined}
                 onClick={onOpenMarkdownDrawer}

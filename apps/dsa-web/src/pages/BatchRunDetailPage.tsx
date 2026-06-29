@@ -162,7 +162,7 @@ const BatchRunDetailPage: React.FC = () => {
 
   return (
     <div className="flex h-[calc(100vh-1.5rem)] min-h-0 flex-col bg-base sm:h-[calc(100vh-2rem)]">
-      <div className="border-b border-[#dbe3ed] bg-[#fbfcfe]/90 px-4 py-3 backdrop-blur-xl">
+      <div className="border-b border-slate-200 bg-slate-50/90 px-4 py-3 backdrop-blur-xl">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <button

@@ -130,12 +130,12 @@ export const HistoryList: React.FC<HistoryListProps> = ({
                 <span className="text-[11px] text-muted-text select-none">全选当前</span>
               </label>
               <Button
-                variant="danger-subtle"
-                size="xsm"
+                variant="ghost"
+                size="sm"
                 onClick={onDeleteSelected}
                 disabled={selectedCount === 0 || isDeleting}
                 isLoading={isDeleting}
-                className="history-batch-delete-button disabled:!border-transparent disabled:!bg-transparent"
+                className="history-batch-delete-button border-danger/30 bg-danger/10 text-danger hover:bg-danger/15 disabled:!border-transparent disabled:!bg-transparent"
               >
                 {isDeleting ? '删除中' : '删除'}
               </Button>

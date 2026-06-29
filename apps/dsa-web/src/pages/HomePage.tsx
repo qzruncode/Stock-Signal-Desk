@@ -207,9 +207,8 @@ const HomePage: React.FC = () => {
   return (
     <div
       data-testid="home-dashboard"
-      className="relative flex min-h-[calc(100vh-1.5rem)] w-full overflow-hidden rounded-[1.35rem] border border-[#d6dee8] bg-[#f7f9fc] shadow-[0_18px_60px_rgba(24,45,77,0.12)] sm:min-h-[calc(100vh-2rem)]"
+      className="relative flex min-h-[calc(100vh-1.5rem)] w-full flex-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-sm sm:min-h-[calc(100vh-2rem)]"
     >
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-40 bg-[linear-gradient(90deg,rgba(8,145,178,0.16),rgba(16,185,129,0.12),rgba(245,158,11,0.10))]" />
       <div className="relative grid min-h-0 w-full grid-cols-1 gap-0 lg:grid-cols-[23rem_minmax(0,1fr)] 2xl:grid-cols-[23rem_minmax(0,1fr)_24rem]">
         <HomeSidebar
           query={query}
@@ -230,16 +229,16 @@ const HomePage: React.FC = () => {
         />
 
         <main className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <header className="flex flex-shrink-0 items-center gap-3 border-b border-[#dbe3ed] bg-white/72 px-3 py-3 backdrop-blur-xl sm:px-5">
+          <header className="flex flex-shrink-0 items-center gap-3 border-b border-slate-200 bg-white/72 px-3 py-3 backdrop-blur-xl sm:px-5">
             <button
               onClick={() => setSidebarOpen(true)}
-              className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-600 shadow-sm transition hover:border-cyan-300 hover:text-cyan-700 lg:hidden"
+              className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-cyan-300 hover:text-cyan-700 lg:hidden"
               aria-label="历史记录"
             >
               <Menu className="h-5 w-5" />
             </button>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Stock-Signal-Desk</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Stock-Signal-Desk</p>
               <h2 className="truncate text-lg font-semibold text-slate-950 sm:text-xl">选股通知工作台</h2>
             </div>
             <div className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
@@ -254,7 +253,7 @@ const HomePage: React.FC = () => {
             </div>
           </header>
 
-          <div className="border-b border-[#dbe3ed] bg-white/64 px-3 py-3 lg:hidden">
+          <div className="border-b border-slate-200 bg-white/64 px-3 py-3 lg:hidden">
             <div className="flex min-w-0 gap-2">
               <StockAutocomplete
                 value={query}
@@ -279,7 +278,7 @@ const HomePage: React.FC = () => {
           </div>
 
           {(inputError || duplicateError || setupNeedsAction) ? (
-            <div className="space-y-2 border-b border-[#dbe3ed] bg-white/58 px-3 py-3 sm:px-5">
+            <div className="space-y-2 border-b border-slate-200 bg-white/58 px-3 py-3 sm:px-5">
               {inputError ? (
                 <InlineAlert
                   variant="danger"
@@ -346,13 +345,13 @@ const HomePage: React.FC = () => {
 
         </main>
 
-        <aside className="hidden min-h-0 border-l border-[#dbe3ed] bg-[#fbfcfe]/86 p-4 backdrop-blur-xl 2xl:flex 2xl:flex-col 2xl:gap-4">
+        <aside className="hidden min-h-0 border-l border-slate-200 bg-slate-50/86 p-4 backdrop-blur-xl 2xl:flex 2xl:flex-col 2xl:gap-4">
           <BatchPanel
             templates={templates}
             selectedTemplateId={selectedTemplateId}
             onTemplateChange={setSelectedTemplateId}
           />
-          <div className="rounded-2xl border border-[#dbe5ef] bg-white/84 p-4 text-sm text-slate-500 shadow-[0_10px_28px_rgba(15,23,42,0.06)]">
+          <div className="rounded-xl border border-slate-200 bg-white/84 p-4 text-sm text-slate-500 shadow-sm">
             <div className="mb-2 flex items-center gap-2 font-medium text-slate-800">
               <History className="h-4 w-4 text-amber-600" />
               工作流

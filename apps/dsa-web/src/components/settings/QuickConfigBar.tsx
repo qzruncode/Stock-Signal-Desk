@@ -71,11 +71,11 @@ export const QuickConfigBar: React.FC<QuickConfigBarProps> = ({
           </select>
         )}
 
-        <Button variant="settings-secondary" size="sm" onClick={onReset} disabled={saving}>
+        <Button variant="secondary" size="sm" onClick={onReset} disabled={saving}>
           <RotateCcw className="h-4 w-4" />
           放弃更改
         </Button>
-        <Button variant="settings-primary" size="sm" onClick={onSave} isLoading={saving} loadingText="保存中...">
+        <Button variant="primary" size="sm" onClick={onSave} isLoading={saving} loadingText="保存中...">
           <Save className="h-4 w-4" />
           保存配置
         </Button>

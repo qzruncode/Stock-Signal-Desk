@@ -79,7 +79,7 @@ const AtrScreenerDialog: React.FC<AtrScreenerDialogProps> = ({
           </ul>
         </div>
       </div>
-      <Button variant="home-action-ai" onClick={handleScreen} className="w-full">
+      <Button variant="primary" onClick={handleScreen} className="w-full">
         <Zap className="h-4 w-4" />
         开始筛选
       </Button>
@@ -206,7 +206,7 @@ const AtrScreenerDialog: React.FC<AtrScreenerDialogProps> = ({
               placeholder="分组名称"
             />
             <Button
-              variant="home-action-ai"
+              variant="primary"
               size="sm"
               onClick={handleCreateGroup}
               disabled={!result.matchedCodes.length || isSaving}

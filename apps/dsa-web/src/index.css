@@ -9,13 +9,18 @@
   /* Typography */
   font-family:
     "Inter",
+    -apple-system,
     "SF Pro Display",
     "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
     system-ui,
-    -apple-system,
     sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   line-height: 1.5;
   font-weight: 400;
+  letter-spacing: -0.011em;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -23,48 +28,48 @@
 
   /* HSL tokens used by Tailwind-based components */
 
-  --background: 216 33% 97%;
-  --foreground: 228 35% 12%;
+  --background: 150 20% 98%;
+  --foreground: 222 47% 11%;
   --card: 0 0% 100%;
-  --card-foreground: 228 35% 12%;
+  --card-foreground: 222 47% 11%;
   --popover: 0 0% 100%;
-  --popover-foreground: 228 35% 12%;
-  --primary: 193 100% 43%;
-  --primary-foreground: 216 33% 97%;
-  --secondary: 214 32% 91%;
-  --secondary-foreground: 228 35% 16%;
-  --muted: 214 30% 94%;
-  --muted-foreground: 224 12% 42%;
-  --accent: 214 32% 93%;
-  --accent-foreground: 228 35% 16%;
-  --destructive: 349 82% 56%;
-  --destructive-foreground: 210 33% 98%;
-  --border: 217 28% 84%;
-  --input: 217 28% 84%;
-  --ring: 193 100% 43%;
-  --radius: 1rem;
+  --popover-foreground: 222 47% 11%;
+  --primary: 160 84% 39%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 150 16% 95%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 150 16% 95%;
+  --muted-foreground: 220 9% 46%;
+  --accent: 150 16% 95%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 150 12% 90%;
+  --input: 150 12% 90%;
+  --ring: 160 84% 39%;
+  --radius: 0.625rem;
   --elevated: 0 0% 100%;
-  --hover: 214 29% 90%;
-  --secondary-text: 224 18% 28%;
-  --muted-text: 224 12% 35%;
+  --hover: 150 16% 95%;
+  --secondary-text: 220 9% 32%;
+  --muted-text: 220 9% 46%;
 
   --color-cyan: hsl(var(--primary));
   --color-cyan-dim: hsl(var(--primary) / 0.8);
-  --color-cyan-glow: hsl(var(--primary) / 0.18);
-  --color-purple: 247 84% 66%;
-  --color-purple-dim: 247 84% 56%;
-  --color-purple-glow: hsl(247 84% 66% / 0.18);
-  --color-success: 152 69% 40%;
-  --color-warning: 37 92% 50%;
-  --color-danger: 0 90% 55%;
-  --color-danger-alert-text: 349 82% 35%; /* Darker red for light mode */
-  --color-danger-alert-border: 349 82% 56%;
-  --color-danger-alert-bg: 349 82% 56%;
+  --color-cyan-glow: hsl(var(--primary) / 0.12);
+  --color-purple: 173 80% 40%;
+  --color-purple-dim: 173 80% 34%;
+  --color-purple-glow: hsl(173 80% 40% / 0.12);
+  --color-success: 160 84% 39%;
+  --color-warning: 38 92% 45%;
+  --color-danger: 0 72% 51%;
+  --color-danger-alert-text: 0 72% 40%;
+  --color-danger-alert-border: 0 72% 51%;
+  --color-danger-alert-bg: 0 72% 51%;
   /* Tailwind-compatible accent colors (Light theme) */
-  --color-cyan-400: 188 78% 41%;
-  --color-emerald-400: 152 69% 40%;
-  --color-red-400: 0 90% 55%;
-  --color-amber-400: 37 92% 50%;
+  --color-cyan-400: 160 84% 39%;
+  --color-emerald-400: 160 84% 39%;
+  --color-red-400: 0 72% 51%;
+  --color-amber-400: 38 92% 45%;
   /* Tailwind aliases (for hsl(var(--success))) */
   --success: var(--color-success);
   --warning: var(--color-warning);
@@ -76,8 +81,8 @@
   --sentiment-fear: var(--color-danger);
 
   /* Sentiment indicator glow effect - Intensity adjustable via CSS */
-  --glow-spread: 8px;
-  --glow-intensity: 0.18;
+  --glow-spread: 6px;
+  --glow-intensity: 0.08;
   --sentiment-greed-glow: hsl(var(--sentiment-greed) / var(--glow-intensity));
   --sentiment-neutral-glow: hsl(var(--sentiment-neutral) / var(--glow-intensity));
   --sentiment-fear-glow: hsl(var(--sentiment-fear) / var(--glow-intensity));
@@ -186,22 +191,22 @@
   --home-prose-border-strong: hsl(var(--foreground) / 0.16);
   --home-prose-blockquote-border: hsl(247 84% 66% / 0.28);
   --home-prose-blockquote-bg: hsl(247 84% 66% / 0.08);
-  --home-panel-shadow: 0 14px 32px hsl(220 22% 34% / 0.08), 0 4px 10px hsl(220 18% 28% / 0.04);
-  --home-panel-shadow-hover: 0 18px 40px hsl(220 24% 32% / 0.12), 0 6px 16px hsl(220 20% 28% / 0.06);
+  --home-panel-shadow: 0 1px 2px hsl(220 20% 20% / 0.04), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --home-panel-shadow-hover: 0 4px 12px hsl(220 20% 20% / 0.08), 0 1px 3px hsl(220 20% 20% / 0.06);
   --home-hero-border: hsl(193 100% 43% / 0.32);
   --home-hero-gradient-start: hsl(193 100% 43% / 0.24);
   --home-hero-gradient-mid: hsl(247 84% 66% / 0.14);
   --home-hero-gradient-end: hsl(218 22% 82% / 0.14);
-  --home-hero-shadow: 0 18px 44px hsl(220 24% 34% / 0.12), 0 8px 18px hsl(220 20% 30% / 0.06);
+  --home-hero-shadow: 0 4px 12px hsl(220 20% 20% / 0.08), 0 1px 3px hsl(220 20% 20% / 0.06);
   --home-rail-border: hsl(218 24% 82% / 0.9);
   --home-rail-bg: linear-gradient(180deg, hsl(0 0% 100% / 0.98), hsl(214 36% 97% / 0.98));
-  --home-rail-shadow: 0 14px 30px hsl(220 22% 34% / 0.09), 0 4px 10px hsl(220 18% 28% / 0.05);
+  --home-rail-shadow: 0 1px 2px hsl(220 20% 20% / 0.04), 0 1px 3px hsl(220 20% 20% / 0.06);
   --home-history-glow: hsl(193 100% 43% / 0.14);
   --autocomplete-hover-bg: #04d1f6;
 
   /* Shadows (using HSL format) */
-  --shadow-soft-card: 0 12px 24px hsl(220 20% 34% / 0.09), 0 3px 8px hsl(220 16% 28% / 0.05);
-  --shadow-soft-card-strong: 0 18px 34px hsl(220 20% 32% / 0.12), 0 6px 16px hsl(220 16% 28% / 0.07);
+  --shadow-soft-card: 0 1px 2px hsl(220 20% 20% / 0.04), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --shadow-soft-card-strong: 0 4px 12px hsl(220 20% 20% / 0.08), 0 1px 3px hsl(220 20% 20% / 0.06);
   --settings-surface: hsl(0 0% 100% / 0.97);
   --settings-surface-hover: hsl(214 44% 95% / 0.99);
   --settings-surface-strong: hsl(0 0% 100% / 0.99);
@@ -249,296 +254,8 @@
   --chat-bubble-ai-bg: hsl(var(--card) / 0.85);
   --chat-bubble-ai-border: hsl(var(--foreground) / 0.2);
 
-  /* Login Page Tokens (Light) */
-  --login-bg-main: hsl(214 34% 96%);
-  --login-bg-card: hsl(210 43% 92% / 0.78);
-  --login-border-card: hsl(221 28% 28% / 0.58);
-  --login-border-input: hsl(201 56% 46% / 0.7);
-  --login-border-focus: hsl(var(--primary) / 0.48);
-  --login-error-text: hsl(var(--destructive));
-  --login-error-bg: hsl(var(--destructive) / 0.1);
-  --login-error-border: hsl(var(--destructive) / 0.2);
-  --login-text-primary: hsl(223 36% 12%);
-  --login-text-secondary: hsl(220 17% 28%);
-  --login-text-muted: hsl(221 18% 32% / 0.72);
-  --login-accent-soft: hsl(var(--primary) / 0.08);
-  --login-accent-border: hsl(220 22% 32% / 0.72);
-  --login-accent-text: hsl(223 36% 18%);
-  --login-accent-glow: hsl(var(--primary) / 0.18);
-  --login-brand-start: hsl(222 36% 16%);
-  --login-brand-end: hsl(205 88% 48%);
-  --login-brand-button-start: hsl(194 78% 56%);
-  --login-brand-button-end: hsl(213 88% 56%);
-  --login-brand-button-start-hover: hsl(194 82% 52%);
-  --login-brand-button-end-hover: hsl(213 90% 52%);
-  --login-button-text: hsl(210 40% 98%);
-  --login-label-text: hsl(223 36% 14%);
-  --login-hint-text: hsl(220 14% 34% / 0.9);
-  --login-input-icon: hsl(205 66% 38% / 0.86);
-  --login-input-toggle-bg: hsl(210 44% 96% / 0.92);
-  --login-input-toggle-border: hsl(208 42% 46% / 0.32);
-  --login-input-toggle-text: hsl(220 24% 22% / 0.82);
-  --login-input-toggle-border-hover: hsl(205 82% 46% / 0.42);
-  --login-input-toggle-bg-hover: hsl(205 100% 92% / 0.98);
-  --login-input-toggle-text-hover: hsl(205 88% 34%);
-  --login-input-toggle-ring: hsl(var(--primary) / 0.22);
-  --login-input-toggle-active-bg: hsl(var(--primary) / 0.14);
-  --login-input-toggle-active-border: hsl(var(--primary) / 0.34);
-  --login-input-toggle-active-text: hsl(205 88% 28%);
-  --login-grid-line: hsl(214 20% 55% / 0.08);
-  --login-grid-mask: radial-gradient(ellipse 80% 50% at 50% 50%, #000 70%, transparent 100%);
 }
 
-.dark {
-  --background: 228 35% 7%;
-  --foreground: 210 33% 98%;
-  --card: 230 24% 10%;
-  --card-foreground: 210 33% 98%;
-  --popover: 230 24% 10%;
-  --popover-foreground: 210 33% 98%;
-  --primary: 190 100% 50%;
-  --primary-foreground: 228 35% 8%;
-  --secondary: 231 19% 15%;
-  --secondary-foreground: 210 33% 94%;
-  --muted: 230 18% 14%;
-  --muted-foreground: 228 13% 66%;
-  --accent: 231 18% 16%;
-  --accent-foreground: 210 33% 98%;
-  --destructive: 349 100% 63%;
-  --destructive-foreground: 210 33% 98%;
-  --border: 226 19% 20%;
-  --input: 226 19% 20%;
-  --ring: 190 100% 50%;
-  --elevated: 230 22% 12%;
-  --hover: 231 20% 16%;
-  --secondary-text: 228 16% 72%;
-  --muted-text: 228 10% 48%;
-
-  --color-cyan: hsl(var(--primary));
-  --color-cyan-dim: hsl(var(--primary) / 0.8);
-  --color-cyan-glow: hsl(var(--primary) / 0.4);
-  --color-purple: 247 84% 72%;
-  --color-purple-dim: 247 84% 62%;
-  --color-purple-glow: hsl(247 84% 72% / 0.3);
-  --color-success: 152 69% 40%;
-  --color-warning: 37 92% 50%;
-  --color-danger: 0 90% 55%;
-  --color-danger-alert-text: 349 100% 75%; /* Bright/light pink for dark mode */
-  --color-danger-alert-border: 349 100% 63%;
-  --color-danger-alert-bg: 349 100% 63%;
-  --autocomplete-hover-bg: #2dcae6;
-  /* Tailwind-compatible accent colors (Dark theme) */
-  --color-cyan-400: 188 78% 41%;
-  --color-emerald-400: 152 69% 40%;
-  --color-red-400: 0 90% 55%;
-  --color-amber-400: 37 92% 50%;
-  /* Tailwind aliases (for hsl(var(--success))) */
-  --success: var(--color-success);
-  --warning: var(--color-warning);
-  --danger: var(--color-danger);
-
-  /* Sentiment indicator colors (Dark theme) - Adjustable via CSS */
-  --sentiment-greed: var(--color-cyan);
-  --sentiment-neutral: var(--color-purple);
-  --sentiment-fear: var(--color-danger);
-
-  /* Sentiment indicator glow effect (Dark theme) - Stronger glow */
-  --glow-spread: 12px;
-  --glow-intensity: 0.3;
-  --sentiment-greed-glow: hsl(var(--sentiment-greed) / var(--glow-intensity));
-  --sentiment-neutral-glow: hsl(var(--sentiment-neutral) / var(--glow-intensity));
-  --sentiment-fear-glow: hsl(var(--sentiment-fear) / var(--glow-intensity));
-
-  --bg-base: hsl(var(--background));
-  --bg-card: hsl(var(--card));
-  --bg-elevated: hsl(var(--elevated));
-  --bg-hover: hsl(var(--hover));
-
-  /* Dark theme design token color sources */
-  --bg-subtle-raw: var(--foreground);
-  --border-dim-raw: var(--foreground);
-  --border-subtle-raw: var(--foreground);
-
-  /* Dark theme design tokens (Ready to use) */
-  --bg-subtle: hsl(var(--bg-subtle-raw) / 0.05);
-  --border-dim: hsl(var(--border-dim-raw) / 0.06);
-  --border-subtle: hsl(var(--border-subtle-raw) / 0.08);
-  --border-subtle-hover: hsl(var(--border-subtle-raw) / 0.15);
-  --border-default: var(--border-dim);
-  --border-hover: hsl(var(--primary) / 0.34);
-  --border-selected: hsl(var(--primary) / 0.46);
-
-  /* Dark theme surface variants */
-  --surface-1: hsl(var(--card));
-  --surface-2: hsl(var(--elevated));
-  --surface-3: hsl(var(--hover));
-
-  --overlay-hover: hsl(var(--foreground) / 0.08);
-  --overlay-selected: hsl(var(--primary) / 0.15);
-
-  /* Compatibility preservation */
-  --border-accent: hsl(var(--primary) / 0.8);
-  --border-purple: hsl(247 84% 72% / 0.28);
-  --border-cyan: hsl(var(--primary));
-  --text-primary: hsl(var(--foreground));
-  --text-secondary-text: hsl(var(--secondary-text));
-  --text-muted-text: hsl(var(--muted-text));
-
-  /* Navigation related (Dark theme) */
-  --nav-active-bg: hsl(var(--primary) / 0.11);
-  --nav-active-border: hsl(var(--primary) / 0.3);
-  --nav-active-shadow: hsl(var(--primary) / 0.05);
-  --nav-hover-bg: hsl(var(--primary) / 0.06);
-  --nav-icon-active: hsl(var(--primary));
-  --nav-item-height: 2.75rem;
-  --nav-item-padding-x: 1rem;
-  --nav-indicator-width: 0.25rem;
-  --nav-indicator-bg: hsl(var(--primary));
-  --nav-indicator-shadow: hsl(var(--primary) / 0.8);
-  --nav-badge-bg: hsl(var(--primary));
-  --nav-brand-shadow: hsl(var(--primary) / 0.24);
-
-  /* Home page related (Dark theme) */
-  --home-loading-ring-track: hsl(var(--primary) / 0.2);
-  --home-loading-ring-head: hsl(var(--primary));
-  --page-drawer-overlay-bg: hsl(0 0% 0% / 0.6);
-  --home-mobile-overlay-bg: var(--page-drawer-overlay-bg);
-  --home-action-ai-bg: hsl(var(--primary) / 0.1);
-  --home-action-ai-border: hsl(var(--primary) / 0.2);
-  --home-action-ai-text: hsl(var(--primary));
-  --home-action-ai-hover-bg: hsl(var(--primary) / 0.2);
-  --home-action-report-bg: hsl(247 84% 72% / 0.1);
-  --home-action-report-border: hsl(247 84% 72% / 0.2);
-  --home-action-report-text: hsl(247 84% 72%);
-  --home-action-report-hover-bg: hsl(247 84% 72% / 0.2);
-  --home-accent-bg: hsl(var(--primary) / 0.1);
-  --home-accent-bg-hover: hsl(var(--primary) / 0.18);
-  --home-accent-border: hsl(var(--primary) / 0.22);
-  --home-accent-border-hover: hsl(var(--primary) / 0.34);
-  --home-accent-text: hsl(var(--primary));
-  --home-secondary-accent-text: hsl(247 84% 72%);
-  --home-title-accent: hsl(247 84% 72%);
-  --home-price-up: hsl(0 88% 64%);
-  --home-price-down: hsl(149 100% 44%);
-  --home-strategy-buy: hsl(149 100% 44%);
-  --home-strategy-secondary: hsl(var(--primary));
-  --home-strategy-stop: hsl(346 100% 66%);
-  --home-strategy-take: hsl(38 100% 58%);
-  --home-panel-border: hsl(var(--foreground) / 0.1);
-  --home-panel-border-hover: hsl(var(--primary) / 0.34);
-  --home-panel-border-selected: hsl(var(--primary) / 0.46);
-  --home-panel-gradient-start: hsl(var(--primary) / 0.3);
-  --home-panel-gradient-mid: hsl(247 84% 72% / 0.24);
-  --home-panel-gradient-end: hsl(var(--foreground) / 0.08);
-  --home-panel-selected-shadow:
-    0 0 0 1px hsl(var(--primary) / 0.14),
-    0 4px 16px hsl(var(--primary) / 0.16);
-  --home-panel-subtle-bg: hsl(var(--foreground) / 0.03);
-  --home-panel-subtle-bg-hover: hsl(var(--foreground) / 0.05);
-  --home-history-item-bg: hsl(var(--foreground) / 0.03);
-  --home-history-item-hover-bg: hsl(var(--foreground) / 0.06);
-  --home-history-item-selected-bg:
-    linear-gradient(180deg, hsl(247 84% 72% / 0.14), hsl(var(--primary) / 0.1));
-  --home-divider-border: hsl(var(--foreground) / 0.1);
-  --home-surface-button-bg: hsl(var(--foreground) / 0.03);
-  --home-surface-button-bg-hover: hsl(var(--foreground) / 0.06);
-  --home-surface-button-border: hsl(var(--foreground) / 0.1);
-  --home-surface-button-border-hover: hsl(var(--primary) / 0.28);
-  --home-state-icon-muted: hsl(var(--muted-text) / 0.85);
-  --home-prose-border: hsl(var(--foreground) / 0.12);
-  --home-prose-border-strong: hsl(var(--foreground) / 0.18);
-  --home-prose-blockquote-border: hsl(247 84% 72% / 0.3);
-  --home-prose-blockquote-bg: hsl(247 84% 72% / 0.1);
-
-  /* Shadows (Dark theme) */
-  --shadow-soft-card: 0 18px 48px hsl(215 25% 10% / 0.4);
-  --shadow-soft-card-strong: 0 24px 56px hsl(215 25% 10% / 0.5);
-  --settings-surface: hsl(0 0% 100% / 0.02);
-  --settings-surface-hover: hsl(0 0% 100% / 0.05);
-  --settings-surface-strong: hsl(var(--card) / 0.92);
-  --settings-surface-panel: hsl(var(--elevated) / 0.62);
-  --settings-surface-overlay: hsl(var(--background) / 0.22);
-  --settings-surface-overlay-soft: hsl(var(--background) / 0.15);
-  --settings-surface-overlay-muted: hsl(var(--background) / 0.12);
-  --settings-border: hsl(0 0% 100% / 0.1);
-  --settings-border-soft: hsl(0 0% 100% / 0.08);
-  --settings-border-strong: hsl(0 0% 100% / 0.2);
-  --settings-border-overlay: hsl(0 0% 100% / 0.45);
-  --settings-accent-shadow: hsl(190 100% 50% / 0.1);
-  --settings-primary-border: hsl(190 100% 50% / 0.26);
-  --settings-primary-gradient:
-    linear-gradient(135deg, hsl(190 100% 50% / 0.96), hsl(191 100% 40% / 0.96));
-  --settings-primary-text: hsl(205 71% 6%);
-  --settings-primary-shadow: hsl(190 100% 50% / 0.2);
-  --settings-primary-shadow-hover: hsl(190 100% 50% / 0.22);
-  --settings-secondary-border: hsl(0 0% 100% / 0.08);
-  --settings-secondary-bg: hsl(0 0% 100% / 0.03);
-  --settings-secondary-border-hover: hsl(190 100% 50% / 0.3);
-  --settings-secondary-bg-hover: hsl(190 100% 50% / 0.06);
-  --settings-glow-hover: hsl(190 100% 50% / 0.38);
-  --settings-skeleton-strong: hsl(0 0% 100% / 0.1);
-  --settings-skeleton-soft: hsl(0 0% 100% / 0.06);
-  --input-surface-bg: var(--bg-card);
-  --input-surface-border: hsl(var(--border) / 0.82);
-  --input-surface-border-hover: rgba(255, 255, 255, 0.18);
-  --input-surface-border-focus: hsl(var(--primary) / 0.45);
-  --input-surface-focus-ring: 0 0 0 4px hsl(var(--primary) / 0.18);
-  --settings-input-rest-border: hsl(var(--border) / 0.58);
-  --gradient-primary:
-    linear-gradient(135deg, rgba(0, 212, 255, 0.96), rgba(0, 168, 204, 0.96));
-
-  /* Chat UI Tokens (Dark) */
-  --chat-avatar-user-bg: hsl(var(--primary) / 0.8);
-  --chat-avatar-user-fg: hsl(var(--foreground) / 0.9);
-  --chat-avatar-user-border: hsl(var(--primary) / 0.15); /* Lower brightness/opacity for dark mode */
-  --chat-avatar-ai-bg: hsl(var(--primary) / 0.8);
-  --chat-avatar-ai-fg: hsl(var(--foreground) / 0.9);
-  --chat-avatar-ai-border: hsl(0 0% 100% / 0.1); /* Low opacity white for dark mode */
-  
-  --chat-bubble-user-bg: hsl(var(--primary) / 0.1);
-  --chat-bubble-user-border: hsl(var(--primary) / 0.2);
-  --chat-bubble-ai-bg: hsl(var(--card) / 0.72);
-  --chat-bubble-ai-border: hsl(0 0% 100% / 0.12); /* Semi-transparent border for dark mode */
-
-  /* Login Page Tokens (Dark - Preserved Cyber Style) */
-  --login-bg-main: hsl(222 84% 5%);
-  --login-bg-card: hsl(222 34% 8%);
-  --login-border-card: hsl(0 0% 100% / 0.05);
-  --login-border-input: hsl(0 0% 100% / 0.1);
-  --login-border-focus: hsl(var(--primary) / 0.5);
-  --login-error-text: hsl(var(--destructive));
-  --login-error-bg: hsl(var(--destructive) / 0.1);
-  --login-error-border: hsl(var(--destructive) / 0.2);
-  --login-text-primary: hsl(0 0% 100%);
-  --login-text-secondary: hsl(215 20% 65%);
-  --login-text-muted: hsl(215 16% 45%);
-  --login-accent-soft: hsl(var(--primary) / 0.08);
-  --login-accent-border: hsl(var(--primary) / 0.28);
-  --login-accent-text: hsl(var(--primary) / 0.92);
-  --login-accent-glow: hsl(var(--primary) / 0.2);
-  --login-brand-start: hsl(var(--primary));
-  --login-brand-end: hsl(214 100% 62%);
-  --login-brand-button-start: hsl(194 96% 45%);
-  --login-brand-button-end: hsl(214 100% 56%);
-  --login-brand-button-start-hover: hsl(194 96% 50%);
-  --login-brand-button-end-hover: hsl(214 100% 62%);
-  --login-button-text: hsl(210 33% 98%);
-  --login-label-text: hsl(0 0% 100%);
-  --login-hint-text: hsl(215 20% 65%);
-  --login-input-icon: hsl(var(--primary) / 0.88);
-  --login-input-toggle-bg: hsl(223 28% 14% / 0.92);
-  --login-input-toggle-border: hsl(0 0% 100% / 0.10);
-  --login-input-toggle-text: hsl(var(--primary) / 0.82);
-  --login-input-toggle-border-hover: hsl(var(--primary) / 0.34);
-  --login-input-toggle-bg-hover: hsl(var(--primary) / 0.12);
-  --login-input-toggle-text-hover: hsl(var(--primary) / 0.92);
-  --login-input-toggle-ring: hsl(var(--primary) / 0.24);
-  --login-input-toggle-active-bg: hsl(var(--primary) / 0.18);
-  --login-input-toggle-active-border: hsl(var(--primary) / 0.46);
-  --login-input-toggle-active-text: hsl(var(--primary) / 0.96);
-  --login-grid-line: hsl(0 0% 50% / 0.04);
-  --login-grid-mask: radial-gradient(ellipse 80% 50% at 50% 50%, #000 70%, transparent 100%);
-}
 
 /* =========================================
    2. GLOBAL STYLES (from Classic)
@@ -707,23 +424,13 @@
   -webkit-text-fill-color: hsl(var(--muted-text) / 0.6);
 }
 
-.dark [data-testid="home-dashboard"] .stock-autocomplete .input-surface::placeholder {
-  color: var(--text-muted-text);
-  -webkit-text-fill-color: var(--text-muted-text);
-}
 
 [data-testid="chat-workspace"] textarea.input-surface::placeholder {
   color: hsl(var(--muted-text) / 0.62);
   -webkit-text-fill-color: hsl(var(--muted-text) / 0.62);
 }
 
-.dark [data-testid="home-dashboard"] .stock-autocomplete .input-surface:not(:hover):not(:focus):not(:disabled) {
-  border-color: hsl(var(--foreground) / 0.2);
-}
 
-.dark [data-testid="chat-workspace"] textarea.input-surface:not(:hover):not(:focus):not(:disabled) {
-  border-color: hsl(var(--foreground) / 0.2);
-}
 
 .input-surface:hover:not(:focus):not(:disabled) {
   border-color: var(--input-surface-border-hover);
@@ -742,19 +449,6 @@
 .input-focus-glow:focus-within {
   border-color: var(--input-surface-border-focus);
   box-shadow: var(--input-surface-shadow, var(--shadow-soft-card)), var(--input-surface-focus-ring);
-}
-
-.input-appearance-login {
-  --input-surface-bg: var(--login-input-surface);
-  --input-surface-border: var(--login-input-border);
-  --input-surface-border-hover: var(--login-input-border-hover);
-  --input-surface-border-focus: var(--login-input-border-focus);
-  --input-surface-focus-ring: var(--login-input-focus-ring);
-  --input-surface-text: var(--login-input-text);
-  --input-surface-placeholder: var(--login-input-placeholder);
-  --input-surface-caret: var(--login-input-caret);
-  --input-surface-fill: var(--login-input-fill);
-  --input-surface-shadow: var(--login-input-shadow, var(--shadow-soft-card));
 }
 
 /* ============ Badge Styles ============ */
@@ -1526,30 +1220,9 @@ textarea {
   opacity: 0.55;
 }
 
-.dark .chat-skill-checkbox {
-  border-color: hsl(var(--foreground) / 0.16);
-  background: hsl(var(--card) / 0.84);
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
-}
 
-.dark .chat-skill-checkbox:hover {
-  border-color: hsl(var(--primary) / 0.42);
-  background: hsl(var(--primary) / 0.09);
-}
 
-.dark .chat-skill-checkbox:checked {
-  border-color: hsl(var(--primary) / 0.68);
-  background:
-    linear-gradient(135deg, transparent 0 36%, hsl(var(--primary)) 37% 48%, transparent 49%),
-    linear-gradient(45deg, transparent 0 52%, hsl(var(--primary)) 53% 66%, transparent 67%),
-    hsl(var(--card) / 0.88);
-}
 
-.dark .chat-skill-checkbox:focus-visible {
-  box-shadow:
-    0 0 0 3px hsl(var(--primary) / 0.18),
-    inset 0 1px 0 hsl(0 0% 100% / 0.06);
-}
 
 .chat-progress-item {
   display: flex;
@@ -1790,104 +1463,24 @@ textarea {
   box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.44);
 }
 
-.dark .home-report-hero {
-  --terminal-card-border: var(--home-panel-border-selected);
-  --terminal-card-gradient-start: hsl(var(--primary) / 0.22);
-  --terminal-card-gradient-mid: hsl(247 84% 72% / 0.18);
-  --terminal-card-gradient-end: hsl(var(--foreground) / 0.08);
-  --terminal-card-shadow: var(--shadow-soft-card);
-  background: linear-gradient(180deg, hsl(var(--card) / 0.96), hsl(var(--background) / 0.94));
-}
 
-.dark .home-report-hero::after,
-.dark .home-rail-card::after {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    hsl(var(--primary) / 0.24) 50%,
-    transparent 100%
-  );
-}
 
-.dark .home-rail-card {
-  --terminal-card-border: var(--home-panel-border);
-  --terminal-card-gradient-start: hsl(var(--primary) / 0.16);
-  --terminal-card-gradient-mid: hsl(247 84% 72% / 0.14);
-  --terminal-card-gradient-end: hsl(var(--foreground) / 0.08);
-  --terminal-card-shadow: var(--shadow-soft-card);
-  background: linear-gradient(180deg, hsl(var(--card) / 0.94), hsl(var(--background) / 0.92));
-}
 
-.dark .home-insight-card {
-  --home-insight-surface: hsl(var(--card) / 0.9);
-  background: linear-gradient(180deg, var(--home-insight-surface), hsl(var(--elevated) / 0.82));
-}
 
-.dark .home-insight-card .home-insight-icon {
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.08);
-}
 
-.dark .home-subpanel {
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.03);
-}
 
-.dark .home-subpanel:hover {
-  box-shadow:
-    inset 0 1px 0 hsl(0 0% 100% / 0.04),
-    0 10px 18px hsl(220 18% 8% / 0.2);
-}
 
-.dark .home-board-pill {
-  border-color: hsl(var(--foreground) / 0.12);
-  background: hsl(var(--foreground) / 0.05);
-  color: hsl(var(--secondary-text));
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.05);
-}
 
-.dark .home-strategy-card {
-  background: linear-gradient(180deg, hsl(var(--card) / 0.92), hsl(var(--elevated) / 0.82));
-}
 
-.dark .home-strategy-card::after {
-  box-shadow: inset 0 0 0 1px hsl(0 0% 100% / 0.04);
-}
 
-.dark .home-news-item {
-  background: linear-gradient(180deg, hsl(var(--card) / 0.9), hsl(var(--elevated) / 0.84));
-}
 
-.dark .home-news-title {
-  color: hsl(var(--foreground) / 0.88);
-}
 
-.dark .home-news-snippet {
-  color: hsl(var(--secondary-text) / 0.82);
-}
 
-.dark .home-trace-pre {
-  border-color: hsl(var(--foreground) / 0.12);
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
-}
 
-.dark .home-trace-toggle {
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.03);
-}
 
-.dark .home-trace-toggle:hover {
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.04);
-}
 
-.dark .home-trace-toggle > span:first-child {
-  color: hsl(var(--secondary-text) / 0.88);
-}
 
-.dark .home-trace-pre-content {
-  color: hsl(var(--secondary-text) / 0.82);
-}
 
-.dark .home-history-sentiment-badge {
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.06);
-}
 
 .home-markdown-prose :where(h1) {
   border-bottom: 1px solid var(--home-prose-border);
@@ -2080,10 +1673,6 @@ textarea {
   background: hsl(var(--primary) / 0.12);
 }
 
-.dark .settings-nav-item-active {
-  border-color: hsl(var(--primary) / 0.34);
-  background: hsl(var(--primary) / 0.12);
-}
 
 .settings-button-primary {
   border-color: var(--settings-primary-border);
@@ -2513,39 +2102,13 @@ textarea {
   color: hsl(var(--muted-text) / 0.8);
 }
 
-.dark .chat-bubble-user {
-  color: hsl(var(--foreground));
-}
 
-.dark .chat-bubble-ai {
-  color: var(--text-secondary-text);
-}
 
-.dark .chat-prose {
-  --chat-prose-fg: hsl(var(--foreground));
-}
 
-.dark .chat-prose h2 {
-  color: hsl(var(--color-purple));
-}
 
-.dark .session-item .title,
-.dark .session-item.active .title {
-  color: hsl(var(--foreground));
-}
 
-.dark .session-item:not(.active) .title {
-  color: hsl(var(--secondary-text));
-}
 
-.dark .session-item:not(.active):hover .title {
-  color: hsl(var(--foreground));
-}
 
-.dark .session-item .meta,
-.dark .session-item.active .meta {
-  color: hsl(var(--muted-text));
-}
 
 .session-item-row .delete-btn {
   flex-shrink: 0;

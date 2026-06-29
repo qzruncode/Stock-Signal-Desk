@@ -47,7 +47,7 @@ function AnalyzeControl({
   onNotifyChange,
 }: Omit<HomeSidebarProps, 'sidebarContent' | 'mobileOpen' | 'onCloseMobile'>) {
   return (
-    <div className="rounded-2xl border border-[#dce5ef] bg-[#f8fbff] p-3 shadow-[0_8px_24px_rgba(15,23,42,0.06)]">
+    <div className="rounded-xl border border-slate-200 bg-white/88 p-3 shadow-sm">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
           <RadioTower className="h-3.5 w-3.5 text-cyan-600" />
@@ -70,7 +70,7 @@ function AnalyzeControl({
           <select
             value={selectedTemplateId}
             onChange={(event) => onTemplateChange(event.target.value)}
-            className="h-10 min-w-0 rounded-xl border border-[#d8e1ec] bg-white px-3 text-sm text-slate-700 outline-none transition hover:border-cyan-300 focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100"
+            className="h-10 min-w-0 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition hover:border-cyan-300 focus:border-cyan-500 focus:ring-4 focus:ring-cyan-100"
             aria-label="分析模板"
           >
             {templates.map((template) => (
@@ -80,23 +80,23 @@ function AnalyzeControl({
             ))}
           </select>
         ) : (
-          <div className="flex h-10 items-center rounded-xl border border-[#d8e1ec] bg-white px-3 text-sm text-slate-400">加载模板</div>
+          <div className="flex h-10 items-center rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-400">加载模板</div>
         )}
         <button
           type="button"
           onClick={onOpenTemplateManager}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 transition hover:border-cyan-300 hover:text-cyan-700"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:border-cyan-300 hover:text-cyan-700"
           aria-label="管理分析模板"
         >
           <SlidersHorizontal className="h-4 w-4" />
         </button>
       </div>
 
-      <div className="mt-3 flex items-center justify-between rounded-xl border border-dashed border-[#d3dde9] bg-white/70 px-3 py-2 text-xs text-slate-500">
+      <div className="mt-3 flex items-center justify-between rounded-xl border border-dashed border-slate-300 bg-white/70 px-3 py-2 text-xs text-slate-500">
         <span>
           当前模板：<span className="font-medium text-slate-700">{selectedTemplateName}</span>
         </span>
-        <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-[#d8e1ec] bg-white px-3 text-xs font-medium text-slate-600 transition hover:border-cyan-300">
+        <label className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 transition hover:border-cyan-300">
           <input
             type="checkbox"
             checked={notify}
@@ -124,7 +124,7 @@ function AnalyzeControl({
 export default function HomeSidebar(props: HomeSidebarProps) {
   return (
     <>
-      <aside className="hidden min-h-0 border-r border-[#dbe3ed] bg-white/82 p-4 backdrop-blur-xl lg:flex lg:flex-col">
+      <aside className="hidden min-h-0 border-r border-slate-200 bg-white/82 p-4 backdrop-blur-xl lg:flex lg:flex-col">
         <div className="mb-4">
           <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">Signal Desk</p>
           <h1 className="mt-1 text-2xl font-semibold text-slate-950">选股通知工作台</h1>

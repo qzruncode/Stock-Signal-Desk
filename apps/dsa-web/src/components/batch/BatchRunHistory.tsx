@@ -35,7 +35,6 @@ function canResumeRun(run: RunRecord) {
 export function BatchRunHistory({
   runs,
   isRunning,
-  stockCodes,
   onResume,
   onDelete,
 }: BatchRunHistoryProps) {

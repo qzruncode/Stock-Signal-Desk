@@ -118,7 +118,7 @@ describe('HomePage', () => {
     const dashboard = await screen.findByTestId('home-dashboard');
     expect(dashboard).toBeInTheDocument();
     expect(dashboard.className).toContain('min-h-[calc(100vh-1.5rem)]');
-    expect(dashboard.className).toContain('rounded-[1.35rem]');
+    expect(dashboard.className).toContain('rounded-xl');
     expect(dashboard.querySelector('.lg\\:grid-cols-\\[23rem_minmax\\(0\\,1fr\\)\\]')).toBeTruthy();
     expect(screen.getByTestId('home-dashboard-scroll')).toBeInTheDocument();
     expect(screen.getAllByPlaceholderText('输入股票代码或名称，如 600519、贵州茅台、AAPL').length).toBeGreaterThan(0);

@@ -99,7 +99,7 @@ const StockAnalysisPage: React.FC = () => {
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <div className="text-center">
-            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-cyan-50">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-xl bg-cyan-50">
               <Activity className="h-8 w-8 text-cyan-500" />
             </div>
             <h3 className="text-lg font-semibold text-slate-700">选择一只股票开始分析</h3>

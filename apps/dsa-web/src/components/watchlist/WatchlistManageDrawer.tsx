@@ -90,7 +90,12 @@ export default function WatchlistManageDrawer({
                 重命名
               </Button>
             </div>
-            <Button variant="danger-subtle" size="sm" onClick={onDeleteGroup}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onDeleteGroup}
+              className="border-danger/30 bg-danger/10 text-danger hover:bg-danger/15"
+            >
               删除此分组
             </Button>
           </div>
@@ -106,7 +111,7 @@ export default function WatchlistManageDrawer({
               placeholder="分组名称"
               className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
             />
-            <Button variant="home-action-ai" size="sm" disabled={!newGroupName.trim()} onClick={onCreateGroup}>
+            <Button variant="primary" size="sm" disabled={!newGroupName.trim()} onClick={onCreateGroup}>
               创建
             </Button>
           </div>
@@ -122,7 +127,7 @@ export default function WatchlistManageDrawer({
             className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-100"
           />
           <Button
-            variant="home-action-ai"
+            variant="primary"
             size="sm"
             disabled={!batchInput.trim() || isBatchAdding}
             onClick={onBatchAdd}
@@ -158,10 +163,11 @@ export default function WatchlistManageDrawer({
               ))}
             </div>
             <Button
-              variant="danger-subtle"
+              variant="ghost"
               size="sm"
               disabled={selectedCodes.size === 0 || isBatchRemoving}
               onClick={onBatchRemove}
+              className="border-danger/30 bg-danger/10 text-danger hover:bg-danger/15"
             >
               {isBatchRemoving ? (
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-red-200 border-t-red-500" />

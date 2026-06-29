@@ -183,7 +183,7 @@ const SettingsPage: React.FC = () => {
     return (
       <div className="settings-page space-y-4">
         <InlineAlert variant="danger" title="加载失败" message={loadError} />
-        <Button variant="settings-secondary" onClick={fetchConfig}>
+        <Button variant="secondary" onClick={fetchConfig}>
           <RotateCcw className="h-4 w-4" />
           重试
         </Button>

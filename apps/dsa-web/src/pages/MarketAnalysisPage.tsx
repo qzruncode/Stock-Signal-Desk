@@ -211,7 +211,7 @@ const MarketAnalysisPage: React.FC = () => {
           <MarketOverviewPanel data={marketData} loading={marketLoading} error={marketError} />
         ) : (
           <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-white/88 p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white/88 p-5 shadow-sm">
               <h3 className="mb-1 flex items-center gap-2 text-sm font-semibold text-slate-700">
                 {sectorConfig.icon}
                 {sectorConfig.title}

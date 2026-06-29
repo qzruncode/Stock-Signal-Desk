@@ -119,7 +119,7 @@ const WorkflowBuilderPage: React.FC = () => {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-base">
-      <header className="border-b border-[#dbe3ed] bg-[#fbfcfe]/90 px-4 py-3 backdrop-blur-xl">
+      <header className="border-b border-slate-200 bg-slate-50/90 px-4 py-3 backdrop-blur-xl">
         <div className="mx-auto flex w-full max-w-[1440px] flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <button

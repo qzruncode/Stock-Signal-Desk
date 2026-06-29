@@ -18,7 +18,7 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onVi
       'flex items-center justify-between rounded-lg border px-3 py-2 text-xs transition',
       isInWatchlist
         ? 'border-emerald-200 bg-emerald-50/50'
-        : 'border-slate-100 bg-white hover:border-indigo-200 hover:bg-indigo-50/30',
+        : 'border-slate-100 bg-white hover:border-cyan-200 hover:bg-cyan-50/30',
     )}
   >
     <div
@@ -46,7 +46,7 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onVi
       <button
         type="button"
         onClick={() => onViewKline({ code: stock.code, name: stock.name })}
-        className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
+        className="rounded-lg p-1.5 text-slate-400 transition hover:bg-cyan-100 hover:text-cyan-700"
         title={`查看 ${stock.code} K线`}
       >
         <Activity className="h-3.5 w-3.5" />
@@ -59,7 +59,7 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onVi
         <button
           type="button"
           onClick={() => onAddStock(stock.code)}
-          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-indigo-100 hover:text-indigo-700"
+          className="rounded-lg p-1.5 text-slate-400 transition hover:bg-cyan-100 hover:text-cyan-700"
           title={`添加 ${stock.code}`}
         >
           <Plus className="h-3.5 w-3.5" />

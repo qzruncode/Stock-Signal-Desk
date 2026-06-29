@@ -35,7 +35,7 @@ export const VerifyModal: React.FC<VerifyModalProps> = ({ open, data, loading, o
 
         {loading ? (
           <div className="flex items-center justify-center py-8">
-            <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo/20 border-t-indigo" />
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
           </div>
         ) : data ? (
           <div className="space-y-3 text-sm">

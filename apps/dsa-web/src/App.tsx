@@ -1,24 +1,65 @@
+/* eslint-disable @typescript-eslint/unbound-method */
 import type React from 'react';
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { ApiErrorAlert, Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import './App.css';
 
-const ChatHomePage = lazy(() => import('./pages/ChatHomePage'));
-const HomePage = lazy(() => import('./pages/HomePage'));
-const BatchRunDetailPage = lazy(() => import('./pages/BatchRunDetailPage'));
-const LoginPage = lazy(() => import('./pages/LoginPage'));
-const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
-const SettingsPage = lazy(() => import('./pages/SettingsPage'));
-const MarketStocksPage = lazy(() => import('./pages/MarketStocksPage'));
-const WatchlistManagePage = lazy(() => import('./pages/WatchlistManagePage'));
-const WorkflowBuilderPage = lazy(() => import('./pages/WorkflowBuilderPage'));
-const StockAnalysisPage = lazy(() => import('./pages/StockAnalysisPage'));
-const MacroDataPage = lazy(() => import('./pages/MacroDataPage'));
-const MarketAnalysisPage = lazy(() => import('./pages/MarketAnalysisPage'));
-const MarketLeadersPage = lazy(() => import('./pages/MarketLeadersPage'));
-const RssPage = lazy(() => import('./pages/RssPage'));
+function lazyWithPreload<T extends { default: React.ComponentType }>(factory: () => Promise<T>) {
+  const Component = lazy(factory);
+  type Preloadable = typeof Component & { preload?: () => Promise<T> };
+  (Component as Preloadable).preload = factory;
+  return Component as Preloadable;
+}
+
+const ChatHomePage = lazyWithPreload(() => import('./pages/ChatHomePage'));
+const HomePage = lazyWithPreload(() => import('./pages/HomePage'));
+const BatchRunDetailPage = lazyWithPreload(() => import('./pages/BatchRunDetailPage'));
+const NotFoundPage = lazyWithPreload(() => import('./pages/NotFoundPage'));
+const SettingsPage = lazyWithPreload(() => import('./pages/SettingsPage'));
+const MarketStocksPage = lazyWithPreload(() => import('./pages/MarketStocksPage'));
+const WatchlistManagePage = lazyWithPreload(() => import('./pages/WatchlistManagePage'));
+const WorkflowBuilderPage = lazyWithPreload(() => import('./pages/WorkflowBuilderPage'));
+const StockAnalysisPage = lazyWithPreload(() => import('./pages/StockAnalysisPage'));
+const MacroDataPage = lazyWithPreload(() => import('./pages/MacroDataPage'));
+const MarketAnalysisPage = lazyWithPreload(() => import('./pages/MarketAnalysisPage'));
+const MarketLeadersPage = lazyWithPreload(() => import('./pages/MarketLeadersPage'));
+const RssPage = lazyWithPreload(() => import('./pages/RssPage'));
+
+const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
+  '/': ChatHomePage.preload!,
+  '/dashboard': HomePage.preload!,
+  '/stocks': MarketStocksPage.preload!,
+  '/portfolio': WatchlistManagePage.preload!,
+  '/analysis': StockAnalysisPage.preload!,
+  '/rss': RssPage.preload!,
+  '/macro': MacroDataPage.preload!,
+  '/market': MarketAnalysisPage.preload!,
+  '/market-leaders': MarketLeadersPage.preload!,
+  '/workflows': WorkflowBuilderPage.preload!,
+  '/settings': SettingsPage.preload!,
+};
+
+export const preloadRoute = (path: string): void => {
+  const preload = ROUTE_PRELOAD_MAP[path];
+  if (preload) {
+    void preload();
+  }
+};
+
+const HIGH_FREQUENCY_ROUTES = ['/', '/dashboard', '/analysis', '/stocks'];
+
+const scheduleIdlePreload = (): void => {
+  const run = () => {
+    HIGH_FREQUENCY_ROUTES.forEach((path) => preloadRoute(path));
+  };
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(run, { timeout: 3000 });
+  } else {
+    setTimeout(run, 1500);
+  }
+};
 
 const PageFallback: React.FC = () => (
   <div className="flex min-h-screen items-center justify-center bg-base">
@@ -28,7 +69,13 @@ const PageFallback: React.FC = () => (
 
 const AppContent: React.FC = () => {
   const location = useLocation();
-  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
+  const { isLoading, loadError, refreshStatus } = useAuth();
+
+  useEffect(() => {
+    if (!isLoading && !loadError) {
+      scheduleIdlePreload();
+    }
+  }, [isLoading, loadError]);
 
   if (isLoading) {
     return (
@@ -55,18 +102,6 @@ const AppContent: React.FC = () => {
     );
   }
 
-  if (authEnabled && !loggedIn) {
-    if (location.pathname === '/login') {
-      return (
-        <Suspense fallback={<PageFallback />}>
-          <LoginPage />
-        </Suspense>
-      );
-    }
-    const redirect = encodeURIComponent(location.pathname + location.search);
-    return <Navigate to={`/login?redirect=${redirect}`} replace />;
-  }
-
   if (location.pathname === '/login') {
     return <Navigate to="/" replace />;
   }
@@ -89,7 +124,6 @@ const AppContent: React.FC = () => {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
-        <Route path="/login" element={<LoginPage />} />
       </Routes>
     </Suspense>
   );

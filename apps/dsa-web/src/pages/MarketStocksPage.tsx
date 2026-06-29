@@ -31,7 +31,7 @@ const MarketStocksPage: React.FC = () => {
           <ArrowLeft className="h-5 w-5" />
         </button>
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-700">Market Browser</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-700">Market Browser</p>
           <h1 className="text-2xl font-semibold text-slate-950">A 股全市场股票</h1>
           <p className="mt-1 text-sm text-slate-500">浏览全部 A 股市场股票，搜索、筛选并添加至自选股</p>
         </div>
@@ -53,14 +53,14 @@ const MarketStocksPage: React.FC = () => {
       )}
 
       {/* Sync bar */}
-      <div className="flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
+      <div className="flex shrink-0 items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white/88 px-5 py-3 shadow-sm">
         <div className="flex items-center gap-3">
-          <TrendingUp className="h-5 w-5 text-indigo-600" />
+          <TrendingUp className="h-5 w-5 text-cyan-600" />
           <div>
             <p className="text-sm font-semibold text-slate-800">
               数据同步状态
               {syncStatus?.total ? (
-                <span className="ml-2 inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                <span className="ml-2 inline-flex items-center rounded-full bg-cyan-100 px-2 py-0.5 text-xs font-medium text-cyan-700">
                   {syncStatus.total} 只
                 </span>
               ) : null}
@@ -84,7 +84,7 @@ const MarketStocksPage: React.FC = () => {
           <button
             type="button"
             onClick={() => void verifyModal.show()}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-indigo-300 hover:text-indigo-700"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-600 transition hover:border-cyan-300 hover:text-cyan-700"
             title="验证 K 线数据完整性"
           >
             <Shield className="h-4 w-4" />
@@ -94,7 +94,7 @@ const MarketStocksPage: React.FC = () => {
             type="button"
             disabled={isSyncingActive}
             onClick={() => void handleSync()}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-cyan-700 disabled:opacity-50"
           >
             {isSyncingActive ? (
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
@@ -115,11 +115,11 @@ const MarketStocksPage: React.FC = () => {
       />
 
       {/* Stock list */}
-      <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white/88 shadow-sm">
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-slate-200 bg-white/88 shadow-sm">
         <div className="px-5 py-4">
           {stockLoading ? (
             <div className="flex items-center justify-center py-12">
-              <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo/20 border-t-indigo" />
+              <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
             </div>
           ) : allStocks.length === 0 && (!syncStatus || syncStatus.total === 0) ? (
             <EmptyState
@@ -152,7 +152,7 @@ const MarketStocksPage: React.FC = () => {
               <div ref={sentinelRef} className="flex items-center justify-center py-4">
                 {loadingMore && (
                   <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo/20 border-t-indigo" />
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
                     加载更多...
                   </div>
                 )}

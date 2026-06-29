@@ -99,7 +99,7 @@ export default function StockSearchBar({
         )}
       </div>
       <Button
-        variant="home-action-ai"
+        variant="primary"
         size="sm"
         disabled={isAdding}
         onClick={() => {
@@ -119,7 +119,7 @@ export default function StockSearchBar({
         type="button"
         onClick={onOpenDrawer}
         className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 transition hover:border-cyan-300 hover:text-cyan-700"
-        title="管理分组"
+        aria-label="管理分组"
       >
         <Settings className="h-5 w-5" />
       </button>

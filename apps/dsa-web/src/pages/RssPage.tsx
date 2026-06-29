@@ -312,7 +312,7 @@ const RssPage: React.FC = () => {
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {/* 错误提示 */}
         {error && !feedData?.items?.length && (
-          <div className="rounded-2xl border border-dashed border-red-200 bg-red-50/50 p-6 text-center">
+          <div className="rounded-xl border border-dashed border-red-200 bg-red-50/50 p-6 text-center">
             <p className="text-sm font-medium text-red-600">{error}</p>
             <p className="mt-1 text-xs text-red-400">
               请检查网络连接或 RSSHub 实例是否可用
@@ -329,7 +329,7 @@ const RssPage: React.FC = () => {
 
         {/* 空状态 */}
         {!loading && feedData && !feedData.items?.length && (
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center">
+          <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center">
             <Rss className="mx-auto h-8 w-8 text-slate-300" />
             <p className="mt-3 text-sm text-slate-400">
               当前源暂无内容，请切换源或调整筛选条件

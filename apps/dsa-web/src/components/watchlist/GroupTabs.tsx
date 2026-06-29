@@ -84,7 +84,7 @@ export default function GroupTabs({
         type="button"
         onClick={onOpenScreener}
         className="flex shrink-0 items-center gap-1 rounded-xl border border-orange-200 bg-orange-50 px-3 py-2 text-sm font-medium text-orange-600 transition hover:border-orange-300 hover:bg-orange-100"
-        title="ATR 相对波动率选股"
+        aria-label="ATR 相对波动率选股"
       >
         <Zap className="h-4 w-4" />
         筛选

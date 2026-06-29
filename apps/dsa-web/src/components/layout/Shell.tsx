@@ -1,8 +1,9 @@
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { BarChart3, ChevronLeft, ChevronRight, Flame, GitBranch, Globe, Home, Menu, MessageSquare, Rss, Search, Settings, Star, TrendingUp, X, Zap } from 'lucide-react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { cn } from '../../utils/cn';
+import { preloadRoute } from '../../App';
 
 type ShellProps = {
   children?: React.ReactNode;
@@ -27,9 +28,9 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
     { to: '/settings', label: '模型 API 配置', icon: Settings },
   ];
 
-  useEffect(() => {
+  const closeMobileDrawer = useCallback(() => {
     setMobileDrawerState('closed');
-  }, [location.pathname]);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -110,11 +111,11 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
       )}
       style={isChatHome ? undefined : { height: 'var(--app-shell-height, 100svh)' }}
     >
-      <div className="mx-auto flex h-full w-full max-w-[1720px] gap-0 px-0 py-0 sm:gap-3 sm:px-4 sm:py-4 lg:px-5">
+      <div className="mx-auto flex h-full w-full gap-0 px-0 py-0 sm:gap-3">
         <button
           type="button"
           onClick={() => setMobileDrawerState('open')}
-          className="fixed left-3 top-3 z-40 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white/96 text-slate-700 shadow-[0_12px_24px_rgba(15,23,42,0.12)] backdrop-blur transition hover:text-slate-950 sm:h-10 sm:w-10 lg:hidden"
+          className="fixed left-3 top-3 z-40 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-card text-foreground/70 shadow-sm backdrop-blur transition hover:text-foreground sm:h-10 sm:w-10 lg:hidden"
           aria-label="打开导航菜单"
         >
           <Menu className="h-5 w-5" />
@@ -122,41 +123,56 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
 
         <aside
           className={cn(
-            'hidden min-h-0 shrink-0 flex-col rounded-[1.35rem] border border-[#d6dee8] bg-white/86 p-3 backdrop-blur-xl transition-[width] duration-200 lg:flex',
+            'hidden min-h-0 shrink-0 flex-col rounded-lg border border-border bg-card p-3 transition-[width] duration-200 lg:flex',
             collapsed ? 'w-[4.75rem]' : 'w-64',
           )}
           aria-label="主菜单"
         >
           <div className="mb-4 flex items-center gap-3 px-1">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-sm">
-              <BarChart3 className="h-5 w-5" />
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+              <BarChart3 className="h-[18px] w-[18px]" />
             </div>
             {!collapsed ? (
               <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Stock Signal</p>
-                <p className="truncate text-sm font-semibold text-slate-950">Stock-Signal-Desk</p>
+                <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Stock Signal</p>
+                <p className="truncate text-sm font-semibold text-foreground">Stock-Signal-Desk</p>
               </div>
             ) : null}
           </div>
 
-          <nav className="flex flex-1 flex-col gap-1">
+          <nav className="flex flex-1 flex-col gap-0.5">
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  title={collapsed ? item.label : undefined}
+                  aria-label={collapsed ? item.label : undefined}
+                  onClick={closeMobileDrawer}
+                  onMouseEnter={() => preloadRoute(item.to)}
                   className={({ isActive }) => cn(
-                    'flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-medium transition',
+                    'group relative flex h-9 items-center gap-3 rounded-md px-3 text-[13px] font-medium transition',
                     collapsed && 'justify-center px-0',
                     isActive
-                      ? 'border border-cyan-200 bg-cyan-50 text-cyan-800 shadow-sm'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                   )}
                 >
-                  <Icon className="h-[18px] w-[18px] shrink-0" />
-                  {!collapsed ? <span className="truncate">{item.label}</span> : null}
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <span className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-primary" />
+                      )}
+                      <Icon className="h-[17px] w-[17px] shrink-0" />
+                      {!collapsed ? (
+                        <span className="truncate">{item.label}</span>
+                      ) : (
+                        <span className="invisible absolute left-full ml-2 whitespace-nowrap rounded-md border border-border bg-popover px-2 py-1 text-xs text-foreground shadow-md group-hover:visible">
+                          {item.label}
+                        </span>
+                      )}
+                    </>
+                  )}
                 </NavLink>
               );
             })}
@@ -165,7 +181,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
           <button
             type="button"
             onClick={() => setCollapsed((value) => !value)}
-            className="mt-3 flex h-10 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500 transition hover:border-cyan-300 hover:text-cyan-700"
+            className="mt-3 flex h-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition hover:border-primary/40 hover:text-primary"
             aria-label={collapsed ? '展开菜单栏' : '收起菜单栏'}
             title={collapsed ? '展开菜单栏' : '收起菜单栏'}
           >
@@ -183,7 +199,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
             />
             <aside
               className={cn(
-                'absolute inset-y-0 left-0 flex w-[min(20rem,86vw)] flex-col border-r border-[#d6dee8] bg-white/96 p-3 shadow-2xl',
+                'absolute inset-y-0 left-0 flex w-[min(20rem,86vw)] flex-col border-r border-border bg-card p-3 shadow-lg',
                 mobileDrawerState === 'closing' ? 'mobile-drawer-left-out' : 'mobile-drawer-left',
               )}
               aria-label="主菜单"
@@ -191,40 +207,48 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
             >
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-sm">
-                    <BarChart3 className="h-5 w-5" />
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+                    <BarChart3 className="h-[18px] w-[18px]" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Stock Signal</p>
-                    <p className="truncate text-sm font-semibold text-slate-950">Stock-Signal-Desk</p>
+                    <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">Stock Signal</p>
+                    <p className="truncate text-sm font-semibold text-foreground">Stock-Signal-Desk</p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setMobileDrawerState('closing')}
-                  className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-[#d8e1ec] bg-white text-slate-500"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground"
                   aria-label="关闭导航菜单"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
 
-              <nav className="flex flex-1 flex-col gap-1">
+              <nav className="flex flex-1 flex-col gap-0.5">
                 {navItems.map((item) => {
                   const Icon = item.icon;
                   return (
                     <NavLink
                       key={item.to}
                       to={item.to}
+                      onClick={closeMobileDrawer}
                       className={({ isActive }) => cn(
-                        'flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-medium transition',
+                        'group relative flex h-9 items-center gap-3 rounded-md px-3 text-[13px] font-medium transition',
                         isActive
-                          ? 'border border-cyan-200 bg-cyan-50 text-cyan-800 shadow-sm'
-                          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-muted-foreground hover:bg-accent hover:text-foreground',
                       )}
                     >
-                      <Icon className="h-[18px] w-[18px] shrink-0" />
-                      <span className="truncate">{item.label}</span>
+                      {({ isActive }) => (
+                        <>
+                          {isActive && (
+                            <span className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-full bg-primary" />
+                          )}
+                          <Icon className="h-[17px] w-[17px] shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </>
+                      )}
                     </NavLink>
                   );
                 })}
