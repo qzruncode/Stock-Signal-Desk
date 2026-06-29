@@ -1,4 +1,0 @@
-interface:
-  display_name: "Audit"
-  short_description: "Audit and loop fixes on the same canonical plan."
-  default_prompt: "/audit <Plan Ref>"

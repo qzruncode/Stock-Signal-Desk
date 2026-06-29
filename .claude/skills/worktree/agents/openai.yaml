@@ -1,4 +1,0 @@
-interface:
-  display_name: "Worktree"
-  short_description: "Create one worktree for one Plan Ref."
-  default_prompt: "使用 $worktree 为这个 Plan Ref 创建一对一 worktree："

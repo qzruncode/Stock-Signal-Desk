@@ -1,4 +1,0 @@
-interface:
-  display_name: "Code Scan"
-  short_description: "Scan code risks into one canonical Human Plan."
-  default_prompt: "/code-scan 扫描当前项目代码，给出最需要修的 Human Plan"

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Design"
-  short_description: "Create senior UX/UI experience briefs."
-  default_prompt: "使用 $design 基于当前项目需求，为这个页面或交互生成资深 UX/UI 体验 Human Plan："

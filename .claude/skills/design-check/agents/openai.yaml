@@ -1,4 +1,0 @@
-interface:
-  display_name: "Design Check"
-  short_description: "Review UI impact on the current canonical plan version."
-  default_prompt: "/design-check <Plan Ref>"

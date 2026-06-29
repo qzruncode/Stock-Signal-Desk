@@ -1,4 +1,0 @@
-interface:
-  display_name: "Plan Check"
-  short_description: "Review the current canonical plan version and code impact."
-  default_prompt: "/plan-check <Plan Ref>"

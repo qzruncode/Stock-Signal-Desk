@@ -1,4 +1,0 @@
-interface:
-  display_name: "Arch Check"
-  short_description: "Research mature solutions in one canonical Human Plan."
-  default_prompt: "/arch-check 检查当前项目有没有在业务、代码或架构上重复造轮子"

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Idea"
-  short_description: "Shape a fuzzy idea inside one canonical Human Plan."
-  default_prompt: "/idea 我有个想法，帮我梳理成可落地需求："

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Bug Fix"
-  short_description: "Plan and fix an identified bug on one canonical plan."
-  default_prompt: "/bug-fix 这个问题已经定位，先给修复 Human Plan："

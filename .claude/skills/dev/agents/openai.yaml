@@ -1,4 +1,0 @@
-interface:
-  display_name: "Dev"
-  short_description: "Develop through review and approval on one canonical plan."
-  default_prompt: "/dev 帮我实现一个需求，先输出 Human Plan 给我审核"
