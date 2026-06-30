@@ -39,12 +39,11 @@ const longChineseNameItem: HistoryItem = {
 
 describe('HistoryList', () => {
   it('shows the empty state copy when no history exists', () => {
-    const { container } = render(<HistoryList {...baseProps} items={[]} />);
+    render(<HistoryList {...baseProps} items={[]} />);
 
     expect(screen.getByText('暂无历史分析记录')).toBeInTheDocument();
     expect(screen.getByText('完成首次分析后，这里会保留最近结果。')).toBeInTheDocument();
     expect(screen.getByText('历史分析')).toBeInTheDocument();
-    expect(container.querySelector('.glass-card')).toBeTruthy();
   });
 
   it('renders selected count and forwards item interactions', () => {

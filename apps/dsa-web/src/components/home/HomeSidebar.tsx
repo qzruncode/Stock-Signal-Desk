@@ -47,7 +47,7 @@ function AnalyzeControl({
   onNotifyChange,
 }: Omit<HomeSidebarProps, 'sidebarContent' | 'mobileOpen' | 'onCloseMobile'>) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white/88 p-3 shadow-sm">
+    <div className="p-1">
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
           <RadioTower className="h-3.5 w-3.5 text-cyan-600" />
@@ -124,7 +124,7 @@ function AnalyzeControl({
 export default function HomeSidebar(props: HomeSidebarProps) {
   return (
     <>
-      <aside className="hidden min-h-0 border-r border-slate-200 bg-white/82 p-4 backdrop-blur-xl lg:flex lg:flex-col">
+      <aside className="hidden min-h-0 border-r border-slate-200 bg-white p-4 lg:flex lg:flex-col">
         <AnalyzeControl {...props} />
 
         <div className="mt-3 flex min-h-0 flex-1 flex-col">

@@ -85,7 +85,7 @@ export const HistoryList: React.FC<HistoryListProps> = ({
   }, [someVisibleSelected]);
 
   return (
-    <aside className={`glass-card overflow-hidden flex flex-col ${className}`}>
+    <div className={`flex flex-col overflow-hidden ${className}`}>
       <ScrollArea
         viewportRef={scrollContainerRef}
         viewportClassName="p-4"
@@ -190,6 +190,6 @@ export const HistoryList: React.FC<HistoryListProps> = ({
           </div>
         )}
       </ScrollArea>
-    </aside>
+    </div>
   );
 };

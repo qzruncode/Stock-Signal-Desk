@@ -38,7 +38,6 @@ describe('TaskPanel', () => {
     expect(screen.getByText('贵州茅台')).toBeInTheDocument();
     expect(screen.getByText('AAPL')).toBeInTheDocument();
     expect(screen.getByLabelText('任务状态：分析中')).toBeInTheDocument();
-    expect(container.querySelector('.home-panel-card')).toBeTruthy();
     expect(container.querySelector('.home-subpanel')).toBeTruthy();
   });
 

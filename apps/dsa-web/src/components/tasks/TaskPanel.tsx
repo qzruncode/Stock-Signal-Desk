@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Badge, Card, StatusDot } from '../common';
+import { Badge, StatusDot } from '../common';
 import { DashboardPanelHeader } from '../dashboard';
 import type { TaskInfo } from '../../types/analysis';
 
@@ -136,12 +136,8 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   const processingCount = activeTasks.filter((t) => t.status === 'processing').length;
 
   return (
-    <Card
-      variant="bordered"
-      padding="none"
-      className={`home-panel-card overflow-hidden ${className}`}
-    >
-      <div className="border-b border-subtle px-3 py-3">
+    <div className={`flex flex-col overflow-hidden ${className}`}>
+      <div className="space-y-3 p-4">
         <DashboardPanelHeader
           className="mb-0"
           title={title}
@@ -174,9 +170,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
             </div>
           )}
         />
-      </div>
 
-      <div className="max-h-64 overflow-y-auto p-2">
         <div className="space-y-2">
           {activeTasks.map((task) => (
             <TaskItem
@@ -187,7 +181,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
           ))}
         </div>
       </div>
-    </Card>
+    </div>
   );
 };
 
