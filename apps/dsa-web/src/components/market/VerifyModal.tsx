@@ -1,17 +1,23 @@
 import React from 'react';
 import { X } from 'lucide-react';
 import { cn } from '../../utils/cn';
-import type { KlineStatusResponse } from '../../api/stocks';
+import type { KlineStatusResponse, SyncStatusResponse } from '../../api/stocks';
 
 interface VerifyModalProps {
   open: boolean;
   data: KlineStatusResponse | null;
   loading: boolean;
+  syncStatus: SyncStatusResponse | null;
+  onSyncMissing: () => void;
   onClose: () => void;
 }
 
-export const VerifyModal: React.FC<VerifyModalProps> = ({ open, data, loading, onClose }) => {
+const isSyncing = (status?: SyncStatusResponse | null) =>
+  status?.status === 'running' || status?.status === 'syncing_kline';
+
+export const VerifyModal: React.FC<VerifyModalProps> = ({ open, data, loading, syncStatus, onSyncMissing, onClose }) => {
   if (!open) return null;
+  const syncing = isSyncing(syncStatus);
 
   return (
     <div
@@ -52,12 +58,31 @@ export const VerifyModal: React.FC<VerifyModalProps> = ({ open, data, loading, o
                   : ''}
               </span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex items-center justify-between gap-3">
               <span className="text-slate-500">缺失数据</span>
-              <span className={cn('font-semibold', data.missing > 0 ? 'text-red-500' : 'text-emerald-600')}>
-                {data.missing} 只
-              </span>
+              <div className="flex items-center gap-2">
+                <span className={cn('font-semibold', data.missing > 0 ? 'text-red-500' : 'text-emerald-600')}>
+                  {data.missing} 只
+                </span>
+                {data.missing > 0 && (
+                  <button
+                    type="button"
+                    onClick={onSyncMissing}
+                    disabled={syncing}
+                    className="rounded-md bg-cyan px-2 py-1 text-xs font-semibold text-white transition hover:bg-cyan/90 disabled:opacity-60"
+                  >
+                    {syncing ? '同步中...' : '同步缺失K线'}
+                  </button>
+                )}
+              </div>
             </div>
+            {syncStatus && syncStatus.status !== 'idle' && (
+              <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                {syncing
+                  ? `同步 K 线 ${syncStatus.kline_progress}/${syncStatus.kline_total || '...'}`
+                  : syncStatus.message || (syncStatus.status === 'success' ? '缺失K线同步完成' : syncStatus.error || '缺失K线同步失败')}
+              </div>
+            )}
             {data.latest_trading_day && (
               <div className="flex justify-between border-t border-slate-100 pt-3">
                 <span className="text-slate-500">最近交易日</span>

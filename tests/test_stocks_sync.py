@@ -1,23 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Stocks sync endpoint tests — sync trigger, status, and state helpers.
-
-Covers api.v1.endpoints.stocks.sync:
-- _mark_sync_started / _get_sync_state_copy (state machine)
-- sync_stocks: 409 when already running, 200 on start
-- get_sync_status: idle / running / db-fallback when state empty
-"""
+"""Stocks sync endpoint tests for split list/K-line flows."""
 
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+import src.auth as auth
 from api.app import create_app
 from api.v1.endpoints.stocks import sync as sync_mod
-import src.auth as auth
 
 
 @pytest.fixture
@@ -35,82 +29,86 @@ def disable_auth():
     auth._auth_enabled = None
 
 
+def _reset_state(state: dict) -> None:
+    state.update({
+        "status": "idle",
+        "progress": 0,
+        "total": 0,
+        "kline_progress": 0,
+        "kline_total": 0,
+        "started_at": None,
+        "finished_at": None,
+        "message": "",
+        "error": None,
+    })
+
+
 @pytest.fixture(autouse=True)
 def reset_sync_state():
-    """Reset in-memory sync state between tests."""
-    with sync_mod._sync_lock:
-        sync_mod._sync_state.update({
-            "status": "idle", "progress": 0, "total": 0,
-            "kline_progress": 0, "kline_total": 0,
-            "started_at": None, "finished_at": None,
-            "message": "", "error": None,
-        })
+    with sync_mod._list_sync_lock:
+        _reset_state(sync_mod._list_sync_state)
+    with sync_mod._kline_sync_lock:
+        _reset_state(sync_mod._kline_sync_state)
+    with sync_mod._missing_kline_sync_lock:
+        _reset_state(sync_mod._missing_kline_sync_state)
     yield
-    with sync_mod._sync_lock:
-        sync_mod._sync_state.update({
-            "status": "idle", "progress": 0, "total": 0,
-            "kline_progress": 0, "kline_total": 0,
-            "started_at": None, "finished_at": None,
-            "message": "", "error": None,
-        })
+    with sync_mod._list_sync_lock:
+        _reset_state(sync_mod._list_sync_state)
+    with sync_mod._kline_sync_lock:
+        _reset_state(sync_mod._kline_sync_state)
+    with sync_mod._missing_kline_sync_lock:
+        _reset_state(sync_mod._missing_kline_sync_state)
 
 
-# ---------------------------------------------------------------------------
-# state helpers
-# ---------------------------------------------------------------------------
-
-def test_mark_sync_started_returns_true_when_idle():
-    assert sync_mod._mark_sync_started() is True
-    state = sync_mod._get_sync_state_copy()
+def test_mark_list_sync_started_returns_true_when_idle():
+    assert sync_mod._mark_list_sync_started() is True
+    state = sync_mod._get_list_state_copy()
     assert state["status"] == "running"
     assert state["started_at"] is not None
 
 
-def test_mark_sync_started_returns_false_when_already_running():
-    sync_mod._mark_sync_started()
-    assert sync_mod._mark_sync_started() is False
+def test_mark_list_sync_started_returns_false_when_already_running():
+    sync_mod._mark_list_sync_started()
+    assert sync_mod._mark_list_sync_started() is False
 
 
-def test_get_sync_state_copy_returns_independent_copy():
-    sync_mod._set_sync_state(message="hello")
-    copy = sync_mod._get_sync_state_copy()
+def test_get_list_state_copy_returns_independent_copy():
+    sync_mod._set_list_state(message="hello")
+    copy = sync_mod._get_list_state_copy()
     copy["message"] = "mutated"
-    assert sync_mod._get_sync_state_copy()["message"] == "hello"
+    assert sync_mod._get_list_state_copy()["message"] == "hello"
 
 
-# ---------------------------------------------------------------------------
-# sync_stocks route
-# ---------------------------------------------------------------------------
-
-def test_sync_stocks_rejects_when_already_running(client):
-    sync_mod._mark_sync_started()
-    resp = client.post("/api/v1/stocks/sync")
+def test_sync_stock_list_rejects_when_already_running(client):
+    sync_mod._mark_list_sync_started()
+    resp = client.post("/api/v1/stocks/sync/list")
     assert resp.status_code == 409
 
 
-def test_sync_stocks_starts_when_idle(client):
-    with patch("api.v1.endpoints.stocks.sync._run_sync"):
-        resp = client.post("/api/v1/stocks/sync")
+def test_sync_stock_list_starts_when_idle(client):
+    with patch("api.v1.endpoints.stocks.sync._run_list_sync"):
+        resp = client.post("/api/v1/stocks/sync/list")
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
     assert body["status"] == "running"
 
 
-# ---------------------------------------------------------------------------
-# get_sync_status route
-# ---------------------------------------------------------------------------
+def test_old_sync_route_removed(client):
+    resp = client.post("/api/v1/stocks/sync")
+    assert resp.status_code in (404, 405)
 
-def test_sync_status_returns_state_when_total_positive(client):
-    sync_mod._set_sync_state(total=100, status="running", progress=10)
-    resp = client.get("/api/v1/stocks/sync/status")
+
+def test_list_sync_status_returns_state_when_total_positive(client):
+    sync_mod._set_list_state(total=100, status="running", progress=10)
+    resp = client.get("/api/v1/stocks/sync/list/status")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 100
     assert body["status"] == "running"
 
 
-def test_sync_status_falls_back_to_db_when_state_empty(client):
+def test_list_sync_status_falls_back_to_db_when_state_empty(client):
     db = MagicMock()
     session = MagicMock()
     query = MagicMock()
@@ -121,33 +119,27 @@ def test_sync_status_falls_back_to_db_when_state_empty(client):
     db.get_session.return_value.__enter__.return_value = session
     with patch("api.v1.endpoints.stocks.sync.DatabaseManager") as db_cls:
         db_cls.get_instance.return_value = db
-        resp = client.get("/api/v1/stocks/sync/status")
+        resp = client.get("/api/v1/stocks/sync/list/status")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 5000
     assert body["status"] == "success"
 
 
-def test_sync_status_returns_idle_when_empty_and_no_db(client):
+def test_list_sync_status_returns_idle_when_empty_and_no_db(client):
     with patch("api.v1.endpoints.stocks.sync.DatabaseManager") as db_cls:
         db = MagicMock()
         session = MagicMock()
         session.query.side_effect = RuntimeError("no db")
         db.get_session.return_value.__enter__.return_value = session
         db_cls.get_instance.return_value = db
-        resp = client.get("/api/v1/stocks/sync/status")
+        resp = client.get("/api/v1/stocks/sync/list/status")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 0
     assert body["status"] == "idle"
 
 
-# ---------------------------------------------------------------------------
-# _get_latest_trading_day
-# ---------------------------------------------------------------------------
-
 def test_get_latest_trading_day_skips_weekend():
-    # 2026-06-06 is a Saturday; should roll back to Friday 2026-06-05
-    # (assuming no CN holiday on that date)
     result = sync_mod._get_latest_trading_day(reference=date(2026, 6, 6))
-    assert result.weekday() < 5  # Mon-Fri
+    assert result.weekday() < 5

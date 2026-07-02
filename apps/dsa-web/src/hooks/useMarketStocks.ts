@@ -61,7 +61,15 @@ export function useMarketStocks() {
     }
   }, []);
 
-  const { syncStatus, syncError, handleSync, isSyncingActive } = useStockSyncPolling({
+  const {
+    listSyncStatus,
+    klineSyncStatus,
+    syncError,
+    handleSyncList,
+    handleSyncKline,
+    isListSyncingActive,
+    isKlineSyncingActive,
+  } = useStockSyncPolling({
     loadWatchlist,
     loadStockList,
     stockSearch,
@@ -117,14 +125,17 @@ export function useMarketStocks() {
     hasMore,
     error,
     successMsg,
-    syncStatus,
+    listSyncStatus,
+    klineSyncStatus,
     syncError,
-    isSyncingActive,
+    isListSyncingActive,
+    isKlineSyncingActive,
     sentinelRef,
     watchlistCodes,
     handleStockSearch,
     handleMarketFilter,
     handleAddStock,
-    handleSync,
+    handleSyncList,
+    handleSyncKline,
   };
 }

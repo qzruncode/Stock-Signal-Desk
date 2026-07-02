@@ -82,13 +82,27 @@ def get_kline_status():
     db = DatabaseManager.get_instance()
     with db.get_session() as session:
         total_stocks = session.query(func.count(StockMeta.id)).filter(StockMeta.status == "active").scalar()
-        stocks_with_kline = session.query(func.count(func.distinct(StockDaily.code))).scalar()
+        active_codes = select(StockMeta.code).where(StockMeta.status == "active")
+        stocks_with_kline = (
+            session.query(func.count(func.distinct(StockDaily.code)))
+            .filter(StockDaily.code.in_(active_codes))
+            .scalar()
+        )
         latest_trading_day = session.execute(select(func.max(StockDaily.date))).scalar()
+        codes_with_kline = select(StockDaily.code).distinct()
+        missing_codes = [
+            row.code
+            for row in session.query(StockMeta.code)
+            .filter(StockMeta.status == "active", StockMeta.code.notin_(codes_with_kline))
+            .order_by(StockMeta.code)
+            .all()
+        ]
 
     return {
         "total_stocks": total_stocks or 0,
         "stocks_with_kline": stocks_with_kline or 0,
         "missing": (total_stocks or 0) - (stocks_with_kline or 0),
+        "missing_codes": missing_codes,
         "latest_trading_day": str(latest_trading_day) if latest_trading_day else None,
     }
 

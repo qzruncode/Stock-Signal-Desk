@@ -20,36 +20,38 @@ class _DeferredThread:
 class StocksSyncStateTest(unittest.TestCase):
     def setUp(self):
         _DeferredThread.started = 0
-        stocks._set_sync_state(
+        stocks._set_list_state(
             status="idle",
             progress=0,
             total=0,
+            kline_progress=0,
+            kline_total=0,
             started_at=None,
             finished_at=None,
             message="",
             error=None,
         )
 
-    def test_sync_is_marked_running_before_background_thread_runs(self):
+    def test_list_sync_is_marked_running_before_background_thread_runs(self):
         with patch.object(stocks.threading, "Thread", _DeferredThread):
-            result = stocks.sync_stocks(service=None)
+            result = stocks.sync_stock_list(service=None)
 
             self.assertTrue(result["success"])
             self.assertEqual(_DeferredThread.started, 1)
-            self.assertEqual(stocks._get_sync_state_copy()["status"], "running")
+            self.assertEqual(stocks._get_list_state_copy()["status"], "running")
 
             with self.assertRaises(HTTPException) as ctx:
-                stocks.sync_stocks(service=None)
+                stocks.sync_stock_list(service=None)
             self.assertEqual(ctx.exception.status_code, 409)
             self.assertEqual(_DeferredThread.started, 1)
 
-    def test_sync_status_returns_a_snapshot(self):
-        stocks._set_sync_state(status="running", total=1)
+    def test_list_sync_status_returns_a_snapshot(self):
+        stocks._set_list_state(status="running", total=1)
 
-        snapshot = stocks.get_sync_status()
+        snapshot = stocks.get_stock_list_sync_status()
         snapshot["status"] = "mutated"
 
-        self.assertEqual(stocks._get_sync_state_copy()["status"], "running")
+        self.assertEqual(stocks._get_list_state_copy()["status"], "running")
 
 
 if __name__ == "__main__":

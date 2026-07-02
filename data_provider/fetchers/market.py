@@ -148,8 +148,6 @@ def get_all_a_stocks(enforce_rate_limit=None) -> Optional[List[Dict[str, Any]]]:
             if not code_str or len(code_str) < 6:
                 continue
             market = _classify_a_stock_market(code_str)
-            if market == 'bj' or 'ST' in name_str.upper():
-                continue
             spot = spot_map.get(code_str)
             item = {
                 'code': code_str, 'name': name_str, 'market': market,
@@ -160,7 +158,7 @@ def get_all_a_stocks(enforce_rate_limit=None) -> Optional[List[Dict[str, Any]]]:
             }
             results.append(item)
 
-        logger.info("[StocksSync] 完成: %d 只 A 股（已过滤北交所、ST）", len(results))
+        logger.info("[StocksSync] 完成: %d 只 A 股（含北交所、ST）", len(results))
         return results
     except Exception as e:
         logger.error("[StocksSync] 获取全 A 股列表失败: %s", e, exc_info=True)

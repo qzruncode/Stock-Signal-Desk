@@ -8,17 +8,15 @@ import { useKlineModal } from '../hooks/useKlineModal';
 import { useVerifyModal } from '../hooks/useVerifyModal';
 import { cn } from '../utils/cn';
 
-const getSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['syncStatus']) => {
+const getListSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['listSyncStatus']) => {
   if (!syncStatus) return '尚未同步';
   switch (syncStatus.status) {
     case 'success':
-      return syncStatus.finished_at ? `已同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : '已同步';
+      return syncStatus.finished_at ? `列表已同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : '列表已同步';
     case 'running':
       return `同步列表中 ${syncStatus.progress}/${syncStatus.total || '...'}`;
-    case 'syncing_kline':
-      return `同步 K 线 ${syncStatus.kline_progress}/${syncStatus.kline_total || '...'}`;
     case 'failed':
-      return '同步失败';
+      return '列表同步失败';
     case 'idle':
       return syncStatus.total > 0
         ? (syncStatus.finished_at ? `上次同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : '已就绪')
@@ -28,19 +26,32 @@ const getSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['syncStatus
   }
 };
 
+const getKlineSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['klineSyncStatus']) => {
+  if (syncStatus.status === 'syncing_kline' || syncStatus.status === 'running') {
+    return `同步 K 线 ${syncStatus.kline_progress}/${syncStatus.kline_total || '...'}`;
+  }
+  if (syncStatus.status === 'success') {
+    return syncStatus.finished_at ? `K线已同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : 'K线已同步';
+  }
+  if (syncStatus.status === 'failed') return 'K线同步失败';
+  return 'K线未同步';
+};
+
 const MarketStocksPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     allStocks, stockTotal, stockSearch, stockMarket, stockLoading, loadingMore, hasMore,
-    error, successMsg, syncError, isSyncingActive, sentinelRef, watchlistCodes,
-    handleStockSearch, handleMarketFilter, handleAddStock, handleSync, syncStatus,
+    error, successMsg, syncError, isListSyncingActive, isKlineSyncingActive, sentinelRef, watchlistCodes,
+    handleStockSearch, handleMarketFilter, handleAddStock, handleSyncList, handleSyncKline,
+    listSyncStatus, klineSyncStatus,
   } = useMarketStocks();
 
   const klineModal = useKlineModal();
   const verifyModal = useVerifyModal();
 
   const hasAlert = Boolean(error || successMsg || syncError);
-  const isRunning = isSyncingActive;
+  const canSyncKline = listSyncStatus?.status === 'success' && (listSyncStatus.total > 0 || stockTotal > 0);
+  const shouldShowKlineBadge = Boolean(klineSyncStatus && klineSyncStatus.status !== 'idle');
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-[1100px] flex-col gap-0 overflow-hidden px-4 pt-3 pb-2 sm:px-5 sm:pt-4 sm:pb-2">
@@ -67,27 +78,50 @@ const MarketStocksPage: React.FC = () => {
           <span
             className={cn(
               'hidden items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium md:inline-flex',
-              isRunning
+              isListSyncingActive
                 ? 'bg-primary/10 text-primary'
-                : syncStatus?.status === 'success'
+                : listSyncStatus?.status === 'success'
                   ? 'bg-success/10 text-success'
-                  : syncStatus?.status === 'failed'
+                  : listSyncStatus?.status === 'failed'
                     ? 'bg-[hsl(var(--color-danger-alert-bg)/0.1)] text-[hsl(var(--color-danger-alert-text))]'
                     : 'bg-muted text-muted-foreground',
             )}
-            title={syncStatus?.status === 'failed' ? syncStatus.error || syncStatus.message || '同步失败' : undefined}
+            title={listSyncStatus?.status === 'failed' ? listSyncStatus.error || listSyncStatus.message || '列表同步失败' : undefined}
           >
             <span
               className={cn(
                 'h-1.5 w-1.5 rounded-full',
-                isRunning ? 'animate-pulse bg-primary' : syncStatus?.status === 'success' ? 'bg-success' : syncStatus?.status === 'failed' ? 'bg-[hsl(var(--color-danger-alert-text))]' : 'bg-muted-foreground/60',
+                isListSyncingActive ? 'animate-pulse bg-primary' : listSyncStatus?.status === 'success' ? 'bg-success' : listSyncStatus?.status === 'failed' ? 'bg-[hsl(var(--color-danger-alert-text))]' : 'bg-muted-foreground/60',
               )}
             />
-            <span className="max-w-[220px] truncate">{getSyncLabel(syncStatus)}</span>
-            {syncStatus?.total ? (
-              <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">{syncStatus.total}</span>
+            <span className="max-w-[220px] truncate">{getListSyncLabel(listSyncStatus)}</span>
+            {listSyncStatus?.total ? (
+              <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] text-muted-foreground">{listSyncStatus.total}</span>
             ) : null}
           </span>
+          {shouldShowKlineBadge && klineSyncStatus && (
+            <span
+              className={cn(
+                'hidden items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium lg:inline-flex',
+                isKlineSyncingActive
+                  ? 'bg-primary/10 text-primary'
+                  : klineSyncStatus.status === 'success'
+                    ? 'bg-success/10 text-success'
+                    : klineSyncStatus.status === 'failed'
+                      ? 'bg-[hsl(var(--color-danger-alert-bg)/0.1)] text-[hsl(var(--color-danger-alert-text))]'
+                      : 'bg-muted text-muted-foreground',
+              )}
+              title={klineSyncStatus.status === 'failed' ? klineSyncStatus.error || klineSyncStatus.message || 'K线同步失败' : undefined}
+            >
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 rounded-full',
+                  isKlineSyncingActive ? 'animate-pulse bg-primary' : klineSyncStatus.status === 'success' ? 'bg-success' : klineSyncStatus.status === 'failed' ? 'bg-[hsl(var(--color-danger-alert-text))]' : 'bg-muted-foreground/60',
+                )}
+              />
+              <span className="max-w-[180px] truncate">{getKlineSyncLabel(klineSyncStatus)}</span>
+            </span>
+          )}
 
           <button
             type="button"
@@ -100,16 +134,30 @@ const MarketStocksPage: React.FC = () => {
           </button>
           <button
             type="button"
-            disabled={isSyncingActive}
-            onClick={() => void handleSync()}
+            disabled={isListSyncingActive}
+            onClick={() => void handleSyncList()}
             className="inline-flex h-[34px] items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
           >
-            {isSyncingActive ? (
+            {isListSyncingActive ? (
               <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary-foreground/30 border-t-primary-foreground" />
             ) : (
               <RefreshCw className="h-3.5 w-3.5" />
             )}
-            同步
+            同步列表
+          </button>
+          <button
+            type="button"
+            disabled={!canSyncKline || isKlineSyncingActive}
+            onClick={() => void handleSyncKline()}
+            className="inline-flex h-[34px] items-center gap-1.5 rounded-lg border border-primary/30 bg-card px-3 text-xs font-semibold text-primary transition hover:bg-primary/10 disabled:cursor-not-allowed disabled:border-border disabled:text-muted-foreground disabled:opacity-60"
+            title={!canSyncKline ? '请先同步股票列表' : undefined}
+          >
+            {isKlineSyncingActive ? (
+              <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            同步K线
           </button>
         </div>
       </header>
@@ -131,10 +179,10 @@ const MarketStocksPage: React.FC = () => {
             <div className="flex items-center justify-center py-12">
               <div className="h-7 w-7 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
             </div>
-          ) : allStocks.length === 0 && (!syncStatus || syncStatus.total === 0) ? (
+          ) : allStocks.length === 0 && (!listSyncStatus || listSyncStatus.total === 0) ? (
             <EmptyState
               title="尚未同步股票数据"
-              description="点击右上角「同步」按钮，从东方财富同步全部 A 股数据"
+              description="点击右上角「同步列表」按钮，从东方财富同步全部 A 股数据"
               className="border-dashed py-10"
             />
           ) : allStocks.length === 0 ? (
@@ -206,6 +254,8 @@ const MarketStocksPage: React.FC = () => {
         open={verifyModal.open}
         data={verifyModal.data}
         loading={verifyModal.loading}
+        syncStatus={verifyModal.syncStatus}
+        onSyncMissing={verifyModal.syncMissing}
         onClose={verifyModal.hide}
       />
     </div>

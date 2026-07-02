@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Query, HTTPException
 
@@ -95,6 +95,63 @@ def _get_kline_from_stock_daily(symbol: str, count: int) -> list[dict] | None:
             return records
     except Exception as e:
         logger.debug(f"[K线本地] 读取 StockDaily 失败: {e}")
+        return None
+
+
+def _format_kline_date(value: str | date | datetime) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, date):
+        return value.strftime("%Y%m%d")
+    text = str(value).strip()
+    if "-" in text:
+        return datetime.strptime(text[:10], "%Y-%m-%d").strftime("%Y%m%d")
+    return text
+
+
+def _get_kline_range_from_stock_daily(symbol: str, start_date: str, end_date: str) -> list[dict] | None:
+    """Read a date range from StockDaily when local data already covers it."""
+    try:
+        from src.storage import DatabaseManager, StockDaily
+        from sqlalchemy import select
+
+        start_dt = datetime.strptime(_format_kline_date(start_date), "%Y%m%d").date()
+        end_dt = datetime.strptime(_format_kline_date(end_date), "%Y%m%d").date()
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            bounds = session.execute(
+                select(StockDaily.date)
+                .where(StockDaily.code == symbol)
+                .where(StockDaily.date >= start_dt)
+                .where(StockDaily.date <= end_dt)
+                .order_by(StockDaily.date)
+            ).scalars().all()
+            if not bounds:
+                return None
+            rows = session.execute(
+                select(StockDaily)
+                .where(StockDaily.code == symbol)
+                .where(StockDaily.date >= start_dt)
+                .where(StockDaily.date <= end_dt)
+                .order_by(StockDaily.date)
+            ).scalars().all()
+        records = []
+        for row in rows:
+            records.append({
+                'date': row.date.isoformat() if hasattr(row.date, 'isoformat') else str(row.date),
+                'open': row.open,
+                'high': row.high,
+                'low': row.low,
+                'close': row.close,
+                'volume': row.volume,
+                'amount': row.amount,
+                'pct_chg': row.pct_chg,
+                '_source': 'stock_daily',
+            })
+        logger.info(f"[K线本地] {symbol} 命中 StockDaily range: {len(records)} 条")
+        return records
+    except Exception as e:
+        logger.debug(f"[K线本地] 读取 StockDaily range 失败: {e}")
         return None
 
 
@@ -338,6 +395,51 @@ def _save_to_stock_daily(symbol: str, data: list) -> None:
         logger.debug(f"[K线-stock_daily] 写入失败 {symbol}: {e}")
 
 
+def fetch_and_persist_kline(
+    symbol: str,
+    count: int = DEFAULT_COUNT,
+    start_date: str | date | datetime | None = None,
+    end_date: str | date | datetime | None = None,
+    use_cache: bool = True,
+) -> tuple[list[dict], str]:
+    """Unified K-line entry: StockDaily → cache → multi-source fallback, then persist."""
+    range_mode = start_date is not None and end_date is not None
+
+    if range_mode:
+        start = _format_kline_date(start_date)
+        end = _format_kline_date(end_date)
+        records = _get_kline_range_from_stock_daily(symbol, start, end)
+        if records:
+            return records, "stock_daily"
+        cache_key = _history_kline_cache_key(symbol, start, end)
+    else:
+        records = _get_kline_from_stock_daily(symbol, count)
+        if records and len(records) >= count:
+            return records, "stock_daily"
+        cache_key = _latest_kline_cache_key(symbol, count)
+
+    if use_cache and not _is_trading_hours():
+        cached = _get_kline_from_cache(cache_key)
+        if cached:
+            cached_records = cached.get('data') or []
+            if cached_records:
+                return cached_records, cached.get('source') or "cache"
+
+    if range_mode:
+        fetch_start, fetch_end = start, end
+    else:
+        fetch_end = datetime.now().strftime("%Y%m%d")
+        fetch_start = (datetime.now() - timedelta(days=count * 2)).strftime("%Y%m%d")
+
+    records, source = _fetch_kline_with_fallback(symbol, fetch_start, fetch_end)
+    if not range_mode and len(records) > count:
+        records = records[-count:]
+
+    _save_kline_to_cache(cache_key, symbol, records, source)
+    _save_to_stock_daily(symbol, records)
+    return records, source
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -349,50 +451,13 @@ def get_kline(
     use_cache: bool = Query(True, description="是否使用缓存"),
 ):
     """获取日线K线数据（前复权）。优先本地 StockDaily，其次缓存，最后外部 API。"""
-    cache_key = _latest_kline_cache_key(symbol, count)
-
-    # 1. Try StockDaily (local DB)
-    records = _get_kline_from_stock_daily(symbol, count)
-    if records:
-        now_ts = datetime.now().isoformat()
-        return {
-            'symbol': symbol, 'source': 'stock_daily',
-            'count': len(records), 'data': records,
-            '_fetched_at': now_ts, '_cached': True,
-            'data_time': _kline_data_time(records),
-            'is_stale': _kline_is_stale(records),
-            'fallback_used': False,
-        }
-
-    # 2. Try KlineSnapshot cache (non-trading hours)
-    if use_cache and not _is_trading_hours():
-        cached = _get_kline_from_cache(cache_key)
-        if cached:
-            logger.info(f"[K线缓存] 命中 {symbol}")
-            cached['_cached'] = True
-            recs = cached.get('data') or []
-            cached.setdefault('data_time', _kline_data_time(recs))
-            cached.setdefault('is_stale', _kline_is_stale(recs))
-            cached.setdefault('fallback_used', cached.get('source') != KLINE_SOURCE_EM if cached.get('source') else False)
-            return cached
-
-    # 3. Fetch from external APIs
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=count * 2)).strftime("%Y%m%d")
-
-    records, source = _fetch_kline_with_fallback(symbol, start_date, end_date)
-
-    if len(records) > count:
-        records = records[-count:]
-
+    records, source = fetch_and_persist_kline(symbol, count=count, use_cache=use_cache)
     now_ts = datetime.now().isoformat()
-    _save_kline_to_cache(cache_key, symbol, records, source)
-    _save_to_stock_daily(symbol, records)
 
     return {
         'symbol': symbol, 'source': source,
         'count': len(records), 'data': records,
-        '_fetched_at': now_ts, '_cached': False,
+        '_fetched_at': now_ts, '_cached': source in ("stock_daily", "cache"),
         'data_time': _kline_data_time(records),
         'is_stale': _kline_is_stale(records),
         'fallback_used': source != KLINE_SOURCE_EM,
@@ -415,28 +480,18 @@ def get_history_data(
             "error": "invalid_date", "message": "日期格式错误，应为 YYYYMMDD",
         })
 
-    cache_key = _history_kline_cache_key(symbol, start_date, end_date)
-    if use_cache and not _is_trading_hours():
-        cached = _get_kline_from_cache(cache_key)
-        if cached:
-            logger.info(f"[K线缓存] 命中 {symbol}")
-            cached['_cached'] = True
-            records = cached.get('data') or []
-            cached.setdefault('data_time', _kline_data_time(records))
-            cached.setdefault('is_stale', _kline_is_stale(records))
-            cached.setdefault('fallback_used', cached.get('source') != KLINE_SOURCE_EM if cached.get('source') else False)
-            return cached
-
-    records, source = _fetch_kline_with_fallback(symbol, start_date, end_date)
-
+    records, source = fetch_and_persist_kline(
+        symbol,
+        start_date=start_date,
+        end_date=end_date,
+        use_cache=use_cache,
+    )
     now_ts = datetime.now().isoformat()
-    _save_kline_to_cache(cache_key, symbol, records, source)
-    _save_to_stock_daily(symbol, records)
 
     return {
         'symbol': symbol, 'source': source,
         'count': len(records), 'data': records,
-        '_fetched_at': now_ts, '_cached': False,
+        '_fetched_at': now_ts, '_cached': source in ("stock_daily", "cache"),
         'data_time': _kline_data_time(records),
         'is_stale': _kline_is_stale(records),
         'fallback_used': source != KLINE_SOURCE_EM,
