@@ -117,7 +117,7 @@ def test_kline_batch_returns_data_for_known_codes(client):
     db = MagicMock()
     session = MagicMock()
     session.execute.return_value.all.return_value = [
-        ("000001", "2026-06-01", 10.0, 11.0, 9.5, 10.5),
+        ("000001", "2026-06-01", 10.0, 11.0, 9.5, 10.5, 123.0, 456.0, 1.2, None, None, None, None, "test"),
     ]
     db.get_session.return_value.__enter__.return_value = session
     with patch("api.v1.endpoints.stocks.list.DatabaseManager") as db_cls:
@@ -129,4 +129,6 @@ def test_kline_batch_returns_data_for_known_codes(client):
     assert resp.status_code == 200
     results = resp.json()["results"]
     assert "000001" in results
-    assert results["000001"][0][0] == "2026-06-01"
+    assert results["000001"][0]["date"] == "2026-06-01"
+    assert results["000001"][0]["volume"] == 123.0
+    assert results["000001"][0]["data_source"] == "test"

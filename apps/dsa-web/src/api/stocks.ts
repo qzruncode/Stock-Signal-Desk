@@ -12,6 +12,16 @@ export interface StockMetaItem {
   circulating_market_cap: number | null;
   pe_ttm: number | null;
   pb: number | null;
+  amount_today: number | null;
+  revenue_ttm: number | null;
+  deducted_profit_ttm: number | null;
+  operating_cf_ttm: number | null;
+  net_profit_ttm: number | null;
+  debt_ratio: number | null;
+  interest_bearing_debt_ratio: number | null;
+  cash_debt_ratio: number | null;
+  financial_fetched_at: string | null;
+  report_date: string | null;
   last_sync_at: string | null;
 }
 
@@ -44,16 +54,42 @@ export interface KlineStatusResponse {
 }
 
 export interface KlineBatchResponse {
-  results: Record<string, Array<[string, number, number, number, number]>>;
+  results: Record<string, KlineBatchBar[]>;
+}
+
+export interface KlineBatchBar {
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  amount: number | null;
+  pct_chg: number | null;
+  ma5: number | null;
+  ma10: number | null;
+  ma20: number | null;
+  volume_ratio: number | null;
+  data_source: string | null;
 }
 
 export interface FundamentalFilterResponse {
   data: Record<string, {
     revenue_ttm: number | null;
     deducted_profit_ttm: number | null;
+    operating_cf_ttm: number | null;
+    net_profit_ttm: number | null;
     debt_ratio: number | null;
+    interest_bearing_debt_ratio: number | null;
+    cash_debt_ratio: number | null;
     report_date: string | null;
   }>;
+}
+
+export interface StockEnrichResponse {
+  item: StockMetaItem | null;
+  updated_sections: string[];
+  errors: Record<string, string>;
 }
 
 export const stocksApi = {
@@ -62,8 +98,14 @@ export const stocksApi = {
     page_size?: number;
     search?: string;
     market?: string;
-  }): Promise<StocksListResponse> {
-    const response = await apiClient.get<StocksListResponse>('/api/v1/stocks', { params });
+    count?: boolean;
+    signal?: AbortSignal;
+  }): Promise<StocksListResponse & { has_more?: boolean }> {
+    const { signal, ...query } = params || {};
+    const response = await apiClient.get<StocksListResponse & { has_more?: boolean }>('/api/v1/stocks', {
+      params: query,
+      signal,
+    });
     return response.data;
   },
 
@@ -121,6 +163,15 @@ export const stocksApi = {
       '/api/v1/stocks/fundamental-filter',
       { codes },
       { timeout: 240000 }, // 4min > backend 3min timeout, leave margin for slow fetches
+    );
+    return response.data;
+  },
+
+  async enrichStock(code: string, sections: Array<'valuation' | 'financial'>): Promise<StockEnrichResponse> {
+    const response = await apiClient.post<StockEnrichResponse>(
+      '/api/v1/stocks/enrich',
+      { code, sections },
+      { timeout: 240000 },
     );
     return response.data;
   },

@@ -25,15 +25,28 @@ export const SCREEN_GROUP_NAME = '高波动股';
 
 /** K-line bar: [date_str, open, high, low, close] */
 export type KlineCompact = [string, number, number, number, number];
+export type KlineLike = KlineCompact | {
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+};
 
 /** Convert KlineBar[] (API response format) to KlineCompact[] (calculation format) */
 export function klineBarsToCompact(
-  bars: Array<{ date: string; open: number; high: number; low: number; close: number }>,
+  bars: KlineLike[],
 ): KlineCompact[] {
-  const result: KlineCompact[] = new Array(bars.length);
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i];
-    result[i] = [b.date, b.open, b.high, b.low, b.close];
+  const result: KlineCompact[] = [];
+  for (const b of bars) {
+    if (Array.isArray(b)) {
+      result.push(b);
+      continue;
+    }
+    if (b.open == null || b.high == null || b.low == null || b.close == null) {
+      continue;
+    }
+    result.push([b.date, b.open, b.high, b.low, b.close]);
   }
   return result;
 }
@@ -144,7 +157,7 @@ export function calculateAtrForStock(
  * @returns Screen result with matched codes and details
  */
 export function runAtrScreener(
-  klineMap: Map<string, KlineCompact[]> | Record<string, KlineCompact[]>,
+  klineMap: Map<string, KlineLike[]> | Record<string, KlineLike[]>,
 ): AtrScreenResult {
   const entries = klineMap instanceof Map
     ? Array.from(klineMap.entries())
@@ -154,7 +167,7 @@ export function runAtrScreener(
   const matchedCodes: string[] = [];
 
   for (const [code, klines] of entries) {
-    const detail = calculateAtrForStock(klines);
+    const detail = calculateAtrForStock(klineBarsToCompact(klines));
     if (!detail) continue;
 
     detail.code = code;

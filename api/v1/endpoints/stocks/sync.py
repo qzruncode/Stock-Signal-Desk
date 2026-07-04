@@ -6,6 +6,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
@@ -18,12 +19,20 @@ from api.v1.endpoints.kline import fetch_and_persist_kline
 from api.v1.endpoints.stocks import router
 from api.v1.schemas.common import ErrorResponse
 from data_provider.akshare_fetcher import AkshareFetcher
+from data_provider.fetchers.market import get_last_a_stock_list_error, reset_a_stock_list_fetch_state
 from src.services.system_config_service import SystemConfigService
 from src.storage import DatabaseManager, StockDaily, StockMeta
 
 logger = logging.getLogger(__name__)
 
 LIST_SYNC_BATCH_SIZE = 200
+KLINE_SYNC_MAX_WORKERS = 5
+LIST_SYNC_FETCH_ATTEMPTS = 3
+LIST_SYNC_FETCH_RETRY_DELAY_SECONDS = 2.0
+KLINE_SYNC_ATTEMPTS = 2
+KLINE_SYNC_RETRY_DELAY_SECONDS = 1.5
+STATUS_DB_FALLBACK_TTL_SECONDS = 30.0
+_status_db_fallback_cache = {"expires_at": 0.0, "total": 0}
 
 
 def _initial_state() -> dict:
@@ -136,15 +145,35 @@ def _run_list_sync() -> None:
     try:
         db = DatabaseManager.get_instance()
         fetcher = AkshareFetcher()
-        stocks_raw = fetcher.get_all_a_stocks()
+        stocks_raw = None
+        _set_list_state(message="股票列表拉取中")
+        for attempt in range(1, LIST_SYNC_FETCH_ATTEMPTS + 1):
+            _set_list_state(message=f"股票列表拉取中 {attempt}/{LIST_SYNC_FETCH_ATTEMPTS}")
+            stocks_raw = fetcher.get_all_a_stocks()
+            if stocks_raw:
+                break
+            if attempt < LIST_SYNC_FETCH_ATTEMPTS:
+                delay = LIST_SYNC_FETCH_RETRY_DELAY_SECONDS * attempt
+                logger.warning("[StocksSync] 股票列表拉取为空，%.1fs 后重试(%d/%d)", delay, attempt + 1, LIST_SYNC_FETCH_ATTEMPTS)
+                time.sleep(delay)
 
         if not stocks_raw:
-            _set_list_state(status="failed", message="未能从数据源获取股票列表", finished_at=_utc_now_iso())
+            detail = get_last_a_stock_list_error()
+            message = "未能从数据源获取股票列表"
+            if detail:
+                message = f"{message}: {detail}"
+            _set_list_state(
+                status="failed",
+                message=message,
+                error=detail,
+                finished_at=_utc_now_iso(),
+            )
             return
 
         _set_list_state(total=len(stocks_raw), progress=0, message="股票列表写入中")
         now = datetime.now()
         added, updated, delisted, delisted_daily = 0, 0, 0, 0
+        quote_rows = sum(1 for item in stocks_raw if item.get("_has_quote_fields"))
         all_codes = [s["code"] for s in stocks_raw]
 
         for start in range(0, len(stocks_raw), LIST_SYNC_BATCH_SIZE):
@@ -163,10 +192,17 @@ def _run_list_sync() -> None:
                         meta.name = item["name"]
                         meta.market = item["market"]
                         meta.status = "active"
-                        meta.pe_ttm = item.get("pe_ttm")
-                        meta.pb = item.get("pb")
-                        meta.total_market_cap = item.get("total_market_cap")
-                        meta.circulating_market_cap = item.get("circulating_market_cap")
+                        if item.get("sector"):
+                            meta.sector = item.get("sector")
+                        if item.get("area"):
+                            meta.area = item.get("area")
+                        if item.get("ipo_date"):
+                            meta.ipo_date = item.get("ipo_date")
+                        if item.get("_has_quote_fields"):
+                            meta.pe_ttm = item.get("pe_ttm")
+                            meta.pb = item.get("pb")
+                            meta.total_market_cap = item.get("total_market_cap")
+                            meta.circulating_market_cap = item.get("circulating_market_cap")
                         meta.last_sync_at = now
                         updated += 1
                     else:
@@ -175,6 +211,9 @@ def _run_list_sync() -> None:
                             name=item["name"],
                             market=item["market"],
                             status="active",
+                            sector=item.get("sector"),
+                            area=item.get("area"),
+                            ipo_date=item.get("ipo_date"),
                             pe_ttm=item.get("pe_ttm"),
                             pb=item.get("pb"),
                             total_market_cap=item.get("total_market_cap"),
@@ -210,9 +249,20 @@ def _run_list_sync() -> None:
             progress=len(stocks_raw),
             total=len(stocks_raw),
             finished_at=_utc_now_iso(),
-            message=f"同步列表完成: 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})",
+            message=(
+                f"同步列表完成: 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})"
+                if quote_rows > 0
+                else f"同步列表完成(基础资料): 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})"
+            ),
         )
-        logger.info("[StocksSync] 列表同步完成: total=%d added=%d updated=%d delisted=%d", len(stocks_raw), added, updated, delisted)
+        logger.info(
+            "[StocksSync] 列表同步完成: total=%d added=%d updated=%d delisted=%d quote_rows=%d",
+            len(stocks_raw),
+            added,
+            updated,
+            delisted,
+            quote_rows,
+        )
     except Exception as e:
         _set_list_state(status="failed", error=str(e), finished_at=_utc_now_iso())
         logger.error("[StocksSync] 列表同步失败: %s", e, exc_info=True)
@@ -220,22 +270,36 @@ def _run_list_sync() -> None:
 
 def _sync_one_kline(code: str, today: date, latest_dates: dict[str, date | None]) -> tuple[str, str]:
     latest_date = latest_dates.get(code)
-    if latest_date is None:
-        records, _source = fetch_and_persist_kline(code, count=500, use_cache=False)
-        return code, "updated" if records else "failed"
-    if latest_date >= today:
+    if latest_date is not None and latest_date >= today:
         return code, "skipped"
 
-    start_date = latest_date + timedelta(days=1)
-    if start_date > today:
+    start_date = latest_date + timedelta(days=1) if latest_date else None
+    if start_date and start_date > today:
         return code, "skipped"
-    records, _source = fetch_and_persist_kline(
-        code,
-        start_date=start_date,
-        end_date=today,
-        use_cache=False,
-    )
-    return code, "updated" if records else "failed"
+
+    last_error: Exception | None = None
+    for attempt in range(1, KLINE_SYNC_ATTEMPTS + 1):
+        try:
+            if start_date:
+                records, _source = fetch_and_persist_kline(
+                    code,
+                    start_date=start_date,
+                    end_date=today,
+                    use_cache=False,
+                )
+            else:
+                records, _source = fetch_and_persist_kline(code, count=500, use_cache=False)
+            if records:
+                return code, "updated"
+        except Exception as e:
+            last_error = e
+
+        if attempt < KLINE_SYNC_ATTEMPTS:
+            time.sleep(KLINE_SYNC_RETRY_DELAY_SECONDS * attempt)
+
+    if last_error:
+        logger.warning("[StocksSync] K线同步重试失败 %s: %s", code, str(last_error)[:120])
+    return code, "failed"
 
 
 def _run_kline_sync_for_codes(
@@ -268,7 +332,7 @@ def _run_kline_sync_for_codes(
             return code, "failed"
 
     progress = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=KLINE_SYNC_MAX_WORKERS) as pool:
         futures = {pool.submit(_fetch, code): code for code in codes}
         for future in concurrent.futures.as_completed(futures):
             _code, result = future.result()
@@ -324,14 +388,29 @@ def _run_missing_kline_sync(codes: list[str]) -> None:
 def _status_with_db_fallback(state: dict) -> dict:
     if state["total"] != 0:
         return state
+    if state["status"] != "idle":
+        return state
     try:
-        db = DatabaseManager.get_instance()
-        with db.get_session() as session:
-            total = session.query(StockMeta).filter(StockMeta.status == "active").count()
+        now = time.monotonic()
+        if now < _status_db_fallback_cache["expires_at"]:
+            total = _status_db_fallback_cache["total"]
+        else:
+            db = DatabaseManager.get_instance()
+            with db.get_session() as session:
+                total = session.query(StockMeta).filter(StockMeta.status == "active").count()
+            _status_db_fallback_cache.update({
+                "expires_at": now + STATUS_DB_FALLBACK_TTL_SECONDS,
+                "total": total,
+            })
         if total > 0:
+            if state["status"] != "idle":
+                return {
+                    **state,
+                    "total": state["total"] or total,
+                }
             return {
                 **state,
-                "status": "success" if state["status"] == "idle" else state["status"],
+                "status": "success",
                 "total": total,
                 "message": state["message"] or "数据已存在（来自数据库）",
             }
@@ -351,6 +430,7 @@ def sync_stock_list(
     """Trigger stock metadata sync only."""
     if not _mark_list_sync_started():
         raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "股票列表同步正在进行中，请稍后再试"})
+    reset_a_stock_list_fetch_state()
     thread = threading.Thread(target=_run_list_sync, daemon=True)
     thread.start()
     return {"success": True, "message": "同步列表已启动", "status": "running"}

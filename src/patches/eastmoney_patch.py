@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 original_request = requests.Session.request
 
 ua = UserAgent()
+_request_user_agent = None
+_request_lock = threading.Lock()
+_eastmoney_domain_patch_enabled = False
 
 
 class AuthCache:
@@ -39,6 +42,17 @@ class PatchSign:
 
 
 _patch_sign = PatchSign()
+
+
+def set_request_user_agent(user_agent):
+    global _request_user_agent
+    with _request_lock:
+        _request_user_agent = user_agent
+
+
+def _current_user_agent():
+    with _request_lock:
+        return _request_user_agent
 
 
 def _get_nid(user_agent):
@@ -147,11 +161,20 @@ def _get_nid(user_agent):
             return None
 
 
-def eastmoney_patch():
+def eastmoney_patch(enable_eastmoney: bool = True):
+    global _eastmoney_domain_patch_enabled
+    _eastmoney_domain_patch_enabled = _eastmoney_domain_patch_enabled or enable_eastmoney
     if _patch_sign.is_patched():
         return
 
     def patched_request(self, method, url, **kwargs):
+        headers = dict(kwargs.get("headers") or {})
+        current_user_agent = _current_user_agent()
+        if current_user_agent:
+            headers["User-Agent"] = current_user_agent
+        else:
+            headers.setdefault("User-Agent", ua.random)
+
         # 排除非目标域名
         is_target = any(
             d in (url or "")
@@ -161,12 +184,10 @@ def eastmoney_patch():
                 "push2his.eastmoney.com",
             ]
         )
-        if not is_target:
+        if not (_eastmoney_domain_patch_enabled and is_target):
+            kwargs["headers"] = headers
             return original_request(self, method, url, **kwargs)
-        # 获取一个随机的 User-Agent
-        user_agent = ua.random
-        # 处理 Headers：确保不破坏业务代码传入的 headers
-        headers = kwargs.get("headers", {})
+        user_agent = headers.get("User-Agent") or ua.random
         headers["User-Agent"] = user_agent
         nid = _get_nid(user_agent)
         if nid:

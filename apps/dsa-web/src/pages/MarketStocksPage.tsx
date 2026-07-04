@@ -1,12 +1,13 @@
-import React from 'react';
+import React, { useCallback, useState } from 'react';
 import { ArrowLeft, RefreshCw, Shield } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { EmptyState, InlineAlert } from '../components/common';
-import { StockCard, StockSearchBar, KlineModal, VerifyModal } from '../components/market';
+import { StockCard, StockDetailDrawer, StockSearchBar, KlineModal, VerifyModal } from '../components/market';
 import { useMarketStocks } from '../hooks/useMarketStocks';
 import { useKlineModal } from '../hooks/useKlineModal';
 import { useVerifyModal } from '../hooks/useVerifyModal';
 import { cn } from '../utils/cn';
+import type { StockMetaItem } from '../api/stocks';
 
 const getListSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['listSyncStatus']) => {
   if (!syncStatus) return '尚未同步';
@@ -14,9 +15,12 @@ const getListSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['listSy
     case 'success':
       return syncStatus.finished_at ? `列表已同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : '列表已同步';
     case 'running':
+      if (syncStatus.total === 0) {
+        return syncStatus.message || '股票列表拉取中';
+      }
       return `同步列表中 ${syncStatus.progress}/${syncStatus.total || '...'}`;
     case 'failed':
-      return '列表同步失败';
+      return syncStatus.error || syncStatus.message || '列表同步失败';
     case 'idle':
       return syncStatus.total > 0
         ? (syncStatus.finished_at ? `上次同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : '已就绪')
@@ -27,6 +31,7 @@ const getListSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['listSy
 };
 
 const getKlineSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['klineSyncStatus']) => {
+  if (!syncStatus) return 'K线未同步';
   if (syncStatus.status === 'syncing_kline' || syncStatus.status === 'running') {
     return `同步 K 线 ${syncStatus.kline_progress}/${syncStatus.kline_total || '...'}`;
   }
@@ -48,10 +53,21 @@ const MarketStocksPage: React.FC = () => {
 
   const klineModal = useKlineModal();
   const verifyModal = useVerifyModal();
+  const [detailStock, setDetailStock] = useState<StockMetaItem | null>(null);
 
   const hasAlert = Boolean(error || successMsg || syncError);
   const canSyncKline = listSyncStatus?.status === 'success' && (listSyncStatus.total > 0 || stockTotal > 0);
   const shouldShowKlineBadge = Boolean(klineSyncStatus && klineSyncStatus.status !== 'idle');
+  const openDetail = useCallback((stock: StockMetaItem) => {
+    setDetailStock(stock);
+  }, []);
+  const closeDetail = useCallback(() => {
+    setDetailStock(null);
+  }, []);
+  const openKlineFromDetail = useCallback((stock: { code: string; name: string }) => {
+    setDetailStock(null);
+    void klineModal.open(stock);
+  }, [klineModal]);
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-[1100px] flex-col gap-0 overflow-hidden px-4 pt-3 pb-2 sm:px-5 sm:pt-4 sm:pb-2">
@@ -200,6 +216,7 @@ const MarketStocksPage: React.FC = () => {
                     stock={stock}
                     isInWatchlist={watchlistCodes.has(stock.code)}
                     onViewKline={klineModal.open}
+                    onViewDetails={openDetail}
                     onAddStock={handleAddStock}
                     onNavigate={navigate}
                   />
@@ -237,6 +254,14 @@ const MarketStocksPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* K-line modal */}
+      <StockDetailDrawer
+        open={Boolean(detailStock)}
+        stock={detailStock}
+        onClose={closeDetail}
+        onViewKline={openKlineFromDetail}
+      />
 
       {/* K-line modal */}
       {klineModal.stock && (

@@ -4,48 +4,79 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import time
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from ..utils import is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
-
+from ..circuit_breaker import RealtimeCircuitBreaker
 
 logger = logging.getLogger(__name__)
+_spot_em_circuit_breaker = RealtimeCircuitBreaker()
+_name_circuit_breaker = RealtimeCircuitBreaker()
+_last_a_stock_list_error: str | None = None
+
+
+def reset_a_stock_list_fetch_state() -> None:
+    global _last_a_stock_list_error
+    _last_a_stock_list_error = None
+    _spot_em_circuit_breaker.reset()
+    _name_circuit_breaker.reset()
+
+
+def get_last_a_stock_list_error() -> str | None:
+    return _last_a_stock_list_error
+
+
+def _remember_a_stock_list_error(source: str, error: Any) -> None:
+    global _last_a_stock_list_error
+    _last_a_stock_list_error = f"{source}: {str(error)[:180]}"
+
+
+def _parse_date(value: Any) -> Optional[date]:
+    if value is None or str(value).strip() in ("", "nan", "NaT"):
+        return None
+    parsed = pd.to_datetime(value, errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _safe_intish(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    text = str(value).strip().replace(",", "")
+    if text in ("", "-", "nan", "None"):
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
 
 
 # ── Market stats ─────────────────────────────────────────────────────────
 
 
 def get_market_stats(enforce_rate_limit=None, set_user_agent=None) -> Optional[Dict[str, Any]]:
-    """获取市场涨跌统计，优先东财接口，失败后降级新浪。"""
+    """获取市场涨跌统计，使用东财 spot 接口短重试。"""
     import akshare as ak
 
-    if set_user_agent:
-        set_user_agent()
-    if enforce_rate_limit:
-        enforce_rate_limit()
-    try:
-        logger.info("[API调用] ak.stock_zh_a_spot_em() 获取市场统计...")
-        df = ak.stock_zh_a_spot_em()
-        if df is not None and not df.empty:
-            return _calc_market_stats(df)
-    except Exception as e:
-        logger.warning("[Akshare] 东财接口获取市场统计失败: %s，尝试新浪接口", e)
-
-    if set_user_agent:
-        set_user_agent()
-    if enforce_rate_limit:
-        enforce_rate_limit()
-    try:
-        logger.info("[API调用] ak.stock_zh_a_spot() 获取市场统计(新浪)...")
-        df = ak.stock_zh_a_spot()
-        if df is not None and not df.empty:
-            return _calc_market_stats(df)
-    except Exception as e:
-        logger.error("[Akshare] 新浪接口获取市场统计也失败: %s", e)
+    for attempt in range(1, 3):
+        if set_user_agent:
+            set_user_agent()
+        if enforce_rate_limit:
+            enforce_rate_limit()
+        try:
+            logger.info("[API调用] ak.stock_zh_a_spot_em() 获取市场统计...")
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                return _calc_market_stats(df)
+        except Exception as e:
+            logger.warning("[Akshare] 东财接口获取市场统计失败(%d/2): %s", attempt, e)
+        if attempt < 2:
+            time.sleep(1.5 * attempt)
 
     return None
 
@@ -60,43 +91,30 @@ def _calc_market_stats(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     pre_close_col = next((c for c in ['昨收', '昨日收盘', 'pre_close', 'lastClose'] if c in df.columns), None)
     amount_col = next((c for c in ['成交额', 'amount'] if c in df.columns), None)
 
-    limit_up_count = limit_down_count = up_count = down_count = flat_count = 0
+    if not all([code_col, name_col, close_col, pre_close_col]):
+        logger.warning("[Akshare] 市场统计字段缺失: columns=%s", list(df.columns))
+        return None
 
-    for code, name, current_price, pre_close, amount in zip(
-        df[code_col], df[name_col], df[close_col], df[pre_close_col], df[amount_col]
-    ):
-        if pd.isna(current_price) or pd.isna(pre_close) or current_price in ['-'] or pre_close in ['-'] or amount == 0:
-            continue
-        current_price = float(current_price)
-        pre_close = float(pre_close)
-        pure_code = normalize_stock_code(str(code))
+    current = pd.to_numeric(df[close_col], errors='coerce')
+    pre_close = pd.to_numeric(df[pre_close_col], errors='coerce')
+    amount = pd.to_numeric(df[amount_col], errors='coerce') if amount_col else pd.Series(1, index=df.index)
+    valid = current.notna() & pre_close.notna() & (current > 0) & (amount.fillna(0) != 0)
 
-        if is_bse_code(pure_code):
-            ratio = 0.30
-        elif is_kc_cy_stock(pure_code):
-            ratio = 0.20
-        elif is_st_stock(name):
-            ratio = 0.05
-        else:
-            ratio = 0.10
+    codes = df[code_col].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(6)
+    names = df[name_col].astype(str)
+    ratios = pd.Series(0.10, index=df.index, dtype=float)
+    ratios.loc[codes.str.startswith(('8', '9'))] = 0.30
+    ratios.loc[codes.str.startswith(('300', '301', '688'))] = 0.20
+    ratios.loc[names.str.contains('ST', case=False, na=False)] = 0.05
 
-        limit_up_price = np.floor(pre_close * (1 + ratio) * 100 + 0.5) / 100.0
-        limit_down_price = np.floor(pre_close * (1 - ratio) * 100 + 0.5) / 100.0
+    limit_up_price = np.floor(pre_close * (1 + ratios) * 100 + 0.5) / 100.0
+    limit_down_price = np.floor(pre_close * (1 - ratios) * 100 + 0.5) / 100.0
 
-        if current_price > 0:
-            is_limit_up = abs(current_price - limit_up_price) <= round(abs(pre_close * (1 + ratio) - limit_up_price), 10)
-            is_limit_down = abs(current_price - limit_down_price) <= round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
-
-            if is_limit_up:
-                limit_up_count += 1
-            if is_limit_down:
-                limit_down_count += 1
-            if current_price > pre_close:
-                up_count += 1
-            elif current_price < pre_close:
-                down_count += 1
-            else:
-                flat_count += 1
+    limit_up_count = int((valid & np.isclose(current, limit_up_price, atol=0.001)).sum())
+    limit_down_count = int((valid & np.isclose(current, limit_down_price, atol=0.001)).sum())
+    up_count = int((valid & (current > pre_close)).sum())
+    down_count = int((valid & (current < pre_close)).sum())
+    flat_count = int((valid & (current == pre_close)).sum())
 
     stats = {
         'up_count': up_count, 'down_count': down_count, 'flat_count': flat_count,
@@ -111,56 +129,197 @@ def _calc_market_stats(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 # ── All A-share list ────────────────────────────────────────────────────
 
 
-def get_all_a_stocks(enforce_rate_limit=None) -> Optional[List[Dict[str, Any]]]:
-    """获取全部 A 股股票列表（含基础元数据）。"""
+def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[List[Dict[str, Any]]]:
+    """获取全部 A 股股票列表（含基础元数据）。
+
+    主方案：单次股票实时行情接口（含代码/名称/PE/PB/市值），
+    兜底方案：切换到代码名称接口（无估值字段）。
+    """
     import akshare as ak
+    global _last_a_stock_list_error
 
-    try:
-        logger.info("[StocksSync] Step 1: 获取 A 股代码名称列表...")
-        name_df = ak.stock_info_a_code_name()
-        if name_df is None or name_df.empty:
-            return None
+    def _normalize_a_stock_code(value: Any) -> str:
+        code = str(value or '').strip()
+        if code.endswith('.0'):
+            code = code[:-2]
+        if code.isdigit() and len(code) < 6:
+            code = code.zfill(6)
+        return code
 
-        spot_df = None
-        try:
-            if enforce_rate_limit:
-                enforce_rate_limit()
-            logger.info("[StocksSync] Step 2: 尝试获取估值快照...")
-            spot_df = ak.stock_zh_a_spot_em()
-            if spot_df is not None and not spot_df.empty:
-                logger.info("[StocksSync] 估值快照: %d 条", len(spot_df))
-            else:
-                spot_df = None
-        except Exception as e:
-            logger.warning("[StocksSync] 估值快照获取失败: %s", str(e)[:120])
+    def _row_float(row: pd.Series, candidates: Tuple[str, ...]) -> Optional[float]:
+        for col in candidates:
+            if col in row.index:
+                value = _safe_float(row.get(col))
+                if value is not None:
+                    return value
+        return None
 
-        results: List[Dict[str, Any]] = []
-        spot_map: Dict[str, Any] = {}
-        if spot_df is not None:
-            for _, row in spot_df.iterrows():
-                c = str(row.get('代码', '')).strip()
-                if len(c) >= 6:
-                    spot_map[c] = row
-
-        for _, row in name_df.iterrows():
-            code_str = str(row.get('code', '')).strip()
-            name_str = str(row.get('name', '')).strip()
+    def _build_stock_items(
+        df: pd.DataFrame,
+        *,
+        col_code: str,
+        col_name: str,
+        col_sector: str | None = None,
+        col_area: str | None = None,
+        col_ipo_date: str | None = None,
+        spot_map: dict[str, pd.Series] | None = None,
+        use_row_as_spot: bool = False,
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            code_str = _normalize_a_stock_code(row.get(col_code, ''))
+            name_str = str(row.get(col_name, '')).strip()
             if not code_str or len(code_str) < 6:
                 continue
             market = _classify_a_stock_market(code_str)
-            spot = spot_map.get(code_str)
-            item = {
-                'code': code_str, 'name': name_str, 'market': market,
-                'pe_ttm': _safe_float(spot.get('市盈率-动态')) if spot is not None else None,
-                'pb': _safe_float(spot.get('市净率')) if spot is not None else None,
-                'total_market_cap': _safe_float(spot.get('总市值')) if spot is not None else None,
-                'circulating_market_cap': _safe_float(spot.get('流通市值')) if spot is not None else None,
-            }
-            results.append(item)
+            spot = row if use_row_as_spot else (spot_map.get(code_str) if spot_map else None)
+            has_quote_fields = spot is not None
+            items.append(
+                {
+                    'code': code_str,
+                    'name': name_str,
+                    'market': market,
+                    'sector': str(row.get(col_sector, '')).strip() if col_sector and col_sector in row.index and str(row.get(col_sector, '')).strip() != 'nan' else None,
+                    'area': str(row.get(col_area, '')).strip() if col_area and col_area in row.index and str(row.get(col_area, '')).strip() != 'nan' else None,
+                    'ipo_date': _parse_date(row.get(col_ipo_date)) if col_ipo_date and col_ipo_date in row.index else None,
+                    '_has_quote_fields': has_quote_fields,
+                    'pe_ttm': (
+                        _row_float(spot, ('市盈率-动态', '市盈率-TTM', '市盈率TTM', 'PE(TTM)', 'pe_ttm'))
+                        if spot is not None
+                        else None
+                    ),
+                    'pb': _row_float(spot, ('市净率', 'PB', 'pb')) if spot is not None else None,
+                    'total_market_cap': (
+                        _row_float(spot, ('总市值', '总市值-元', 'total_market_cap'))
+                        if spot is not None
+                        else None
+                    ),
+                    'circulating_market_cap': (
+                        _row_float(spot, ('流通市值', '流通市值-元', 'circulating_market_cap'))
+                        if spot is not None
+                        else None
+                    ),
+                }
+            )
+        return items
 
-        logger.info("[StocksSync] 完成: %d 只 A 股（含北交所、ST）", len(results))
+    def _fetch_exchange_lists() -> List[Dict[str, Any]]:
+        frames: list[tuple[pd.DataFrame, dict[str, str]]] = []
+
+        def _append(name: str, fetch, mapping: dict[str, str]) -> None:
+            try:
+                if set_user_agent:
+                    set_user_agent()
+                if enforce_rate_limit:
+                    enforce_rate_limit()
+                df = fetch()
+                if df is None or df.empty:
+                    logger.warning("[StocksSync] %s 返回空", name)
+                    return
+                logger.info("[StocksSync] %s: %d 条", name, len(df))
+                frames.append((df, mapping))
+            except Exception as exc:
+                _remember_a_stock_list_error(name, exc)
+                logger.warning("[StocksSync] %s 失败: %s", name, str(exc)[:120])
+
+        _append(
+            "上交所主板名录",
+            lambda: ak.stock_info_sh_name_code(symbol="主板A股"),
+            {"code": "证券代码", "name": "证券简称", "ipo_date": "上市日期"},
+        )
+        _append(
+            "上交所科创板名录",
+            lambda: ak.stock_info_sh_name_code(symbol="科创板"),
+            {"code": "证券代码", "name": "证券简称", "ipo_date": "上市日期"},
+        )
+        _append(
+            "深交所A股名录",
+            lambda: ak.stock_info_sz_name_code(symbol="A股列表"),
+            {"code": "A股代码", "name": "A股简称", "sector": "所属行业", "ipo_date": "A股上市日期"},
+        )
+        _append(
+            "北交所名录",
+            lambda: ak.stock_info_bj_name_code(),
+            {"code": "证券代码", "name": "证券简称", "sector": "所属行业", "area": "地区", "ipo_date": "上市日期"},
+        )
+
+        merged: dict[str, Dict[str, Any]] = {}
+        for df, mapping in frames:
+            for item in _build_stock_items(
+                df,
+                col_code=mapping["code"],
+                col_name=mapping["name"],
+                col_sector=mapping.get("sector"),
+                col_area=mapping.get("area"),
+                col_ipo_date=mapping.get("ipo_date"),
+            ):
+                merged[item["code"]] = item
+
+        return [merged[code] for code in sorted(merged)]
+
+    # ── 主方案: 单次 spot 接口 → code + name + 估值 ──
+    if _spot_em_circuit_breaker.is_available("stock_zh_a_spot_em"):
+        try:
+            if set_user_agent:
+                set_user_agent()
+            if enforce_rate_limit:
+                enforce_rate_limit()
+            logger.info("[StocksSync] 获取东财实时行情...")
+            spot_df = ak.stock_zh_a_spot_em()
+            if spot_df is not None and not spot_df.empty:
+                _last_a_stock_list_error = None
+                _spot_em_circuit_breaker.record_success("stock_zh_a_spot_em")
+                logger.info("[StocksSync] 实时行情: %d 条", len(spot_df))
+                results = _build_stock_items(
+                    spot_df,
+                    col_code='代码',
+                    col_name='名称',
+                    use_row_as_spot=True,
+                )
+                logger.info("[StocksSync] 完成: %d 只 A 股（含北交所、ST）", len(results))
+                return results
+            _spot_em_circuit_breaker.record_failure("stock_zh_a_spot_em")
+            _remember_a_stock_list_error("东财实时行情返回空", "empty dataframe")
+            logger.warning("[StocksSync] 实时行情返回空，退化到代码名称接口")
+        except Exception as spot_error:
+            _spot_em_circuit_breaker.record_failure("stock_zh_a_spot_em", spot_error)
+            _remember_a_stock_list_error("东财实时行情", spot_error)
+            logger.warning("[StocksSync] 东财实时行情失败，退化到代码名称接口: %s", str(spot_error)[:120])
+    else:
+        logger.warning("[StocksSync] 东财实时行情熔断中，跳过 spot 接口")
+
+    exchange_results = _fetch_exchange_lists()
+    if exchange_results:
+        _last_a_stock_list_error = None
+        logger.info("[StocksSync] 完成(交易所名录): %d 只 A 股（含基础资料，无估值）", len(exchange_results))
+        return exchange_results
+
+    # ── 兜底: spot 接口异常/空/熔断，退化到 code+name 接口 ──
+    if not _name_circuit_breaker.is_available("stock_info_a_code_name"):
+        _remember_a_stock_list_error("代码名称接口", "熔断中")
+        logger.warning("[StocksSync] 代码名称接口熔断中，跳过兜底")
+        return None
+
+    try:
+        if set_user_agent:
+            set_user_agent()
+        if enforce_rate_limit:
+            enforce_rate_limit()
+
+        name_df = ak.stock_info_a_code_name()
+        if name_df is None or name_df.empty:
+            _name_circuit_breaker.record_failure("stock_info_a_code_name")
+            _remember_a_stock_list_error("代码名称接口返回空", "empty dataframe")
+            return None
+
+        _name_circuit_breaker.record_success("stock_info_a_code_name")
+        _last_a_stock_list_error = None
+        results = _build_stock_items(name_df, col_code='code', col_name='name')
+        logger.info("[StocksSync] 完成(降级): %d 只 A 股（仅代码名称，无估值）", len(results))
         return results
     except Exception as e:
+        _name_circuit_breaker.record_failure("stock_info_a_code_name", e)
+        _remember_a_stock_list_error("代码名称接口", e)
         logger.error("[StocksSync] 获取全 A 股列表失败: %s", e, exc_info=True)
         return None
 

@@ -36,6 +36,15 @@ class RealtimeCircuitBreaker:
             if failures >= self.failure_threshold:
                 self._opened_until[source] = time.time() + self.cooldown_seconds
 
+    def reset(self, source: str | None = None) -> None:
+        with self._lock:
+            if source is None:
+                self._failures.clear()
+                self._opened_until.clear()
+                return
+            self._failures.pop(source, None)
+            self._opened_until.pop(source, None)
+
 
 _realtime_circuit_breaker = RealtimeCircuitBreaker()
 _circuit_breaker_lock = threading.Lock()

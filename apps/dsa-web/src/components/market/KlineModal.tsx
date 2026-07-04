@@ -17,7 +17,7 @@ export const KlineModal: React.FC<KlineModalProps> = ({ stock, data, loading, er
     onClick={onClose}
   >
     <div
-      className="flex w-full max-w-3xl flex-col rounded-2xl bg-white shadow-xl"
+      className="flex max-h-[90vh] w-full max-w-4xl flex-col rounded-2xl bg-white shadow-xl"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
@@ -37,7 +37,7 @@ export const KlineModal: React.FC<KlineModalProps> = ({ stock, data, loading, er
           <X className="h-5 w-5" />
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden px-4 py-4">
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
         <KLineChartPanel
           data={data}
           loading={loading}

@@ -59,6 +59,111 @@ def _compute_ttm_value(
     return None
 
 
+def _safe_float(value) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed:
+        return None
+    return parsed
+
+
+def _compute_abstract_ttm(rows, metric_name: str) -> float | None:
+    metric_rows = [
+        row for row in rows
+        if str(row.get('metric_name') or '') == metric_name
+    ]
+    if not metric_rows:
+        return None
+    metric_rows = sorted(metric_rows, key=lambda row: row.get('report_date') or '', reverse=True)
+    latest = metric_rows[0]
+    latest_date = str(latest.get('report_date') or '')
+    latest_value = _safe_float(latest.get('value'))
+    if latest_date.endswith('12-31'):
+        return latest_value
+
+    single_values = []
+    for row in metric_rows[:4]:
+        value = _safe_float(row.get('single'))
+        if value is not None:
+            single_values.append(value)
+    if len(single_values) >= 4:
+        return sum(single_values)
+    return latest_value
+
+
+def _fetch_abstract_fundamentals(code: str) -> dict | None:
+    try:
+        import akshare as ak
+        df = ak.stock_financial_abstract_new_ths(symbol=code, indicator='按报告期')
+    except Exception as exc:
+        logger.warning(f"[fundamental-filter] THS abstract failed for {code}: {exc}")
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    rows = df.to_dict('records')
+    report_dates = [str(row.get('report_date') or '')[:10] for row in rows if row.get('report_date')]
+    latest_report = max(report_dates) if report_dates else None
+
+    latest_debt_ratio = None
+    debt_rows = [
+        row for row in rows
+        if str(row.get('metric_name') or '') == 'assets_debt_ratio'
+    ]
+    if debt_rows:
+        debt_rows = sorted(debt_rows, key=lambda row: row.get('report_date') or '', reverse=True)
+        latest_debt_ratio = _safe_float(debt_rows[0].get('value'))
+
+    return {
+        'revenue_ttm': _compute_abstract_ttm(rows, 'operating_income_total'),
+        'deducted_profit_ttm': _compute_abstract_ttm(rows, 'index_deduct_holder_net_profit'),
+        'operating_cf_ttm': None,
+        'net_profit_ttm': _compute_abstract_ttm(rows, 'parent_holder_net_profit'),
+        'debt_ratio': latest_debt_ratio,
+        'interest_bearing_debt_ratio': None,
+        'cash_debt_ratio': None,
+        'report_date': latest_report,
+    }
+
+
+def _write_fundamentals(code: str, db: DatabaseManager, computed: dict) -> bool:
+    key_fields_complete = (
+        computed.get('revenue_ttm') is not None
+        and computed.get('deducted_profit_ttm') is not None
+        and computed.get('debt_ratio') is not None
+    )
+    now = datetime.now()
+
+    def _write(session):
+        existing = session.execute(
+            sa_select(StockMeta).where(StockMeta.code == code)
+        ).scalars().first()
+        if existing:
+            existing.revenue_ttm = computed.get('revenue_ttm')
+            existing.deducted_profit_ttm = computed.get('deducted_profit_ttm')
+            existing.operating_cf_ttm = computed.get('operating_cf_ttm')
+            existing.net_profit_ttm = computed.get('net_profit_ttm')
+            existing.debt_ratio = computed.get('debt_ratio')
+            existing.interest_bearing_debt_ratio = computed.get('interest_bearing_debt_ratio')
+            existing.cash_debt_ratio = computed.get('cash_debt_ratio')
+            existing.report_date = computed.get('report_date')
+            if key_fields_complete:
+                existing.financial_fetched_at = now
+        else:
+            logger.warning(f"[fundamental-filter] StockMeta not found for {code}, skipping")
+        return True
+
+    try:
+        db._run_write_transaction(f"fundamental_filter[{code}]", _write)
+        return True
+    except Exception as e:
+        logger.warning(f"[fundamental-filter] DB upsert failed for {code}: {e}")
+        return False
+
+
 def _fetch_and_compute_fundamentals(
     code: str,
     db: DatabaseManager,
@@ -95,6 +200,9 @@ def _fetch_and_compute_fundamentals(
                 logger.warning(f"[fundamental-filter] EM also failed for {code}: {e2}")
 
     if not statements:
+        computed = _fetch_abstract_fundamentals(code)
+        if computed and _write_fundamentals(code, db, computed):
+            return computed
         return None
 
     bs_items = (statements.get('balance_sheet') or [])
@@ -105,15 +213,40 @@ def _fetch_and_compute_fundamentals(
             break
 
     if not latest_bs:
+        computed = _fetch_abstract_fundamentals(code)
+        if computed and _write_fundamentals(code, db, computed):
+            return computed
         return None
 
     total_assets = latest_bs.get('total_assets', 0)
     total_liabilities = latest_bs.get('total_liabilities', 0)
+    monetary_funds = latest_bs.get('monetary_funds') or 0
+    interest_bearing_debt = sum(
+        value or 0
+        for value in (
+            latest_bs.get('short_loan'),
+            latest_bs.get('long_loan'),
+            latest_bs.get('noncurrent_liab_1year'),
+            latest_bs.get('lease_liab'),
+        )
+    )
 
     debt_ratio = (total_liabilities / total_assets * 100) if total_assets else None
+    interest_bearing_debt_ratio = (
+        interest_bearing_debt / total_assets * 100
+        if total_assets and interest_bearing_debt
+        else None
+    )
+    cash_debt_ratio = (
+        monetary_funds / interest_bearing_debt * 100
+        if interest_bearing_debt
+        else None
+    )
 
     revenue_ttm = _compute_ttm_value(statements, 'revenue')
     deducted_profit_ttm = _compute_ttm_value(statements, 'deducted_net_profit')
+    operating_cf_ttm = _compute_ttm_value(statements, 'operating_cf')
+    net_profit_ttm = _compute_ttm_value(statements, 'net_profit')
 
     all_dates = []
     for section in ('balance_sheet', 'income_statement'):
@@ -123,41 +256,20 @@ def _fetch_and_compute_fundamentals(
                 all_dates.append(d)
     latest_report = max(all_dates) if all_dates else None
 
-    now = datetime.now()
-
-    key_fields_complete = (
-        revenue_ttm is not None
-        and deducted_profit_ttm is not None
-        and debt_ratio is not None
-    )
-
-    def _write(session):
-        existing = session.execute(
-            sa_select(StockMeta).where(StockMeta.code == code)
-        ).scalars().first()
-        if existing:
-            existing.revenue_ttm = revenue_ttm
-            existing.deducted_profit_ttm = deducted_profit_ttm
-            existing.debt_ratio = debt_ratio
-            existing.report_date = latest_report
-            if key_fields_complete:
-                existing.financial_fetched_at = now
-        else:
-            logger.warning(f"[fundamental-filter] StockMeta not found for {code}, skipping")
-        return True
-
-    try:
-        db._run_write_transaction(f"fundamental_filter[{code}]", _write)
-    except Exception as e:
-        logger.warning(f"[fundamental-filter] DB upsert failed for {code}: {e}")
-        return None
-
-    return {
+    computed = {
         'revenue_ttm': revenue_ttm,
         'deducted_profit_ttm': deducted_profit_ttm,
+        'operating_cf_ttm': operating_cf_ttm,
+        'net_profit_ttm': net_profit_ttm,
         'debt_ratio': debt_ratio,
+        'interest_bearing_debt_ratio': interest_bearing_debt_ratio,
+        'cash_debt_ratio': cash_debt_ratio,
         'report_date': latest_report,
     }
+    if not _write_fundamentals(code, db, computed):
+        return None
+
+    return computed
 
 
 @router.post(

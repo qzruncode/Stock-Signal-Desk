@@ -17,6 +17,8 @@ const COLORS = {
 };
 
 const SOURCE_LABELS: Record<string, string> = {
+  stock_daily: '本地日线库',
+  cache: '缓存',
   eastmoney: '东方财富',
   sina: '新浪财经',
   tencent: '腾讯财经',
@@ -38,6 +40,21 @@ function toChartData(bars: KlineBar[]) {
       volume: bar.volume ?? undefined,
       turnover: bar.turnover_rate ?? undefined,
     }));
+}
+
+function formatNumber(value: number | null | undefined, digits = 2) {
+  return value == null ? '-' : value.toFixed(digits);
+}
+
+function formatAmount(value: number | null | undefined) {
+  if (value == null) return '-';
+  if (Math.abs(value) >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
+  if (Math.abs(value) >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
+  return value.toFixed(0);
+}
+
+function formatPct(value: number | null | undefined) {
+  return value == null ? '-' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +82,7 @@ const KLineChartPanel: React.FC<KLineChartPanelProps> = ({
   const chartData = useMemo(() => toChartData(data?.data ?? []), [data?.data]);
   const hasData = chartData.length > 0;
   const symbol = data?.symbol;
+  const latest = data?.data?.[data.data.length - 1];
 
   // Initialize chart when data becomes available
   useEffect(() => {
@@ -169,6 +187,15 @@ const KLineChartPanel: React.FC<KLineChartPanelProps> = ({
   }, []);
 
   const sourceLabel = data?.source ? SOURCE_LABELS[data.source] || data.source : '-';
+  const latestSource = latest?._source || latest?.data_source;
+  const latestSourceLabel = latestSource ? SOURCE_LABELS[latestSource] || latestSource : sourceLabel;
+  const pctTone = latest?.pct_chg == null
+    ? 'text-slate-600'
+    : latest.pct_chg > 0
+      ? 'text-red-600'
+      : latest.pct_chg < 0
+        ? 'text-emerald-600'
+        : 'text-slate-600';
 
   return (
     <div className={cn('flex flex-col gap-3', className)}>
@@ -189,6 +216,48 @@ const KLineChartPanel: React.FC<KLineChartPanelProps> = ({
         ) : (
           <>
             <div id={CHART_CONTAINER_ID} className="h-[500px] w-full" style={{ minHeight: 500 }} />
+            {latest && (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-slate-100 px-5 py-3 text-xs sm:grid-cols-4">
+                <div>
+                  <div className="text-slate-400">交易日</div>
+                  <div className="mt-0.5 font-mono font-medium text-slate-700">{latest.date}</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">收盘 / 涨跌幅</div>
+                  <div className={cn('mt-0.5 font-mono font-medium', pctTone)}>
+                    {formatNumber(latest.close)} / {formatPct(latest.pct_chg)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-400">成交量</div>
+                  <div className="mt-0.5 font-mono font-medium text-slate-700">{formatAmount(latest.volume)}</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">成交额</div>
+                  <div className="mt-0.5 font-mono font-medium text-slate-700">{formatAmount(latest.amount)}</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">MA5 / MA10 / MA20</div>
+                  <div className="mt-0.5 font-mono font-medium text-slate-700">
+                    {formatNumber(latest.ma5)} / {formatNumber(latest.ma10)} / {formatNumber(latest.ma20)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-400">量比</div>
+                  <div className="mt-0.5 font-mono font-medium text-slate-700">{formatNumber(latest.volume_ratio)}</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">开高低</div>
+                  <div className="mt-0.5 font-mono font-medium text-slate-700">
+                    {formatNumber(latest.open)} / {formatNumber(latest.high)} / {formatNumber(latest.low)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-slate-400">日线来源</div>
+                  <div className="mt-0.5 font-medium text-slate-700">{latestSourceLabel}</div>
+                </div>
+              </div>
+            )}
             <div className="flex items-center justify-between border-t border-slate-100 px-5 py-2">
               <div className="flex items-center gap-3 text-xs text-slate-500">
                 <span className="font-mono font-semibold text-slate-700">{data?.symbol}</span>

@@ -6,10 +6,15 @@ export interface KlineBar {
   close: number;
   high: number;
   low: number;
-  volume: number;
-  amount: number;
+  volume: number | null;
+  amount: number | null;
   pct_chg: number | null;
   turnover_rate: number | null;
+  ma5?: number | null;
+  ma10?: number | null;
+  ma20?: number | null;
+  volume_ratio?: number | null;
+  data_source?: string | null;
   _source?: string;
 }
 

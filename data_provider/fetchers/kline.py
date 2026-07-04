@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from tenacity import (
     retry, stop_after_attempt, wait_exponential,
-    retry_if_exception_type, before_sleep_log,
+    retry_if_exception_type, retry_if_exception, before_sleep_log,
 )
 
 from ..utils import DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
@@ -70,6 +70,37 @@ def _normalize_data(df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
 # ── Retry wrapper ────────────────────────────────────────────────────────
 
 
+def _is_retryable_kline_error(exc: BaseException) -> bool:
+    if isinstance(exc, (RateLimitError, ConnectionError, TimeoutError)):
+        return True
+    message = str(exc).lower()
+    return any(
+        kw in message
+        for kw in [
+            'banned', 'blocked', '频率', 'rate', '限制',
+            'timeout', 'timed out', 'connection', 'remote end closed',
+            'temporarily', 'reset by peer',
+        ]
+    )
+
+
+def _wait_for_kline_retry(retry_state) -> float:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    attempt = retry_state.attempt_number
+    if isinstance(exc, RateLimitError):
+        return min(30.0, 5.0 * (2 ** (attempt - 1)))
+    return min(8.0, 1.0 * (2 ** (attempt - 1)))
+
+
+_retry_a_stock_kline = retry(
+    stop=stop_after_attempt(3),
+    wait=_wait_for_kline_retry,
+    retry=retry_if_exception(_is_retryable_kline_error),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+
+
 def _rate_limited_fetch(fetch_func, *args, **kwargs):
     """Execute a fetch function with rate-limit enforcement.
 
@@ -84,6 +115,7 @@ def _rate_limited_fetch(fetch_func, *args, **kwargs):
 # _enforce_rate_limit() and _set_random_user_agent().
 
 
+@_retry_a_stock_kline
 def fetch_stock_data_em(
     stock_code: str, start_date: str, end_date: str,
     enforce_rate_limit=None, set_user_agent=None,
@@ -119,6 +151,7 @@ def fetch_stock_data_em(
         raise e
 
 
+@_retry_a_stock_kline
 def fetch_stock_data_sina(
     stock_code: str, start_date: str, end_date: str,
     enforce_rate_limit=None,
@@ -149,9 +182,13 @@ def fetch_stock_data_sina(
             return df
         return pd.DataFrame()
     except Exception as e:
+        error_msg = str(e).lower()
+        if any(kw in error_msg for kw in ['banned', 'blocked', '频率', 'rate', '限制']):
+            raise RateLimitError(f"Akshare(新浪) 可能被限流: {e}") from e
         raise e
 
 
+@_retry_a_stock_kline
 def fetch_stock_data_tx(
     stock_code: str, start_date: str, end_date: str,
     enforce_rate_limit=None,
@@ -184,6 +221,9 @@ def fetch_stock_data_tx(
             return df
         return pd.DataFrame()
     except Exception as e:
+        error_msg = str(e).lower()
+        if any(kw in error_msg for kw in ['banned', 'blocked', '频率', 'rate', '限制']):
+            raise RateLimitError(f"Akshare(腾讯) 可能被限流: {e}") from e
         raise e
 
 

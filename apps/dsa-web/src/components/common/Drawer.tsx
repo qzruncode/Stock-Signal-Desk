@@ -87,15 +87,15 @@ export const Drawer: React.FC<DrawerProps> = ({
         >
           <div className="flex items-center justify-between border-b border-border/60 px-6 py-4">
             {title ? (
-              <div>
+              <div className="min-w-0">
                 <span className="label-uppercase">DETAIL VIEW</span>
-                <h2 id={titleId} className="mt-1 text-lg font-semibold text-foreground">{title}</h2>
+                <h2 id={titleId} className="mt-1 truncate text-lg font-semibold text-foreground">{title}</h2>
               </div>
             ) : <div />}
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/70 bg-card/80 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-card/80 text-secondary-text transition-colors hover:bg-hover hover:text-foreground"
               aria-label="关闭抽屉"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

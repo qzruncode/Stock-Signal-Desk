@@ -39,9 +39,10 @@ from tenacity import (
     retry_if_exception_type, before_sleep_log,
 )
 
-from src.patches.eastmoney_patch import eastmoney_patch
+from src.patches.eastmoney_patch import eastmoney_patch, set_request_user_agent
 from src.config import get_config
 from .utils import DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
+from .rate_limiter import akshare_rate_limiter
 from .realtime_types import UnifiedRealtimeQuote, ChipDistribution, RealtimeSource, safe_float, safe_int
 from .us_index_mapping import is_us_index_code, is_us_stock_code
 
@@ -103,13 +104,13 @@ class AkshareFetcher:
     def __init__(self, sleep_min: float = 2.0, sleep_max: float = 5.0):
         self.sleep_min = sleep_min
         self.sleep_max = sleep_max
-        self._last_request_time: Optional[float] = None
         if get_config().enable_eastmoney_patch:
             eastmoney_patch()
 
     def _set_random_user_agent(self) -> None:
         try:
-            random.choice(USER_AGENTS)
+            set_request_user_agent(random.choice(USER_AGENTS))
+            eastmoney_patch(enable_eastmoney=get_config().enable_eastmoney_patch)
         except Exception as e:
             logger.debug("设置 User-Agent 失败: %s", e)
 
@@ -119,16 +120,11 @@ class AkshareFetcher:
         time.sleep(sleep_time)
 
     def _enforce_rate_limit(self, jitter: bool = True) -> None:
-        if self._last_request_time is not None:
-            elapsed = time.time() - self._last_request_time
-            min_interval = self.sleep_min
-            if elapsed < min_interval:
-                additional_sleep = min_interval - elapsed
-                logger.debug("补充休眠 %.2f 秒", additional_sleep)
-                time.sleep(additional_sleep)
-        if jitter and self._last_request_time is not None:
-            self.random_sleep(self.sleep_min, self.sleep_max)
-        self._last_request_time = time.time()
+        akshare_rate_limiter.wait(
+            min_interval=self.sleep_min,
+            max_jitter=self.sleep_max,
+            jitter=jitter,
+        )
 
     # ── K-line history ─────────────────────────────────────────────────
 
@@ -285,7 +281,10 @@ class AkshareFetcher:
                 logger.warning("[StocksSync] eastmoney_patch 应用失败（非致命）", exc_info=True)
         except Exception:
             logger.warning("[StocksSync] get_all_a_stocks outer guard failed", exc_info=True)
-        return _fetch_all_a_stocks(enforce_rate_limit=self._enforce_rate_limit)
+        return _fetch_all_a_stocks(
+            enforce_rate_limit=self._enforce_rate_limit,
+            set_user_agent=self._set_random_user_agent,
+        )
 
     # ── Kline history (convenience) ────────────────────────────────────
 
@@ -294,12 +293,11 @@ class AkshareFetcher:
 
     def fetch_stock_kline_batch(self, codes: List[str], days: int = 365, workers: int = 5) -> Dict[str, Optional[pd.DataFrame]]:
         import concurrent.futures
-        batch_fetcher = AkshareFetcher(sleep_min=0.3, sleep_max=0.5)
 
         results: Dict[str, Optional[pd.DataFrame]] = {}
 
         def _fetch_one(code: str) -> tuple:
-            df = batch_fetcher.fetch_stock_kline_history(code, days=days)
+            df = self.fetch_stock_kline_history(code, days=days)
             return code, df
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:

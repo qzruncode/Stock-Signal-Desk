@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 
 from fastapi import Query
+from sqlalchemy import or_
 
 from api.v1.endpoints.stocks import router
 from src.storage import DatabaseManager, StockMeta, StockDaily
@@ -24,6 +25,7 @@ def list_stocks(
     page_size: int = Query(default=50, ge=10, le=500, description="每页数量"),
     search: Optional[str] = Query(default=None, description="搜索代码或名称"),
     market: Optional[str] = Query(default=None, description="市场筛选 (sh/sz/cyb/kcb/bj)"),
+    count: bool = Query(default=True, description="是否返回精确总数；加载更多可设为 false"),
 ):
     """Paginate and search the synced A-share stock list."""
     db = DatabaseManager.get_instance()
@@ -36,7 +38,6 @@ def list_stocks(
 
         if search:
             search_term = f"%{search.strip()}%"
-            from sqlalchemy import or_
             query = query.filter(
                 or_(
                     StockMeta.code.like(search_term),
@@ -44,20 +45,35 @@ def list_stocks(
                 )
             )
 
-        total = query.count()
-        items = (
-            query.order_by(StockMeta.code)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-            .all()
-        )
+        if count:
+            total = query.count()
+            items = (
+                query.order_by(StockMeta.code)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
+            )
+            has_more = page < max(1, (total + page_size - 1) // page_size)
+            total_pages = max(1, (total + page_size - 1) // page_size)
+        else:
+            rows = (
+                query.order_by(StockMeta.code)
+                .offset((page - 1) * page_size)
+                .limit(page_size + 1)
+                .all()
+            )
+            items = rows[:page_size]
+            has_more = len(rows) > page_size
+            total = 0
+            total_pages = page + 1 if has_more else page
 
         return {
             "items": [item.to_dict() for item in items],
             "total": total,
             "page": page,
             "page_size": page_size,
-            "total_pages": max(1, (total + page_size - 1) // page_size),
+            "total_pages": total_pages,
+            "has_more": has_more,
         }
 
 
@@ -115,7 +131,7 @@ def get_kline_batch(body: dict):
     """Return daily OHLCV data from local DB for specified stock codes.
 
     Request body: { "codes": ["000001", "000002", ...], "count": 250 }
-    Returns: { "results": { "000001": [[date, o, h, l, c], ...], ... } }
+    Returns: { "results": { "000001": [{date, open, high, low, close, ...}, ...], ... } }
     Only returns data for codes that exist in DB; missing codes get empty arrays.
     """
     import time
@@ -134,8 +150,22 @@ def get_kline_batch(body: dict):
 
     with db.get_session() as session:
         rows = session.execute(
-            select(StockDaily.code, StockDaily.date, StockDaily.open, StockDaily.high,
-                   StockDaily.low, StockDaily.close)
+            select(
+                StockDaily.code,
+                StockDaily.date,
+                StockDaily.open,
+                StockDaily.high,
+                StockDaily.low,
+                StockDaily.close,
+                StockDaily.volume,
+                StockDaily.amount,
+                StockDaily.pct_chg,
+                StockDaily.ma5,
+                StockDaily.ma10,
+                StockDaily.ma20,
+                StockDaily.volume_ratio,
+                StockDaily.data_source,
+            )
             .where(StockDaily.code.in_(codes))
             .order_by(StockDaily.code, StockDaily.date)
         ).all()
@@ -143,7 +173,21 @@ def get_kline_batch(body: dict):
     klines: dict[str, list] = {c: [] for c in codes}
     for row in rows:
         date_str = row[1].isoformat() if hasattr(row[1], 'isoformat') else str(row[1])[:10]
-        klines[row[0]].append([date_str, row[2], row[3], row[4], row[5]])
+        klines[row[0]].append({
+            "date": date_str,
+            "open": row[2],
+            "high": row[3],
+            "low": row[4],
+            "close": row[5],
+            "volume": row[6],
+            "amount": row[7],
+            "pct_chg": row[8],
+            "ma5": row[9],
+            "ma10": row[10],
+            "ma20": row[11],
+            "volume_ratio": row[12],
+            "data_source": row[13],
+        })
 
     results = {}
     for code in codes:

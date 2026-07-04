@@ -9,3 +9,4 @@ router = APIRouter()
 from api.v1.endpoints.stocks import sync  # noqa: E402, F401
 from api.v1.endpoints.stocks import list  # noqa: E402, F401
 from api.v1.endpoints.stocks import filter  # noqa: E402, F401
+from api.v1.endpoints.stocks import enrich  # noqa: E402, F401
