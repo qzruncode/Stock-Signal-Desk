@@ -99,6 +99,114 @@ class ToolRegistry:
         self._register_macro_tools()
         self._register_search_fallback_tools()
         self._register_buy_criteria_tools()
+        self._register_web_tools()
+
+    # ===================================================================
+    # 11. 通用 Web 工具 (webfetch / websearch)
+    #     独立实现，复刻 OpenCode (sst/opencode) 的 webfetch.ts / websearch.ts，
+    #     不依赖项目 src.search_service。
+    # ===================================================================
+
+    def _register_web_tools(self) -> None:
+        import datetime as _dt
+
+        from src.tools.webfetch import WEBFETCH_DESCRIPTION, fetch_url
+        from src.tools.websearch import WEBSEARCH_DESCRIPTION, websearch
+
+        # --- websearch ---
+        # 参数 schema 对应 websearch.ts 的 Parameters（均为 Schema.optional，仅描述提及默认值）
+        def _exec_websearch(
+            query: str,
+            numResults: int = 8,
+            livecrawl: str = "fallback",
+            type: str = "auto",
+            contextMaxCharacters: Optional[int] = None,
+        ) -> Any:
+            return websearch(
+                query=query,
+                num_results=numResults,
+                livecrawl=livecrawl,
+                search_type=type,
+                context_max_characters=contextMaxCharacters,
+            )
+
+        self._add(ToolDef(
+            name="websearch",
+            # 对应 websearch.ts description getter：把 {{year}} 替换为当前年份
+            description=WEBSEARCH_DESCRIPTION.replace("{{year}}", str(_dt.date.today().year)),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Websearch query",
+                    },
+                    "numResults": {
+                        "type": "number",
+                        "description": "Number of search results to return (default: 8)",
+                    },
+                    "livecrawl": {
+                        "type": "string",
+                        "enum": ["fallback", "preferred"],
+                        "description": (
+                            "Live crawl mode - 'fallback': use live crawling as backup if "
+                            "cached content unavailable, 'preferred': prioritize live crawling "
+                            "(default: 'fallback')"
+                        ),
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["auto", "fast", "deep"],
+                        "description": (
+                            "Search type - 'auto': balanced search (default), "
+                            "'fast': quick results, 'deep': comprehensive search"
+                        ),
+                    },
+                    "contextMaxCharacters": {
+                        "type": "number",
+                        "description": "Maximum characters for context string optimized for LLMs (default: 10000)",
+                    },
+                },
+                "required": ["query"],
+            },
+            executor=_exec_websearch,
+            category="search",
+        ))
+
+        # --- webfetch ---
+        # 参数 schema 对应 webfetch.ts 的 Parameters（url/format/timeout）
+        def _exec_webfetch(url: str, format: str = "markdown", timeout: int = 30) -> Any:
+            return fetch_url(url=url, format=format, timeout=timeout)
+
+        self._add(ToolDef(
+            name="webfetch",
+            description=WEBFETCH_DESCRIPTION,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to fetch content from",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["text", "markdown", "html"],
+                        "description": (
+                            "The format to return the content in (text, markdown, or html). "
+                            "Defaults to markdown."
+                        ),
+                        "default": "markdown",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Optional timeout in seconds (max 120)",
+                    },
+                },
+                "required": ["url"],
+            },
+            executor=_exec_webfetch,
+            category="search",
+        ))
 
     def _resolve_symbol(self, value: str) -> str:
         """Resolve stock name/code into a normalized stock code when possible."""

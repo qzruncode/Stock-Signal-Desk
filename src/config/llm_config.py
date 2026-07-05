@@ -139,6 +139,53 @@ def get_configured_llm_models(model_list: List[Dict[str, Any]]) -> List[str]:
     return models
 
 
+def normalize_agent_litellm_model(
+    model: str,
+    configured_models: Optional[set] = None,
+) -> str:
+    """Normalize the Agent-specific model override."""
+    normalized = (model or "").strip()
+    if not normalized:
+        return ""
+    if "/" not in normalized:
+        if configured_models and normalized in configured_models:
+            return normalized
+        return f"openai/{normalized}"
+    return normalized
+
+
+def get_effective_agent_primary_model(config: Any) -> str:
+    """Return the model used by the agent chat endpoint."""
+    agent_model = str(getattr(config, "agent_litellm_model", "") or "").strip()
+    if agent_model:
+        return agent_model
+    return str(getattr(config, "litellm_model", "") or "").strip()
+
+
+def get_effective_agent_models_to_try(config: Any) -> List[str]:
+    """Return Agent primary plus fallback models, de-duplicated in call order."""
+    configured_models = set(get_configured_llm_models(getattr(config, "llm_model_list", []) or []))
+    candidates = [
+        get_effective_agent_primary_model(config),
+        *(getattr(config, "litellm_fallback_models", []) or []),
+    ]
+
+    models: List[str] = []
+    seen: set[str] = set()
+    for raw_model in candidates:
+        model = normalize_agent_litellm_model(str(raw_model or ""), configured_models)
+        if not model:
+            continue
+        key = model
+        if "/" not in model and model not in configured_models:
+            key = f"openai/{model}"
+        if key in seen:
+            continue
+        seen.add(key)
+        models.append(model)
+    return models
+
+
 def resolve_litellm_wire_model(
     model: str,
     model_list: Optional[List[Dict[str, Any]]] = None,

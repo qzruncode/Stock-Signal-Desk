@@ -30,7 +30,12 @@ from api.v1.endpoints.agent.tools import (
     _maybe_attach_search_fallback,
 )
 from src.agent.tool_registry import ToolRegistry
-from src.config import get_config, extra_litellm_params, get_api_keys_for_model
+from src.config import (
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_config,
+    get_effective_agent_primary_model,
+)
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -76,20 +81,58 @@ SYSTEM_PROMPT = """\
 """
 
 
+def _find_model_deployment(model: str, model_list: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    """Find the Router deployment that should back a requested model."""
+    normalized_model = (model or "").strip()
+    if not normalized_model:
+        return None
+
+    provider = normalized_model.split("/", 1)[0] if "/" in normalized_model else "openai"
+    legacy_provider = "gemini" if provider == "vertex_ai" else provider
+    legacy_name = f"__legacy_{legacy_provider}__"
+    anonymous_entry: Dict[str, Any] | None = None
+
+    for entry in model_list or []:
+        if not isinstance(entry, dict):
+            continue
+        params = entry.get("litellm_params") or {}
+        if not isinstance(params, dict):
+            continue
+
+        model_name = str(entry.get("model_name") or "").strip()
+        wire_model = str(params.get("model") or "").strip()
+        if model_name == normalized_model or wire_model == normalized_model:
+            return entry
+        if model_name == legacy_name or wire_model == legacy_name:
+            return entry
+        if not model_name and not wire_model and anonymous_entry is None:
+            anonymous_entry = entry
+
+    if anonymous_entry is not None:
+        return anonymous_entry
+    if len(model_list or []) == 1:
+        entry = model_list[0]
+        return entry if isinstance(entry, dict) else None
+    return None
+
+
 def _get_llm_config():
     """Get the LLM config for the agent chat endpoint."""
     config = get_config()
-    model = config.litellm_model or "gpt-4o"
+    model = get_effective_agent_primary_model(config) or "gpt-4o"
     api_key = None
-    api_base = config.openai_base_url or None
+    api_base = None
+    extra_headers = None
 
     models = config.llm_model_list if config.llm_model_list else []
-    if models:
-        first = models[0]
-        lp = first.get("litellm_params", {})
+    deployment = _find_model_deployment(model, models)
+    if deployment:
+        lp = deployment.get("litellm_params", {}) or {}
         api_key = lp.get("api_key")
         if lp.get("api_base"):
             api_base = lp["api_base"]
+        if lp.get("extra_headers"):
+            extra_headers = lp["extra_headers"]
 
     if not api_key:
         keys = get_api_keys_for_model(model, config)
@@ -99,7 +142,8 @@ def _get_llm_config():
     extra = extra_litellm_params(model, config)
     if extra.get("api_base") and not api_base:
         api_base = extra["api_base"]
-    extra_headers = extra.get("extra_headers")
+    if extra.get("extra_headers") and not extra_headers:
+        extra_headers = extra["extra_headers"]
 
     return {
         "model": model,

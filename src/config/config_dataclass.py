@@ -22,6 +22,7 @@ from src.config.llm_config import (
     resolve_llm_channel_protocol,
     channel_allows_empty_api_key,
     normalize_llm_channel_model,
+    normalize_agent_litellm_model,
     get_configured_llm_models,
     resolve_unified_llm_temperature,
     SUPPORTED_LLM_CHANNEL_PROTOCOLS,
@@ -74,6 +75,7 @@ class Config:
 
     # === AI 分析配置 ===
     litellm_model: str = ""
+    agent_litellm_model: str = ""
     litellm_fallback_models: List[str] = field(default_factory=list)
     llm_temperature: float = 0.7
     llm_thinking_enabled: bool = False
@@ -421,6 +423,11 @@ class Config:
                 if m not in _seen and not _seen.add(m)
             ]
 
+        agent_litellm_model = normalize_agent_litellm_model(
+            os.getenv('AGENT_LITELLM_MODEL', '').strip(),
+            configured_models=set(get_configured_llm_models(llm_model_list)),
+        )
+
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
         bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
 
@@ -512,6 +519,7 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             litellm_model=litellm_model,
+            agent_litellm_model=agent_litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             llm_temperature=resolve_unified_llm_temperature(litellm_model),
             llm_thinking_enabled=os.getenv('LLM_THINKING_ENABLED', 'false').lower() == 'true',
@@ -849,8 +857,7 @@ class Config:
 
     @classmethod
     def _get_env_file_value(cls, key: str) -> Optional[str]:
-        env_file = os.getenv("ENV_FILE")
-        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / ".env")
+        env_path = cls._resolve_env_path()
         if not env_path.exists():
             return None
         try:
@@ -864,6 +871,18 @@ class Config:
         if value is None:
             return None
         return str(value)
+
+    @classmethod
+    def _resolve_env_path(cls) -> Path:
+        env_file = os.getenv("ENV_FILE")
+        if env_file:
+            return Path(env_file).expanduser().resolve()
+
+        project_env = (Path(__file__).resolve().parent.parent.parent / ".env").resolve()
+        if project_env.exists():
+            return project_env
+
+        return (Path(__file__).resolve().parent.parent / ".env").resolve()
 
     @classmethod
     def _resolve_env_value(
@@ -925,7 +944,7 @@ class Config:
             env_text = preexisting_env_value.strip()
             file_text = (file_value or "").strip()
             if file_text and env_text and env_text.lower() != file_text.lower():
-                env_file = os.getenv("ENV_FILE") or str(Path(__file__).parent.parent / ".env")
+                env_file = os.getenv("ENV_FILE") or str(cls._resolve_env_path())
                 logging.getLogger(__name__).warning(
                     "REPORT_LANGUAGE environment value '%s' overrides %s ('%s')",
                     preexisting_env_value, env_file, file_value,
@@ -985,8 +1004,7 @@ class Config:
         )
 
     def refresh_stock_list(self) -> None:
-        env_file = os.getenv("ENV_FILE")
-        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / '.env')
+        env_path = self._resolve_env_path()
         stock_list_str = ''
         if env_path.exists():
             env_values = dotenv_values(env_path)
@@ -1046,6 +1064,12 @@ class Config:
                     message=f"已配置的主模型未出现在当前渠道或高级模型路由配置中。当前可用模型：{', '.join(available_router_models[:6])}",
                     field="LITELLM_MODEL",
                 ))
+            if self.agent_litellm_model and not _uses_direct_env_provider(self.agent_litellm_model) and self.agent_litellm_model not in available_router_model_set:
+                issues.append(ConfigIssue(
+                    severity="error",
+                    message=f"已配置的 Agent 主模型未出现在当前渠道或高级模型路由配置中。当前可用模型：{', '.join(available_router_models[:6])}",
+                    field="AGENT_LITELLM_MODEL",
+                ))
             invalid_fallbacks = [
                 model for model in (self.litellm_fallback_models or [])
                 if model and model not in available_router_model_set and not _uses_direct_env_provider(model)
@@ -1062,6 +1086,12 @@ class Config:
                     message=f"VISION_MODEL 未出现在当前渠道声明中。当前可用模型：{', '.join(available_router_models[:6])}",
                     field="VISION_MODEL",
                 ))
+        elif self.agent_litellm_model and not _has_runtime_source_for_model(self.agent_litellm_model):
+            issues.append(ConfigIssue(
+                severity="error",
+                message="已配置的 Agent 主模型缺少可用渠道或匹配的 API Key。",
+                field="AGENT_LITELLM_MODEL",
+            ))
 
         if not self.has_search_capability_enabled():
             issues.append(ConfigIssue(
