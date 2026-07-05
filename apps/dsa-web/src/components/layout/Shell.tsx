@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, Flame, GitBranch, Globe, Home, Menu, MessageSquare, Rss, Search, Settings, Star, TrendingUp, X, Zap } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Flame, GitBranch, Globe, Home, Menu, MessageSquare, Rss, Search, Settings, Star, TrendingUp, Wrench, X, Zap } from 'lucide-react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { cn } from '../../utils/cn';
 import { preloadRoute } from '../../App';
@@ -26,6 +26,7 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
     { to: '/market-leaders', label: '市场主线', icon: Flame },
     { to: '/workflows', label: '工作流编排', icon: GitBranch },
     { to: '/settings', label: '模型 API 配置', icon: Settings },
+    { to: '/setting', label: '设置', icon: Wrench },
   ];
 
   const closeMobileDrawer = useCallback(() => {

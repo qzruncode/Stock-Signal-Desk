@@ -18,6 +18,7 @@ const HomePage = lazyWithPreload(() => import('./pages/HomePage'));
 const BatchRunDetailPage = lazyWithPreload(() => import('./pages/BatchRunDetailPage'));
 const NotFoundPage = lazyWithPreload(() => import('./pages/NotFoundPage'));
 const SettingsPage = lazyWithPreload(() => import('./pages/SettingsPage'));
+const SettingPage = lazyWithPreload(() => import('./pages/SettingPage'));
 const MarketStocksPage = lazyWithPreload(() => import('./pages/MarketStocksPage'));
 const WatchlistManagePage = lazyWithPreload(() => import('./pages/WatchlistManagePage'));
 const WorkflowBuilderPage = lazyWithPreload(() => import('./pages/WorkflowBuilderPage'));
@@ -39,6 +40,7 @@ const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/market-leaders': MarketLeadersPage.preload!,
   '/workflows': WorkflowBuilderPage.preload!,
   '/settings': SettingsPage.preload!,
+  '/setting': SettingPage.preload!,
 };
 
 export const preloadRoute = (path: string): void => {
@@ -122,6 +124,7 @@ const AppContent: React.FC = () => {
           <Route path="/market-leaders" element={<MarketLeadersPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/setting" element={<SettingPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>
