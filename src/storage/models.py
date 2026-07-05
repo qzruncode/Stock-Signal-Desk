@@ -88,21 +88,12 @@ class StockMeta(Base):
     name = Column(String(50), nullable=False)
     market = Column(String(10), nullable=False, index=True)
     sector = Column(String(100))
-    area = Column(String(50))
     status = Column(String(20), nullable=False, default='active', index=True)
     ipo_date = Column(Date)
-    total_market_cap = Column(Float)
-    circulating_market_cap = Column(Float)
-    pe_ttm = Column(Float)
-    pb = Column(Float)
-    amount_today = Column(Float)
-    revenue_ttm = Column(Float)
-    deducted_profit_ttm = Column(Float)
-    operating_cf_ttm = Column(Float)
-    net_profit_ttm = Column(Float)
+    revenue_latest = Column(Float)
+    net_profit_latest = Column(Float)
+    operating_cf_latest = Column(Float)
     debt_ratio = Column(Float)
-    interest_bearing_debt_ratio = Column(Float)
-    cash_debt_ratio = Column(Float)
     financial_fetched_at = Column(DateTime)
     report_date = Column(String(20))
     last_sync_at = Column(DateTime, default=datetime.now)
@@ -120,18 +111,12 @@ class StockMeta(Base):
     def to_dict(self) -> Dict[str, Any]:
         return {
             'code': self.code, 'name': self.name, 'market': self.market,
-            'sector': self.sector, 'area': self.area, 'status': self.status,
+            'sector': self.sector, 'status': self.status,
             'ipo_date': self.ipo_date.isoformat() if self.ipo_date else None,
-            'total_market_cap': self.total_market_cap,
-            'circulating_market_cap': self.circulating_market_cap,
-            'pe_ttm': self.pe_ttm, 'pb': self.pb, 'amount_today': self.amount_today,
-            'revenue_ttm': self.revenue_ttm,
-            'deducted_profit_ttm': self.deducted_profit_ttm,
-            'operating_cf_ttm': self.operating_cf_ttm,
-            'net_profit_ttm': self.net_profit_ttm,
+            'revenue_latest': self.revenue_latest,
+            'net_profit_latest': self.net_profit_latest,
+            'operating_cf_latest': self.operating_cf_latest,
             'debt_ratio': self.debt_ratio,
-            'interest_bearing_debt_ratio': self.interest_bearing_debt_ratio,
-            'cash_debt_ratio': self.cash_debt_ratio,
             'financial_fetched_at': self.financial_fetched_at.isoformat() if self.financial_fetched_at else None,
             'report_date': self.report_date,
             'last_sync_at': self.last_sync_at.isoformat() if self.last_sync_at else None,

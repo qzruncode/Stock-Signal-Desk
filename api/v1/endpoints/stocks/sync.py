@@ -55,6 +55,29 @@ _kline_sync_lock = threading.Lock()
 _kline_sync_state = _initial_state()
 _missing_kline_sync_lock = threading.Lock()
 _missing_kline_sync_state = _initial_state()
+_financial_sync_lock = threading.Lock()
+_financial_sync_state = _initial_state()
+
+
+def _set_financial_state(**updates) -> None:
+    _set_state(_financial_sync_state, _financial_sync_lock, **updates)
+
+
+def _get_financial_state_copy() -> dict:
+    return _get_state_copy(_financial_sync_state, _financial_sync_lock)
+
+
+def _mark_financial_sync_started() -> bool:
+    """财务同步允许与 list/kline 并发；不检查 running 状态。"""
+    with _financial_sync_lock:
+        if _financial_sync_state["status"] == "running":
+            return False
+        _financial_sync_state.update(_initial_state())
+        _financial_sync_state.update({
+            "status": "running",
+            "started_at": _utc_now_iso(),
+        })
+        return True
 
 
 def _get_latest_trading_day(reference: date | None = None) -> date:
@@ -173,7 +196,6 @@ def _run_list_sync() -> None:
         _set_list_state(total=len(stocks_raw), progress=0, message="股票列表写入中")
         now = datetime.now()
         added, updated, delisted, delisted_daily = 0, 0, 0, 0
-        quote_rows = sum(1 for item in stocks_raw if item.get("_has_quote_fields"))
         all_codes = [s["code"] for s in stocks_raw]
 
         for start in range(0, len(stocks_raw), LIST_SYNC_BATCH_SIZE):
@@ -194,15 +216,8 @@ def _run_list_sync() -> None:
                         meta.status = "active"
                         if item.get("sector"):
                             meta.sector = item.get("sector")
-                        if item.get("area"):
-                            meta.area = item.get("area")
                         if item.get("ipo_date"):
                             meta.ipo_date = item.get("ipo_date")
-                        if item.get("_has_quote_fields"):
-                            meta.pe_ttm = item.get("pe_ttm")
-                            meta.pb = item.get("pb")
-                            meta.total_market_cap = item.get("total_market_cap")
-                            meta.circulating_market_cap = item.get("circulating_market_cap")
                         meta.last_sync_at = now
                         updated += 1
                     else:
@@ -212,12 +227,7 @@ def _run_list_sync() -> None:
                             market=item["market"],
                             status="active",
                             sector=item.get("sector"),
-                            area=item.get("area"),
                             ipo_date=item.get("ipo_date"),
-                            pe_ttm=item.get("pe_ttm"),
-                            pb=item.get("pb"),
-                            total_market_cap=item.get("total_market_cap"),
-                            circulating_market_cap=item.get("circulating_market_cap"),
                             last_sync_at=now,
                         ))
                         added += 1
@@ -249,19 +259,14 @@ def _run_list_sync() -> None:
             progress=len(stocks_raw),
             total=len(stocks_raw),
             finished_at=_utc_now_iso(),
-            message=(
-                f"同步列表完成: 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})"
-                if quote_rows > 0
-                else f"同步列表完成(基础资料): 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})"
-            ),
+            message=f"同步列表完成(基础资料): 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})",
         )
         logger.info(
-            "[StocksSync] 列表同步完成: total=%d added=%d updated=%d delisted=%d quote_rows=%d",
+            "[StocksSync] 列表同步完成: total=%d added=%d updated=%d delisted=%d",
             len(stocks_raw),
             added,
             updated,
             delisted,
-            quote_rows,
         )
     except Exception as e:
         _set_list_state(status="failed", error=str(e), finished_at=_utc_now_iso())
@@ -488,3 +493,39 @@ def sync_missing_kline(body: dict):
 @router.get("/kline/sync-missing/status", summary="Get missing K-line sync status")
 def get_missing_kline_sync_status():
     return _get_missing_kline_state_copy()
+
+
+@router.post(
+    "/sync/financial",
+    summary="按报告期拉全市场业绩快报写入 stock_meta",
+    responses={409: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+)
+def sync_stock_financial(
+    service: SystemConfigService = Depends(get_system_config_service),
+):
+    """按最近一个已披露的报告期（季度/年报）一次拉全市场业绩快报写入 stock_meta。"""
+    if not _get_active_stock_codes():
+        raise HTTPException(status_code=400, detail={"error": "stock_list_required", "message": "请先同步股票列表"})
+    if not _mark_financial_sync_started():
+        raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "财报同步正在进行中，请稍后再试"})
+    period = _financials_sync.latest_report_period()
+    _set_financial_state(message=f"已启动 (报告期 {period})")
+    thread = threading.Thread(target=_financials_sync.run_financial_sync, args=(period,), daemon=True)
+    thread.start()
+    return {"success": True, "message": f"同步财报已启动 (报告期 {period})", "status": "running", "period": period}
+
+
+@router.get("/sync/financial/status", summary="Get financial sync status")
+def get_stock_financial_sync_status():
+    return _get_financial_state_copy()
+
+
+# 注入状态对象给 _financials_sync（必须在 _utc_now_iso 等所有 helper 定义后）
+from api.v1.endpoints.stocks import _financials_sync  # noqa: E402
+_financials_sync.attach_state(
+    state=_financial_sync_state,
+    lock=_financial_sync_lock,
+    set_state=_set_financial_state,
+    initial_state=_initial_state,
+    utc_now_iso=_utc_now_iso,
+)

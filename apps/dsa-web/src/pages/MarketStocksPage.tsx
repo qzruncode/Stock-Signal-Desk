@@ -42,13 +42,25 @@ const getKlineSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['kline
   return 'K线未同步';
 };
 
+const getFinancialSyncLabel = (syncStatus: ReturnType<typeof useMarketStocks>['financialSyncStatus']) => {
+  if (!syncStatus) return '财报未同步';
+  if (syncStatus.status === 'running' || syncStatus.status === 'syncing_kline') {
+    return `同步财报中 ${syncStatus.progress}/${syncStatus.total || '...'}`;
+  }
+  if (syncStatus.status === 'success') {
+    return syncStatus.finished_at ? `财报已同步 · ${new Date(syncStatus.finished_at).toLocaleString()}` : '财报已同步';
+  }
+  if (syncStatus.status === 'failed') return '财报同步失败';
+  return '财报未同步';
+};
+
 const MarketStocksPage: React.FC = () => {
   const navigate = useNavigate();
   const {
     allStocks, stockTotal, stockSearch, stockMarket, stockLoading, loadingMore, hasMore,
-    error, successMsg, syncError, isListSyncingActive, isKlineSyncingActive, sentinelRef, watchlistCodes,
-    handleStockSearch, handleMarketFilter, handleAddStock, handleSyncList, handleSyncKline,
-    listSyncStatus, klineSyncStatus,
+    error, successMsg, syncError, isListSyncingActive, isKlineSyncingActive, isFinancialSyncingActive, sentinelRef, watchlistCodes,
+    handleStockSearch, handleMarketFilter, handleAddStock, handleSyncList, handleSyncKline, handleSyncFinancial,
+    listSyncStatus, klineSyncStatus, financialSyncStatus,
   } = useMarketStocks();
 
   const klineModal = useKlineModal();
@@ -57,7 +69,9 @@ const MarketStocksPage: React.FC = () => {
 
   const hasAlert = Boolean(error || successMsg || syncError);
   const canSyncKline = listSyncStatus?.status === 'success' && (listSyncStatus.total > 0 || stockTotal > 0);
+  const canSyncFinancial = canSyncKline;
   const shouldShowKlineBadge = Boolean(klineSyncStatus && klineSyncStatus.status !== 'idle');
+  const shouldShowFinancialBadge = Boolean(financialSyncStatus && financialSyncStatus.status !== 'idle');
   const openDetail = useCallback((stock: StockMetaItem) => {
     setDetailStock(stock);
   }, []);
@@ -138,6 +152,29 @@ const MarketStocksPage: React.FC = () => {
               <span className="max-w-[180px] truncate">{getKlineSyncLabel(klineSyncStatus)}</span>
             </span>
           )}
+          {shouldShowFinancialBadge && financialSyncStatus && (
+            <span
+              className={cn(
+                'hidden items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium xl:inline-flex',
+                isFinancialSyncingActive
+                  ? 'bg-primary/10 text-primary'
+                  : financialSyncStatus.status === 'success'
+                    ? 'bg-success/10 text-success'
+                    : financialSyncStatus.status === 'failed'
+                      ? 'bg-[hsl(var(--color-danger-alert-bg)/0.1)] text-[hsl(var(--color-danger-alert-text))]'
+                      : 'bg-muted text-muted-foreground',
+              )}
+              title={financialSyncStatus.status === 'failed' ? financialSyncStatus.error || financialSyncStatus.message || '财报同步失败' : undefined}
+            >
+              <span
+                className={cn(
+                  'h-1.5 w-1.5 rounded-full',
+                  isFinancialSyncingActive ? 'animate-pulse bg-primary' : financialSyncStatus.status === 'success' ? 'bg-success' : financialSyncStatus.status === 'failed' ? 'bg-[hsl(var(--color-danger-alert-text))]' : 'bg-muted-foreground/60',
+                )}
+              />
+              <span className="max-w-[180px] truncate">{getFinancialSyncLabel(financialSyncStatus)}</span>
+            </span>
+          )}
 
           <button
             type="button"
@@ -160,6 +197,20 @@ const MarketStocksPage: React.FC = () => {
               <RefreshCw className="h-3.5 w-3.5" />
             )}
             同步列表
+          </button>
+          <button
+            type="button"
+            disabled={!canSyncFinancial || isFinancialSyncingActive}
+            onClick={() => void handleSyncFinancial()}
+            className="inline-flex h-[34px] items-center gap-1.5 rounded-lg border border-primary/30 bg-card px-3 text-xs font-semibold text-primary transition hover:bg-primary/10 disabled:cursor-not-allowed disabled:border-border disabled:text-muted-foreground disabled:opacity-60"
+            title={!canSyncFinancial ? '请先同步股票列表' : '按报告期拉全市场业绩快报写入 stock_meta'}
+          >
+            {isFinancialSyncingActive ? (
+              <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" />
+            )}
+            同步财报
           </button>
           <button
             type="button"
@@ -257,6 +308,7 @@ const MarketStocksPage: React.FC = () => {
 
       {/* K-line modal */}
       <StockDetailDrawer
+        key={detailStock?.code ?? 'closed'}
         open={Boolean(detailStock)}
         stock={detailStock}
         onClose={closeDetail}

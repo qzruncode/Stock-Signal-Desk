@@ -118,21 +118,18 @@ def _fetch_abstract_fundamentals(code: str) -> dict | None:
         latest_debt_ratio = _safe_float(debt_rows[0].get('value'))
 
     return {
-        'revenue_ttm': _compute_abstract_ttm(rows, 'operating_income_total'),
-        'deducted_profit_ttm': _compute_abstract_ttm(rows, 'index_deduct_holder_net_profit'),
-        'operating_cf_ttm': None,
-        'net_profit_ttm': _compute_abstract_ttm(rows, 'parent_holder_net_profit'),
+        'revenue_latest': _compute_abstract_ttm(rows, 'operating_income_total'),
+        'net_profit_latest': _compute_abstract_ttm(rows, 'parent_holder_net_profit'),
+        'operating_cf_latest': None,
         'debt_ratio': latest_debt_ratio,
-        'interest_bearing_debt_ratio': None,
-        'cash_debt_ratio': None,
         'report_date': latest_report,
     }
 
 
 def _write_fundamentals(code: str, db: DatabaseManager, computed: dict) -> bool:
     key_fields_complete = (
-        computed.get('revenue_ttm') is not None
-        and computed.get('deducted_profit_ttm') is not None
+        computed.get('revenue_latest') is not None
+        and computed.get('net_profit_latest') is not None
         and computed.get('debt_ratio') is not None
     )
     now = datetime.now()
@@ -142,13 +139,10 @@ def _write_fundamentals(code: str, db: DatabaseManager, computed: dict) -> bool:
             sa_select(StockMeta).where(StockMeta.code == code)
         ).scalars().first()
         if existing:
-            existing.revenue_ttm = computed.get('revenue_ttm')
-            existing.deducted_profit_ttm = computed.get('deducted_profit_ttm')
-            existing.operating_cf_ttm = computed.get('operating_cf_ttm')
-            existing.net_profit_ttm = computed.get('net_profit_ttm')
+            existing.revenue_latest = computed.get('revenue_latest')
+            existing.net_profit_latest = computed.get('net_profit_latest')
+            existing.operating_cf_latest = computed.get('operating_cf_latest')
             existing.debt_ratio = computed.get('debt_ratio')
-            existing.interest_bearing_debt_ratio = computed.get('interest_bearing_debt_ratio')
-            existing.cash_debt_ratio = computed.get('cash_debt_ratio')
             existing.report_date = computed.get('report_date')
             if key_fields_complete:
                 existing.financial_fetched_at = now
@@ -232,21 +226,10 @@ def _fetch_and_compute_fundamentals(
     )
 
     debt_ratio = (total_liabilities / total_assets * 100) if total_assets else None
-    interest_bearing_debt_ratio = (
-        interest_bearing_debt / total_assets * 100
-        if total_assets and interest_bearing_debt
-        else None
-    )
-    cash_debt_ratio = (
-        monetary_funds / interest_bearing_debt * 100
-        if interest_bearing_debt
-        else None
-    )
 
-    revenue_ttm = _compute_ttm_value(statements, 'revenue')
-    deducted_profit_ttm = _compute_ttm_value(statements, 'deducted_net_profit')
-    operating_cf_ttm = _compute_ttm_value(statements, 'operating_cf')
-    net_profit_ttm = _compute_ttm_value(statements, 'net_profit')
+    revenue_latest = _compute_ttm_value(statements, 'revenue')
+    net_profit_latest = _compute_ttm_value(statements, 'net_profit')
+    operating_cf_latest = _compute_ttm_value(statements, 'operating_cf')
 
     all_dates = []
     for section in ('balance_sheet', 'income_statement'):
@@ -257,13 +240,10 @@ def _fetch_and_compute_fundamentals(
     latest_report = max(all_dates) if all_dates else None
 
     computed = {
-        'revenue_ttm': revenue_ttm,
-        'deducted_profit_ttm': deducted_profit_ttm,
-        'operating_cf_ttm': operating_cf_ttm,
-        'net_profit_ttm': net_profit_ttm,
+        'revenue_latest': revenue_latest,
+        'net_profit_latest': net_profit_latest,
+        'operating_cf_latest': operating_cf_latest,
         'debt_ratio': debt_ratio,
-        'interest_bearing_debt_ratio': interest_bearing_debt_ratio,
-        'cash_debt_ratio': cash_debt_ratio,
         'report_date': latest_report,
     }
     if not _write_fundamentals(code, db, computed):
@@ -308,13 +288,10 @@ def fundamental_filter(body: dict):
         meta = meta_map.get(code)
         if meta and meta.financial_fetched_at and meta.financial_fetched_at >= ttl_cutoff:
             data[code] = {
-                'revenue_ttm': meta.revenue_ttm,
-                'deducted_profit_ttm': meta.deducted_profit_ttm,
-                'operating_cf_ttm': meta.operating_cf_ttm,
-                'net_profit_ttm': meta.net_profit_ttm,
+                'revenue_latest': meta.revenue_latest,
+                'net_profit_latest': meta.net_profit_latest,
+                'operating_cf_latest': meta.operating_cf_latest,
                 'debt_ratio': meta.debt_ratio,
-                'interest_bearing_debt_ratio': meta.interest_bearing_debt_ratio,
-                'cash_debt_ratio': meta.cash_debt_ratio,
                 'report_date': meta.report_date,
             }
         else:

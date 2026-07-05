@@ -132,8 +132,8 @@ def _calc_market_stats(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[List[Dict[str, Any]]]:
     """获取全部 A 股股票列表（含基础元数据）。
 
-    主方案：单次股票实时行情接口（含代码/名称/PE/PB/市值），
-    兜底方案：切换到代码名称接口（无估值字段）。
+    主方案：单次股票实时行情接口（代码/名称）。
+    兜底方案：交易所名录或代码名称接口。
     """
     import akshare as ak
     global _last_a_stock_list_error
@@ -146,24 +146,13 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
             code = code.zfill(6)
         return code
 
-    def _row_float(row: pd.Series, candidates: Tuple[str, ...]) -> Optional[float]:
-        for col in candidates:
-            if col in row.index:
-                value = _safe_float(row.get(col))
-                if value is not None:
-                    return value
-        return None
-
     def _build_stock_items(
         df: pd.DataFrame,
         *,
         col_code: str,
         col_name: str,
         col_sector: str | None = None,
-        col_area: str | None = None,
         col_ipo_date: str | None = None,
-        spot_map: dict[str, pd.Series] | None = None,
-        use_row_as_spot: bool = False,
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         for _, row in df.iterrows():
@@ -172,33 +161,13 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
             if not code_str or len(code_str) < 6:
                 continue
             market = _classify_a_stock_market(code_str)
-            spot = row if use_row_as_spot else (spot_map.get(code_str) if spot_map else None)
-            has_quote_fields = spot is not None
             items.append(
                 {
                     'code': code_str,
                     'name': name_str,
                     'market': market,
                     'sector': str(row.get(col_sector, '')).strip() if col_sector and col_sector in row.index and str(row.get(col_sector, '')).strip() != 'nan' else None,
-                    'area': str(row.get(col_area, '')).strip() if col_area and col_area in row.index and str(row.get(col_area, '')).strip() != 'nan' else None,
                     'ipo_date': _parse_date(row.get(col_ipo_date)) if col_ipo_date and col_ipo_date in row.index else None,
-                    '_has_quote_fields': has_quote_fields,
-                    'pe_ttm': (
-                        _row_float(spot, ('市盈率-动态', '市盈率-TTM', '市盈率TTM', 'PE(TTM)', 'pe_ttm'))
-                        if spot is not None
-                        else None
-                    ),
-                    'pb': _row_float(spot, ('市净率', 'PB', 'pb')) if spot is not None else None,
-                    'total_market_cap': (
-                        _row_float(spot, ('总市值', '总市值-元', 'total_market_cap'))
-                        if spot is not None
-                        else None
-                    ),
-                    'circulating_market_cap': (
-                        _row_float(spot, ('流通市值', '流通市值-元', 'circulating_market_cap'))
-                        if spot is not None
-                        else None
-                    ),
                 }
             )
         return items
@@ -240,7 +209,7 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
         _append(
             "北交所名录",
             lambda: ak.stock_info_bj_name_code(),
-            {"code": "证券代码", "name": "证券简称", "sector": "所属行业", "area": "地区", "ipo_date": "上市日期"},
+            {"code": "证券代码", "name": "证券简称", "sector": "所属行业", "ipo_date": "上市日期"},
         )
 
         merged: dict[str, Dict[str, Any]] = {}
@@ -250,14 +219,13 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
                 col_code=mapping["code"],
                 col_name=mapping["name"],
                 col_sector=mapping.get("sector"),
-                col_area=mapping.get("area"),
                 col_ipo_date=mapping.get("ipo_date"),
             ):
                 merged[item["code"]] = item
 
         return [merged[code] for code in sorted(merged)]
 
-    # ── 主方案: 单次 spot 接口 → code + name + 估值 ──
+    # ── 主方案: 单次 spot 接口 → code + name ──
     if _spot_em_circuit_breaker.is_available("stock_zh_a_spot_em"):
         try:
             if set_user_agent:
@@ -274,7 +242,6 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
                     spot_df,
                     col_code='代码',
                     col_name='名称',
-                    use_row_as_spot=True,
                 )
                 logger.info("[StocksSync] 完成: %d 只 A 股（含北交所、ST）", len(results))
                 return results
@@ -291,7 +258,7 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
     exchange_results = _fetch_exchange_lists()
     if exchange_results:
         _last_a_stock_list_error = None
-        logger.info("[StocksSync] 完成(交易所名录): %d 只 A 股（含基础资料，无估值）", len(exchange_results))
+        logger.info("[StocksSync] 完成(交易所名录): %d 只 A 股（含基础资料）", len(exchange_results))
         return exchange_results
 
     # ── 兜底: spot 接口异常/空/熔断，退化到 code+name 接口 ──
@@ -315,7 +282,7 @@ def get_all_a_stocks(enforce_rate_limit=None, set_user_agent=None) -> Optional[L
         _name_circuit_breaker.record_success("stock_info_a_code_name")
         _last_a_stock_list_error = None
         results = _build_stock_items(name_df, col_code='code', col_name='name')
-        logger.info("[StocksSync] 完成(降级): %d 只 A 股（仅代码名称，无估值）", len(results))
+        logger.info("[StocksSync] 完成(降级): %d 只 A 股（仅代码名称）", len(results))
         return results
     except Exception as e:
         _name_circuit_breaker.record_failure("stock_info_a_code_name", e)

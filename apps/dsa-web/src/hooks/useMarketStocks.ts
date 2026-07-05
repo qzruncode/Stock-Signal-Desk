@@ -105,11 +105,14 @@ export function useMarketStocks() {
   const {
     listSyncStatus,
     klineSyncStatus,
+    financialSyncStatus,
     syncError,
     handleSyncList,
     handleSyncKline,
+    handleSyncFinancial,
     isListSyncingActive,
     isKlineSyncingActive,
+    isFinancialSyncingActive,
   } = useStockSyncPolling({
     loadWatchlist,
     loadStockList,
@@ -184,9 +187,11 @@ export function useMarketStocks() {
     successMsg,
     listSyncStatus,
     klineSyncStatus,
+    financialSyncStatus,
     syncError,
     isListSyncingActive,
     isKlineSyncingActive,
+    isFinancialSyncingActive,
     sentinelRef,
     watchlistCodes,
     handleStockSearch,
@@ -194,5 +199,6 @@ export function useMarketStocks() {
     handleAddStock,
     handleSyncList,
     handleSyncKline,
+    handleSyncFinancial,
   };
 }

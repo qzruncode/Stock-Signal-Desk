@@ -54,7 +54,6 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
   const lastFlushRef = useRef(0);
   const lastFlushCountRef = useRef(0);
   const t0Ref = useRef(0);
-  const stockMetaMapRef = useRef<Record<string, { total_market_cap: number | null }>>({});
 
   const flushProgress = useCallback((overrides?: Partial<ScreenProgress>) => {
     const now = Date.now();
@@ -126,10 +125,6 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
         const res = await stocksApi.list({ page, page_size: STOCKS_PAGE_SIZE });
         totalPages = res.total_pages;
         allStocks.push(...res.items.map((s) => s.code));
-
-        for (const s of res.items) {
-          stockMetaMapRef.current[s.code] = { total_market_cap: s.total_market_cap };
-        }
 
         page++;
 
@@ -258,14 +253,14 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
               batchSuccess = true;
 
               for (const code of batch) {
-                const data = response.data[code] as { revenue_ttm: number | null; deducted_profit_ttm: number | null; debt_ratio: number | null } | undefined;
-                if (!data || data.revenue_ttm == null) {
+                const data = response.data[code] as { revenue_latest: number | null; net_profit_latest: number | null; debt_ratio: number | null } | undefined;
+                if (!data || data.revenue_latest == null) {
                   noDataCount++;
                   setLog((prev) => [...prev, `⚠️ ${code}: 无财务数据`]);
                 } else {
                   let passed = true;
-                  if (data.revenue_ttm <= 500_000_000) passed = false;
-                  if (data.deducted_profit_ttm == null || data.deducted_profit_ttm <= 0) passed = false;
+                  if (data.revenue_latest <= 500_000_000) passed = false;
+                  if (data.net_profit_latest == null || data.net_profit_latest <= 0) passed = false;
                   if (data.debt_ratio == null || data.debt_ratio >= 70) passed = false;
 
                   if (passed) {
@@ -275,8 +270,8 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
                   } else {
                     rejectedCount++;
                     const reasons: string[] = [];
-                    if (data.revenue_ttm <= 500_000_000) reasons.push('营收TTM不足');
-                    if (data.deducted_profit_ttm == null || data.deducted_profit_ttm <= 0) reasons.push('扣非净利润为负');
+                    if (data.revenue_latest <= 500_000_000) reasons.push('营收不足');
+                    if (data.net_profit_latest == null || data.net_profit_latest <= 0) reasons.push('净利润为负');
                     if (data.debt_ratio != null && data.debt_ratio >= 70) reasons.push('资产负债率超标');
                     setLog((prev) => [...prev, `❌ ${code}: ${reasons.join(', ')}`]);
                   }

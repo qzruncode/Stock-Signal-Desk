@@ -13,10 +13,6 @@ interface StockCardProps {
   onNavigate: (path: string) => void;
 }
 
-function formatMarketCap(value: number | null) {
-  return value != null ? `${(value / 1e8).toFixed(1)}亿` : '-';
-}
-
 function formatDateTime(value: string | null) {
   if (!value) return null;
   const date = new Date(value);
@@ -31,15 +27,8 @@ function formatDateTime(value: string | null) {
 }
 
 export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onViewKline, onViewDetails, onAddStock, onNavigate }) => {
-  const metaLine = [
-    stock.pe_ttm != null ? `PE ${stock.pe_ttm.toFixed(1)}` : null,
-    stock.pb != null ? `PB ${stock.pb.toFixed(1)}` : null,
-    stock.total_market_cap != null ? `总市值 ${formatMarketCap(stock.total_market_cap)}` : null,
-    stock.circulating_market_cap != null ? `流通 ${formatMarketCap(stock.circulating_market_cap)}` : null,
-  ].filter(Boolean);
   const profileLine = [
     stock.sector,
-    stock.area,
     stock.ipo_date ? `上市 ${stock.ipo_date}` : null,
     stock.last_sync_at ? `同步 ${formatDateTime(stock.last_sync_at)}` : null,
   ].filter(Boolean);
@@ -68,13 +57,8 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onVi
           </span>
           <span className="truncate text-muted-foreground">{stock.name}</span>
         </div>
-        {metaLine.length > 0 && (
-          <div className="mt-1 truncate text-[10px] text-muted-foreground/80">
-            {metaLine.join(' | ')}
-          </div>
-        )}
         {profileLine.length > 0 && (
-          <div className="mt-0.5 truncate text-[10px] text-muted-foreground/60">
+          <div className="mt-1 truncate text-[10px] text-muted-foreground/60">
             {profileLine.join(' | ')}
           </div>
         )}

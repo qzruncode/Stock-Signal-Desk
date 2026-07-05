@@ -5,21 +5,12 @@ export interface StockMetaItem {
   name: string;
   market: string;
   sector: string | null;
-  area: string | null;
   status: string;
   ipo_date: string | null;
-  total_market_cap: number | null;
-  circulating_market_cap: number | null;
-  pe_ttm: number | null;
-  pb: number | null;
-  amount_today: number | null;
-  revenue_ttm: number | null;
-  deducted_profit_ttm: number | null;
-  operating_cf_ttm: number | null;
-  net_profit_ttm: number | null;
+  revenue_latest: number | null;
+  net_profit_latest: number | null;
+  operating_cf_latest: number | null;
   debt_ratio: number | null;
-  interest_bearing_debt_ratio: number | null;
-  cash_debt_ratio: number | null;
   financial_fetched_at: string | null;
   report_date: string | null;
   last_sync_at: string | null;
@@ -75,21 +66,12 @@ export interface KlineBatchBar {
 
 export interface FundamentalFilterResponse {
   data: Record<string, {
-    revenue_ttm: number | null;
-    deducted_profit_ttm: number | null;
-    operating_cf_ttm: number | null;
-    net_profit_ttm: number | null;
+    revenue_latest: number | null;
+    net_profit_latest: number | null;
+    operating_cf_latest: number | null;
     debt_ratio: number | null;
-    interest_bearing_debt_ratio: number | null;
-    cash_debt_ratio: number | null;
     report_date: string | null;
   }>;
-}
-
-export interface StockEnrichResponse {
-  item: StockMetaItem | null;
-  updated_sections: string[];
-  errors: Record<string, string>;
 }
 
 export const stocksApi = {
@@ -129,6 +111,16 @@ export const stocksApi = {
     return response.data;
   },
 
+  async syncFinancial(): Promise<{ success: boolean; message: string; status: string; period: string }> {
+    const response = await apiClient.post('/api/v1/stocks/sync/financial');
+    return response.data;
+  },
+
+  async syncFinancialStatus(): Promise<SyncStatusResponse> {
+    const response = await apiClient.get<SyncStatusResponse>('/api/v1/stocks/sync/financial/status');
+    return response.data;
+  },
+
   async syncMissingKline(codes: string[]): Promise<SyncStatusResponse> {
     const response = await apiClient.post<SyncStatusResponse>('/api/v1/stocks/kline/sync-missing', { codes });
     return response.data;
@@ -163,15 +155,6 @@ export const stocksApi = {
       '/api/v1/stocks/fundamental-filter',
       { codes },
       { timeout: 240000 }, // 4min > backend 3min timeout, leave margin for slow fetches
-    );
-    return response.data;
-  },
-
-  async enrichStock(code: string, sections: Array<'valuation' | 'financial'>): Promise<StockEnrichResponse> {
-    const response = await apiClient.post<StockEnrichResponse>(
-      '/api/v1/stocks/enrich',
-      { code, sections },
-      { timeout: 240000 },
     );
     return response.data;
   },

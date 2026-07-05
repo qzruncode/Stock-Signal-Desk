@@ -191,19 +191,20 @@ export function runAtrScreener(
  * Result of fundamental screening
  */
 export interface FundamentalData {
-  revenue_ttm: number | null;
-  deducted_profit_ttm: number | null;
+  revenue_latest: number | null;
+  net_profit_latest: number | null;
   debt_ratio: number | null;
   report_date: string | null;
 }
 
 /**
  * Fundamental filter thresholds (Phase 3 2筛)
+ * 注：字段已从 TTM 改为"最新报告期累计"，阈值同步调整
  */
 const FUNDAMENTAL_THRESHOLDS = {
-  revenue_ttm_min: 500_000_000,       // 营收TTM > 5亿
-  deducted_profit_ttm_min: 0,         // 扣非净利润TTM > 0
-  debt_ratio_max: 70.0,               // 资产负债率 < 70%
+  revenue_latest_min: 500_000_000,   // 最新报告期营收 > 5亿
+  net_profit_latest_min: 0,          // 最新报告期净利润 > 0（替代原扣非净利润，业绩快报无扣非）
+  debt_ratio_max: 70.0,              // 资产负债率 < 70%
 };
 
 /**
@@ -213,11 +214,11 @@ const FUNDAMENTAL_THRESHOLDS = {
 export function checkFundamentalCriteria(data: FundamentalData): boolean {
   const t = FUNDAMENTAL_THRESHOLDS;
 
-  // 1. 营收TTM > 5亿
-  if (data.revenue_ttm == null || data.revenue_ttm <= t.revenue_ttm_min) return false;
+  // 1. 最新报告期营收 > 5亿
+  if (data.revenue_latest == null || data.revenue_latest <= t.revenue_latest_min) return false;
 
-  // 2. 扣非净利润TTM > 0
-  if (data.deducted_profit_ttm == null || data.deducted_profit_ttm <= t.deducted_profit_ttm_min) return false;
+  // 2. 最新报告期净利润 > 0
+  if (data.net_profit_latest == null || data.net_profit_latest <= t.net_profit_latest_min) return false;
 
   // 3. 资产负债率 < 70%
   if (data.debt_ratio == null || data.debt_ratio >= t.debt_ratio_max) return false;
