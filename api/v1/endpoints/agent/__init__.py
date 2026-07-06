@@ -11,3 +11,4 @@ from api.v1.endpoints.agent import conversations  # noqa: E402, F401
 from api.v1.endpoints.agent import tools  # noqa: E402, F401
 from api.v1.endpoints.agent import health  # noqa: E402, F401
 from api.v1.endpoints.agent import tool_registry_meta  # noqa: E402, F401
+from api.v1.endpoints.agent import prompts  # noqa: E402, F401

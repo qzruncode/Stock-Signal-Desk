@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Box, Wrench } from 'lucide-react';
+import { ArrowLeft, Box, MessageSquareText, Wrench } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
 import type { SettingsCategory } from '../components/settings/SettingsSidebar';
 import { ToolRegistryView } from '../components/tools/ToolRegistryView';
 import { ModelSettingsView } from '../components/settings/ModelSettingsView';
+import { AgentPromptView } from '../components/agentPrompts/AgentPromptView';
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
@@ -20,6 +21,13 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Box,
     available: true,
     description: 'Anthropic / Claude Code 模型参数',
+  },
+  {
+    id: 'prompt',
+    label: 'AI 助手 Prompt',
+    icon: MessageSquareText,
+    available: true,
+    description: '配置 AI 助手的系统提示词',
   },
 ];
 
@@ -62,6 +70,8 @@ const SettingPage: React.FC = () => {
             <ToolRegistryView />
           ) : activeCategory?.id === 'model' ? (
             <ModelSettingsView />
+          ) : activeCategory?.id === 'prompt' ? (
+            <AgentPromptView />
           ) : null}
         </main>
       </div>

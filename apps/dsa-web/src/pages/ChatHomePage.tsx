@@ -5,6 +5,7 @@ import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
 import type { ExportedMessageRepository } from '@assistant-ui/core';
 import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
+import { extractErrorPayloadText } from '../api/error';
 
 const Thread = lazy(() => import('../components/assistant-ui/thread'));
 import { ThreadListSidebar } from '../components/assistant-ui/threadlist-sidebar';
@@ -27,6 +28,20 @@ const toRuntimeMessages = (messages: ChatConversationDetail['messages']) =>
       createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
       content: [{ type: 'text' as const, text: message.content || '' }],
     }));
+
+async function readStreamErrorMessage(response: Response): Promise<string> {
+  const rawText = await response.clone().text().catch(() => '');
+  if (!rawText.trim()) {
+    return `请求失败：HTTP ${response.status}`;
+  }
+
+  try {
+    const payload = JSON.parse(rawText) as unknown;
+    return extractErrorPayloadText(payload) || rawText;
+  } catch {
+    return rawText;
+  }
+}
 
 const ChatRuntimeBridge: React.FC<{
   conversationDetail: ChatConversationDetail | null;
@@ -116,8 +131,7 @@ const ChatHomePage: React.FC = () => {
         setStreamError(null);
         return;
       }
-      const message = await response.clone().text().catch(() => '');
-      throw new Error(message || `请求失败：HTTP ${response.status}`);
+      throw new Error(await readStreamErrorMessage(response));
     },
     onError: (error) => {
       if (error instanceof TypeError && error.message?.includes('enqueue')) {

@@ -103,55 +103,93 @@ class _FakeController:
 # _get_llm_config
 # ---------------------------------------------------------------------------
 
-def _make_config(**overrides):
-    cfg = MagicMock()
-    cfg.litellm_model = overrides.get("litellm_model", "gpt-4o")
-    cfg.openai_base_url = overrides.get("openai_base_url", None)
-    cfg.llm_model_list = overrides.get("llm_model_list", [])
-    return cfg
-
-
-def test_get_llm_config_uses_litellm_model_default():
-    with patch("api.v1.endpoints.agent.chat.get_config", return_value=_make_config()), \
-         patch("api.v1.endpoints.agent.chat.get_api_keys_for_model", return_value=[]), \
-         patch("api.v1.endpoints.agent.chat.extra_litellm_params", return_value={}):
+def test_get_llm_config_uses_anthropic_settings_env():
+    with patch.dict(
+        chat_mod.os.environ,
+        {
+            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
+            "ANTHROPIC_AUTH_TOKEN": "token-123",
+            "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+        },
+        clear=True,
+    ):
         cfg = chat_mod._get_llm_config()
-    assert cfg["model"] == "gpt-4o"
-    assert cfg["api_key"] is None
-    assert cfg["api_base"] is None
+
+    assert cfg == {
+        "model": "claude-sonnet-4-6",
+        "custom_llm_provider": "anthropic",
+        "api_key": "token-123",
+        "api_base": "https://anthropic-gateway.example/v1",
+        "extra_headers": {"authorization": "Bearer token-123"},
+    }
 
 
-def test_get_llm_config_prefers_model_list_api_key():
-    config = _make_config(
-        litellm_model="gpt-4o",
-        llm_model_list=[{"litellm_params": {"api_key": "sk-list", "api_base": "http://list"}}],
-    )
-    with patch("api.v1.endpoints.agent.chat.get_config", return_value=config), \
-         patch("api.v1.endpoints.agent.chat.get_api_keys_for_model", return_value=[]), \
-         patch("api.v1.endpoints.agent.chat.extra_litellm_params", return_value={}):
+def test_get_llm_config_keeps_gateway_model_name_with_provider_prefix():
+    with patch.dict(
+        chat_mod.os.environ,
+        {
+            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
+            "ANTHROPIC_AUTH_TOKEN": "token-123",
+            "ANTHROPIC_MODEL": "openai/glm-5.2",
+        },
+        clear=True,
+    ):
         cfg = chat_mod._get_llm_config()
-    assert cfg["api_key"] == "sk-list"
-    assert cfg["api_base"] == "http://list"
+
+    assert cfg["model"] == "openai/glm-5.2"
+    assert cfg["custom_llm_provider"] == "anthropic"
 
 
-def test_get_llm_config_falls_back_to_api_keys_for_model():
-    config = _make_config(litellm_model="gpt-4o", llm_model_list=[])
-    with patch("api.v1.endpoints.agent.chat.get_config", return_value=config), \
-         patch("api.v1.endpoints.agent.chat.get_api_keys_for_model", return_value=["sk-fallback"]), \
-         patch("api.v1.endpoints.agent.chat.extra_litellm_params", return_value={}):
+def test_get_llm_config_strips_saved_setting_values():
+    with patch.dict(
+        chat_mod.os.environ,
+        {
+            "ANTHROPIC_BASE_URL": "  https://anthropic-gateway.example/v1  ",
+            "ANTHROPIC_AUTH_TOKEN": "  token-123  ",
+            "ANTHROPIC_MODEL": "  claude-sonnet-4-6  ",
+        },
+        clear=True,
+    ):
         cfg = chat_mod._get_llm_config()
-    assert cfg["api_key"] == "sk-fallback"
+
+    assert cfg["api_base"] == "https://anthropic-gateway.example/v1"
+    assert cfg["api_key"] == "token-123"
+    assert cfg["model"] == "claude-sonnet-4-6"
 
 
-def test_get_llm_config_extra_params_provide_api_base_when_missing():
-    config = _make_config(litellm_model="gpt-4o", openai_base_url=None, llm_model_list=[])
-    with patch("api.v1.endpoints.agent.chat.get_config", return_value=config), \
-         patch("api.v1.endpoints.agent.chat.get_api_keys_for_model", return_value=[]), \
-         patch("api.v1.endpoints.agent.chat.extra_litellm_params",
-               return_value={"api_base": "http://extra", "extra_headers": {"X": "1"}}):
+def test_get_llm_config_removes_pasted_terminal_style_fragments_from_model():
+    with patch.dict(
+        chat_mod.os.environ,
+        {
+            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
+            "ANTHROPIC_AUTH_TOKEN": "token-123",
+            "ANTHROPIC_MODEL": "\x1b[1mopenai/glm-5.2[1m]",
+        },
+        clear=True,
+    ):
         cfg = chat_mod._get_llm_config()
-    assert cfg["api_base"] == "http://extra"
-    assert cfg["extra_headers"] == {"X": "1"}
+
+    assert cfg["model"] == "openai/glm-5.2"
+    assert cfg["custom_llm_provider"] == "anthropic"
+
+
+def test_get_llm_config_errors_when_anthropic_settings_incomplete():
+    with patch.dict(
+        chat_mod.os.environ,
+        {
+            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
+            "ANTHROPIC_AUTH_TOKEN": "",
+            "ANTHROPIC_MODEL": "",
+        },
+        clear=True,
+    ):
+        with pytest.raises(chat_mod.AgentModelConfigError) as exc_info:
+            chat_mod._get_llm_config()
+
+    message = str(exc_info.value)
+    assert "AI 助手模型未配置完整" in message
+    assert "鉴权令牌(ANTHROPIC_AUTH_TOKEN)" in message
+    assert "主模型(ANTHROPIC_MODEL)" in message
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +199,19 @@ def test_get_llm_config_extra_params_provide_api_base_when_missing():
 def test_run_react_loop_exits_when_no_tool_calls():
     """LLM returns content without tool_calls -> loop exits returning content."""
     controller = _FakeController()
-    fake_acompletion = _async_completion([_mock_llm_chunk(content="最终答案")])
+    captured_kwargs = {}
 
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+    async def fake_acompletion(**kwargs):
+        captured_kwargs.update(kwargs)
+        return _AsyncChunkStream([_mock_llm_chunk(content="最终答案")])
+
+    fake_cfg = {
+        "model": "openai/glm-5.2",
+        "custom_llm_provider": "anthropic",
+        "api_key": "token-123",
+        "api_base": "https://anthropic-gateway.example",
+        "extra_headers": None,
+    }
 
     async def run():
         with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
@@ -176,6 +224,10 @@ def test_run_react_loop_exits_when_no_tool_calls():
     result = asyncio.run(run())
     assert result == "最终答案"
     assert "最终答案" in controller.texts
+    assert captured_kwargs["model"] == "openai/glm-5.2"
+    assert captured_kwargs["custom_llm_provider"] == "anthropic"
+    assert captured_kwargs["api_key"] == "token-123"
+    assert captured_kwargs["api_base"] == "https://anthropic-gateway.example"
 
 
 def test_run_react_loop_handles_unknown_tool_name():

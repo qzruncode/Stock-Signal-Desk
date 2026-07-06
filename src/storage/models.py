@@ -839,5 +839,27 @@ class WatchlistGroup(Base):
         }
 
 
+class AgentPromptTemplate(Base):
+    """AI 助手 system prompt 模板（可在设置页配置）。"""
+    __tablename__ = 'agent_prompt_templates'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(120), nullable=False)
+    content = Column(Text, nullable=False, default='')
+    is_active = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'name': self.name,
+            'content': self.content,
+            'is_active': bool(self.is_active),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
 class WatchlistGroupNameConflict(Exception):
     """分组名称与已有分组冲突。"""

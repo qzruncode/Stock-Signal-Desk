@@ -13,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List
@@ -20,7 +22,7 @@ from typing import Any, Dict, List
 import litellm
 from assistant_stream import RunController, create_run
 from assistant_stream.serialization.data_stream import DataStreamResponse
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
@@ -30,12 +32,6 @@ from api.v1.endpoints.agent.tools import (
     _maybe_attach_search_fallback,
 )
 from src.agent.tool_registry import ToolRegistry
-from src.config import (
-    extra_litellm_params,
-    get_api_keys_for_model,
-    get_config,
-    get_effective_agent_primary_model,
-)
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -81,75 +77,48 @@ SYSTEM_PROMPT = """\
 """
 
 
-def _find_model_deployment(model: str, model_list: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """Find the Router deployment that should back a requested model."""
-    normalized_model = (model or "").strip()
-    if not normalized_model:
-        return None
-
-    provider = normalized_model.split("/", 1)[0] if "/" in normalized_model else "openai"
-    legacy_provider = "gemini" if provider == "vertex_ai" else provider
-    legacy_name = f"__legacy_{legacy_provider}__"
-    anonymous_entry: Dict[str, Any] | None = None
-
-    for entry in model_list or []:
-        if not isinstance(entry, dict):
-            continue
-        params = entry.get("litellm_params") or {}
-        if not isinstance(params, dict):
-            continue
-
-        model_name = str(entry.get("model_name") or "").strip()
-        wire_model = str(params.get("model") or "").strip()
-        if model_name == normalized_model or wire_model == normalized_model:
-            return entry
-        if model_name == legacy_name or wire_model == legacy_name:
-            return entry
-        if not model_name and not wire_model and anonymous_entry is None:
-            anonymous_entry = entry
-
-    if anonymous_entry is not None:
-        return anonymous_entry
-    if len(model_list or []) == 1:
-        entry = model_list[0]
-        return entry if isinstance(entry, dict) else None
-    return None
+class AgentModelConfigError(Exception):
+    """Setting 页「模型设置」的 Anthropic 配置缺失时抛出。"""
 
 
-def _get_llm_config():
-    """Get the LLM config for the agent chat endpoint."""
-    config = get_config()
-    model = get_effective_agent_primary_model(config) or "gpt-4o"
-    api_key = None
-    api_base = None
-    extra_headers = None
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_TRAILING_SGR_FRAGMENT_RE = re.compile(r"(?:\[(?:0|1|2|3|4|5|7|9)(?:;\d+)*m\])+$")
 
-    models = config.llm_model_list if config.llm_model_list else []
-    deployment = _find_model_deployment(model, models)
-    if deployment:
-        lp = deployment.get("litellm_params", {}) or {}
-        api_key = lp.get("api_key")
-        if lp.get("api_base"):
-            api_base = lp["api_base"]
-        if lp.get("extra_headers"):
-            extra_headers = lp["extra_headers"]
 
-    if not api_key:
-        keys = get_api_keys_for_model(model, config)
-        if keys:
-            api_key = keys[0]
+def _clean_model_name(model_name: str) -> str:
+    """Remove terminal style fragments that can be pasted into the settings field."""
+    cleaned = _ANSI_ESCAPE_RE.sub("", model_name).strip()
+    return _TRAILING_SGR_FRAGMENT_RE.sub("", cleaned).strip()
 
-    extra = extra_litellm_params(model, config)
-    if extra.get("api_base") and not api_base:
-        api_base = extra["api_base"]
-    if extra.get("extra_headers") and not extra_headers:
-        extra_headers = extra["extra_headers"]
+
+def _get_llm_config() -> Dict[str, Any]:
+    """Resolve the agent chat model config from the Setting page (ANTHROPIC_*).
+
+    仅使用 Setting 页「模型设置」保存的接入地址、鉴权令牌和主模型；三者任一
+    缺失即报错，不回落到 AGENT_LITELLM_MODEL / litellm_model 等其他来源。
+    """
+    base_url = (os.getenv("ANTHROPIC_BASE_URL") or "").strip()
+    auth_token = (os.getenv("ANTHROPIC_AUTH_TOKEN") or "").strip()
+    model_name = _clean_model_name(os.getenv("ANTHROPIC_MODEL") or "")
+
+    missing = []
+    if not base_url:
+        missing.append("接入地址(ANTHROPIC_BASE_URL)")
+    if not auth_token:
+        missing.append("鉴权令牌(ANTHROPIC_AUTH_TOKEN)")
+    if not model_name:
+        missing.append("主模型(ANTHROPIC_MODEL)")
+    if missing:
+        raise AgentModelConfigError(
+            "AI 助手模型未配置完整，请前往「设置 - 模型设置」补全：" + "、".join(missing)
+        )
 
     return {
-        "model": model,
-        "api_key": api_key,
-        "api_base": api_base,
-        "extra_headers": extra_headers,
+        "model": model_name,
+        "custom_llm_provider": "anthropic",
+        "api_key": auth_token,
+        "api_base": base_url,
+        "extra_headers": {"authorization": f"Bearer {auth_token}"},
     }
 
 
@@ -187,6 +156,8 @@ async def _stream_final_answer_without_tools(
         kwargs["api_key"] = llm_cfg["api_key"]
     if llm_cfg.get("api_base"):
         kwargs["api_base"] = llm_cfg["api_base"]
+    if llm_cfg.get("custom_llm_provider"):
+        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
     if llm_cfg.get("extra_headers"):
         kwargs["extra_headers"] = llm_cfg["extra_headers"]
 
@@ -222,13 +193,14 @@ async def _run_react_loop(
     controller: RunController,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
+    system_prompt: str = "",
 ) -> str:
     """Execute the ReAct loop: LLM thinks → calls tools → observes → repeats."""
     tools = _registry.get_all_schemas()
     tool_names = set(_registry.get_tool_names())
 
     full_messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         *messages,
     ]
 
@@ -243,6 +215,8 @@ async def _run_react_loop(
         kwargs["api_key"] = llm_cfg["api_key"]
     if llm_cfg.get("api_base"):
         kwargs["api_base"] = llm_cfg["api_base"]
+    if llm_cfg.get("custom_llm_provider"):
+        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
     if llm_cfg.get("extra_headers"):
         kwargs["extra_headers"] = llm_cfg["extra_headers"]
 
@@ -346,7 +320,10 @@ async def agent_chat(
     body = await request.json()
     messages = body.get("messages", [])
     conversation_id = body.get("conversation_id")
-    llm_cfg = _get_llm_config()
+    try:
+        llm_cfg = _get_llm_config()
+    except AgentModelConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     session_service = ChatSessionService(db_manager)
     conversation = session_service.ensure_conversation(conversation_id)
     final_response_text = ""
@@ -358,7 +335,16 @@ async def agent_chat(
 
     async def run_callback(controller: RunController):
         nonlocal final_response_text
-        final_response_text = await _run_react_loop(controller, messages, llm_cfg)
+        from src.services.agent_prompt_service import AgentPromptService
+
+        system_prompt, is_fallback = AgentPromptService(db_manager).get_active_system_prompt()
+        logger.info(
+            "[Agent] system prompt %s",
+            "fallback to source default" if is_fallback else f"from template",
+        )
+        final_response_text = await _run_react_loop(
+            controller, messages, llm_cfg, system_prompt
+        )
 
         persisted_messages = list(messages)
         if final_response_text.strip():
