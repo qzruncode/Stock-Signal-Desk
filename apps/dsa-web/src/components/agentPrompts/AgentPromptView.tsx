@@ -82,24 +82,8 @@ export const AgentPromptView: React.FC = () => {
         </Button>
       </header>
 
-      {activePrompt && (
-        <InlineAlert
-          variant={activePrompt.isFallback ? 'warning' : 'info'}
-          title={activePrompt.isFallback ? '当前使用系统默认 prompt' : '当前生效模板'}
-          message={
-            activePrompt.isFallback
-              ? '未配置生效模板或内容为空，AI 助手正在使用源码内置的默认 system prompt。'
-              : `生效模板：${activePrompt.templateName ?? '未知'}`
-          }
-        />
-      )}
-
       {error && (
-        <InlineAlert
-          variant="danger"
-          title="操作出错"
-          message={error}
-        />
+        <InlineAlert variant="danger" title="操作出错" message={error} />
       )}
 
       {status === 'loading' ? (
@@ -119,6 +103,9 @@ export const AgentPromptView: React.FC = () => {
           )}
           <AgentPromptList
             templates={templates}
+            fallbackPrompt={
+              activePrompt?.isFallback ? { content: activePrompt.content } : null
+            }
             mutating={mutating}
             onEdit={(tpl) => setForm({ mode: 'edit', template: tpl })}
             onDelete={handleDelete}
