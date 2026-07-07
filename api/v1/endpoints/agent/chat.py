@@ -17,7 +17,7 @@ import os
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import litellm
 from assistant_stream import RunController, create_run
@@ -417,7 +417,6 @@ async def _summarize_for_compaction(
 
 
 async def _compact_history_if_needed(
-    controller: RunController,
     full_messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
@@ -443,7 +442,8 @@ async def _compact_history_if_needed(
     keep_count = _KEEP_RECENT_MESSAGES
     to_summarize = full_messages[1:-keep_count]
     recent = full_messages[-keep_count:]
-    if not to_summarize:
+    # 待摘要太少（<=1）则不再压缩：可能是上一轮刚压缩过只剩摘要，再压缩无意义且会重复。
+    if len(to_summarize) <= 1:
         return full_messages
 
     summary = await _summarize_for_compaction(llm_cfg, to_summarize)
@@ -461,12 +461,8 @@ async def _compact_history_if_needed(
         *recent,
     ]
     tokens_after = _estimate_messages_tokens(compacted, llm_cfg["model"])
-    # 提示融入流式文本（append_text 是项目既有用法，前端必定能渲染，不依赖协议特性）。
-    # 注：useDataStreamRuntime 在 data-stream 协议下无 onData 钩子，故不用 add_data。
-    controller.append_text(
-        f"\n\n_已自动压缩早期对话（{len(to_summarize)} 条历史摘要化，"
-        f"token {tokens_before}→{tokens_after}），最近对话保持完整。_\n\n"
-    )
+    # 只记日志，不向前端推提示：append_text 会进 assistant 消息正文被持久化和回传 LLM，
+    # 污染对话；data-stream 协议又无 onData 钩子接收结构化事件。压缩对用户透明即可。
     logger.info(
         "[Agent] context compacted: %d msgs → summary, tokens %d → %d (threshold %d)",
         len(to_summarize), tokens_before, tokens_after, threshold,
@@ -558,7 +554,7 @@ async def _run_react_loop(
         content_text = ""
 
         # 每轮调用前检查上下文是否超阈值，超了就把早期对话摘要压缩（含首轮：前端回传的历史可能已超限）
-        full_messages = await _compact_history_if_needed(controller, full_messages, llm_cfg)
+        full_messages = await _compact_history_if_needed(full_messages, llm_cfg)
         kwargs["messages"] = full_messages
 
         try:

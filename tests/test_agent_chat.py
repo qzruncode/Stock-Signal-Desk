@@ -906,7 +906,7 @@ def test_compact_history_noop_under_threshold():
            "custom_llm_provider": None, "extra_headers": None}
     with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
         llm_mod.token_counter.return_value = 1000  # 远低于阈值 160000
-        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+        out = asyncio.run(chat_mod._compact_history_if_needed(msgs, cfg))
     assert out is msgs
     assert not any("已自动压缩" in t for t in controller.texts)
     llm_mod.acompletion.assert_not_called()
@@ -920,7 +920,7 @@ def test_compact_history_too_few_messages_skips():
            "custom_llm_provider": None, "extra_headers": None}
     with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
         llm_mod.token_counter.return_value = 999999  # 超阈值
-        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+        out = asyncio.run(chat_mod._compact_history_if_needed(msgs, cfg))
     assert out is msgs
     assert not any("已自动压缩" in t for t in controller.texts)
 
@@ -941,7 +941,7 @@ def test_compact_history_summarizes_when_over_threshold():
     with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
         llm_mod.token_counter.side_effect = [999999, 500]  # 压缩前超阈值，压缩后正常
         llm_mod.acompletion = AsyncMock(return_value=summary_response)
-        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+        out = asyncio.run(chat_mod._compact_history_if_needed(msgs, cfg))
 
     # 摘要 LLM 被调一次，且不带 tools（非主调用）
     llm_mod.acompletion.assert_awaited_once()
@@ -959,9 +959,8 @@ def test_compact_history_summarizes_when_over_threshold():
     assert out[-1] == msgs[-1]
     assert out[-6] == msgs[-6]
 
-    # 压缩提示已融入流式文本
-    assert any("已自动压缩" in t for t in controller.texts)
-    assert any("6 条历史摘要化" in t for t in controller.texts)
+    # 压缩不向前端推提示（避免污染对话流）：texts 不含压缩提示
+    assert not any("已自动压缩" in t for t in controller.texts)
 
 
 def test_compact_history_falls_back_when_summary_fails():
@@ -975,9 +974,30 @@ def test_compact_history_falls_back_when_summary_fails():
     with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
         llm_mod.token_counter.return_value = 999999
         llm_mod.acompletion = AsyncMock(side_effect=RuntimeError("LLM down"))
-        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+        out = asyncio.run(chat_mod._compact_history_if_needed(msgs, cfg))
     assert out is msgs  # 原样
     assert not any("已自动压缩" in t for t in controller.texts)
+
+
+def test_compact_history_skips_when_too_few_to_summarize():
+    """压缩后仍超限但待摘要只剩1条（如上一轮刚压缩过）：不再二次压缩，原样返回。
+
+    防止摘要被反复压缩 + 重复触发。构造 system + 摘要 + 近6条 = 8 条，to_summarize=[摘要] len=1。
+    """
+    controller = _FakeController()
+    # 模拟"上一轮已压缩过"的状态：system + 摘要 + 6条近期 = 8条
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "[早期对话摘要]\n上一轮的摘要"},
+    ] + [{"role": "user", "content": f"近期{i}"} for i in range(6)]
+    cfg = {"model": "m", "context_window": 200000, "api_key": None, "api_base": None,
+           "custom_llm_provider": None, "extra_headers": None}
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.return_value = 999999  # 仍超阈值
+        llm_mod.acompletion = AsyncMock()  # 不应被调用
+        out = asyncio.run(chat_mod._compact_history_if_needed(msgs, cfg))
+    assert out is msgs  # 不压缩
+    llm_mod.acompletion.assert_not_called()  # 没调摘要 LLM
 
 
 def test_run_react_loop_compacts_overlong_history_before_first_llm_call():
@@ -1026,5 +1046,5 @@ def test_run_react_loop_compacts_overlong_history_before_first_llm_call():
     summary_msgs = [m for m in first_main["messages"]
                     if m.get("role") == "user" and "早期对话摘要" in str(m.get("content", ""))]
     assert len(summary_msgs) == 1
-    # 压缩提示已融入流式文本
-    assert any("已自动压缩" in t for t in controller.texts)
+    # 压缩不向前端推提示，避免污染对话流
+    assert not any("已自动压缩" in t for t in controller.texts)
