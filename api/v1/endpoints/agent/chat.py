@@ -271,6 +271,24 @@ def _clean_model_name(model_name: str) -> str:
     return _TRAILING_SGR_FRAGMENT_RE.sub("", cleaned).strip()
 
 
+# 模型名上下文窗口后缀：用户在 Setting 页填的模型名可能带 [1m] 表示 1M 上下文窗口，
+# 无后缀则默认 200k。后缀仅用于本地窗口判定，传给 litellm/网关前必须剥离（否则网关 400）。
+_CONTEXT_WINDOW_SUFFIX_RE = re.compile(r"\s*\[\s*1m\s*\]\s*$", re.IGNORECASE)
+_DEFAULT_CONTEXT_WINDOW = 200_000
+_1M_CONTEXT_WINDOW = 1_000_000
+
+
+def _parse_model_context_window(model_name: str) -> tuple[str, int]:
+    """从模型名解析上下文窗口：带 [1m] 后缀 → 1,000,000，否则 200,000。
+
+    返回 (剥离后缀的干净模型名, 窗口 token 数)。后缀大小写不敏感、允许内部空格。
+    """
+    if _CONTEXT_WINDOW_SUFFIX_RE.search(model_name):
+        clean = _CONTEXT_WINDOW_SUFFIX_RE.sub("", model_name).strip()
+        return clean, _1M_CONTEXT_WINDOW
+    return model_name, _DEFAULT_CONTEXT_WINDOW
+
+
 def _get_llm_config() -> Dict[str, Any]:
     """Resolve the agent chat model config from the Setting page (ANTHROPIC_*).
 
@@ -279,19 +297,24 @@ def _get_llm_config() -> Dict[str, Any]:
     """
     base_url = (os.getenv("ANTHROPIC_BASE_URL") or "").strip()
     auth_token = (os.getenv("ANTHROPIC_AUTH_TOKEN") or "").strip()
-    model_name = _clean_model_name(os.getenv("ANTHROPIC_MODEL") or "")
+    raw_model = os.getenv("ANTHROPIC_MODEL") or ""
 
     missing = []
     if not base_url:
         missing.append("接入地址(ANTHROPIC_BASE_URL)")
     if not auth_token:
         missing.append("鉴权令牌(ANTHROPIC_AUTH_TOKEN)")
-    if not model_name:
+    if not raw_model.strip():
         missing.append("主模型(ANTHROPIC_MODEL)")
     if missing:
         raise AgentModelConfigError(
             "AI 助手模型未配置完整，请前往「设置 - 模型设置」补全：" + "、".join(missing)
         )
+
+    # 先解析 [1m] 窗口后缀（必须先于 _clean_model_name：SGR 正则会误吃 [1m] 字面后缀），
+    # 再清洗 ANSI 转义。后缀仅用于本地窗口判定，传给 litellm/网关前剥离。
+    stripped_model, context_window = _parse_model_context_window(raw_model.strip())
+    model_name = _clean_model_name(stripped_model)
 
     return {
         "model": model_name,
@@ -299,6 +322,7 @@ def _get_llm_config() -> Dict[str, Any]:
         "api_key": auth_token,
         "api_base": base_url,
         "extra_headers": {"authorization": f"Bearer {auth_token}"},
+        "context_window": context_window,
     }
 
 
@@ -325,6 +349,129 @@ def _build_llm_kwargs(
         kwargs["extra_headers"] = llm_cfg["extra_headers"]
     kwargs.update(extra)
     return kwargs
+
+
+# ---------------------------------------------------------------------------
+# 上下文窗口管理：token 估算 + 超阈值时自动摘要压缩早期对话
+# ---------------------------------------------------------------------------
+
+# 压缩触发阈值 = 窗口 × 0.8（留 20% 给回复，弥补中文 token 估算偏差）
+_CONTEXT_COMPACT_RATIO = 0.8
+# 压缩时保留最近多少条消息完整（user/assistant/tool 成组，不切断 tool_call↔result 配对）
+_KEEP_RECENT_MESSAGES = 6
+
+_COMPACT_SUMMARY_PROMPT = """\
+你是对话压缩助手。下面是用户与 A 股分析助手的早期对话（含工具调用与结果）。
+请把它压缩成一段紧凑的中文摘要，供后续对话引用。要求：
+1. 保留所有出现过的股票代码、公司名称、关键数值（价格、涨跌幅、财务指标、日期）。
+2. 保留已得出的分析结论与判断（如"近60天震荡上行""估值偏高""不可买入"等）。
+3. 丢弃查询过程、工具调用细节、重复的中间数据明细。
+4. 只输出摘要正文，不要加标题或额外说明。\
+"""
+
+
+def _estimate_messages_tokens(messages: List[Dict[str, Any]], model: str) -> int:
+    """估算 messages 的 token 数。litellm.token_counter 失败时回退字符粗估。"""
+    try:
+        return int(litellm.token_counter(model=model, messages=messages))
+    except Exception:
+        # 回退：网关模型未映射 → 按字符粗估（中文约 1.5 字/token，英文约 4 字符/token，取 2.5 偏保守）
+        total_chars = 0
+        for m in messages:
+            content = m.get("content")
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                total_chars += sum(len(str(p)) for p in content)
+            # tool_calls 等结构也计入
+            tc = m.get("tool_calls")
+            if tc:
+                total_chars += sum(len(json.dumps(t, ensure_ascii=False, default=str)) for t in tc)
+        return int(total_chars / 2.5) + len(messages) * 4
+
+
+async def _summarize_for_compaction(
+    llm_cfg: Dict[str, Any], to_summarize: List[Dict[str, Any]]
+) -> Optional[str]:
+    """调一次 LLM 把早期消息压缩成摘要文本。失败返回 None（调用方回退）。"""
+    compact_messages = [
+        {"role": "system", "content": _COMPACT_SUMMARY_PROMPT},
+        {"role": "user", "content": json.dumps(
+            [{"role": m.get("role"), "content": m.get("content")} for m in to_summarize],
+            ensure_ascii=False, default=str,
+        )},
+    ]
+    kwargs = _build_llm_kwargs(llm_cfg, messages=compact_messages)
+    kwargs["stream"] = False  # 摘要非流式，直接拿完整文本
+    try:
+        response = await litellm.acompletion(**kwargs)
+        text = ""
+        for choice in getattr(response, "choices", []) or []:
+            msg = getattr(choice, "message", None)
+            if msg and getattr(msg, "content", None):
+                text += str(msg.content)
+        return text.strip() or None
+    except Exception:
+        logger.warning("[Agent] compaction summary LLM call failed", exc_info=True)
+        return None
+
+
+async def _compact_history_if_needed(
+    controller: RunController,
+    full_messages: List[Dict[str, Any]],
+    llm_cfg: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """超阈值时把早期对话摘要化，保留最近 _KEEP_RECENT_MESSAGES 条完整。
+
+    返回可能被压缩后的 full_messages。未超阈值或无法压缩时原样返回。
+    """
+    context_window = llm_cfg.get("context_window") or _DEFAULT_CONTEXT_WINDOW
+    threshold = int(context_window * _CONTEXT_COMPACT_RATIO)
+    tokens_before = _estimate_messages_tokens(full_messages, llm_cfg["model"])
+    if tokens_before < threshold:
+        return full_messages
+
+    # 至少保留 system + 近期消息；待摘要部分为空（消息太少但单条超长）则无法压缩
+    if len(full_messages) <= _KEEP_RECENT_MESSAGES + 1:
+        logger.info(
+            "[Agent] context over threshold (%d/%d) but too few messages to compact",
+            tokens_before, threshold,
+        )
+        return full_messages
+
+    # system（首条）保留，其后到「倒数 KEEP_RECENT_MESSAGES 条」之间为待摘要部分
+    keep_count = _KEEP_RECENT_MESSAGES
+    to_summarize = full_messages[1:-keep_count]
+    recent = full_messages[-keep_count:]
+    if not to_summarize:
+        return full_messages
+
+    summary = await _summarize_for_compaction(llm_cfg, to_summarize)
+    if not summary:
+        # 摘要失败：宁可交给主调用可能超限，也不丢数据、不伪造摘要
+        logger.warning(
+            "[Agent] compaction skipped (summary empty), tokens=%d threshold=%d",
+            tokens_before, threshold,
+        )
+        return full_messages
+
+    compacted = [
+        full_messages[0],  # system
+        {"role": "user", "content": f"[早期对话摘要]\n{summary}"},
+        *recent,
+    ]
+    tokens_after = _estimate_messages_tokens(compacted, llm_cfg["model"])
+    # 提示融入流式文本（append_text 是项目既有用法，前端必定能渲染，不依赖协议特性）。
+    # 注：useDataStreamRuntime 在 data-stream 协议下无 onData 钩子，故不用 add_data。
+    controller.append_text(
+        f"\n\n_已自动压缩早期对话（{len(to_summarize)} 条历史摘要化，"
+        f"token {tokens_before}→{tokens_after}），最近对话保持完整。_\n\n"
+    )
+    logger.info(
+        "[Agent] context compacted: %d msgs → summary, tokens %d → %d (threshold %d)",
+        len(to_summarize), tokens_before, tokens_after, threshold,
+    )
+    return compacted
 
 
 async def _flush_substreams(controller: RunController) -> None:
@@ -409,6 +556,10 @@ async def _run_react_loop(
     for iteration in range(MAX_REACT_ITERATIONS):
         tool_calls_acc: Dict[int, Dict[str, Any]] = {}
         content_text = ""
+
+        # 每轮调用前检查上下文是否超阈值，超了就把早期对话摘要压缩（含首轮：前端回传的历史可能已超限）
+        full_messages = await _compact_history_if_needed(controller, full_messages, llm_cfg)
+        kwargs["messages"] = full_messages
 
         try:
             response = await litellm.acompletion(**kwargs)

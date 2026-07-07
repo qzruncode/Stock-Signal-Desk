@@ -122,6 +122,7 @@ def test_get_llm_config_uses_anthropic_settings_env():
         "api_key": "token-123",
         "api_base": "https://anthropic-gateway.example/v1",
         "extra_headers": {"authorization": "Bearer token-123"},
+        "context_window": 200000,
     }
 
 
@@ -845,3 +846,185 @@ def test_run_react_loop_normalizes_aisdk_history_before_llm_call():
     # 而历史 call_hist 在第二轮仍是裁剪态
     hist_tool2 = next(m for m in round2_msgs if m.get("role") == "tool" and m.get("tool_call_id") == "call_hist")
     assert json.loads(hist_tool2["content"]).get("_slimmed") is True
+
+
+# ---------------------------------------------------------------------------
+# 上下文窗口解析 + token 估算 + 自动压缩
+# ---------------------------------------------------------------------------
+
+def test_parse_model_context_window():
+    """[1m] 后缀 → 1M 窗口并剥离；无后缀 → 200k。大小写/空格不敏感。"""
+    assert chat_mod._parse_model_context_window("openai/glm-5.2[1m]") == ("openai/glm-5.2", 1_000_000)
+    assert chat_mod._parse_model_context_window("openai/glm-5.2") == ("openai/glm-5.2", 200_000)
+    assert chat_mod._parse_model_context_window("GLM[1M]") == ("GLM", 1_000_000)
+    assert chat_mod._parse_model_context_window("model[ 1m ]") == ("model", 1_000_000)
+    # 后缀在中间不算（仅末尾）
+    assert chat_mod._parse_model_context_window("[1m]model") == ("[1m]model", 200_000)
+
+
+def test_get_llm_config_strips_1m_suffix_and_sets_window():
+    """带 [1m] 的模型名：传给 litellm 的剥离后缀，context_window=1M。"""
+    with patch.dict(
+        chat_mod.os.environ,
+        {
+            "ANTHROPIC_BASE_URL": "https://gw.example/v1",
+            "ANTHROPIC_AUTH_TOKEN": "tok",
+            "ANTHROPIC_MODEL": "openai/glm-5.2[1m]",
+        },
+        clear=True,
+    ):
+        cfg = chat_mod._get_llm_config()
+    assert cfg["model"] == "openai/glm-5.2"  # 后缀剥离
+    assert cfg["context_window"] == 1_000_000
+
+
+def test_estimate_messages_tokens_fallback_on_error():
+    """litellm.token_counter 抛错时回退字符粗估，返回正整数。"""
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.side_effect = RuntimeError("model not mapped")
+        n = chat_mod._estimate_messages_tokens(
+            [{"role": "user", "content": "你好世界" * 100}], "openai/glm-5.2"
+        )
+    assert isinstance(n, int) and n > 0
+
+
+def test_estimate_messages_tokens_normal():
+    """litellm.token_counter 正常时返回其值。"""
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.return_value = 12345
+        n = chat_mod._estimate_messages_tokens([{"role": "user", "content": "x"}], "m")
+    assert n == 12345
+
+
+def test_compact_history_noop_under_threshold():
+    """未超阈值：原样返回，不调 LLM，不输出压缩提示。"""
+    controller = _FakeController()
+    msgs = [{"role": "system", "content": "sys"}] + [
+        {"role": "user", "content": f"msg{i}"} for i in range(10)
+    ]
+    cfg = {"model": "m", "context_window": 200000, "api_key": None, "api_base": None,
+           "custom_llm_provider": None, "extra_headers": None}
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.return_value = 1000  # 远低于阈值 160000
+        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+    assert out is msgs
+    assert not any("已自动压缩" in t for t in controller.texts)
+    llm_mod.acompletion.assert_not_called()
+
+
+def test_compact_history_too_few_messages_skips():
+    """超阈值但消息太少（<= KEEP_RECENT+1）：不压缩，原样返回。"""
+    controller = _FakeController()
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    cfg = {"model": "m", "context_window": 200000, "api_key": None, "api_base": None,
+           "custom_llm_provider": None, "extra_headers": None}
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.return_value = 999999  # 超阈值
+        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+    assert out is msgs
+    assert not any("已自动压缩" in t for t in controller.texts)
+
+
+def test_compact_history_summarizes_when_over_threshold():
+    """超阈值且有足够消息：调摘要 LLM，替换早期，保留近6条，输出压缩提示。"""
+    controller = _FakeController()
+    # system + 12 条历史 → 待摘要 7 条（去掉 system 和近 6 条），保留近 6 条
+    msgs = [{"role": "system", "content": "sys"}] + [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg{i}"} for i in range(12)
+    ]
+    cfg = {"model": "m", "context_window": 200000, "api_key": None, "api_base": None,
+           "custom_llm_provider": None, "extra_headers": None}
+
+    summary_response = MagicMock()
+    summary_response.choices = [MagicMock(message=MagicMock(content="这是早期对话摘要"))]
+
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.side_effect = [999999, 500]  # 压缩前超阈值，压缩后正常
+        llm_mod.acompletion = AsyncMock(return_value=summary_response)
+        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+
+    # 摘要 LLM 被调一次，且不带 tools（非主调用）
+    llm_mod.acompletion.assert_awaited_once()
+    call_kwargs = llm_mod.acompletion.await_args.kwargs
+    assert "tools" not in call_kwargs
+    assert call_kwargs["stream"] is False
+
+    # 结构：[system, 摘要(user), *近6条]
+    assert out[0] == {"role": "system", "content": "sys"}
+    assert out[1]["role"] == "user"
+    assert "早期对话摘要" in out[1]["content"]
+    assert "这是早期对话摘要" in out[1]["content"]
+    assert len(out) == 1 + 1 + 6  # system + 摘要 + 近6条
+    # 近6条是原末6条
+    assert out[-1] == msgs[-1]
+    assert out[-6] == msgs[-6]
+
+    # 压缩提示已融入流式文本
+    assert any("已自动压缩" in t for t in controller.texts)
+    assert any("6 条历史摘要化" in t for t in controller.texts)
+
+
+def test_compact_history_falls_back_when_summary_fails():
+    """摘要 LLM 失败：回退原样返回，不丢数据，不输出压缩提示。"""
+    controller = _FakeController()
+    msgs = [{"role": "system", "content": "s"}] + [
+        {"role": "user", "content": f"m{i}"} for i in range(12)
+    ]
+    cfg = {"model": "m", "context_window": 200000, "api_key": None, "api_base": None,
+           "custom_llm_provider": None, "extra_headers": None}
+    with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        llm_mod.token_counter.return_value = 999999
+        llm_mod.acompletion = AsyncMock(side_effect=RuntimeError("LLM down"))
+        out = asyncio.run(chat_mod._compact_history_if_needed(controller, msgs, cfg))
+    assert out is msgs  # 原样
+    assert not any("已自动压缩" in t for t in controller.texts)
+
+
+def test_run_react_loop_compacts_overlong_history_before_first_llm_call():
+    """端到端：前端回传超长历史，首轮发给 litellm 前自动压缩。"""
+    controller = _FakeController()
+    main_calls: list[dict] = []
+
+    async def fake_acompletion(**kwargs):
+        # 区分摘要调用（stream=False 无 tools）vs 主调用（stream=True 有 tools）
+        if kwargs.get("stream") is False:
+            resp = MagicMock()
+            resp.choices = [MagicMock(message=MagicMock(content="早期摘要内容"))]
+            return resp
+        # 主调用
+        main_calls.append({"messages": list(kwargs["messages"]), "has_tools": "tools" in kwargs})
+        return _AsyncChunkStream([_mock_llm_chunk(content="最终回答")])
+
+    # 构造超长历史：system + 20 条消息
+    aisdk_messages = [
+        {"role": "user", "content": [{"type": "text", "text": "问题1"}]},
+    ] + [
+        {"role": "assistant" if i % 2 else "user", "content": [{"type": "text", "text": f"历史{i}"}]}
+        for i in range(1, 20)
+    ]
+
+    cfg = {"model": "m", "api_key": None, "api_base": None, "extra_headers": None,
+           "custom_llm_provider": None, "context_window": 200000}
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = []
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            llm_mod.acompletion = fake_acompletion
+            # token_counter：压缩前超阈值，压缩后低于阈值
+            llm_mod.token_counter.side_effect = [999999, 1000]
+            return await chat_mod._run_react_loop(controller, aisdk_messages, cfg)
+
+    result = asyncio.run(run())
+    assert result == "最终回答"
+
+    # 主调用收到的 messages 含摘要消息（user 角色带"早期对话摘要"）
+    first_main = main_calls[0]
+    summary_msgs = [m for m in first_main["messages"]
+                    if m.get("role") == "user" and "早期对话摘要" in str(m.get("content", ""))]
+    assert len(summary_msgs) == 1
+    # 压缩提示已融入流式文本
+    assert any("已自动压缩" in t for t in controller.texts)
