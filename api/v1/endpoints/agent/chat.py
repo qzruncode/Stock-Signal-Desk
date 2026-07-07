@@ -84,6 +84,186 @@ class AgentModelConfigError(Exception):
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _TRAILING_SGR_FRAGMENT_RE = re.compile(r"(?:\[(?:0|1|2|3|4|5|7|9)(?:;\d+)*m\])+$")
 
+# 历史轮 tool 结果中的「明细数组」字段：这些是单次压缩保留给当前轮 LLM 看的细节，
+# 进入下一轮后已无价值（模型只引用最新结论），裁掉可显著降低 token 累积。
+_TOOL_DETAIL_ARRAY_KEYS = (
+    "recent", "recent_periods", "history", "items", "top_movers", "bottom_movers",
+    "inflow_top", "outflow_top", "top_holders", "holder_changes", "daily_trend",
+    "score_trend", "search_fallback", "criteria",
+)
+
+
+def _slim_tool_content(result_str: str) -> str:
+    """对历史轮的 tool 结果做二次瘦身：丢弃明细数组，保留摘要字段。
+
+    解析失败（非 JSON / 非 dict）则原样返回，绝不破坏结果。已裁剪过的（含
+    `_slimmed` 标记）不重复处理。只影响回灌给 LLM 的历史消息，不影响 UI 气泡。
+    """
+    text = (result_str or "").strip()
+    if not text or text[0] != "{":
+        return result_str
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return result_str
+    if not isinstance(payload, dict) or payload.get("_slimmed"):
+        return result_str
+
+    slimmed: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in _TOOL_DETAIL_ARRAY_KEYS:
+            continue
+        slimmed[key] = value
+    slimmed["_slimmed"] = True
+    try:
+        return json.dumps(slimmed, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return result_str
+
+
+# ---------------------------------------------------------------------------
+# 入站消息格式适配：前端（@assistant-ui/react-data-stream）发的是 AI SDK v5
+# 格式（content 为 part 数组），后端 ReAct 循环内部与 litellm/anthropic 用的是
+# OpenAI 格式（tool_calls / tool_call_id + 字符串 content）。两类格式混发会让
+# litellm 的 anthropic 转换层静默丢弃历史 tool 数据（convert_to_anthropic_tool_result
+# 只认 text/image_url part 且要求顶层 tool_call_id）。这里在入口统一归一化。
+# ---------------------------------------------------------------------------
+
+_AI_SDK_PART_TYPES = {"text", "tool-call", "tool-result", "reasoning", "file", "image"}
+
+
+def _is_aisdk_content(content: Any) -> bool:
+    """判断 content 是否为 AI SDK v5 的 part 数组（而非 OpenAI 的字符串/对象）。"""
+    if not isinstance(content, list) or not content:
+        return False
+    return any(
+        isinstance(p, dict) and p.get("type") in _AI_SDK_PART_TYPES for p in content
+    )
+
+
+def _join_text_parts(parts: List[Dict[str, Any]]) -> str:
+    """把 AI SDK 的 text part 文本拼成一个字符串（reasoning 不拼入 content）。"""
+    chunks: List[str] = []
+    for p in parts:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text":
+            text = str(p.get("text") or "").strip()
+            if text:
+                chunks.append(text)
+    return "\n".join(chunks).strip()
+
+
+def _convert_aisdk_assistant(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """AI SDK assistant 消息 → OpenAI 格式（content 字符串 + tool_calls）。"""
+    parts = msg.get("content") or []
+    content_text = _join_text_parts(parts)
+    tool_calls: List[Dict[str, Any]] = []
+    for p in parts:
+        if not isinstance(p, dict) or p.get("type") != "tool-call":
+            continue
+        tool_call_id = p.get("toolCallId") or f"call_{uuid.uuid4().hex}"
+        tool_name = p.get("toolName") or ""
+        try:
+            arguments = json.dumps(p.get("input") or {}, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            arguments = "{}"
+        tool_calls.append({
+            "id": tool_call_id,
+            "type": "function",
+            "function": {"name": tool_name, "arguments": arguments},
+        })
+    out: Dict[str, Any] = {"role": "assistant", "content": content_text or None}
+    if tool_calls:
+        out["tool_calls"] = tool_calls
+    return out
+
+
+def _convert_aisdk_tool(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """AI SDK tool 消息 → OpenAI 格式（tool_call_id + 字符串 content）。
+
+    转换后立即对 content 跑一次 _slim_tool_content：这是从前端回传的历史 tool 结果，
+    属于更早轮次，明细数组对当前/后续轮无价值，裁掉省 token。本轮新加的 tool 消息
+    由 _run_react_loop 末尾的 current_tool_ids 逻辑负责（保完整）。
+    """
+    parts = msg.get("content") or []
+    tool_result = next(
+        (p for p in parts if isinstance(p, dict) and p.get("type") == "tool-result"),
+        None,
+    )
+    if tool_result is None:
+        return {"role": "tool", "tool_call_id": f"call_{uuid.uuid4().hex}", "content": ""}
+    tool_call_id = tool_result.get("toolCallId") or f"call_{uuid.uuid4().hex}"
+    output = tool_result.get("output") or {}
+    value = output.get("value") if isinstance(output, dict) else output
+    is_error = bool(
+        (isinstance(output, dict) and output.get("type") == "error-json")
+        or tool_result.get("isError")
+    )
+    try:
+        content_str = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        content_str = str(value)
+    if is_error:
+        content_str = "[工具执行错误] " + content_str
+    # 历史 tool 结果二次瘦身（明细数组已无价值）
+    content_str = _slim_tool_content(content_str)
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": content_str}
+
+
+def _normalize_incoming_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把前端入站消息归一化为 OpenAI 格式（litellm/anthropic 期望）。
+
+    兼容三种 content 形态：
+    - 字符串：OpenAI/简化格式，按原样透传（user/system/assistant）。
+    - AI SDK part 数组：转换（见 _convert_aisdk_*）。
+    - 已是 OpenAI 格式（tool 有顶层 tool_call_id、assistant 有顶层 tool_calls）：透传。
+
+    单条消息转换失败则原样透传，不阻断整批。
+    """
+    normalized: List[Dict[str, Any]] = []
+    for raw in messages:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            role = str(raw.get("role") or "").strip()
+            content = raw.get("content")
+
+            # 已是 OpenAI 格式：tool 有顶层 tool_call_id，或 assistant 有顶层 tool_calls → 透传
+            if role == "tool" and raw.get("tool_call_id") is not None:
+                normalized.append(raw)
+                continue
+            if role == "assistant" and raw.get("tool_calls") is not None:
+                normalized.append(raw)
+                continue
+
+            # assistant / tool 的数组 content 一律按 AI SDK 转（OpenAI 这两个角色的
+            # content 不会是数组，无需用 _is_aisdk_content 探测 part type）。
+            if role == "assistant" and isinstance(content, list):
+                normalized.append(_convert_aisdk_assistant(raw))
+                continue
+            if role == "tool" and isinstance(content, list):
+                normalized.append(_convert_aisdk_tool(raw))
+                continue
+
+            if not _is_aisdk_content(content):
+                # 字符串/空 content：原样透传（补 role 默认值）
+                normalized.append({
+                    "role": role or "user",
+                    **{k: v for k, v in raw.items() if k != "role"},
+                })
+                continue
+
+            # user / system / 未知 role 的 AI SDK 数组 content：拼文本
+            normalized.append({
+                "role": role or "user",
+                "content": _join_text_parts(content) or None,
+            })
+        except Exception:
+            logger.debug("[Agent] normalize message failed, passthrough: %s", raw)
+            normalized.append(raw)
+    return normalized
+
 
 def _clean_model_name(model_name: str) -> str:
     """Remove terminal style fragments that can be pasted into the settings field."""
@@ -122,6 +302,31 @@ def _get_llm_config() -> Dict[str, Any]:
     }
 
 
+def _build_llm_kwargs(
+    llm_cfg: Dict[str, Any], **extra: Any
+) -> Dict[str, Any]:
+    """Assemble litellm.acompletion kwargs from the agent model config.
+
+    合并基础鉴权字段（model/api_key/api_base/custom_llm_provider/extra_headers，
+    缺省不写）与调用方额外参数（messages/tools/tool_choice 等）。两处调用
+    （_run_react_loop / _stream_final_answer_without_tools）共用，避免重复维护。
+    """
+    kwargs: Dict[str, Any] = {
+        "model": llm_cfg["model"],
+        "stream": True,
+    }
+    if llm_cfg.get("api_key"):
+        kwargs["api_key"] = llm_cfg["api_key"]
+    if llm_cfg.get("api_base"):
+        kwargs["api_base"] = llm_cfg["api_base"]
+    if llm_cfg.get("custom_llm_provider"):
+        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
+    if llm_cfg.get("extra_headers"):
+        kwargs["extra_headers"] = llm_cfg["extra_headers"]
+    kwargs.update(extra)
+    return kwargs
+
+
 async def _flush_substreams(controller: RunController) -> None:
     """Wait for all pending add_stream reader tasks to finish."""
     for task in controller._stream_tasks:
@@ -147,19 +352,7 @@ async def _stream_final_answer_without_tools(
         },
     ]
 
-    kwargs: Dict[str, Any] = {
-        "model": llm_cfg["model"],
-        "messages": forced_messages,
-        "stream": True,
-    }
-    if llm_cfg.get("api_key"):
-        kwargs["api_key"] = llm_cfg["api_key"]
-    if llm_cfg.get("api_base"):
-        kwargs["api_base"] = llm_cfg["api_base"]
-    if llm_cfg.get("custom_llm_provider"):
-        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
-    if llm_cfg.get("extra_headers"):
-        kwargs["extra_headers"] = llm_cfg["extra_headers"]
+    kwargs = _build_llm_kwargs(llm_cfg, messages=forced_messages)
 
     try:
         response = await litellm.acompletion(**kwargs)
@@ -201,29 +394,19 @@ async def _run_react_loop(
 
     full_messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
-        *messages,
+        *_normalize_incoming_messages(messages),
     ]
 
-    kwargs: Dict[str, Any] = {
-        "model": llm_cfg["model"],
-        "messages": full_messages,
-        "tools": tools,
-        "tool_choice": "auto",
-        "stream": True,
-    }
-    if llm_cfg.get("api_key"):
-        kwargs["api_key"] = llm_cfg["api_key"]
-    if llm_cfg.get("api_base"):
-        kwargs["api_base"] = llm_cfg["api_base"]
-    if llm_cfg.get("custom_llm_provider"):
-        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
-    if llm_cfg.get("extra_headers"):
-        kwargs["extra_headers"] = llm_cfg["extra_headers"]
+    kwargs = _build_llm_kwargs(
+        llm_cfg,
+        messages=full_messages,
+        tools=tools,
+        tool_choice="auto",
+    )
 
     controller.append_text("正在理解问题并规划需要查询的数据...\n\n")
 
     for iteration in range(MAX_REACT_ITERATIONS):
-        chunks: List[Any] = []
         tool_calls_acc: Dict[int, Dict[str, Any]] = {}
         content_text = ""
 
@@ -235,7 +418,6 @@ async def _run_react_loop(
             return ""
 
         async for chunk in response:
-            chunks.append(chunk)
             delta = chunk.choices[0].delta if chunk.choices else None
             if not delta:
                 continue
@@ -262,7 +444,15 @@ async def _run_react_loop(
             return content_text
 
         controller.append_text("\n\n正在调用数据工具...\n\n")
-        for tc in tool_calls_acc.values():
+
+        async def _execute_one_tool(tc: Dict[str, Any]) -> Dict[str, Any]:
+            """Run a single tool call: concurrent fetch (off the event loop) + UI回填.
+
+            取数（registry.execute + 压缩 + 联网兜底）是同步网络 IO，必须丢进线程池，
+            否则会阻塞整个 FastAPI 事件循环。多个工具调用通过 asyncio.gather 并发执行，
+            UI 气泡（add_tool_call / set_response）在各自协程里独立回填，作用于互不共享的
+            tool 对象，无需加锁；messages 按调用顺序回灌。
+            """
             tool_name = tc["name"].strip()
             tool_call_id = tc["id"] or f"call_{uuid.uuid4().hex}"
             try:
@@ -278,9 +468,12 @@ async def _run_react_loop(
                 tool.set_response({"error": result_str}, is_error=True)
             else:
                 try:
-                    result = _registry.execute(tool_name, args)
-                    llm_result = _compact_tool_result(tool_name, result)
-                    llm_result = _maybe_attach_search_fallback(tool_name, args, llm_result)
+                    def _sync_fetch() -> Any:
+                        result = _registry.execute(tool_name, args)
+                        llm_result = _compact_tool_result(tool_name, result)
+                        return _maybe_attach_search_fallback(tool_name, args, llm_result)
+
+                    llm_result = await asyncio.to_thread(_sync_fetch)
                     result_str = _format_result(llm_result)
                     tool.set_response(llm_result if isinstance(llm_result, dict) else {"result": result_str})
                 except Exception as e:
@@ -288,22 +481,45 @@ async def _run_react_loop(
                     result_str = f"工具执行失败: {e}"
                     tool.set_response({"error": result_str}, is_error=True)
 
+            return {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "arguments": tc["arguments"],
+                "result_str": result_str,
+            }
+
+        outcomes = await asyncio.gather(
+            *[_execute_one_tool(tc) for tc in tool_calls_acc.values()]
+        )
+
+        for oc in outcomes:
             full_messages.append({
                 "role": "assistant",
                 "content": None,
                 "tool_calls": [{
-                    "id": tool_call_id,
+                    "id": oc["tool_call_id"],
                     "type": "function",
-                    "function": {"name": tool_name, "arguments": tc["arguments"]},
+                    "function": {"name": oc["tool_name"], "arguments": oc["arguments"]},
                 }],
             })
             full_messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": result_str,
+                "tool_call_id": oc["tool_call_id"],
+                "content": oc["result_str"],
             })
 
         await _flush_substreams(controller)
+
+        # 历史轮 tool 结果二次瘦身：本轮刚加的 tool_call_id 跳过，更早轮次的明细数组
+        # 已无价值，裁掉可避免 token 随轮次二次方累积。仅影响回灌 LLM 的内容。
+        current_tool_ids = {oc["tool_call_id"] for oc in outcomes}
+        for msg in full_messages:
+            if (
+                msg.get("role") == "tool"
+                and msg.get("tool_call_id") not in current_tool_ids
+            ):
+                msg["content"] = _slim_tool_content(msg.get("content", ""))
+
         kwargs["messages"] = full_messages
 
     logger.warning("[Agent] ReAct loop hit max iterations without final answer")

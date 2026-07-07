@@ -355,9 +355,9 @@ class AgentReactLoopFallbackTestCase(unittest.IsolatedAsyncioTestCase):
             def execute(self, tool_name, args):
                 return {"tool": tool_name, "args": args, "items": []}
 
-        with patch("api.v1.endpoints.agent.MAX_REACT_ITERATIONS", 1), \
-             patch("api.v1.endpoints.agent._registry", _FakeRegistry()), \
-             patch("api.v1.endpoints.agent.litellm.acompletion", side_effect=[first_response, final_response]):
+        with patch("api.v1.endpoints.agent.chat.MAX_REACT_ITERATIONS", 1), \
+             patch("api.v1.endpoints.agent.chat._registry", _FakeRegistry()), \
+             patch("api.v1.endpoints.agent.chat.litellm.acompletion", side_effect=[first_response, final_response]):
             await _run_react_loop(
                 controller,
                 [{"role": "user", "content": "分析A股广电计量和亚太股份谁更值得买"}],
