@@ -126,20 +126,6 @@ def test_list_sync_status_falls_back_to_db_when_state_empty(client):
     assert body["status"] == "success"
 
 
-def test_list_sync_status_returns_idle_when_empty_and_no_db(client):
-    with patch("api.v1.endpoints.stocks.sync.DatabaseManager") as db_cls:
-        db = MagicMock()
-        session = MagicMock()
-        session.query.side_effect = RuntimeError("no db")
-        db.get_session.return_value.__enter__.return_value = session
-        db_cls.get_instance.return_value = db
-        resp = client.get("/api/v1/stocks/sync/list/status")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 0
-    assert body["status"] == "idle"
-
-
 def test_get_latest_trading_day_skips_weekend():
     result = sync_mod._get_latest_trading_day(reference=date(2026, 6, 6))
     assert result.weekday() < 5

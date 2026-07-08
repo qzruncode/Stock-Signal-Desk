@@ -11,16 +11,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import litellm
 from json_repair import repair_json
-from litellm import Router
 
 from src.config import (
     Config,
-    extra_litellm_params,
-    get_api_keys_for_model,
-    get_configured_llm_models,
     resolve_news_window_days,
 )
 from src.data.stock_mapping import STOCK_NAME_MAP
+from src.llm.anthropic_gateway import (
+    AnthropicGatewayConfigError,
+    build_litellm_kwargs,
+    resolve_anthropic_gateway_config,
+)
 from src.llm.errors import call_litellm_with_param_recovery
 from src.llm.generation_params import apply_litellm_generation_params
 from src.market_context import get_market_guidelines, get_market_role
@@ -423,18 +424,15 @@ class GeminiAnalyzer:
         *,
         config: Optional[Config] = None,
     ):
-        """Initialize LLM Analyzer via LiteLLM.
+        """Initialize LLM Analyzer.
+
+        模型/鉴权统一由 Anthropic 网关配置（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL）决定，
+        不再在初始化期构建 Router；配置是否齐全在 :meth:`is_available` / 调用时按需检测。
 
         Args:
-            api_key: Ignored (kept for backward compatibility). Keys are loaded from config.
+            api_key: Ignored (kept for backward compatibility). Keys come from the gateway config.
         """
         self._config_override = config
-        self._router = None
-        self._legacy_router_model_list: List[Dict[str, Any]] = []
-        self._litellm_available = False
-        self._init_litellm()
-        if not self._litellm_available:
-            logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
 
     def _get_runtime_config(self) -> Config:
         """Return the runtime config, honoring injected overrides for tests/pipeline."""
@@ -471,160 +469,25 @@ class GeminiAnalyzer:
 - 所有面向用户的人类可读文本值必须使用中文。
 """
 
-    def _has_channel_config(self, config: Config) -> bool:
-        """Check if multi-channel config (channels / YAML / legacy model_list) is active."""
-        return bool(config.llm_model_list) and not all(
-            e.get('model_name', '').startswith('__legacy_') for e in config.llm_model_list
-        )
-
-    @staticmethod
-    def _legacy_router_provider_alias(model: str) -> str:
-        provider = model.split("/", 1)[0] if "/" in model else "openai"
-        return f"__legacy_{provider}__"
-
-    @staticmethod
-    def _build_legacy_router_model_list_from_config(
-        model: str,
-        model_list: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Build legacy-router candidates from configured legacy llm_model_list entries."""
-        if not model:
-            return []
-        target_model = model
-        target_legacy_alias = GeminiAnalyzer._legacy_router_provider_alias(model)
-        legacy_entries: List[Dict[str, Any]] = []
-        for entry in model_list or []:
-            if not isinstance(entry, dict):
-                continue
-            model_name = str(entry.get("model_name") or "").strip()
-            if model_name != target_legacy_alias:
-                continue
-
-            params = entry.get("litellm_params")
-            if not isinstance(params, dict):
-                continue
-
-            api_key = str(params.get("api_key") or "").strip()
-            if not api_key or len(api_key) < 8:
-                continue
-
-            deployed_params = dict(params)
-            deployed_params["model"] = target_model
-            deployed_params["api_key"] = api_key
-            legacy_entries.append({
-                "model_name": target_model,
-                "litellm_params": deployed_params,
-            })
-
-        return legacy_entries
-
-    def _init_litellm(self) -> None:
-        """Initialize litellm Router from channels / YAML / legacy keys."""
-        config = self._get_runtime_config()
-        litellm_model = config.litellm_model
-        if not litellm_model:
-            logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
-            return
-
-        self._litellm_available = True
-
-        # --- Channel / YAML path: build Router from pre-built model_list ---
-        if self._has_channel_config(config):
-            model_list = config.llm_model_list
-            try:
-                self._router = Router(
-                    model_list=model_list,
-                    routing_strategy="simple-shuffle",
-                    num_retries=2,
-                )
-            except TypeError:
-                logger.debug("Analyzer LLM: Router constructor signature not compatible; fallback to direct mode")
-                self._router = None
-            else:
-                unique_models = list(dict.fromkeys(
-                    e['litellm_params']['model'] for e in model_list
-                ))
-                logger.info(
-                    f"Analyzer LLM: Router initialized from channels/YAML — "
-                    f"{len(model_list)} deployment(s), models: {unique_models}"
-                )
-                return
-
-        # --- Legacy path: build Router for multi-key, or use single key ---
-        keys = get_api_keys_for_model(litellm_model, config)
-        legacy_model_list = self._build_legacy_router_model_list_from_config(
-            litellm_model,
-            config.llm_model_list,
-        )
-        if len(legacy_model_list) <= 1 and keys:
-            extra_params = extra_litellm_params(litellm_model, config)
-            configured_model_list = [
-                {
-                    "model_name": litellm_model,
-                    "litellm_params": {
-                        "model": litellm_model,
-                        "api_key": k,
-                        **extra_params,
-                    },
-                }
-                for k in keys
-            ]
-            if not legacy_model_list:
-                legacy_model_list = configured_model_list
-            elif len(legacy_model_list) < len(configured_model_list):
-                legacy_model_list = configured_model_list
-
-        if len(legacy_model_list) > 1:
-            self._legacy_router_model_list = legacy_model_list
-            try:
-                self._router = Router(
-                    model_list=legacy_model_list,
-                    routing_strategy="simple-shuffle",
-                    num_retries=2,
-                )
-            except TypeError:
-                logger.debug("Analyzer LLM: Legacy Router constructor signature not compatible; using legacy model_list fallback")
-                self._router = None
-            else:
-                logger.info(
-                    f"Analyzer LLM: Legacy Router initialized with {len(legacy_model_list)} keys "
-                    f"for {litellm_model}"
-                )
-                return
-
-        if keys:
-            logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
-        else:
-            logger.info(
-                f"Analyzer LLM: litellm initialized (model={litellm_model}, "
-                f"API key from environment)"
-            )
-
     def is_available(self) -> bool:
-        """Check if LiteLLM is properly configured with at least one API key."""
-        return self._router is not None or self._litellm_available
+        """Check if the Anthropic gateway is fully configured (base_url/token/model all set)."""
+        import os
+        return bool(
+            (os.getenv("ANTHROPIC_BASE_URL") or "").strip()
+            and (os.getenv("ANTHROPIC_AUTH_TOKEN") or "").strip()
+            and (os.getenv("ANTHROPIC_MODEL") or "").strip()
+        )
 
     def _dispatch_litellm_completion(
         self,
-        model: str,
         call_kwargs: Dict[str, Any],
-        *,
-        config: Config,
-        use_channel_router: bool,
-        router_model_names: set[str],
     ) -> Any:
-        """Dispatch a LiteLLM completion through router or direct fallback."""
-        effective_kwargs = dict(call_kwargs)
-        if use_channel_router and self._router and model in router_model_names:
-            return self._router.completion(**effective_kwargs)
-        if self._router and model == config.litellm_model and not use_channel_router:
-            return self._router.completion(**effective_kwargs)
+        """Dispatch a sync LiteLLM completion.
 
-        keys = get_api_keys_for_model(model, config)
-        if keys:
-            effective_kwargs["api_key"] = keys[0]
-        effective_kwargs.update(extra_litellm_params(model, config))
-        return litellm.completion(**effective_kwargs)
+        网关单源后无 Router/多供应商分支：kwargs 已由 ``build_litellm_kwargs`` 组装好
+        鉴权字段（api_key/api_base/custom_llm_provider/extra_headers），直接调用即可。
+        """
+        return litellm.completion(**call_kwargs)
 
     def _normalize_usage(self, usage_obj: Any) -> Dict[str, Any]:
         """Normalize usage objects from LiteLLM responses/chunks."""
@@ -801,21 +664,19 @@ class GeminiAnalyzer:
         stream_text_callback: Optional[Callable[[str, str], None]] = None,
         response_validator: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, str, Dict[str, Any]]:
-        """Call LLM via litellm with fallback across configured models.
+        """Call LLM via litellm through the Anthropic gateway (single source).
 
-        When channels/YAML are configured, every model goes through the Router
-        (which handles per-model key selection, load balancing, and retries).
-        In legacy mode, the primary model may use the Router while fallback
-        models fall back to direct litellm.completion().
+        模型/鉴权统一由 ``ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL`` 决定，无多模型 fallback
+        与 Router 路由。thinking/reasoning_effort/temperature 等正交生成参数仍然生效。
+        流式失败时自动回退到非流式。所有失败（含响应校验失败）聚合为
+        :class:`_AllModelsFailedError`，保留 ``last_response_text/last_model/last_usage``
+        以便上游 :meth:`analyze` 用末次文本兜底。
 
         Args:
             prompt: User prompt text.
             generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
             response_validator: Optional callable that accepts the raw response text and raises
-                an exception if the response is unacceptable (e.g. not valid JSON).  When it
-                raises, the current model is treated as failed and the next fallback model is
-                tried.  If all models fail validation, :class:`_AllModelsFailedError` is raised
-                with ``last_response_text`` set to the last raw response received.
+                an exception if the response is unacceptable (e.g. not valid JSON).
 
         Returns:
             Tuple of (response text, model_used, usage). On success model_used is the full model
@@ -829,154 +690,120 @@ class GeminiAnalyzer:
         )
         requested_temperature = generation_config.get('temperature', 0.7)
 
-        models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
-        models_to_try = [m for m in models_to_try if m]
+        # 网关单源：缺失即抛错，不回落（与 AI 助手一致）
+        llm_cfg = resolve_anthropic_gateway_config()
+        model = llm_cfg["model"]
 
-        use_channel_router = self._has_channel_config(config)
-
-        last_error = None
+        last_error: Optional[BaseException] = None
         last_response_text: Optional[str] = None
         last_model: Optional[str] = None
         last_usage: Dict[str, Any] = {}
         effective_system_prompt = system_prompt or self.TEXT_SYSTEM_PROMPT
-        router_model_names = set(get_configured_llm_models(config.llm_model_list))
-        for model in models_to_try:
-            recovery_model_list = config.llm_model_list
-            legacy_router_model_list = getattr(self, "_legacy_router_model_list", None) or []
-            if legacy_router_model_list and model == config.litellm_model and not use_channel_router:
-                recovery_model_list = legacy_router_model_list
 
-            try:
-                call_kwargs: Dict[str, Any] = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": effective_system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": max_tokens,
-                }
-                uses_router = (
-                    (use_channel_router and self._router and model in router_model_names)
-                    or (self._router and model == config.litellm_model and not use_channel_router)
-                )
-                if not uses_router:
-                    try:
-                        keys = get_api_keys_for_model(model, config)
-                    except AttributeError:
-                        keys = []
-                    if keys:
-                        call_kwargs["api_key"] = keys[0]
-                    try:
-                        call_kwargs.update(extra_litellm_params(model, config))
-                    except AttributeError:
-                        pass
-                call_kwargs = apply_litellm_generation_params(
-                    call_kwargs,
+        try:
+            call_kwargs = build_litellm_kwargs(
+                llm_cfg,
+                stream=False,
+                messages=[
+                    {"role": "system", "content": effective_system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=max_tokens,
+            )
+            call_kwargs = apply_litellm_generation_params(
+                call_kwargs,
+                model,
+                requested_temperature,
+            )
+
+            # Inject thinking mode and reasoning effort if configured
+            thinking_enabled = getattr(config, "llm_thinking_enabled", False)
+            reasoning_effort = getattr(config, "llm_reasoning_effort", "auto")
+            if thinking_enabled and reasoning_effort != "auto":
+                extra_body = call_kwargs.get("extra_body", {})
+                extra_body["reasoning_effort"] = reasoning_effort
+                call_kwargs["extra_body"] = extra_body
+                logger.debug(
+                    "[LiteLLM] Injecting reasoning_effort=%s for model %s (thinking enabled)",
+                    reasoning_effort,
                     model,
-                    requested_temperature,
-                    model_list=recovery_model_list,
                 )
 
-                # Inject thinking mode and reasoning effort if configured
-                thinking_enabled = getattr(config, "llm_thinking_enabled", False)
-                reasoning_effort = getattr(config, "llm_reasoning_effort", "auto")
-                if thinking_enabled and reasoning_effort != "auto":
-                    extra_body = call_kwargs.get("extra_body", {})
-                    extra_body["reasoning_effort"] = reasoning_effort
-                    call_kwargs["extra_body"] = extra_body
-                    logger.debug(
-                        "[LiteLLM] Injecting reasoning_effort=%s for model %s (thinking enabled)",
-                        reasoning_effort,
-                        model,
+            _stream_text: Optional[str] = None
+            _stream_usage: Dict[str, Any] = {}
+
+            if stream:
+                try:
+                    stream_response = call_litellm_with_param_recovery(
+                        lambda kwargs: self._dispatch_litellm_completion(kwargs),
+                        model=model,
+                        call_kwargs={**call_kwargs, "stream": True},
+                        model_list=None,
+                        cache_recovery=False,
+                        logger=logger,
                     )
-
-                _stream_text: Optional[str] = None
-                _stream_usage: Dict[str, Any] = {}
-
-                if stream:
-                    try:
-                        stream_response = call_litellm_with_param_recovery(
-                            lambda kwargs: self._dispatch_litellm_completion(
-                                model,
-                                kwargs,
-                                config=config,
-                                use_channel_router=use_channel_router,
-                                router_model_names=router_model_names,
-                            ),
+                    with contextlib.closing(stream_response):
+                        _stream_text, _stream_usage = self._consume_litellm_stream(
+                            stream_response,
                             model=model,
-                            call_kwargs={**call_kwargs, "stream": True},
-                            model_list=recovery_model_list,
-                            cache_recovery=False,
-                            logger=logger,
+                            progress_callback=stream_progress_callback,
+                            text_callback=stream_text_callback,
                         )
-                        with contextlib.closing(stream_response):
-                            _stream_text, _stream_usage = self._consume_litellm_stream(
-                                stream_response,
-                                model=model,
-                                progress_callback=stream_progress_callback,
-                                text_callback=stream_text_callback,
-                            )
-                    except _LiteLLMStreamError as exc:
-                        if exc.partial_received:
-                            logger.warning(
-                                "[LiteLLM] %s stream failed after partial output, retrying non-stream for same model: %s",
-                                model,
-                                exc,
-                            )
-                        else:
-                            logger.warning(
-                                "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
-                                model,
-                                exc,
-                            )
-                        last_error = exc
-                    except Exception as exc:
+                except _LiteLLMStreamError as exc:
+                    if exc.partial_received:
                         logger.warning(
-                            "[LiteLLM] %s stream request failed before first chunk, falling back to non-stream: %s",
+                            "[LiteLLM] %s stream failed after partial output, retrying non-stream: %s",
                             model,
                             exc,
                         )
-
-                if _stream_text is not None:
-                    last_response_text = _stream_text
-                    last_model = model
-                    last_usage = _stream_usage
-                    if response_validator is not None:
-                        response_validator(_stream_text)
-                    return _stream_text, model, _stream_usage
-
-                response = call_litellm_with_param_recovery(
-                    lambda kwargs: self._dispatch_litellm_completion(
+                    else:
+                        logger.warning(
+                            "[LiteLLM] %s stream unavailable before first chunk, falling back to non-stream: %s",
+                            model,
+                            exc,
+                        )
+                    last_error = exc
+                except Exception as exc:
+                    logger.warning(
+                        "[LiteLLM] %s stream request failed before first chunk, falling back to non-stream: %s",
                         model,
-                        kwargs,
-                        config=config,
-                        use_channel_router=use_channel_router,
-                        router_model_names=router_model_names,
-                    ),
-                    model=model,
-                    call_kwargs=call_kwargs,
-                    model_list=recovery_model_list,
-                    logger=logger,
-                )
+                        exc,
+                    )
+                    last_error = exc
 
-                content = self._extract_completion_text(response)
-                if content:
-                    usage = self._normalize_usage(self._get_response_field(response, "usage"))
-                    last_response_text = content
-                    last_model = model
-                    last_usage = usage
-                    if response_validator is not None:
-                        response_validator(content)
-                    return (content, model, usage)
-                raise ValueError("LLM returned empty response")
+            if _stream_text is not None:
+                last_response_text = _stream_text
+                last_model = model
+                last_usage = _stream_usage
+                if response_validator is not None:
+                    response_validator(_stream_text)
+                return _stream_text, model, _stream_usage
 
-            except Exception as e:
-                logger.warning(f"[LiteLLM] {model} failed: {e}")
-                last_error = e
-                continue
+            response = call_litellm_with_param_recovery(
+                lambda kwargs: self._dispatch_litellm_completion(kwargs),
+                model=model,
+                call_kwargs=call_kwargs,
+                model_list=None,
+                logger=logger,
+            )
+
+            content = self._extract_completion_text(response)
+            if content:
+                usage = self._normalize_usage(self._get_response_field(response, "usage"))
+                last_response_text = content
+                last_model = model
+                last_usage = usage
+                if response_validator is not None:
+                    response_validator(content)
+                return (content, model, usage)
+            raise ValueError("LLM returned empty response")
+
+        except Exception as e:
+            logger.warning(f"[LiteLLM] {model} failed: {e}")
+            last_error = e
 
         raise _AllModelsFailedError(
-            f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}",
+            f"LLM call failed for model {model}. Last error: {last_error}",
             last_response_text=last_response_text,
             last_model=last_model,
             last_usage=last_usage,
@@ -991,8 +818,7 @@ class GeminiAnalyzer:
         """Public entry point for free-form text generation.
 
         External callers (e.g. MarketAnalyzer) must use this method instead of
-        calling _call_litellm() directly or accessing private attributes such as
-        _litellm_available, _router, _model, _use_openai, or _use_anthropic.
+        calling _call_litellm() directly.
 
         Args:
             prompt:      Text prompt to send to the LLM.
@@ -1079,7 +905,7 @@ class GeminiAnalyzer:
                 operation_advice='Hold' if report_language == "en" else '持有',
                 confidence_level='Low' if report_language == "en" else '低',
                 analysis_summary='AI analysis is unavailable because no API key is configured.' if report_language == "en" else 'AI 分析功能未启用（未配置 API Key）',
-                risk_warning='Configure an LLM API key (GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY) and retry.' if report_language == "en" else '请配置 LLM API Key（GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY）后重试',
+                risk_warning='Configure the Anthropic gateway (ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL) and retry.' if report_language == "en" else '请配置 Anthropic 网关（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL）后重试',
                 success=False,
                 error_message='LLM API key is not configured' if report_language == "en" else 'LLM API Key 未配置',
                 model_used=None,
@@ -1091,7 +917,8 @@ class GeminiAnalyzer:
             prompt = self._format_prompt(context, name, news_context, report_language=report_language)
             
             config = self._get_runtime_config()
-            model_name = config.litellm_model or "unknown"
+            import os as _os
+            model_name = (_os.getenv("ANTHROPIC_MODEL") or "").strip() or "unknown"
             logger.info(f"========== AI 分析 {name}({code}) ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
             logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")

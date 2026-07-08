@@ -5,22 +5,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from src.config import (
-    ANSPIRE_LLM_BASE_URL_DEFAULT,
-    ANSPIRE_LLM_MODEL_DEFAULT,
-    _get_litellm_provider,
-    _uses_direct_env_provider,
-    canonicalize_llm_channel_protocol,
-    channel_allows_empty_api_key,
-    normalize_llm_channel_model,
-    parse_env_bool,
-    resolve_llm_channel_protocol,
-)
 from src.core.config_registry import get_registered_field_keys
-
-from ._types import _normalize_agent_model
 
 
 class SetupStatusMixin:
@@ -74,26 +61,27 @@ class SetupStatusMixin:
 
     @staticmethod
     def _is_setup_relevant_env_key(key: str) -> bool:
+        """Whether an env key is relevant to first-run setup status.
+
+        模型接入统一由 Anthropic 网关（ANTHROPIC_*）决定，故仅保留网关与正交生成参数、
+        以及 stock_list / storage / notification 相关键。
+        """
         if key in {
             "STOCK_LIST",
             "DATABASE_PATH",
-            "LITELLM_CONFIG",
-            "LITELLM_MODEL",
-            "LITELLM_FALLBACK_MODELS",
-            "AGENT_LITELLM_MODEL",
-            "VISION_MODEL",
-            "OPENAI_BASE_URL",
-            "OLLAMA_API_BASE",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_MODEL",
+            "LLM_THINKING_ENABLED",
+            "LLM_REASONING_EFFORT",
+            "LLM_TEMPERATURE",
+            "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
             "FEISHU_STREAM_ENABLED",
         }:
             return True
         prefixes = (
-            "LLM_",
-            "GEMINI_",
-            "OPENAI_",
             "ANTHROPIC_",
-            "DEEPSEEK_",
-            "OLLAMA_",
+            "CLAUDE_CODE_",
             "FEISHU_",
             "TELEGRAM_",
             "EMAIL_",
@@ -110,7 +98,7 @@ class SetupStatusMixin:
             "WECOM_",
             "ASTRBOT_",
         )
-        return key.startswith(prefixes) or key.endswith("_API_KEY") or key.endswith("_API_KEYS")
+        return key.startswith(prefixes)
 
     def _build_setup_effective_config_map(self) -> Dict[str, str]:
         """Combine saved `.env` values with injected runtime env values for status checks."""
@@ -130,184 +118,32 @@ class SetupStatusMixin:
     def _has_any_config_value(effective_map: Dict[str, str], keys: Sequence[str]) -> bool:
         return any((effective_map.get(key) or "").strip() for key in keys)
 
-    @classmethod
-    def _anspire_legacy_llm_enabled(cls, effective_map: Dict[str, str]) -> bool:
-        if not parse_env_bool(effective_map.get("ANSPIRE_LLM_ENABLED"), default=True):
-            return False
-        for name in cls._split_csv(effective_map.get("LLM_CHANNELS") or ""):
-            if name.strip().lower() != "anspire":
-                continue
-            enabled_raw = effective_map.get("LLM_ANSPIRE_ENABLED")
-            if not (enabled_raw or "").strip():
-                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
-            return parse_env_bool(enabled_raw, default=True)
-        return True
+    @staticmethod
+    def _split_csv(raw: str) -> List[str]:
+        return [item.strip() for item in (raw or "").split(",") if item.strip()]
 
-    @classmethod
-    def _provider_has_setup_credentials(cls, provider: str, effective_map: Dict[str, str]) -> bool:
-        normalized = canonicalize_llm_channel_protocol(provider)
-        if normalized == "ollama":
-            return True
-        if normalized == "gemini" or normalized == "vertex_ai":
-            return cls._has_any_config_value(effective_map, ("GEMINI_API_KEYS", "GEMINI_API_KEY"))
-        if normalized == "anthropic":
-            return cls._has_any_config_value(effective_map, ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY"))
-        if normalized == "deepseek":
-            return cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY"))
-        if normalized == "openai":
-            if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
-                return True
-            if (
-                cls._anspire_legacy_llm_enabled(effective_map)
-                and cls._has_any_config_value(effective_map, ("ANSPIRE_API_KEYS",))
-            ):
-                return True
-            base_url = (effective_map.get("OPENAI_BASE_URL") or "").strip()
-            return channel_allows_empty_api_key("openai", base_url)
-
-        env_prefix = normalized.upper().replace("-", "_")
-        return cls._has_any_config_value(
-            effective_map,
-            (f"{env_prefix}_API_KEYS", f"{env_prefix}_API_KEY"),
-        )
-
-    @classmethod
-    def _has_setup_runtime_source_for_model(cls, model: str, effective_map: Dict[str, str]) -> bool:
-        normalized_model = (model or "").strip()
-        if not normalized_model:
-            return False
-        provider = _get_litellm_provider(normalized_model)
-        return cls._provider_has_setup_credentials(provider, effective_map)
-
-    @classmethod
-    def _collect_setup_channel_models(cls, effective_map: Dict[str, str]) -> List[str]:
-        models: List[str] = []
-        seen: Set[str] = set()
-        for raw_name in cls._split_csv(effective_map.get("LLM_CHANNELS") or ""):
-            name = raw_name.strip()
-            if not name:
-                continue
-            prefix = f"LLM_{name.upper()}"
-            enabled_raw = effective_map.get(f"{prefix}_ENABLED")
-            if name.lower() == "anspire" and not (enabled_raw or "").strip():
-                enabled_raw = effective_map.get("ANSPIRE_LLM_ENABLED")
-            enabled = parse_env_bool(enabled_raw, default=True)
-            if not enabled:
-                continue
-
-            base_url = (effective_map.get(f"{prefix}_BASE_URL") or "").strip()
-            if name.lower() == "anspire" and not base_url:
-                base_url = (
-                    effective_map.get("ANSPIRE_LLM_BASE_URL")
-                    or ANSPIRE_LLM_BASE_URL_DEFAULT
-                ).strip()
-            protocol = (effective_map.get(f"{prefix}_PROTOCOL") or "").strip()
-            if name.lower() == "anspire" and not protocol:
-                protocol = "openai"
-            api_key = (
-                (effective_map.get(f"{prefix}_API_KEYS") or "").strip()
-                or (effective_map.get(f"{prefix}_API_KEY") or "").strip()
-            )
-            if name.lower() == "anspire" and not api_key:
-                api_key = (effective_map.get("ANSPIRE_API_KEYS") or "").strip()
-            raw_models = cls._split_csv(effective_map.get(f"{prefix}_MODELS") or "")
-            if name.lower() == "anspire" and not raw_models:
-                raw_models = [
-                    (
-                        effective_map.get("ANSPIRE_LLM_MODEL")
-                        or ANSPIRE_LLM_MODEL_DEFAULT
-                    ).strip()
-                ]
-            resolved_protocol = resolve_llm_channel_protocol(
-                protocol,
-                base_url=base_url,
-                models=raw_models,
-                channel_name=name,
-            )
-            if not raw_models or not resolved_protocol:
-                continue
-            if not api_key and not channel_allows_empty_api_key(resolved_protocol, base_url):
-                continue
-
-            for raw_model in raw_models:
-                normalized_model = normalize_llm_channel_model(raw_model, resolved_protocol, base_url)
-                if normalized_model and normalized_model not in seen:
-                    seen.add(normalized_model)
-                    models.append(normalized_model)
-        return models
-
-    @classmethod
-    def _infer_setup_legacy_primary_model(cls, effective_map: Dict[str, str]) -> str:
-        if cls._has_any_config_value(effective_map, ("GEMINI_API_KEYS", "GEMINI_API_KEY")):
-            model = (effective_map.get("GEMINI_MODEL") or "gemini-3.1-pro-preview").strip()
-            return model if "/" in model else f"gemini/{model}"
-        if cls._has_any_config_value(effective_map, ("ANTHROPIC_API_KEYS", "ANTHROPIC_API_KEY")):
-            model = (effective_map.get("ANTHROPIC_MODEL") or "claude-sonnet-4-6").strip()
-            return model if "/" in model else f"anthropic/{model}"
-        if cls._has_any_config_value(effective_map, ("DEEPSEEK_API_KEYS", "DEEPSEEK_API_KEY")):
-            return "deepseek/deepseek-chat"
-        if cls._has_any_config_value(effective_map, ("OPENAI_API_KEYS", "OPENAI_API_KEY", "AIHUBMIX_KEY")):
-            model = (effective_map.get("OPENAI_MODEL") or "gpt-5.5").strip()
-            return model if "/" in model else f"openai/{model}"
-        if (
-            cls._anspire_legacy_llm_enabled(effective_map)
-            and cls._has_any_config_value(effective_map, ("ANSPIRE_API_KEYS",))
-        ):
-            model = (
-                effective_map.get("ANSPIRE_LLM_MODEL")
-                or effective_map.get("OPENAI_MODEL")
-                or ANSPIRE_LLM_MODEL_DEFAULT
-            ).strip()
-            return model if "/" in model else f"openai/{model}"
-        if (effective_map.get("OLLAMA_API_BASE") or "").strip():
-            model = (effective_map.get("OLLAMA_MODEL") or "").strip()
-            return model if model.startswith("ollama/") else (f"ollama/{model}" if model else "ollama/local")
-        return ""
-
-    def _resolve_setup_primary_model(self, effective_map: Dict[str, str]) -> Tuple[str, str]:
-        explicit_model = (effective_map.get("LITELLM_MODEL") or "").strip()
-        yaml_models = self._collect_yaml_models_from_map(effective_map)
-        channel_models = self._collect_setup_channel_models(effective_map)
-
-        if explicit_model:
-            if _uses_direct_env_provider(explicit_model):
-                return explicit_model, "explicit"
-            has_direct_source = self._has_setup_runtime_source_for_model(explicit_model, effective_map)
-            if yaml_models and explicit_model not in set(yaml_models):
-                return "", "主模型未出现在当前 LiteLLM YAML model_list 中"
-            if channel_models and explicit_model not in set(channel_models):
-                return "", "主模型未出现在当前启用渠道模型列表中"
-            if yaml_models or channel_models or has_direct_source:
-                return explicit_model, "explicit"
-            return "", "主模型缺少可用渠道或匹配的 API Key"
-
-        if yaml_models:
-            return yaml_models[0], "yaml"
-        if channel_models:
-            return channel_models[0], "channel"
-
-        legacy_model = self._infer_setup_legacy_primary_model(effective_map)
-        if legacy_model:
-            return legacy_model, "legacy"
-
-        return "", "尚未检测到主模型配置"
+    def _gateway_configured(self, effective_map: Dict[str, str]) -> Tuple[bool, List[str]]:
+        """Return (configured, missing_keys) for the Anthropic gateway."""
+        missing = [
+            name for name, key in (
+                ("接入地址(ANTHROPIC_BASE_URL)", "ANTHROPIC_BASE_URL"),
+                ("鉴权令牌(ANTHROPIC_AUTH_TOKEN)", "ANTHROPIC_AUTH_TOKEN"),
+                ("主模型(ANTHROPIC_MODEL)", "ANTHROPIC_MODEL"),
+            ) if not (effective_map.get(key) or "").strip()
+        ]
+        return (not missing, missing)
 
     def _build_setup_primary_llm_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
-        model, source = self._resolve_setup_primary_model(effective_map)
-        if model:
-            source_label = {
-                "explicit": "显式主模型",
-                "yaml": "LiteLLM YAML",
-                "channel": "LLM 渠道",
-                "legacy": "legacy provider",
-            }.get(source, source)
+        configured, missing = self._gateway_configured(effective_map)
+        if configured:
+            model = (effective_map.get("ANTHROPIC_MODEL") or "").strip()
             return self._setup_check(
                 "llm_primary",
                 "LLM 主渠道",
                 "ai_model",
                 True,
                 "configured",
-                f"已检测到 {source_label}: {model}",
+                f"已检测到 Anthropic 网关: {model}",
             )
         return self._setup_check(
             "llm_primary",
@@ -315,8 +151,8 @@ class SetupStatusMixin:
             "ai_model",
             True,
             "needs_action",
-            source,
-            "请配置 LITELLM_MODEL、LLM_CHANNELS、LITELLM_CONFIG 或 legacy provider API Key。",
+            "Anthropic 网关未配置完整：" + "、".join(missing),
+            "请前往「设置 - 模型设置」补全 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL。",
         )
 
     def _build_setup_agent_llm_check(
@@ -324,62 +160,24 @@ class SetupStatusMixin:
         effective_map: Dict[str, str],
         primary_check: Dict[str, Any],
     ) -> Dict[str, Any]:
-        agent_model_raw = (effective_map.get("AGENT_LITELLM_MODEL") or "").strip()
-        if not agent_model_raw:
-            if primary_check["status"] == "configured":
-                return self._setup_check(
-                    "llm_agent",
-                    "Agent 渠道",
-                    "agent",
-                    True,
-                    "inherited",
-                    "未单独配置 Agent 主模型，将继承 LLM 主渠道。",
-                )
+        """Agent 复用同一 Anthropic 网关，状态与主渠道一致。"""
+        if primary_check["status"] == "configured":
             return self._setup_check(
                 "llm_agent",
                 "Agent 渠道",
                 "agent",
                 True,
-                "needs_action",
-                "Agent 未配置独立模型，且 LLM 主渠道尚不可用。",
-                "请先补齐 LLM 主渠道配置。",
+                "inherited",
+                "Agent 复用 Anthropic 网关，与 LLM 主渠道一致。",
             )
-
-        configured_models = set(
-            self._collect_yaml_models_from_map(effective_map)
-            or self._collect_setup_channel_models(effective_map)
-        )
-        agent_model = _normalize_agent_model(agent_model_raw, configured_models=configured_models)
-        if _uses_direct_env_provider(agent_model):
-            return self._setup_check(
-                "llm_agent",
-                "Agent 渠道",
-                "agent",
-                True,
-                "configured",
-                f"已配置 Agent 主模型: {agent_model}",
-            )
-        if (
-            not configured_models
-            and self._has_setup_runtime_source_for_model(agent_model, effective_map)
-        ) or agent_model in configured_models:
-            return self._setup_check(
-                "llm_agent",
-                "Agent 渠道",
-                "agent",
-                True,
-                "configured",
-                f"已配置 Agent 主模型: {agent_model}",
-            )
-
         return self._setup_check(
             "llm_agent",
             "Agent 渠道",
             "agent",
             True,
             "needs_action",
-            f"Agent 主模型 {agent_model} 缺少可用渠道或匹配的 API Key。",
-            "请调整 AGENT_LITELLM_MODEL 或补齐对应渠道配置。",
+            "Agent 复用 Anthropic 网关，但网关未配置完整。",
+            "请先补齐 Anthropic 网关配置。",
         )
 
     def _build_setup_stock_list_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:

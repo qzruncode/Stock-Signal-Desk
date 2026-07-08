@@ -37,6 +37,6 @@ describe('Shell', () => {
 
     expect(screen.getByRole('button', { name: '关闭导航菜单' })).toBeInTheDocument();
     expect(screen.getAllByRole('link', { name: '工作台' }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole('link', { name: '模型 API 配置' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('link', { name: '设置' }).length).toBeGreaterThan(0);
   });
 });

@@ -436,10 +436,6 @@
   border-color: var(--input-surface-border-hover);
 }
 
-.settings-page .input-surface:not(:hover):not(:focus):not(:disabled) {
-  border-color: var(--settings-input-rest-border);
-}
-
 .input-surface:disabled {
   cursor: not-allowed;
   opacity: 0.65;

@@ -11,7 +11,11 @@ from typing import Any, Callable, Optional
 import litellm
 
 from src.ai_caller import call_ai_structured
-from src.config import extra_litellm_params, get_api_keys_for_model, get_config
+from src.config import get_config
+from src.llm.anthropic_gateway import (
+    build_litellm_kwargs,
+    resolve_anthropic_gateway_config,
+)
 from src.llm.generation_params import apply_litellm_generation_params
 from src.storage import DatabaseManager, persist_llm_usage
 
@@ -19,52 +23,6 @@ from ._llm import build_model_report_prompts, build_streaming_report_draft
 from ._context import build_report_evidence_pack, collect_context
 
 logger = logging.getLogger(__name__)
-
-
-def resolve_market_mainline_litellm_config() -> dict[str, Any]:
-    config = get_config()
-    model = (config.litellm_model or "").strip()
-    if not model:
-        raise RuntimeError("模型服务当前不可用")
-
-    api_key: Optional[str] = None
-    api_base: Optional[str] = None
-    extra_headers: Optional[dict[str, Any]] = None
-
-    for entry in (config.llm_model_list or []):
-        if not isinstance(entry, dict):
-            continue
-        params = entry.get("litellm_params")
-        if not isinstance(params, dict):
-            continue
-        model_name = str(entry.get("model_name") or "").strip()
-        wire_model = str(params.get("model") or "").strip()
-        if model_name == model or wire_model == model:
-            api_key = params.get("api_key") or api_key
-            api_base = params.get("api_base") or api_base
-            extra_headers = params.get("extra_headers") or extra_headers
-            break
-
-    if not api_key:
-        keys = get_api_keys_for_model(model, config)
-        if keys:
-            api_key = keys[0]
-
-    extra = extra_litellm_params(model, config)
-    if extra.get("api_base") and not api_base:
-        api_base = extra["api_base"]
-    if extra.get("extra_headers") and not extra_headers:
-        extra_headers = extra["extra_headers"]
-
-    return {
-        "model": model,
-        "api_key": api_key,
-        "api_base": api_base,
-        "extra_headers": extra_headers,
-        "thinking_enabled": bool(getattr(config, "llm_thinking_enabled", False)),
-        "reasoning_effort": getattr(config, "llm_reasoning_effort", "auto"),
-        "model_list": config.llm_model_list,
-    }
 
 
 def extract_json_object_from_text(raw_text: str) -> Optional[str]:
@@ -150,35 +108,31 @@ def stream_market_mainline_report_via_litellm(
     max_tokens: int,
     on_text: Optional[Callable[[str, str], None]] = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
-    llm_cfg = resolve_market_mainline_litellm_config()
+    llm_cfg = resolve_anthropic_gateway_config()
+    config = get_config()
+    thinking_enabled = bool(getattr(config, "llm_thinking_enabled", False))
+    reasoning_effort = getattr(config, "llm_reasoning_effort", "auto")
 
     async def _run() -> tuple[str, str, str, dict[str, Any]]:
-        call_kwargs: dict[str, Any] = {
-            "model": llm_cfg["model"],
-            "messages": [
+        call_kwargs = build_litellm_kwargs(
+            llm_cfg,
+            stream=True,
+            messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "stream": True,
-            "max_tokens": max_tokens,
-        }
-        if llm_cfg.get("api_key"):
-            call_kwargs["api_key"] = llm_cfg["api_key"]
-        if llm_cfg.get("api_base"):
-            call_kwargs["api_base"] = llm_cfg["api_base"]
-        if llm_cfg.get("extra_headers"):
-            call_kwargs["extra_headers"] = llm_cfg["extra_headers"]
+            max_tokens=max_tokens,
+        )
 
         call_kwargs = apply_litellm_generation_params(
             call_kwargs,
             llm_cfg["model"],
             temperature,
-            model_list=llm_cfg.get("model_list"),
         )
 
-        if llm_cfg["thinking_enabled"] and llm_cfg["reasoning_effort"] != "auto":
+        if thinking_enabled and reasoning_effort != "auto":
             extra_body = call_kwargs.get("extra_body", {})
-            extra_body["reasoning_effort"] = llm_cfg["reasoning_effort"]
+            extra_body["reasoning_effort"] = reasoning_effort
             call_kwargs["extra_body"] = extra_body
 
         response = await litellm.acompletion(**call_kwargs)

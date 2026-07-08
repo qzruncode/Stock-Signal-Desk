@@ -79,8 +79,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         )
 
     def test_analysis_prompt_contains_actionability_guardrails(self) -> None:
-        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
-            analyzer = GeminiAnalyzer()
+        analyzer = GeminiAnalyzer()
 
         prompt = analyzer._get_analysis_system_prompt("zh", stock_code="002812")
 
@@ -90,8 +89,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("洗盘观察", prompt)
 
     def test_prompt_contains_time_constraints(self) -> None:
-        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
-            analyzer = GeminiAnalyzer()
+        analyzer = GeminiAnalyzer()
 
         context = {
             "code": "600519",
@@ -122,8 +120,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("禁止编造", prompt)
 
     def test_prompt_includes_capital_flow_as_operation_filter(self) -> None:
-        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
-            analyzer = GeminiAnalyzer()
+        analyzer = GeminiAnalyzer()
 
         context = {
             "code": "002812",
@@ -157,8 +154,7 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("洗盘观察", prompt)
 
     def test_prompt_prefers_context_news_window_days(self) -> None:
-        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
-            analyzer = GeminiAnalyzer()
+        analyzer = GeminiAnalyzer()
 
         context = {
             "code": "600519",

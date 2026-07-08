@@ -64,22 +64,18 @@ def _generate_llm_business_analysis(
     on_env_text=None,
     on_track_text=None,
     on_catalyst_text=None,
-    model: str = None,
-    api_key: str = None,
 ):
-    """Generate LLM business analysis synchronously."""
-    from src.config import get_config, extra_litellm_params, get_api_keys_for_model
+    """Generate LLM business analysis synchronously.
 
-    config = get_config()
-    resolved_model = model or config.litellm_model or "gpt-4o"
-    resolved_api_key = api_key
-    if not resolved_api_key:
-        keys = get_api_keys_for_model(resolved_model, config)
-        if keys:
-            resolved_api_key = keys[0]
-    extra = extra_litellm_params(resolved_model, config)
+    模型/鉴权统一由 Anthropic 网关配置（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL）决定，
+    不再接受调用方传入的 model/api_key。
+    """
+    from src.llm.anthropic_gateway import build_litellm_kwargs, resolve_anthropic_gateway_config
 
     import litellm
+
+    llm_cfg = resolve_anthropic_gateway_config()
+    resolved_model = llm_cfg["model"]
 
     industry = _get_stock_industry(symbol)
     main_business = (intro.get('main_business') or intro.get('主营业务', ''))[:200] if isinstance(intro, dict) else ''
@@ -88,16 +84,14 @@ def _generate_llm_business_analysis(
 
     # Environment analysis
     env_system, env_user = _build_environment_prompt(symbol, industry, main_business, peer_data, macro_data)
-    kwargs = {"model": resolved_model, "messages": [
-        {"role": "system", "content": env_system},
-        {"role": "user", "content": env_user},
-    ], "stream": False}
-    if resolved_api_key:
-        kwargs["api_key"] = resolved_api_key
-    if extra.get("api_base"):
-        kwargs["api_base"] = extra["api_base"]
-    if extra.get("extra_headers"):
-        kwargs["extra_headers"] = extra["extra_headers"]
+    kwargs = build_litellm_kwargs(
+        llm_cfg,
+        stream=False,
+        messages=[
+            {"role": "system", "content": env_system},
+            {"role": "user", "content": env_user},
+        ],
+    )
 
     try:
         env_response = litellm.completion(**kwargs)

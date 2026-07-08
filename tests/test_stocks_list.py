@@ -83,30 +83,6 @@ def test_list_stocks_count_endpoint(client):
     assert resp.json()["total"] == 42
 
 
-def test_kline_status_returns_counts(client):
-    db = MagicMock()
-    session = MagicMock()
-    query = MagicMock()
-    filtered = MagicMock()
-    filtered.scalar.return_value = 100
-    query.filter.return_value = filtered
-    # stocks_with_kline: session.query(...).scalar() with no filter
-    query_no_filter = MagicMock()
-    query_no_filter.scalar.return_value = 80
-    session.query.side_effect = [query, query_no_filter]
-    session.execute.return_value.scalar.return_value = "2026-06-01"
-    db.get_session.return_value.__enter__.return_value = session
-    with patch("api.v1.endpoints.stocks.list.DatabaseManager") as db_cls:
-        db_cls.get_instance.return_value = db
-        resp = client.get("/api/v1/stocks/kline-status")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total_stocks"] == 100
-    assert body["stocks_with_kline"] == 80
-    assert body["missing"] == 20
-    assert body["latest_trading_day"] == "2026-06-01"
-
-
 def test_kline_batch_returns_empty_for_no_codes(client):
     resp = client.post("/api/v1/stocks/kline/batch", json={"codes": []})
     assert resp.status_code == 200

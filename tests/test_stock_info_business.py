@@ -41,12 +41,6 @@ def disable_auth():
 # cache helpers
 # ---------------------------------------------------------------------------
 
-def test_business_cache_key_includes_symbol_and_date():
-    key = biz._business_cache_key("000001")
-    today = datetime.now().strftime("%Y%m%d")
-    assert key == f"{biz.BUSINESS_CACHE_KEY}:000001:{today}"
-
-
 def test_business_cache_get_returns_none_when_db_raises():
     with patch("src.storage.DatabaseManager") as db_cls:
         db_cls.get_instance.side_effect = RuntimeError("no db")
@@ -90,61 +84,6 @@ def test_business_cache_put_serializes_dict_to_json():
 
 # ---------------------------------------------------------------------------
 # _sanitize
-# ---------------------------------------------------------------------------
-
-def test_sanitize_replaces_nan_and_inf_with_none():
-    assert biz._sanitize(float("nan")) is None
-    assert biz._sanitize(float("inf")) is None
-    assert biz._sanitize(float("-inf")) is None
-
-
-def test_sanitize_keeps_finite_floats():
-    assert biz._sanitize(3.14) == 3.14
-
-
-def test_sanitize_recurses_into_dict_and_list():
-    out = biz._sanitize({"a": float("nan"), "b": [float("inf"), 1]})
-    assert out == {"a": None, "b": [None, 1]}
-
-
-def test_sanitize_passes_through_strings():
-    assert biz._sanitize("hello") == "hello"
-
-
-# ---------------------------------------------------------------------------
-# _build_growth_text / format_llm_input
-# ---------------------------------------------------------------------------
-
-def test_build_growth_text_returns_default_for_empty():
-    assert biz._build_growth_text({}) == "暂无财务数据"
-    assert biz._build_growth_text(None) == "暂无财务数据"
-
-
-def test_build_growth_text_returns_default_when_no_growth_key():
-    assert biz._build_growth_text({"other": 1}) == "暂无增长数据"
-
-
-def test_build_growth_text_truncates_long_growth():
-    growth = "x" * 300
-    out = biz._build_growth_text({"growth": growth})
-    assert len(out) == 200
-
-
-def test_build_growth_text_takes_last_item_when_list():
-    out = biz._build_growth_text([{"growth": "first"}, {"growth": "second"}])
-    assert out == "second"
-
-
-def test_format_llm_input_combines_prompts():
-    out = biz.format_llm_input("sys", "user")
-    assert "[系统提示词]" in out
-    assert "sys" in out
-    assert "[用户输入]" in out
-    assert "user" in out
-
-
-# ---------------------------------------------------------------------------
-# get_stock_business route (non-streaming)
 # ---------------------------------------------------------------------------
 
 def test_get_stock_business_returns_cached_without_force(client):

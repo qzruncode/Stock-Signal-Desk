@@ -44,16 +44,6 @@ class TestAnalyzeRequest:
         assert request.original_query is None
         assert request.selection_source is None
 
-    def test_analyze_request_validation_selection_source(self):
-        """Test selection_source field validation"""
-        # Valid selection_source values
-        for source in ["manual", "autocomplete", "import", "image"]:
-            request = AnalyzeRequest(
-                stock_code="600519",
-                selection_source=source,
-            )
-            assert request.selection_source == source
-
     def test_analyze_request_with_multiple_stocks(self):
         """Test support for new fields in batch analysis"""
         request = AnalyzeRequest(

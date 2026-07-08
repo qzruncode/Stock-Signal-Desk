@@ -141,7 +141,8 @@ class DatabaseManager(
         self._sqlite_file_db = self._is_sqlite_engine and self._is_file_sqlite_database()
         self._install_sqlite_pragma_handler()
 
-        if self._is_sqlite_engine and self._sqlite_file_db:
+        if self._is_sqlite_engine:
+            # 文件库与内存库（测试）都需要建表；此前内存库被漏掉导致测试 no such table。
             ensure_compatible_schema(self._engine, self._is_sqlite_engine)
             self._ensure_compatible_schema()
 

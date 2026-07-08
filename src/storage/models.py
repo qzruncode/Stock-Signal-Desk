@@ -807,7 +807,7 @@ class MacroIndicator(Base):
 
     __table_args__ = (
         UniqueConstraint('indicator', 'period', name='uix_macro_indicator_period'),
-        Index('ix_macro_indicator_period', 'indicator', 'period'),
+        Index('ix_macro_indicator_indicator_period', 'indicator', 'period'),
     )
 
 

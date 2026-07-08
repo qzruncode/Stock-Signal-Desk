@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import re
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -32,6 +30,11 @@ from api.v1.endpoints.agent.tools import (
     _maybe_attach_search_fallback,
 )
 from src.agent.tool_registry import ToolRegistry
+from src.llm.anthropic_gateway import (
+    AnthropicGatewayConfigError,
+    build_litellm_kwargs,
+    resolve_anthropic_gateway_config,
+)
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -77,12 +80,10 @@ SYSTEM_PROMPT = """\
 """
 
 
-class AgentModelConfigError(Exception):
-    """Setting 页「模型设置」的 Anthropic 配置缺失时抛出。"""
+# 兼容别名：历史代码与测试以 ``AgentModelConfigError`` 捕获网关配置缺失错误。
+# Phase 6 测试迁移后将移除此别名，统一改用 ``AnthropicGatewayConfigError``。
+AgentModelConfigError = AnthropicGatewayConfigError
 
-
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_TRAILING_SGR_FRAGMENT_RE = re.compile(r"(?:\[(?:0|1|2|3|4|5|7|9)(?:;\d+)*m\])+$")
 
 # 历史轮 tool 结果中的「明细数组」字段：这些是单次压缩保留给当前轮 LLM 看的细节，
 # 进入下一轮后已无价值（模型只引用最新结论），裁掉可显著降低 token 累积。
@@ -265,90 +266,16 @@ def _normalize_incoming_messages(messages: List[Dict[str, Any]]) -> List[Dict[st
     return normalized
 
 
-def _clean_model_name(model_name: str) -> str:
-    """Remove terminal style fragments that can be pasted into the settings field."""
-    cleaned = _ANSI_ESCAPE_RE.sub("", model_name).strip()
-    return _TRAILING_SGR_FRAGMENT_RE.sub("", cleaned).strip()
+# ---------------------------------------------------------------------------
+# 模型配置 / litellm kwargs 组装已收敛到共享 helper ``src.llm.anthropic_gateway``。
+# 此处保留薄封装别名，便于本文件内调用点维持原读法；``stream`` 由调用方显式传入。
+# ---------------------------------------------------------------------------
+_get_llm_config = resolve_anthropic_gateway_config
 
 
-# 模型名上下文窗口后缀：用户在 Setting 页填的模型名可能带 [1m] 表示 1M 上下文窗口，
-# 无后缀则默认 200k。后缀仅用于本地窗口判定，传给 litellm/网关前必须剥离（否则网关 400）。
-_CONTEXT_WINDOW_SUFFIX_RE = re.compile(r"\s*\[\s*1m\s*\]\s*$", re.IGNORECASE)
-_DEFAULT_CONTEXT_WINDOW = 200_000
-_1M_CONTEXT_WINDOW = 1_000_000
-
-
-def _parse_model_context_window(model_name: str) -> tuple[str, int]:
-    """从模型名解析上下文窗口：带 [1m] 后缀 → 1,000,000，否则 200,000。
-
-    返回 (剥离后缀的干净模型名, 窗口 token 数)。后缀大小写不敏感、允许内部空格。
-    """
-    if _CONTEXT_WINDOW_SUFFIX_RE.search(model_name):
-        clean = _CONTEXT_WINDOW_SUFFIX_RE.sub("", model_name).strip()
-        return clean, _1M_CONTEXT_WINDOW
-    return model_name, _DEFAULT_CONTEXT_WINDOW
-
-
-def _get_llm_config() -> Dict[str, Any]:
-    """Resolve the agent chat model config from the Setting page (ANTHROPIC_*).
-
-    仅使用 Setting 页「模型设置」保存的接入地址、鉴权令牌和主模型；三者任一
-    缺失即报错，不回落到 AGENT_LITELLM_MODEL / litellm_model 等其他来源。
-    """
-    base_url = (os.getenv("ANTHROPIC_BASE_URL") or "").strip()
-    auth_token = (os.getenv("ANTHROPIC_AUTH_TOKEN") or "").strip()
-    raw_model = os.getenv("ANTHROPIC_MODEL") or ""
-
-    missing = []
-    if not base_url:
-        missing.append("接入地址(ANTHROPIC_BASE_URL)")
-    if not auth_token:
-        missing.append("鉴权令牌(ANTHROPIC_AUTH_TOKEN)")
-    if not raw_model.strip():
-        missing.append("主模型(ANTHROPIC_MODEL)")
-    if missing:
-        raise AgentModelConfigError(
-            "AI 助手模型未配置完整，请前往「设置 - 模型设置」补全：" + "、".join(missing)
-        )
-
-    # 先解析 [1m] 窗口后缀（必须先于 _clean_model_name：SGR 正则会误吃 [1m] 字面后缀），
-    # 再清洗 ANSI 转义。后缀仅用于本地窗口判定，传给 litellm/网关前剥离。
-    stripped_model, context_window = _parse_model_context_window(raw_model.strip())
-    model_name = _clean_model_name(stripped_model)
-
-    return {
-        "model": model_name,
-        "custom_llm_provider": "anthropic",
-        "api_key": auth_token,
-        "api_base": base_url,
-        "extra_headers": {"authorization": f"Bearer {auth_token}"},
-        "context_window": context_window,
-    }
-
-
-def _build_llm_kwargs(
-    llm_cfg: Dict[str, Any], **extra: Any
-) -> Dict[str, Any]:
-    """Assemble litellm.acompletion kwargs from the agent model config.
-
-    合并基础鉴权字段（model/api_key/api_base/custom_llm_provider/extra_headers，
-    缺省不写）与调用方额外参数（messages/tools/tool_choice 等）。两处调用
-    （_run_react_loop / _stream_final_answer_without_tools）共用，避免重复维护。
-    """
-    kwargs: Dict[str, Any] = {
-        "model": llm_cfg["model"],
-        "stream": True,
-    }
-    if llm_cfg.get("api_key"):
-        kwargs["api_key"] = llm_cfg["api_key"]
-    if llm_cfg.get("api_base"):
-        kwargs["api_base"] = llm_cfg["api_base"]
-    if llm_cfg.get("custom_llm_provider"):
-        kwargs["custom_llm_provider"] = llm_cfg["custom_llm_provider"]
-    if llm_cfg.get("extra_headers"):
-        kwargs["extra_headers"] = llm_cfg["extra_headers"]
-    kwargs.update(extra)
-    return kwargs
+def _build_llm_kwargs(llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any) -> Dict[str, Any]:
+    """Assemble litellm kwargs from the gateway config (delegates to shared helper)."""
+    return build_litellm_kwargs(llm_cfg, stream=stream, **extra)
 
 
 # ---------------------------------------------------------------------------
@@ -401,8 +328,7 @@ async def _summarize_for_compaction(
             ensure_ascii=False, default=str,
         )},
     ]
-    kwargs = _build_llm_kwargs(llm_cfg, messages=compact_messages)
-    kwargs["stream"] = False  # 摘要非流式，直接拿完整文本
+    kwargs = _build_llm_kwargs(llm_cfg, stream=False, messages=compact_messages)  # 摘要非流式，直接拿完整文本
     try:
         response = await litellm.acompletion(**kwargs)
         text = ""
@@ -424,7 +350,7 @@ async def _compact_history_if_needed(
 
     返回可能被压缩后的 full_messages。未超阈值或无法压缩时原样返回。
     """
-    context_window = llm_cfg.get("context_window") or _DEFAULT_CONTEXT_WINDOW
+    context_window = llm_cfg.get("context_window") or 200_000
     threshold = int(context_window * _CONTEXT_COMPACT_RATIO)
     tokens_before = _estimate_messages_tokens(full_messages, llm_cfg["model"])
     if tokens_before < threshold:
@@ -495,7 +421,7 @@ async def _stream_final_answer_without_tools(
         },
     ]
 
-    kwargs = _build_llm_kwargs(llm_cfg, messages=forced_messages)
+    kwargs = _build_llm_kwargs(llm_cfg, stream=True, messages=forced_messages)
 
     try:
         response = await litellm.acompletion(**kwargs)
@@ -542,6 +468,7 @@ async def _run_react_loop(
 
     kwargs = _build_llm_kwargs(
         llm_cfg,
+        stream=True,
         messages=full_messages,
         tools=tools,
         tool_choice="auto",

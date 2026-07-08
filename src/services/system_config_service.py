@@ -18,21 +18,11 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import requests  # noqa: F401 — re-exported for test patches.
 
 from src.config import (
-    ANSPIRE_LLM_BASE_URL_DEFAULT,  # noqa: F401 — re-exported for compatibility.
-    ANSPIRE_LLM_MODEL_DEFAULT,  # noqa: F401
-    SUPPORTED_LLM_CHANNEL_PROTOCOLS,  # noqa: F401
     Config,
-    _get_litellm_provider,  # noqa: F401
-    _uses_direct_env_provider,  # noqa: F401
-    canonicalize_llm_channel_protocol,  # noqa: F401
-    channel_allows_empty_api_key,  # noqa: F401
-    get_configured_llm_models,  # noqa: F401
     normalize_news_strategy_profile,
-    normalize_llm_channel_model,  # noqa: F401
     parse_env_bool,  # noqa: F401
     parse_env_int,  # noqa: F401
     resolve_news_window_days,
-    resolve_llm_channel_protocol,  # noqa: F401
     setup_env,
 )
 from src.core.config_manager import ConfigManager
@@ -44,13 +34,8 @@ from src.core.config_registry import (
 )
 
 from src.services.system_config._display import DisplayMixin
-from src.services.system_config._llm_capabilities import LLMCapabilitiesMixin
-from src.services.system_config._llm_channel_validation import LLMChannelValidationMixin
-from src.services.system_config._llm_diagnostics import LLMDiagnosticsMixin
-from src.services.system_config._llm_operations import LLMOperationsMixin
 from src.services.system_config._notifications import NotificationsMixin
 from src.services.system_config._setup_status import SetupStatusMixin
-from src.services.system_config._types import _LLMDiagnostic, _normalize_agent_model  # noqa: F401
 from src.services.system_config._validation import ValidationMixin
 
 logger = logging.getLogger(__name__)
@@ -81,12 +66,8 @@ class ConfigImportError(Exception):
 
 
 class SystemConfigService(
-    LLMOperationsMixin,
     NotificationsMixin,
     SetupStatusMixin,
-    LLMCapabilitiesMixin,
-    LLMChannelValidationMixin,
-    LLMDiagnosticsMixin,
     ValidationMixin,
     DisplayMixin,
 ):

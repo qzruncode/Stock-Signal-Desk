@@ -27,10 +27,7 @@ import logging
 # 以保留旧测试 `patch("src.analyzer.get_config", ...)` 的行为。
 from src.config import (
     Config,
-    extra_litellm_params,
-    get_api_keys_for_model,
     get_config,
-    get_configured_llm_models,
     resolve_news_window_days,
 )
 from src.data.stock_mapping import STOCK_NAME_MAP
@@ -124,10 +121,7 @@ __all__ = [
     "AnalysisReportSchema",
     "apply_litellm_generation_params",
     "call_litellm_with_param_recovery",
-    "extra_litellm_params",
-    "get_api_keys_for_model",
     "get_config",
-    "get_configured_llm_models",
     "get_market_guidelines",
     "get_market_role",
     "get_no_data_text",

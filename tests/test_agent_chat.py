@@ -101,97 +101,9 @@ class _FakeController:
 
 
 # ---------------------------------------------------------------------------
-# _get_llm_config
+# _get_llm_config 的解析逻辑已迁移至 src.llm.anthropic_gateway，
+# 相关测试见 tests/test_anthropic_gateway.py。
 # ---------------------------------------------------------------------------
-
-def test_get_llm_config_uses_anthropic_settings_env():
-    with patch.dict(
-        chat_mod.os.environ,
-        {
-            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
-            "ANTHROPIC_AUTH_TOKEN": "token-123",
-            "ANTHROPIC_MODEL": "claude-sonnet-4-6",
-        },
-        clear=True,
-    ):
-        cfg = chat_mod._get_llm_config()
-
-    assert cfg == {
-        "model": "claude-sonnet-4-6",
-        "custom_llm_provider": "anthropic",
-        "api_key": "token-123",
-        "api_base": "https://anthropic-gateway.example/v1",
-        "extra_headers": {"authorization": "Bearer token-123"},
-        "context_window": 200000,
-    }
-
-
-def test_get_llm_config_keeps_gateway_model_name_with_provider_prefix():
-    with patch.dict(
-        chat_mod.os.environ,
-        {
-            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
-            "ANTHROPIC_AUTH_TOKEN": "token-123",
-            "ANTHROPIC_MODEL": "openai/glm-5.2",
-        },
-        clear=True,
-    ):
-        cfg = chat_mod._get_llm_config()
-
-    assert cfg["model"] == "openai/glm-5.2"
-    assert cfg["custom_llm_provider"] == "anthropic"
-
-
-def test_get_llm_config_strips_saved_setting_values():
-    with patch.dict(
-        chat_mod.os.environ,
-        {
-            "ANTHROPIC_BASE_URL": "  https://anthropic-gateway.example/v1  ",
-            "ANTHROPIC_AUTH_TOKEN": "  token-123  ",
-            "ANTHROPIC_MODEL": "  claude-sonnet-4-6  ",
-        },
-        clear=True,
-    ):
-        cfg = chat_mod._get_llm_config()
-
-    assert cfg["api_base"] == "https://anthropic-gateway.example/v1"
-    assert cfg["api_key"] == "token-123"
-    assert cfg["model"] == "claude-sonnet-4-6"
-
-
-def test_get_llm_config_removes_pasted_terminal_style_fragments_from_model():
-    with patch.dict(
-        chat_mod.os.environ,
-        {
-            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
-            "ANTHROPIC_AUTH_TOKEN": "token-123",
-            "ANTHROPIC_MODEL": "\x1b[1mopenai/glm-5.2[1m]",
-        },
-        clear=True,
-    ):
-        cfg = chat_mod._get_llm_config()
-
-    assert cfg["model"] == "openai/glm-5.2"
-    assert cfg["custom_llm_provider"] == "anthropic"
-
-
-def test_get_llm_config_errors_when_anthropic_settings_incomplete():
-    with patch.dict(
-        chat_mod.os.environ,
-        {
-            "ANTHROPIC_BASE_URL": "https://anthropic-gateway.example/v1",
-            "ANTHROPIC_AUTH_TOKEN": "",
-            "ANTHROPIC_MODEL": "",
-        },
-        clear=True,
-    ):
-        with pytest.raises(chat_mod.AgentModelConfigError) as exc_info:
-            chat_mod._get_llm_config()
-
-    message = str(exc_info.value)
-    assert "AI 助手模型未配置完整" in message
-    assert "鉴权令牌(ANTHROPIC_AUTH_TOKEN)" in message
-    assert "主模型(ANTHROPIC_MODEL)" in message
 
 
 # ---------------------------------------------------------------------------
@@ -851,32 +763,6 @@ def test_run_react_loop_normalizes_aisdk_history_before_llm_call():
 # ---------------------------------------------------------------------------
 # 上下文窗口解析 + token 估算 + 自动压缩
 # ---------------------------------------------------------------------------
-
-def test_parse_model_context_window():
-    """[1m] 后缀 → 1M 窗口并剥离；无后缀 → 200k。大小写/空格不敏感。"""
-    assert chat_mod._parse_model_context_window("openai/glm-5.2[1m]") == ("openai/glm-5.2", 1_000_000)
-    assert chat_mod._parse_model_context_window("openai/glm-5.2") == ("openai/glm-5.2", 200_000)
-    assert chat_mod._parse_model_context_window("GLM[1M]") == ("GLM", 1_000_000)
-    assert chat_mod._parse_model_context_window("model[ 1m ]") == ("model", 1_000_000)
-    # 后缀在中间不算（仅末尾）
-    assert chat_mod._parse_model_context_window("[1m]model") == ("[1m]model", 200_000)
-
-
-def test_get_llm_config_strips_1m_suffix_and_sets_window():
-    """带 [1m] 的模型名：传给 litellm 的剥离后缀，context_window=1M。"""
-    with patch.dict(
-        chat_mod.os.environ,
-        {
-            "ANTHROPIC_BASE_URL": "https://gw.example/v1",
-            "ANTHROPIC_AUTH_TOKEN": "tok",
-            "ANTHROPIC_MODEL": "openai/glm-5.2[1m]",
-        },
-        clear=True,
-    ):
-        cfg = chat_mod._get_llm_config()
-    assert cfg["model"] == "openai/glm-5.2"  # 后缀剥离
-    assert cfg["context_window"] == 1_000_000
-
 
 def test_estimate_messages_tokens_fallback_on_error():
     """litellm.token_counter 抛错时回退字符粗估，返回正整数。"""

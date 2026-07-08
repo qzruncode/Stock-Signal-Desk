@@ -4,39 +4,25 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.deps import get_system_config_service
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.system_config import (
-    DiscoverLLMChannelModelsRequest,
-    DiscoverLLMChannelModelsResponse,
-    ExportSystemConfigResponse,
-    ImportSystemConfigRequest,
     SystemConfigConflictResponse,
     SystemConfigResponse,
     SystemConfigSchemaResponse,
     SetupStatusResponse,
     SystemConfigValidationErrorResponse,
-    TestLLMChannelRequest,
-    TestLLMChannelResponse,
     TestNotificationChannelRequest,
     TestNotificationChannelResponse,
     UpdateSystemConfigRequest,
     UpdateSystemConfigResponse,
-    ValidateSystemConfigRequest,
-    ValidateSystemConfigResponse,
 )
 from src.services.system_config_service import (
     ConfigConflictError,
-    ConfigImportError,
     ConfigValidationError,
     SystemConfigService,
-)
-from api.v1.endpoints._auth import (
-    EnvBackupAccessDenied,
-    _allow_env_backup_access,
-    _raise_env_backup_access_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,119 +123,6 @@ def update_system_config(
         )
 
 
-@router.get(
-    "/config/export",
-    response_model=ExportSystemConfigResponse,
-    responses={
-        200: {"description": "Env exported"},
-        401: {"description": "Unauthorized", "model": ErrorResponse},
-        403: {"description": "Env backup disabled", "model": ErrorResponse},
-        500: {"description": "Internal server error", "model": ErrorResponse},
-    },
-    summary="Export env backup",
-    description="Return the raw saved .env content for configuration backup.",
-)
-def export_system_config(
-    request: Request,
-    service: SystemConfigService = Depends(get_system_config_service),
-) -> ExportSystemConfigResponse:
-    try:
-        _allow_env_backup_access(request)
-    except EnvBackupAccessDenied as exc:
-        logger.warning("System config export blocked: %s", exc)
-        _raise_env_backup_access_error(exc)
-
-    try:
-        payload = service.export_env()
-        return ExportSystemConfigResponse.model_validate(payload)
-    except Exception as exc:
-        logger.error("Failed to export system configuration: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": "Failed to export system configuration"},
-        )
-
-
-@router.post(
-    "/config/import",
-    response_model=UpdateSystemConfigResponse,
-    responses={200: {"description": "Env imported"}, 400: {"description": "Import failed"}, 401: {"description": "Unauthorized", "model": ErrorResponse}, 403: {"description": "Env backup disabled", "model": ErrorResponse}, 409: {"description": "Version conflict", "model": SystemConfigConflictResponse}, 500: {"description": "Internal server error", "model": ErrorResponse}},
-    summary="Import env backup",
-    description="Merge raw .env text into the saved configuration with config version conflict protection.",
-)
-def import_system_config(
-    request: ImportSystemConfigRequest,
-    request_obj: Request,
-    service: SystemConfigService = Depends(get_system_config_service),
-) -> UpdateSystemConfigResponse:
-    try:
-        _allow_env_backup_access(request_obj)
-    except EnvBackupAccessDenied as exc:
-        logger.warning("System config import blocked: %s", exc)
-        _raise_env_backup_access_error(exc)
-
-    try:
-        payload = service.import_env(
-            config_version=request.config_version,
-            content=request.content,
-            reload_now=request.reload_now,
-        )
-        return UpdateSystemConfigResponse.model_validate(payload)
-    except ConfigImportError as exc:
-        raise HTTPException(status_code=400, detail={"error": "invalid_import_file", "message": exc.message})
-    except ConfigValidationError as exc:
-        raise HTTPException(status_code=400, detail={"error": "validation_failed", "message": "System configuration validation failed", "issues": exc.issues})
-    except ConfigConflictError as exc:
-        raise HTTPException(status_code=409, detail={"error": "config_version_conflict", "message": "Configuration has changed, please reload and retry", "current_config_version": exc.current_version})
-    except Exception as exc:
-        logger.error("Failed to import system configuration: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Failed to import system configuration"})
-
-
-@router.post(
-    "/config/validate",
-    response_model=ValidateSystemConfigResponse,
-    responses={200: {"description": "Validation completed"}, 500: {"description": "Internal server error", "model": ErrorResponse}},
-    summary="Validate system configuration",
-    description="Validate submitted configuration values without writing to .env.",
-)
-def validate_system_config(
-    request: ValidateSystemConfigRequest,
-    service: SystemConfigService = Depends(get_system_config_service),
-) -> ValidateSystemConfigResponse:
-    try:
-        payload = service.validate(items=[item.model_dump() for item in request.items])
-        return ValidateSystemConfigResponse.model_validate(payload)
-    except Exception as exc:
-        logger.error("Failed to validate system configuration: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Failed to validate system configuration"})
-
-
-@router.post(
-    "/config/llm/test-channel",
-    response_model=TestLLMChannelResponse,
-    responses={200: {"description": "Channel test completed"}, 500: {"description": "Internal server error", "model": ErrorResponse}},
-    summary="Test one LLM channel",
-    description="Run a minimal LLM request against one unsaved or saved channel definition.",
-)
-def test_llm_channel(
-    request: TestLLMChannelRequest,
-    service: SystemConfigService = Depends(get_system_config_service),
-) -> TestLLMChannelResponse:
-    try:
-        payload = service.test_llm_channel(
-            name=request.name, protocol=request.protocol, base_url=request.base_url,
-            api_key=request.api_key, models=request.models, enabled=request.enabled,
-            timeout_seconds=request.timeout_seconds, capability_checks=request.capability_checks,
-        )
-        return TestLLMChannelResponse.model_validate(payload)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": str(exc)})
-    except Exception as exc:
-        logger.error("Failed to test LLM channel: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Failed to test LLM channel"})
-
-
 @router.post(
     "/config/notification/test-channel",
     response_model=TestNotificationChannelResponse,
@@ -273,30 +146,6 @@ def test_notification_channel(
     except Exception as exc:
         logger.error("Failed to test notification channel: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Failed to test notification channel"})
-
-
-@router.post(
-    "/config/llm/discover-models",
-    response_model=DiscoverLLMChannelModelsResponse,
-    responses={200: {"description": "Model discovery completed"}, 500: {"description": "Internal server error", "model": ErrorResponse}},
-    summary="Discover models for one LLM channel",
-    description="Call one unsaved or saved channel's `/models` endpoint and return discovered model IDs.",
-)
-def discover_llm_channel_models(
-    request: DiscoverLLMChannelModelsRequest,
-    service: SystemConfigService = Depends(get_system_config_service),
-) -> DiscoverLLMChannelModelsResponse:
-    try:
-        payload = service.discover_llm_channel_models(
-            name=request.name, protocol=request.protocol, base_url=request.base_url,
-            api_key=request.api_key, models=request.models, timeout_seconds=request.timeout_seconds,
-        )
-        return DiscoverLLMChannelModelsResponse.model_validate(payload)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail={"error": "validation_error", "message": str(exc)})
-    except Exception as exc:
-        logger.error("Failed to discover LLM channel models: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": "Failed to discover LLM channel models"})
 
 
 @router.get(

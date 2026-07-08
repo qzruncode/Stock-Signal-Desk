@@ -280,6 +280,30 @@ class NotificationsMixin:
             sanitized["target"] = cls._mask_notification_target(str(sanitized.get("target") or ""))
         return sanitized
 
+    @staticmethod
+    def _sanitize_llm_error_text(text: Any) -> str:
+        """Redact secrets from error/diagnostic text before surfacing to callers.
+
+        从原 _llm_diagnostics 模块迁入：notification 测试结果脱敏复用此逻辑。
+        """
+        if text is None:
+            return ""
+        sanitized = str(text).strip()
+        if not sanitized:
+            return ""
+
+        patterns = [
+            (r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?([^\s,;]+)", r"\1[REDACTED]"),
+            (r"(?i)(api[_-]?key\s*[:=]\s*)([^\s,;]+)", r"\1[REDACTED]"),
+            (r"(?i)(cookie\s*[:=]\s*)([^\s,;]+)", r"\1[REDACTED]"),
+            (r"(?i)bearer\s+[a-z0-9._\-]+", "Bearer [REDACTED]"),
+            (r"(?i)sk-[a-z0-9_\-]+", "[REDACTED]"),
+        ]
+        for pattern, replacement in patterns:
+            sanitized = re.sub(pattern, replacement, sanitized)
+        sanitized = " ".join(sanitized.split())
+        return sanitized[:300]
+
     @classmethod
     def _sanitize_notification_text(cls, text: Any) -> str:
         sanitized = cls._sanitize_llm_error_text(text)

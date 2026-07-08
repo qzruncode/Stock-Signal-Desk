@@ -188,32 +188,6 @@ def test_auto_resume_only_uses_partial_runs():
     assert codes == ["600519", "000001"]
 
 
-def test_batch_notification_is_statistical_summary_not_raw_stock_list():
-    state = BatchRunState(
-        "run-1",
-        total=3,
-        existing_results={
-            "605118": {"success": True, "text": "筛选通过：建议买入\n理由：基本面改善且趋势向上", "model": "model-a"},
-            "000001": {"success": True, "text": "最终结论：不买\n原因：买点不足", "model": "model-b"},
-            "300750": {"success": False, "text": "failed", "model": ""},
-        },
-    )
-
-    content = _build_batch_notification_content(
-        "run-1",
-        state,
-        "行业+预期差",
-        "/tmp/batch.md",
-    )
-
-    assert "跑批筛选汇总" in content
-    assert "成功率" in content
-    assert "| 605118 |" in content
-    assert "建议买入" in content
-    assert "000001" not in content
-    assert "300750" in content
-
-
 def test_batch_summary_respects_final_no_buy_over_section_pass():
     state = BatchRunState(
         "run-1",

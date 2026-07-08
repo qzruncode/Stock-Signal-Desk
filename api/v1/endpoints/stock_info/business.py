@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator
 
 from fastapi import Query
 from fastapi.responses import StreamingResponse
@@ -33,8 +33,6 @@ logger = logging.getLogger(__name__)
 def get_stock_business(
     symbol: str = Query(..., description="股票代码，如 000001、600519"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
-    model: Optional[str] = Query(None, description="指定 LLM 模型"),
-    api_key: Optional[str] = Query(None, description="指定 API Key"),
 ):
     """Get stock business analysis with LLM insights. Returns cached data if available."""
     normalized = _normalize_symbol(symbol)
@@ -57,8 +55,6 @@ def get_stock_business(
         profit_forecast=profit_forecast,
         financial_summary=financial_summary,
         events=events,
-        model=model,
-        api_key=api_key,
     )
 
     _business_cache_put(normalized, result)
@@ -68,8 +64,6 @@ def get_stock_business(
 @router.get("/business/stream", summary="获取个股业务分析数据 (SSE 流)")
 async def get_stock_business_stream(
     symbol: str = Query(..., description="股票代码，如 000001、600519"),
-    model: Optional[str] = Query(None, description="指定 LLM 模型"),
-    api_key: Optional[str] = Query(None, description="指定 API Key"),
 ):
     """Stream stock business analysis via SSE with real-time progress."""
     normalized = _normalize_symbol(symbol)
@@ -114,8 +108,6 @@ async def get_stock_business_stream(
                     on_env_text=_on_env_text,
                     on_track_text=_on_track_text,
                     on_catalyst_text=_on_catalyst_text,
-                    model=model,
-                    api_key=api_key,
                 )
 
                 if cancel_event.is_set():

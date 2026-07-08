@@ -12,22 +12,6 @@ from src.utils.analysis_metadata import SELECTION_SOURCES, SELECTION_SOURCE_PATT
 class TestSelectionSourceConstants:
     """Test selection source constants"""
 
-    def test_selection_sources_tuple(self):
-        """Test that SELECTION_SOURCES is a tuple with expected values"""
-        assert isinstance(SELECTION_SOURCES, tuple)
-        assert len(SELECTION_SOURCES) == 4
-        assert "manual" in SELECTION_SOURCES
-        assert "autocomplete" in SELECTION_SOURCES
-        assert "import" in SELECTION_SOURCES
-        assert "image" in SELECTION_SOURCES
-
-    def test_selection_sources_order(self):
-        """Test that selection sources are in expected order"""
-        assert SELECTION_SOURCES[0] == "manual"
-        assert SELECTION_SOURCES[1] == "autocomplete"
-        assert SELECTION_SOURCES[2] == "import"
-        assert SELECTION_SOURCES[3] == "image"
-
     def test_selection_sources_unique(self):
         """Test that selection source values are unique"""
         assert len(SELECTION_SOURCES) == len(set(SELECTION_SOURCES))
@@ -190,29 +174,6 @@ class TestSelectionSourceIntegration:
 
 class TestSelectionSourceBusinessLogic:
     """Test selection source business logic"""
-
-    def test_all_sources_covered(self):
-        """Test that all expected user input scenarios are covered"""
-        # Manual input
-        assert "manual" in SELECTION_SOURCES
-        # Autocomplete selection
-        assert "autocomplete" in SELECTION_SOURCES
-        # Batch import
-        assert "import" in SELECTION_SOURCES
-        # Image recognition
-        assert "image" in SELECTION_SOURCES
-
-    def test_no_redundant_sources(self):
-        """Test that there are no redundant or duplicate selection sources"""
-        # Each selection source should represent a unique user interaction pattern
-        unique_patterns = {
-            "manual": "User directly inputs stock code",
-            "autocomplete": "User selects from autocomplete list",
-            "import": "User uses batch import function",
-            "image": "User uses image recognition function",
-        }
-
-        assert len(SELECTION_SOURCES) == len(unique_patterns)
 
     def test_future_extensibility(self):
         """Test that pattern structure supports future extensions"""

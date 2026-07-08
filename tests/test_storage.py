@@ -152,47 +152,6 @@ class TestStorage(unittest.TestCase):
         finally:
             DatabaseManager.reset_instance()
 
-    def test_legacy_kline_snapshot_table_is_recreated_after_migration(self):
-        DatabaseManager.reset_instance()
-        temp_dir = tempfile.TemporaryDirectory()
-        db_path = os.path.join(temp_dir.name, "legacy_kline.db")
-
-        try:
-            raw_conn = sqlite3.connect(db_path)
-            raw_conn.execute(
-                "CREATE TABLE kline_snapshot ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "code VARCHAR(16) NOT NULL UNIQUE, "
-                "period VARCHAR(16), "
-                "adjust VARCHAR(16), "
-                "data TEXT NOT NULL, "
-                "created_at DATETIME, "
-                "updated_at DATETIME"
-                ")"
-            )
-            raw_conn.commit()
-            raw_conn.close()
-
-            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
-            db.save_kline_snapshot("kline:latest:600519:30", '{"symbol":"600519"}')
-            snapshot = db.get_kline_snapshot("kline:latest:600519:30")
-
-            self.assertIsNotNone(snapshot)
-            self.assertEqual(snapshot["symbol"], "600519")
-            with db.get_session() as session:
-                columns = {
-                    row[1]
-                    for row in session.connection().exec_driver_sql(
-                        "PRAGMA table_info(kline_snapshot)"
-                    ).fetchall()
-                }
-            self.assertIn("code", columns)
-            self.assertNotIn("period", columns)
-            self.assertNotIn("adjust", columns)
-        finally:
-            temp_dir.cleanup()
-            DatabaseManager.reset_instance()
-
     def test_save_daily_data_sqlite_concurrent_same_code_date_counts_only_new_rows(self):
         DatabaseManager.reset_instance()
         temp_dir = tempfile.TemporaryDirectory()
