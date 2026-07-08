@@ -99,6 +99,18 @@ class ChatSessionService:
                 return existing.to_dict()
         return self.create_conversation()
 
+    def save_partial_assistant_text(self, conversation_id: str, assistant_text: str) -> None:
+        """增量保存"进行中"的 assistant 文本(刷新后可恢复已生成部分)。
+
+        用固定 message_id(upsert)反复更新同一条记录,不删既有消息。
+        生成完成后,save_conversation_snapshot 的全量覆盖会修正/替换它。
+        """
+        text = (assistant_text or "").strip()
+        if not text:
+            return
+        message_id = f"{conversation_id}-assistant-pending"
+        self.db.upsert_partial_assistant_message(conversation_id, message_id, text)
+
     def save_conversation_snapshot(
         self,
         conversation_id: str,

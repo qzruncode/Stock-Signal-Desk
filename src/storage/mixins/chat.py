@@ -173,6 +173,45 @@ class ChatMixin:
                     record.thread_state_json = thread_state_json
                 record.updated_at = timestamp
 
+    def upsert_partial_assistant_message(
+        self,
+        conversation_id: str,
+        message_id: str,
+        content: str,
+    ) -> None:
+        """按 id upsert 单条"进行中"的 assistant 消息(增量持久化用)。
+
+        不删除对话内的其他消息。若同 id 已存在则更新 content,否则追加。
+        用于流式生成过程中周期性保存已生成的 assistant 文本,刷新后可恢复。
+        """
+        safe_id = message_id[:64]
+        timestamp = datetime.now()
+        with self.session_scope() as session:
+            existing = session.execute(
+                select(ChatMessage).where(ChatMessage.id == safe_id)
+            ).scalars().first()
+            if existing is not None:
+                existing.content = content
+                existing.created_at = timestamp
+                return
+            # 追加:sequence 取当前最大值 + 1
+            max_seq = session.execute(
+                select(ChatMessage.sequence)
+                .where(ChatMessage.conversation_id == conversation_id)
+                .order_by(ChatMessage.sequence.desc())
+                .limit(1)
+            ).scalars().first()
+            session.add(
+                ChatMessage(
+                    id=safe_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=content,
+                    sequence=(max_seq or -1) + 1,
+                    created_at=timestamp,
+                )
+            )
+
     # ── Agent conversation messages ──────────────────────────────────────
 
     def save_conversation_message(self, session_id: str, role: str, content: str) -> None:

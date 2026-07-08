@@ -1,15 +1,20 @@
 import type React from 'react';
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { AssistantRuntimeProvider, useThreadRuntime } from '@assistant-ui/react';
+import {
+  AssistantRuntimeProvider,
+  useThreadRuntime,
+  CompositeAttachmentAdapter,
+  SimpleTextAttachmentAdapter,
+} from '@assistant-ui/react';
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
 import type { ExportedMessageRepository } from '@assistant-ui/core';
 import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
 import { extractErrorPayloadText } from '../api/error';
+import { ApprovalContext, type PendingApproval } from '../components/assistant-ui/tool-ui/ApprovalContext';
 
 const Thread = lazy(() => import('../components/assistant-ui/thread'));
 import { ThreadListSidebar } from '../components/assistant-ui/threadlist-sidebar';
-import { useAssistantTools } from '../hooks/useAssistantTools';
 import { cn } from '../utils/cn';
 
 const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => {
@@ -73,6 +78,7 @@ const ChatHomePage: React.FC = () => {
   const [selectedConversationDetail, setSelectedConversationDetail] = useState<ChatConversationDetail | null>(null);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<Record<string, PendingApproval>>({});
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
 
   const refreshConversations = useCallback(async () => {
@@ -120,12 +126,49 @@ const ChatHomePage: React.FC = () => {
     void loadConversationDetail(selectedConversationId);
   }, [loadConversationDetail, selectedConversationId]);
 
+  const handleApproveToolCall = useCallback((toolCallId: string, approved: boolean) => {
+    void (async () => {
+      try {
+        await agentApi.approveToolCall(toolCallId, approved);
+      } catch (err) {
+        console.error('[Chat] approveToolCall failed:', err);
+      } finally {
+        // 无论成功失败,从 pending 列表移除(后端会超时自行处理)
+        setPendingApprovals((prev) => {
+          if (!prev[toolCallId]) return prev;
+          const next = { ...prev };
+          delete next[toolCallId];
+          return next;
+        });
+      }
+    })();
+  }, []);
+
   const runtime = useDataStreamRuntime({
     api: '/api/v1/agent/chat',
     protocol: 'data-stream',
+    adapters: {
+      // 文本类附件(CSV/JSON/MD/TXT)端到端打通:SimpleTextAttachmentAdapter
+      // 在 send() 时把文件内容包成 <attachment> text part,后端 _join_text_parts
+      // 已认 text part,无需后端改动。
+      attachments: new CompositeAttachmentAdapter([new SimpleTextAttachmentAdapter()]),
+    },
     body: () => (
       selectedConversationId ? { conversation_id: selectedConversationId } : undefined
     ),
+    onData: (event) => {
+      // 后端 controller.add_data({"type":"approval-request",...}) 经 2: data chunk 到达
+      const payload = event.data as Record<string, unknown> | undefined;
+      if (payload && payload.type === 'approval-request' && typeof payload.tool_call_id === 'string') {
+        const approval: PendingApproval = {
+          tool_call_id: payload.tool_call_id,
+          tool_name: String(payload.tool_name ?? ''),
+          symbol: String(payload.symbol ?? ''),
+          reason: String(payload.reason ?? ''),
+        };
+        setPendingApprovals((prev) => ({ ...prev, [approval.tool_call_id]: approval }));
+      }
+    },
     onResponse: async (response) => {
       if (response.ok) {
         setStreamError(null);
@@ -134,11 +177,20 @@ const ChatHomePage: React.FC = () => {
       throw new Error(await readStreamErrorMessage(response));
     },
     onError: (error) => {
-      if (error instanceof TypeError && error.message?.includes('enqueue')) {
+      // 用户主动取消(点 Stop):AbortError / DOMException.AbortError 不算错误
+      if (
+        (error instanceof TypeError && error.message?.includes('enqueue')) ||
+        error.name === 'AbortError' ||
+        (error instanceof DOMException && error.name === 'AbortError')
+      ) {
         return;
       }
       console.error('[Chat] Stream error:', error);
       setStreamError(error.message || '对话请求失败，请稍后重试');
+    },
+    onCancel: () => {
+      // 取消由 onError 的 AbortError 过滤兜底,这里仅确保不残留错误态
+      setStreamError(null);
     },
     onFinish: async () => {
       setStreamError(null);
@@ -155,8 +207,6 @@ const ChatHomePage: React.FC = () => {
       await refreshConversations();
     },
   });
-
-  useAssistantTools();
 
   const handleCreateConversation = useCallback(() => {
     void createConversation();
@@ -203,6 +253,7 @@ const ChatHomePage: React.FC = () => {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
+      <ApprovalContext.Provider value={{ pendingApprovals, approveToolCall: handleApproveToolCall }}>
       <ChatRuntimeBridge
         conversationDetail={selectedConversationDetail}
         onThreadRuntime={(threadRuntime) => {
@@ -242,6 +293,7 @@ const ChatHomePage: React.FC = () => {
           }
         }}
       />
+      </ApprovalContext.Provider>
     </AssistantRuntimeProvider>
   );
 };

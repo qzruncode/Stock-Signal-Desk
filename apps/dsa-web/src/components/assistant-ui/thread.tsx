@@ -8,7 +8,9 @@ import {
   ComposerPrimitive,
   MessagePrimitive,
   BranchPickerPrimitive,
+  ActionBarPrimitive,
   useMessage,
+  useThread,
   type TextMessagePartProps,
 } from '@assistant-ui/react';
 import {
@@ -22,9 +24,18 @@ import {
   CheckCircle2Icon,
   Loader2Icon,
   SparklesIcon,
+  SquareIcon,
+  CopyIcon,
+  RefreshCwIcon,
+  PencilIcon,
 } from 'lucide-react';
 import {
   GenericToolUI,
+  KlineToolUI,
+  RealtimeQuotesToolUI,
+  FinancialsToolUI,
+  NewsToolUI,
+  BuyCriteriaToolUI,
 } from '../../hooks/useAssistantTools';
 import {
   ComposerAttachments,
@@ -121,7 +132,15 @@ const UserMessage: FC = () => (
       <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-br-md border border-primary/20 bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm [overflow-wrap:anywhere]">
         <MessagePrimitive.Parts />
       </div>
-      <BranchPicker />
+      <div className="flex items-center gap-1 px-1 opacity-0 transition-opacity group-hover/message:opacity-100">
+        <ActionBarPrimitive.Edit
+          className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          title="编辑并重新发送"
+        >
+          <PencilIcon className="size-3.5" />
+        </ActionBarPrimitive.Edit>
+        <BranchPicker />
+      </div>
     </div>
     <Avatar fallback={<UserIcon className="size-3.5" />} className="chat-avatar-user" />
   </MessagePrimitive.Root>
@@ -140,7 +159,14 @@ const AssistantMessage: FC = () => {
             components={{
               Text: AssistantMarkdownText,
               tools: {
-                Override: GenericToolUI,
+                by_name: {
+                  get_kline: KlineToolUI,
+                  get_realtime_quotes: RealtimeQuotesToolUI,
+                  get_financials: FinancialsToolUI,
+                  search_news: NewsToolUI,
+                  get_buy_criteria_analysis: BuyCriteriaToolUI,
+                },
+                Fallback: GenericToolUI,
               },
             }}
           />
@@ -151,11 +177,36 @@ const AssistantMessage: FC = () => {
             <span>正在生成回答</span>
           </div>
         )}
+        <AssistantActionBar />
         <BranchPicker />
       </div>
     </MessagePrimitive.Root>
   );
 };
+
+/* ── Assistant Action Bar (Copy / Reload) ────────────────────────────── */
+
+const AssistantActionBar: FC = () => (
+  <ActionBarPrimitive.Root
+    hideWhenRunning
+    autohide="not-last"
+    className="mt-1 flex items-center gap-0.5 px-1 opacity-0 transition-opacity group-hover/message:opacity-100 data-[copied]:opacity-100"
+  >
+    <ActionBarPrimitive.Copy
+      copiedDuration={1500}
+      className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground data-[copied]:text-emerald-500"
+      title="复制"
+    >
+      <CopyIcon className="size-3.5" />
+    </ActionBarPrimitive.Copy>
+    <ActionBarPrimitive.Reload
+      className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-30"
+      title="重新生成"
+    >
+      <RefreshCwIcon className="size-3.5" />
+    </ActionBarPrimitive.Reload>
+  </ActionBarPrimitive.Root>
+);
 
 /* ── Avatar ──────────────────────────────────────────────────────────── */
 
@@ -317,37 +368,53 @@ const BranchPicker: FC = () => (
 
 /* ── Composer ────────────────────────────────────────────────────────── */
 
-const Composer: FC = () => (
-  <div className="shrink-0 border-t border-border/70 bg-background/85 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
-    <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-4xl flex-col rounded-2xl border border-border bg-card shadow-[0_18px_50px_hsl(220_22%_34%/0.12)] transition focus-within:border-primary/45 focus-within:shadow-[0_20px_60px_hsl(var(--primary)/0.16)]">
-      <ComposerAttachmentDropzone />
+const Composer: FC = () => {
+  const isRunning = useThread((s) => s.isRunning);
+  return (
+    <div className="shrink-0 border-t border-border/70 bg-background/85 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
+      <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-4xl flex-col rounded-2xl border border-border bg-card shadow-[0_18px_50px_hsl(220_22%_34%/0.12)] transition focus-within:border-primary/45 focus-within:shadow-[0_20px_60px_hsl(var(--primary)/0.16)]">
+        <ComposerAttachmentDropzone />
 
-      <ComposerAttachments />
+        <ComposerAttachments />
 
-      <ComposerPrimitive.Input
-        placeholder="问问市场、个股、板块或财务数据..."
-        className="min-h-16 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-[15px] leading-7 text-foreground placeholder-muted-foreground focus:outline-none sm:px-5"
-        rows={1}
-      />
+        <ComposerPrimitive.Input
+          placeholder="问问市场、个股、板块或财务数据..."
+          className="min-h-16 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-[15px] leading-7 text-foreground placeholder-muted-foreground focus:outline-none sm:px-5"
+          rows={1}
+        />
 
-      <div className="flex items-center justify-between gap-3 px-3 pb-3">
-        <div className="flex items-center gap-2">
-          <ComposerAddAttachment />
-          <span className="hidden text-xs text-muted-foreground sm:inline">实时数据工具会自动按需调用</span>
-        </div>
+        <div className="flex items-center justify-between gap-3 px-3 pb-3">
+          <div className="flex items-center gap-2">
+            <ComposerAddAttachment />
+            <span className="hidden text-xs text-muted-foreground sm:inline">实时数据工具会自动按需调用</span>
+          </div>
 
-        <ComposerPrimitive.Send
-          className={cn(
-            'flex size-9 items-center justify-center rounded-xl',
-            'bg-primary text-primary-foreground shadow-sm transition',
-            'hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-md disabled:translate-y-0 disabled:opacity-30 disabled:shadow-none',
+          {isRunning ? (
+            <ComposerPrimitive.Cancel
+              className={cn(
+                'flex size-9 items-center justify-center rounded-xl',
+                'border border-border bg-card text-foreground shadow-sm transition',
+                'hover:bg-muted disabled:opacity-30',
+              )}
+              title="停止生成"
+            >
+              <SquareIcon className="size-3.5" />
+            </ComposerPrimitive.Cancel>
+          ) : (
+            <ComposerPrimitive.Send
+              className={cn(
+                'flex size-9 items-center justify-center rounded-xl',
+                'bg-primary text-primary-foreground shadow-sm transition',
+                'hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-md disabled:translate-y-0 disabled:opacity-30 disabled:shadow-none',
+              )}
+            >
+              <ArrowUpIcon className="size-4" />
+            </ComposerPrimitive.Send>
           )}
-        >
-          <ArrowUpIcon className="size-4" />
-        </ComposerPrimitive.Send>
-      </div>
-    </ComposerPrimitive.Root>
-  </div>
-);
+        </div>
+      </ComposerPrimitive.Root>
+    </div>
+  );
+};
 
 export default Thread;

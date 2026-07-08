@@ -97,4 +97,12 @@ export const agentApi = {
   async deleteConversation(conversationId: string): Promise<void> {
     await apiClient.delete(`/api/v1/agent/conversations/${conversationId}`);
   },
+
+  /** HITL: 批准或拒绝一个待审批的工具调用(如买入判定)。 */
+  async approveToolCall(toolCallId: string, approved: boolean): Promise<void> {
+    await apiClient.post('/api/v1/agent/approve', {
+      tool_call_id: toolCallId,
+      approved,
+    });
+  },
 };

@@ -44,6 +44,30 @@ MAX_REACT_ITERATIONS = 10
 
 _registry = ToolRegistry()
 
+# ── Human-in-the-Loop: 需要人工确认才能执行的工具 ────────────────────────
+# get_buy_criteria_analysis 会顺序调用 8 次 LLM,耗时且费 token,执行前需用户确认。
+# assistant-stream 0.0.32 无内置 interrupt/resume 原语,这里自建轻量协议:
+#   1. _execute_one_tool 检测到 gated 工具 → controller.add_data 发 approval-request
+#   2. asyncio.Event 阻塞等待,POST /agent/approve 收到用户决定后 set event
+#   3. 批准 → 继续执行;拒绝/超时 → set_response(is_error) 跳过执行
+APPROVAL_TIMEOUT_SECONDS = 180
+GATED_TOOLS = {"get_buy_criteria_analysis"}
+
+
+class _ApprovalState:
+    """单次工具调用的审批等待状态。"""
+
+    __slots__ = ("event", "approved", "symbol")
+
+    def __init__(self, symbol: str) -> None:
+        self.event: asyncio.Event = asyncio.Event()
+        self.approved: Optional[bool] = None
+        self.symbol = symbol
+
+
+# tool_call_id -> _ApprovalState。进程级注册表(单进程 FastAPI 足够)。
+_pending_approvals: Dict[str, _ApprovalState] = {}
+
 SYSTEM_PROMPT = """\
 你是 A 股智能分析助手，擅长股票分析、行业研究和投资辅助。
 
@@ -456,8 +480,13 @@ async def _run_react_loop(
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
     system_prompt: str = "",
+    on_progress=None,
 ) -> str:
-    """Execute the ReAct loop: LLM thinks → calls tools → observes → repeats."""
+    """Execute the ReAct loop: LLM thinks → calls tools → observes → repeats.
+
+    on_progress: 可选回调 async (assistant_text_so_far: str) -> None,每轮迭代末尾
+    调用,用于增量持久化已生成的 assistant 文本(刷新后可恢复)。
+    """
     tools = _registry.get_all_schemas()
     tool_names = set(_registry.get_tool_names())
 
@@ -465,6 +494,8 @@ async def _run_react_loop(
         {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         *_normalize_incoming_messages(messages),
     ]
+
+    assistant_text_acc = ""  # 跨轮累积的 assistant 文本(用于增量持久化)
 
     kwargs = _build_llm_kwargs(
         llm_cfg,
@@ -498,6 +529,7 @@ async def _run_react_loop(
             if delta.content:
                 content_text += delta.content
                 controller.append_text(delta.content)
+                assistant_text_acc += delta.content
             if delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index
@@ -541,19 +573,57 @@ async def _run_react_loop(
                 result_str = f"工具 '{tool_name}' 不存在，可用工具: {', '.join(sorted(tool_names))}"
                 tool.set_response({"error": result_str}, is_error=True)
             else:
-                try:
-                    def _sync_fetch() -> Any:
-                        result = _registry.execute(tool_name, args)
-                        llm_result = _compact_tool_result(tool_name, result)
-                        return _maybe_attach_search_fallback(tool_name, args, llm_result)
+                # HITL: 需要人工确认的工具,执行前等待用户批准
+                gate_approved = True
+                if tool_name in GATED_TOOLS:
+                    gate_symbol = str(args.get("symbol", ""))
+                    approval = _ApprovalState(gate_symbol)
+                    _pending_approvals[tool_call_id] = approval
+                    controller.add_data({
+                        "type": "approval-request",
+                        "tool_call_id": tool_call_id,
+                        "tool_name": tool_name,
+                        "symbol": gate_symbol,
+                        "reason": "将调用 8 次 LLM 进行买入判定,预计 ~30s,是否继续?",
+                    })
+                    try:
+                        await asyncio.wait_for(
+                            approval.event.wait(), timeout=APPROVAL_TIMEOUT_SECONDS
+                        )
+                        gate_approved = approval.approved is True
+                    except asyncio.TimeoutError:
+                        gate_approved = False
+                    finally:
+                        _pending_approvals.pop(tool_call_id, None)
 
-                    llm_result = await asyncio.to_thread(_sync_fetch)
-                    result_str = _format_result(llm_result)
-                    tool.set_response(llm_result if isinstance(llm_result, dict) else {"result": result_str})
-                except Exception as e:
-                    logger.exception("[Agent] Tool execution failed: %s", tool_name)
-                    result_str = f"工具执行失败: {e}"
-                    tool.set_response({"error": result_str}, is_error=True)
+                    if not gate_approved:
+                        result_str = "用户取消买入判定(未执行 8 维分析)"
+                        tool.set_response(
+                            {"error": result_str, "cancelled": True},
+                            is_error=True,
+                        )
+                        # 跳过下面的实际执行
+                        llm_result = None
+                        _skip_exec = True
+                    else:
+                        _skip_exec = False
+                else:
+                    _skip_exec = False
+
+                if not _skip_exec:
+                    try:
+                        def _sync_fetch() -> Any:
+                            result = _registry.execute(tool_name, args)
+                            llm_result = _compact_tool_result(tool_name, result)
+                            return _maybe_attach_search_fallback(tool_name, args, llm_result)
+
+                        llm_result = await asyncio.to_thread(_sync_fetch)
+                        result_str = _format_result(llm_result)
+                        tool.set_response(llm_result if isinstance(llm_result, dict) else {"result": result_str})
+                    except Exception as e:
+                        logger.exception("[Agent] Tool execution failed: %s", tool_name)
+                        result_str = f"工具执行失败: {e}"
+                        tool.set_response({"error": result_str}, is_error=True)
 
             return {
                 "tool_call_id": tool_call_id,
@@ -596,6 +666,13 @@ async def _run_react_loop(
 
         kwargs["messages"] = full_messages
 
+        # 增量持久化:本轮已有 assistant 文本,回调通知外层保存(刷新后可恢复)
+        if on_progress is not None and assistant_text_acc.strip():
+            try:
+                await on_progress(assistant_text_acc)
+            except Exception:
+                logger.debug("[Agent] on_progress save failed (non-fatal)", exc_info=True)
+
     logger.warning("[Agent] ReAct loop hit max iterations without final answer")
     controller.append_text("\n\n已完成多轮数据查询，正在生成最终总结...\n\n")
     return await _stream_final_answer_without_tools(controller, full_messages, llm_cfg)
@@ -632,8 +709,24 @@ async def agent_chat(
             "[Agent] system prompt %s",
             "fallback to source default" if is_fallback else f"from template",
         )
+
+        # 增量持久化:节流(>=3s 一次)把已生成 assistant 文本写库,刷新后可恢复
+        last_save_ts = 0.0
+
+        async def on_progress(assistant_text_so_far: str) -> None:
+            nonlocal last_save_ts
+            now = asyncio.get_event_loop().time()
+            if now - last_save_ts < 3.0:
+                return
+            last_save_ts = now
+            await asyncio.to_thread(
+                session_service.save_partial_assistant_text,
+                conversation["id"],
+                assistant_text_so_far,
+            )
+
         final_response_text = await _run_react_loop(
-            controller, messages, llm_cfg, system_prompt
+            controller, messages, llm_cfg, system_prompt, on_progress=on_progress
         )
 
         persisted_messages = list(messages)
