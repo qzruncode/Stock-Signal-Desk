@@ -103,13 +103,25 @@ def test_resume_returns_inactive_when_no_run(client):
 
 
 def test_chat_returns_409_when_run_in_progress(client):
-    """同一对话已有活跃 run → 409 run_in_progress。"""
+    """同一对话已有活跃 run → 409 run_in_progress。
+
+    用真实 running ActiveRun 占位(而非 mock is_active):409 判定现由 try_claim
+    在锁内基于 registry 真实状态做出,mock is_active 已无法触发该分支。conversation_id
+    必须用真实创建的对话 id(agent_chat 的 ensure_conversation 会把不存在的 id 换成新 uuid,
+    导致 try_claim 查不到占位的 run)。
+    """
+    created = client.post("/api/v1/agent/conversations").json()
+    cid = created["id"]
+    active_run_registry._runs[cid] = ActiveRun(
+        conversation_id=cid,
+        broadcaster=RunBroadcaster(),
+        status="running",
+    )
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
-               return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
-         patch.object(active_run_registry, "is_active", return_value=True):
+               return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}):
         resp = client.post("/api/v1/agent/chat", json={
             "messages": [{"role": "user", "content": "hi"}],
-            "conversation_id": "conv-409",
+            "conversation_id": cid,
         })
     assert resp.status_code == 409
     assert resp.json()["error"] == "run_in_progress"

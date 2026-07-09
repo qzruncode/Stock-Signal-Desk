@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -28,6 +28,10 @@ import {
   CopyIcon,
   RefreshCwIcon,
   PencilIcon,
+  DownloadIcon,
+  Volume2Icon,
+  SquareIcon as StopIcon,
+  MicIcon,
 } from 'lucide-react';
 import {
   GenericToolUI,
@@ -43,6 +47,7 @@ import {
   ComposerAttachmentDropzone,
   UserMessageAttachments,
 } from './attachment';
+import { ApprovalContext } from './tool-ui/ApprovalContext';
 import { cn } from '../../utils/cn';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
@@ -182,6 +187,7 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-start gap-2.5 sm:gap-3">
       <Avatar fallback={<BotIcon className="size-3.5" />} className="chat-avatar-ai" />
       <div className="min-w-0 flex-1">
+        <ApprovalInterceptor />
         <div className="w-full min-w-0 overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-3 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur sm:px-4">
           <MessagePrimitive.Parts
             components={{
@@ -212,6 +218,40 @@ const AssistantMessage: FC = () => {
   );
 };
 
+/* ── Approval Interceptor ────────────────────────────────────────────── */
+
+// 从 assistant 消息的 metadata.unstable_data 提取 approval-request 并写入
+// ApprovalContext。data-stream 协议下 onData 不触发(useDataStreamRuntime 仅
+// ui-message-stream 支持 onData),后端 controller.add_data 的 approval-request
+// 经 DataStreamDecoder 累进 unstable_data,故在此拦截。覆盖首连与续流两条路径。
+// 无 UI,仅副作用;用 ref 记录已注册 id 去重,避免重复 setState。
+const ApprovalInterceptor: FC = () => {
+  const { registerApproval } = useContext(ApprovalContext);
+  const unstableData = useMessage((s) => s.metadata?.unstable_data);
+  const registeredRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!unstableData?.length) return;
+    for (const entry of unstableData) {
+      if (!entry || typeof entry !== 'object') continue;
+      const payload = entry as Record<string, unknown>;
+      if (payload.type !== 'approval-request') continue;
+      const toolCallId = payload.tool_call_id;
+      if (typeof toolCallId !== 'string') continue;
+      if (registeredRef.current.has(toolCallId)) continue;
+      registeredRef.current.add(toolCallId);
+      registerApproval({
+        tool_call_id: toolCallId,
+        tool_name: String(payload.tool_name ?? ''),
+        symbol: String(payload.symbol ?? ''),
+        reason: String(payload.reason ?? ''),
+      });
+    }
+  }, [unstableData, registerApproval]);
+
+  return null;
+};
+
 /* ── Assistant Action Bar (Copy / Reload) ────────────────────────────── */
 
 const AssistantActionBar: FC = () => (
@@ -227,6 +267,29 @@ const AssistantActionBar: FC = () => (
     >
       <CopyIcon className="size-3.5" />
     </ActionBarPrimitive.Copy>
+    {/* 朗读回答(TTS):需在 runtime adapters 配 speech 合成器(见 ChatHomePage)。
+        未配置或无文本时 Speak 自动隐藏;朗读中(s.message.speech 存在)显示 Stop。 */}
+    <ActionBarPrimitive.Speak
+      className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-30"
+      title="朗读"
+    >
+      <Volume2Icon className="size-3.5" />
+    </ActionBarPrimitive.Speak>
+    <AuiIf condition={(s) => s.message.speech != null}>
+      <ActionBarPrimitive.StopSpeaking
+        className="flex size-6 items-center justify-center rounded text-primary transition hover:bg-primary/10"
+        title="停止朗读"
+      >
+        <StopIcon className="size-3.5" />
+      </ActionBarPrimitive.StopSpeaking>
+    </AuiIf>
+    {/* 导出回答为 Markdown 文件(纯前端,无后端)。filename 带对话上下文更友好。 */}
+    <ActionBarPrimitive.ExportMarkdown
+      className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-30"
+      title="导出 Markdown"
+    >
+      <DownloadIcon className="size-3.5" />
+    </ActionBarPrimitive.ExportMarkdown>
     <ActionBarPrimitive.Reload
       className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-30"
       title="重新生成"
@@ -405,6 +468,14 @@ const Composer: FC = () => {
 
         <ComposerAttachments />
 
+        {/* 语音输入实时转写预览:录音中在输入框上方显示部分识别结果。 */}
+        <AuiIf condition={(s) => s.composer.dictation != null}>
+          <div className="flex items-center gap-2 px-4 pt-2 text-xs text-muted-foreground sm:px-5">
+            <span className="size-1.5 animate-pulse rounded-full bg-red-500" />
+            <ComposerPrimitive.DictationTranscript className="min-w-0 truncate" />
+          </div>
+        </AuiIf>
+
         <ComposerPrimitive.Input
           placeholder="问问市场、个股、板块或财务数据..."
           className="min-h-16 w-full resize-none bg-transparent px-4 pt-4 pb-2 text-[15px] leading-7 text-foreground placeholder-muted-foreground focus:outline-none sm:px-5"
@@ -414,6 +485,23 @@ const Composer: FC = () => {
         <div className="flex items-center justify-between gap-3 px-3 pb-3">
           <div className="flex items-center gap-2">
             <ComposerAddAttachment />
+            {/* 语音输入:无 DictationAdapter(浏览器不支持)或非编辑态时 Dictate 自动隐藏;
+                录音中显示 StopDictation(红点)+ 实时转写预览。 */}
+            <ComposerPrimitive.Dictate
+              className="flex size-9 items-center justify-center rounded-xl text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-30"
+              title="语音输入"
+            >
+              <MicIcon className="size-4" />
+            </ComposerPrimitive.Dictate>
+            <AuiIf condition={(s) => s.composer.dictation != null}>
+              <ComposerPrimitive.StopDictation
+                className="relative flex size-9 items-center justify-center rounded-xl text-red-500 transition hover:bg-red-50"
+                title="停止语音输入"
+              >
+                <MicIcon className="size-4" />
+                <span className="absolute right-1.5 top-1.5 size-1.5 animate-pulse rounded-full bg-red-500" />
+              </ComposerPrimitive.StopDictation>
+            </AuiIf>
             <span className="hidden text-xs text-muted-foreground sm:inline">实时数据工具会自动按需调用</span>
           </div>
 

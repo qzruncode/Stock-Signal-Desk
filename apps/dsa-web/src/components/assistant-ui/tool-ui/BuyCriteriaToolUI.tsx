@@ -56,7 +56,7 @@ const BuyCriteriaToolUI = ({
   }
 
   if (status.type === 'running' && !result) {
-    return <ToolStatusPill status={status} isError={isError} label={`正在执行 ${args.symbol} 8 维买入判定…(预计 ~30s)`} />;
+    return <ToolStatusPill status={status} isError={isError} streamingFields={['symbol']} label={`正在执行 ${args.symbol} 8 维买入判定…(预计 ~30s)`} />;
   }
   if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
     return <ToolStatusPill status={status} isError label="买入判定失败" />;

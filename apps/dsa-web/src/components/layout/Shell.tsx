@@ -17,10 +17,10 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   const navItems = [
     { to: '/', label: 'AI 助手', icon: MessageSquare },
     { to: '/stocks', label: '全市场股票', icon: Search },
+    { to: '/rss', label: 'RSS 资讯', icon: Rss },
     { to: '/dashboard', label: '工作台', icon: Home },
     { to: '/portfolio', label: '管理自选股', icon: Star },
     { to: '/analysis', label: '个股分析', icon: Zap },
-    { to: '/rss', label: 'RSS 资讯', icon: Rss },
     { to: '/macro', label: '宏观数据', icon: TrendingUp },
     { to: '/market', label: '市场分析', icon: Globe },
     { to: '/market-leaders', label: '市场主线', icon: Flame },

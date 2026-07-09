@@ -272,6 +272,29 @@ class ActiveRunRegistry:
             self._runs[conversation_id] = run
             return run
 
+    async def try_claim(self, conversation_id: str) -> Optional[ActiveRun]:
+        """原子地「判定无活跃 run + 创建新 run」。
+
+        与 ``start_or_get`` 的区别:后者在已有 running run 时复用(返回已有 run),
+        本方法在已有 running run 时返回 ``None``(让调用方走 409 拒绝并发)。
+
+        解决 ``agent_chat`` 的双请求竞态:``is_active``(无锁)与 ``start_or_get``
+        (锁内)之间的窗口会让两个并发请求都通过 ``is_active`` 检查、各自落库
+        messages,然后第二个请求静默 attach 到第一个 run、其 messages 被丢弃。
+        用本方法把「判定 + 创建」合并进锁内,只有第一个请求能拿到新 run。
+        """
+        async with self._lock:
+            existing = self._runs.get(conversation_id)
+            if existing is not None and existing.is_running:
+                return None
+            broadcaster = RunBroadcaster()
+            run = ActiveRun(
+                conversation_id=conversation_id,
+                broadcaster=broadcaster,
+            )
+            self._runs[conversation_id] = run
+            return run
+
     def get(self, conversation_id: str) -> Optional[ActiveRun]:
         return self._runs.get(conversation_id)
 

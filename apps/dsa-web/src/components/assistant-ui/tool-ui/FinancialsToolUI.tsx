@@ -38,7 +38,7 @@ const FinancialsToolUI = ({
   isError,
 }: ToolCallMessagePartProps<{ symbol: string; periods?: number }, FinancialsToolResult>) => {
   if (status.type === 'running' && !result) {
-    return <ToolStatusPill status={status} isError={isError} label={`正在获取 ${args.symbol} 财务数据…`} />;
+    return <ToolStatusPill status={status} isError={isError} streamingFields={['symbol']} label={`正在获取 ${args.symbol} 财务数据…`} />;
   }
   if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
     return <ToolStatusPill status={status} isError label="获取财务数据失败" />;

@@ -5,190 +5,19 @@ import {
   useThreadRuntime,
   CompositeAttachmentAdapter,
   SimpleTextAttachmentAdapter,
+  WebSpeechDictationAdapter,
+  WebSpeechSynthesisAdapter,
 } from '@assistant-ui/react';
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
-import type { ExportedMessageRepository } from '@assistant-ui/core';
 import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
-import { extractErrorPayloadText } from '../api/error';
 import { ApprovalContext, type PendingApproval } from '../components/assistant-ui/tool-ui/ApprovalContext';
+import { ChatRuntimeBridge } from '../components/assistant-ui/ChatRuntimeBridge';
+import { readStreamErrorMessage } from '../utils/chatStreamError';
 
 const Thread = lazy(() => import('../components/assistant-ui/thread'));
 import { ThreadListSidebar } from '../components/assistant-ui/threadlist-sidebar';
 import { cn } from '../utils/cn';
-
-const PENDING_ASSISTANT_SUFFIX = '-assistant-pending';
-
-const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => {
-  if (role === 'user' || role === 'assistant' || role === 'system') {
-    return role;
-  }
-  return 'assistant';
-};
-
-const toRuntimeMessages = (messages: ChatConversationDetail['messages']) =>
-  messages
-    .filter((message) => (message.content || '').trim().length > 0)
-    .map((message) => ({
-      id: message.id,
-      role: normalizeMessageRole(message.role),
-      createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
-      content: [{ type: 'text' as const, text: message.content || '' }],
-    }));
-
-const getConversationHydrationKey = (detail: ChatConversationDetail): string => {
-  const lastMessage = detail.messages.at(-1);
-  return [
-    detail.id,
-    detail.updatedAt,
-    detail.isGenerating ? 'running' : 'idle',
-    detail.resumeState?.active ? 'resumable' : 'not-resumable',
-    detail.resumeState?.status ?? '',
-    detail.resumeState?.afterChunkIndex ?? '',
-    detail.threadState?.headId ?? '',
-    detail.messages.length,
-    lastMessage?.id ?? '',
-    lastMessage?.content ?? '',
-  ].join('|');
-};
-
-const hasToolParts = (threadState: ChatConversationDetail['threadState']): boolean => {
-  if (!threadState?.messages?.length) return false;
-  return threadState.messages.some((entry) => {
-    const content = entry.message?.content;
-    return Array.isArray(content)
-      && content.some((part) => {
-        if (!part || typeof part !== 'object') return false;
-        const partType = (part as Record<string, unknown>).type;
-        return partType === 'tool-call' || partType === 'tool-result';
-      });
-  });
-};
-
-const removeTrailingAssistant = (
-  messages: ChatConversationDetail['messages'],
-): ChatConversationDetail['messages'] => {
-  const lastMessage = messages.at(-1);
-  if (lastMessage?.role !== 'assistant') {
-    return messages;
-  }
-  return messages.slice(0, -1);
-};
-
-const getLastAssistantText = (messages: ChatConversationDetail['messages']): string => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === 'assistant') {
-      return (message.content || '').trim();
-    }
-  }
-  return '';
-};
-
-async function readStreamErrorMessage(response: Response): Promise<string> {
-  const rawText = await response.clone().text().catch(() => '');
-  if (!rawText.trim()) {
-    return `请求失败：HTTP ${response.status}`;
-  }
-
-  try {
-    const payload = JSON.parse(rawText) as unknown;
-    return extractErrorPayloadText(payload) || rawText;
-  } catch {
-    return rawText;
-  }
-}
-
-const ChatRuntimeBridge: React.FC<{
-  conversationDetail: ChatConversationDetail | null;
-  onThreadRuntime: (threadRuntime: ReturnType<typeof useThreadRuntime>) => void;
-  onPrepareResumeExisting: (conversationId: string, afterChunkIndex: number | null) => void;
-}> = ({ conversationDetail, onThreadRuntime, onPrepareResumeExisting }) => {
-  const threadRuntime = useThreadRuntime();
-  const appliedHydrationKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    onThreadRuntime(threadRuntime);
-  }, [onThreadRuntime, threadRuntime]);
-
-  useEffect(() => {
-    if (!conversationDetail) {
-      appliedHydrationKeyRef.current = null;
-      onPrepareResumeExisting('', null);
-      threadRuntime.cancelRun();
-      threadRuntime.reset([]);
-      return;
-    }
-
-    const hydrationKey = getConversationHydrationKey(conversationDetail);
-    if (appliedHydrationKeyRef.current === hydrationKey) {
-      return;
-    }
-    appliedHydrationKeyRef.current = hydrationKey;
-
-    onPrepareResumeExisting(conversationDetail.id, null);
-    threadRuntime.cancelRun();
-    threadRuntime.reset([]);
-
-    const isGenerating = conversationDetail.isGenerating === true;
-    const canReplayStream = conversationDetail.resumeState?.active === true;
-    const threadStateHasToolParts = hasToolParts(conversationDetail.threadState);
-    const retainedFinalText = (conversationDetail.resumeState?.assistantText || '').trim();
-    const lastAssistantText = getLastAssistantText(conversationDetail.messages);
-    const retainedTextMismatch = Boolean(
-      retainedFinalText && lastAssistantText && retainedFinalText !== lastAssistantText,
-    );
-    const shouldReplayStream = isGenerating
-      || (canReplayStream
-        && (
-          (conversationDetail.resumeState?.hasToolEvents === true && !threadStateHasToolParts)
-          || retainedTextMismatch
-        ));
-    const pendingId = `${conversationDetail.id}${PENDING_ASSISTANT_SUFFIX}`;
-
-    // isGenerating 时:threadState 是上次完成时的旧快照(不含本次 user 消息),
-    // 而 messages 是生成开始时刚落的完整历史(含本次 user)。故续流场景一律用
-    // messages,确保恢复完整历史;非生成态才用 threadState(保留分支结构)。
-    const messagesWithoutPending = conversationDetail.messages.filter((m) => m.id !== pendingId);
-    const visibleMessages = shouldReplayStream
-      ? removeTrailingAssistant(messagesWithoutPending)
-      : conversationDetail.messages;
-
-    if (!shouldReplayStream && conversationDetail.threadState?.messages?.length) {
-      threadRuntime.import(
-        conversationDetail.threadState as unknown as ExportedMessageRepository,
-      );
-    } else {
-      threadRuntime.reset(toRuntimeMessages(visibleMessages));
-    }
-
-    if (!shouldReplayStream) {
-      const lastMessage = conversationDetail.messages.at(-1);
-      if (lastMessage?.role === 'user') {
-        onPrepareResumeExisting(conversationDetail.id, null);
-        threadRuntime.startRun({
-          parentId: lastMessage.id,
-          sourceId: lastMessage.id,
-          runConfig: {},
-        });
-      }
-      return;
-    }
-
-    // 后端仍在生成或保留了刚完成的 run:通过 /agent/chat + resume_existing
-    // 复用 useDataStreamRuntime 的完整 data-stream 管道,保证 K 线图等 tool UI
-    // 与初次生成一致。
-    const parentId = visibleMessages.at(-1)?.id ?? null;
-    onPrepareResumeExisting(conversationDetail.id, 0);
-    threadRuntime.startRun({
-      parentId,
-      sourceId: parentId,
-      runConfig: {},
-    });
-  }, [conversationDetail, threadRuntime, onPrepareResumeExisting]);
-
-  return null;
-};
 
 const ChatHomePage: React.FC = () => {
   const [conversations, setConversations] = useState<ChatConversationItem[]>([]);
@@ -275,6 +104,16 @@ const ChatHomePage: React.FC = () => {
     })();
   }, []);
 
+  // approval-request 经 data-stream 协议累进当前 assistant 消息的
+  // metadata.unstable_data,由 AssistantMessage 组件拦截后调用本方法写入。
+  // (useDataStreamRuntime 的 onData 在 protocol:'data-stream' 下不触发,故不在此拦截。)
+  const registerApproval = useCallback((approval: PendingApproval) => {
+    setPendingApprovals((prev) => {
+      if (prev[approval.tool_call_id]) return prev;
+      return { ...prev, [approval.tool_call_id]: approval };
+    });
+  }, []);
+
   const prepareResumeExisting = useCallback((conversationId: string, afterChunkIndex: number | null) => {
     if (afterChunkIndex == null) {
       if (!conversationId || resumeExistingRef.current?.conversationId === conversationId) {
@@ -300,6 +139,11 @@ const ChatHomePage: React.FC = () => {
       // 在 send() 时把文件内容包成 <attachment> text part,后端 _join_text_parts
       // 已认 text part,无需后端改动。
       attachments: new CompositeAttachmentAdapter([new SimpleTextAttachmentAdapter()]),
+      // 朗读回答(TTS):浏览器原生 speechSynthesis,零后端。未配置时 ActionBar Speak 自动隐藏。
+      speech: new WebSpeechSynthesisAdapter(),
+      // 语音输入(麦克风):浏览器原生 SpeechRecognition,零后端。zh-CN 适配中文提问。
+      // 不支持的浏览器下 Composer Dictate 按钮自动不渲染(useComposerDictate 返回 null)。
+      dictation: new WebSpeechDictationAdapter({ language: 'zh-CN', interimResults: true }),
     },
     body: () => {
       if (!selectedConversationId) return undefined;
@@ -321,19 +165,11 @@ const ChatHomePage: React.FC = () => {
       };
       return { conversation_id: selectedConversationId };
     },
-    onData: (event) => {
-      // 后端 controller.add_data({"type":"approval-request",...}) 经 2: data chunk 到达
-      const payload = event.data as Record<string, unknown> | undefined;
-      if (payload && payload.type === 'approval-request' && typeof payload.tool_call_id === 'string') {
-        const approval: PendingApproval = {
-          tool_call_id: payload.tool_call_id,
-          tool_name: String(payload.tool_name ?? ''),
-          symbol: String(payload.symbol ?? ''),
-          reason: String(payload.reason ?? ''),
-        };
-        setPendingApprovals((prev) => ({ ...prev, [approval.tool_call_id]: approval }));
-      }
-    },
+    // NOTE: approval-request 不在 onData 拦截。useDataStreamRuntime 的 onData 仅在
+    // protocol:'ui-message-stream' 时触发(useDataStreamRuntime.js),本项目用
+    // 'data-stream',data chunk 经 DataStreamDecoder 累进 message.metadata.unstable_data。
+    // 故 HITL 拦截改在 AssistantMessage 组件(读 unstable_data → registerApproval),
+    // 天然覆盖首连与续流两条路径。
     onResponse: async (response) => {
       if (response.ok) {
         setStreamError(null);
@@ -445,7 +281,7 @@ const ChatHomePage: React.FC = () => {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ApprovalContext.Provider value={{ pendingApprovals, approveToolCall: handleApproveToolCall }}>
+      <ApprovalContext.Provider value={{ pendingApprovals, registerApproval, approveToolCall: handleApproveToolCall }}>
       <ChatRuntimeBridge
         conversationDetail={selectedConversationDetail}
         onPrepareResumeExisting={prepareResumeExisting}

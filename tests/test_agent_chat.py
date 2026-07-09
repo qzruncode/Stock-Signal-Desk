@@ -934,3 +934,73 @@ def test_run_react_loop_compacts_overlong_history_before_first_llm_call():
     assert len(summary_msgs) == 1
     # 压缩不向前端推提示，避免污染对话流
     assert not any("已自动压缩" in t for t in controller.texts)
+
+
+def test_agent_chat_emits_approval_request_data_chunk(client):
+    """gated 工具(get_buy_criteria_analysis)执行前发出 approval-request data chunk。
+
+    验证 HITL 的后端→前端 wire:approval-request 经 controller.add_data → DataStreamResponse
+    编码成 `2:{...}` data 行到达响应流。这是前端 ApprovalInterceptor 从
+    message.metadata.unstable_data 拦截的前提(protocol:'data-stream' 下 onData 不触发,
+    拦截改在消息层;若该 chunk 不在流里,拦截无从谈起)。
+
+    gated 工具会 await approval.event.wait() 阻塞,这里把超时 patch 成极短,让它快速
+    超时走"取消"分支,避免测试等待 180s。approval-request 在 wait 之前已 add_data 发出。
+    """
+    from src.agent.run_registry import active_run_registry
+
+    # 轮1:调 gated 工具;轮2:拿到"取消"结果后给最终文本
+    tc = _mock_tool_call_delta(
+        name="get_buy_criteria_analysis",
+        arguments='{"symbol":"600519"}',
+        tc_id="call_buy",
+    )
+    fake_acompletion = _async_completion([
+        _mock_llm_chunk(tool_calls=[tc]),
+        _mock_llm_chunk(content="已取消判定"),
+    ])
+
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = ["get_buy_criteria_analysis"]
+    registry.execute.side_effect = AssertionError("gated tool should not execute before approval")
+
+    try:
+        with patch("api.v1.endpoints.agent.chat._get_llm_config",
+                   return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
+             patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
+             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
+             patch("api.v1.endpoints.agent.chat._format_result", side_effect=lambda r: json.dumps(r, ensure_ascii=False)), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()), \
+             patch("api.v1.endpoints.agent.chat.APPROVAL_TIMEOUT_SECONDS", 0.05):
+            llm_mod.acompletion = fake_acompletion
+            with client.stream("POST", "/api/v1/agent/chat",
+                                json={"messages": [{"role": "user", "content": "判断茅台能否买入"}]}) as response:
+                assert response.status_code == 200
+                body = b""
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    # approval-request 以 `2:` data 行编码;读到即可断言,无需消费完整 run
+                    if b'"approval-request"' in body:
+                        break
+
+        text = body.decode("utf-8", errors="replace")
+        # data-stream 协议:data 行形如 `2:[{...}]\n`(Python DataStream 把单个 data
+        # 包成单元素数组;前端 DataStreamDecoder 解码后 spread 进 unstable_data)
+        data_lines = [ln for ln in text.splitlines() if ln.startswith("2:")]
+        assert data_lines, f"expected a 2: data line in stream, got: {text!r}"
+        payload_list = json.loads(data_lines[0][2:])
+        assert isinstance(payload_list, list) and payload_list
+        payload = payload_list[0]
+        assert payload["type"] == "approval-request"
+        assert payload["tool_call_id"] == "call_buy"
+        assert payload["tool_name"] == "get_buy_criteria_analysis"
+        assert payload["symbol"] == "600519"
+    finally:
+        # 清理本测试占位的后台 run(超时分支已 set_response,gated 不会真执行)
+        for run in list(active_run_registry._runs.values()):
+            if run.task is not None and not run.task.done():
+                run.task.cancel()
+        active_run_registry._runs.clear()

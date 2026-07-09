@@ -124,6 +124,7 @@ from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
+from src.agent.run_registry import active_run_registry
 from src.services.system_config_service import SystemConfigService
 
 
@@ -140,6 +141,12 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # 取消所有进行中的后台 agent 生成 task,避免进程关闭时残留的 LLM 请求
+        # 继续烧 token;shutdown 会 cancel 并 await 每个 task。
+        try:
+            await active_run_registry.shutdown()
+        except Exception:
+            logger.exception("Failed to shutdown active run registry")
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
 
