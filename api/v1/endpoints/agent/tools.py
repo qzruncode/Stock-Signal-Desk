@@ -92,15 +92,37 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         return result
 
     if tool_name == "get_realtime_quotes":
-        items = result.get("items", [])
-        compact_items = _trim_list(
-            items,
-            12,
-            [
-                "symbol", "name", "price", "change", "pct_chg", "open", "high", "low",
-                "volume", "amount", "turnover_rate", "pe", "pb", "total_mv", "circ_mv",
-            ],
+        # 后端 UnifiedRealtimeQuote.to_dict() 的字段名(code/change_pct/change_amount/
+        # open_price/pe_ratio/pb_ratio)与前端 RealtimeQuotesToolUI 期望的
+        # (symbol/pct_chg/change/open/pe/pb)不一致。直接 _pick_fields 会取不到值,
+        # 导致前端卡片字段全空 + React key(item.symbol)为 undefined。这里做字段映射,
+        # 把后端真实字段归一为前端/类型约定的字段名。
+        _QUOTE_FIELD_MAP = {
+            "code": "symbol",
+            "change_pct": "pct_chg",
+            "change_amount": "change",
+            "open_price": "open",
+            "pe_ratio": "pe",
+            "pb_ratio": "pb",
+        }
+        _QUOTE_PASSTHROUGH = (
+            "name", "price", "high", "low", "volume", "amount",
+            "turnover_rate", "total_mv", "circ_mv",
         )
+        raw_items = result.get("items", []) if isinstance(result, dict) else []
+        compact_items: list[Any] = []
+        for item in _trim_list(raw_items, 12):
+            if not isinstance(item, dict):
+                compact_items.append(item)
+                continue
+            mapped: Dict[str, Any] = {}
+            for src, dst in _QUOTE_FIELD_MAP.items():
+                if item.get(src) is not None:
+                    mapped[dst] = item.get(src)
+            for f in _QUOTE_PASSTHROUGH:
+                if item.get(f) is not None:
+                    mapped[f] = item.get(f)
+            compact_items.append(mapped)
         return _annotate_tool_payload(tool_name, {
             "total": result.get("total", len(compact_items)),
             "items": compact_items,

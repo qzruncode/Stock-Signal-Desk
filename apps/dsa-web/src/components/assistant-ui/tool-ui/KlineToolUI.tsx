@@ -87,8 +87,10 @@ const KlineToolUI = ({
     };
   }, [containerId, chartData, args.symbol]);
 
+  const symbolLabel = args.symbol?.trim();
+
   if (status.type === 'running' && !result) {
-    return <ToolStatusPill status={status} isError={isError} label={`正在获取 ${args.symbol} K线数据…`} />;
+    return <ToolStatusPill status={status} isError={isError} label={symbolLabel ? `正在获取 ${symbolLabel} K线数据…` : '正在获取K线数据…'} />;
   }
   if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
     return <ToolStatusPill status={status} isError label="获取K线数据失败" />;
@@ -103,7 +105,7 @@ const KlineToolUI = ({
     <div className="my-2 overflow-hidden rounded-xl border border-border bg-card/60">
       <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
         <span className="text-xs font-medium text-foreground">
-          {args.symbol} · K线
+          {symbolLabel ?? 'K线'}
           <span className="ml-2 text-muted-foreground">近 {chartData.length} 日</span>
         </span>
         {pct != null && (
