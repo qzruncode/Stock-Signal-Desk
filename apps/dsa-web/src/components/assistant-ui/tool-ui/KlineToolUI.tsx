@@ -152,7 +152,7 @@ const KlineToolUI = ({
   const symbolLabel = args.symbol?.trim();
 
   if (status.type === 'running' && !result) {
-    return <ToolStatusPill status={status} isError={isError} label={symbolLabel ? `正在获取 ${symbolLabel} K线数据…` : '正在获取K线数据…'} />;
+    return <ToolStatusPill status={status} isError={isError} streamingFields={['symbol']} label={symbolLabel ? `正在获取 ${symbolLabel} K线数据…` : '正在获取K线数据…'} />;
   }
   if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
     return <ToolStatusPill status={status} isError label="获取K线数据失败" />;

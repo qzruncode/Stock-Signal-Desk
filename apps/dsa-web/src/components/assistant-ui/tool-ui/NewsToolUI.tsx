@@ -34,7 +34,7 @@ const NewsToolUI = ({
   isError,
 }: ToolCallMessagePartProps<{ symbol: string; days?: number }, NewsToolResult>) => {
   if (status.type === 'running' && !result) {
-    return <ToolStatusPill status={status} isError={isError} label={`正在搜索 ${args.symbol} 相关新闻…`} />;
+    return <ToolStatusPill status={status} isError={isError} streamingFields={['symbol']} label={`正在搜索 ${args.symbol} 相关新闻…`} />;
   }
   if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
     return <ToolStatusPill status={status} isError label="搜索新闻失败" />;

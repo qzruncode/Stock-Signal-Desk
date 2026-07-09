@@ -14,7 +14,7 @@ const RealtimeQuotesToolUI = ({
 }: ToolCallMessagePartProps<{ symbols: string }, RealtimeQuotesToolResult>) => {
   const symbolsLabel = args.symbols?.trim();
   if (status.type === 'running' && !result) {
-    return <ToolStatusPill status={status} isError={isError} label={symbolsLabel ? `正在查询 ${symbolsLabel} 实时行情…` : '正在查询实时行情…'} />;
+    return <ToolStatusPill status={status} isError={isError} streamingFields={['symbols']} label={symbolsLabel ? `正在查询 ${symbolsLabel} 实时行情…` : '正在查询实时行情…'} />;
   }
   if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
     return <ToolStatusPill status={status} isError label="查询实时行情失败" />;

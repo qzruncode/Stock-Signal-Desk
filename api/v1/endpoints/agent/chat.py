@@ -750,7 +750,12 @@ async def agent_chat(
             content={"error": "run_not_active", "conversation_id": conv_id},
         )
 
-    if active_run_registry.is_active(conv_id):
+    # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
+    # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
+    # 都通过检查、各自落库 messages 后第二个静默 attach 到第一个 run 而丢消息。
+    # 拿到 None 表示已有活跃 run → 409 触发前端续流。
+    run = await active_run_registry.try_claim(conv_id)
+    if run is None:
         logger.info("[Agent] chat rejected: run already in progress for %s", conv_id)
         return JSONResponse(
             status_code=409,
@@ -789,7 +794,7 @@ async def agent_chat(
             nonlocal last_save_ts
             # 同步镜像到 broadcaster,供续流端点补齐已生成文本
             controller.assistant_text_snapshot = assistant_text_so_far
-            now = asyncio.get_event_loop().time()
+            now = asyncio.get_running_loop().time()
             if now - last_save_ts < 3.0:
                 return
             last_save_ts = now
@@ -853,9 +858,9 @@ async def agent_chat(
     async def factory(broadcaster: RunBroadcaster) -> "asyncio.Task":
         return asyncio.create_task(run_callback(broadcaster))
 
-    run = await active_run_registry.start_or_get(conv_id)
-    # 首连接必须先 subscribe 再启动后台 task,否则 task 可能在首个订阅者
-    # subscribe 之前就 emit 完所有 chunk,导致首连收不到内容。
+    # run 已由前面的 try_claim 原子创建(判定 + 创建在同一锁内)。首连接必须先
+    # subscribe 再启动后台 task,否则 task 可能在首个订阅者 subscribe 之前就
+    # emit 完所有 chunk,导致首连收不到内容。
     first_queue = run.broadcaster.subscribe()
     await run.start(factory)
     return DataStreamResponse(subscriber_stream(run, first_queue))
