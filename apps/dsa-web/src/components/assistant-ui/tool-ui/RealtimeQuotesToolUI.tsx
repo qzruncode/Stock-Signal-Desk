@@ -24,7 +24,7 @@ const RealtimeQuotesToolUI = ({
   }
 
   return (
-    <div className="my-2 space-y-2">
+    <div className="my-2 w-full min-w-0 space-y-2">
       {result.items.map((item, idx) => {
         const up = (item.pct_chg ?? 0) > 0;
         const flat = (item.pct_chg ?? 0) === 0;
@@ -32,7 +32,7 @@ const RealtimeQuotesToolUI = ({
         // symbol 经后端 compact 映射后应存在;兜底用索引避免 key 为 undefined/重复
         const key = item.symbol ?? `quote-${idx}`;
         return (
-          <div key={key} className="rounded-xl border border-border bg-card/60 p-3">
+          <div key={key} className="w-full min-w-0 rounded-xl border border-border bg-card/60 p-3">
             <div className="flex items-baseline justify-between gap-2">
               <div className="min-w-0">
                 <span className="text-sm font-semibold text-foreground">{item.name}</span>

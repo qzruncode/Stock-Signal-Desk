@@ -61,6 +61,51 @@ def _annotate_tool_payload(
     return annotated
 
 
+def _normalize_stock_info(result: Dict[str, Any]) -> Dict[str, Any]:
+    """把 get_stock_info endpoint 的嵌套中文结构拍平成英文 key 字典。
+
+    endpoint `_fetch_all` 返回的是按数据源嵌套 + 中文字段名的结构:
+      { symbol, _sources, cninfo: {中文列名: 值}, eastmoney: {中文item: 值},
+        ths_business: {...} }
+    而 `_compact_tool_result` 的白名单用的是英文 key(name/industry/pe_dynamic/...),
+    直接 `_pick_fields` 顶层取不到值(只剩 symbol)。这里做归一化,把中文字段名映射
+    成白名单 key,多候选名兜底(akshare 不同接口/版本 item 名有差异)。
+    与 get_realtime_quotes 的 _QUOTE_FIELD_MAP 同思路。
+    """
+    # (英文目标key, [候选中文字段名(按优先级)], 数据源子dict名)
+    # cninfo 列名来自 stock_profile_cninfo;em item 名来自 stock_individual_info_em。
+    _MAP: list[tuple[str, list[str], str]] = [
+        ("name", ["A股简称", "股票简称", "公司名称"], "cninfo"),
+        ("short_name", ["A股简称", "股票简称"], "cninfo"),
+        ("industry", ["所属行业", "行业"], "cninfo"),
+        ("market", ["所属市场"], "cninfo"),
+        ("listing_date", ["上市日期", "上市时间"], "cninfo"),
+        ("main_business", ["主营业务"], "cninfo"),
+        ("total_shares", ["总股本"], "eastmoney"),
+        ("circ_shares", ["流通股本", "流通股"], "eastmoney"),
+        ("pe_dynamic", ["市盈率(动态)", "市盈率-动态", "动态市盈率"], "eastmoney"),
+        ("pe_static", ["市盈率(静态)", "市盈率-静态", "静态市盈率"], "eastmoney"),
+        ("pb_ratio", ["市净率"], "eastmoney"),
+        ("total_mv", ["总市值"], "eastmoney"),
+        ("circ_mv", ["流通市值"], "eastmoney"),
+    ]
+    flat: Dict[str, Any] = {"symbol": result.get("symbol")}
+    for dst, candidates, source in _MAP:
+        bucket = result.get(source)
+        if not isinstance(bucket, dict):
+            continue
+        for cand in candidates:
+            val = bucket.get(cand)
+            if val is not None and str(val).strip() not in ("", "--", "-", "nan", "None"):
+                flat[dst] = val
+                break
+    # 保留新鲜度元数据(若有)
+    for meta_key in ("_cached", "_fetched_at", "_sources"):
+        if result.get(meta_key) is not None:
+            flat[meta_key] = result.get(meta_key)
+    return flat
+
+
 def _compact_time_series(result: Dict[str, Any], key: str = "data") -> Dict[str, Any]:
     series = result.get(key)
     if not isinstance(series, list):
@@ -191,8 +236,11 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         }, payload_policy="compacted", compacted=True, compaction_reason="sector_top_bottom_window")
 
     if tool_name == "get_stock_info":
+        # endpoint 返回嵌套中文结构,先归一化成英文 key 再挑字段,
+        # 否则白名单里除 symbol 外全部取不到值(只剩 symbol + meta)。
+        normalized = _normalize_stock_info(result)
         return _annotate_tool_payload(tool_name, _pick_fields(
-            result,
+            normalized,
             [
                 "symbol", "name", "short_name", "industry", "market", "listing_date",
                 "main_business", "total_shares", "circ_shares", "pe_dynamic",

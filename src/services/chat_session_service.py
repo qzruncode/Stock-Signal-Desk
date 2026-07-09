@@ -117,6 +117,7 @@ class ChatSessionService:
         messages: List[Dict[str, Any]],
         *,
         thread_state: Optional[Dict[str, Any]] = None,
+        skip_title: bool = False,
     ) -> Optional[Dict[str, Any]]:
         conversation = self.db.get_chat_conversation(conversation_id)
         if not conversation:
@@ -152,7 +153,7 @@ class ChatSessionService:
             updated_at=datetime.now(),
         )
 
-        if getattr(conversation, "title_source", None) != "manual" and first_user_text:
+        if not skip_title and getattr(conversation, "title_source", None) != "manual" and first_user_text:
             self.db.update_chat_conversation(
                 conversation_id,
                 title=self.generate_title(first_user_text),
@@ -221,10 +222,6 @@ class ChatSessionService:
                 continue
             part_type = part.get("type")
             if part_type == "text":
-                text = str(part.get("text") or "").strip()
-                if text:
-                    chunks.append(text)
-            elif part_type == "reasoning":
                 text = str(part.get("text") or "").strip()
                 if text:
                     chunks.append(text)

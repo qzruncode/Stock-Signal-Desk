@@ -10,6 +10,7 @@ from fastapi import Body, Depends, HTTPException, Query
 
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
+from src.agent.run_registry import active_run_registry
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -43,6 +44,18 @@ def get_agent_conversation(
     conversation = service.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")
+    # 附加运行态:后端是否仍在生成该对话的回复(供前端刷新后判断是否续流)。
+    run = active_run_registry.get(conversation_id)
+    is_generating = active_run_registry.is_active(conversation_id)
+    conversation["is_generating"] = is_generating
+    conversation["resume_state"] = {
+        "active": run is not None,
+        "is_generating": is_generating,
+        "status": run.status if run else None,
+        "after_chunk_index": run.broadcaster.history_length if run else 0,
+        "assistant_text": run.broadcaster.assistant_text_snapshot if run else "",
+        "has_tool_events": run.broadcaster.has_tool_events if run else False,
+    }
     return conversation
 
 
@@ -63,7 +76,7 @@ def rename_agent_conversation(
 
 
 @router.delete("/agent/conversations/{conversation_id}")
-def delete_agent_conversation(
+async def delete_agent_conversation(
     conversation_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
@@ -71,6 +84,9 @@ def delete_agent_conversation(
     deleted = service.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="对话不存在")
+    cancelled = await active_run_registry.cancel(conversation_id)
+    if cancelled:
+        logger.info("[Agent] cancelled active run for deleted conversation %s", conversation_id)
     return {"deleted": deleted}
 
 

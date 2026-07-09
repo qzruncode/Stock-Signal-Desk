@@ -50,7 +50,7 @@ const FinancialsToolUI = ({
   }
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-border bg-card/60">
+    <div className="my-3 w-full min-w-0 overflow-hidden rounded-xl border border-border bg-card/60">
       <div className="border-b border-border px-3 py-2 text-xs font-medium text-foreground">
         {args.symbol} · 财务摘要
         <span className="ml-2 text-muted-foreground">近 {periods.length} 期</span>

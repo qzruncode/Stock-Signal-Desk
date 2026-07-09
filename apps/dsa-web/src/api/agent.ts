@@ -33,6 +33,16 @@ export interface ChatConversationThreadState {
 export interface ChatConversationDetail extends ChatConversationItem {
   messages: ChatConversationMessage[];
   threadState?: ChatConversationThreadState | null;
+  /** 后端是否仍在生成该对话的回复(刷新后前端据此判断是否续流)。 */
+  isGenerating?: boolean;
+  resumeState?: {
+    active: boolean;
+    isGenerating?: boolean;
+    status?: 'running' | 'completed' | 'failed' | 'cancelled' | string | null;
+    afterChunkIndex: number;
+    assistantText: string;
+    hasToolEvents?: boolean;
+  };
 }
 
 export interface ChatConversationListResponse {

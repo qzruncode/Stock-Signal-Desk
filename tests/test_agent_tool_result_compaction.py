@@ -274,6 +274,57 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertTrue(compact["fallback_used"])
         self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "macro_history_window")
 
+    def test_compact_stock_info_flattens_nested_chinese_sources(self) -> None:
+        # endpoint `_fetch_all` 的真实结构:按数据源嵌套 + 中文字段名。
+        # 归一化前 _pick_fields 顶层只能取到 symbol,其余字段全丢。
+        payload = {
+            "symbol": "301004",
+            "_sources": ["cninfo", "eastmoney", "ths"],
+            "cninfo": {
+                "A股简称": "嘉益股份",
+                "公司名称": "浙江嘉益保温科技股份有限公司",
+                "所属行业": "金属制品业",
+                "所属市场": "深交所创业板",
+                "上市日期": "2021-06-25",
+                "主营业务": "饮品、食品容器的研发设计、生产与销售",
+            },
+            "eastmoney": {
+                "总股本": 145806262,
+                "流通股本": 90000000,
+                "市盈率(动态)": 18.5,
+                "市盈率(静态)": 20.1,
+                "市净率": 3.2,
+                "总市值": 4.8e9,
+                "流通市值": 3.0e9,
+            },
+            "ths_business": {"_revenue_breakdown": []},
+        }
+
+        compact = _compact_tool_result("get_stock_info", payload)
+
+        # 关键字段必须从中文子结构归一化出来,不再只剩 symbol
+        self.assertEqual(compact["symbol"], "301004")
+        self.assertEqual(compact["name"], "嘉益股份")
+        self.assertEqual(compact["short_name"], "嘉益股份")
+        self.assertEqual(compact["industry"], "金属制品业")
+        self.assertEqual(compact["market"], "深交所创业板")
+        self.assertEqual(compact["listing_date"], "2021-06-25")
+        self.assertIn("饮品", compact["main_business"])
+        self.assertEqual(compact["total_shares"], 145806262)
+        self.assertEqual(compact["circ_shares"], 90000000)
+        self.assertEqual(compact["pe_dynamic"], 18.5)
+        self.assertEqual(compact["pe_static"], 20.1)
+        self.assertEqual(compact["pb_ratio"], 3.2)
+        self.assertEqual(compact["total_mv"], 4.8e9)
+        self.assertEqual(compact["circ_mv"], 3.0e9)
+        # 噪声子结构不应外泄给 LLM/前端
+        self.assertNotIn("cninfo", compact)
+        self.assertNotIn("eastmoney", compact)
+        self.assertNotIn("ths_business", compact)
+        self.assertEqual(
+            compact["_tool_payload_meta"]["compaction_reason"], "stock_info_key_fields"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

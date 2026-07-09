@@ -12,6 +12,8 @@ const COLORS = {
   grid: '#E2E8F0',
 };
 
+type KlineChart = NonNullable<ReturnType<typeof init>>;
+
 function toChartData(recent: KlineToolResult['recent']) {
   return (recent ?? [])
     .filter((bar) => bar.open != null && bar.close != null && bar.high != null && bar.low != null)
@@ -24,6 +26,19 @@ function toChartData(recent: KlineToolResult['recent']) {
       volume: bar.volume ?? undefined,
       turnover: bar.turnover_rate ?? undefined,
     }));
+}
+
+function loadChartData(chart: KlineChart, symbol: string | undefined, data: ReturnType<typeof toChartData>) {
+  chart.setDataLoader({
+    getBars: ({ callback }) => {
+      callback(data, false);
+    },
+  });
+  chart.setSymbol({ ticker: symbol?.trim() || 'KLINE' });
+  chart.setPeriod({ span: 1, type: 'day' });
+  chart.setOffsetRightDistance(18);
+  chart.setBarSpace(12);
+  chart.resize();
 }
 
 /**
@@ -39,17 +54,19 @@ const KlineToolUI = ({
 }: ToolCallMessagePartProps<{ symbol: string; count?: number }, KlineToolResult>) => {
   const reactId = useId();
   const containerId = `kline-tool-${reactId.replace(/[^a-zA-Z0-9]/g, '')}`;
-  const chartRef = useRef<ReturnType<typeof init> | null>(null);
+  const chartRef = useRef<KlineChart | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   // chartData 用 ref 持有:init 只做一次,其 setDataLoader 闭包需读最新数据,
   // 避免流式 recent 增量时 stale。ref 在 effect 里同步,不在渲染期写。
   const chartData = useMemo(() => toChartData(result?.recent), [result?.recent]);
   const chartDataRef = useRef(chartData);
   const latest = result?.latest;
+  const hasChartData = chartData.length > 0;
 
-  // 初始化 chart(仅一次):等容器有非 0 尺寸再 init,否则 klinecharts 测得 0 宽高
-  // 不画柱子(白屏)。用 ResizeObserver 监听容器首次获得尺寸的时刻。
+  // 初始化 chart:工具 running 阶段没有 result,也就没有图表容器。
+  // 等数据和容器都出现后再 init,否则首次 effect 会空跑并永久错过初始化。
   useEffect(() => {
+    if (!hasChartData) return undefined;
     const el = containerRef.current;
     if (!el) return undefined;
     let disposed = false;
@@ -78,18 +95,16 @@ const KlineToolUI = ({
             downWickColor: COLORS.down,
             noChangeWickColor: COLORS.noChange,
           },
+          tooltip: {
+            showRule: 'none',
+          },
         },
         xAxis: { show: true, axisLine: { show: true, color: COLORS.grid }, tickLine: { show: false }, tickText: { show: true, color: '#76808F', size: 10 } },
         yAxis: { show: true, axisLine: { show: true, color: COLORS.grid }, tickLine: { show: false }, tickText: { show: true, color: '#76808F', size: 10 } },
         separator: { size: 1, color: COLORS.grid, fill: true, activeBackgroundColor: 'rgba(0,0,0,0)' },
       });
       chart.createIndicator('VOL', { isStack: false });
-      chart.setDataLoader({
-        getBars: ({ callback }) => {
-          callback(chartDataRef.current, false);
-        },
-      });
-      chart.setPeriod({ span: 1, type: 'day' });
+      loadChartData(chart, args.symbol, chartDataRef.current);
     };
 
     // 容器已布局(有宽高)直接建图;否则等 ResizeObserver 报告首次非 0 尺寸
@@ -118,7 +133,7 @@ const KlineToolUI = ({
         chartRef.current = null;
       }
     };
-  }, []);
+  }, [hasChartData, args.symbol]);
 
   // 同步 chartData 到 ref,供 init 一次性注册的 loader 闭包读取最新数据
   useEffect(() => {
@@ -131,13 +146,7 @@ const KlineToolUI = ({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    chart.setSymbol({ ticker: args.symbol ?? '' });
-    chart.setDataLoader({
-      getBars: ({ callback }) => {
-        callback(chartData, false);
-      },
-    });
-    chart.resize();
+    loadChartData(chart, args.symbol, chartData);
   }, [chartData, args.symbol]);
 
   const symbolLabel = args.symbol?.trim();
@@ -155,7 +164,7 @@ const KlineToolUI = ({
   const pct = latest?.pct_chg;
 
   return (
-    <div className="my-2 overflow-hidden rounded-xl border border-border bg-card/60">
+    <div className="my-2 w-full min-w-0 overflow-hidden rounded-xl border border-border bg-card/60">
       <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-2">
         <span className="text-xs font-medium text-foreground">
           {symbolLabel ?? 'K线'}
@@ -167,7 +176,7 @@ const KlineToolUI = ({
           </span>
         )}
       </div>
-      <div id={containerId} ref={containerRef} className="h-[220px] w-full" />
+      <div id={containerId} ref={containerRef} className="h-[380px] min-h-[380px] w-full" />
     </div>
   );
 };
