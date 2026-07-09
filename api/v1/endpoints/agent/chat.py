@@ -18,9 +18,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import litellm
-from assistant_stream import RunController, create_run
 from assistant_stream.serialization.data_stream import DataStreamResponse
 from fastapi import Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
@@ -28,6 +28,11 @@ from api.v1.endpoints.agent.tools import (
     _compact_tool_result,
     _format_result,
     _maybe_attach_search_fallback,
+)
+from src.agent.run_registry import (
+    ActiveRun,
+    RunBroadcaster,
+    active_run_registry,
 )
 from src.agent.tool_registry import ToolRegistry
 from src.llm.anthropic_gateway import (
@@ -41,6 +46,11 @@ from src.storage import DatabaseManager
 logger = logging.getLogger(__name__)
 
 MAX_REACT_ITERATIONS = 10
+
+# controller 产出层:当前生产路径走自建后台运行时的 RunBroadcaster (方法名与
+# assistant-stream 的 RunController 对齐:append_text/add_tool_call/add_data/
+# append_reasoning,以及 _stream_tasks 属性),不再依赖 create_run 的单连接生命周期。
+ControllerLike = RunBroadcaster
 
 _registry = ToolRegistry()
 
@@ -420,7 +430,7 @@ async def _compact_history_if_needed(
     return compacted
 
 
-async def _flush_substreams(controller: RunController) -> None:
+async def _flush_substreams(controller: ControllerLike) -> None:
     """Wait for all pending add_stream reader tasks to finish."""
     for task in controller._stream_tasks:
         if not task.done():
@@ -428,11 +438,16 @@ async def _flush_substreams(controller: RunController) -> None:
 
 
 async def _stream_final_answer_without_tools(
-    controller: RunController,
+    controller: ControllerLike,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
+    *,
+    state: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Force one final synthesis pass without tool use to avoid silent exits."""
+    """Force one final synthesis pass without tool use to avoid silent exits.
+
+    state: 可选共享容器,累积最终答案文本,使外层在取消时能取到已生成内容。
+    """
     forced_messages = [
         *messages,
         {
@@ -464,6 +479,10 @@ async def _stream_final_answer_without_tools(
             continue
         content_text += delta.content
         controller.append_text(delta.content)
+        if state is not None:
+            # 最终答案覆盖此前累积的中间推理文本(它才是该被落定的内容)
+            state["assistant_text"] = content_text
+            controller.assistant_text_snapshot = content_text
 
     if content_text.strip():
         return content_text
@@ -476,16 +495,19 @@ async def _stream_final_answer_without_tools(
 
 
 async def _run_react_loop(
-    controller: RunController,
+    controller: ControllerLike,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
     system_prompt: str = "",
     on_progress=None,
+    *,
+    state: Optional[Dict[str, str]] = None,
 ) -> str:
     """Execute the ReAct loop: LLM thinks → calls tools → observes → repeats.
 
     on_progress: 可选回调 async (assistant_text_so_far: str) -> None,每轮迭代末尾
     调用,用于增量持久化已生成的 assistant 文本(刷新后可恢复)。
+    state: 可选共享容器,实时记录已累积 assistant 文本,使外层在取消时能取到。
     """
     tools = _registry.get_all_schemas()
     tool_names = set(_registry.get_tool_names())
@@ -496,6 +518,8 @@ async def _run_react_loop(
     ]
 
     assistant_text_acc = ""  # 跨轮累积的 assistant 文本(用于增量持久化)
+    if state is not None:
+        state["assistant_text"] = ""
 
     kwargs = _build_llm_kwargs(
         llm_cfg,
@@ -530,6 +554,9 @@ async def _run_react_loop(
                 content_text += delta.content
                 controller.append_text(delta.content)
                 assistant_text_acc += delta.content
+                if state is not None:
+                    state["assistant_text"] = assistant_text_acc
+                    controller.assistant_text_snapshot = assistant_text_acc
             if delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index
@@ -675,7 +702,7 @@ async def _run_react_loop(
 
     logger.warning("[Agent] ReAct loop hit max iterations without final answer")
     controller.append_text("\n\n已完成多轮数据查询，正在生成最终总结...\n\n")
-    return await _stream_final_answer_without_tools(controller, full_messages, llm_cfg)
+    return await _stream_final_answer_without_tools(controller, full_messages, llm_cfg, state=state)
 
 
 @router.post("/agent/chat")
@@ -683,7 +710,11 @@ async def agent_chat(
     request: Request,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
-    """Chat endpoint using assistant-stream DataStream protocol."""
+    """Chat endpoint using assistant-stream DataStream protocol.
+
+    生成逻辑跑在独立后台 task (detach 于 HTTP 连接),首连接 attach 为第一个订阅者。
+    断连不杀生成 —— 后端继续跑完落库,用户刷新后可通过 /agent/chat/resume 续流。
+    """
     body = await request.json()
     messages = body.get("messages", [])
     conversation_id = body.get("conversation_id")
@@ -693,15 +724,55 @@ async def agent_chat(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     session_service = ChatSessionService(db_manager)
     conversation = session_service.ensure_conversation(conversation_id)
-    final_response_text = ""
+    conv_id = conversation["id"]
+
+    # 同一对话已有 run:默认拒绝并发发起;刷新恢复时前端会用
+    # resume_existing=true 走同一个 /agent/chat data-stream 管道,这样 tool UI
+    # 的解码与初次生成完全一致。即使 run 刚完成但仍在保留期内,也重放
+    # chunk 历史,避免竞态下误开第二轮生成。
+    active_run = active_run_registry.get(conv_id)
+    if body.get("resume_existing") is True:
+        try:
+            replay_from = int(body.get("after_chunk_index") or 0)
+        except (TypeError, ValueError):
+            replay_from = 0
+        if active_run is not None:
+            logger.info(
+                "[Agent] chat attach existing run for %s from chunk %s status=%s",
+                conv_id,
+                replay_from,
+                active_run.status,
+            )
+            return DataStreamResponse(subscriber_stream(active_run, replay_from=replay_from))
+        logger.info("[Agent] chat resume requested but no retained run for %s", conv_id)
+        return JSONResponse(
+            status_code=409,
+            content={"error": "run_not_active", "conversation_id": conv_id},
+        )
+
+    if active_run_registry.is_active(conv_id):
+        logger.info("[Agent] chat rejected: run already in progress for %s", conv_id)
+        return JSONResponse(
+            status_code=409,
+            content={"error": "run_in_progress", "conversation_id": conv_id},
+        )
 
     logger.info(
         f"[Agent] Chat request with {len(messages)} messages, "
-        f"model={llm_cfg['model']}, conversation_id={conversation['id']}"
+        f"model={llm_cfg['model']}, conversation_id={conv_id}"
     )
 
-    async def run_callback(controller: RunController):
-        nonlocal final_response_text
+    # 生成开始前同步落库本次完整 messages(含刚发的 user 消息)。
+    # 这一步不能放在后台 task 里:用户一发送就刷新时,conversation detail 会
+    # 先于后台 task 执行,如果库里还没有本次 user,前端只能恢复出空白历史。
+    await asyncio.to_thread(
+        session_service.save_conversation_snapshot,
+        conv_id,
+        list(messages),
+        skip_title=True,
+    )
+
+    async def run_callback(controller: RunBroadcaster):
         from src.services.agent_prompt_service import AgentPromptService
 
         system_prompt, is_fallback = AgentPromptService(db_manager).get_active_system_prompt()
@@ -712,34 +783,128 @@ async def agent_chat(
 
         # 增量持久化:节流(>=3s 一次)把已生成 assistant 文本写库,刷新后可恢复
         last_save_ts = 0.0
+        state: Dict[str, str] = {"assistant_text": ""}
 
         async def on_progress(assistant_text_so_far: str) -> None:
             nonlocal last_save_ts
+            # 同步镜像到 broadcaster,供续流端点补齐已生成文本
+            controller.assistant_text_snapshot = assistant_text_so_far
             now = asyncio.get_event_loop().time()
             if now - last_save_ts < 3.0:
                 return
             last_save_ts = now
             await asyncio.to_thread(
                 session_service.save_partial_assistant_text,
-                conversation["id"],
+                conv_id,
                 assistant_text_so_far,
             )
 
-        final_response_text = await _run_react_loop(
-            controller, messages, llm_cfg, system_prompt, on_progress=on_progress
-        )
-
-        persisted_messages = list(messages)
-        if final_response_text.strip():
-            persisted_messages.append(
-                {
-                    "id": f"assistant-{uuid.uuid4().hex}",
-                    "role": "assistant",
-                    "content": final_response_text,
-                    "created_at": datetime.now().isoformat(),
-                }
+        final_response_text = ""
+        try:
+            final_response_text = await _run_react_loop(
+                controller, messages, llm_cfg, system_prompt,
+                on_progress=on_progress, state=state,
             )
-        session_service.save_conversation_snapshot(conversation["id"], persisted_messages)
 
-    stream = create_run(run_callback)
-    return DataStreamResponse(stream)
+            persisted_messages = list(messages)
+            if final_response_text.strip():
+                persisted_messages.append(
+                    {
+                        "id": f"assistant-{uuid.uuid4().hex}",
+                        "role": "assistant",
+                        "content": final_response_text,
+                        "created_at": datetime.now().isoformat(),
+                    }
+                )
+            session_service.save_conversation_snapshot(conv_id, persisted_messages)
+            await active_run_registry.mark_done(
+                conv_id, "completed", final_text=final_response_text
+            )
+        except asyncio.CancelledError:
+            # 后台 task 不被 HTTP 断连取消,仅进程关闭/显式 cancel 会到这。
+            # 把已生成文本落定,避免残留 {conv_id}-assistant-pending 半截消息。
+            partial = state.get("assistant_text", "")
+            if partial.strip():
+                partial = partial.rstrip() + "\n\n[已停止]"
+                try:
+                    await asyncio.shield(asyncio.to_thread(
+                        session_service.save_partial_assistant_text, conv_id, partial,
+                    ))
+                except asyncio.CancelledError:
+                    try:
+                        session_service.save_partial_assistant_text(conv_id, partial)
+                    except Exception:
+                        logger.warning("[Agent] cancel-time partial save failed", exc_info=True)
+            await active_run_registry.mark_done(conv_id, "cancelled", final_text=partial)
+            raise
+        except Exception as exc:
+            logger.exception("[Agent] background run failed")
+            controller.add_error(str(exc))
+            partial = state.get("assistant_text", "")
+            if partial.strip():
+                try:
+                    await asyncio.to_thread(
+                        session_service.save_partial_assistant_text, conv_id, partial
+                    )
+                except Exception:
+                    logger.debug("[Agent] failed-run partial save failed", exc_info=True)
+            await active_run_registry.mark_done(conv_id, "failed", error=str(exc))
+
+    async def factory(broadcaster: RunBroadcaster) -> "asyncio.Task":
+        return asyncio.create_task(run_callback(broadcaster))
+
+    run = await active_run_registry.start_or_get(conv_id)
+    # 首连接必须先 subscribe 再启动后台 task,否则 task 可能在首个订阅者
+    # subscribe 之前就 emit 完所有 chunk,导致首连收不到内容。
+    first_queue = run.broadcaster.subscribe()
+    await run.start(factory)
+    return DataStreamResponse(subscriber_stream(run, first_queue))
+
+
+async def subscriber_stream(
+    run: ActiveRun,
+    queue: "asyncio.Queue | None" = None,
+    *,
+    replay_from: int | None = None,
+):
+    """首连/续流共用的订阅流:从指定 chunk 游标继续发送 data-stream。
+
+    queue: 首连传入预先 subscribe 的 queue (确保在后台 task 启动前已订阅);
+           续流留空,内部 subscribe。
+
+    刷新恢复时,历史消息由 conversations detail 的 messages/resume_state 恢复;
+    resume 只负责从 after_chunk_index 之后继续推增量。生成结束
+    broadcaster.mark_finished 向 queue 投 None 哨兵,本 generator 自然结束。
+    """
+    broadcaster = run.broadcaster
+    if queue is None:
+        queue = broadcaster.subscribe(replay_from=replay_from)
+    try:
+        # 先消费游标之后的历史 chunk,再接后续实时 chunk,直到 None 哨兵。
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            yield chunk
+    finally:
+        broadcaster.unsubscribe(queue)
+
+
+@router.post("/agent/chat/resume")
+async def agent_chat_resume(
+    request: Request,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """续流端点:attach 到进行中的 run;无活跃 run 返回 {active: false}。"""
+    body = await request.json()
+    conversation_id = body.get("conversation_id")
+    if not conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id is required")
+    run = active_run_registry.get(conversation_id)
+    if run is None or not run.is_running:
+        return JSONResponse(status_code=200, content={"active": False})
+    try:
+        replay_from = int(body.get("after_chunk_index") or 0)
+    except (TypeError, ValueError):
+        replay_from = 0
+    return DataStreamResponse(subscriber_stream(run, replay_from=replay_from))

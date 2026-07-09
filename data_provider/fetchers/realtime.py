@@ -538,7 +538,10 @@ def get_realtime_quote(stock_code: str, source: str = "em") -> Optional[UnifiedR
     Returns:
         UnifiedRealtimeQuote 或 None
     """
-    from ..utils import _is_us_code, _is_hk_code, _is_etf_code
+    # _is_us_code / _is_hk_code / _is_etf_code 定义在同级模块 kline.py（拆分
+    # akshare_fetcher 时随 K 线逻辑一起搬走），akshare_fetcher 也从那里再导出。
+    # 不能从 ..utils 导入：utils.py 只有 _is_hk_market，没有这三个函数。
+    from .kline import _is_us_code, _is_hk_code, _is_etf_code
 
     normalized_code = normalize_stock_code(stock_code)
 

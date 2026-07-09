@@ -46,9 +46,9 @@ const NewsToolUI = ({
   }
 
   return (
-    <div className="my-2 space-y-2">
+    <div className="my-2 w-full min-w-0 space-y-2">
       {(result.sentiment_score != null || result.overall_score != null) && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-[11px]">
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-1.5 text-[11px]">
           {result.overall_score != null && <span className="text-muted-foreground">综合评分 <b className="text-foreground">{formatNum(result.overall_score)}</b></span>}
           {result.sentiment_score != null && <span className="text-muted-foreground">情感分 <b className="text-foreground">{formatNum(result.sentiment_score)}</b></span>}
           {result.positive_count != null && <span className="text-red-600">正面 {result.positive_count}</span>}
@@ -58,7 +58,7 @@ const NewsToolUI = ({
       )}
       <div className="space-y-1.5">
         {items.map((item: NewsToolItem, idx) => (
-          <div key={idx} className="rounded-lg border border-border bg-card/60 px-3 py-2">
+          <div key={idx} className="w-full min-w-0 rounded-lg border border-border bg-card/60 px-3 py-2">
             <div className="flex items-start justify-between gap-2">
               <span className="min-w-0 text-sm font-medium text-foreground [overflow-wrap:anywhere]">{item.title}</span>
               {item.polarity != null && (

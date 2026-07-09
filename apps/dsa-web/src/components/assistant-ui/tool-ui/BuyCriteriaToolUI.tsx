@@ -28,7 +28,7 @@ const BuyCriteriaToolUI = ({
   // HITL: 后端发了 approval-request,等待用户确认才执行
   if (approval && status.type === 'running' && !result) {
     return (
-      <div className="my-2 rounded-xl border-2 border-amber-300 bg-amber-50 px-3 py-2.5">
+      <div className="my-2 w-full min-w-0 rounded-xl border-2 border-amber-300 bg-amber-50 px-3 py-2.5">
         <div className="flex items-center gap-2 text-sm font-medium text-amber-800">
           <ShieldAlertIcon className="size-4 shrink-0" />
           <span>买入判定需要确认</span>
@@ -69,7 +69,7 @@ const BuyCriteriaToolUI = ({
   const isBuy = result.final_decision === '可买入';
 
   return (
-    <div className="my-3 overflow-hidden rounded-xl border border-border bg-card/60">
+    <div className="my-3 w-full min-w-0 overflow-hidden rounded-xl border border-border bg-card/60">
       {/* 结论卡 */}
       <div className={cn('flex items-center justify-between gap-3 border-b px-3 py-2.5', isBuy ? 'border-emerald-200 bg-emerald-50/60' : 'border-red-200 bg-red-50/60')}>
         <div className="flex items-center gap-2">

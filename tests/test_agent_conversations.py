@@ -126,15 +126,25 @@ def test_rename_conversation_404_when_missing(client, mock_service):
 
 def test_delete_conversation_returns_deleted_flag(client, mock_service):
     mock_service.delete_conversation.return_value = 1
-    resp = client.delete("/api/v1/agent/conversations/c1")
+    with patch(
+        "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
+        return_value=False,
+    ) as cancel_run:
+        resp = client.delete("/api/v1/agent/conversations/c1")
     assert resp.status_code == 200
     assert resp.json()["deleted"] == 1
+    cancel_run.assert_awaited_once_with("c1")
 
 
 def test_delete_conversation_404_when_missing(client, mock_service):
     mock_service.delete_conversation.return_value = 0
-    resp = client.delete("/api/v1/agent/conversations/c1")
+    with patch(
+        "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
+        return_value=False,
+    ) as cancel_run:
+        resp = client.delete("/api/v1/agent/conversations/c1")
     assert resp.status_code == 404
+    cancel_run.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

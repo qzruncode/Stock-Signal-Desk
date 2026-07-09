@@ -129,18 +129,46 @@ const UserMessage: FC = () => (
   <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-end gap-2.5 sm:gap-3">
     <div className="flex min-w-0 max-w-[min(88%,calc(100%-2.5rem))] flex-col items-end space-y-1 sm:max-w-[min(78%,calc(100%-3rem))]">
       <UserMessageAttachments />
-      <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-br-md border border-primary/20 bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm [overflow-wrap:anywhere]">
-        <MessagePrimitive.Parts />
-      </div>
-      <div className="flex items-center gap-1 px-1 opacity-0 transition-opacity group-hover/message:opacity-100">
-        <ActionBarPrimitive.Edit
-          className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-          title="编辑并重新发送"
-        >
-          <PencilIcon className="size-3.5" />
-        </ActionBarPrimitive.Edit>
-        <BranchPicker />
-      </div>
+      {/* 编辑态:点击 Edit 后 composer.isEditing=true,这里渲染编辑输入框;
+          ComposerPrimitive 在 message 上下文下会自动绑定到该消息的 edit composer,
+          提交(Send)即覆盖原消息并重新生成。 */}
+      <AuiIf condition={(s) => s.composer.isEditing}>
+        <ComposerPrimitive.Root className="w-full rounded-2xl rounded-br-md border border-primary/30 bg-card shadow-sm focus-within:border-primary/45">
+          <ComposerPrimitive.Input
+            autoFocus
+            className="min-h-16 w-full resize-none bg-transparent px-4 py-3 text-sm leading-7 text-foreground placeholder-muted-foreground focus:outline-none [overflow-wrap:anywhere]"
+          />
+          <div className="flex items-center justify-end gap-2 px-3 pb-3">
+            <ComposerPrimitive.Cancel
+              className="flex h-8 items-center rounded-lg border border-border bg-card px-3 text-xs text-foreground transition hover:bg-muted"
+              title="取消编辑"
+            >
+              取消
+            </ComposerPrimitive.Cancel>
+            <ComposerPrimitive.Send
+              className="flex h-8 items-center rounded-lg bg-primary px-3 text-xs text-primary-foreground transition hover:bg-primary/90 disabled:opacity-30"
+              title="重新发送"
+            >
+              发送
+            </ComposerPrimitive.Send>
+          </div>
+        </ComposerPrimitive.Root>
+      </AuiIf>
+      {/* 非编辑态:静态气泡 + Edit 按钮 */}
+      <AuiIf condition={(s) => !s.composer.isEditing}>
+        <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-br-md border border-primary/20 bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-sm [overflow-wrap:anywhere]">
+          <MessagePrimitive.Parts />
+        </div>
+        <div className="flex items-center gap-1 px-1 opacity-0 transition-opacity group-hover/message:opacity-100">
+          <ActionBarPrimitive.Edit
+            className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            title="编辑并重新发送"
+          >
+            <PencilIcon className="size-3.5" />
+          </ActionBarPrimitive.Edit>
+          <BranchPicker />
+        </div>
+      </AuiIf>
     </div>
     <Avatar fallback={<UserIcon className="size-3.5" />} className="chat-avatar-user" />
   </MessagePrimitive.Root>
@@ -153,8 +181,8 @@ const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-start gap-2.5 sm:gap-3">
       <Avatar fallback={<BotIcon className="size-3.5" />} className="chat-avatar-ai" />
-      <div className="min-w-0 max-w-[calc(100%-2.5rem)] flex-1 sm:max-w-[min(92%,780px,calc(100%-3rem))] sm:flex-none">
-        <div className="min-w-0 max-w-full overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-3 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur sm:px-4">
+      <div className="min-w-0 flex-1">
+        <div className="w-full min-w-0 overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-3 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur sm:px-4">
           <MessagePrimitive.Parts
             components={{
               Text: AssistantMarkdownText,
@@ -249,9 +277,9 @@ const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
   const [expanded, setExpanded] = useState(status.type === 'running');
 
   return (
-    <div className="space-y-3">
+    <div className="w-full min-w-0 space-y-3">
       {steps.length > 0 && (
-        <div className="rounded-xl border border-border bg-muted/45">
+        <div className="w-full min-w-0 rounded-xl border border-border bg-muted/45">
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
@@ -286,7 +314,7 @@ const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
       )}
 
       {content.trim() && (
-        <div className="assistant-markdown">
+        <div className="assistant-markdown w-full min-w-0">
           <Markdown
             remarkPlugins={[remarkGfm]}
             components={{
