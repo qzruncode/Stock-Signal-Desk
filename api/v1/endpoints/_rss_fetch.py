@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import logging
 import re
+from html import escape, unescape
+from html.parser import HTMLParser
 from datetime import datetime
-from typing import Optional
-from urllib.parse import quote
+from typing import Any, Callable, Dict, Optional
+from urllib.parse import quote, urlencode, urlparse
 
 import feedparser
 import requests
@@ -16,6 +18,187 @@ from src.config import Config
 from api.v1.endpoints._rss_routes import RSSHUB_ROUTES
 
 logger = logging.getLogger(__name__)
+
+
+# Express-style route param: :name / :name? / :name{regex}?
+_PARAM_RE = re.compile(r':([a-zA-Z_][a-zA-Z0-9_]*)(\{[^}]+\})?(\?)?')
+
+
+def _readable_http_url(value: Any) -> str:
+    """Return a browser-readable article URL, never a GUID or relative identifier."""
+    if not value:
+        return ""
+    candidate = str(value).strip()
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return ""
+    return candidate if parsed.scheme in {"http", "https"} and parsed.netloc else ""
+
+
+class _FeedTextExtractor(HTMLParser):
+    """Small dependency-free HTML-to-text converter for RSS descriptions."""
+
+    _BLOCK_TAGS = {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "blockquote"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() in self._BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self._BLOCK_TAGS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+_ENCODED_HTML_RE = re.compile(r"&lt;\s*/?\s*(?:p|div|a|span|br|ul|ol|li|h[1-6]|table)\b", re.I)
+
+
+def _normalize_content_html(html_value: Any, text_value: Any = "") -> str:
+    """Normalize RSS content while preserving rich markup for safe frontend rendering."""
+    raw_html = str(html_value or "").strip()
+    if raw_html:
+        # Some feeds encode the whole HTML fragment once more. Decode only when
+        # the value clearly contains encoded tags, not ordinary `&lt;` prose.
+        for _ in range(2):
+            if not _ENCODED_HTML_RE.search(raw_html):
+                break
+            decoded = unescape(raw_html)
+            if decoded == raw_html:
+                break
+            raw_html = decoded
+        return raw_html
+    raw_text = str(text_value or "").strip()
+    return escape(raw_text).replace("\n", "<br>") if raw_text else ""
+
+
+def _html_to_text(value: Any) -> str:
+    """Return readable plain text from raw, encoded, or malformed RSS HTML."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    for _ in range(2):
+        decoded = unescape(raw)
+        if decoded == raw:
+            break
+        raw = decoded
+    parser = _FeedTextExtractor()
+    try:
+        parser.feed(raw)
+        parser.close()
+        text = "".join(parser.parts)
+    except Exception:
+        text = re.sub(r"<[^>]+>", " ", raw)
+    lines = [re.sub(r"[ \t\r\f\v]+", " ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _derive_item_title(title: Any, body_text: str) -> str:
+    existing = _html_to_text(title)
+    if existing:
+        return existing
+    first_line = next((line.strip() for line in body_text.splitlines() if line.strip()), "")
+    if not first_line:
+        return ""
+    if len(first_line) <= 80:
+        return first_line
+    return first_line[:79].rstrip() + "…"
+
+
+def _is_unresolvable_truncated_item(title: str, link: str, body_text: str = "") -> bool:
+    """Hide items that are visibly truncated and provide no document to resolve."""
+    if link or not (title.rstrip().endswith("...") or title.rstrip().endswith("…")):
+        return False
+    normalized_title = title.rstrip(". …").strip()
+    normalized_body = body_text.rstrip(". …").strip()
+    return not normalized_body or normalized_body == normalized_title or body_text.rstrip().endswith(("...", "…"))
+
+
+# Namespace-keyed param formatters. Applies finance-specific niceties (e.g. the
+# 6-digit stock code -> SH/SZ/BJ conversion) while keeping the generic core clean.
+# Unregistered namespaces pass param values through raw.
+_PARAM_FORMATTERS: Dict[str, Dict[str, Callable[[str], str]]] = {
+    "xueqiu": {"id": lambda v: _stock_code_to_rsshub_id(v)},
+}
+
+
+def _normalize_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Drop falsy / empty values; stringify keys. RSSHub ignores empty params anyway."""
+    out: Dict[str, Any] = {}
+    for k, v in (options or {}).items():
+        key = str(k).strip()
+        if not key or v is None:
+            continue
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                continue
+        elif isinstance(v, bool):
+            # RSSHub uses presence/`true`/`false`; send as string.
+            v = "true" if v else "false"
+        out[key] = v
+    return out
+
+
+def _build_feed_url_generic(
+    route_path: str,
+    params: Optional[Dict[str, Any]] = None,
+    options: Optional[Dict[str, Any]] = None,
+    namespace: Optional[str] = None,
+) -> str:
+    """Build a RSSHub feed URL from a generic route template + params + universal options.
+
+    ``route_path`` is the RSSHub route (e.g. ``/wallstreetcn/news/:category?``).
+    Path params are substituted; optional params with empty/missing values are
+    dropped from the path. Universal ``options`` become the query string.
+    Raises ``ValueError`` when a required path param is missing.
+    """
+    base_url = Config.get_instance().rsshub_base_url.rstrip("/")
+    path: str = route_path or ""
+    params = params or {}
+
+    def _resolve(name: str) -> Optional[str]:
+        raw = params.get(name)
+        if raw is None:
+            return None
+        val = str(raw).strip()
+        if not val:
+            return None
+        formatter = _PARAM_FORMATTERS.get(namespace or "", {}).get(name)
+        if formatter:
+            try:
+                val = formatter(val)
+            except Exception:
+                pass
+        return val
+
+    def _sub(match: re.Match) -> str:
+        name, _regex, opt_q = match.group(1), match.group(2), match.group(3)
+        optional = opt_q == "?"
+        val = _resolve(name)
+        if val:
+            return quote(val, safe="")
+        if optional:
+            return ""  # drop the segment marker; caller cleans up slashes
+        raise ValueError(f"缺少必填参数: {name}")
+
+    rendered = _PARAM_RE.sub(_sub, path)
+    # Collapse empty segments left by dropped optional params and trailing slash.
+    rendered = re.sub(r"/+", "/", rendered)
+    if rendered.endswith("/") and len(rendered) > 1:
+        rendered = rendered.rstrip("/")
+    if not rendered.startswith("/"):
+        rendered = "/" + rendered
+
+    opts = _normalize_options(options)
+    qs = urlencode(opts) if opts else ""
+    return f"{base_url}{rendered}{'?' + qs if qs else ''}"
 
 
 def _stock_code_to_rsshub_id(code: str) -> str:
@@ -118,14 +301,18 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
 
     items = []
     for entry in feed.entries[:limit]:
-        summary = ""
+        raw_summary = ""
         if hasattr(entry, "summary"):
-            summary = entry.summary or ""
+            raw_summary = entry.summary or ""
         elif hasattr(entry, "description"):
-            summary = entry.description or ""
-        summary = re.sub(r"<[^>]+>", "", summary).strip()
-        if len(summary) > 500:
-            summary = summary[:497] + "..."
+            raw_summary = entry.description or ""
+        raw_content = ""
+        entry_content = getattr(entry, "content", None)
+        if isinstance(entry_content, list) and entry_content:
+            first_content = entry_content[0]
+            raw_content = first_content.get("value", "") if isinstance(first_content, dict) else ""
+        content_html = _normalize_content_html(raw_content or raw_summary)
+        summary = _html_to_text(raw_summary or content_html)
 
         published = None
         for attr in ("published", "updated", "created"):
@@ -146,13 +333,24 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
         if hasattr(entry, "tags"):
             tags = [t.get("term", "") for t in entry.tags if t.get("term")]
 
+        link = _readable_http_url(getattr(entry, "link", ""))
+        title = _derive_item_title(getattr(entry, "title", ""), summary)
+        if not title and not summary and not content_html:
+            continue
+        if _is_unresolvable_truncated_item(title, link, summary):
+            continue
+
         items.append({
-            "title": getattr(entry, "title", ""),
-            "link": getattr(entry, "link", ""),
+            "id": str(getattr(entry, "id", "") or getattr(entry, "guid", "")),
+            "title": title,
+            "link": link,
             "summary": summary,
             "published": published,
             "author": getattr(entry, "author", ""),
             "tags": tags,
+            "image": "",
+            "content_html": content_html,
+            "attachments": [],
         })
 
     feed_title = ""
@@ -164,6 +362,123 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
     return {
         "feed_title": feed_title,
         "feed_link": feed_link,
+        "items": items,
+        "errors": [],
+    }
+
+
+def _authors_to_str(authors: Any) -> str:
+    """JSON Feed authors (list of {name,url,avatar} or str) → 逗号分隔字符串。"""
+    if not authors:
+        return ""
+    if isinstance(authors, str):
+        return authors
+    if isinstance(authors, list):
+        names = []
+        for a in authors:
+            if isinstance(a, dict):
+                n = a.get("name") or ""
+                if n:
+                    names.append(str(n))
+            elif isinstance(a, str):
+                names.append(a)
+        return ", ".join(names)
+    return str(authors)
+
+
+def _attachments_from_json(att: Any) -> list:
+    """归一化 JSON Feed attachments（音频/视频/图片直链）。"""
+    if not isinstance(att, list):
+        return []
+    out = []
+    for a in att:
+        if not isinstance(a, dict):
+            continue
+        url = a.get("url")
+        if not url:
+            continue
+        out.append({
+            "url": str(url),
+            "mime_type": str(a.get("mime_type") or a.get("mime") or ""),
+            "title": str(a.get("title") or ""),
+            "size_in_bytes": a.get("size_in_bytes"),
+            "duration_in_seconds": a.get("duration_in_seconds"),
+        })
+    return out
+
+
+def _fetch_rss_feed_json(url: str, limit: int = 20, timeout: float = 20.0) -> dict:
+    """以 format=json 抓取 RSSHub feed，返回富 item（含 image/content_html/attachments/authors）。
+
+    RSSHub 的 JSON Feed 1.1 item 字段：id/url/title/content_html/summary/image/
+    date_published/authors/tags/attachments。
+    """
+    # Strip any existing format= param, then force format=json.
+    json_url = re.sub(r"[?&]format=[^&]*", "", url)
+    sep = "&" if "?" in json_url else "?"
+    json_url = f"{json_url}{sep}format=json"
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/feed+json, application/json",
+        }
+        resp = requests.get(json_url, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as exc:
+        logger.warning(f"[RSS] JSON 请求失败 {json_url}: {exc}")
+        return {"items": [], "errors": [f"请求失败: {exc}"]}
+    except ValueError as exc:
+        logger.warning(f"[RSS] JSON 解析失败 {json_url}: {exc}")
+        return {"items": [], "errors": [f"解析失败: {exc}"]}
+
+    if not isinstance(data, dict):
+        return {"items": [], "errors": ["JSON Feed 格式异常"]}
+
+    raw_items = data.get("items") or data.get("item") or []
+    if not isinstance(raw_items, list):
+        raw_items = []
+
+    items = []
+    for entry in raw_items[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        content_html = _normalize_content_html(entry.get("content_html"), entry.get("content_text"))
+        summary = _html_to_text(entry.get("summary") or content_html)
+
+        tags_raw = entry.get("tags") or []
+        tags = [str(t) for t in tags_raw] if isinstance(tags_raw, list) else []
+
+        title = _derive_item_title(entry.get("title"), summary)
+        link = _readable_http_url(entry.get("url"))
+        image = str(entry.get("image") or entry.get("banner") or "")
+        attachments = _attachments_from_json(entry.get("attachments"))
+        if not title and not summary and not content_html and not image and not attachments:
+            continue
+        if _is_unresolvable_truncated_item(title, link, summary):
+            continue
+
+        items.append({
+            "id": str(entry.get("id") or ""),
+            "title": title,
+            # JSON Feed `id` is an opaque stable identifier. It is not a URL and
+            # must never be rendered as an href (UUID ids otherwise become
+            # localhost-relative links in the web app).
+            "link": link,
+            "summary": summary,
+            "published": str(entry.get("date_published") or entry.get("date_modified") or "") or None,
+            "author": _authors_to_str(entry.get("authors")),
+            "tags": tags,
+            "image": image,
+            "content_html": content_html,
+            "attachments": attachments,
+        })
+
+    return {
+        "feed_title": str(data.get("title") or ""),
+        "feed_link": str(data.get("home_page_url") or data.get("feed_url") or ""),
         "items": items,
         "errors": [],
     }

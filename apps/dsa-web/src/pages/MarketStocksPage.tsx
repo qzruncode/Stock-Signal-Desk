@@ -84,7 +84,7 @@ const MarketStocksPage: React.FC = () => {
   }, [klineModal]);
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-[1100px] flex-col gap-0 overflow-hidden px-4 pt-3 pb-2 sm:px-5 sm:pt-4 sm:pb-2">
+    <div className="flex h-dvh w-full flex-col gap-0 overflow-hidden px-4 pt-3 pb-2 sm:px-5 sm:pt-4 sm:pb-2">
       {/* Compact top bar: title + sync status + actions */}
       <header className="flex shrink-0 items-center justify-between gap-3 pb-2">
         <div className="flex min-w-0 items-center gap-2">

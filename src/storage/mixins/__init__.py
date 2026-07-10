@@ -12,6 +12,7 @@ from src.storage.mixins.batch import BatchMixin
 from src.storage.mixins.alert import AlertMixin
 from src.storage.mixins.watchlist import WatchlistMixin
 from src.storage.mixins.agent_prompt import AgentPromptMixin
+from src.storage.mixins.rss_subscription import RssSubscriptionMixin
 
 __all__ = [
     "DailyDataMixin",
@@ -25,4 +26,5 @@ __all__ = [
     "AlertMixin",
     "WatchlistMixin",
     "AgentPromptMixin",
+    "RssSubscriptionMixin",
 ]

@@ -1,54 +1,49 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { rssApi, type RssFeedResponse, type RssSourceOption } from '../api/rss';
-
-export interface UseRssFeedsParams {
-  source: string;
-  stockCode: string;
-  keyword: string;
-  uid: string;
-  subType: string;
-  category: string;
-  currentSource: RssSourceOption | undefined;
-  sourcesLength: number;
-}
+import { rssApi, type FeedSpec, type RssFeedBySpecResponse } from '../api/rss';
 
 export interface UseRssFeedsResult {
-  feedData: RssFeedResponse | null;
+  feedData: RssFeedBySpecResponse | null;
   loading: boolean;
   error: string | null;
-  fetchFeeds: () => Promise<void>;
+  fetchFeeds: (force?: boolean) => Promise<void>;
 }
 
-export function useRssFeeds({
-  source,
-  stockCode,
-  keyword,
-  uid,
-  subType,
-  category,
-  currentSource,
-  sourcesLength,
-}: UseRssFeedsParams): UseRssFeedsResult {
-  const [feedData, setFeedData] = useState<RssFeedResponse | null>(null);
+/**
+ * Fetch a feed by generic FeedSpec (shared by subscribed feeds and ad-hoc explore).
+ * - Aborts in-flight requests on new fetch / unmount.
+ * - Auto-fetches when `spec` changes (and enabled), so the page only owns the spec.
+ */
+export function useRssFeeds(
+  spec: FeedSpec | null,
+  enabled = true,
+): UseRssFeedsResult {
+  const [feedData, setFeedData] = useState<RssFeedBySpecResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const specRef = useRef<FeedSpec | null>(spec);
+  specRef.current = spec;
 
-  const fetchFeeds = useCallback(async () => {
+  const fetchFeeds = useCallback(async (force = false) => {
+    const current = specRef.current;
+    if (!current) {
+      setFeedData(null);
+      return;
+    }
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setLoading(true);
     setError(null);
     try {
-      const params: Record<string, unknown> = { source, limit: 30 };
-      if (currentSource?.requires_stock && stockCode) params.stock_code = stockCode;
-      if (currentSource?.requires_keyword && keyword) params.keyword = keyword;
-      if (currentSource?.requires_uid && uid) params.uid = uid;
-      if (currentSource?.requires_type && subType) params.type = subType;
-      if (currentSource?.requires_category && category) params.category = category;
-      const result = await rssApi.getFeeds(
-        params as Parameters<typeof rssApi.getFeeds>[0],
+      const result = await rssApi.getFeedsBySpec(
+        {
+          route_path: current.route_path,
+          params: current.params,
+          options: current.options,
+          namespace: current.namespace,
+          force,
+        },
         ctrl.signal,
       );
       setFeedData(result);
@@ -57,6 +52,7 @@ export function useRssFeeds({
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
+      if ((err as { code?: string })?.code === 'ERR_CANCELED') return;
       const msg =
         (err as { response?: { data?: { detail?: { message?: string } } } })
           ?.response?.data?.detail?.message ||
@@ -66,16 +62,21 @@ export function useRssFeeds({
     } finally {
       setLoading(false);
     }
-  }, [source, stockCode, keyword, uid, subType, category, currentSource]);
+  }, []);
 
-  // Auto-load when sources are ready
+  // Auto-fetch when spec changes (and enabled).
   useEffect(() => {
-    if (sourcesLength > 0) {
-      void fetchFeeds();
+    if (!enabled || !spec) {
+      setFeedData(null);
+      setLoading(false);
+      return;
     }
-  }, [fetchFeeds, sourcesLength]);
+    setFeedData(null);
+    void fetchFeeds(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spec, enabled]);
 
-  // Abort in-flight requests on unmount
+  // Abort in-flight requests on unmount.
   useEffect(() => {
     return () => {
       abortRef.current?.abort();

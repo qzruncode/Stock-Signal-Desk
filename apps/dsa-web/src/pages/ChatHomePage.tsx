@@ -182,7 +182,12 @@ const ChatHomePage: React.FC = () => {
         handleRunInProgress();
         return;
       }
-      throw new Error(await readStreamErrorMessage(response));
+      // 注意:不能在此 throw。useDataStreamRuntime 的 onResponse 在 try 块之外
+      // 调用(useDataStreamRuntime.js),throw 不会进 onError,而是变成 fetch 的
+      // 未捕获 rejection 被静默吞掉,红条永远不出现。直接 setStreamError 即可。
+      activeStreamRef.current = null;
+      const message = await readStreamErrorMessage(response);
+      setStreamError(message);
     },
     onError: (error) => {
       // 用户主动取消(点 Stop):AbortError / DOMException.AbortError 不算错误

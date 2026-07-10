@@ -80,13 +80,18 @@ async def delete_agent_conversation(
     conversation_id: str,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
+    # 必须先取消活跃 run 再删 DB:cancel 会 task.cancel() 唤醒后台 task 的
+    # CancelledError 分支,该分支会 save_partial_assistant_text 落库。若先删
+    # 会话记录,后写的 partial 会挂到已不存在的 conversation_id 上成为孤儿
+    # 消息(FK 缺失时残留脏数据)。先 cancel 让 task 收尾、再删 DB。
+    cancelled = await active_run_registry.cancel(conversation_id)
+    if cancelled:
+        logger.info("[Agent] cancelled active run for deleted conversation %s", conversation_id)
+
     service = ChatSessionService(db_manager)
     deleted = service.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="对话不存在")
-    cancelled = await active_run_registry.cancel(conversation_id)
-    if cancelled:
-        logger.info("[Agent] cancelled active run for deleted conversation %s", conversation_id)
     return {"deleted": deleted}
 
 
