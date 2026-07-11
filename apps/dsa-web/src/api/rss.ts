@@ -165,6 +165,14 @@ export interface HtmlTransformResponse {
   persist_params: Record<string, string>;
 }
 
+/** 测试实例 XUEQIU_COOKIES 是否生效的结果。 */
+export interface RssCookieTestResult {
+  configured: boolean;
+  verified: boolean;
+  item_count: number;
+  message: string;
+}
+
 // ── API ────────────────────────────────────────────────────────────────
 
 export const rssApi = {
@@ -281,6 +289,13 @@ export const rssApi = {
   transformHtml(body: HtmlTransformRequest, signal?: AbortSignal): Promise<HtmlTransformResponse> {
     return apiClient
       .post('/api/v1/rss/transform/html', body, { timeout: 30000, signal })
+      .then((r) => r.data);
+  },
+
+  // 测试实例配置的雪球 Cookie 是否生效（实际请求一次 timeline）
+  testXueqiuCookie(): Promise<RssCookieTestResult> {
+    return apiClient
+      .post('/api/v1/rss/instance/cookies/test', {}, { timeout: 45000 })
       .then((r) => r.data);
   },
 };

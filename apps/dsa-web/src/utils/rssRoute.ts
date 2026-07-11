@@ -90,6 +90,81 @@ export function parseMarkdownParamOptions(markdown: string): RouteParamOption[] 
   return options;
 }
 
+/**
+ * Routes that depend on a logged-in account cookie/token even when RSSHub does
+ * not flag them with `features.requireConfig` — i.e. they would work if the user
+ * configured the corresponding env var, and are NOT already hidden as broken.
+ * Empirically maintained: only add routes confirmed to (a) need credentials and
+ * (b) actually return content once configured. (xueqiu routes are NOT here —
+ * verified that XUEQIU_COOKIES does not revive them due to IP blacklist + missing
+ * HttpOnly xq_a_token; they live in KNOWN_BROKEN_ROUTES instead.)
+ */
+const AUTH_REQUIRED_ROUTES = new Set<string>([]);
+
+/**
+ * Whether a route needs user-supplied credentials (cookie/token) beyond path
+ * params — i.e. it will 503 until the RSSHub instance is configured. Covers both
+ * RSSHub's `features.requireConfig` flag and the auth-dependent routes RSSHub
+ * fails to flag. Returns a short reason for the badge tooltip when truthy.
+ */
+export function requiresAuth(route: {
+  route_path: string;
+  features?: { requireConfig?: unknown } | null;
+}): string | null {
+  if (route.features?.requireConfig) return '需配置 Cookie/Token';
+  // Match on the namespace + first literal segment so optional params
+  // (e.g. /xueqiu/column/:id) still hit /xueqiu/column.
+  const head = route.route_path.split('/:')[0].replace(/\/+$/, '');
+  if (AUTH_REQUIRED_ROUTES.has(head)) return '需登录 Cookie';
+  return null;
+}
+
+/**
+ * Routes verified broken against the self-hosted instance (2026-07-11, after
+ * installing patchright): they return 503/404 regardless of params/cookies
+ * because the upstream site changed its API, blocks RSSHub (403/HTML), or the
+ * route's parsing code is broken. None is fixable by the user, so the explore
+ * list hides them. Routes that merely need a cookie (see requiresAuth) or are
+ * slow (browser-rendered, intermittent timeout) are NOT listed here — only
+ * persistently broken ones. Re-verify before pruning: upstreams do recover.
+ *
+ * Note on xueqiu: user_stock/column stay hidden — user_stock hits
+ * stock.xueqiu.com which IP-blacklists this server (403 even with a valid
+ * xq_a_token); column is broken by Xuequi's anti-crawl (missing SNOWMAN_TARGET).
+ * xueqiu/timeline is NOT here — it works once XUEQIU_COOKIES (incl. the HttpOnly
+ * xq_a_token) is configured on the instance.
+ */
+const KNOWN_BROKEN_ROUTES = new Set<string>([
+  '/bse/:category?/:keyword?',
+  '/stream-capital/search',
+  '/jin10/topic/:id',
+  '/21caijing/channel/:name{.+}?',
+  '/barronschina/:id?',
+  '/caijing/roll',
+  '/dtcj/datahero/:category?',
+  '/dtcj/datainsight/:id?',
+  '/nbd/:id?',
+  '/taoguba/blog/:id',
+  '/xueqiu/snb/:id',
+  '/xueqiu/stock_comments/:id',
+  '/xueqiu/today',
+  '/xueqiu/favorite/:id',
+  '/xueqiu/user/:id/:type?',
+  '/xueqiu/user_stock/:id',
+  '/xueqiu/column/:id',
+  '/bloomberg/authors/:id/:slug/:source?',
+  '/followin/tag/:tagId/:lang?',
+  '/followin/topic/:topicId/:lang?',
+  '/finology/category/:category',
+  '/finology/most-viewed',
+  '/finology/tag/:topic',
+]);
+
+/** Whether a route is persistently broken and should be hidden from explore. */
+export function isKnownBroken(route: { route_path: string }): boolean {
+  return KNOWN_BROKEN_ROUTES.has(route.route_path);
+}
+
 /** Remove Markdown tables before displaying a route's prose description. */
 export function routeDescriptionProse(markdown: string): string {
   if (!markdown) return '';

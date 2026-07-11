@@ -1,12 +1,13 @@
-import React, { useEffect, useMemo } from 'react';
-import { Sparkles } from 'lucide-react';
-import type { RssRouteDescriptor } from '../../api/rss';
-import { Input, Select, Badge } from '../common';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Sparkles, ShieldCheck } from 'lucide-react';
+import { rssApi, type RssRouteDescriptor, type RssCookieTestResult } from '../../api/rss';
+import { Input, Select, Badge, Button, InlineAlert } from '../common';
 import {
   parseRouteParams,
   paramsFromExample,
   parseMarkdownParamOptions,
   routeDescriptionProse,
+  requiresAuth,
   type RouteParamOption,
 } from '../../utils/rssRoute';
 
@@ -16,10 +17,63 @@ export interface RssRouteParamFormProps {
   onParamsChange: (params: Record<string, string>) => void;
 }
 
-function FeatureBadges({ features }: { features: RssRouteDescriptor['features'] }) {
+/**
+ * "需配置 Cookie" 路由的提示 + Cookie 生效测试。
+ *
+ * XUEQIU_COOKIES 是 RSSHub 实例级环境变量（含 HttpOnly 的 xq_a_token），页面无法
+ * 直接配置——只能提示联系管理员。这里提供一个"测试 Cookie 是否生效"按钮，管理员
+ * 配好 .env 并重启实例后，用户点此确认实际取数是否正常。
+ */
+function CookieTestSection() {
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<RssCookieTestResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const runTest = async () => {
+    setTesting(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await rssApi.testXueqiuCookie();
+      setResult(res);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: { message?: string } } } })
+        ?.response?.data?.detail?.message
+        || (err as Error).message
+        || '测试失败';
+      setError(msg);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 space-y-2">
+      <div className="flex items-start gap-1.5 text-[11px] leading-relaxed text-secondary-text">
+        <span>此路由需登录态 Cookie（含 HttpOnly 的 <code className="text-foreground">xq_a_token</code>），由管理员在 RSSHub 实例 <code className="text-foreground">.env</code> 配置 <code className="text-foreground">XUEQIU_COOKIES</code> 并重启实例后生效。页面无法直接配置，如需使用请联系管理员。</span>
+      </div>
+      <Button variant="outline" size="sm" isLoading={testing} onClick={() => void runTest()}>
+        <ShieldCheck className="h-3.5 w-3.5" />
+        测试 Cookie 是否生效
+      </Button>
+      {error && <InlineAlert title="测试失败" variant="danger" message={error} />}
+      {result && (
+        <InlineAlert
+          title={result.verified ? 'Cookie 已生效' : 'Cookie 未生效'}
+          variant={result.verified ? 'success' : 'warning'}
+          message={result.message}
+        />
+      )}
+    </div>
+  );
+}
+
+function FeatureBadges({ route }: { route: RssRouteDescriptor }) {
+  const { features } = route;
+  const authReason = requiresAuth(route);
   return (
     <div className="flex flex-wrap gap-1.5">
-      {features.requireConfig && <Badge variant="warning">需配置 Cookie/Token</Badge>}
+      {authReason && <Badge variant="warning">{authReason}</Badge>}
       {features.requirePuppeteer && <Badge variant="info">需 Puppeteer（较慢）</Badge>}
       {features.antiCrawler && <Badge variant="danger">反爬（可能失败）</Badge>}
       {features.supportPodcast && <Badge variant="default">播客</Badge>}
@@ -102,7 +156,8 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
         )}
       </div>
 
-      <FeatureBadges features={route.features} />
+      <FeatureBadges route={route} />
+      {requiresAuth(route) && <CookieTestSection />}
 
       {paramList.length === 0 ? (
         <p className="text-xs text-muted-text">此路由无需参数，可直接刷新获取。</p>

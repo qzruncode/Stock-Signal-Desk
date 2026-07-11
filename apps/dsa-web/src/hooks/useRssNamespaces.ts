@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { rssApi, type RssRouteDescriptor } from '../api/rss';
 import { useDebouncedValue } from './useDebouncedValue';
+import { isKnownBroken } from '../utils/rssRoute';
 
 export interface UseRssNamespacesResult {
   routes: RssRouteDescriptor[];
@@ -75,7 +76,7 @@ export function useRssNamespaces(): UseRssNamespacesResult {
   }, [load]);
 
   const filtered = useMemo(() => {
-    let list = routes;
+    let list = routes.filter((r) => !isKnownBroken(r));
     if (category) {
       list = list.filter((r) => r.categories.includes(category));
     }

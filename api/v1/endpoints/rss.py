@@ -11,9 +11,11 @@ RSS 订阅源端点
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
 
+from dotenv import dotenv_values
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
@@ -651,3 +653,75 @@ def delete_rss_subscription(sub_id: str):
             status_code=500,
             detail={"error": "internal_error", "message": "删除订阅失败"},
         )
+
+
+# ── 实例 Cookie 生效测试 ──────────────────────────────────────────────────
+#
+# XUEQIU_COOKIES 是 RSSHub 实例级环境变量（含 HttpOnly 的 xq_a_token），只能由
+# 管理员写入 services/rsshub/app/.env 并重启实例，页面无法直接配置。这里只提供
+# "测试当前实例配置的 Cookie 是否生效"——实际请求一次 xueqiu/timeline 看能否取到内容。
+
+def _rsshub_env_path() -> Path:
+    """RSSHub 实例 .env 路径（项目根/services/rsshub/app/.env）。"""
+    return Path(__file__).resolve().parent.parent.parent.parent / "services" / "rsshub" / "app" / ".env"
+
+
+def _xueqiu_cookies_configured() -> bool:
+    """实例 .env 是否配置了非空的 XUEQIU_COOKIES。"""
+    env_path = _rsshub_env_path()
+    if not env_path.exists():
+        return False
+    try:
+        values = dotenv_values(env_path)
+    except Exception:
+        return False
+    return bool((values.get("XUEQIU_COOKIES") or "").strip())
+
+
+@router.post(
+    "/instance/cookies/test",
+    summary="测试 RSSHub 实例配置的雪球 Cookie 是否生效",
+    responses={500: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def test_xueqiu_cookie():
+    """实际请求一次 xueqiu/timeline，判断实例当前 XUEQIU_COOKIES 是否生效。
+
+    不写 .env、不重启实例——只读当前状态并做一次真实取数验证。供前端"测试
+    Cookie 是否生效"按钮调用。管理员配好 .env 并重启实例后，用户点此即可确认。
+    """
+    configured = _xueqiu_cookies_configured()
+    if not configured:
+        return {
+            "configured": False,
+            "verified": False,
+            "item_count": 0,
+            "message": "实例未配置 XUEQIU_COOKIES，请联系管理员在 services/rsshub/app/.env 配置（需含 xq_a_token）并重启 RSSHub 实例。",
+        }
+
+    # 实际请求 timeline（与正式取数同路径：format=json 富取数）。
+    try:
+        feed_url = _build_feed_url_generic("/xueqiu/timeline/:usergroup_id?", {}, {})
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"构建测试 URL 失败: {exc}"},
+        )
+
+    result = _fetch_rss_feed_json(feed_url, limit=3)
+    errors = result.get("errors") or []
+    items = result.get("items") or []
+    if items:
+        return {
+            "configured": True,
+            "verified": True,
+            "item_count": len(items),
+            "message": f"Cookie 已生效，timeline 成功返回 {len(items)} 条内容。",
+        }
+    # 配了但取不到内容：通常是 xq_a_token 缺失或过期。
+    detail = errors[0] if errors else "timeline 未返回内容"
+    return {
+        "configured": True,
+        "verified": False,
+        "item_count": 0,
+        "message": f"Cookie 已配置但未生效（{detail}）。可能是 xq_a_token 缺失或已过期，请联系管理员更新。",
+    }

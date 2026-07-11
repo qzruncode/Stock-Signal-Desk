@@ -9,7 +9,7 @@ import { RssRouteParamForm } from './RssRouteParamForm';
 import { RssOptionsPanel } from './RssOptionsPanel';
 import { RssFeedList } from './RssFeedList';
 import { RssDownloadMenu } from './RssDownloadMenu';
-import { paramsFromExample, parseRouteParams } from '../../utils/rssRoute';
+import { paramsFromExample, parseRouteParams, requiresAuth } from '../../utils/rssRoute';
 
 const EMPTY_OPTIONS: RssFeedOptions = {};
 const PAGE_SIZE = 80;
@@ -129,7 +129,7 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
                   <span className={cn('truncate text-xs font-medium', active ? 'text-cyan' : 'text-foreground')}>
                     {route.name || route.route_path}
                   </span>
-                  {route.features?.requireConfig && <Badge variant="warning">需配置</Badge>}
+                  {requiresAuth(route) && <Badge variant="warning">{requiresAuth(route)}</Badge>}
                 </div>
                 <div className="truncate text-[10px] text-muted-text">{route.namespace_name} · {route.namespace}</div>
               </button>
