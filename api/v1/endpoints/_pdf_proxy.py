@@ -20,6 +20,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -48,12 +49,15 @@ def _allowed_hosts() -> set[str]:
     Defaults cover the PDF hosts the RSS feeds actually emit:
     ``mall.nanhua.net`` (南华研报), ``pdf.dfcfw.com`` (东方财富研报 —
     ``/eastmoney/report/:category`` 把非 stock 类别的 item.link 重写为该域
-    的 .pdf 直链), ``www.chinaratings.com.cn`` / ``www.wkjyqh.com`` 等历史上
-    通过 env 配置过的源。其余 host 仍需经 ``PDF_PROXY_ALLOWED_HOSTS`` 显式放行。
+    的 .pdf 直链), ``static.sse.com.cn`` / ``disc.static.szse.cn``（沪深交易所
+    公告）以及 ``www.chinaratings.com.cn`` / ``www.wkjyqh.com`` 等研报来源。
+    其余 host 仍需经 ``PDF_PROXY_ALLOWED_HOSTS`` 显式放行。
     """
     hosts = {
         "mall.nanhua.net",
         "pdf.dfcfw.com",
+        "static.sse.com.cn",
+        "disc.static.szse.cn",
         "www.chinaratings.com.cn",
         "www.wkjyqh.com",
     }
@@ -133,6 +137,39 @@ def _looks_like_anti_crawl(content: bytes) -> bool:
     return head[:1] in (b"<",) or content[:200].lower().find(b"<script") >= 0
 
 
+_ACW_ARG_RE = re.compile(rb"var\s+arg1\s*=\s*['\"]([0-9A-Fa-f]{40})['\"]")
+_ACW_POSITIONS = (
+    15, 35, 29, 24, 33, 16, 1, 38, 10, 9,
+    19, 31, 40, 27, 22, 23, 25, 13, 6, 11,
+    39, 18, 20, 8, 14, 21, 32, 26, 2, 30,
+    7, 4, 17, 5, 3, 28, 34, 37, 12, 36,
+)
+_ACW_MASK = "3000176000856006061501533003690027800375"
+
+
+def _acw_cookie_from_challenge(content: bytes) -> Optional[str]:
+    """Solve the public ``acw_sc__v2`` permutation/XOR challenge.
+
+    ``static.sse.com.cn`` protects announcement PDFs with a small JavaScript
+    challenge.  A browser computes this cookie and reloads, but the server-side
+    proxy receives the HTML challenge instead of PDF bytes.  Reproduce the
+    deterministic calculation here so SSE announcements remain readable inside
+    the app; return ``None`` for every other anti-bot body.
+    """
+    match = _ACW_ARG_RE.search(content)
+    if not match:
+        return None
+    arg1 = match.group(1).decode("ascii")
+    shuffled = "".join(arg1[position - 1] for position in _ACW_POSITIONS)
+    try:
+        return "".join(
+            f"{int(shuffled[index:index + 2], 16) ^ int(_ACW_MASK[index:index + 2], 16):02x}"
+            for index in range(0, len(_ACW_MASK), 2)
+        )
+    except ValueError:
+        return None
+
+
 def _fetch_with_curl(url: str) -> Tuple[bytes, str, str]:
     """Fallback fetch via the system ``curl`` binary.
 
@@ -199,13 +236,31 @@ def fetch_pdf(url: str) -> Optional[Tuple[bytes, str]]:
     if not safe_url:
         return None
 
-    resp = requests.get(
+    session = requests.Session()
+    resp = session.get(
         safe_url,
         headers={"User-Agent": _UA},
         timeout=FETCH_TIMEOUT,
         allow_redirects=True,
     )
     resp.raise_for_status()
+    acw_cookie = _acw_cookie_from_challenge(resp.content)
+    if acw_cookie:
+        # Keep the cookies set by the first response (acw_tc/cdn_sec_tc), add
+        # the JS-computed cookie, then replay the exact request once.
+        session.cookies.set(
+            "acw_sc__v2",
+            acw_cookie,
+            domain=urlparse(resp.url).hostname or urlparse(safe_url).hostname,
+            path="/",
+        )
+        resp = session.get(
+            safe_url,
+            headers={"User-Agent": _UA},
+            timeout=FETCH_TIMEOUT,
+            allow_redirects=True,
+        )
+        resp.raise_for_status()
     # Re-check the *final* URL after redirects — a whitelisted host could 302
     # to an internal address.
     if not is_safe_pdf_url(resp.url):

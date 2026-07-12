@@ -200,6 +200,18 @@ def read_item(
             _cache_put(cache_key, result)
 
     if result.get("errors") and not result.get("items"):
+        fallback_html = (list_content_html or "").strip()
+        fallback_summary = (list_summary or "").strip()
+        fallback_image = (list_image or "").strip()
+        if fallback_html or fallback_summary or fallback_image:
+            return _pack_item_text(
+                title=title or "",
+                link=link,
+                published=None,
+                source="",
+                content_text=_html_to_text(fallback_html or fallback_summary),
+                fallback=True,
+            )
         return {
             "title": title,
             "content_text": "",

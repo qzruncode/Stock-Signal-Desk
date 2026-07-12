@@ -474,6 +474,12 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
             _cache_put(cache_key, result)
 
     if result.get("errors") and not result.get("items"):
+        # The list item is already on screen and may contain the complete body,
+        # image or attachment.  A transient fulltext refresh failure must not
+        # turn that readable item into a dead-end detail error.
+        fallback = _build_detail_fallback(body)
+        if fallback is not None:
+            return fallback
         raise HTTPException(
             status_code=502,
             detail={"error": "upstream_error", "message": result["errors"][0]},
