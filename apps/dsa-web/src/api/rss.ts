@@ -130,10 +130,6 @@ export interface RssSubscriptionsResponse {
   subscriptions: RssSubscription[];
 }
 
-export interface RssFeaturedResponse {
-  routes: (RssRouteDescriptor & { source_id?: string })[];
-}
-
 export type RssFeedFormat = 'rss' | 'atom' | 'json' | 'rss3';
 
 export interface HtmlTransformParams {
@@ -283,12 +279,6 @@ export const rssApi = {
   getCategories(force = false): Promise<RssCategoriesResponse> {
     return apiClient
       .get('/api/v1/rss/categories', { params: { force } })
-      .then((r) => r.data);
-  },
-
-  getFeatured(): Promise<RssFeaturedResponse> {
-    return apiClient
-      .get('/api/v1/rss/featured')
       .then((r) => r.data);
   },
 

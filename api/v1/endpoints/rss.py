@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 from api.v1.schemas.common import ErrorResponse
 from src.config import Config
 from src.storage import DatabaseManager, RssSubscriptionTitleConflict
-from api.v1.endpoints._rss_routes import RSSHUB_ROUTES
 from api.v1.endpoints._rss_fetch import (
     _build_feed_url_generic,
     _fetch_rss_feed,
@@ -108,40 +107,6 @@ def get_rss_categories(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "获取分类失败"},
-        )
-
-
-@router.get(
-    "/featured",
-    summary="获取精选财经 RSS 源",
-    responses={500: {"model": ErrorResponse}},
-)
-def get_rss_featured():
-    """返回静态精选财经源（与发现的扁平结构同形），供快入口。"""
-    try:
-        routes = []
-        for source_id, info in RSSHUB_ROUTES.items():
-            routes.append({
-                "namespace": _namespace_from_path(info["path"]),
-                "namespace_name": info.get("label", source_id),
-                "route_path": info["path"] if info["path"].startswith("/") else f"/{info['path']}",
-                "name": info.get("label", source_id),
-                "url": "",
-                "example": info["path"],
-                "categories": ["finance"],
-                "description": info.get("label", ""),
-                "parameters": {},
-                "features": {},
-                "maintainers": [],
-                "source_id": source_id,
-                "source_info": info,
-            })
-        return {"routes": routes}
-    except Exception as exc:
-        logger.error("Failed to fetch featured sources: %s", exc, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": "获取精选源失败"},
         )
 
 
@@ -272,12 +237,6 @@ def get_futunn_topics_route(
             status_code=500,
             detail={"error": "internal_error", "message": "获取富途话题失败"},
         )
-
-
-def _namespace_from_path(path: str) -> str:
-    """从路径取首个段作为 namespace（如 /xueqiu/... -> xueqiu）。"""
-    p = (path or "").strip("/")
-    return p.split("/", 1)[0] if p else ""
 
 
 # ── 通用 Feed 取数（POST /feeds）─────────────────────────────────────────

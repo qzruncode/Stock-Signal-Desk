@@ -11,25 +11,6 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def _rss_cache_key(source: str, stock_code: str = "", type: str = "",
-                   category: str = "", keyword: str = "", uid: str = "") -> str:
-    """按小时粒度构建缓存 key（新闻更新频率高于日线）。"""
-    hour = datetime.now().strftime("%Y%m%d%H")
-    parts = [f"rss:{source}"]
-    if stock_code:
-        parts.append(f"stock={stock_code}")
-    if type:
-        parts.append(f"type={type}")
-    if category:
-        parts.append(f"cat={category}")
-    if keyword:
-        parts.append(f"kw={keyword}")
-    if uid:
-        parts.append(f"uid={uid}")
-    parts.append(hour)
-    return ":".join(parts)
-
-
 def _cache_get(key: str) -> Optional[dict]:
     """从数据库获取缓存的 RSS 数据。"""
     try:

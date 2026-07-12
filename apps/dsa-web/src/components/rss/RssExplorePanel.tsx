@@ -23,11 +23,21 @@ export interface RssExplorePanelProps {
   filtered: RssRouteDescriptor[];
   onReload: () => Promise<void> | void;
   onSubscribe: (spec: FeedSpec, title: string) => Promise<void> | void;
+  categories: string[];
+  category: string;
+  setCategory: (v: string) => void;
+  /** True when the route list came from a stale cache (RSSHub instance was unavailable). */
+  stale: boolean;
 }
 
 export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
   loading, error, search, setSearch, filtered, onReload, onSubscribe,
+  categories, category, setCategory, stale,
 }) => {
+  const pickCategory = (next: string) => {
+    setCategory(next);
+    setVisibleCount(PAGE_SIZE);
+  };
   const [selected, setSelected] = useState<RssRouteDescriptor | null>(null);
   const [params, setParams] = useState<Record<string, string>>({});
   const [options, setOptions] = useState<RssFeedOptions>(EMPTY_OPTIONS);
@@ -116,7 +126,10 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
             />
           </div>
           <div className="mt-1.5 flex items-center justify-between px-0.5 text-[10px] text-muted-text">
-            <span>{loading ? '加载中…' : `${filtered.length} 条股市路由`}</span>
+            <span className="flex items-center gap-1.5">
+              {loading ? '加载中…' : `${filtered.length} 条股市路由`}
+              {stale && !loading && <Badge variant="warning">缓存可能过期</Badge>}
+            </span>
             <button
               type="button"
               onClick={handleReload}
@@ -127,6 +140,23 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
               {reloading ? '刷新中…' : '刷新列表'}
             </button>
           </div>
+          {!loading && categories.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1 px-0.5">
+              <CategoryChip
+                active={category === ''}
+                onClick={() => pickCategory('')}
+                label="全部"
+              />
+              {categories.map((cat) => (
+                <CategoryChip
+                  key={cat}
+                  active={category === cat}
+                  onClick={() => pickCategory(cat)}
+                  label={cat}
+                />
+              ))}
+            </div>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-1.5">
           {loading && <div className="p-4"><Loading label="加载路由…" /></div>}
@@ -222,5 +252,30 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
     </div>
   );
 };
+
+function CategoryChip({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'rounded-full border px-2 py-0.5 text-[10px] transition',
+        active
+          ? 'border-cyan/60 bg-cyan/10 text-cyan'
+          : 'border-border bg-card text-muted-text hover:text-foreground',
+      )}
+    >
+      {label}
+    </button>
+  );
+}
 
 export default RssExplorePanel;

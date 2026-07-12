@@ -199,6 +199,10 @@ const RssPage: React.FC = () => {
               filtered={namespaces.filtered}
               onReload={() => void namespaces.reload()}
               onSubscribe={handleSubscribeFromExplore}
+              categories={namespaces.categories}
+              category={namespaces.category}
+              setCategory={namespaces.setCategory}
+              stale={namespaces.stale}
             />
           </div>
         )}
