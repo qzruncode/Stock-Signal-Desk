@@ -93,6 +93,58 @@ def _normalize_code(raw: Any) -> str:
     return s
 
 
+def _market_prefix(code: str) -> str:
+    """A 股代码 → 东财市场前缀 sh/sz/bj。"""
+    c = _normalize_code(code)
+    if c.startswith(("6", "5", "90")):
+        return "sh"
+    if c.startswith(("8", "4", "9")):
+        return "bj"
+    return "sz"
+
+
+def _to_em_prefixed_symbol(code: str) -> str:
+    """A 股代码 → 东财带前缀 symbol，如 sh688686 / sz000001。"""
+    return f"{_market_prefix(code)}{_normalize_code(code)}"
+
+
+def _recent_report_periods(limit: int = 4) -> List[str]:
+    """最近的 A 股报告期（YYYYMMDD），按季倒序。
+
+    用于 stock_yjyg_em/yjbb_em/yjkb_em(date=)、stock_gdfx_top_10_em(date=) 等
+    需要指定报告期的接口。以当前月份推断已披露的最近报告期。
+    """
+    now = datetime.now()
+    # 报告期月份：3/4 月底(Q1)、6 月底(Q2)、9 月底(Q3)、12 月底(Q4)
+    quarters = []
+    y, m = now.year, now.month
+    for _ in range(limit * 2):  # 多取几期以防披露窗口
+        if m >= 10:
+            period = (datetime(y, 9, 30),)
+        elif m >= 7:
+            period = (datetime(y, 6, 30),)
+        elif m >= 4:
+            period = (datetime(y, 3, 31),)
+        else:
+            period = (datetime(y - 1, 12, 31),)
+        quarters.append(period[0])
+        # 回退一季度
+        if m <= 3:
+            m = 12
+            y -= 1
+        else:
+            m -= 3
+    # 去重并保留最近 limit 期
+    seen = set()
+    ordered: List[datetime] = []
+    for d in quarters:
+        if d not in seen:
+            seen.add(d)
+            ordered.append(d)
+    ordered.sort(reverse=True)
+    return [d.strftime("%Y%m%d") for d in ordered[:limit]]
+
+
 def _pick_by_keywords(row: pd.Series, keywords: List[str]) -> Optional[Any]:
     """
     Return first non-empty row value whose column name contains any keyword.
@@ -341,13 +393,12 @@ class AkshareFundamentalAdapter:
                     result["earnings"]["financial_report"] = financial_report_payload
                 result["source_chain"].append(f"growth:{fin_source}")
 
-        # Earnings forecast
-        forecast_df, forecast_source, forecast_errors = self._call_df_candidates([
-            ("stock_yjyg_em", {"symbol": stock_code}),
-            ("stock_yjyg_em", {}),
-            ("stock_yjbb_em", {"symbol": stock_code}),
-            ("stock_yjbb_em", {}),
-        ])
+        # Earnings forecast (业绩预告/快报为全市场接口，按报告期拉取后按代码过滤)
+        forecast_candidates = []
+        for period in _recent_report_periods(4):
+            forecast_candidates.append(("stock_yjyg_em", {"date": period}))
+            forecast_candidates.append(("stock_yjbb_em", {"date": period}))
+        forecast_df, forecast_source, forecast_errors = self._call_df_candidates(forecast_candidates)
         result["errors"].extend(forecast_errors)
         if forecast_df is not None:
             row = _extract_latest_row(forecast_df, stock_code)
@@ -358,10 +409,8 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"earnings_forecast:{forecast_source}")
 
         # Earnings quick report
-        quick_df, quick_source, quick_errors = self._call_df_candidates([
-            ("stock_yjkb_em", {"symbol": stock_code}),
-            ("stock_yjkb_em", {}),
-        ])
+        quick_candidates = [("stock_yjkb_em", {"date": period}) for period in _recent_report_periods(4)]
+        quick_df, quick_source, quick_errors = self._call_df_candidates(quick_candidates)
         result["errors"].extend(quick_errors)
         if quick_df is not None:
             row = _extract_latest_row(quick_df, stock_code)
@@ -385,10 +434,14 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"dividend:{dividend_source}")
 
         # Institution / top shareholders
-        inst_df, inst_source, inst_errors = self._call_df_candidates([
-            ("stock_institute_hold", {}),
-            ("stock_institute_recommend", {}),
-        ])
+        # stock_institute_hold(symbol=) 的 symbol 是"年份+季度"报告期选择串（如 20241），
+        # stock_institute_recommend(symbol=) 是评级类别；两者均为全市场接口，按代码过滤。
+        _recent_hold_periods = [
+            f"{d[:4]}{d[4:6].lstrip('0') or '0'}" for d in _recent_report_periods(4)
+        ]
+        inst_candidates = [("stock_institute_hold", {"symbol": p}) for p in _recent_hold_periods]
+        inst_candidates.append(("stock_institute_recommend", {"symbol": "机构关注度"}))
+        inst_df, inst_source, inst_errors = self._call_df_candidates(inst_candidates)
         result["errors"].extend(inst_errors)
         if inst_df is not None:
             row = _extract_latest_row(inst_df, stock_code)
@@ -397,12 +450,14 @@ class AkshareFundamentalAdapter:
                 result["institution"]["institution_holding_change"] = inst_change
                 result["source_chain"].append(f"institution:{inst_source}")
 
-        top10_df, top10_source, top10_errors = self._call_df_candidates([
-            ("stock_gdfx_top_10_em", {"symbol": stock_code}),
-            ("stock_gdfx_top_10_em", {}),
-            ("stock_zh_a_gdhs_detail_em", {"symbol": stock_code}),
-            ("stock_zh_a_gdhs_detail_em", {}),
-        ])
+        # stock_gdfx_top_10_em 需带市场前缀的 symbol + 报告期 date
+        em_prefixed = _to_em_prefixed_symbol(stock_code)
+        top10_candidates = []
+        for period in _recent_report_periods(4):
+            top10_candidates.append(("stock_gdfx_top_10_em", {"symbol": em_prefixed, "date": period}))
+        # 兜底：股东户数详情（纯 6 位代码，单股）
+        top10_candidates.append(("stock_zh_a_gdhs_detail_em", {"symbol": _normalize_code(stock_code)}))
+        top10_df, top10_source, top10_errors = self._call_df_candidates(top10_candidates)
         result["errors"].extend(top10_errors)
         if top10_df is not None:
             row = _extract_latest_row(top10_df, stock_code)
@@ -427,12 +482,13 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
 
+        # stock_individual_fund_flow(stock, market) 需指定市场；stock_main_fund_flow
+        # 是全市场主力净流入排名（symbol 为板块选择串），按代码过滤。
+        _mkt = _market_prefix(stock_code)
+        _code = _normalize_code(stock_code)
         stock_df, stock_source, stock_errors = self._call_df_candidates([
-            ("stock_individual_fund_flow", {"stock": stock_code}),
-            ("stock_individual_fund_flow", {"symbol": stock_code}),
-            ("stock_individual_fund_flow", {}),
-            ("stock_main_fund_flow", {"symbol": stock_code}),
-            ("stock_main_fund_flow", {}),
+            ("stock_individual_fund_flow", {"stock": _code, "market": _mkt}),
+            ("stock_main_fund_flow", {"symbol": "全部股票"}),
         ])
         result["errors"].extend(stock_errors)
         if stock_df is not None:
@@ -448,9 +504,9 @@ class AkshareFundamentalAdapter:
                 }
                 result["source_chain"].append(f"capital_stock:{stock_source}")
 
+        # 板块资金流排名（无 symbol 参数，indicator+sector_type 走默认今日/行业资金流）
         sector_df, sector_source, sector_errors = self._call_df_candidates([
-            ("stock_sector_fund_flow_rank", {}),
-            ("stock_sector_fund_flow_summary", {}),
+            ("stock_sector_fund_flow_rank", {"indicator": "今日", "sector_type": "行业资金流"}),
         ])
         result["errors"].extend(sector_errors)
         if sector_df is not None:
@@ -485,10 +541,14 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
 
+        # stock_lhb_stock_statistic_em(symbol=) 的 symbol 是统计周期串；
+        # stock_lhb_detail_em / stock_lhb_jgmmtj_em 需 start_date+end_date（无 symbol）。
+        _end = datetime.now().strftime("%Y%m%d")
+        _start = (datetime.now() - timedelta(days=max(1, lookback_days))).strftime("%Y%m%d")
         df, source, errors = self._call_df_candidates([
-            ("stock_lhb_stock_statistic_em", {}),
-            ("stock_lhb_detail_em", {}),
-            ("stock_lhb_jgmmtj_em", {}),
+            ("stock_lhb_stock_statistic_em", {"symbol": "近一月"}),
+            ("stock_lhb_detail_em", {"start_date": _start, "end_date": _end}),
+            ("stock_lhb_jgmmtj_em", {"start_date": _start, "end_date": _end}),
         ])
         result["errors"].extend(errors)
         if df is None:

@@ -25,9 +25,6 @@ def test_rsshub_route_templates_cover_finance_sources():
     assert _build_feed_url("eastmoney_search", keyword="贵州茅台").endswith(
         "/eastmoney/search/%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0"
     )
-    assert _build_feed_url("eastmoney_guba_user", uid="12345").endswith(
-        "/eastmoney/gerenzhongxin/guba/12345"
-    )
     assert _build_feed_url("szse_disclosure", stock_code="SZ000001").endswith(
         "/szse/disclosure/listed/notice/stock=000001"
     )
@@ -45,6 +42,30 @@ def test_generic_route_builder_validates_and_renders_dynamic_params():
     assert url.endswith("/jin10/category/36?limit=20")
     with pytest.raises(ValueError, match="缺少必填参数: id"):
         _build_feed_url_generic("/jin10/category/:id", {})
+
+
+def test_xueqiu_fund_code_is_not_prefixed_with_exchange():
+    # /xueqiu/fund/:id takes a 6-digit fund code (e.g. 040008). It must NOT get
+    # the SH/SZ/BJ stock prefix the xueqiu namespace default applies — that
+    # would turn 040008 into SZ040008 and upstream returns 503.
+    url = _build_feed_url_generic(
+        "/xueqiu/fund/:id",
+        {"id": "040008"},
+        {},
+        namespace="xueqiu",
+    )
+    assert url.endswith("/xueqiu/fund/040008")
+
+
+def test_xueqiu_stock_code_still_gets_exchange_prefix():
+    # The namespace default must still apply to stock routes (regression guard).
+    url = _build_feed_url_generic(
+        "/xueqiu/stock_info/:id",
+        {"id": "000002"},
+        {},
+        namespace="xueqiu",
+    )
+    assert url.endswith("/xueqiu/stock_info/SZ000002")
 
 
 def test_rss_item_link_only_accepts_readable_web_urls():

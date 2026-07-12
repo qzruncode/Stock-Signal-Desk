@@ -2,8 +2,11 @@
 """Shareholder structure: holder count, top-10, changes, actual controller."""
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import re
+import threading
+import time
 from datetime import datetime
 from typing import Any, Optional
 
@@ -15,6 +18,62 @@ from ._helpers import (
     _pick_col, _row_pick, _parse_date, _latest_quarter_dates,
 )
 from ._cache import _daily_cache_get, _daily_cache_put, SHAREHOLDER_CACHE_KEY
+
+# 全市场慢接口的超时上限（秒）。stock_hold_control_cninfo / stock_hold_management_detail_em
+# 均为无参全市场接口，网络不佳时可能数 tens 秒不返回，必须加超时保护。
+_SLOW_MARKET_TIMEOUT = 30
+
+
+class _ProcessTtlCache:
+    """进程级 TTL 缓存（线程安全）。
+
+    用于缓存全市场慢接口（如实际控制人持股变动）的结果——这类数据全市场共享、
+    一天只变一次，没必要每查一只股票都重新拉全市场。
+    """
+
+    def __init__(self, ttl: int):
+        self._ttl = ttl
+        self._lock = threading.Lock()
+        self._data: Any = None
+        self._ts: float = 0.0
+
+    def get(self) -> Any:
+        with self._lock:
+            if self._data is not None and (time.time() - self._ts) < self._ttl:
+                return self._data
+            return None
+
+    def set(self, data: Any) -> None:
+        with self._lock:
+            self._data = data
+            self._ts = time.time()
+
+
+# 实际控制人持股变动：全市场数据，缓存 6 小时（一天最多刷新 4 次）。
+_actual_controller_cache = _ProcessTtlCache(ttl=6 * 3600)
+
+
+def _run_with_timeout(func, timeout: float, *args, **kwargs):
+    """在子线程里执行 func，超过 timeout 秒返回 None（不抛错）。
+
+    超时后不等待后台线程——Python 无法强制中断线程，但 akshare 的网络请求最终会因
+    系统级 socket 超时而自行返回；这里优先保证调用方不被阻塞。
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        logger.warning("[Shareholder] %s 超时 (%ss)", getattr(func, "__name__", "call"), timeout)
+        pool.shutdown(wait=False)  # 不阻塞，后台线程自行结束
+        return None
+    except Exception as exc:
+        logger.warning("[Shareholder] %s 失败: %s", getattr(func, "__name__", "call"), exc)
+        pool.shutdown(wait=False)
+        return None
+    finally:
+        # 正常返回时也要释放线程（future 已完成，wait=True 不会阻塞）
+        pool.shutdown(wait=False)
 
 def _fetch_holder_count_from_akshare(symbol: str) -> tuple[dict, Optional[str], list[str]]:
     import akshare as ak
@@ -174,18 +233,20 @@ def _fetch_holder_changes(symbol: str) -> tuple[list[dict], Optional[str], list[
 
     code = _normalize_symbol(symbol)
     errors: list[str] = []
+    # 主源是单股接口（快），降级源 stock_hold_management_detail_em 无参拉全市场（慢）。
+    # 两者都加超时——降级源实测可能 45s 不返回，不加超时会拖住整个股东结构请求。
     candidates = [
-        ("stock_shareholder_change_ths", {"symbol": code}),
-        ("stock_hold_management_detail_em", {}),
+        ("stock_shareholder_change_ths", {"symbol": code}, 15),
+        ("stock_hold_management_detail_em", {}, _SLOW_MARKET_TIMEOUT),
     ]
-    for func_name, kwargs in candidates:
+    for func_name, kwargs, timeout in candidates:
         fn = getattr(ak, func_name, None)
         if fn is None:
             continue
+        df = _run_with_timeout(fn, timeout, **kwargs)
+        if df is None or df.empty:
+            continue
         try:
-            df = fn(**kwargs)
-            if df is None or df.empty:
-                continue
             code_col = _pick_col(df.columns, ["代码", "证券代码", "股票代码"])
             if code_col is not None:
                 df = df[df[code_col].astype(str).map(_normalize_symbol) == code]
@@ -230,26 +291,37 @@ def _fetch_holder_changes(symbol: str) -> tuple[list[dict], Optional[str], list[
 
 
 def _fetch_actual_controller(symbol: str) -> tuple[Optional[str], Optional[str], list[str]]:
+    """实际控制人。
+
+    ``stock_hold_control_cninfo`` 的 symbol 是控制类型枚举（"全部"/"实际控制人"/...），
+    不是股票代码，akshare 没有单股实际控制人接口——传 "全部" 返回全市场（从 2010 年起
+    所有公司）。该接口慢且全市场共享，故用进程级缓存（6h TTL）+ 超时保护：首只股票
+    触发一次全量拉取，之后所有股票复用缓存，仅在缓存里按代码过滤。
+    """
     import akshare as ak
 
     code = _normalize_symbol(symbol)
     errors: list[str] = []
-    try:
-        df = ak.stock_hold_control_cninfo(symbol="全部")
-        if df is None or df.empty:
-            return None, None, ["stock_hold_control_cninfo:empty"]
-        code_col = _pick_col(df.columns, ["代码", "证券代码", "股票代码"])
-        matched = df
-        if code_col is not None:
-            matched = df[df[code_col].astype(str).map(_normalize_symbol) == code]
-        if matched.empty:
-            return None, None, []
-        row = matched.iloc[0]
-        controller = _safe_str(_row_pick(row, ["实际控制人", "控制人", "控股股东"]))
-        return controller or None, "stock_hold_control_cninfo", errors
-    except Exception as exc:
-        logger.warning(f"[Shareholder] actual controller failed for {code}: {exc}")
-        return None, None, [f"stock_hold_control_cninfo:{type(exc).__name__}"]
+
+    df = _actual_controller_cache.get()
+    if df is None:
+        df = _run_with_timeout(ak.stock_hold_control_cninfo, _SLOW_MARKET_TIMEOUT, symbol="全部")
+        if df is not None and not df.empty:
+            _actual_controller_cache.set(df)
+        else:
+            return None, None, ["stock_hold_control_cninfo:empty_or_timeout"]
+
+    if df is None or df.empty:
+        return None, None, ["stock_hold_control_cninfo:empty"]
+    code_col = _pick_col(df.columns, ["代码", "证券代码", "股票代码"])
+    matched = df
+    if code_col is not None:
+        matched = df[df[code_col].astype(str).map(_normalize_symbol) == code]
+    if matched.empty:
+        return None, None, []
+    row = matched.iloc[0]
+    controller = _safe_str(_row_pick(row, ["实际控制人", "控制人", "控股股东"]))
+    return controller or None, "stock_hold_control_cninfo", errors
 
 
 def _fetch_shareholder_structure(symbol: str) -> dict:
@@ -271,29 +343,50 @@ def _fetch_shareholder_structure(symbol: str) -> dict:
         "_cached": False,
     }
 
-    holder_payload, holder_source, holder_errors = _fetch_holder_count_from_akshare(code)
-    if not holder_payload:
-        holder_payload, holder_source, tushare_errors = _fetch_holder_count_from_tushare(code)
-        holder_errors.extend(tushare_errors)
+    def _holder_count_task():
+        """股东户数：akshare 为主，空则降级 tushare（降级逻辑保持在同一任务内）。"""
+        payload, source, errs = _fetch_holder_count_from_akshare(code)
+        if not payload:
+            payload, source, tushare_errs = _fetch_holder_count_from_tushare(code)
+            errs.extend(tushare_errs)
+        return payload, source, errs
+
+    # 四个子抓取互相独立，并发执行（原先串行，actual_controller 的全市场慢接口
+    # 会阻塞其余三个）。每个子任务单独兜底——一个失败不影响其余结果回收。
+    def _safe_result(fut, default):
+        try:
+            return fut.result()
+        except Exception as exc:
+            logger.warning("[Shareholder] sub-fetcher failed for %s: %s", code, exc)
+            return default
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        fut_count = pool.submit(_holder_count_task)
+        fut_top10 = pool.submit(_fetch_top10_holders, code)
+        fut_changes = pool.submit(_fetch_holder_changes, code)
+        fut_controller = pool.submit(_fetch_actual_controller, code)
+
+        holder_payload, holder_source, holder_errors = _safe_result(fut_count, ({}, None, []))
+        holders, institution_pct, top_source, top_errors = _safe_result(fut_top10, ([], None, None, []))
+        changes, changes_source, changes_errors = _safe_result(fut_changes, ([], None, []))
+        controller, controller_source, controller_errors = _safe_result(fut_controller, (None, None, []))
+
     result.update(holder_payload)
     result["errors"].extend(holder_errors)
     if holder_source:
         result["source_chain"].append(holder_source)
 
-    holders, institution_pct, top_source, top_errors = _fetch_top10_holders(code)
     result["top10_holders"] = holders
     result["institution_holding_pct"] = institution_pct
     result["errors"].extend(top_errors)
     if top_source:
         result["source_chain"].append(top_source)
 
-    changes, changes_source, changes_errors = _fetch_holder_changes(code)
     result["major_holder_changes"] = changes
     result["errors"].extend(changes_errors)
     if changes_source:
         result["source_chain"].append(changes_source)
 
-    controller, controller_source, controller_errors = _fetch_actual_controller(code)
     result["actual_controller"] = controller
     result["errors"].extend(controller_errors)
     if controller_source:

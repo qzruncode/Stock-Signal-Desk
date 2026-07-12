@@ -94,18 +94,17 @@ def _fetch_research_reports(symbol: str, days: int) -> dict:
                 url = _safe_str(row.get("报告PDF链接"))
                 industry = _safe_str(row.get("行业"))
 
-                # Build profit forecast summary
+                # Build profit forecast summary（年份随当前时间动态生成，当年+未来2年）
+                base_year = datetime.now().year
                 forecasts = []
-                for year_key, label in [
-                    ("2026-盈利预测-收益", "2026"),
-                    ("2027-盈利预测-收益", "2027"),
-                    ("2028-盈利预测-收益", "2028"),
-                ]:
+                for offset in range(3):
+                    year = base_year + offset
+                    year_key = f"{year}-盈利预测-收益"
                     eps = _safe_float(row.get(year_key))
                     pe = _safe_float(row.get(year_key.replace("-收益", "-市盈率")))
                     if eps is not None:
                         forecasts.append({
-                            "year": label,
+                            "year": str(year),
                             "eps": eps,
                             "pe": pe,
                         })

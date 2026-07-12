@@ -138,6 +138,11 @@ def _flatten_routes(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     routes: List[Dict[str, Any]] = []
     if not isinstance(raw, dict):
         return routes
+    # RSSHub exposes the same route under multiple keys when it has path
+    # aliases (e.g. futunn "/main" and "/" both map to path ["/main", "/"]).
+    # Dedupe by (namespace, route_path) so the explore list shows each route
+    # once — keeping the first occurrence (the canonical key, e.g. "/main").
+    seen: set[tuple[str, str]] = set()
     for ns_id, ns_info in raw.items():
         if not isinstance(ns_info, dict):
             continue
@@ -169,6 +174,10 @@ def _flatten_routes(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
                 route_path = f"{ns_prefix}{path}"
             else:
                 route_path = f"{ns_prefix}/{path}"
+            dedupe_key = (ns_id, route_path)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
             entry: Dict[str, Any] = {
                 "namespace": ns_id,
                 "namespace_name": ns_name,

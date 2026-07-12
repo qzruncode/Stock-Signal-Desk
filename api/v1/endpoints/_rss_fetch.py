@@ -127,6 +127,15 @@ _PARAM_FORMATTERS: Dict[str, Dict[str, Callable[[str], str]]] = {
     "xueqiu": {"id": lambda v: _stock_code_to_rsshub_id(v)},
 }
 
+# Route-path-level formatters, looked up before the namespace-level table above.
+# Use this to override the namespace default for a specific route whose param of
+# the same name needs different handling. Example: /xueqiu/fund/:id takes a
+# 6-digit fund code that must NOT get the SH/SZ/BJ stock prefix the namespace
+# default applies (it would turn 040008 into SZ040008 → upstream 503).
+_PARAM_FORMATTERS_BY_ROUTE: Dict[str, Dict[str, Callable[[str], str]]] = {
+    "/xueqiu/fund/:id": {"id": lambda v: v},
+}
+
 
 def _normalize_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Drop falsy / empty values; stringify keys. RSSHub ignores empty params anyway."""
@@ -170,7 +179,13 @@ def _build_feed_url_generic(
         val = str(raw).strip()
         if not val:
             return None
-        formatter = _PARAM_FORMATTERS.get(namespace or "", {}).get(name)
+        # Route-path-level formatter wins over the namespace default — lets a
+        # specific route override the namespace's param handling (e.g. xueqiu
+        # fund codes must not get the stock SH/SZ/BJ prefix).
+        formatter = (
+            _PARAM_FORMATTERS_BY_ROUTE.get(path, {}).get(name)
+            or _PARAM_FORMATTERS.get(namespace or "", {}).get(name)
+        )
         if formatter:
             try:
                 val = formatter(val)

@@ -13,7 +13,7 @@ import requests
 
 from ..constants import USER_AGENTS, SINA_REALTIME_ENDPOINT, TENCENT_REALTIME_ENDPOINT
 from ..circuit_breaker import get_realtime_circuit_breaker
-from ..cache import realtime_cache, etf_realtime_cache
+from ..cache import realtime_cache, etf_realtime_cache, hk_realtime_cache
 from ..realtime_types import (
     UnifiedRealtimeQuote, RealtimeSource,
     safe_float, safe_int,
@@ -249,20 +249,26 @@ def _get_stock_realtime_quote_xueqiu(stock_code: str) -> Optional[UnifiedRealtim
             breaker.record_failure(source_key, "empty_payload")
             return None
 
+        current = safe_float(quote_data.get("current"))
+        last_close = safe_float(quote_data.get("last_close"))
+        change_amount = safe_float(quote_data.get("chg"))
+        if change_amount is None and current is not None and last_close is not None:
+            change_amount = round(current - last_close, 4)
+
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=str(quote_data.get("name", "")),
             source=RealtimeSource.XUEQIU,
-            price=safe_float(quote_data.get("current")),
+            price=current,
             change_pct=safe_float(quote_data.get("percent")),
-            change_amount=safe_float(quote_data.get("current")),
+            change_amount=change_amount,
             volume=safe_int(quote_data.get("volume")),
             amount=safe_float(quote_data.get("amount")),
             turnover_rate=safe_float(quote_data.get("turnover_rate")),
             open_price=safe_float(quote_data.get("open")),
             high=safe_float(quote_data.get("high")),
             low=safe_float(quote_data.get("low")),
-            pre_close=safe_float(quote_data.get("last_close")),
+            pre_close=last_close,
             pe_ratio=safe_float(quote_data.get("pe_ttm")),
             pb_ratio=safe_float(quote_data.get("pb")),
             total_mv=safe_float(quote_data.get("market_capital")),
@@ -478,7 +484,7 @@ def _get_etf_realtime_quote(stock_code: str) -> Optional[UnifiedRealtimeQuote]:
 
 
 def _get_hk_realtime_quote(stock_code: str) -> Optional[UnifiedRealtimeQuote]:
-    """港股实时行情（全量拉取）。"""
+    """港股实时行情（全量拉取，带缓存）。"""
     import akshare as ak
 
     raw_code = stock_code.strip().lower()
@@ -489,12 +495,21 @@ def _get_hk_realtime_quote(stock_code: str) -> Optional[UnifiedRealtimeQuote]:
     code = raw_code.zfill(5)
 
     try:
-        logger.info("[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
-        import time as _time
-        api_start = _time.time()
-        df = ak.stock_hk_spot_em()
-        api_elapsed = _time.time() - api_start
-        logger.info("[API返回] ak.stock_hk_spot_em 成功: %d 只港股, 耗时 %.2fs", len(df), api_elapsed)
+        df = hk_realtime_cache.get()
+        if df is None:
+            logger.info("[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
+            import time as _time
+            api_start = _time.time()
+            df = ak.stock_hk_spot_em()
+            api_elapsed = _time.time() - api_start
+            logger.info("[API返回] ak.stock_hk_spot_em 成功: %d 只港股, 耗时 %.2fs", len(df), api_elapsed)
+            if df is not None and not df.empty:
+                hk_realtime_cache.set(df)
+            else:
+                logger.info("[缓存跳过] 港股实时行情获取为空，不覆盖现有缓存")
+
+        if df is None or df.empty:
+            return None
 
         row = df[df['代码'] == code]
         if row.empty:

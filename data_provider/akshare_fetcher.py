@@ -48,7 +48,7 @@ from .us_index_mapping import is_us_index_code, is_us_stock_code
 
 # ── Re-export module-level API from split sub-modules ────────────────────
 from .circuit_breaker import get_realtime_circuit_breaker, RealtimeCircuitBreaker
-from .cache import realtime_cache, etf_realtime_cache
+from .cache import realtime_cache, etf_realtime_cache, hk_realtime_cache
 from .constants import USER_AGENTS, SINA_REALTIME_ENDPOINT, TENCENT_REALTIME_ENDPOINT
 from .fetchers.realtime import get_realtime_quote as _fetch_realtime_quote
 from .fetchers.kline import (
@@ -396,6 +396,7 @@ _realtime_circuit_breaker = get_realtime_circuit_breaker()
 # Legacy module-level cache references (backward compat)
 _realtime_cache = realtime_cache
 _etf_realtime_cache = etf_realtime_cache
+_hk_realtime_cache = hk_realtime_cache
 
 
 # ── Legacy helpers (kept for test compatibility) ─────────────────────────

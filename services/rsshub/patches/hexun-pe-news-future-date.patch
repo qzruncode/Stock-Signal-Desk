@@ -1,0 +1,18 @@
+diff --git a/lib/routes/hexun/index.ts b/lib/routes/hexun/index.ts
+index aefd556..ebf211b 100644
+--- a/lib/routes/hexun/index.ts
++++ b/lib/routes/hexun/index.ts
+@@ -39,7 +39,12 @@ async function handler() {
+ 
+             const timeSpan = element.find('span');
+             const dateText = timeSpan.text().slice(1, timeSpan.text().length - 1);
+-            const pubDate = parseDate(dateText, 'MM/DD HH:mm');
++            // 上游 pe.hexun.com 列表日期是 `MM/DD HH:mm`（无年份）。dayjs 对无年份
++            // 的 MM/DD 默认补「当前年」，但创投新闻列表常含去年年底旧稿（如 7 月
++            // 看到 12/23），补当前年就成「未来日期」，前端「N 分钟前」算出巨大负数。
++            // 无年份日期的合理语义是「最近过去一次该月日」，故解析后落在未来时年份 -1。
++            const parsed = parseDate(dateText, 'MM/DD HH:mm');
++            const pubDate = parsed > new Date() ? new Date(parsed.getFullYear() - 1, parsed.getMonth(), parsed.getDate(), parsed.getHours(), parsed.getMinutes(), parsed.getSeconds(), parsed.getMilliseconds()) : parsed;
+ 
+             return {
+                 title,

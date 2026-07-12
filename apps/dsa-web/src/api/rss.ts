@@ -191,6 +191,79 @@ export interface GelonghuiSubjectsResponse {
   _error?: string | null;
 }
 
+/** 南华期货研报二级分类（供 /nanhua/report/:type1/:type2 路由选参）。 */
+export interface NanhuaReportType2 {
+  type: string;
+  name: string;
+}
+
+/** 南华期货研报一级分类（含其下的二级分类列表）。 */
+export interface NanhuaReportType1 {
+  type: string;
+  name: string;
+  children: NanhuaReportType2[];
+}
+
+export interface NanhuaTreeResponse {
+  types: NanhuaReportType1[];
+  total: number;
+  _fetched_at?: string | null;
+  _cached?: boolean;
+  _stale?: boolean;
+  _error?: string | null;
+}
+
+/** 中指指数报告一级分类（供 /cih-index/report/list/:report? 路由选参）。 */
+export interface CihIndexCategory {
+  classId: string;
+  className: string;
+}
+
+export interface CihIndexCategoriesResponse {
+  categories: CihIndexCategory[];
+  total: number;
+  _fetched_at?: string | null;
+  _cached?: boolean;
+  _stale?: boolean;
+  _error?: string | null;
+}
+
+/** 财联社话题（供 /cls/subject/:id? 路由选参）。 */
+export interface ClsSubject {
+  subjectId: string;
+  name: string;
+  attention_num: number;
+  link: string;
+}
+
+export interface ClsSubjectsResponse {
+  subjects: ClsSubject[];
+  total: number;
+  _fetched_at?: string | null;
+  _cached?: boolean;
+  _stale?: boolean;
+  _error?: string | null;
+}
+
+/** 富途牛牛话题（供 /futunn/topic/:id 路由选参）。 */
+export interface FutunnTopic {
+  topicId: string;
+  title: string;
+  detail: string;
+  subscribed: number;
+  timestamp: number;
+  link: string;
+}
+
+export interface FutunnTopicsResponse {
+  topics: FutunnTopic[];
+  total: number;
+  _fetched_at?: string | null;
+  _cached?: boolean;
+  _stale?: boolean;
+  _error?: string | null;
+}
+
 // ── API ────────────────────────────────────────────────────────────────
 
 export const rssApi = {
@@ -229,6 +302,46 @@ export const rssApi = {
       .then((r) => r.data);
   },
 
+  // 南华期货研报分类树（供 /nanhua/report/:type1/:type2 路由级联选参）
+  getNanhuaReportTypes(
+    params: { force?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<NanhuaTreeResponse> {
+    return apiClient
+      .get('/api/v1/rss/nanhua/report-types', { params, timeout: 15000, signal })
+      .then((r) => r.data);
+  },
+
+  // 中指指数报告一级分类（供 /cih-index/report/list/:report? 路由选参）
+  getCihIndexCategories(
+    params: { force?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<CihIndexCategoriesResponse> {
+    return apiClient
+      .get('/api/v1/rss/cih-index/report-categories', { params, timeout: 15000, signal })
+      .then((r) => r.data);
+  },
+
+  // 财联社话题列表（供 /cls/subject/:id? 路由选参）
+  getClsSubjects(
+    params: { keyword?: string; force?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<ClsSubjectsResponse> {
+    return apiClient
+      .get('/api/v1/rss/cls/subjects', { params, timeout: 15000, signal })
+      .then((r) => r.data);
+  },
+
+  // 富途牛牛话题列表（供 /futunn/topic/:id 路由选参）
+  getFutunnTopics(
+    params: { keyword?: string; force?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<FutunnTopicsResponse> {
+    return apiClient
+      .get('/api/v1/rss/futunn/topics', { params, timeout: 15000, signal })
+      .then((r) => r.data);
+  },
+
   // 新：通用 Feed 取数
   getFeedsBySpec(
     spec: { route_path: string; params: Record<string, string>; options: RssFeedOptions; namespace?: string; limit?: number; force?: boolean },
@@ -241,7 +354,11 @@ export const rssApi = {
 
   getFeedItemDetail(
     spec: FeedSpec,
-    item: Pick<RssItem, 'id' | 'title' | 'link'>,
+    item: Pick<
+      RssItem,
+      'id' | 'title' | 'link' | 'content_html' | 'summary' | 'image'
+      | 'published' | 'author' | 'tags' | 'attachments'
+    >,
   ): Promise<RssItem> {
     return apiClient
       .post('/api/v1/rss/feeds/item', {
@@ -252,6 +369,19 @@ export const rssApi = {
         item_id: item.id,
         title: item.title,
         link: item.link,
+        // The list item's already-rendered body lets the backend fall back to
+        // it when the fulltext re-fetch is poorer (e.g. cih-index image reports)
+        // or comes back empty (e.g. /eeo/kuaixun — RSSHub applies filter_title
+        // after limit truncation, so the target can be missing from the batch).
+        // published/author/tags/attachments are forwarded so the synthesized
+        // fallback keeps everything the detail view renders.
+        content_html: item.content_html ?? '',
+        summary: item.summary ?? '',
+        image: item.image ?? '',
+        published: item.published ?? '',
+        author: item.author ?? '',
+        tags: item.tags ?? [],
+        attachments: item.attachments ?? [],
       }, { timeout: 60000 })
       .then((r) => r.data);
   },

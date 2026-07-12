@@ -22,19 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 def _fetch_lg_valuation(symbol: str):
-    import akshare as ak
-    import pandas as pd
+    """乐咕单股估值历史接口。
 
-    for func_name in ("stock_a_lg_indicator", "stock_a_indicator_lg"):
-        fn = getattr(ak, func_name, None)
-        if fn is None:
-            continue
-        try:
-            df = fn(symbol=_normalize_symbol(symbol))
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                return df, func_name
-        except Exception as exc:
-            logger.warning(f"[Valuation] {func_name} failed for {symbol}: {exc}")
+    akshare 1.18.55 已移除 ``stock_a_lg_indicator`` / ``stock_a_indicator_lg``，
+    此处保留入口但不再探测，估值历史分位统一由 ``stock_value_em`` 路径提供。
+    """
     return None, None
 
 

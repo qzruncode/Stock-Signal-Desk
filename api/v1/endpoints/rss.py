@@ -39,6 +39,10 @@ from api.v1.endpoints._rss_namespace import (
     get_categories,
 )
 from api.v1.endpoints._gelonghui_subjects import get_subjects as get_gelonghui_subjects_list
+from api.v1.endpoints._nanhua_tree import get_nanhua_tree
+from api.v1.endpoints._cih_index_categories import get_cih_index_categories
+from api.v1.endpoints._cls_subjects import get_cls_subjects as get_cls_subjects_list
+from api.v1.endpoints._futunn_topics import get_futunn_topics
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -165,6 +169,111 @@ def get_gelonghui_subjects(
         )
 
 
+@router.get(
+    "/nanhua/report-types",
+    summary="南华期货研报分类树（供 /nanhua/report/:type1/:type2 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_nanhua_report_types(
+    force: bool = Query(False, description="强制刷新缓存"),
+):
+    """代理南华官网分类树接口，返回 ``{types: [{type, name, children: [{type, name}]}]}``。
+
+    供 ``/nanhua/report/:type1/:type2`` 路由的级联选择器使用：选了 type1 后联动出该
+    分类下的合法 type2，避免填出 ``HOT/WEEK_black`` 这类非法组合（上游返回空、RSSHub
+    抛 503 ``this route is empty``）。6h 缓存，抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_nanhua_tree(force=force)
+    except Exception as exc:
+        logger.error("Failed to fetch nanhua report types: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取南华分类树失败"},
+        )
+
+
+@router.get(
+    "/cih-index/report-categories",
+    summary="中指指数报告一级分类（供 /cih-index/report/list/:report? 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_cih_index_report_categories(
+    force: bool = Query(False, description="强制刷新缓存"),
+):
+    """代理中指指数报告列表页，返回 ``{categories: [{classId, className}]}``。
+
+    供 ``/cih-index/report/list/:report?`` 路由的分类选择器使用。该路由的 ``report``
+    参数是复合路径段（``f<classId>-p1-oaddtime-ddesc`` 形式，前缀表见
+    ``_cih_index_categories``），上游元数据只给散文无可选列表，但报告列表页
+    ``__INITIAL_STATE__.indNavLists`` 内嵌了 8 个一级分类。前端选分类后拼出合法
+    路径段，避免盲填。6h 缓存，抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_cih_index_categories(force=force)
+    except Exception as exc:
+        logger.error("Failed to fetch cih-index categories: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取中指指数分类失败"},
+        )
+
+
+@router.get(
+    "/cls/subjects",
+    summary="财联社话题列表（供 /cls/subject/:id? 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_cls_subjects(
+    force: bool = Query(False, description="强制刷新缓存"),
+    keyword: Optional[str] = Query(None, description="按话题名过滤"),
+):
+    """代理财联社话题列表，返回 ``{subjects: [{subjectId, name, attention_num, link}]}``。
+
+    供 ``/cls/subject/:id?`` 路由的参数选择器使用。财联社没有公开话题索引接口，
+    这里以默认话题（``1103`` 盘面直播、``1151`` 有声早报）为种子分页抓取其文章 API，
+    从文章附带的 ``subjects`` 字段收割话题去重、按关注度降序输出，让前端按话题名
+    点选后填入 ``subjectId``。``id`` 可选，留空走 RSSHub 默认（盘面直播）。6h 缓存，
+    抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_cls_subjects_list(force=force, keyword=keyword)
+    except Exception as exc:
+        logger.error("Failed to fetch cls subjects: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取财联社话题失败"},
+        )
+
+
+@router.get(
+    "/futunn/topics",
+    summary="富途牛牛话题列表（供 /futunn/topic/:id 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_futunn_topics_route(
+    force: bool = Query(False, description="强制刷新缓存"),
+    keyword: Optional[str] = Query(None, description="按话题名/简介过滤"),
+):
+    """代理富途牛牛话题列表，返回 ``{topics: [{topicId, title, detail, subscribed, timestamp, link}]}``。
+
+    供 ``/futunn/topic/:id`` 路由的参数选择器使用。上游元数据只写
+    "Topic ID, can be found in URL"，无可选列表，但富途公开话题列表接口
+    ``news-site-api/main/get-topics-list``（分页，无需签名/cookie）返回每个话题的
+    ``idx``/``title``/``detail``/``subscribed``。这里翻页累积全量、按订阅数降序输出，
+    让前端按话题名点选后填入 ``idx``。``id`` 必填（路由无默认）。6h 缓存，抓取失败回退
+    stale 缓存。
+    """
+    try:
+        return get_futunn_topics(force=force, keyword=keyword)
+    except Exception as exc:
+        logger.error("Failed to fetch futunn topics: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取富途话题失败"},
+        )
+
+
 def _namespace_from_path(path: str) -> str:
     """从路径取首个段作为 namespace（如 /xueqiu/... -> xueqiu）。"""
     p = (path or "").strip("/")
@@ -253,6 +362,85 @@ class FeedItemDetailRequest(BaseModel):
     item_id: str = ""
     title: str = ""
     link: str = ""
+    # The list-mode item's already-rendered body, sent by the frontend so the
+    # detail endpoint can fall back to it when the fulltext re-fetch produces a
+    # poorer body (e.g. cih-index reports are image-only SPAs — fulltext returns
+    # an empty `.page_main` shell, stripping the <img> pages the list already had),
+    # or when the re-fetch comes back empty (see the fallback below).
+    content_html: str = ""
+    summary: str = ""
+    image: str = ""
+    # Metadata the list item already carries, forwarded so a synthesized
+    # fallback (when the re-fetch comes back empty) keeps the published time /
+    # author / tags / attachments the detail view renders.
+    published: str = ""
+    author: str = ""
+    tags: List[str] = Field(default_factory=list)
+    attachments: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+def _build_detail_fallback(body: "FeedItemDetailRequest") -> Optional[Dict[str, Any]]:
+    """Synthesize a detail item from the list-mode item when the fulltext
+    re-fetch comes back empty.
+
+    Returns ``None`` when the list item carried no content at all (no body, no
+    summary, no image, no attachments) — in that case there is genuinely nothing
+    to show and the caller should 404. Otherwise returns an item dict carrying
+    the list item's title/link/body/metadata so the detail view renders the
+    already-available content instead of a dead-end error.
+    """
+    has_body = any([
+        (body.content_html or "").strip(),
+        (body.summary or "").strip(),
+        (body.image or "").strip(),
+        bool(body.attachments),
+    ])
+    if not has_body:
+        return None
+    return {
+        "id": body.item_id,
+        "title": body.title,
+        "link": body.link,
+        "summary": body.summary,
+        "published": body.published or None,
+        "author": body.author,
+        "tags": list(body.tags or []),
+        "image": body.image,
+        "content_html": body.content_html,
+        "attachments": list(body.attachments or []),
+    }
+
+
+def _fulltext_lost_content(list_html: str, new_html: str) -> bool:
+    """True when the fulltext re-fetch clearly failed to capture the article
+    body — its text barely overlaps the list item's summary, meaning the
+    re-fetch grabbed page chrome (nav/promo/footer) or an anti-crawl payload
+    instead of real content. The list item's body is then the better source.
+
+    The length-only fallback below can't catch this: a promo shell or a WAF
+    noise page is often *longer* than the list summary, so it wins on size
+    despite carrying zero article content. Concrete cases observed:
+    /eastmoney/search — fulltext returns the SPA page shell (title echo +
+    "东方财富APP …" promo block, 649 chars) while the list summary has the
+    real 75-char excerpt; /xueqiu/timeline — fulltext returns a 34k-char WAF
+    anti-crawl token blob. Both beat the list summary on length yet share no
+    article text with it.
+    """
+    from api.v1.endpoints._rss_fetch import _html_to_text
+
+    list_txt = _html_to_text(list_html)
+    new_txt = _html_to_text(new_html)
+    if not list_txt or not new_txt:
+        return False  # nothing comparable; defer to the length fallback
+    # n-grams are unreliable for very short summaries — use a plain substring.
+    if len(list_txt) < 16:
+        return list_txt not in new_txt
+    n = 8
+    grams = [list_txt[i:i + n] for i in range(0, len(list_txt) - n + 1, n)]
+    if not grams:
+        return list_txt not in new_txt
+    hit = sum(1 for g in grams if g in new_txt)
+    return (hit / len(grams)) < 0.3
 
 
 @router.post(
@@ -262,11 +450,18 @@ class FeedItemDetailRequest(BaseModel):
 )
 def get_rss_feed_item_detail(body: FeedItemDetailRequest):
     """只抓取当前选中消息的全文，供项目内详情阅读。"""
+    # Re-fetch the whole feed in fulltext mode and match the selected item by
+    # id/link/title. limit is sized to the typical list batch so the target is
+    # likely present: RSSHub applies `filter_title` *after* `limit` truncation,
+    # so a tiny limit can keep the target out of the filtered batch entirely
+    # (e.g. /eeo/kuaixun returns a *different* item set at limit=5 than at the
+    # list's default limit — the filter then matches nothing → 404).
+    detail_limit = 30
     detail_options = dict(body.options or {})
     detail_options.pop("brief", None)
     detail_options.update({
         "mode": "fulltext",
-        "limit": 5,
+        "limit": detail_limit,
     })
     if body.title:
         detail_options["filter_title"] = f"^{re.escape(body.title)}$"
@@ -289,9 +484,9 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
     if cached and isinstance(cached, dict) and cached.get("items"):
         result = cached
     else:
-        result = _fetch_rss_feed_json(feed_url, limit=5, timeout=45.0)
+        result = _fetch_rss_feed_json(feed_url, limit=detail_limit, timeout=45.0)
         if result.get("errors") and not result.get("items"):
-            result = _fetch_rss_feed(feed_url, limit=5, timeout=30.0)
+            result = _fetch_rss_feed(feed_url, limit=detail_limit, timeout=30.0)
         if result.get("items"):
             _cache_put(cache_key, result)
 
@@ -312,10 +507,43 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         items[0] if items else None,
     )
     if not selected:
+        # The fulltext re-fetch came back empty (filter_title found nothing in
+        # the truncated batch, or the upstream returned no items). The list item
+        # the user clicked already has its rendered body — fall back to it
+        # instead of showing a misleading "未找到该消息内容" error. Many flash-news /
+        # list feeds (e.g. /eeo/kuaixun) carry the *full* body in list mode, so
+        # this is lossless; for feeds where fulltext genuinely adds more, the
+        # user simply gets the list body (still readable) rather than a dead end.
+        fallback = _build_detail_fallback(body)
+        if fallback is not None:
+            return fallback
         raise HTTPException(
             status_code=404,
             detail={"error": "not_found", "message": "未找到该消息内容"},
         )
+
+    # Fulltext re-fetch can produce a *worse* body than the list already had.
+    # Fall back to the list item's rendered fields when the re-fetched body is:
+    #   - empty, or markedly shorter (image-only/SPA shells, e.g. cih-index
+    #     fulltext returns an empty `.page_main`, stripping the list's <img>s), OR
+    #   - captured page chrome / an anti-crawl payload instead of the article
+    #     (e.g. /eastmoney/search fulltext returns the SPA promo shell "东方财富
+    #     APP …" that is *longer* than the list excerpt but shares no article
+    #     text; /xueqiu/timeline returns a 34k WAF token blob). Detected by a
+    #     near-zero 8-gram overlap between the list summary and the re-fetched
+    #     text — a longer-but-irrelevant body would otherwise win on size.
+    list_html = (body.content_html or "").strip()
+    new_html = str(selected.get("content_html") or "").strip()
+    if list_html and (
+        not new_html
+        or len(new_html) < max(80, int(len(list_html) * 0.6))
+        or _fulltext_lost_content(list_html, new_html)
+    ):
+        selected["content_html"] = body.content_html
+        if not str(selected.get("summary") or "").strip() and body.summary:
+            selected["summary"] = body.summary
+        if not str(selected.get("image") or "").strip() and body.image:
+            selected["image"] = body.image
     return selected
 
 
@@ -750,3 +978,49 @@ def test_xueqiu_cookie():
         "item_count": 0,
         "message": f"Cookie 已配置但未生效（{detail}）。可能是 xq_a_token 缺失或已过期，请联系管理员更新。",
     }
+
+
+# ── PDF 代理（供前端 PDF.js 同源渲染）─────────────────────────────────────
+
+@router.get(
+    "/pdf/proxy",
+    summary="代理下载 PDF 文件（供前端 PDF.js 同源渲染）",
+    responses={400: {"model": ErrorResponse}, 502: {"model": ErrorResponse}},
+)
+def proxy_pdf(url: str = Query(..., description="PDF 原始 URL（须在白名单 host 内）")):
+    """代理外部 PDF 字节，返回同源 ``Content-Disposition: inline`` 响应。
+
+    解决两类问题：(1) 上游（如 ``mall.nanhua.net``）跨域无 CORS 头，前端 PDF.js
+    直接 fetch 会失败；(2) 上游带 ``Content-Disposition: attachment`` 触发下载而非
+    内联渲染。代理改写为 ``inline``，前端 PDF.js 用 canvas 渲染。
+
+    SSRF 防护见 ``_pdf_proxy.py``：host 白名单 + 内网 IP 拦截 + 重定向二次校验 +
+    ``%PDF-`` magic 校验。
+    """
+    from api.v1.endpoints._pdf_proxy import fetch_pdf, is_safe_pdf_url
+
+    if not is_safe_pdf_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "validation_error", "message": "不被允许的 PDF 来源"},
+        )
+    try:
+        result = fetch_pdf(url)
+    except Exception as exc:
+        logger.warning("[RSS] PDF proxy fetch failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "upstream_error", "message": f"PDF 下载失败: {exc}"},
+        )
+    if result is None:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "upstream_error", "message": "PDF 校验失败（非有效 PDF 或被重定向到非法地址）"},
+        )
+    content, _content_type = result
+    headers = {
+        "Content-Disposition": "inline",  # 覆盖上游 attachment，强制内联
+        "Cache-Control": "private, max-age=3600",  # 1h 浏览器缓存，翻页不重复打代理
+        "X-Content-Type-Options": "nosniff",
+    }
+    return Response(content=content, media_type="application/pdf", headers=headers)

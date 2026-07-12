@@ -1,0 +1,19 @@
+diff --git a/lib/routes/wallstreetcn/calendar.ts b/lib/routes/wallstreetcn/calendar.ts
+--- a/lib/routes/wallstreetcn/calendar.ts
++++ b/lib/routes/wallstreetcn/calendar.ts
+@@ -56,7 +56,14 @@ async function handler(ctx) {
+                       start: new Date().setHours(0, 0, 0, 0) / 1000,
+                       end: Math.trunc(new Date().setHours(23, 59, 59, 999) / 1000),
+                   }
+-                : undefined,
++                : {
++                      // report: 上游 api-ddc-wscn.awtmt.com/finance/report/list 不带
++                      // 日期参数时返回空 items → RSSHub 503 "route is empty"。财报
++                      // 日历的语义是"未来有哪些财报发布",并非每天都有(周末必空),
++                      // 故用"今天起未来 7 天"窗口,而非 macrodatas 那样的仅当天。
++                      start: new Date().setHours(0, 0, 0, 0) / 1000,
++                      end: Math.trunc(new Date().setHours(23, 59, 59, 999) / 1000) + 6 * 86400,
++                  },
+     });
+ 
+     const items =

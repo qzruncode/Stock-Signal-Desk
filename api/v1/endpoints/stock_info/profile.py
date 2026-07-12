@@ -129,20 +129,30 @@ def _fetch_from_em(symbol: str) -> dict:
 
 
 def _fetch_from_ths_business(symbol: str) -> dict:
-    """Fetch business composition from THS."""
+    """Fetch business composition (主营构成, 东方财富 stock_zygc_em)."""
     import akshare as ak
     try:
-        df = ak.stock_business_analysis(symbol=symbol)
+        code = _normalize_symbol(symbol).zfill(6)
+        if code.startswith(("6", "5", "9")):
+            em_symbol = f"SH{code}"
+        elif code.startswith(("8", "4")):
+            em_symbol = f"BJ{code}"
+        else:
+            em_symbol = f"SZ{code}"
+        df = ak.stock_zygc_em(symbol=em_symbol)
         if df is None or df.empty:
             return {}
-        result = {}
-        result['_revenue_breakdown'] = (
-            sorted(df.to_dict('records'), key=lambda x: x.get('revenue_pct', 0), reverse=True)
-            if 'revenue_pct' in df.columns else df.to_dict('records')
-        )
-        return result
+        records = df.to_dict('records')
+        # 主营构成按收入占比排序（列名兼容 主营收入/营业收入/收入比例）
+        pct_col = next((c for c in df.columns if "比例" in str(c) or "占比" in str(c)), None)
+        if pct_col:
+            try:
+                records = sorted(records, key=lambda x: float(x.get(pct_col) or 0), reverse=True)
+            except (TypeError, ValueError):
+                pass
+        return {"_revenue_breakdown": records}
     except Exception as exc:
-        logger.warning("[StockInfo] THS business analysis failed for %s: %s", symbol, exc)
+        logger.warning("[StockInfo] business analysis failed for %s: %s", symbol, exc)
         return {}
 
 

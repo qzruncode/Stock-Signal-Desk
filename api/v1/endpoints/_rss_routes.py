@@ -111,13 +111,6 @@ RSSHUB_ROUTES: dict[str, dict[str, Any]] = {
         "requires_keyword": True,
         "keyword_placeholder": "关键词/股票代码 (如 600519)",
     },
-    "eastmoney_guba_user": {
-        "path": "/eastmoney/gerenzhongxin/guba/{uid}",
-        "label": "东方财富股吧用户帖子",
-        "group": "个股",
-        "requires_uid": True,
-        "uid_placeholder": "股吧用户 UID",
-    },
     "yicai": {
         "path": "/yicai/{category}",
         "label": "第一财经",
