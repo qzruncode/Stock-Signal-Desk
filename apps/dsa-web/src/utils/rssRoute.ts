@@ -199,31 +199,16 @@ export function parseDefaultFromDescription(description: string): string {
 }
 
 /**
- * Routes that depend on a logged-in account cookie/token even when RSSHub does
- * not flag them with `features.requireConfig` — i.e. they would work if the user
- * configured the corresponding env var, and are NOT already hidden as broken.
- * Empirically maintained: only add routes confirmed to (a) need credentials and
- * (b) actually return content once configured. (xueqiu routes are NOT here —
- * verified that XUEQIU_COOKIES does not revive them due to IP blacklist + missing
- * HttpOnly xq_a_token; they live in KNOWN_BROKEN_ROUTES instead.)
- */
-const AUTH_REQUIRED_ROUTES = new Set<string>([]);
-
-/**
  * Whether a route needs user-supplied credentials (cookie/token) beyond path
- * params — i.e. it will 503 until the RSSHub instance is configured. Covers both
- * RSSHub's `features.requireConfig` flag and the auth-dependent routes RSSHub
- * fails to flag. Returns a short reason for the badge tooltip when truthy.
+ * params — i.e. it will 503 until the RSSHub instance is configured. Currently
+ * relies on RSSHub's `features.requireConfig` flag; returns a short reason for
+ * the badge tooltip when truthy.
  */
 export function requiresAuth(route: {
   route_path: string;
   features?: { requireConfig?: unknown } | null;
 }): string | null {
   if (route.features?.requireConfig) return '需配置 Cookie/Token';
-  // Match on the namespace + first literal segment so optional params
-  // (e.g. /xueqiu/column/:id) still hit /xueqiu/column.
-  const head = route.route_path.split('/:')[0].replace(/\/+$/, '');
-  if (AUTH_REQUIRED_ROUTES.has(head)) return '需登录 Cookie';
   return null;
 }
 
@@ -419,28 +404,6 @@ export function isUnuseful(route: { route_path: string }): boolean {
  */
 export function isHiddenFromExplore(route: { route_path: string }): boolean {
   return isKnownBroken(route) || isEnglishOnly(route) || isUnuseful(route);
-}
-
-/**
- * Routes whose param has a small, stable option list that RSSHub does NOT
- * expose in metadata (no `parameters.options`, no markdown table, no backtick
- * enum) but which is nonetheless a closed set discoverable from the upstream
- * site's nav. Hard-coding is appropriate here because the set is small and
- * changes rarely (unlike gelonghui subjects, which need a remote picker).
- *
- * Each entry maps a route_path → its single param's options. Verified against
- * the self-hosted RSSHub instance (each value returns 200; empty-item ones are
- * still legal paths). Re-verify if an option starts 503ing — upstreams do
- * restructure.
- */
-const STATIC_OPTIONS_ROUTES: Record<string, RouteParamOption[]> = {
-  // (chinaratings/CreditResearch lived here but the route was hidden as
-  //  unuseful — its 7-option list is dead code now, removed 2026-07-12.)
-};
-
-/** Static option list for a route's param, if one is hard-coded above. */
-export function staticOptionsForRoute(routePath: string): RouteParamOption[] {
-  return STATIC_OPTIONS_ROUTES[routePath] ?? [];
 }
 
 /**

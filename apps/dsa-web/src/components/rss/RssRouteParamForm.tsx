@@ -13,7 +13,6 @@ import {
   requiresAuth,
   routeNeedsRemoteOptions,
   routeCascadePicker,
-  staticOptionsForRoute,
   type RouteParamOption,
 } from '../../utils/rssRoute';
 import { GelonghuiSubjectPicker } from './GelonghuiSubjectPicker';
@@ -149,10 +148,6 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
     // value and hit an upstream "route is empty" 503.
     const enumOptions = parseEnumFromDescription(paramDescription(name));
     if (enumOptions.length >= 2) return enumOptions;
-    // Hard-coded option list for routes whose param is a closed set RSSHub
-    // doesn't expose in metadata (e.g. chinaratings CreditResearch category).
-    const staticOptions = staticOptionsForRoute(route.route_path);
-    if (staticOptions.length) return staticOptions;
     // Fall back to the route description's markdown option table when this param
     // is the one the table documents. RSSHub points at the table with "见下表" in
     // most routes, but some ship a bare "动态的类型, 不填则为股票公告" hint next to

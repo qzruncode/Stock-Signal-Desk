@@ -49,8 +49,6 @@ from src.storage.models import (
     MacroIndicator,
     WatchlistGroup,
     WatchlistGroupNameConflict,
-    RssSubscription,
-    RssSubscriptionTitleConflict,
     AgentPromptTemplate,
 )
 from src.storage.manager import DatabaseManager
@@ -121,8 +119,6 @@ __all__ = [
     "MacroIndicator",
     "WatchlistGroup",
     "WatchlistGroupNameConflict",
-    "RssSubscription",
-    "RssSubscriptionTitleConflict",
     "AgentPromptTemplate",
     "DatabaseManager",
     "get_db",

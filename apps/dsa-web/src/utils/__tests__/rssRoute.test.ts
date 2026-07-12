@@ -10,7 +10,6 @@ import {
   parseRouteParams,
   routeDescriptionProse,
   routeNeedsRemoteOptions,
-  staticOptionsForRoute,
 } from '../rssRoute';
 
 describe('rssRoute helpers', () => {
@@ -92,16 +91,6 @@ describe('rssRoute helpers', () => {
     // Routes without a remote list fall back to a plain input.
     expect(routeNeedsRemoteOptions('/wallstreetcn/news/:category?')).toBe(false);
     expect(routeNeedsRemoteOptions('/xueqiu/stock_info/:id')).toBe(false);
-  });
-
-  it('returns hard-coded options for routes with a closed param set', () => {
-    // chinaratings/CreditResearch used to have a 7-option list, but the route
-    // was hidden as unuseful (2026-07-12) so its option table was removed —
-    // staticOptionsForRoute now returns nothing for it, like any other route
-    // without a hard-coded list.
-    expect(staticOptionsForRoute('/chinaratings/CreditResearch/:category{.+}?')).toEqual([]);
-    // Routes without a hard-coded list get nothing (fall back to bare input).
-    expect(staticOptionsForRoute('/wallstreetcn/news/:category?')).toEqual([]);
   });
 
   it('hides English-only feeds and keeps Chinese ones in the same namespace', () => {

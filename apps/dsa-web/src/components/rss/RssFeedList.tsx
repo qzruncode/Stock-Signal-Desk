@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { Clock, FileText } from 'lucide-react';
 import { rssApi, type FeedSpec, type RssItem, type RssAttachment } from '../../api/rss';
@@ -396,8 +396,21 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
   const [selectedItem, setSelectedItem] = useState<RssItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Monotonic request sequence + AbortController for the detail fetch. Same
+  // rationale as useRssFeeds: a slow item (e.g. a first-uncached fulltext
+  // re-fetch) must not overwrite the item the user moved on to, and a request
+  // that resolves after the drawer closed must not reopen it. Only the latest
+  // openItem() may touch selectedItem/loading/error.
+  const detailSeqRef = useRef(0);
+  const detailAbortRef = useRef<AbortController | null>(null);
 
   const openItem = async (item: RssItem) => {
+    // Cancel any in-flight detail fetch before starting a new one.
+    detailAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    detailAbortRef.current = ctrl;
+    const seq = ++detailSeqRef.current;
+
     setSelectedItem(item);
     setDetailError(null);
     // Some flash-news feeds only expose an opaque id and the complete alert
@@ -413,8 +426,13 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
 
     setDetailLoading(true);
     try {
-      setSelectedItem(await rssApi.getFeedItemDetail(spec, item));
+      const detail = await rssApi.getFeedItemDetail(spec, item, ctrl.signal);
+      if (seq !== detailSeqRef.current) return; // superseded — don't touch state
+      setSelectedItem(detail);
     } catch (error) {
+      if (seq !== detailSeqRef.current) return; // superseded — don't touch state
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      if ((error as { code?: string })?.code === 'ERR_CANCELED') return;
       const message =
         (error as { response?: { data?: { detail?: { message?: string } } } })
           ?.response?.data?.detail?.message
@@ -422,9 +440,17 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
         || '消息正文加载失败';
       setDetailError(message);
     } finally {
-      setDetailLoading(false);
+      if (seq === detailSeqRef.current) setDetailLoading(false);
     }
   };
+
+  // Cancel any in-flight detail fetch on unmount so a late resolution cannot
+  // setState on an unmounted component.
+  useEffect(() => {
+    return () => {
+      detailAbortRef.current?.abort();
+    };
+  }, []);
 
   return (
     <>

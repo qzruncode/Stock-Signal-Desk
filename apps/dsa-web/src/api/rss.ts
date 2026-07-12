@@ -81,20 +81,6 @@ export interface RssNamespacesResponse {
   _error: string | null;
 }
 
-export interface RssNamespaceDetail {
-  namespace: string;
-  name: string;
-  routes: Record<string, unknown>;
-  _fetched_at: string | null;
-  _cached: boolean;
-  _stale: boolean;
-  _error: string | null;
-}
-
-export interface RssCategoriesResponse {
-  categories: string[];
-}
-
 /** 通用 FeedSpec —— 订阅与临时浏览共用。 */
 export interface FeedSpec {
   route_path: string;
@@ -113,21 +99,6 @@ export interface RssFeedBySpecResponse {
   errors: string[];
   _fetched_at: string;
   _cached: boolean;
-}
-
-/** 一条持久化订阅。 */
-export interface RssSubscription {
-  id: string;
-  title: string;
-  namespace: string;
-  routePath: string;
-  params: Record<string, string>;
-  options: RssFeedOptions;
-  sortOrder: number;
-}
-
-export interface RssSubscriptionsResponse {
-  subscriptions: RssSubscription[];
 }
 
 export type RssFeedFormat = 'rss' | 'atom' | 'json' | 'rss3';
@@ -158,7 +129,6 @@ export interface HtmlTransformResponse {
   errors: string[];
   _fetched_at: string;
   _cached: boolean;
-  persist_params: Record<string, string>;
 }
 
 /** 测试实例 XUEQIU_COOKIES 是否生效的结果。 */
@@ -270,18 +240,6 @@ export const rssApi = {
       .then((r) => r.data);
   },
 
-  getNamespaceDetail(namespace: string, signal?: AbortSignal): Promise<RssNamespaceDetail> {
-    return apiClient
-      .get(`/api/v1/rss/namespaces/${namespace}`, { timeout: 15000, signal })
-      .then((r) => r.data);
-  },
-
-  getCategories(force = false): Promise<RssCategoriesResponse> {
-    return apiClient
-      .get('/api/v1/rss/categories', { params: { force } })
-      .then((r) => r.data);
-  },
-
   // 格隆汇主题列表（供 /gelonghui/subject/:id 路由选参）
   getGelonghuiSubjects(
     params: { keyword?: string; force?: boolean },
@@ -349,6 +307,7 @@ export const rssApi = {
       'id' | 'title' | 'link' | 'content_html' | 'summary' | 'image'
       | 'published' | 'author' | 'tags' | 'attachments'
     >,
+    signal?: AbortSignal,
   ): Promise<RssItem> {
     return apiClient
       .post('/api/v1/rss/feeds/item', {
@@ -372,50 +331,7 @@ export const rssApi = {
         author: item.author ?? '',
         tags: item.tags ?? [],
         attachments: item.attachments ?? [],
-      }, { timeout: 60000 })
-      .then((r) => r.data);
-  },
-
-  // 新：订阅 CRUD
-  listSubscriptions(signal?: AbortSignal): Promise<RssSubscriptionsResponse> {
-    return apiClient
-      .get('/api/v1/rss/subscriptions', { signal })
-      .then((r) => r.data);
-  },
-
-  upsertSubscription(body: {
-    title: string;
-    namespace: string;
-    route_path: string;
-    params?: Record<string, string>;
-    options?: RssFeedOptions;
-  }): Promise<RssSubscription> {
-    return apiClient
-      .post('/api/v1/rss/subscriptions', body)
-      .then((r) => r.data);
-  },
-
-  updateSubscription(id: string, patch: {
-    title?: string;
-    namespace?: string;
-    route_path?: string;
-    params?: Record<string, string>;
-    options?: RssFeedOptions;
-  }): Promise<RssSubscription> {
-    return apiClient
-      .patch(`/api/v1/rss/subscriptions/${id}`, patch)
-      .then((r) => r.data);
-  },
-
-  deleteSubscription(id: string): Promise<{ deleted: boolean }> {
-    return apiClient
-      .delete(`/api/v1/rss/subscriptions/${id}`)
-      .then((r) => r.data);
-  },
-
-  reorderSubscriptions(orderedIds: string[]): Promise<{ reordered: boolean }> {
-    return apiClient
-      .patch('/api/v1/rss/subscriptions/reorder', { ordered_ids: orderedIds })
+      }, { timeout: 60000, signal })
       .then((r) => r.data);
   },
 

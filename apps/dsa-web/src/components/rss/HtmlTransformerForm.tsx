@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Wand2 } from 'lucide-react';
 import type { HtmlTransformRequest, RssItem } from '../../api/rss';
 import { Modal, Button, Input, InlineAlert, Loading, EmptyState } from '../common';
@@ -33,6 +33,17 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<RssItem[]>([]);
   const [feedTitle, setFeedTitle] = useState('');
+  // Abort + sequence guard so repeated "预览" clicks (or a click after the modal
+  // closes) can't let a slow earlier response overwrite the latest result.
+  const previewSeqRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
+
+  // Cancel any in-flight preview when the modal closes so a late response can't
+  // setState on an unmounted/hidden form.
+  useEffect(() => {
+    if (isOpen) return;
+    previewAbortRef.current?.abort();
+  }, [isOpen]);
 
   const update = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -54,18 +65,29 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
       setError('请输入目标网页 URL');
       return;
     }
+    // Cancel any in-flight preview before starting a new one — a slow earlier
+    // transform must not overwrite this one's result.
+    previewAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    previewAbortRef.current = ctrl;
+    const seq = ++previewSeqRef.current;
+
     setLoading(true);
     setError(null);
     setItems([]);
     try {
-      const res = await rssApi.transformHtml(buildRequest());
+      const res = await rssApi.transformHtml(buildRequest(), ctrl.signal);
+      if (seq !== previewSeqRef.current) return; // superseded — don't touch state
       setItems(res.items || []);
       setFeedTitle(res.feed_title || '');
       if (res.errors?.length && !res.items?.length) setError(res.errors.join('; '));
     } catch (err) {
+      if (seq !== previewSeqRef.current) return; // superseded — don't touch state
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if ((err as { code?: string })?.code === 'ERR_CANCELED') return;
       setError((err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message || (err as Error).message || '转换失败');
     } finally {
-      setLoading(false);
+      if (seq === previewSeqRef.current) setLoading(false);
     }
   };
 

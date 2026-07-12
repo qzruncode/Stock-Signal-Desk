@@ -22,7 +22,7 @@ const RssPage: React.FC = () => {
       </div>
 
       {/* Content */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-0 pb-4">
         <div className="h-full min-h-0">
           <RssExplorePanel
             routes={namespaces.routes}
