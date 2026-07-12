@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Rss, Trash2, GripVertical } from 'lucide-react';
+import { Rss, Trash2, GripVertical, Loader2 } from 'lucide-react';
 import type { RssSubscription } from '../../api/rss';
 import { EmptyState } from '../common';
 import { cn } from '../../utils/cn';
@@ -7,15 +7,34 @@ import { cn } from '../../utils/cn';
 export interface SubscriptionListProps {
   subscriptions: RssSubscription[];
   loading: boolean;
+  /** Subscription id currently being deleted, to show a spinner on its row. */
+  deletingId: string | null;
+  /** True while a reorder (or any mutation-triggered refetch) is saving. */
+  reordering: boolean;
   selectedId: string | null;
   onSelect: (sub: RssSubscription) => void;
   onDelete: (sub: RssSubscription) => void;
   onReorder: (orderedIds: string[]) => void;
 }
 
+function SubscriptionSkeletonRow() {
+  return (
+    <div className="flex items-center gap-2 rounded-xl border border-border bg-card p-2">
+      <span className="h-4 w-4 animate-pulse rounded bg-muted" />
+      <span className="h-7 w-7 shrink-0 animate-pulse rounded-lg bg-muted" />
+      <span className="flex-1 space-y-1.5">
+        <span className="block h-3 w-2/3 animate-pulse rounded bg-muted" />
+        <span className="block h-2.5 w-1/2 animate-pulse rounded bg-muted" />
+      </span>
+    </div>
+  );
+}
+
 export const SubscriptionList: React.FC<SubscriptionListProps> = ({
   subscriptions,
   loading,
+  deletingId,
+  reordering,
   selectedId,
   onSelect,
   onDelete,
@@ -24,7 +43,15 @@ export const SubscriptionList: React.FC<SubscriptionListProps> = ({
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
 
-  if (loading) return null;
+  if (loading) {
+    return (
+      <div className="space-y-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <SubscriptionSkeletonRow key={i} />
+        ))}
+      </div>
+    );
+  }
 
   if (subscriptions.length === 0) {
     return (
@@ -52,13 +79,20 @@ export const SubscriptionList: React.FC<SubscriptionListProps> = ({
 
   return (
     <div className="space-y-2">
+      {reordering && (
+        <div className="flex items-center justify-center gap-1.5 rounded-lg bg-muted/40 py-1 text-[11px] text-muted-text">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          正在保存排序…
+        </div>
+      )}
       {subscriptions.map((sub, idx) => {
         const active = sub.id === selectedId;
         const isOver = overIndex === idx && dragIndex !== null && dragIndex !== idx;
+        const isDeleting = sub.id === deletingId;
         return (
           <div
             key={sub.id}
-            draggable
+            draggable={!reordering && !isDeleting}
             onDragStart={() => setDragIndex(idx)}
             onDragOver={(e) => { e.preventDefault(); setOverIndex(idx); }}
             onDrop={(e) => { e.preventDefault(); handleDrop(idx); }}
@@ -68,10 +102,14 @@ export const SubscriptionList: React.FC<SubscriptionListProps> = ({
               active ? 'border-cyan/60 shadow-soft-card' : 'border-border hover:border-cyan/40',
               isOver && 'border-cyan ring-2 ring-cyan/20',
               dragIndex === idx && 'opacity-50',
+              isDeleting && 'opacity-60',
             )}
           >
             <span
-              className="cursor-grab text-muted-text hover:text-secondary-text active:cursor-grabbing"
+              className={cn(
+                'text-muted-text hover:text-secondary-text active:cursor-grabbing',
+                reordering ? 'pointer-events-none opacity-50' : 'cursor-grab',
+              )}
               aria-label="拖拽排序"
             >
               <GripVertical className="h-4 w-4" />
@@ -79,6 +117,7 @@ export const SubscriptionList: React.FC<SubscriptionListProps> = ({
             <button
               type="button"
               onClick={() => onSelect(sub)}
+              disabled={isDeleting}
               className="flex min-w-0 flex-1 items-center gap-2 text-left"
             >
               <span
@@ -97,10 +136,18 @@ export const SubscriptionList: React.FC<SubscriptionListProps> = ({
             <button
               type="button"
               onClick={() => onDelete(sub)}
-              className="shrink-0 rounded-md p-1.5 text-muted-text opacity-0 transition hover:bg-danger/10 hover:text-danger group-hover:opacity-100"
-              aria-label="删除订阅"
+              disabled={isDeleting}
+              className={cn(
+                'shrink-0 rounded-md p-1.5 transition',
+                isDeleting
+                  ? 'text-muted-text'
+                  : 'text-muted-text opacity-0 hover:bg-danger/10 hover:text-danger group-hover:opacity-100',
+              )}
+              aria-label={isDeleting ? '正在删除' : '删除订阅'}
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              {isDeleting
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Trash2 className="h-3.5 w-3.5" />}
             </button>
           </div>
         );

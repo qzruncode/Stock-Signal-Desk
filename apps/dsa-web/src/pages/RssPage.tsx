@@ -24,9 +24,10 @@ const RssPage: React.FC = () => {
   const [tab, setTab] = useState<Tab>('subscriptions');
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [transformerOpen, setTransformerOpen] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const didAutoSelect = useRef(false);
 
-  const { subscriptions, loading: subsLoading, reload: reloadSubs } = useRssSubscriptions();
+  const { subscriptions, loading: subsLoading, mutating: subsMutating, reload: reloadSubs } = useRssSubscriptions();
   const namespaces = useRssNamespaces();
 
   useEffect(() => {
@@ -52,6 +53,7 @@ const RssPage: React.FC = () => {
 
   const handleDeleteSub = async (sub: RssSubscription) => {
     if (!window.confirm(`删除订阅「${sub.title}」？`)) return;
+    setDeletingId(sub.id);
     try {
       await deleteRssSubscription(sub.id);
       if (selectedSubId === sub.id) {
@@ -59,6 +61,8 @@ const RssPage: React.FC = () => {
       }
     } catch (err) {
       window.alert(`删除失败：${(err as Error).message}`);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -150,6 +154,8 @@ const RssPage: React.FC = () => {
               <SubscriptionList
                 subscriptions={subscriptions}
                 loading={subsLoading}
+                deletingId={deletingId}
+                reordering={subsMutating}
                 selectedId={selectedSubId}
                 onSelect={handleSelectSub}
                 onDelete={handleDeleteSub}

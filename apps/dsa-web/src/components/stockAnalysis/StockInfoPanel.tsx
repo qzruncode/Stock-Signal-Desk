@@ -1,7 +1,6 @@
-import { BarChart3, Building2, FileText, Info, TrendingUp } from 'lucide-react';
+import { BarChart3, FileText, Info, TrendingUp } from 'lucide-react';
 import type { StockInfo } from '../../api/stockInfo';
 import {
-  formatAmount,
   formatMarketCap,
   formatShares,
 } from '../../utils/stockAnalysisFormat';
@@ -12,26 +11,6 @@ export function StockInfoPanel({ info }: { info: StockInfo }) {
 
   return (
     <div className="space-y-4">
-      <div className="stock-analysis-panel">
-        <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
-          <Building2 className="h-4 w-4 text-cyan-600" />公司概况
-        </h3>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-          <DataItem label="公司全称" value={info.name || info.short_name || '-'} />
-          <DataItem label="所属行业" value={info.industry || '-'} />
-          <DataItem label="所属市场" value={info.market || '-'} />
-          <DataItem
-            label="上市日期"
-            value={info.listing_date ? info.listing_date.replace(/-/g, '/') : '-'}
-          />
-          <DataItem
-            label="成立日期"
-            value={info.establish_date ? info.establish_date.replace(/-/g, '/') : '-'}
-          />
-          <DataItem label="注册资本" value={formatAmount(info.register_capital)} />
-        </div>
-      </div>
-
       {(info.total_shares != null || info.circ_shares != null) && (
         <div className="stock-analysis-panel">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-700">

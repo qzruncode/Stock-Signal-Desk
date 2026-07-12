@@ -38,6 +38,7 @@ from api.v1.endpoints._rss_namespace import (
     get_namespace_detail,
     get_categories,
 )
+from api.v1.endpoints._gelonghui_subjects import get_subjects as get_gelonghui_subjects_list
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -137,6 +138,30 @@ def get_rss_featured():
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "获取精选源失败"},
+        )
+
+
+@router.get(
+    "/gelonghui/subjects",
+    summary="格隆汇主题列表（供 /gelonghui/subject/:id 路由选参）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_gelonghui_subjects(
+    force: bool = Query(False, description="强制刷新缓存"),
+    keyword: Optional[str] = Query(None, description="按主题名/简介过滤"),
+):
+    """代理格隆汇主题列表 API，返回 ``{subjectId, name, followCount, summary, link}``。
+
+    供 ``/gelonghui/subject/:id`` 路由的参数选择器使用：用户搜主题名、看到关注数与
+    简介、点选后填入 ``subjectId``。6h 缓存，抓取失败回退 stale 缓存。
+    """
+    try:
+        return get_gelonghui_subjects_list(force=force, keyword=keyword)
+    except Exception as exc:
+        logger.error("Failed to fetch gelonghui subjects: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取格隆汇主题失败"},
         )
 
 

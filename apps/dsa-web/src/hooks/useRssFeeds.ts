@@ -21,6 +21,13 @@ export function useRssFeeds(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Monotonic request sequence: each fetchFeeds() bumps it. A request is only
+  // allowed to mutate state while it is still the latest one — so when a slow
+  // request is aborted by a newer one, its finally() does NOT clear the newer
+  // request's loading flag. Without this, a slow route (e.g. /followin/news on
+  // first uncached hit) shows no loading because the aborted request's
+  // setLoading(false) runs after the new request's setLoading(true).
+  const seqRef = useRef(0);
   const specRef = useRef<FeedSpec | null>(spec);
   specRef.current = spec;
 
@@ -33,6 +40,7 @@ export function useRssFeeds(
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const seq = ++seqRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -46,6 +54,7 @@ export function useRssFeeds(
         },
         ctrl.signal,
       );
+      if (seq !== seqRef.current) return; // superseded by a newer request
       setFeedData(result);
       if (result.errors?.length) {
         setError(result.errors.join('; '));
@@ -53,6 +62,7 @@ export function useRssFeeds(
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if ((err as { code?: string })?.code === 'ERR_CANCELED') return;
+      if (seq !== seqRef.current) return; // superseded — don't touch state
       const msg =
         (err as { response?: { data?: { detail?: { message?: string } } } })
           ?.response?.data?.detail?.message ||
@@ -60,7 +70,9 @@ export function useRssFeeds(
         '获取 RSS 数据失败';
       setError(msg);
     } finally {
-      setLoading(false);
+      // Only the latest request may clear loading; an aborted superseded
+      // request must leave the active request's loading flag intact.
+      if (seq === seqRef.current) setLoading(false);
     }
   }, []);
 

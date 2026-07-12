@@ -8,7 +8,7 @@ import { RssFeedList } from './RssFeedList';
 export interface HtmlTransformerFormProps {
   isOpen: boolean;
   onClose: () => void;
-  onSaveSubscription: (params: { title: string; routePath: string; namespace: string; persistParams: Record<string, string> }) => void;
+  onSaveSubscription: (params: { title: string; routePath: string; namespace: string; persistParams: Record<string, string> }) => Promise<void> | void;
 }
 
 interface FormState {
@@ -35,6 +35,7 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
   const [items, setItems] = useState<RssItem[]>([]);
   const [feedTitle, setFeedTitle] = useState('');
   const [persistParams, setPersistParams] = useState<Record<string, string> | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const update = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -73,17 +74,22 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
     }
   };
 
-  const handleSave = () => {
-    if (!persistParams) return;
+  const handleSave = async () => {
+    if (!persistParams || saving) return;
     const title = window.prompt('订阅标题', feedTitle || form.url) ;
     if (!title?.trim()) return;
-    onSaveSubscription({
-      title: title.trim(),
-      routePath: '/rsshub/transform/html',
-      namespace: 'rsshub',
-      persistParams,
-    });
-    onClose();
+    setSaving(true);
+    try {
+      await onSaveSubscription({
+        title: title.trim(),
+        routePath: '/rsshub/transform/html',
+        namespace: 'rsshub',
+        persistParams,
+      });
+      onClose();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -111,7 +117,7 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
             预览
           </Button>
           {persistParams && items.length > 0 && (
-            <Button variant="outline" size="sm" onClick={handleSave}>存为订阅</Button>
+            <Button variant="outline" size="sm" isLoading={saving} onClick={() => void handleSave()}>存为订阅</Button>
           )}
         </div>
 

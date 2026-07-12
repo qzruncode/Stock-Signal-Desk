@@ -4,6 +4,7 @@ import {
   parseMarkdownParamOptions,
   parseRouteParams,
   routeDescriptionProse,
+  routeNeedsRemoteOptions,
 } from '../rssRoute';
 
 describe('rssRoute helpers', () => {
@@ -32,5 +33,12 @@ describe('rssRoute helpers', () => {
       { value: 'a-stock', label: 'A 股（a-stock）' },
       { value: 'us-stock', label: '美股（us-stock）' },
     ]);
+  });
+
+  it('flags routes that have a remote option list for the param picker', () => {
+    expect(routeNeedsRemoteOptions('/gelonghui/subject/:id')).toBe(true);
+    // Routes without a remote list fall back to a plain input.
+    expect(routeNeedsRemoteOptions('/wallstreetcn/news/:category?')).toBe(false);
+    expect(routeNeedsRemoteOptions('/xueqiu/stock_info/:id')).toBe(false);
   });
 });

@@ -19,89 +19,69 @@ from ._fetch_statements_fallback import _enrich_financial_items_with_statements
 # Late-bound reference for test monkey-patching compatibility
 _pkg = sys.modules[__package__]
 
-_THS_COLUMN_MAP = {
-    '报告期': 'report_date',
-    '净利润': 'net_profit',
-    '净利润同比增长率': 'net_profit_yoy',
-    '扣非净利润': 'deducted_profit',
-    '扣非净利润同比增长率': 'deducted_profit_yoy',
-    '营业总收入': 'revenue',
-    '营业总收入同比增长率': 'revenue_yoy',
-    '基本每股收益': 'eps',
-    '每股净资产': 'bps',
-    '销售净利率': 'net_margin',
-    '销售毛利率': 'gross_margin',
-    '净资产收益率': 'roe',
-    '净资产收益率-摊薄': 'roe_diluted',
-    '流动比率': 'current_ratio',
-    '速动比率': 'quick_ratio',
-    '资产负债率': 'debt_ratio',
-}
-
-_THS_PCT_FIELDS = {
-    'net_profit_yoy', 'deducted_profit_yoy', 'revenue_yoy',
-    'net_margin', 'gross_margin', 'roe', 'roe_diluted', 'debt_ratio',
-}
-
-_THS_AMOUNT_FIELDS = {'net_profit', 'deducted_profit', 'revenue'}
-
-# Fields whose values are cumulative (Q2=H1, Q3=3Q, Q4=annual).
-_THS_CUMULATIVE_FIELDS = {'net_profit', 'deducted_profit', 'revenue'}
-
-
 def _fetch_from_ths(symbol: str, periods: int) -> list[dict]:
-    """Fetch from 同花顺. Returns cumulative data converted to single-quarter."""
+    """Fetch from 同花顺 (stock_financial_abstract_new_ths).
+
+    The new API returns a long table (one row per metric) with English
+    ``metric_name`` keys and already provides single-quarter values via the
+    ``single`` column plus YoY ratios, so no manual cumulative→single-quarter
+    diffing is needed (unlike the deprecated stock_financial_abstract_ths).
+    """
     import akshare as ak
 
-    df = ak.stock_financial_abstract_ths(symbol=symbol, indicator='按报告期')
+    df = ak.stock_financial_abstract_new_ths(symbol=symbol, indicator='按报告期')
     if df is None or df.empty:
         raise ValueError("同花顺返回空数据")
 
-    all_rows = []
+    # metric_name → FinancialItem field
+    metric_map = {
+        'operating_income_total': 'revenue',
+        'parent_holder_net_profit': 'net_profit',
+        'index_deduct_holder_net_profit': 'deducted_profit',
+        'basic_eps': 'eps',
+        'calc_per_net_assets': 'bps',
+        'sale_net_interest_ratio': 'net_margin',
+        'sale_gross_margin': 'gross_margin',
+        'index_weighted_avg_roe': 'roe',
+        'index_full_diluted_roe': 'roe_diluted',
+        'current_ratio': 'current_ratio',
+        'quick_ratio': 'quick_ratio',
+        'assets_debt_ratio': 'debt_ratio',
+        'calculate_operating_income_total_yoy_growth_ratio': 'revenue_yoy',
+        'calculate_parent_holder_net_profit_yoy_growth_ratio': 'net_profit_yoy',
+        'deduct_net_profit_yoy_growth_ratio': 'deducted_profit_yoy',
+    }
+    flow_fields = {'revenue', 'net_profit', 'deducted_profit', 'eps'}
+    yoy_fields = {'revenue_yoy', 'net_profit_yoy', 'deducted_profit_yoy'}
+
+    # Pivot long → wide: one dict per report_date.
+    by_date: dict[str, dict] = {}
     for _, row in df.iterrows():
-        item = {}
-        for src_col, dst_col in _THS_COLUMN_MAP.items():
-            if src_col not in row.index:
-                continue
-            val = row[src_col]
-            if dst_col in _THS_PCT_FIELDS:
-                item[dst_col] = _safe_pct(val)
-            elif dst_col in _THS_AMOUNT_FIELDS:
-                item[dst_col] = _safe_amount(val)
-            else:
-                item[dst_col] = _safe_float(val)
-
-        raw_date = row.get('报告期', '')
-        if raw_date is not None and str(raw_date).strip() not in ('', 'nan', 'None'):
-            item['report_date'] = str(raw_date).strip()
-        all_rows.append(item)
-
-    all_rows.sort(key=lambda x: x.get('report_date', ''))
-
-    # Diff cumulative → single-quarter
-    items = []
-    for i, cur in enumerate(all_rows):
-        is_q1 = (cur.get('report_date') or '').endswith('03-31')
-        if i == 0 or is_q1:
-            items.append(cur)
+        metric = str(row.get('metric_name', '')).strip()
+        dst = metric_map.get(metric)
+        if not dst:
             continue
-        prev = all_rows[i - 1]
-        single = dict(cur)
-        for field in _THS_CUMULATIVE_FIELDS:
-            cv = cur.get(field)
-            pv = prev.get(field)
-            if cv is not None and pv is not None:
-                single[field] = cv - pv
-        items.append(single)
+        date = str(row.get('report_date', '')).strip()
+        if not date:
+            continue
+        item = by_date.setdefault(date, {'report_date': date})
 
-    # Take last N, but need periods+1 for proper Q1 diff
-    if len(items) > periods:
-        # Include one extra before the window for Q1 diff reference
-        start_idx = len(items) - periods - 1
-        if start_idx >= 0:
-            items = items[start_idx:]
+        if dst in flow_fields:
+            # prefer single-quarter value; fall back to cumulative value
+            val = _safe_float(row.get('single'))
+            if val is None:
+                val = _safe_amount(row.get('value'))
+            item[dst] = val
+        elif dst in yoy_fields:
+            # value/single already hold the yoy as a percent (-46.58 == -46.58%);
+            # the yoy/single_yoy columns are a different (decimal) ratio, not the
+            # direct growth rate, so do not use them here.
+            item[dst] = _safe_float(row.get('value'))
+        else:
+            item[dst] = _safe_float(row.get('value'))
 
-    return items[-periods:]
+    items = sorted(by_date.values(), key=lambda x: x.get('report_date', ''))
+    return items[-periods:] if periods else items
 
 # Mapping: (选项, 指标) → response field
 _SINA_INDICATOR_MAP = {

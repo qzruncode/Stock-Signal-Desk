@@ -147,21 +147,56 @@ def _fetch_from_ths_business(symbol: str) -> dict:
 
 
 def _fetch_all(symbol: str) -> dict:
-    cninfo = _fetch_from_cninfo(symbol)
-    em = _fetch_from_em(symbol)
-    ths = _fetch_from_ths_business(symbol)
+    """Fetch from cninfo / eastmoney / ths concurrently with per-source timeout.
 
-    merged = {}
-    merged['_sources'] = []
+    Each source runs in its own thread with a hard timeout; a slow or hanging
+    source cannot block the others or blow past the client's request timeout.
+    """
+    import concurrent.futures
 
+    sources = {
+        'cninfo': _fetch_from_cninfo,
+        'eastmoney': _fetch_from_em,
+        'ths': _fetch_from_ths_business,
+    }
+    results: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {
+            pool.submit(fn, symbol): name
+            for name, fn in sources.items()
+        }
+        try:
+            for future in concurrent.futures.as_completed(futures, timeout=20):
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                except Exception as exc:
+                    logger.warning("[StockInfo] %s fetch failed for %s: %s", name, symbol, exc)
+                    results[name] = {}
+        except concurrent.futures.TimeoutError:
+            # Sources still running past the deadline are abandoned; collect
+            # whatever has already finished so a slow source can't fail the lot.
+            for fut, name in futures.items():
+                if name not in results and fut.done():
+                    try:
+                        results[name] = fut.result()
+                    except Exception:
+                        results[name] = {}
+                elif name not in results:
+                    logger.warning("[StockInfo] %s timed out for %s", name, symbol)
+                    results[name] = {}
+
+    cninfo = results.get('cninfo', {})
+    em = results.get('eastmoney', {})
+    ths = results.get('ths', {})
+
+    merged: dict = {'_sources': []}
     if cninfo:
         merged['_sources'].append('cninfo')
         merged['cninfo'] = cninfo
-
     if em:
         merged['_sources'].append('eastmoney')
         merged['eastmoney'] = em
-
     if ths:
         merged['_sources'].append('ths')
         merged['ths_business'] = ths

@@ -173,6 +173,24 @@ export interface RssCookieTestResult {
   message: string;
 }
 
+/** 格隆汇主题（供 /gelonghui/subject/:id 路由选参）。 */
+export interface GelonghuiSubject {
+  subjectId: number;
+  name: string;
+  followCount: number;
+  summary: string;
+  link: string;
+}
+
+export interface GelonghuiSubjectsResponse {
+  subjects: GelonghuiSubject[];
+  total: number;
+  _fetched_at?: string | null;
+  _cached?: boolean;
+  _stale?: boolean;
+  _error?: string | null;
+}
+
 // ── API ────────────────────────────────────────────────────────────────
 
 export const rssApi = {
@@ -198,6 +216,16 @@ export const rssApi = {
   getFeatured(): Promise<RssFeaturedResponse> {
     return apiClient
       .get('/api/v1/rss/featured')
+      .then((r) => r.data);
+  },
+
+  // 格隆汇主题列表（供 /gelonghui/subject/:id 路由选参）
+  getGelonghuiSubjects(
+    params: { keyword?: string; force?: boolean },
+    signal?: AbortSignal,
+  ): Promise<GelonghuiSubjectsResponse> {
+    return apiClient
+      .get('/api/v1/rss/gelonghui/subjects', { params, timeout: 15000, signal })
       .then((r) => r.data);
   },
 

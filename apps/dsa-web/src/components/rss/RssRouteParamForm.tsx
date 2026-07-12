@@ -8,8 +8,10 @@ import {
   parseMarkdownParamOptions,
   routeDescriptionProse,
   requiresAuth,
+  routeNeedsRemoteOptions,
   type RouteParamOption,
 } from '../../utils/rssRoute';
+import { GelonghuiSubjectPicker } from './GelonghuiSubjectPicker';
 
 export interface RssRouteParamFormProps {
   route: RssRouteDescriptor;
@@ -179,6 +181,17 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
           {paramList.map((p) => {
             const paramOptions = optionsForParam(p.name);
             const label = `${p.name}${p.optional ? '（可选）' : ''}`;
+            // Route has a remote enumerable option list (e.g. gelonghui subjects):
+            // render a picker instead of a bare input.
+            if (paramOptions.length === 0 && routeNeedsRemoteOptions(route.route_path)) {
+              return (
+                <GelonghuiSubjectPicker
+                  key={p.name}
+                  value={params[p.name] ?? ''}
+                  onSelect={(id) => update(p.name, id)}
+                />
+              );
+            }
             return paramOptions.length > 0 ? (
               <Select
                 key={p.name}

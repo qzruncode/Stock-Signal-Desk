@@ -67,7 +67,7 @@ def get_financials(
     偿债能力（资产负债率、流动/速动比率）、每股指标（EPS、BPS）。
 
     数据源（按优先级）：
-    1. 同花顺 (stock_financial_abstract_ths)
+    1. 同花顺 (stock_financial_abstract_new_ths)
     2. 新浪财经 (stock_financial_abstract)
 
     按天缓存。

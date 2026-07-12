@@ -294,19 +294,11 @@
   content: none;
 }
 
-.stock-analysis-hero {
-  border-radius: 1.75rem;
-  box-shadow:
-    inset 0 0 0 1px rgba(15, 23, 42, 0.12),
-    0 18px 36px -30px rgba(15, 23, 42, 0.18);
-}
-
 .stock-analysis-panel {
-  border-radius: 1.6rem;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(248, 250, 252, 0.94));
-  box-shadow:
-    inset 0 0 0 1px rgba(226, 232, 240, 0.82),
-    0 16px 34px -30px rgba(15, 23, 42, 0.16);
+  border-radius: 1rem;
+  border: 1px solid rgb(226 232 240);
+  background: rgb(255 255 255 / 0.88);
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
   padding: 1.25rem;
 }
 
@@ -340,16 +332,8 @@
     height: 2.5rem;
   }
 
-  .stock-analysis-hero,
   .stock-analysis-panel {
-    border-radius: 1.35rem;
-  }
-
-  .stock-analysis-hero {
-    padding: 1.125rem;
-  }
-
-  .stock-analysis-panel {
+    border-radius: 0.875rem;
     padding: 1rem;
   }
 

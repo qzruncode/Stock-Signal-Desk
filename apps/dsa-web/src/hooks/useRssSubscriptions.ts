@@ -8,6 +8,8 @@ import type { RssSubscription } from '../api/rss';
 export interface UseRssSubscriptionsResult {
   subscriptions: RssSubscription[];
   loading: boolean;
+  /** True while a mutation-triggered refetch is in flight (delete/subscribe/reorder). */
+  mutating: boolean;
   reload: () => Promise<void>;
 }
 
@@ -15,14 +17,24 @@ export interface UseRssSubscriptionsResult {
  * Owns RSS subscriptions state, synced from the backend (source of truth).
  * Refetches whenever any component dispatches RSS_SUBSCRIPTIONS_UPDATED_EVENT
  * (emitted by every subscription mutation).
+ *
+ * `loading` covers the initial mount fetch only; `mutating` toggles during the
+ * silent refetch a mutation kicks off, so the UI can show feedback without the
+ * whole list disappearing.
  */
 export function useRssSubscriptions(): UseRssSubscriptionsResult {
   const [subscriptions, setSubscriptions] = useState<RssSubscription[]>([]);
   const [loading, setLoading] = useState(true);
+  const [mutating, setMutating] = useState(false);
 
   const reload = useCallback(async () => {
-    const next = await fetchRssSubscriptions();
-    setSubscriptions(next);
+    setMutating(true);
+    try {
+      const next = await fetchRssSubscriptions();
+      setSubscriptions(next);
+    } finally {
+      setMutating(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -48,7 +60,7 @@ export function useRssSubscriptions(): UseRssSubscriptionsResult {
     };
   }, [reload]);
 
-  return { subscriptions, loading, reload };
+  return { subscriptions, loading, mutating, reload };
 }
 
 export default useRssSubscriptions;

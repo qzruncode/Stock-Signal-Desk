@@ -133,6 +133,10 @@ export function requiresAuth(route: {
  * xq_a_token); column is broken by Xuequi's anti-crawl (missing SNOWMAN_TARGET).
  * xueqiu/timeline is NOT here — it works once XUEQIU_COOKIES (incl. the HttpOnly
  * xq_a_token) is configured on the instance.
+ *
+ * Note on finology: the entire namespace is hidden (2026-07-12) — every route
+ * returns 503 because upstream insider.finology.in 403-blocks RSSHub outright,
+ * so no amount of config/cookies revives them.
  */
 const KNOWN_BROKEN_ROUTES = new Set<string>([
   '/bse/:category?/:keyword?',
@@ -155,6 +159,7 @@ const KNOWN_BROKEN_ROUTES = new Set<string>([
   '/bloomberg/authors/:id/:slug/:source?',
   '/followin/tag/:tagId/:lang?',
   '/followin/topic/:topicId/:lang?',
+  '/finology/bullets',
   '/finology/category/:category',
   '/finology/most-viewed',
   '/finology/tag/:topic',
@@ -163,6 +168,21 @@ const KNOWN_BROKEN_ROUTES = new Set<string>([
 /** Whether a route is persistently broken and should be hidden from explore. */
 export function isKnownBroken(route: { route_path: string }): boolean {
   return KNOWN_BROKEN_ROUTES.has(route.route_path);
+}
+
+/**
+ * Routes whose path params lack a static option list in RSSHub metadata but
+ * have a remote enumerable source we proxy. For these, the param form renders a
+ * searchable picker (fetching the option list from our backend) instead of a
+ * bare text input. Add a route here when a remote list endpoint is wired up.
+ */
+const REMOTE_OPTIONS_ROUTES = new Set<string>([
+  '/gelonghui/subject/:id', // 主题列表来自格隆汇 /api/subjects（后端代理 + 6h 缓存）
+]);
+
+/** Whether a route has a remote option list to power a searchable param picker. */
+export function routeNeedsRemoteOptions(routePath: string): boolean {
+  return REMOTE_OPTIONS_ROUTES.has(routePath);
 }
 
 /** Remove Markdown tables before displaying a route's prose description. */

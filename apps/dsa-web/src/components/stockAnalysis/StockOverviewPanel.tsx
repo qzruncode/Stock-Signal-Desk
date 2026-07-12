@@ -52,7 +52,7 @@ export const StockOverviewPanel: React.FC<StockOverviewPanelProps> = ({
         <p className="text-sm font-medium text-red-600">{quoteError}</p>
       </div>
     ) : quote ? (
-      <RealtimeQuotePanel quote={quote} />
+      <RealtimeQuotePanel quote={quote} stockInfo={stockInfo} />
     ) : (
       <EmptyBlock text="暂无行情数据" />
     )}
