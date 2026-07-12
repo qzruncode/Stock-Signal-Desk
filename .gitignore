@@ -96,5 +96,8 @@ services/rsshub/node_modules/
 services/rsshub/logs/
 services/rsshub/app/
 
+# Node.js (vitest 缓存等)
+/node_modules/
+
 docs
 .claude/plans
