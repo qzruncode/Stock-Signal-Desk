@@ -404,6 +404,7 @@ const UNUSEFUL_ROUTES = new Set<string>([
   '/sse/convert/:query?', // 上交所可转债公告，与披露路由重复
   '/sselawsrules/:category{.+}?', // 上交所业务规则，非资讯流
   '/taoguba/:category?', // 淘股吧论坛，探索页抓不到
+  '/szse/rule/:channel{.+}?', // 深交所业务规则，非资讯流
 ]);
 
 /** Whether a route's feed is not useful for the stock explore page. */

@@ -1,5 +1,4 @@
 diff --git a/lib/routes/hexun/index.ts b/lib/routes/hexun/index.ts
-index aefd556..ebf211b 100644
 --- a/lib/routes/hexun/index.ts
 +++ b/lib/routes/hexun/index.ts
 @@ -39,7 +39,12 @@ async function handler() {

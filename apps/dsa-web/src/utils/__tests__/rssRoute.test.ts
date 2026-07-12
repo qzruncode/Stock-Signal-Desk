@@ -174,6 +174,7 @@ describe('rssRoute helpers', () => {
     expect(isUnuseful({ route_path: '/sse/convert/:query?' })).toBe(true);
     expect(isUnuseful({ route_path: '/sselawsrules/:category{.+}?' })).toBe(true);
     expect(isUnuseful({ route_path: '/taoguba/:category?' })).toBe(true);
+    expect(isUnuseful({ route_path: '/szse/rule/:channel{.+}?' })).toBe(true);
     // Not broken, not English — only flagged as unuseful.
     expect(isKnownBroken({ route_path: '/ulapia/reports/:category?' })).toBe(false);
     expect(isEnglishOnly({ route_path: '/ulapia/reports/:category?' })).toBe(false);

@@ -8,10 +8,39 @@ export interface UseRssFeedsResult {
   fetchFeeds: (force?: boolean) => Promise<void>;
 }
 
+// ── Session-level feed cache ──────────────────────────────────────────
+// Switching back to a previously viewed route used to re-trigger a POST and
+// show a loading spinner every time — the backend cache only made each request
+// fast, it couldn't stop the round-trip/flash. This Map keys on the stable
+// spec signature (route_path + params + options, mirroring the backend's
+// _rss_cache_key_generic minus the hour bucket) and remembers successful
+// results for the session, so revisits are instant. force=true bypasses it.
+//
+// Mirrors the module-level cachedRoutes pattern in useRssNamespaces.
+const feedCache = new Map<string, RssFeedBySpecResponse>();
+
+/** Stable signature for a FeedSpec — must stay in sync with backend key parts. */
+function specKey(spec: FeedSpec): string {
+  const params = spec.params ?? {};
+  const options = spec.options ?? {};
+  // Object.entries avoids indexing the fixed-key RssFeedOptions interface with
+  // an arbitrary string (TS7053). Sort for determinism.
+  const p = JSON.stringify(Object.entries(params).sort());
+  const o = JSON.stringify(Object.entries(options).sort());
+  return `${spec.route_path}|${p}|${o}`;
+}
+
+/** Only successful results with items are worth remembering. */
+function isCacheable(data: RssFeedBySpecResponse | null): data is RssFeedBySpecResponse {
+  return Boolean(data && data.items && data.items.length > 0);
+}
+
 /**
  * Fetch a feed by generic FeedSpec (shared by subscribed feeds and ad-hoc explore).
  * - Aborts in-flight requests on new fetch / unmount.
  * - Auto-fetches when `spec` changes (and enabled), so the page only owns the spec.
+ * - Serves session-cached results instantly on revisits (no spinner flash); the
+ *   refresh / force-refresh buttons still hit the network.
  */
 export function useRssFeeds(
   spec: FeedSpec | null,
@@ -56,6 +85,11 @@ export function useRssFeeds(
       );
       if (seq !== seqRef.current) return; // superseded by a newer request
       setFeedData(result);
+      // Remember successful results so revisits are instant; force-refresh
+      // overwrites the entry with the freshest data.
+      if (isCacheable(result)) {
+        feedCache.set(specKey(current), result);
+      }
       if (result.errors?.length) {
         setError(result.errors.join('; '));
       }
@@ -76,10 +110,19 @@ export function useRssFeeds(
     }
   }, []);
 
-  // Auto-fetch when spec changes (and enabled).
+  // Auto-fetch when spec changes (and enabled). Serve cached result instantly
+  // on revisits so switching routes doesn't flash a spinner every time.
   useEffect(() => {
     if (!enabled || !spec) {
       setFeedData(null);
+      setLoading(false);
+      return;
+    }
+    const cached = feedCache.get(specKey(spec));
+    if (cached) {
+      // Instant hit — show remembered data without a network round-trip.
+      setFeedData(cached);
+      setError(null);
       setLoading(false);
       return;
     }
