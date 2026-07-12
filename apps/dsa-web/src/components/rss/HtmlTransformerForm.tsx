@@ -8,7 +8,6 @@ import { RssFeedList } from './RssFeedList';
 export interface HtmlTransformerFormProps {
   isOpen: boolean;
   onClose: () => void;
-  onSaveSubscription: (params: { title: string; routePath: string; namespace: string; persistParams: Record<string, string> }) => Promise<void> | void;
 }
 
 interface FormState {
@@ -28,14 +27,12 @@ const EMPTY: FormState = {
   itemPubDate: '', itemContent: '', encoding: '',
 };
 
-export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen, onClose, onSaveSubscription }) => {
+export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen, onClose }) => {
   const [form, setForm] = useState<FormState>(EMPTY);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<RssItem[]>([]);
   const [feedTitle, setFeedTitle] = useState('');
-  const [persistParams, setPersistParams] = useState<Record<string, string> | null>(null);
-  const [saving, setSaving] = useState(false);
 
   const update = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -60,35 +57,15 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
     setLoading(true);
     setError(null);
     setItems([]);
-    setPersistParams(null);
     try {
       const res = await rssApi.transformHtml(buildRequest());
       setItems(res.items || []);
       setFeedTitle(res.feed_title || '');
-      setPersistParams(res.persist_params || null);
       if (res.errors?.length && !res.items?.length) setError(res.errors.join('; '));
     } catch (err) {
       setError((err as { response?: { data?: { detail?: { message?: string } } } })?.response?.data?.detail?.message || (err as Error).message || '转换失败');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleSave = async () => {
-    if (!persistParams || saving) return;
-    const title = window.prompt('订阅标题', feedTitle || form.url) ;
-    if (!title?.trim()) return;
-    setSaving(true);
-    try {
-      await onSaveSubscription({
-        title: title.trim(),
-        routePath: '/rsshub/transform/html',
-        namespace: 'rsshub',
-        persistParams,
-      });
-      onClose();
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -116,16 +93,13 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
             <Wand2 className="h-3.5 w-3.5" />
             预览
           </Button>
-          {persistParams && items.length > 0 && (
-            <Button variant="outline" size="sm" isLoading={saving} onClick={() => void handleSave()}>存为订阅</Button>
-          )}
         </div>
 
         {error && <InlineAlert title="转换失败" variant="danger" message={error} />}
         {loading && <Loading label="正在转换…" />}
         {!loading && items.length > 0 && <RssFeedList items={items} feedTitle={feedTitle} />}
-        {!loading && !error && persistParams === null && (
-          <EmptyState title="填写参数后点击预览" description="预览成功后可存为订阅，之后像普通订阅一样刷新。" />
+        {!loading && !error && items.length === 0 && (
+          <EmptyState title="填写参数后点击预览" description="预览成功后会在此显示转换后的 RSS 内容。" />
         )}
       </div>
     </Modal>

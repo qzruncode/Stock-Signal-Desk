@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { RefreshCw, BookmarkPlus, Search, Star, Loader2 } from 'lucide-react';
+import { RefreshCw, Search, Star, Loader2 } from 'lucide-react';
 import type { RssRouteDescriptor, RssFeedOptions, FeedSpec } from '../../api/rss';
 import { Button, EmptyState, InlineAlert, Loading, Badge } from '../common';
 import { cn } from '../../utils/cn';
@@ -22,7 +22,6 @@ export interface RssExplorePanelProps {
   setSearch: (v: string) => void;
   filtered: RssRouteDescriptor[];
   onReload: () => Promise<void> | void;
-  onSubscribe: (spec: FeedSpec, title: string) => Promise<void> | void;
   categories: string[];
   category: string;
   setCategory: (v: string) => void;
@@ -31,7 +30,7 @@ export interface RssExplorePanelProps {
 }
 
 export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
-  loading, error, search, setSearch, filtered, onReload, onSubscribe,
+  loading, error, search, setSearch, filtered, onReload,
   categories, category, setCategory, stale,
 }) => {
   const pickCategory = (next: string) => {
@@ -44,7 +43,6 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [loadingMore, setLoadingMore] = useState(false);
   const [reloading, setReloading] = useState(false);
-  const [subscribing, setSubscribing] = useState(false);
 
   // Effective selection: the user's pick, or the first route once data arrives.
   // Derived (not an effect) to avoid setState-in-effect.
@@ -94,18 +92,6 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
     if (reloading) return;
     setReloading(true);
     void Promise.resolve(onReload()).finally(() => setReloading(false));
-  };
-
-  const handleSubscribe = async () => {
-    if (!effectiveSelected || !spec || subscribing) return;
-    const title = window.prompt('订阅标题', effectiveSelected.name || effectiveSelected.namespace_name);
-    if (!title?.trim()) return;
-    setSubscribing(true);
-    try {
-      await onSubscribe(spec, title.trim());
-    } finally {
-      setSubscribing(false);
-    }
   };
 
   const visible = filtered.slice(0, visibleCount);
@@ -213,10 +199,6 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
                   刷新
                 </Button>
                 <Button variant="outline" size="sm" isLoading={feedLoading} disabled={!specReady || feedLoading} onClick={() => void fetchFeeds(true)}>强制刷新</Button>
-                <Button variant="ghost" size="sm" isLoading={subscribing} onClick={() => void handleSubscribe()}>
-                  <BookmarkPlus className="h-3.5 w-3.5" />
-                  存为订阅
-                </Button>
                 {feedData?._cached && <span className="text-[11px] text-muted-text">已缓存</span>}
               </div>
             </div>
@@ -245,7 +227,7 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
           <EmptyState
             icon={<Star className="h-8 w-8" />}
             title="从左侧选择一个路由"
-            description={loading ? '正在加载股市相关路由…' : '选中后在此预览内容，满意可存为订阅。'}
+            description={loading ? '正在加载股市相关路由…' : '选中后在此预览内容。'}
           />
         )}
       </div>
