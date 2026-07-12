@@ -3,6 +3,12 @@ import { rssApi, type RssRouteDescriptor } from '../api/rss';
 import { useDebouncedValue } from './useDebouncedValue';
 import { isHiddenFromExplore } from '../utils/rssRoute';
 
+// The backend /namespaces endpoint already applies the explore-visibility
+// filter (api/v1/endpoints/_rss_filter.py), so the curated ~47-route catalog
+// arrives pre-filtered. We keep a defensive client-side pass as a fallback in
+// case a future backend change ships unfiltered routes — it is a no-op when
+// the backend filter is active.
+
 export interface UseRssNamespacesResult {
   routes: RssRouteDescriptor[];
   categories: string[];

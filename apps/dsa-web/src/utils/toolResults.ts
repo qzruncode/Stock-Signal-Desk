@@ -127,3 +127,34 @@ export function formatPct(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '-';
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
 }
+
+/** 后端 read_rss_feed 的单条 item（_compact_tool_result 截断后的字段）。 */
+export interface RssFeedItem {
+  title: string;
+  summary?: string;
+  link?: string;
+  published?: string | null;
+  source?: string;
+  image?: string;
+}
+export interface RssFeedToolResult {
+  feed_title?: string;
+  feed_link?: string;
+  item_count?: number;
+  items?: RssFeedItem[];
+  errors?: string[];
+  _cached?: boolean;
+}
+
+/** 后端 read_rss_item 的全文结果。 */
+export interface RssItemToolResult {
+  title: string;
+  content_text?: string;
+  link?: string;
+  published?: string | null;
+  source?: string;
+  _fallback?: boolean;
+  _truncated?: boolean;
+  _not_found?: boolean;
+  errors?: string[];
+}

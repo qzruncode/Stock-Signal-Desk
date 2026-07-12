@@ -213,6 +213,15 @@ export function requiresAuth(route: {
 }
 
 /**
+ * NOTE (2026-07-12): The three sets below are the **authoritative source of
+ * truth on the backend** — `api/v1/endpoints/_rss_filter.py` mirrors these
+ * exact route_path values and the `/namespaces` endpoint filters them out
+ * before serving. The frontend keeps these as a defensive fallback (in case a
+ * future backend change ships unfiltered routes) and to anchor the unit tests.
+ * When changing which routes are hidden, edit `_rss_filter.py` first and keep
+ * this file in sync — the backend is what the RSS explore page AND the AI
+ * assistant consume.
+ *
  * Routes verified broken against the self-hosted instance (2026-07-11, after
  * installing patchright): they return 503/404 regardless of params/cookies
  * because the upstream site changed its API, blocks RSSHub (403/HTML), or the

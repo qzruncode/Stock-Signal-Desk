@@ -37,6 +37,7 @@ from api.v1.endpoints._rss_namespace import (
     get_namespace_detail,
     get_categories,
 )
+from api.v1.endpoints._rss_catalog import get_rss_catalog as _get_rss_catalog
 from api.v1.endpoints._gelonghui_subjects import get_subjects as get_gelonghui_subjects_list
 from api.v1.endpoints._nanhua_tree import get_nanhua_tree
 from api.v1.endpoints._cih_index_categories import get_cih_index_categories
@@ -107,6 +108,28 @@ def get_rss_categories(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": "获取分类失败"},
+        )
+
+
+@router.get(
+    "/catalog",
+    summary="获取 AI 助手友好的 RSS 源目录（精筛财经路由 + 参数提示）",
+    responses={500: {"model": ErrorResponse}},
+)
+def get_rss_catalog_endpoint(
+    force: bool = Query(False, description="强制刷新缓存"),
+):
+    """返回 agent 友好的 RSS 源目录：基于已过滤的 ~47 条财经路由，每条带
+    中文用途描述 + 参数提示（名称/必填/hint/默认/选项）。供 AI 助手的
+    ``list_rss_sources`` 工具消费，6h 缓存。
+    """
+    try:
+        return _get_rss_catalog(force=force)
+    except Exception as exc:
+        logger.error("Failed to build RSS catalog: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": "获取 RSS 目录失败"},
         )
 
 

@@ -40,6 +40,7 @@ import {
   FinancialsToolUI,
   NewsToolUI,
   BuyCriteriaToolUI,
+  RssFeedToolUI,
 } from '../../hooks/useAssistantTools';
 import {
   ComposerAttachments,
@@ -199,6 +200,8 @@ const AssistantMessage: FC = () => {
                   get_financials: FinancialsToolUI,
                   search_news: NewsToolUI,
                   get_buy_criteria_analysis: BuyCriteriaToolUI,
+                  read_rss_feed: RssFeedToolUI,
+                  read_rss_item: RssFeedToolUI,
                 },
                 Fallback: GenericToolUI,
               },

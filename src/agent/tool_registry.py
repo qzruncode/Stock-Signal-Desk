@@ -100,6 +100,7 @@ class ToolRegistry:
         self._register_search_fallback_tools()
         self._register_buy_criteria_tools()
         self._register_web_tools()
+        self._register_rss_tools()
 
     # ===================================================================
     # 11. 通用 Web 工具 (webfetch / websearch)
@@ -1251,4 +1252,184 @@ class ToolRegistry:
             },
             executor=_exec_get_buy_criteria_analysis,
             category="analysis",
+        ))
+
+    # ===================================================================
+    # 12. RSS 资讯源工具 (list_rss_sources / read_rss_feed / read_rss_item)
+    # ===================================================================
+    def _register_rss_tools(self) -> None:
+        # --- list_rss_sources ---
+        def _exec_list_rss_sources(
+            category: Optional[str] = None,
+            keyword: Optional[str] = None,
+        ) -> Any:
+            from api.v1.endpoints._rss_catalog import list_catalog_routes
+
+            return {"sources": list_catalog_routes(category=category, keyword=keyword)}
+
+        self._add(ToolDef(
+            name="list_rss_sources",
+            description=(
+                "列出可用的 RSS 财经资讯源目录（已精筛的 ~47 条高质量中文财经路由，"
+                "覆盖华尔街见闻/财联社/东方财富/新浪/第一财经/同花顺/雪球等）。"
+                "每条源返回 route_path（取数时填入 read_rss_feed 的 route_path）、"
+                "中文名称、用途描述、示例、以及参数提示（名称/是否必填/hint/默认值/可选值）。"
+                "用户问及某主题资讯、或需要从特定财经媒体取最新消息时，先调用本工具查看有哪些源可用、"
+                "各源需要什么参数，再调用 read_rss_feed 取数。可用 category 按媒体命名空间过滤"
+                "（如 cls/wallstreetcn/xueqiu），或用 keyword 搜索源名/描述。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "可选，按媒体命名空间过滤，如 cls(财联社)、wallstreetcn(华尔街见闻)、xueqiu(雪球)、eastmoney(东方财富)。不填返回全部。",
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "可选，按源名/描述/命名空间关键词搜索，如“快讯”“研报”“公告”。",
+                    },
+                },
+                "required": [],
+            },
+            executor=_exec_list_rss_sources,
+            category="search",
+        ))
+
+        # --- read_rss_feed ---
+        def _exec_read_rss_feed(
+            route_path: str,
+            params: Optional[Dict[str, Any]] = None,
+            namespace: Optional[str] = None,
+            limit: int = 20,
+            force: bool = False,
+        ) -> Any:
+            from api.v1.endpoints._rss_reader import read_feed
+
+            return read_feed(
+                route_path=route_path,
+                params=params or {},
+                namespace=namespace,
+                limit=limit,
+                force=force,
+            )
+
+        self._add(ToolDef(
+            name="read_rss_feed",
+            description=(
+                "从指定 RSS 财经源读取最新条目列表。route_path 与参数从 list_rss_sources 获取"
+                "（如 /wallstreetcn/news/:category?，params 填 {\"category\":\"shares\"}，可选参数可省略）。"
+                "返回 feed_title 与 items（每条含标题/摘要/链接/发布时间/来源）。"
+                "用户问“最近有什么XX新闻/资讯/快讯”时，先 list_rss_sources 找到合适源，再用本工具取数。"
+                "结果按时间倒序，默认取 20 条。如需某条全文做深入分析，再用 read_rss_item 取全文。"
+                "注意：route_path 必须带命名空间前缀且与 list_rss_sources 返回的完全一致。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "route_path": {
+                        "type": "string",
+                        "description": "RSS 源路由模板，如 /wallstreetcn/news/:category? 或 /cls/telegraph/:category?（从 list_rss_sources 获取）",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "路径参数值，如 {\"category\":\"shares\"}。可选参数可省略；无参数路由传 {} 或省略。",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "命名空间（如 xueqiu），用于参数格式化（如 6 位股票代码转 SH/SZ/BJ）。非 xueqiu 源可省略。",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回条数，默认 20，最大 50",
+                        "default": 20,
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "是否强制刷新跳过缓存，默认 false",
+                        "default": False,
+                    },
+                },
+                "required": ["route_path"],
+            },
+            executor=_exec_read_rss_feed,
+            category="search",
+        ))
+
+        # --- read_rss_item ---
+        def _exec_read_rss_item(
+            route_path: str,
+            title: str,
+            params: Optional[Dict[str, Any]] = None,
+            namespace: Optional[str] = None,
+            item_id: Optional[str] = None,
+            link: Optional[str] = None,
+            summary: Optional[str] = None,
+            force: bool = False,
+        ) -> Any:
+            from api.v1.endpoints._rss_reader import read_item
+
+            return read_item(
+                route_path=route_path,
+                params=params or {},
+                namespace=namespace,
+                title=title,
+                item_id=item_id or "",
+                link=link or "",
+                list_summary=summary or "",
+                force=force,
+            )
+
+        self._add(ToolDef(
+            name="read_rss_item",
+            description=(
+                "读取 RSS 源中某条资讯的全文正文（纯文本，用于深入分析）。"
+                "传 read_rss_feed 返回的某条 item 的 title（必填，用于匹配），可选 item_id/link 辅助精确匹配，"
+                "以及该 feed 的 route_path + params。后端会用 fulltext 模式重抓并匹配出目标条目，"
+                "自动回退到列表摘要（当全文抓取失败或更差时）。返回 title/content_text(正文纯文本,超长截断)/link/published/source。"
+                "当需要对某条新闻做深入分析、用户追问某条资讯细节时调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "route_path": {
+                        "type": "string",
+                        "description": "该条目所属的 RSS 源路由模板（同 read_rss_feed 的 route_path）",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "目标条目的标题（从 read_rss_feed 的 items 中取），用于 fulltext 匹配",
+                    },
+                    "params": {
+                        "type": "object",
+                        "description": "该 feed 的路径参数值（同 read_rss_feed 的 params）",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "命名空间（同 read_rss_feed）",
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "可选，条目 id（从 read_rss_feed 的 items 中取），辅助精确匹配",
+                    },
+                    "link": {
+                        "type": "string",
+                        "description": "可选，条目链接，辅助精确匹配",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "可选，列表中该条目的摘要，全文抓取失败时作为回退正文",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "是否强制刷新跳过缓存，默认 false",
+                        "default": False,
+                    },
+                },
+                "required": ["route_path", "title"],
+            },
+            executor=_exec_read_rss_item,
+            category="search",
         ))

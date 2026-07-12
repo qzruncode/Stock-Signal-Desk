@@ -21,6 +21,7 @@ import requests
 
 from src.config import Config
 from api.v1.endpoints._rss_cache import _cache_get, _cache_put
+from api.v1.endpoints._rss_filter import is_hidden_from_explore
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,10 @@ def get_namespaces_flat(force: bool = False, finance_only: bool = False) -> Dict
             if "finance" in (r.get("categories") or [])
             and r.get("namespace") not in CRYPTO_NAMESPACES
         ]
+    # Apply the explore-visibility filter (broken / English-only / unuseful)
+    # so the backend serves the curated catalog directly — single source of
+    # truth shared by the RSS explore page and the AI assistant catalog.
+    routes = [r for r in routes if not is_hidden_from_explore(r)]
     # Derive categories from the (possibly filtered) set (deduped, sorted).
     cat_set: set[str] = set()
     for r in routes:

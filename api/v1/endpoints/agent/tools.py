@@ -332,6 +332,52 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             compaction_reason="news_family_item_window",
         )
 
+    if tool_name == "list_rss_sources":
+        # Catalog listing — cap the source count to keep the payload bounded;
+        # _rss_catalog already trimmed each entry to a slim view.
+        sources = _trim_list(result.get("sources"), 30)
+        return _annotate_tool_payload(
+            tool_name,
+            {"sources": sources, "source_count": len(result.get("sources") or [])},
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="rss_source_catalog_cap",
+        )
+
+    if tool_name == "read_rss_feed":
+        compact = _pick_fields(
+            result,
+            ["feed_title", "feed_link", "item_count", "errors", "_cached"],
+        )
+        # _rss_reader already trimmed items (summary ≤180 chars, no content_html);
+        # cap the array the LLM sees.
+        compact["items"] = _trim_list(
+            result.get("items"),
+            LLM_ARRAY_LIMIT,
+            ["title", "summary", "link", "published", "source", "image"],
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="rss_feed_item_window",
+        )
+
+    if tool_name == "read_rss_item":
+        # Single item — _rss_reader already capped content_text to 2000 chars.
+        compact = _pick_fields(
+            result,
+            ["title", "content_text", "link", "published", "source", "_fallback", "_truncated", "_not_found", "errors"],
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="rss_item_text_passthrough",
+        )
+
     if tool_name == "get_index_data":
         compact = _pick_fields(
             result,
