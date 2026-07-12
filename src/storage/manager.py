@@ -18,7 +18,7 @@ from src.storage.migrations import ensure_compatible_schema
 from src.storage.mixins import (
     DailyDataMixin, NewsMixin, QuoteKlineMixin, MacroMixin,
     PortfolioMixin, AnalysisMixin, ChatMixin, BatchMixin,
-    AlertMixin, WatchlistMixin, AgentPromptMixin,
+    AlertMixin, WatchlistMixin, AgentPromptMixin, RssCacheMixin,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ T = TypeVar("T")
 class DatabaseManager(
     DailyDataMixin, NewsMixin, QuoteKlineMixin, MacroMixin,
     PortfolioMixin, AnalysisMixin, ChatMixin, BatchMixin,
-    AlertMixin, WatchlistMixin, AgentPromptMixin,
+    AlertMixin, WatchlistMixin, AgentPromptMixin, RssCacheMixin,
 ):
     """
     数据库管理器 - 单例模式

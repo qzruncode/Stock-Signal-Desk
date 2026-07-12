@@ -16,7 +16,7 @@ def _cache_get(key: str) -> Optional[dict]:
     try:
         from src.storage import DatabaseManager
         db = DatabaseManager.get_instance()
-        data = db.get_kline_snapshot(key)
+        data = db.get_rss_cache(key)
         return data
     except Exception:
         logger.warning("[RSS] _cache_get failed for key=%s", key, exc_info=True)
@@ -28,7 +28,7 @@ def _cache_put(key: str, data: dict) -> None:
     try:
         from src.storage import DatabaseManager
         db = DatabaseManager.get_instance()
-        db.save_kline_snapshot(key, json.dumps(data, ensure_ascii=False))
+        db.save_rss_cache(key, json.dumps(data, ensure_ascii=False))
     except Exception as exc:
         logger.warning(f"[RSS] 缓存写入失败: {exc}")
 

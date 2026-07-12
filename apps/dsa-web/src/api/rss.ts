@@ -308,6 +308,7 @@ export const rssApi = {
       | 'published' | 'author' | 'tags' | 'attachments'
     >,
     signal?: AbortSignal,
+    force?: boolean,
   ): Promise<RssItem> {
     return apiClient
       .post('/api/v1/rss/feeds/item', {
@@ -318,6 +319,7 @@ export const rssApi = {
         item_id: item.id,
         title: item.title,
         link: item.link,
+        force: force ?? false,
         // The list item's already-rendered body lets the backend fall back to
         // it when the fulltext re-fetch is poorer (e.g. cih-index image reports)
         // or comes back empty (e.g. /eeo/kuaixun — RSSHub applies filter_title

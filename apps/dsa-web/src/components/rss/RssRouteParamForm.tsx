@@ -28,13 +28,32 @@ export interface RssRouteParamFormProps {
 }
 
 /**
- * "需配置 Cookie" 路由的提示 + Cookie 生效测试。
+ * "需配置 Cookie" 路由的通用提示（非雪球）。
+ *
+ * 仅告知用户此路由需要实例级 Cookie/Token、页面无法配置、需联系管理员——不提供
+ * 测试按钮，因为后端的 Cookie 生效测试只覆盖雪球（testXueqiuCookie 实测
+ * /xueqiu/timeline）。对其他 requireConfig 路由显示"测试 Cookie"会误导用户以为
+ * 测的是当前路由，故非雪球路由只给提示。
+ */
+function RequireConfigNotice() {
+  return (
+    <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5">
+      <div className="flex items-start gap-1.5 text-[11px] leading-relaxed text-secondary-text">
+        <span>此路由需登录态 Cookie/Token（由管理员在 RSSHub 实例 <code className="text-foreground">.env</code> 配置并重启实例后生效）。页面无法直接配置，如需使用请联系管理员。</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 雪球路由的 Cookie 生效测试。
  *
  * XUEQIU_COOKIES 是 RSSHub 实例级环境变量（含 HttpOnly 的 xq_a_token），页面无法
  * 直接配置——只能提示联系管理员。这里提供一个"测试 Cookie 是否生效"按钮，管理员
- * 配好 .env 并重启实例后，用户点此确认实际取数是否正常。
+ * 配好 .env 并重启实例后，用户点此确认实际取数是否正常。仅对 xueqiu 命名空间路由
+ * 渲染——后端测试接口只实测 /xueqiu/timeline，对其他 requireConfig 路由无意义。
  */
-function CookieTestSection() {
+function XueqiuCookieTestSection() {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<RssCookieTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -198,7 +217,9 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
       </div>
 
       <FeatureBadges route={route} />
-      {requiresAuth(route) && <CookieTestSection />}
+      {requiresAuth(route) && (
+        route.namespace === 'xueqiu' ? <XueqiuCookieTestSection /> : <RequireConfigNotice />
+      )}
 
       {paramList.length === 0 ? (
         <p className="text-xs text-muted-text">此路由无需参数，可直接刷新获取。</p>

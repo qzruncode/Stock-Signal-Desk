@@ -321,6 +321,7 @@ class FeedItemDetailRequest(BaseModel):
     item_id: str = ""
     title: str = ""
     link: str = ""
+    force: bool = Field(False, description="强制刷新（跳过缓存，重新 fulltext 抓取）")
     # The list-mode item's already-rendered body, sent by the frontend so the
     # detail endpoint can fall back to it when the fulltext re-fetch produces a
     # poorer body (e.g. cih-index reports are image-only SPAs — fulltext returns
@@ -439,7 +440,7 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         )
 
     cache_key = _rss_cache_key_generic(body.route_path, body.params, detail_options)
-    cached = _cache_get(cache_key)
+    cached = None if body.force else _cache_get(cache_key)
     if cached and isinstance(cached, dict) and cached.get("items"):
         result = cached
     else:
@@ -456,6 +457,14 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         )
 
     items = result.get("items") or []
+    # Match the clicked item by id/link/title. We deliberately do NOT fall back
+    # to items[0] when nothing matches: detail_options carries filter_title=
+    # ^{title}$, so a non-empty `items` that misses the target means the filter
+    # returned *other* entries (title differs by whitespace/entity/width between
+    # list and fulltext modes). Returning items[0] there would surface the wrong
+    # article's full text. Instead fall through to the list-item fallback below —
+    # the body the user clicked already has is the correct, lossless choice for
+    # list-mode feeds, and a dead-end 404 is more honest than a wrong article.
     selected = next(
         (
             item for item in items
@@ -463,7 +472,7 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
             or (body.link and item.get("link") == body.link)
             or (body.title and item.get("title") == body.title)
         ),
-        items[0] if items else None,
+        None,
     )
     if not selected:
         # The fulltext re-fetch came back empty (filter_title found nothing in

@@ -5,7 +5,7 @@
  * Supports keyboard navigation, IME input method, graceful degradation
  */
 
-import { Component, useRef, useEffect, useState, useId } from 'react';
+import { Component, useCallback, useRef, useEffect, useState, useId } from 'react';
 import type { KeyboardEvent } from 'react';
 import type { ErrorInfo, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
@@ -141,10 +141,10 @@ function StockAutocompleteInner({
     });
   };
 
-  const closeSuggestions = () => {
+  const closeSuggestions = useCallback(() => {
     close();
     setDropdownStyle(null);
-  };
+  }, [close]);
 
   // Sync external value with internal query (only when value truly changes)
   useEffect(() => {

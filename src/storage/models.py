@@ -748,6 +748,21 @@ class KlineSnapshot(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class RssCache(Base):
+    """RSS feed / namespace blob 缓存（key→JSON text）。
+
+    与 kline_snapshot 解耦：RSS 缓存键长且体积大（namespace blob ~3.3MB），
+    混在 kline 表里排查困难，独立成表便于运维与将来按 TTL 清理。
+    """
+    __tablename__ = 'rss_cache'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cache_key = Column(String(255), nullable=False, unique=True, index=True)
+    data = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class MacroIndexDaily(Base):
     """大盘指数日线数据"""
     __tablename__ = 'macro_index_daily'

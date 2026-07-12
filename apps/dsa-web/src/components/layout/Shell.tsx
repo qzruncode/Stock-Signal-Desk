@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { BarChart3, ChevronLeft, ChevronRight, Flame, GitBranch, Globe, Home, Menu, MessageSquare, Rss, Search, Star, TrendingUp, Wrench, X, Zap } from 'lucide-react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { cn } from '../../utils/cn';
-import { preloadRoute } from '../../App';
+import { preloadRoute } from '../../utils/routePreload';
 
 type ShellProps = {
   children?: React.ReactNode;

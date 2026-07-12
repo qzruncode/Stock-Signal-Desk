@@ -44,10 +44,12 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [reloading, setReloading] = useState(false);
 
-  // Effective selection: the user's pick, or the first route once data arrives.
-  // Derived (not an effect) to avoid setState-in-effect.
-  const selectedIsVisible = selected && filtered.some((route) => route.route_path === selected.route_path);
-  const effectiveSelected: RssRouteDescriptor | null = selectedIsVisible ? selected : filtered[0] ?? null;
+  // Effective selection: once the user picks a route it stays selected even when
+  // a search/category filter hides it from the list — silently swapping the
+  // right pane to filtered[0] would be confusing ("I didn't click another
+  // route"). Before any pick, default to the first visible route so the pane
+  // isn't empty on first load. Derived (not an effect) to avoid setState-in-effect.
+  const effectiveSelected: RssRouteDescriptor | null = selected ?? filtered[0] ?? null;
 
   const hasMore = !loading && !error && visibleCount < filtered.length;
   const { sentinelRef } = useInfiniteScroll({
