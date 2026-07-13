@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { announcementsApi, type AnnouncementsResponse } from '../api/announcements';
-import { financialsApi, type FinancialsResponse } from '../api/financialsCore';
 import { financialStatementsApi, type FinancialStatementsResponse } from '../api/financialStatements';
 import { newsApi, type NewsResponse } from '../api/news';
 import { riskEventsApi, type RiskEventsResponse } from '../api/riskEvents';
@@ -11,11 +10,8 @@ import { shareholderApi, type ShareholderStructureResponse } from '../api/shareh
 import { socialSentimentApi, type SocialSentimentResponse } from '../api/socialSentiment';
 import { valuationApi, type ValuationRatiosResponse } from '../api/valuation';
 import { klineApi, type KlineResponse } from '../api/kline';
-import { quotesApi, type RealtimeQuote } from '../api/quotes';
-import { stockInfoApi, type StockInfo } from '../api/stockInfo';
 
 export type AnalysisMode =
-  | 'overview'
   | 'kline'
   | 'financials'
   | 'business'
@@ -38,23 +34,12 @@ export interface StockAnalysisState {
   setMode: (m: AnalysisMode) => void;
   handleStockSelect: (code: string) => void;
 
-  // Realtime quote
-  quote: RealtimeQuote | null;
-  quoteLoading: boolean;
-  quoteError: string | null;
-
   // K-line
   klineData: KlineResponse | null;
   klineLoading: boolean;
   klineError: string | null;
 
-  // Stock info
-  stockInfo: StockInfo | null;
-  stockInfoLoading: boolean;
-
-  // Financials
-  financials: FinancialsResponse | null;
-  financialsLoading: boolean;
+  // Financial statements
   financialStatements: FinancialStatementsResponse | null;
   financialStatementsLoading: boolean;
 
@@ -85,19 +70,9 @@ export function useStockAnalysisData(): StockAnalysisState {
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchValue, setSearchValue] = useState('');
 
-  const [quote, setQuote] = useState<RealtimeQuote | null>(null);
-  const [quoteLoading, setQuoteLoading] = useState(false);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
-
   const [klineData, setKlineData] = useState<KlineResponse | null>(null);
   const [klineLoading, setKlineLoading] = useState(false);
   const [klineError, setKlineError] = useState<string | null>(null);
-
-  const [stockInfo, setStockInfo] = useState<StockInfo | null>(null);
-  const [stockInfoLoading, setStockInfoLoading] = useState(false);
-
-  const [financials, setFinancials] = useState<FinancialsResponse | null>(null);
-  const [financialsLoading, setFinancialsLoading] = useState(false);
 
   const [financialStatements, setFinancialStatements] = useState<FinancialStatementsResponse | null>(null);
   const [financialStatementsLoading, setFinancialStatementsLoading] = useState(false);
@@ -121,28 +96,9 @@ export function useStockAnalysisData(): StockAnalysisState {
   const [social, setSocial] = useState<SocialSentimentResponse | null>(null);
   const [socialLoading, setSocialLoading] = useState(false);
 
-  const [mode, setMode] = useState<AnalysisMode>('overview');
+  const [mode, setMode] = useState<AnalysisMode>('kline');
 
   const selectedSymbol = searchParams.get('symbol');
-
-  const fetchQuote = useCallback(async (symbol: string) => {
-    setQuoteLoading(true);
-    setQuoteError(null);
-    try {
-      const result = await quotesApi.getRealtime(symbol);
-      if (result.items.length > 0) {
-        setQuote(result.items[0]);
-      } else {
-        setQuote(null);
-        setQuoteError(`未找到股票 ${symbol} 的实时行情数据`);
-      }
-    } catch {
-      setQuote(null);
-      setQuoteError('获取实时行情失败，请稍后重试');
-    } finally {
-      setQuoteLoading(false);
-    }
-  }, []);
 
   const fetchKline = useCallback(async (symbol: string) => {
     setKlineLoading(true);
@@ -155,30 +111,6 @@ export function useStockAnalysisData(): StockAnalysisState {
       setKlineError('获取K线数据失败，请稍后重试');
     } finally {
       setKlineLoading(false);
-    }
-  }, []);
-
-  const fetchStockInfo = useCallback(async (symbol: string) => {
-    setStockInfoLoading(true);
-    try {
-      const result = await stockInfoApi.getInfo(symbol);
-      setStockInfo(result);
-    } catch {
-      setStockInfo(null);
-    } finally {
-      setStockInfoLoading(false);
-    }
-  }, []);
-
-  const fetchFinancials = useCallback(async (symbol: string) => {
-    setFinancialsLoading(true);
-    try {
-      const result = await financialsApi.getFinancials(symbol);
-      setFinancials(result);
-    } catch {
-      setFinancials(null);
-    } finally {
-      setFinancialsLoading(false);
     }
   }, []);
 
@@ -295,9 +227,6 @@ export function useStockAnalysisData(): StockAnalysisState {
     const symbol = searchParams.get('symbol');
     if (symbol) {
       setSearchValue(symbol);
-      void fetchQuote(symbol);
-      void fetchStockInfo(symbol);
-      void fetchFinancials(symbol);
       void fetchFinancialStatements(symbol);
       void fetchValuation(symbol);
       void fetchShareholder(symbol);
@@ -351,14 +280,11 @@ export function useStockAnalysisData(): StockAnalysisState {
     (code: string) => {
       setSearchValue(code);
       setSearchParams({ symbol: code });
-      void fetchQuote(code);
-      void fetchStockInfo(code);
-      void fetchFinancials(code);
       void fetchFinancialStatements(code);
       void fetchValuation(code);
       void fetchShareholder(code);
     },
-    [setSearchParams, fetchQuote, fetchStockInfo, fetchFinancials, fetchFinancialStatements, fetchValuation, fetchShareholder],
+    [setSearchParams, fetchFinancialStatements, fetchValuation, fetchShareholder],
   );
 
   return {
@@ -368,16 +294,9 @@ export function useStockAnalysisData(): StockAnalysisState {
     mode,
     setMode,
     handleStockSelect,
-    quote,
-    quoteLoading,
-    quoteError,
     klineData,
     klineLoading,
     klineError,
-    stockInfo,
-    stockInfoLoading,
-    financials,
-    financialsLoading,
     financialStatements,
     financialStatementsLoading,
     valuation,

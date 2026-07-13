@@ -57,8 +57,6 @@ export const StockContentRouter: React.FC<StockContentRouterProps> = (props) => 
   const { mode, selectedSymbol } = props;
 
   switch (mode) {
-    case 'overview':
-      return null; // handled by StockOverviewPanel
     case 'kline':
       return <KLineChartPanel data={props.klineData} loading={props.klineLoading} error={props.klineError} />;
     case 'financials':

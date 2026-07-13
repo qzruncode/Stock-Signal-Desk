@@ -1,12 +1,10 @@
 import React from 'react';
 import { Activity } from 'lucide-react';
 import { StockAutocomplete } from '../components/StockAutocomplete';
-import { StockOverviewPanel } from '../components/stockAnalysis/StockOverviewPanel';
 import { StockContentRouter } from '../components/stockAnalysis/StockContentRouter';
 import { useStockAnalysisData, type AnalysisMode } from '../hooks/useStockAnalysisData';
 
 const MODE_OPTIONS: ReadonlyArray<{ value: AnalysisMode; label: string }> = [
-  { value: 'overview', label: '行情概览' },
   { value: 'kline', label: 'K线分析' },
   { value: 'financials', label: '财报分析' },
   { value: 'business', label: '业务分析' },
@@ -59,43 +57,31 @@ const StockAnalysisPage: React.FC = () => {
 
         <main className="relative min-h-0 min-w-0 flex-1">
           {selectedSymbol ? (
-            mode === 'overview' ? (
-              <StockOverviewPanel
-                quoteLoading={s.quoteLoading}
-                quoteError={s.quoteError}
-                quote={s.quote}
-                financialsLoading={s.financialsLoading}
-                financials={s.financials}
-                stockInfoLoading={s.stockInfoLoading}
-                stockInfo={s.stockInfo}
-              />
-            ) : (
-              <StockContentRouter
-                mode={mode}
-                selectedSymbol={selectedSymbol}
-                klineData={s.klineData}
-                klineLoading={s.klineLoading}
-                klineError={s.klineError}
-                financialStatements={s.financialStatements}
-                financialStatementsLoading={s.financialStatementsLoading}
-                valuation={s.valuation}
-                valuationLoading={s.valuationLoading}
-                shareholder={s.shareholder}
-                shareholderLoading={s.shareholderLoading}
-                news={s.news}
-                newsLoading={s.newsLoading}
-                riskEvents={s.riskEvents}
-                riskEventsLoading={s.riskEventsLoading}
-                announcements={s.announcements}
-                announcementsLoading={s.announcementsLoading}
-                sentiment={s.sentiment}
-                sentimentLoading={s.sentimentLoading}
-                research={s.research}
-                researchLoading={s.researchLoading}
-                social={s.social}
-                socialLoading={s.socialLoading}
-              />
-            )
+            <StockContentRouter
+              mode={mode}
+              selectedSymbol={selectedSymbol}
+              klineData={s.klineData}
+              klineLoading={s.klineLoading}
+              klineError={s.klineError}
+              financialStatements={s.financialStatements}
+              financialStatementsLoading={s.financialStatementsLoading}
+              valuation={s.valuation}
+              valuationLoading={s.valuationLoading}
+              shareholder={s.shareholder}
+              shareholderLoading={s.shareholderLoading}
+              news={s.news}
+              newsLoading={s.newsLoading}
+              riskEvents={s.riskEvents}
+              riskEventsLoading={s.riskEventsLoading}
+              announcements={s.announcements}
+              announcementsLoading={s.announcementsLoading}
+              sentiment={s.sentiment}
+              sentimentLoading={s.sentimentLoading}
+              research={s.research}
+              researchLoading={s.researchLoading}
+              social={s.social}
+              socialLoading={s.socialLoading}
+            />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-center">
