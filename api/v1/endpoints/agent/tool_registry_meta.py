@@ -1,21 +1,33 @@
 # -*- coding: utf-8 -*-
-"""Tool registry metadata endpoint.
+"""Tool registry metadata + 执行端点。
 
 只读反射 src.agent.tool_registry.ToolRegistry，供前端 /setting 页展示当前接入
-LLM 模型的全部工具。不修改 ToolRegistry 自身的注册逻辑。
+LLM 模型的全部工具(GET /agent/tool-registry);并提供单工具试运行端点
+(POST /agent/tool-registry/execute),复用与真实 agent chat 完全一致的执行链
+(registry.execute → _compact_tool_result → _maybe_attach_search_fallback),
+使 setting 页「测试」结果 = LLM 实际看到的结果。不修改 ToolRegistry 自身的
+注册逻辑。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from api.v1.endpoints.agent import router
 from api.v1.schemas.tools_meta import (
     ToolCategory,
+    ToolExecuteRequest,
+    ToolExecuteResponse,
     ToolMeta,
     ToolParameterSpec,
     ToolRegistryResponse,
+)
+from api.v1.endpoints.agent.tools import (
+    _compact_tool_result,
+    _maybe_attach_search_fallback,
 )
 from src.agent.tool_registry import ToolRegistry
 
@@ -104,3 +116,53 @@ def list_tool_registry(
         categories=categories,
         tools=tools,
     )
+
+
+@router.post("/agent/tool-registry/execute", response_model=ToolExecuteResponse)
+async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
+    """单工具试运行。
+
+    复用与真实 agent chat 一致的执行链(execute → 压缩 → 联网兜底),
+    使 setting 页「测试」结果与 LLM 实际看到的相同。同步网络 IO 丢进线程池,
+    避免阻塞事件循环(与 chat.py 的 _execute_one_tool 同思路)。工具不存在、
+    参数错误或任意异常均以 success=False + error 返回,保持响应结构统一,
+    供前端按 success 字段判断。服务端不设硬超时(对齐 chat.py,工具跑到自然结束)。
+    """
+    tool_name = (req.tool_name or "").strip()
+    args = req.arguments or {}
+    start = time.perf_counter()
+
+    def _elapsed_ms() -> int:
+        return int((time.perf_counter() - start) * 1000)
+
+    try:
+        def _sync_fetch() -> Any:
+            result = _registry.execute(tool_name, args)
+            compacted = _compact_tool_result(tool_name, result)
+            return _maybe_attach_search_fallback(tool_name, args, compacted)
+
+        payload = await asyncio.to_thread(_sync_fetch)
+        return ToolExecuteResponse(
+            tool_name=tool_name,
+            arguments=args,
+            success=True,
+            result=payload,
+            duration_ms=_elapsed_ms(),
+        )
+    except KeyError:
+        return ToolExecuteResponse(
+            tool_name=tool_name,
+            arguments=args,
+            success=False,
+            error=f"工具不存在: {tool_name}",
+            duration_ms=_elapsed_ms(),
+        )
+    except Exception as e:  # noqa: BLE001 — 试运行端点要把任意异常透传给前端
+        logger.exception("[tool-registry] execute failed: %s", tool_name)
+        return ToolExecuteResponse(
+            tool_name=tool_name,
+            arguments=args,
+            success=False,
+            error=str(e),
+            duration_ms=_elapsed_ms(),
+        )

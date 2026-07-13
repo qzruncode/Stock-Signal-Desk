@@ -48,3 +48,25 @@ class ToolRegistryResponse(BaseModel):
     total: int = Field(..., description="工具总数")
     categories: Dict[str, int] = Field(default_factory=dict, description="各 category 的工具计数")
     tools: List[ToolMeta] = Field(default_factory=list, description="工具列表")
+
+
+class ToolExecuteRequest(BaseModel):
+    """POST /api/v1/agent/tool-registry/execute 请求。"""
+
+    tool_name: str = Field(..., description="工具名(OpenAI function name)")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="工具参数")
+
+
+class ToolExecuteResponse(BaseModel):
+    """POST /api/v1/agent/tool-registry/execute 响应。
+
+    success=False 时 result 为 None、error 填可读错误信息;
+    success=True 时 result 为压缩 + 联网兜底后的 payload(与真实 agent 调用看到的相同)。
+    """
+
+    tool_name: str = Field(..., description="工具名")
+    arguments: Dict[str, Any] = Field(default_factory=dict, description="实际执行用的参数")
+    success: bool = Field(..., description="是否执行成功")
+    result: Optional[Any] = Field(None, description="压缩 + 兜底后的结果 payload")
+    error: Optional[str] = Field(None, description="失败时的可读错误信息")
+    duration_ms: int = Field(..., description="服务端执行耗时(毫秒)")

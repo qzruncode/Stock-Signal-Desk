@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { Badge } from '../common';
 import type { ToolCategory, ToolMeta } from '../../types/toolRegistry';
+import { useToolTest } from '../../hooks/useToolTest';
+import { ToolParamInput } from './ToolParamInput';
+import { ToolTestPanel } from './ToolTestPanel';
 
 const CATEGORY_LABEL: Record<ToolCategory, string> = {
   data: '数据',
@@ -39,8 +42,10 @@ interface ToolListItemProps {
 
 export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
   const [open, setOpen] = useState(false);
+  const test = useToolTest(tool);
   const categoryVariant = CATEGORY_VARIANT[tool.category] ?? 'default';
   const Chevron = open ? ChevronUp : ChevronDown;
+  const running = test.status === 'running';
 
   return (
     <div
@@ -91,34 +96,39 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
             {tool.parameters.length > 0 ? (
               <div className="mt-3">
                 <p className="label-uppercase mb-2">参数</p>
-                <ul className="space-y-1.5">
+                <ul className="space-y-2">
                   {tool.parameters.map((param) => {
                     const defaultText = formatDefault(param.default);
                     return (
-                      <li
-                        key={param.name}
-                        className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs"
-                      >
-                        <code className="rounded bg-elevated/75 px-1.5 py-0.5 font-mono text-foreground/90">
-                          {param.name}
-                        </code>
-                        <span className="text-muted-foreground">{param.type}</span>
-                        {param.required ? (
-                          <span className="rounded-sm bg-danger/15 px-1 text-[10px] font-medium text-danger">
-                            必填
-                          </span>
-                        ) : null}
-                        {param.description ? (
-                          <span className="text-muted-foreground">— {param.description}</span>
-                        ) : null}
-                        {Array.isArray(param.enum) && param.enum.length > 0 ? (
-                          <span className="text-muted-foreground">
-                            [可选: {param.enum.map((value) => formatDefault(value)).join(' | ')}]
-                          </span>
-                        ) : null}
-                        {defaultText !== '' ? (
-                          <span className="text-muted-foreground">默认: {defaultText}</span>
-                        ) : null}
+                      <li key={param.name} className="space-y-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                          <code className="rounded bg-elevated/75 px-1.5 py-0.5 font-mono text-foreground/90">
+                            {param.name}
+                          </code>
+                          <span className="text-muted-foreground">{param.type}</span>
+                          {param.required ? (
+                            <span className="rounded-sm bg-danger/15 px-1 text-[10px] font-medium text-danger">
+                              必填
+                            </span>
+                          ) : null}
+                          {param.description ? (
+                            <span className="text-muted-foreground">— {param.description}</span>
+                          ) : null}
+                          {Array.isArray(param.enum) && param.enum.length > 0 ? (
+                            <span className="text-muted-foreground">
+                              [可选: {param.enum.map((value) => formatDefault(value)).join(' | ')}]
+                            </span>
+                          ) : null}
+                          {defaultText !== '' ? (
+                            <span className="text-muted-foreground">默认: {defaultText}</span>
+                          ) : null}
+                        </div>
+                        <ToolParamInput
+                          param={param}
+                          value={test.values[param.name] ?? ''}
+                          onChange={(v) => test.setValue(param.name, v)}
+                          disabled={running}
+                        />
                       </li>
                     );
                   })}
@@ -127,6 +137,10 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
             ) : (
               <p className="mt-3 text-xs text-muted-foreground">无参数</p>
             )}
+
+            <div className="mt-4 border-t border-border/40 pt-3">
+              <ToolTestPanel tool={tool} test={test} />
+            </div>
           </div>
         </div>
       </div>
