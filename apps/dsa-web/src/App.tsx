@@ -13,7 +13,6 @@ import {
   MarketStocksPage,
   WatchlistManagePage,
   WorkflowBuilderPage,
-  StockAnalysisPage,
   MacroDataPage,
   MarketAnalysisPage,
   MarketLeadersPage,
@@ -75,7 +74,6 @@ const AppContent: React.FC = () => {
           <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
           <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
-          <Route path="/analysis" element={<StockAnalysisPage />} />
           <Route path="/rss" element={<RssPage />} />
           <Route path="/macro" element={<MacroDataPage />} />
           <Route path="/market" element={<MarketAnalysisPage />} />

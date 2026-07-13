@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, Flame, GitBranch, Globe, Home, Menu, MessageSquare, Rss, Search, Star, TrendingUp, Wrench, X, Zap } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Flame, GitBranch, Globe, Home, Menu, MessageSquare, Rss, Search, Star, TrendingUp, Wrench, X } from 'lucide-react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { cn } from '../../utils/cn';
 import { preloadRoute } from '../../utils/routePreload';
@@ -18,7 +18,6 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
     { to: '/', label: 'AI 助手', icon: MessageSquare },
     { to: '/stocks', label: '全市场股票', icon: Search },
     { to: '/rss', label: 'RSS 资讯', icon: Rss },
-    { to: '/analysis', label: '个股分析', icon: Zap },
     { to: '/dashboard', label: '工作台', icon: Home },
     { to: '/portfolio', label: '管理自选股', icon: Star },
     { to: '/macro', label: '宏观数据', icon: TrendingUp },

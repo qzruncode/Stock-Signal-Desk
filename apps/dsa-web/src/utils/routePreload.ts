@@ -23,7 +23,6 @@ export const SettingPage = lazyWithPreload(() => import('../pages/SettingPage'))
 export const MarketStocksPage = lazyWithPreload(() => import('../pages/MarketStocksPage'));
 export const WatchlistManagePage = lazyWithPreload(() => import('../pages/WatchlistManagePage'));
 export const WorkflowBuilderPage = lazyWithPreload(() => import('../pages/WorkflowBuilderPage'));
-export const StockAnalysisPage = lazyWithPreload(() => import('../pages/StockAnalysisPage'));
 export const MacroDataPage = lazyWithPreload(() => import('../pages/MacroDataPage'));
 export const MarketAnalysisPage = lazyWithPreload(() => import('../pages/MarketAnalysisPage'));
 export const MarketLeadersPage = lazyWithPreload(() => import('../pages/MarketLeadersPage'));
@@ -34,7 +33,6 @@ const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/dashboard': HomePage.preload!,
   '/stocks': MarketStocksPage.preload!,
   '/portfolio': WatchlistManagePage.preload!,
-  '/analysis': StockAnalysisPage.preload!,
   '/rss': RssPage.preload!,
   '/macro': MacroDataPage.preload!,
   '/market': MarketAnalysisPage.preload!,
@@ -50,7 +48,7 @@ export const preloadRoute = (path: string): void => {
   }
 };
 
-const HIGH_FREQUENCY_ROUTES = ['/', '/dashboard', '/analysis', '/stocks'];
+const HIGH_FREQUENCY_ROUTES = ['/', '/dashboard', '/stocks'];
 
 export const scheduleIdlePreload = (): void => {
   const run = () => {

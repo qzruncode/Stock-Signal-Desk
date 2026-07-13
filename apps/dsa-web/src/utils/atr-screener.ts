@@ -58,6 +58,8 @@ export interface AtrScreenResult {
   stockDetails: AtrStockDetail[];
   /** 分析的总股票数 */
   totalAnalyzed: number;
+  /** 进入 ATR 阶段前的列表总数（含被 ATR 跳过的） */
+  totalListed: number;
 }
 
 export interface AtrStockDetail {
@@ -182,6 +184,7 @@ export function runAtrScreener(
     matchedCodes,
     stockDetails,
     totalAnalyzed: stockDetails.length,
+    totalListed: entries.length,
   };
 }
 

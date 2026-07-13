@@ -10,6 +10,11 @@ const MAX_FRONTEND_SOURCE_LINES = 600;
 const MAX_ENTRY_CHUNK_KB = 150;
 const MAX_PAGE_CHUNK_KB = 150;
 const MAX_VENDOR_CHUNK_KB = 260;
+// assistant-ui 是单一第三方生态(@assistant-ui/* + assistant-stream/cloud)，无法再拆，
+// 单独放宽预算。留余量应对小版本升级。
+const VENDOR_CHUNK_BUDGET_OVERRIDES = {
+  'vendor-assistant-ui': 360,
+};
 
 function walk(dir, predicate, result = []) {
   for (const name of readdirSync(dir)) {
@@ -52,7 +57,12 @@ function checkSourceLineBudgets() {
 }
 
 function chunkBudgetFor(name) {
-  if (name.startsWith('vendor-')) return MAX_VENDOR_CHUNK_KB;
+  if (name.startsWith('vendor-')) {
+    // 去掉 hash 后缀(-xxxxxxxx.js)得到 chunk 基名用于匹配 override。
+    const base = name.replace(/-[A-Za-z0-9_]{8,}\.js$/, '');
+    if (base in VENDOR_CHUNK_BUDGET_OVERRIDES) return VENDOR_CHUNK_BUDGET_OVERRIDES[base];
+    return MAX_VENDOR_CHUNK_KB;
+  }
   if (name.startsWith('index-')) return MAX_ENTRY_CHUNK_KB;
   if (/Page-/.test(name)) return MAX_PAGE_CHUNK_KB;
   return null;

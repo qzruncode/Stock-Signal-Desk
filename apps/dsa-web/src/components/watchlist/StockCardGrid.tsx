@@ -1,5 +1,4 @@
 import { X } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
 import { EmptyState } from '../common';
 import { cn } from '../../utils/cn';
 import { MARKET_COLORS } from '../../utils/market';
@@ -22,8 +21,6 @@ export default function StockCardGrid({
   removingCodes,
   onRemove,
 }: StockCardGridProps) {
-  const navigate = useNavigate();
-
   return (
     <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white/88 shadow-sm">
       <div className="px-5 py-4">
@@ -55,9 +52,8 @@ export default function StockCardGrid({
                   )}
                 >
                   <div
-                    className="min-w-0 cursor-pointer flex-1"
-                    onClick={() => navigate(`/analysis?symbol=${stock.code}`)}
-                    title={`查看 ${stock.code} 分析`}
+                    className="min-w-0 flex-1"
+                    title={stock.code}
                   >
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono font-medium text-slate-700">{stock.code}</span>

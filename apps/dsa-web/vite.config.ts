@@ -40,26 +40,32 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return undefined;
-          if (id.includes('/react-dom/')) {
+          // 匹配包边界用 /node_modules/<pkg>/，避免 /react/ 这种子串误把
+          // @assistant-ui/core/dist/react/* 等业务包打进 vendor-react 导致超预算。
+          if (id.includes('/node_modules/react-dom/')) {
             return 'vendor-react-dom';
           }
-          if (id.includes('/react/') || id.includes('/scheduler/')) {
+          if (id.includes('/node_modules/react/') || id.includes('/node_modules/scheduler/')) {
             return 'vendor-react';
           }
-          if (id.includes('/react-router-dom/') || id.includes('/react-router/')) {
+          if (id.includes('/node_modules/react-router-dom/') || id.includes('/node_modules/react-router/')) {
             return 'vendor-router';
           }
-          if (id.includes('/react-markdown/') || id.includes('/remark-gfm/') || id.includes('/remove-markdown/')) {
+          if (id.includes('/node_modules/react-markdown/') || id.includes('/node_modules/remark-gfm/') || id.includes('/node_modules/remove-markdown/')) {
             return 'vendor-markdown';
           }
-          if (id.includes('/klinecharts/')) {
+          if (id.includes('/node_modules/klinecharts/')) {
             return 'vendor-kline';
           }
-          if (id.includes('/motion/')) {
+          if (id.includes('/node_modules/motion/')) {
             return 'vendor-motion';
           }
-          if (id.includes('/lucide-react/')) {
+          if (id.includes('/node_modules/lucide-react/')) {
             return 'vendor-icons';
+          }
+          // assistant-ui 生态是单一第三方包集合，无法再拆，单独成 chunk 避免撑爆页面 chunk。
+          if (id.includes('/node_modules/@assistant-ui/') || id.includes('/node_modules/assistant-stream/') || id.includes('/node_modules/assistant-cloud/')) {
+            return 'vendor-assistant-ui';
           }
           return undefined;
         },

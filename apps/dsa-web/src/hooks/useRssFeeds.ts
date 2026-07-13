@@ -58,7 +58,12 @@ export function useRssFeeds(
   // setLoading(false) runs after the new request's setLoading(true).
   const seqRef = useRef(0);
   const specRef = useRef<FeedSpec | null>(spec);
-  specRef.current = spec;
+
+  // Keep specRef in sync inside an effect (never during render) so the stable
+  // fetchFeeds callback can read the latest spec without it in its deps.
+  useEffect(() => {
+    specRef.current = spec;
+  }, [spec]);
 
   const fetchFeeds = useCallback(async (force = false) => {
     const current = specRef.current;

@@ -269,7 +269,6 @@ const MarketStocksPage: React.FC = () => {
                     onViewKline={klineModal.open}
                     onViewDetails={openDetail}
                     onAddStock={handleAddStock}
-                    onNavigate={navigate}
                   />
                 ))}
               </div>

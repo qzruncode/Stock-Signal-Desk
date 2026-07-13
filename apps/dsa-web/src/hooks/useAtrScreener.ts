@@ -33,7 +33,6 @@ export interface UseAtrScreenerReturn {
   progress: ScreenProgress | null;
   log: string[];
   result: AtrScreenResult | null;
-  totalRef: React.RefObject<number>;
   handleScreen: () => Promise<void>;
   handleCancel: () => void;
   handleReset: () => void;
@@ -205,6 +204,7 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
           matchedCodes: [...matchedCodesRef.current],
           stockDetails: [],
           totalAnalyzed: processedRef.current,
+          totalListed: totalRef.current,
         });
         setPhase('idle');
         setProgress(null);
@@ -215,6 +215,7 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
         matchedCodes: [...matchedCodesRef.current],
         stockDetails: [],
         totalAnalyzed: processedRef.current,
+        totalListed: totalRef.current,
       };
 
       if (atrResult.matchedCodes.length > 0 && !cancelledRef.current) {
@@ -322,6 +323,7 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
             matchedCodes: phase3PassedCodes,
             stockDetails: [],
             totalAnalyzed: atrResult.totalAnalyzed,
+            totalListed: atrResult.totalListed,
           });
         }
       } else {
@@ -355,7 +357,6 @@ export function useAtrScreener({ onError }: UseAtrScreenerOptions): UseAtrScreen
     progress,
     log,
     result,
-    totalRef,
     handleScreen,
     handleCancel,
     handleReset,

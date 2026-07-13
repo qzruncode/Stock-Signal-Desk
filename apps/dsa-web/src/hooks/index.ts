@@ -1,8 +1,6 @@
 export { useAuth } from './useAuth';
 export { useAgentPrompts } from './useAgentPrompts';
 export type { AgentPromptsStatus, UseAgentPromptsResult } from './useAgentPrompts';
-export { useBusinessStream } from './useBusinessStream';
-export type { BusinessStreamPhase, BusinessProgressEvent, UseBusinessStreamResult } from './useBusinessStream';
 export { useDashboardLifecycle } from './useDashboardLifecycle';
 export { useHomeDashboardState } from './useHomeDashboardState';
 export { usePromptTemplates } from './usePromptTemplates';

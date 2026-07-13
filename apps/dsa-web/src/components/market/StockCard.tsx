@@ -10,7 +10,6 @@ interface StockCardProps {
   onViewKline: (stock: { code: string; name: string }) => void;
   onViewDetails: (stock: StockMetaItem) => void;
   onAddStock: (code: string) => void;
-  onNavigate: (path: string) => void;
 }
 
 function formatDateTime(value: string | null) {
@@ -26,7 +25,7 @@ function formatDateTime(value: string | null) {
   });
 }
 
-export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onViewKline, onViewDetails, onAddStock, onNavigate }) => {
+export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onViewKline, onViewDetails, onAddStock }) => {
   const profileLine = [
     stock.sector,
     stock.ipo_date ? `上市 ${stock.ipo_date}` : null,
@@ -43,9 +42,8 @@ export const StockCard: React.FC<StockCardProps> = ({ stock, isInWatchlist, onVi
       )}
     >
       <div
-        className="min-w-0 flex-1 cursor-pointer"
-        onClick={() => onNavigate(`/analysis?symbol=${stock.code}`)}
-        title={`查看 ${stock.code} 分析`}
+        className="min-w-0 flex-1"
+        title={`${stock.code} ${stock.name}`}
       >
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="font-mono font-medium text-foreground">{stock.code}</span>

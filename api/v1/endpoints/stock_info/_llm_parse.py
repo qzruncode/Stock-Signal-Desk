@@ -60,10 +60,6 @@ def _generate_llm_business_analysis(
     profit_forecast: list[dict],
     financial_summary: dict,
     events: dict,
-    on_text=None,
-    on_env_text=None,
-    on_track_text=None,
-    on_catalyst_text=None,
 ):
     """Generate LLM business analysis synchronously.
 
@@ -101,8 +97,6 @@ def _generate_llm_business_analysis(
         env_text = "环境分析暂不可用"
     env_input = format_llm_input(env_system, env_user)
     env_result = _parse_environment_analysis(env_text, resolved_model, env_input)
-    if on_env_text:
-        on_env_text(env_text)
 
     # Track quality analysis
     tr_system, tr_user = _build_track_quality_prompt(symbol, industry, main_business, composition, financial_summary, peer_data)
@@ -118,8 +112,6 @@ def _generate_llm_business_analysis(
         tr_text = "经营质量分析暂不可用"
     tr_input = format_llm_input(tr_system, tr_user)
     tr_result = _parse_track_quality_analysis(tr_text, resolved_model, tr_input, peer_data)
-    if on_track_text:
-        on_track_text(tr_text)
 
     # Catalyst analysis
     cat_system, cat_user = _build_catalyst_prompt(symbol, industry, events, financial_summary)
@@ -135,8 +127,6 @@ def _generate_llm_business_analysis(
         cat_text = "催化剂分析暂不可用"
     cat_input = format_llm_input(cat_system, cat_user)
     cat_result = _parse_catalyst_analysis(cat_text, resolved_model, cat_input)
-    if on_catalyst_text:
-        on_catalyst_text(cat_text)
 
     # Full business analysis
     biz_system, biz_user, llm_input = _build_business_prompt(symbol, intro, composition, profit_forecast, financial_summary, events)
@@ -150,8 +140,6 @@ def _generate_llm_business_analysis(
     except Exception as e:
         logger.warning("[StockBusiness] Business analysis LLM call failed: %s", e)
         biz_full_text = "业务分析暂不可用"
-    if on_text:
-        on_text(biz_full_text)
 
     return {
         "symbol": symbol,

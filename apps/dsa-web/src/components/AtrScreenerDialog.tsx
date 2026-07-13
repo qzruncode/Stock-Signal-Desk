@@ -29,7 +29,6 @@ const AtrScreenerDialog: React.FC<AtrScreenerDialogProps> = ({
     progress,
     log,
     result,
-    totalRef,
     handleScreen,
     handleCancel,
     handleReset: hookReset,
@@ -168,9 +167,9 @@ const AtrScreenerDialog: React.FC<AtrScreenerDialogProps> = ({
         <div className="flex items-center gap-2 text-sm">
           <span className="text-slate-500">共分析 {result.totalAnalyzed} 只，</span>
           <span className="font-medium text-orange-600">{result.matchedCodes.length} 只符合条件</span>
-          {result.totalAnalyzed < totalRef.current && (
+          {result.totalAnalyzed < result.totalListed && (
             <span className="text-xs text-slate-400">
-              （ATR 阶段跳过 {totalRef.current - result.totalAnalyzed} 只）
+              （ATR 阶段跳过 {result.totalListed - result.totalAnalyzed} 只）
             </span>
           )}
         </div>

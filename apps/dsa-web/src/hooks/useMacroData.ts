@@ -225,6 +225,7 @@ export function useMacroData(params: UseMacroDataParams): UseMacroDataResult {
 
   // Index auto-fetches on mount and when its inputs change (mirrors the page).
   useEffect(() => {
+    // Data-loading effect (async fetch setStates after await, not synchronously).
     void fetchIndexData();
   }, [fetchIndexData]);
 
