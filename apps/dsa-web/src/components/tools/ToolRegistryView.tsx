@@ -1,4 +1,4 @@
-import { Loader2, RotateCcw, Wrench } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 import { Button, InlineAlert } from '../common';
 import { ToolListItem } from './ToolListItem';
 import { useToolRegistry } from '../../hooks/useToolRegistry';
@@ -36,19 +36,10 @@ export const ToolRegistryView: React.FC = () => {
   const tools = data?.tools ?? [];
 
   return (
-    <section className="space-y-5">
-      <header className="flex items-center gap-3">
-        <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-primary/10 text-primary">
-          <Wrench className="h-5 w-5" />
-        </span>
-        <h2 className="text-xl font-semibold text-foreground">Tool 设置</h2>
-      </header>
-
-      <div className="space-y-2">
-        {tools.map((tool) => (
-          <ToolListItem key={tool.name} tool={tool} />
-        ))}
-      </div>
+    <section className="space-y-2">
+      {tools.map((tool) => (
+        <ToolListItem key={tool.name} tool={tool} />
+      ))}
     </section>
   );
 };
