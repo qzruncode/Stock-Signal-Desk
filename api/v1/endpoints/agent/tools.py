@@ -192,7 +192,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             [
                 "is_trading_time", "up_count", "down_count", "flat_count",
                 "limit_up_count", "limit_down_count", "total_amount", "north_flow",
-                "sh_index", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
+                "breadth_source", "sh_index", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="market_status_key_fields")
 

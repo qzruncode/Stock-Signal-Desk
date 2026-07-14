@@ -263,6 +263,32 @@ class MacroMixin:
             logger.debug("指数日线读取失败", exc_info=True)
         return None
 
+    def get_trading_days(self, start_date: date, end_date: date) -> set[date] | None:
+        """返回 [start_date, end_date] 区间内的交易日集合。
+
+        以上证指数（000001）的日线 date 为交易日历来源：上证指数每个交易日都
+        有数据，其 date 集合即 A 股交易日集合，能精确识别停牌/节假日缺失。
+
+        Returns:
+            交易日 date 集合；若该区间内上证指数本地无数据（可能尚未同步），
+            返回 None —— 调用方据此回退到粗略的“首尾对齐”校验，而非误判为
+            完整/不完整。
+        """
+        try:
+            with self.get_session() as session:
+                rows = session.execute(
+                    select(MacroIndexDaily.date)
+                    .where(MacroIndexDaily.index_code == "000001")
+                    .where(MacroIndexDaily.date >= start_date)
+                    .where(MacroIndexDaily.date <= end_date)
+                ).scalars().all()
+            if not rows:
+                return None
+            return set(rows)
+        except Exception:
+            logger.debug("交易日集合读取失败", exc_info=True)
+            return None
+
     def save_bond_yield_daily(
         self,
         country: str,

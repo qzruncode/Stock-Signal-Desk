@@ -58,6 +58,66 @@ class KlineCacheKeyTestCase(unittest.TestCase):
             "eastmoney",
         )
 
+    def test_history_range_local_complete_does_not_refetch(self) -> None:
+        """本地数据首尾日期对齐区间 → 直接返回 stock_daily，不回源外部 API。"""
+        records = [
+            {"date": "20260101", "close": 100.0, "_source": "stock_daily"},
+            {"date": "20260131", "close": 110.0, "_source": "stock_daily"},
+        ]
+        with patch.object(kline, "_get_kline_range_from_stock_daily",
+                          return_value=(records, True)) as get_local, \
+             patch.object(kline, "_get_kline_from_cache") as get_cache, \
+             patch.object(kline, "_fetch_kline_with_fallback") as fetch:
+            result = kline.get_history_data(
+                symbol="600519",
+                start_date="20260101",
+                end_date="20260131",
+                use_cache=True,
+            )
+        self.assertEqual(result["source"], "stock_daily")
+        self.assertTrue(result["_cached"])
+        get_local.assert_called_once()
+        get_cache.assert_not_called()
+        fetch.assert_not_called()
+
+    def test_history_range_local_partial_coverage_falls_back(self) -> None:
+        """本地仅区间内部分日期（首尾未对齐）→ 放弃局部数据，回源取整段。"""
+        partial = [{"date": "20260101", "close": 100.0}]  # 缺尾 20260131
+        fetched = [{"date": "20260101", "close": 100.0}, {"date": "20260131", "close": 110.0}]
+        with patch.object(kline, "_is_trading_hours", return_value=False), \
+             patch.object(kline, "_get_kline_range_from_stock_daily",
+                          return_value=(partial, False)), \
+             patch.object(kline, "_get_kline_from_cache", return_value=None), \
+             patch.object(kline, "_fetch_kline_with_fallback",
+                          return_value=(fetched, "eastmoney")) as fetch, \
+             patch.object(kline, "_save_kline_to_cache"):
+            result = kline.get_history_data(
+                symbol="600519",
+                start_date="20260101",
+                end_date="20260131",
+                use_cache=True,
+            )
+        self.assertEqual(result["source"], "eastmoney")
+        self.assertFalse(result["_cached"])
+        fetch.assert_called_once()
+
+    def test_history_range_is_stale_is_none(self) -> None:
+        """range 模式 freshness 不适用，is_stale 恒为 None。"""
+        records = [
+            {"date": "20260101", "close": 100.0, "_source": "stock_daily"},
+            {"date": "20260131", "close": 110.0, "_source": "stock_daily"},
+        ]
+        with patch.object(kline, "_get_kline_range_from_stock_daily",
+                          return_value=(records, True)), \
+             patch.object(kline, "_fetch_kline_with_fallback"):
+            result = kline.get_history_data(
+                symbol="600519",
+                start_date="20260101",
+                end_date="20260131",
+                use_cache=True,
+            )
+        self.assertIsNone(result["is_stale"])
+
 
 if __name__ == "__main__":
     unittest.main()

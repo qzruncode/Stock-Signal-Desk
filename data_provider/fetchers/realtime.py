@@ -190,8 +190,7 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
             total_mv=safe_float(row.get('总市值')),
             circ_mv=safe_float(row.get('流通市值')),
             change_60d=safe_float(row.get('60日涨跌幅')),
-            high_52w=safe_float(row.get('52周最高')),
-            low_52w=safe_float(row.get('52周最低')),
+            # stock_zh_a_spot_em 不含 52 周高低列，high_52w/low_52w 留空
         )
         logger.info("[实时行情-东财] %s %s: 价格=%s, 涨跌=%s%%", stock_code, quote.name, quote.price, quote.change_pct)
         return quote
@@ -389,6 +388,8 @@ def _get_stock_realtime_quote_tencent(stock_code: str) -> Optional[UnifiedRealti
             breaker.record_failure(source_key, f"category=malformed_payload endpoint={TENCENT_REALTIME_ENDPOINT}")
             return None
 
+        # 腾讯 qt 接口 ~ 分隔字段顺序：[3]最新价 [4]昨收 [5]今开 [6]成交量
+        # [31]涨跌额 [32]涨跌幅 [33]最高 [34]最低；[35] 为"价/量/额"复合串勿用
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=fields[1],
@@ -399,8 +400,8 @@ def _get_stock_realtime_quote_tencent(stock_code: str) -> Optional[UnifiedRealti
             volume=safe_int(fields[6]),
             open_price=safe_float(fields[5]),
             pre_close=safe_float(fields[4]),
-            high=safe_float(fields[34]),
-            low=safe_float(fields[35]),
+            high=safe_float(fields[33]),
+            low=safe_float(fields[34]),
             turnover_rate=safe_float(fields[38]),
             pe_ratio=safe_float(fields[39]),
             pb_ratio=safe_float(fields[46] if len(fields) > 46 else None),
