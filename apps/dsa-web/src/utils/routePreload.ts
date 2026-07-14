@@ -23,9 +23,6 @@ export const SettingPage = lazyWithPreload(() => import('../pages/SettingPage'))
 export const MarketStocksPage = lazyWithPreload(() => import('../pages/MarketStocksPage'));
 export const WatchlistManagePage = lazyWithPreload(() => import('../pages/WatchlistManagePage'));
 export const WorkflowBuilderPage = lazyWithPreload(() => import('../pages/WorkflowBuilderPage'));
-export const MacroDataPage = lazyWithPreload(() => import('../pages/MacroDataPage'));
-export const MarketAnalysisPage = lazyWithPreload(() => import('../pages/MarketAnalysisPage'));
-export const MarketLeadersPage = lazyWithPreload(() => import('../pages/MarketLeadersPage'));
 export const RssPage = lazyWithPreload(() => import('../pages/RssPage'));
 
 const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
@@ -34,9 +31,6 @@ const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/stocks': MarketStocksPage.preload!,
   '/portfolio': WatchlistManagePage.preload!,
   '/rss': RssPage.preload!,
-  '/macro': MacroDataPage.preload!,
-  '/market': MarketAnalysisPage.preload!,
-  '/market-leaders': MarketLeadersPage.preload!,
   '/workflows': WorkflowBuilderPage.preload!,
   '/setting': SettingPage.preload!,
 };

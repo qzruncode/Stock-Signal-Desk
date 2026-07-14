@@ -13,9 +13,6 @@ import {
   MarketStocksPage,
   WatchlistManagePage,
   WorkflowBuilderPage,
-  MacroDataPage,
-  MarketAnalysisPage,
-  MarketLeadersPage,
   RssPage,
 } from './utils/routePreload';
 import './App.css';
@@ -75,9 +72,6 @@ const AppContent: React.FC = () => {
           <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
           <Route path="/rss" element={<RssPage />} />
-          <Route path="/macro" element={<MacroDataPage />} />
-          <Route path="/market" element={<MarketAnalysisPage />} />
-          <Route path="/market-leaders" element={<MarketLeadersPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="*" element={<NotFoundPage />} />

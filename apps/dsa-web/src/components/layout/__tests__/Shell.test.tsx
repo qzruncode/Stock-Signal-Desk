@@ -17,7 +17,6 @@ describe('Shell', () => {
     expect(screen.getByRole('navigation')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '工作台' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: '管理自选股' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '市场主线' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '收起菜单栏' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '切换主题' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '持仓' })).not.toBeInTheDocument();
