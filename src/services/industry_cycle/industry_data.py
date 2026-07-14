@@ -258,8 +258,8 @@ def _fetch_lhb_snapshot(symbol: str) -> dict[str, Any]:
 
 def _build_trading_snapshot(symbol: str) -> dict[str, Any]:
     try:
-        from api.v1.endpoints.kline import _fetch_kline_with_fallback
-        from api.v1.endpoints.quotes import _get_fetcher
+        from src.tools._kline import _fetch_kline_with_fallback
+        from src.tools.get_realtime_quotes import _get_fetcher
         from datetime import timedelta
 
         quote = None

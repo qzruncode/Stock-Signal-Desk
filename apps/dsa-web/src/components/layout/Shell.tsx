@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, GitBranch, Home, Menu, MessageSquare, Rss, Search, Star, Wrench, X } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, GitBranch, Hammer, Home, Menu, MessageSquare, Rss, Search, Star, Wrench, X } from 'lucide-react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { cn } from '../../utils/cn';
 import { preloadRoute } from '../../utils/routePreload';
@@ -17,7 +17,8 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   const navItems = [
     { to: '/', label: 'AI 助手', icon: MessageSquare },
     { to: '/stocks', label: '全市场股票', icon: Search },
-    { to: '/rss', label: 'RSS 资讯', icon: Rss },
+    { to: '/infos', label: '股市资讯', icon: Rss },
+    { to: '/tools', label: 'Tool 集合', icon: Hammer },
     { to: '/dashboard', label: '工作台', icon: Home },
     { to: '/portfolio', label: '管理自选股', icon: Star },
     { to: '/workflows', label: '工作流编排', icon: GitBranch },

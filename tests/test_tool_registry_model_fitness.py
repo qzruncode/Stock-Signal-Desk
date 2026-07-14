@@ -6,9 +6,10 @@ from __future__ import annotations
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from src.agent.tool_registry import ToolRegistry
+from src.tools.registry import ToolRegistry
 
 
 def _install_stub_module(module_name: str, **functions):
@@ -20,6 +21,15 @@ def _install_stub_module(module_name: str, **functions):
 
 
 class ToolRegistryModelFitnessTestCase(unittest.TestCase):
+    def test_each_registered_tool_has_same_named_module(self) -> None:
+        tools_dir = Path(__file__).parents[1] / "src" / "tools"
+        missing = [
+            name
+            for name in ToolRegistry().get_tool_names()
+            if not (tools_dir / f"{name}.py").is_file()
+        ]
+        self.assertEqual(missing, [])
+
     def test_get_stock_info_resolves_name_before_endpoint_call(self) -> None:
         calls: list[str] = []
 
@@ -39,11 +49,15 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
     def test_realtime_quotes_resolves_each_symbol_in_csv(self) -> None:
         calls: list[list[str]] = []
 
-        def fake_get_realtime_quotes(symbol: str, symbols: list[str]):
-            calls.append(symbols)
-            return {"symbol": symbol, "symbols": symbols}
+        def fake_get_realtime_quotes(symbols: list[str]):
+            calls.append(list(symbols))
+            return {"symbols": list(symbols)}
 
-        _install_stub_module("api.v1.endpoints.quotes", get_realtime_quotes=fake_get_realtime_quotes)
+        _install_stub_module(
+            "src.tools.get_realtime_quotes",
+            get_realtime_quotes=fake_get_realtime_quotes,
+            REALTIME_QUOTES_DESCRIPTION="stub",
+        )
         registry = ToolRegistry()
 
         def resolver(value: str) -> str:

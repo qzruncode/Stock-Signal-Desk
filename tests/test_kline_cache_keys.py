@@ -4,7 +4,7 @@
 import unittest
 from unittest.mock import patch
 
-from api.v1.endpoints import kline
+from src.tools import _kline as kline
 
 
 class KlineCacheKeyTestCase(unittest.TestCase):
@@ -12,6 +12,7 @@ class KlineCacheKeyTestCase(unittest.TestCase):
         cached = {"symbol": "600519", "data": [{"date": "20260101"}], "count": 1}
 
         with patch.object(kline, "_is_trading_hours", return_value=False), \
+             patch.object(kline, "_get_kline_from_stock_daily", return_value=None), \
              patch.object(kline, "_get_kline_from_cache", return_value=cached) as get_cache:
             result = kline.get_kline(symbol="600519", count=30, use_cache=True)
 
@@ -22,6 +23,7 @@ class KlineCacheKeyTestCase(unittest.TestCase):
         cached = {"symbol": "600519", "data": [{"date": "20260102"}], "count": 1}
 
         with patch.object(kline, "_is_trading_hours", return_value=False), \
+             patch.object(kline, "_get_kline_range_from_stock_daily", return_value=None), \
              patch.object(kline, "_get_kline_from_cache", return_value=cached) as get_cache:
             result = kline.get_history_data(
                 symbol="600519",
@@ -37,6 +39,7 @@ class KlineCacheKeyTestCase(unittest.TestCase):
         records = [{"date": "20260102", "close": 100.0}]
 
         with patch.object(kline, "_is_trading_hours", return_value=False), \
+             patch.object(kline, "_get_kline_range_from_stock_daily", return_value=None), \
              patch.object(kline, "_get_kline_from_cache", return_value=None), \
              patch.object(kline, "_fetch_kline_with_fallback", return_value=(records, "eastmoney")), \
              patch.object(kline, "_save_kline_to_cache") as save_cache:

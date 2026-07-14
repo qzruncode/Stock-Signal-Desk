@@ -32,9 +32,6 @@ const RssPage: React.FC = () => {
             setSearch={namespaces.setSearch}
             filtered={namespaces.filtered}
             onReload={() => void namespaces.reload()}
-            categories={namespaces.categories}
-            category={namespaces.category}
-            setCategory={namespaces.setCategory}
             stale={namespaces.stale}
           />
         </div>

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Tool registry metadata + 执行端点。
 
-只读反射 src.agent.tool_registry.ToolRegistry，供前端 /setting 页展示当前接入
+只读反射 src.tools.registry.ToolRegistry，供前端 /setting 页展示当前接入
 LLM 模型的全部工具(GET /agent/tool-registry);并提供单工具试运行端点
 (POST /agent/tool-registry/execute),复用与真实 agent chat 完全一致的执行链
 (registry.execute → _compact_tool_result → _maybe_attach_search_fallback),
@@ -29,7 +29,7 @@ from api.v1.endpoints.agent.tools import (
     _compact_tool_result,
     _maybe_attach_search_fallback,
 )
-from src.agent.tool_registry import ToolRegistry
+from src.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 

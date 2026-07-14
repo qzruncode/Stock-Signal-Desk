@@ -1,20 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Box, MessageSquareText, Wrench } from 'lucide-react';
+import { ArrowLeft, Box, MessageSquareText } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
 import type { SettingsCategory } from '../components/settings/SettingsSidebar';
-import { ToolRegistryView } from '../components/tools/ToolRegistryView';
 import { ModelSettingsView } from '../components/settings/ModelSettingsView';
 import { AgentPromptView } from '../components/agentPrompts/AgentPromptView';
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
-  {
-    id: 'tool',
-    label: 'Tool 设置',
-    icon: Wrench,
-    available: true,
-    description: '查看当前接入 LLM 模型的全部工具',
-  },
   {
     id: 'model',
     label: '模型设置',
@@ -66,9 +58,7 @@ const SettingPage: React.FC = () => {
         </aside>
 
         <main className="min-w-0">
-          {activeCategory?.id === 'tool' ? (
-            <ToolRegistryView />
-          ) : activeCategory?.id === 'model' ? (
+          {activeCategory?.id === 'model' ? (
             <ModelSettingsView />
           ) : activeCategory?.id === 'prompt' ? (
             <AgentPromptView />

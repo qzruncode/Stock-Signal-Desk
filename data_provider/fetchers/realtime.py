@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Realtime quote fetchers — EastMoney push, EastMoney full-scan, Xueqiu, Sina, Tencent, ETF, HK."""
+"""Realtime quote fetchers — EastMoney push, EastMoney full-scan, Xueqiu, Sina, Tencent."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import requests
 
 from ..constants import USER_AGENTS, SINA_REALTIME_ENDPOINT, TENCENT_REALTIME_ENDPOINT
 from ..circuit_breaker import get_realtime_circuit_breaker
-from ..cache import realtime_cache, etf_realtime_cache, hk_realtime_cache
+from ..cache import realtime_cache
 from ..realtime_types import (
     UnifiedRealtimeQuote, RealtimeSource,
     safe_float, safe_int,
@@ -418,133 +418,11 @@ def _get_stock_realtime_quote_tencent(stock_code: str) -> Optional[UnifiedRealti
         return None
 
 
-# ── ETF ──────────────────────────────────────────────────────────────────
-
-
-def _get_etf_realtime_quote(stock_code: str) -> Optional[UnifiedRealtimeQuote]:
-    """ETF 实时行情（全量拉取，带缓存）。"""
-    import akshare as ak
-
-    try:
-        df = etf_realtime_cache.get()
-        if df is None:
-            last_error: Optional[Exception] = None
-            for attempt in range(1, 3):
-                try:
-                    logger.info("[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt %d/2)", attempt)
-                    import time as _time
-                    api_start = _time.time()
-                    df = ak.fund_etf_spot_em()
-                    api_elapsed = _time.time() - api_start
-                    logger.info("[API返回] ak.fund_etf_spot_em 成功: %d 只ETF, 耗时 %.2fs", len(df), api_elapsed)
-                    break
-                except Exception as e:
-                    last_error = e
-                    logger.info("[API错误] ak.fund_etf_spot_em 失败 (attempt %d/2): %s", attempt, e)
-                    time.sleep(min(2 ** attempt, 5))
-            if df is None:
-                logger.info("[API错误] ak.fund_etf_spot_em 最终失败: %s", last_error)
-                df = pd.DataFrame()
-            etf_realtime_cache.set(df)
-
-        if df is None or df.empty:
-            return None
-
-        row = df[df['代码'] == stock_code]
-        if row.empty:
-            return None
-        row = row.iloc[0]
-
-        return UnifiedRealtimeQuote(
-            code=stock_code,
-            name=str(row.get('名称', '')),
-            source=RealtimeSource.AKSHARE_EM,
-            price=safe_float(row.get('最新价')),
-            change_pct=safe_float(row.get('涨跌幅')),
-            change_amount=safe_float(row.get('涨跌额')),
-            volume=safe_int(row.get('成交量')),
-            amount=safe_float(row.get('成交额')),
-            volume_ratio=safe_float(row.get('量比')),
-            turnover_rate=safe_float(row.get('换手率')),
-            amplitude=safe_float(row.get('振幅')),
-            open_price=safe_float(row.get('开盘价')),
-            high=safe_float(row.get('最高价')),
-            low=safe_float(row.get('最低价')),
-            total_mv=safe_float(row.get('总市值')),
-            circ_mv=safe_float(row.get('流通市值')),
-            high_52w=safe_float(row.get('52周最高')),
-            low_52w=safe_float(row.get('52周最低')),
-        )
-    except Exception as e:
-        logger.info("[API错误] 获取 ETF %s 实时行情失败: %s", stock_code, e)
-        return None
-
-
-# ── HK ───────────────────────────────────────────────────────────────────
-
-
-def _get_hk_realtime_quote(stock_code: str) -> Optional[UnifiedRealtimeQuote]:
-    """港股实时行情（全量拉取，带缓存）。"""
-    import akshare as ak
-
-    raw_code = stock_code.strip().lower()
-    if raw_code.endswith('.hk'):
-        raw_code = raw_code[:-3]
-    if raw_code.startswith('hk'):
-        raw_code = raw_code[2:]
-    code = raw_code.zfill(5)
-
-    try:
-        df = hk_realtime_cache.get()
-        if df is None:
-            logger.info("[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
-            import time as _time
-            api_start = _time.time()
-            df = ak.stock_hk_spot_em()
-            api_elapsed = _time.time() - api_start
-            logger.info("[API返回] ak.stock_hk_spot_em 成功: %d 只港股, 耗时 %.2fs", len(df), api_elapsed)
-            if df is not None and not df.empty:
-                hk_realtime_cache.set(df)
-            else:
-                logger.info("[缓存跳过] 港股实时行情获取为空，不覆盖现有缓存")
-
-        if df is None or df.empty:
-            return None
-
-        row = df[df['代码'] == code]
-        if row.empty:
-            return None
-        row = row.iloc[0]
-
-        return UnifiedRealtimeQuote(
-            code=stock_code,
-            name=str(row.get('名称', '')),
-            source=RealtimeSource.AKSHARE_EM,
-            price=safe_float(row.get('最新价')),
-            change_pct=safe_float(row.get('涨跌幅')),
-            change_amount=safe_float(row.get('涨跌额')),
-            volume=safe_int(row.get('成交量')),
-            amount=safe_float(row.get('成交额')),
-            volume_ratio=safe_float(row.get('量比')),
-            turnover_rate=safe_float(row.get('换手率')),
-            amplitude=safe_float(row.get('振幅')),
-            pe_ratio=safe_float(row.get('市盈率')),
-            pb_ratio=safe_float(row.get('市净率')),
-            total_mv=safe_float(row.get('总市值')),
-            circ_mv=safe_float(row.get('流通市值')),
-            high_52w=safe_float(row.get('52周最高')),
-            low_52w=safe_float(row.get('52周最低')),
-        )
-    except Exception as e:
-        logger.warning("[API错误] ak.stock_hk_spot_em 获取港股 %s 失败: %s", stock_code, e)
-        return None
-
-
 # ── Public entry point ───────────────────────────────────────────────────
 
 
 def get_realtime_quote(stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:
-    """获取实时行情数据，多源故障切换。
+    """获取 A 股实时行情数据，多源故障切换。
 
     Args:
         stock_code: 股票代码
@@ -553,38 +431,22 @@ def get_realtime_quote(stock_code: str, source: str = "em") -> Optional[UnifiedR
     Returns:
         UnifiedRealtimeQuote 或 None
     """
-    # _is_us_code / _is_hk_code / _is_etf_code 定义在同级模块 kline.py（拆分
-    # akshare_fetcher 时随 K 线逻辑一起搬走），akshare_fetcher 也从那里再导出。
-    # 不能从 ..utils 导入：utils.py 只有 _is_hk_market，没有这三个函数。
-    from .kline import _is_us_code, _is_hk_code, _is_etf_code
-
     normalized_code = normalize_stock_code(stock_code)
 
-    if _is_us_code(normalized_code):
-        logger.debug("[API跳过] %s 是美股，Akshare 不支持美股实时行情", normalized_code)
-        return None
-    elif _is_hk_code(normalized_code):
-        return _get_hk_realtime_quote(normalized_code)
-    elif _is_etf_code(normalized_code):
-        quote = _get_stock_realtime_quote_em_push(normalized_code)
-        if quote and quote.has_basic_data():
-            return quote
-        return _get_etf_realtime_quote(normalized_code)
-    else:
-        quote = _get_stock_realtime_quote_em_push(normalized_code)
-        if quote and quote.has_basic_data():
-            return quote
+    quote = _get_stock_realtime_quote_em_push(normalized_code)
+    if quote and quote.has_basic_data():
+        return quote
 
-        quote = _get_stock_realtime_quote_em(normalized_code)
+    quote = _get_stock_realtime_quote_em(normalized_code)
+    if quote and quote.has_basic_data():
+        return quote
+
+    quote = _get_stock_realtime_quote_xueqiu(normalized_code)
+    if quote and quote.has_basic_data():
+        return quote
+
+    for fallback in (_get_stock_realtime_quote_sina, _get_stock_realtime_quote_tencent):
+        quote = fallback(normalized_code)
         if quote and quote.has_basic_data():
             return quote
-
-        quote = _get_stock_realtime_quote_xueqiu(normalized_code)
-        if quote and quote.has_basic_data():
-            return quote
-
-        for fallback in (_get_stock_realtime_quote_sina, _get_stock_realtime_quote_tencent):
-            quote = fallback(normalized_code)
-            if quote and quote.has_basic_data():
-                return quote
-        return None
+    return None

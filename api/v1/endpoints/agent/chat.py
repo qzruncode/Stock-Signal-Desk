@@ -34,7 +34,7 @@ from src.agent.run_registry import (
     RunBroadcaster,
     active_run_registry,
 )
-from src.agent.tool_registry import ToolRegistry
+from src.tools.registry import ToolRegistry
 from src.llm.anthropic_gateway import (
     AnthropicGatewayConfigError,
     build_litellm_kwargs,

@@ -22,21 +22,13 @@ export interface RssExplorePanelProps {
   setSearch: (v: string) => void;
   filtered: RssRouteDescriptor[];
   onReload: () => Promise<void> | void;
-  categories: string[];
-  category: string;
-  setCategory: (v: string) => void;
   /** True when the route list came from a stale cache (RSSHub instance was unavailable). */
   stale: boolean;
 }
 
 export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
-  loading, error, search, setSearch, filtered, onReload,
-  categories, category, setCategory, stale,
+  loading, error, search, setSearch, filtered, onReload, stale,
 }) => {
-  const pickCategory = (next: string) => {
-    setCategory(next);
-    setVisibleCount(PAGE_SIZE);
-  };
   const [selected, setSelected] = useState<RssRouteDescriptor | null>(null);
   const [params, setParams] = useState<Record<string, string>>({});
   const [options, setOptions] = useState<RssFeedOptions>(EMPTY_OPTIONS);
@@ -45,10 +37,10 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
   const [reloading, setReloading] = useState(false);
 
   // Effective selection: once the user picks a route it stays selected even when
-  // a search/category filter hides it from the list — silently swapping the
-  // right pane to filtered[0] would be confusing ("I didn't click another
-  // route"). Before any pick, default to the first visible route so the pane
-  // isn't empty on first load. Derived (not an effect) to avoid setState-in-effect.
+  // a search filter hides it from the list — silently swapping the right pane
+  // to filtered[0] would be confusing ("I didn't click another route"). Before
+  // any pick, default to the first visible route so the pane isn't empty on
+  // first load. Derived (not an effect) to avoid setState-in-effect.
   const effectiveSelected: RssRouteDescriptor | null = selected ?? filtered[0] ?? null;
 
   const hasMore = !loading && !error && visibleCount < filtered.length;
@@ -128,23 +120,6 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
               {reloading ? '刷新中…' : '刷新列表'}
             </button>
           </div>
-          {!loading && categories.length > 0 && (
-            <div className="mt-1.5 flex flex-wrap gap-1 px-0.5">
-              <CategoryChip
-                active={category === ''}
-                onClick={() => pickCategory('')}
-                label="全部"
-              />
-              {categories.map((cat) => (
-                <CategoryChip
-                  key={cat}
-                  active={category === cat}
-                  onClick={() => pickCategory(cat)}
-                  label={cat}
-                />
-              ))}
-            </div>
-          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-1.5">
           {loading && <div className="p-4"><Loading label="加载路由…" /></div>}
@@ -237,29 +212,6 @@ export const RssExplorePanel: React.FC<RssExplorePanelProps> = ({
   );
 };
 
-function CategoryChip({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'rounded-full border px-2 py-0.5 text-[10px] transition',
-        active
-          ? 'border-cyan/60 bg-cyan/10 text-cyan'
-          : 'border-border bg-card text-muted-text hover:text-foreground',
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
 export default RssExplorePanel;
+
+

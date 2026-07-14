@@ -15,7 +15,7 @@ from fastapi import Depends, HTTPException
 from sqlalchemy import delete, func, select
 
 from api.deps import get_system_config_service
-from api.v1.endpoints.kline import fetch_and_persist_kline
+from src.tools._kline import fetch_and_persist_kline
 from api.v1.endpoints.stocks import router
 from api.v1.schemas.common import ErrorResponse
 from data_provider.akshare_fetcher import AkshareFetcher

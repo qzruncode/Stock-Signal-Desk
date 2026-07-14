@@ -24,13 +24,15 @@ export const MarketStocksPage = lazyWithPreload(() => import('../pages/MarketSto
 export const WatchlistManagePage = lazyWithPreload(() => import('../pages/WatchlistManagePage'));
 export const WorkflowBuilderPage = lazyWithPreload(() => import('../pages/WorkflowBuilderPage'));
 export const RssPage = lazyWithPreload(() => import('../pages/RssPage'));
+export const ToolsPage = lazyWithPreload(() => import('../pages/ToolsPage'));
 
 const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/': ChatHomePage.preload!,
   '/dashboard': HomePage.preload!,
   '/stocks': MarketStocksPage.preload!,
   '/portfolio': WatchlistManagePage.preload!,
-  '/rss': RssPage.preload!,
+  '/infos': RssPage.preload!,
+  '/tools': ToolsPage.preload!,
   '/workflows': WorkflowBuilderPage.preload!,
   '/setting': SettingPage.preload!,
 };

@@ -70,6 +70,3 @@ class _TtlCache:
 
 # 实时行情缓存：盘中 45 秒（保证新鲜），非盘 20 分钟（节省请求）
 realtime_cache = _TtlCache(1200, ttl_for=lambda: 45 if is_cn_market_open() else 1200)
-etf_realtime_cache = _TtlCache(1200, ttl_for=lambda: 45 if is_cn_market_open() else 1200)
-# 港股实时行情缓存：全量拉取，盘中 45 秒，非盘 20 分钟
-hk_realtime_cache = _TtlCache(1200, ttl_for=lambda: 45 if is_cn_market_open() else 1200)

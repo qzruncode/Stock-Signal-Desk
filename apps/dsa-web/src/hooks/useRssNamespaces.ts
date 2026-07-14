@@ -11,14 +11,11 @@ import { isHiddenFromExplore } from '../utils/rssRoute';
 
 export interface UseRssNamespacesResult {
   routes: RssRouteDescriptor[];
-  categories: string[];
   loading: boolean;
   error: string | null;
   stale: boolean;
   search: string;
   setSearch: (v: string) => void;
-  category: string;
-  setCategory: (v: string) => void;
   filtered: RssRouteDescriptor[];
   reload: () => Promise<void>;
 }
@@ -26,7 +23,6 @@ export interface UseRssNamespacesResult {
 // Module-level cache: the 3.3MB blob is fetched once per session; navigating
 // away and back does not refetch (the backend's own 6h cache also guards this).
 let cachedRoutes: RssRouteDescriptor[] | null = null;
-let cachedCategories: string[] = [];
 
 function matchesKeyword(route: RssRouteDescriptor, kw: string): boolean {
   if (!kw) return true;
@@ -36,19 +32,16 @@ function matchesKeyword(route: RssRouteDescriptor, kw: string): boolean {
 
 export function useRssNamespaces(): UseRssNamespacesResult {
   const [routes, setRoutes] = useState<RssRouteDescriptor[]>(cachedRoutes ?? []);
-  const [categories, setCategories] = useState<string[]>(cachedCategories);
   const [loading, setLoading] = useState(!cachedRoutes);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [search, setSearch] = useState('');
-  const [category, setCategory] = useState('');
   const debouncedSearch = useDebouncedValue(search, 300);
   const seqRef = useRef(0);
 
   const load = useCallback(async (force = false) => {
     if (!force && cachedRoutes) {
       setRoutes(cachedRoutes);
-      setCategories(cachedCategories);
       setLoading(false);
       return;
     }
@@ -59,9 +52,7 @@ export function useRssNamespaces(): UseRssNamespacesResult {
       const res = await rssApi.getNamespaces(force);
       if (seq !== seqRef.current) return; // stale
       cachedRoutes = res.routes;
-      cachedCategories = res.categories;
       setRoutes(res.routes);
-      setCategories(res.categories);
       setStale(res._stale);
       if (res._error) setError(res._error);
     } catch (err: unknown) {
@@ -83,25 +74,19 @@ export function useRssNamespaces(): UseRssNamespacesResult {
 
   const filtered = useMemo(() => {
     let list = routes.filter((r) => !isHiddenFromExplore(r));
-    if (category) {
-      list = list.filter((r) => r.categories.includes(category));
-    }
     if (debouncedSearch.trim()) {
       list = list.filter((r) => matchesKeyword(r, debouncedSearch.trim()));
     }
     return list;
-  }, [routes, category, debouncedSearch]);
+  }, [routes, debouncedSearch]);
 
   return {
     routes,
-    categories,
     loading,
     error,
     stale,
     search,
     setSearch,
-    category,
-    setCategory,
     filtered,
     reload,
   };

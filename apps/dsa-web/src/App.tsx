@@ -14,6 +14,7 @@ import {
   WatchlistManagePage,
   WorkflowBuilderPage,
   RssPage,
+  ToolsPage,
 } from './utils/routePreload';
 import './App.css';
 
@@ -71,7 +72,8 @@ const AppContent: React.FC = () => {
           <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
           <Route path="/stocks" element={<MarketStocksPage />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
-          <Route path="/rss" element={<RssPage />} />
+          <Route path="/infos" element={<RssPage />} />
+          <Route path="/tools" element={<ToolsPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="*" element={<NotFoundPage />} />
