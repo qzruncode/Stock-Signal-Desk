@@ -78,7 +78,7 @@ def _assess_tool_data_health(tool_name: str, result: Any) -> Dict[str, Any]:
             return {"should_fallback": True, "reason": "stale_kline", "latest_date": latest.date().isoformat()}
         return {"should_fallback": False, "reason": None}
 
-    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_sentiment", "get_research_report", "get_social_sentiment"}:
+    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_research_report", "get_social_sentiment"}:
         items = result.get("items") or []
         if not items:
             return {"should_fallback": True, "reason": "empty_news_family"}

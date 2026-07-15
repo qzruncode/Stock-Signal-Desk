@@ -82,13 +82,13 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertEqual(schemas["search_news"]["properties"]["days"]["default"], 30)
         self.assertEqual(schemas["get_research_report"]["properties"]["days"]["default"], 365)
 
-    def test_search_fallback_tools_are_registered(self) -> None:
+    def test_removed_search_fallback_tools_are_not_registered(self) -> None:
         registry = ToolRegistry()
         names = set(registry.get_tool_names())
 
-        self.assertIn("search_web_news", names)
-        self.assertIn("search_web_price_fallback", names)
-        self.assertIn("fetch_web_content", names)
+        self.assertNotIn("search_web_news", names)
+        self.assertNotIn("search_web_price_fallback", names)
+        self.assertNotIn("fetch_web_content", names)
 
     def test_llm_dependent_tools_are_not_registered(self) -> None:
         registry = ToolRegistry()
@@ -98,11 +98,12 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertNotIn("get_stock_business", names)
         self.assertNotIn("get_buy_criteria_analysis", names)
 
-    def test_price_overdraft_signal_tool_is_registered(self) -> None:
+    def test_redundant_derived_tools_are_not_registered(self) -> None:
         registry = ToolRegistry()
         names = set(registry.get_tool_names())
 
-        self.assertIn("get_price_overdraft_signal", names)
+        self.assertNotIn("get_price_overdraft_signal", names)
+        self.assertNotIn("get_sentiment", names)
 
     def test_risk_events_tool_is_registered(self) -> None:
         registry = ToolRegistry()

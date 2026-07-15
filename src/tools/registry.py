@@ -96,7 +96,6 @@ class ToolRegistry:
         self._register_financials_tools()
         self._register_news_sentiment_tools()
         self._register_macro_tools()
-        self._register_search_fallback_tools()
         self._register_web_tools()
         self._register_rss_tools()
 
@@ -528,7 +527,7 @@ class ToolRegistry:
 
         self._add(ToolDef(
             name="get_valuation_ratios",
-            description="获取当前及历史估值指标，包括PE(静态/动态/TTM)、PB、PS、PCF、PEG、股息率、PE历史分位数(1/3/5年)、行业平均PE/PB等",
+            description="获取当前及历史估值指标，包括PE(静态/动态/TTM)、PB、PS、PCF、PEG、股息率、PE历史分位数、行业平均估值，以及预期校准后的股价透支判定信号",
             parameters={
                 "type": "object",
                 "properties": {
@@ -545,28 +544,6 @@ class ToolRegistry:
                 "required": ["symbol"],
             },
             executor=_exec_get_valuation_ratios,
-            category="financials",
-        ))
-
-        # --- get_price_overdraft_signal ---
-        def _exec_get_price_overdraft_signal(symbol: str) -> Any:
-            from src.tools.get_price_overdraft_signal import get_price_overdraft_signal
-            return get_price_overdraft_signal(symbol=symbol)
-
-        self._add(ToolDef(
-            name="get_price_overdraft_signal",
-            description="获取预期校准后的股价透支判定信号，包括透支风险分、估值昂贵度、预期支撑度、触发信号、关键估值指标和判定依据",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
-                    },
-                },
-                "required": ["symbol"],
-            },
-            executor=_exec_get_price_overdraft_signal,
             category="financials",
         ))
 
@@ -627,33 +604,6 @@ class ToolRegistry:
                 "required": ["symbol"],
             },
             executor=_exec_search_news,
-            category="sentiment",
-        ))
-
-        # --- get_sentiment ---
-        def _exec_get_sentiment(symbol: str, days: int = 30) -> Any:
-            from src.tools.get_sentiment import get_sentiment
-            return get_sentiment(symbol=symbol, days=days)
-
-        self._add(ToolDef(
-            name="get_sentiment",
-            description="分析市场对某股票的情绪倾向，返回舆情分数、正/负/中性数量、趋势、关键词、逐条标注，以及 analysis 结构化汇总（覆盖度、主题/事件/重要性/证据）。数据源：项目内 RSSHub 聚合财经新闻+研报。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
-                    },
-                    "days": {
-                        "type": "integer",
-                        "description": "分析最近N天，默认30",
-                        "default": 30,
-                    },
-                },
-                "required": ["symbol"],
-            },
-            executor=_exec_get_sentiment,
             category="sentiment",
         ))
 
@@ -907,84 +857,6 @@ class ToolRegistry:
             },
             executor=_exec_get_market_breadth,
             category="macro",
-        ))
-
-    # ===================================================================
-    # 9. 联网兜底搜索类 (search fallback)
-    # ===================================================================
-
-    def _register_search_fallback_tools(self) -> None:
-        def _exec_search_web_news(symbol: str, max_results: int = 5) -> Any:
-            from src.tools.search_web_news import search_web_news
-            return search_web_news(symbol=symbol, max_results=max_results)
-
-        self._add(ToolDef(
-            name="search_web_news",
-            description="当站内新闻、公告或舆情工具返回空数据、失败或明显过时时，联网搜索最新相关新闻作为兜底。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "最多返回几条搜索结果，默认5",
-                        "default": 5,
-                    },
-                },
-                "required": ["symbol"],
-            },
-            executor=_exec_search_web_news,
-            category="search",
-        ))
-
-        def _exec_search_web_price_fallback(symbol: str, max_results: int = 5) -> Any:
-            from src.tools.search_web_price_fallback import search_web_price_fallback
-            return search_web_price_fallback(symbol=symbol, max_results=max_results)
-
-        self._add(ToolDef(
-            name="search_web_price_fallback",
-            description="当行情、K线等结构化数据工具失败、空数据或明显过时时，联网搜索价格走势和行情报道作为兜底。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "最多返回几条搜索结果，默认5",
-                        "default": 5,
-                    },
-                },
-                "required": ["symbol"],
-            },
-            executor=_exec_search_web_price_fallback,
-            category="search",
-        ))
-
-        def _exec_fetch_web_content(url: str) -> Any:
-            from src.tools.fetch_web_content import fetch_web_content
-            return fetch_web_content(url=url)
-
-        self._add(ToolDef(
-            name="fetch_web_content",
-            description="获取网页正文内容，用于补充阅读单条新闻、公告或研报页面。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "要抓取正文的网页 URL",
-                    },
-                },
-                "required": ["url"],
-            },
-            executor=_exec_fetch_web_content,
-            category="search",
         ))
 
     # ===================================================================

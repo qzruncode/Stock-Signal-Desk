@@ -263,7 +263,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             [
                 "symbol", "trade_date", "pe_static", "pe_dynamic", "pe_ttm", "pb", "ps",
                 "pcf", "peg", "dividend_yield", "dividend_date", "pe_percentiles",
-                "industry_average", "source_chain", "errors", "_cached", "_fetched_at",
+                "industry_average", "price_overdraft_signal", "source_chain", "errors", "_cached", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="valuation_key_fields")
 
@@ -290,12 +290,11 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ),
         }, payload_policy="compacted", compacted=True, compaction_reason="shareholder_top_lists")
 
-    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_sentiment", "get_research_report", "get_social_sentiment"}:
+    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_research_report", "get_social_sentiment"}:
         item_fields_map = {
             "search_news": ["title", "publish_time", "source", "category", "event_type", "polarity", "importance", "summary"],
             "get_announcements": ["title", "publish_date", "notice_type", "url"],
             "get_risk_events": ["title", "date", "source", "source_type", "severity", "risk_label", "risk_summary", "tags"],
-            "get_sentiment": ["title", "label", "sentiment_score", "source", "event_type", "importance", "tags"],
             "get_research_report": ["title", "org", "rating", "publish_date", "industry", "profit_forecasts", "monthly_report_count"],
             "get_social_sentiment": ["title", "publish_time", "source", "label", "sentiment_score", "read_count", "reply_count"],
         }
@@ -425,24 +424,6 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
                 "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="market_breadth_key_fields")
-
-    if tool_name in {"search_web_news", "search_web_price_fallback"}:
-        compact = _pick_fields(
-            result,
-            ["query", "provider", "success", "error_message", "search_time"],
-        )
-        compact["results"] = _trim_list(
-            result.get("results"),
-            LLM_ARRAY_LIMIT,
-            ["title", "snippet", "url", "source", "published_date"],
-        )
-        return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="web_search_result_window")
-
-    if tool_name == "fetch_web_content":
-        return _annotate_tool_payload(tool_name, {
-            "url": result.get("url"),
-            "content": str(result.get("content") or "")[:2500],
-        }, payload_policy="compacted", compacted=True, compaction_reason="web_content_preview")
 
     return _annotate_tool_payload(tool_name, result, payload_policy="full", compacted=False)
 

@@ -89,6 +89,15 @@ def test_compact_market_status_picks_key_fields():
     assert "noise" not in out
 
 
+def test_compact_valuation_keeps_price_overdraft_signal():
+    signal = {"risk_score": 72, "level": "偏高"}
+    out = _compact_tool_result(
+        "get_valuation_ratios",
+        {"symbol": "600519", "pe_ttm": 28.1, "price_overdraft_signal": signal},
+    )
+    assert out["price_overdraft_signal"] == signal
+
+
 def test_compact_sector_list_sorts_and_windows_top_bottom():
     items = [{"change_pct": i, "name": f"s{i}"} for i in range(-5, 5)]
     out = _compact_tool_result("get_sector_list", {"items": items, "type": "industry"})
