@@ -91,14 +91,12 @@ class ToolRegistry:
         self._register_quotes_tools()
         self._register_kline_tools()
         self._register_market_status_tools()
-        self._register_market_mainline_tools()
         self._register_sector_tools()
         self._register_stock_info_tools()
         self._register_financials_tools()
         self._register_news_sentiment_tools()
         self._register_macro_tools()
         self._register_search_fallback_tools()
-        self._register_buy_criteria_tools()
         self._register_web_tools()
         self._register_rss_tools()
 
@@ -354,34 +352,6 @@ class ToolRegistry:
             category="market",
         ))
 
-    def _register_market_mainline_tools(self) -> None:
-        # --- get_market_mainline_report ---
-        def _exec_get_market_mainline_report(include_debug_input: bool = False) -> Any:
-            from src.tools.get_market_mainline_report import get_market_mainline_report
-            return get_market_mainline_report(include_debug_input=include_debug_input)
-
-        self._add(ToolDef(
-            name="get_market_mainline_report",
-            description=(
-                "获取当前市场主线报告，与市场主线页面展示使用同一份结构化结果。"
-                "返回完整字段，包括 overview、full_report、market_stage、current_mainlines、"
-                "future_mainlines、action_summary、evidence_digest，以及模型原始输出字段。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "include_debug_input": {
-                        "type": "boolean",
-                        "description": "是否附带生成时的 prompts 和 evidence_pack 调试输入，默认 false。",
-                        "default": False,
-                    },
-                },
-                "required": [],
-            },
-            executor=_exec_get_market_mainline_report,
-            category="market",
-        ))
-
     # ===================================================================
     # 4. 板块类 (sectors)
     # ===================================================================
@@ -435,40 +405,6 @@ class ToolRegistry:
                 "required": ["symbol"],
             },
             executor=_exec_get_stock_info,
-            category="data",
-        ))
-
-        # --- get_stock_business ---
-        def _exec_get_stock_business(symbol: str) -> Any:
-            from src.tools.get_stock_business import get_stock_business
-            return get_stock_business(symbol=symbol)
-
-        self._add(ToolDef(
-            name="get_stock_business",
-            description=(
-                "获取个股业务深度分析数据，返回内容包括：\n"
-                "1. 主营业务介绍（主营/经营范围/产品类型）\n"
-                "2. 主营构成（按行业/产品/地区拆分的营收、成本、利润、毛利率）\n"
-                "3. 机构一致盈利预测（未来 3 年 EPS、净利润）\n"
-                "4. 财务摘要（关键指标 + 增长率趋势）\n"
-                "5. 近期事件（公告 + 新闻）\n"
-                "6. LLM 业务动向分析（公司动态、业务趋势、机构观点、关键判断）\n"
-                "7. LLM 外部环境分析（政策环境、技术变革、需求变化、供给与竞争 4 维度，含宏观数据 PMI/CPI/PPI）\n"
-                "8. LLM 赛道质量评估（行业周期位置、未来 3 年空间、竞争强度，含同行财务对比）\n"
-                "9. LLM 催化分析（未来 6-12 个月催化剂判断：业绩/政策/事件/行业/资金催化，含关键时间窗口和落空风险）\n"
-                "数据按交易日缓存，首次调用较慢（~77s），同日内复用缓存。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "股票代码或股票名称，如 600519 或 贵州茅台",
-                    },
-                },
-                "required": ["symbol"],
-            },
-            executor=_exec_get_stock_business,
             category="data",
         ))
 
@@ -1049,47 +985,6 @@ class ToolRegistry:
             },
             executor=_exec_fetch_web_content,
             category="search",
-        ))
-
-    # ===================================================================
-    # 10. 买入判断类 (analysis)
-    # ===================================================================
-
-    def _register_buy_criteria_tools(self) -> None:
-        # --- get_buy_criteria_analysis ---
-        def _exec_get_buy_criteria_analysis(
-            symbol: str,
-            skip_cache: bool = False,
-        ) -> Any:
-            from src.tools.get_buy_criteria_analysis import get_buy_criteria_analysis
-            return get_buy_criteria_analysis(symbol=symbol, skip_cache=skip_cache)
-
-        self._add(ToolDef(
-            name="get_buy_criteria_analysis",
-            description=(
-                "对指定股票执行完整的 8 维度买入判断评分链，返回结构化分析报告。"
-                "8 个维度依次为：市场主线属性、景气上行周期、未来3年空间、竞争格局、"
-                "驱动因素、催化事件、估值水位、致命风险。"
-                "任何一维未通过则提前终止，最终结论为“可买入”或“不可买入”。"
-                "首次调用较慢（需调用 8 次 LLM），同日内自动缓存结果。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "股票代码，如 600519 或 贵州茅台",
-                    },
-                    "skip_cache": {
-                        "type": "boolean",
-                        "description": "是否跳过今日缓存强制重新分析，默认 false",
-                        "default": False,
-                    },
-                },
-                "required": ["symbol"],
-            },
-            executor=_exec_get_buy_criteria_analysis,
-            category="analysis",
         ))
 
     # ===================================================================

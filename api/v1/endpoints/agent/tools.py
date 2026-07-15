@@ -196,16 +196,6 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="market_status_key_fields")
 
-    if tool_name == "get_market_mainline_report":
-        return _annotate_tool_payload(
-            tool_name,
-            result,
-            payload_policy="full",
-            compacted=False,
-            compaction_reason=None,
-            source_scope="page_and_storage_aligned",
-        )
-
     if tool_name == "get_sector_list":
         items = result.get("items", [])
         sorted_items = sorted(

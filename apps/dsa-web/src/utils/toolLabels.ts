@@ -24,7 +24,6 @@ export const TOOL_LABELS: Record<string, string> = {
   get_macro_indicator: '宏观指标',
   get_sector_flow: '板块资金流',
   get_market_breadth: '市场宽度',
-  get_buy_criteria_analysis: '买入判定',
   websearch: '网络搜索',
   webfetch: '网页抓取',
   list_rss_sources: 'RSS源目录',

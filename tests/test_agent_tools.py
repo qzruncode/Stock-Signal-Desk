@@ -89,15 +89,6 @@ def test_compact_market_status_picks_key_fields():
     assert "noise" not in out
 
 
-def test_compact_market_mainline_report_returns_full_policy():
-    out = _compact_tool_result(
-        "get_market_mainline_report", {"overview": "x", "full_report": "y"}
-    )
-    assert out["overview"] == "x"
-    assert out["_tool_payload_meta"]["payload_policy"] == "full"
-    assert out["_tool_payload_meta"]["compacted"] is False
-
-
 def test_compact_sector_list_sorts_and_windows_top_bottom():
     items = [{"change_pct": i, "name": f"s{i}"} for i in range(-5, 5)]
     out = _compact_tool_result("get_sector_list", {"items": items, "type": "industry"})

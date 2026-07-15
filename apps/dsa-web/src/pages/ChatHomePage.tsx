@@ -11,7 +11,6 @@ import {
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
 import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
-import { ApprovalContext, type PendingApproval } from '../components/assistant-ui/tool-ui/ApprovalContext';
 import { ChatRuntimeBridge } from '../components/assistant-ui/ChatRuntimeBridge';
 import { readStreamErrorMessage } from '../utils/chatStreamError';
 
@@ -25,7 +24,6 @@ const ChatHomePage: React.FC = () => {
   const [selectedConversationDetail, setSelectedConversationDetail] = useState<ChatConversationDetail | null>(null);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [pendingApprovals, setPendingApprovals] = useState<Record<string, PendingApproval>>({});
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
   const resumeExistingRef = useRef<{
     conversationId: string;
@@ -86,34 +84,6 @@ const ChatHomePage: React.FC = () => {
     void loadConversationDetail(selectedConversationId);
   }, [loadConversationDetail, selectedConversationId]);
 
-  const handleApproveToolCall = useCallback((toolCallId: string, approved: boolean) => {
-    void (async () => {
-      try {
-        await agentApi.approveToolCall(toolCallId, approved);
-      } catch (err) {
-        console.error('[Chat] approveToolCall failed:', err);
-      } finally {
-        // 无论成功失败,从 pending 列表移除(后端会超时自行处理)
-        setPendingApprovals((prev) => {
-          if (!prev[toolCallId]) return prev;
-          const next = { ...prev };
-          delete next[toolCallId];
-          return next;
-        });
-      }
-    })();
-  }, []);
-
-  // approval-request 经 data-stream 协议累进当前 assistant 消息的
-  // metadata.unstable_data,由 AssistantMessage 组件拦截后调用本方法写入。
-  // (useDataStreamRuntime 的 onData 在 protocol:'data-stream' 下不触发,故不在此拦截。)
-  const registerApproval = useCallback((approval: PendingApproval) => {
-    setPendingApprovals((prev) => {
-      if (prev[approval.tool_call_id]) return prev;
-      return { ...prev, [approval.tool_call_id]: approval };
-    });
-  }, []);
-
   const prepareResumeExisting = useCallback((conversationId: string, afterChunkIndex: number | null) => {
     if (afterChunkIndex == null) {
       if (!conversationId || resumeExistingRef.current?.conversationId === conversationId) {
@@ -165,11 +135,6 @@ const ChatHomePage: React.FC = () => {
       };
       return { conversation_id: selectedConversationId };
     },
-    // NOTE: approval-request 不在 onData 拦截。useDataStreamRuntime 的 onData 仅在
-    // protocol:'ui-message-stream' 时触发(useDataStreamRuntime.js),本项目用
-    // 'data-stream',data chunk 经 DataStreamDecoder 累进 message.metadata.unstable_data。
-    // 故 HITL 拦截改在 AssistantMessage 组件(读 unstable_data → registerApproval),
-    // 天然覆盖首连与续流两条路径。
     onResponse: async (response) => {
       if (response.ok) {
         setStreamError(null);
@@ -286,7 +251,6 @@ const ChatHomePage: React.FC = () => {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ApprovalContext.Provider value={{ pendingApprovals, registerApproval, approveToolCall: handleApproveToolCall }}>
       <ChatRuntimeBridge
         conversationDetail={selectedConversationDetail}
         onPrepareResumeExisting={prepareResumeExisting}
@@ -327,7 +291,6 @@ const ChatHomePage: React.FC = () => {
           }
         }}
       />
-      </ApprovalContext.Provider>
     </AssistantRuntimeProvider>
   );
 };

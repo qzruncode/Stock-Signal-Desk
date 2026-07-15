@@ -11,7 +11,7 @@ export const toolRegistryApi = {
     return toCamelCase<ToolRegistryResponse>(response.data);
   },
 
-  /** 试运行单个工具。慢工具(buy_criteria ~30s、get_stock_business ~77s)需更长超时,单独覆盖 axios timeout。 */
+  /** 试运行单个工具。 */
   async runTool(
     toolName: string,
     args: Record<string, unknown>,

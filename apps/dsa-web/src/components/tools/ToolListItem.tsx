@@ -139,7 +139,7 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
             )}
 
             <div className="mt-4 border-t border-border/40 pt-3">
-              <ToolTestPanel tool={tool} test={test} />
+              <ToolTestPanel test={test} />
             </div>
           </div>
         </div>

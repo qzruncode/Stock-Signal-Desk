@@ -1,14 +1,5 @@
 import type { ToolMeta, ToolParameterSpec } from '../types/toolRegistry';
 
-/** 试运行时需弹确认框的工具(跑多次 LLM / 耗时长 / 有副作用)。 */
-export const GATED_TOOL_NAMES = new Set<string>(['get_buy_criteria_analysis']);
-
-/** 慢工具(不拦截,但运行中给额外提示文案)。 */
-export const SLOW_TOOL_NAMES = new Set<string>([
-  'get_buy_criteria_analysis',
-  'get_stock_business',
-]);
-
 /** 判断参数类型是否为数值(integer/number)。 */
 export function isNumericParam(param: ToolParameterSpec): boolean {
   return param.type === 'integer' || param.type === 'number';

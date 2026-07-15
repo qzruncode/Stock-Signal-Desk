@@ -1,14 +1,11 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronUp, Play } from 'lucide-react';
-import { Badge, Button, ConfirmDialog } from '../common';
+import { Badge, Button } from '../common';
 import { useToolTest } from '../../hooks/useToolTest';
-import { GATED_TOOL_NAMES, SLOW_TOOL_NAMES } from '../../utils/toolTestParams';
-import type { ToolMeta } from '../../types/toolRegistry';
 
 const RESULT_TRUNCATE_CHARS = 4000;
 
 interface ToolTestPanelProps {
-  tool: ToolMeta;
   /** 由 ToolListItem 提供的试运行状态(参数表单值也托管其中)。 */
   test: ReturnType<typeof useToolTest>;
 }
@@ -17,13 +14,9 @@ interface ToolTestPanelProps {
  * 工具试运行的「执行按钮 + 结果展示」区。
  * 参数输入框不在此处 —— 它们被嵌入 ToolListItem 的参数列表行内,避免参数信息重复展示。
  */
-export const ToolTestPanel: React.FC<ToolTestPanelProps> = ({ tool, test }) => {
+export const ToolTestPanel: React.FC<ToolTestPanelProps> = ({ test }) => {
   const { status, result, error, formError, run, reset } = test;
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [expanded, setExpanded] = useState(false);
-
-  const isGated = GATED_TOOL_NAMES.has(tool.name);
-  const isSlow = SLOW_TOOL_NAMES.has(tool.name);
   const running = status === 'running';
 
   const jsonText = useMemo(() => {
@@ -39,31 +32,20 @@ export const ToolTestPanel: React.FC<ToolTestPanelProps> = ({ tool, test }) => {
   const truncated = jsonText.length > RESULT_TRUNCATE_CHARS;
   const displayed = !expanded && truncated ? jsonText.slice(0, RESULT_TRUNCATE_CHARS) : jsonText;
 
-  const handleRunClick = () => {
-    if (isGated) {
-      setConfirmOpen(true);
-      return;
-    }
-    run();
-  };
-
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <Button
           size="sm"
           variant="outline"
-          onClick={handleRunClick}
+          onClick={run}
           disabled={running}
           isLoading={running}
-          loadingText={isSlow ? '运行中,请耐心等待…' : '运行中…'}
+          loadingText="运行中…"
         >
           <Play className="h-3.5 w-3.5" />
           试运行
         </Button>
-        {isSlow ? (
-          <span className="text-[10px] text-warning">慢工具,可能耗时数十秒</span>
-        ) : null}
         {status !== 'idle' && !running ? (
           <Button size="sm" variant="ghost" onClick={reset}>
             清除
@@ -102,18 +84,6 @@ export const ToolTestPanel: React.FC<ToolTestPanelProps> = ({ tool, test }) => {
         </div>
       ) : null}
 
-      <ConfirmDialog
-        isOpen={confirmOpen}
-        title="确认试运行"
-        message="该工具将调用多次 LLM(预计 ~30s)并可能产生 token 消耗,确认继续?"
-        confirmText="继续运行"
-        cancelText="取消"
-        onConfirm={() => {
-          setConfirmOpen(false);
-          run();
-        }}
-        onCancel={() => setConfirmOpen(false)}
-      />
     </div>
   );
 };

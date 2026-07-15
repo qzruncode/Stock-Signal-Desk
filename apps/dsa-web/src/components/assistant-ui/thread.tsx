@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useContext, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -39,7 +39,6 @@ import {
   RealtimeQuotesToolUI,
   FinancialsToolUI,
   NewsToolUI,
-  BuyCriteriaToolUI,
   RssFeedToolUI,
 } from '../../hooks/useAssistantTools';
 import {
@@ -48,7 +47,6 @@ import {
   ComposerAttachmentDropzone,
   UserMessageAttachments,
 } from './attachment';
-import { ApprovalContext } from './tool-ui/ApprovalContext';
 import { cn } from '../../utils/cn';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
@@ -188,7 +186,6 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-start gap-2.5 sm:gap-3">
       <Avatar fallback={<BotIcon className="size-3.5" />} className="chat-avatar-ai" />
       <div className="min-w-0 flex-1">
-        <ApprovalInterceptor />
         <div className="w-full min-w-0 overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-3 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur sm:px-4">
           <MessagePrimitive.Parts
             components={{
@@ -199,7 +196,6 @@ const AssistantMessage: FC = () => {
                   get_realtime_quotes: RealtimeQuotesToolUI,
                   get_financials: FinancialsToolUI,
                   search_news: NewsToolUI,
-                  get_buy_criteria_analysis: BuyCriteriaToolUI,
                   read_rss_feed: RssFeedToolUI,
                   read_rss_item: RssFeedToolUI,
                 },
@@ -219,40 +215,6 @@ const AssistantMessage: FC = () => {
       </div>
     </MessagePrimitive.Root>
   );
-};
-
-/* ── Approval Interceptor ────────────────────────────────────────────── */
-
-// 从 assistant 消息的 metadata.unstable_data 提取 approval-request 并写入
-// ApprovalContext。data-stream 协议下 onData 不触发(useDataStreamRuntime 仅
-// ui-message-stream 支持 onData),后端 controller.add_data 的 approval-request
-// 经 DataStreamDecoder 累进 unstable_data,故在此拦截。覆盖首连与续流两条路径。
-// 无 UI,仅副作用;用 ref 记录已注册 id 去重,避免重复 setState。
-const ApprovalInterceptor: FC = () => {
-  const { registerApproval } = useContext(ApprovalContext);
-  const unstableData = useMessage((s) => s.metadata?.unstable_data);
-  const registeredRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (!unstableData?.length) return;
-    for (const entry of unstableData) {
-      if (!entry || typeof entry !== 'object') continue;
-      const payload = entry as Record<string, unknown>;
-      if (payload.type !== 'approval-request') continue;
-      const toolCallId = payload.tool_call_id;
-      if (typeof toolCallId !== 'string') continue;
-      if (registeredRef.current.has(toolCallId)) continue;
-      registeredRef.current.add(toolCallId);
-      registerApproval({
-        tool_call_id: toolCallId,
-        tool_name: String(payload.tool_name ?? ''),
-        symbol: String(payload.symbol ?? ''),
-        reason: String(payload.reason ?? ''),
-      });
-    }
-  }, [unstableData, registerApproval]);
-
-  return null;
 };
 
 /* ── Assistant Action Bar (Copy / Reload) ────────────────────────────── */

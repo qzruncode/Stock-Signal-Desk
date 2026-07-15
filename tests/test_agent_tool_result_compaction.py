@@ -225,29 +225,6 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertTrue(compact["fallback_used"])
         self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "market_status_key_fields")
 
-    def test_market_mainline_report_is_not_compacted(self) -> None:
-        payload = {
-            "generated_at": "2026-06-13 12:00:00 CST",
-            "as_of_date": "2026-06-13",
-            "overview": "总判断",
-            "full_report": "完整正文",
-            "market_stage": {"label": "主升中期", "description": "阶段"},
-            "current_mainlines": [{"name": "资源重估", "rank": 1, "branches": ["黄金", "铜"]}],
-            "future_mainlines": [{"name": "AI科技链", "triggers": ["订单"]}],
-            "action_summary": ["结论1", "结论2"],
-            "evidence_digest": {"policy": ["政策1"], "industry": ["产业1"], "market": ["市场1"]},
-            "raw_response": "{\"full_report\":\"完整正文\"}",
-            "raw_stream_output": "{\"full_report\":\"完整正文\"}",
-            "_cached": True,
-        }
-
-        compact = _compact_tool_result("get_market_mainline_report", payload)
-
-        self.assertEqual(compact["overview"], payload["overview"])
-        self.assertEqual(compact["_tool_payload_meta"]["payload_policy"], "full")
-        self.assertFalse(compact["_tool_payload_meta"]["compacted"])
-        self.assertEqual(compact["_tool_payload_meta"]["source_scope"], "page_and_storage_aligned")
-
     def test_format_result_does_not_silently_truncate(self) -> None:
         payload = {"text": "甲" * 6000}
 

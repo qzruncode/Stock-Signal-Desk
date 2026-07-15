@@ -86,30 +86,6 @@ export interface NewsToolResult {
   _cached?: boolean;
 }
 
-/** 后端 get_buy_criteria_analysis 的单维度结果 */
-export interface BuyCriteriaItem {
-  criterion_id: string;
-  criterion_name: string;
-  index: number;
-  passed: boolean;
-  verdict: string;
-  evidence: { data_summary: string };
-  analyzed_at: string;
-}
-export interface BuyCriteriaToolResult {
-  symbol: string;
-  stock_name?: string | null;
-  trade_date: string;
-  cached?: boolean;
-  final_decision: '可买入' | '不可买入';
-  passed_count: number;
-  failed_count: number;
-  not_evaluated_count: number;
-  stopped_at: string | null;
-  summary: string;
-  criteria: BuyCriteriaItem[];
-}
-
 export function formatNum(value: number | null | undefined, digits = 2): string {
   if (value == null || Number.isNaN(value)) return '-';
   return value.toFixed(digits);
