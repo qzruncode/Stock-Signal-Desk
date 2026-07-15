@@ -22,6 +22,7 @@ from datetime import datetime, time, timedelta
 from typing import Any
 
 from data_provider.akshare_fetcher import AkshareFetcher
+from src.tools.base import ToolSpec, object_schema
 
 logger = logging.getLogger(__name__)
 
@@ -166,3 +167,20 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
 
     marked = _mark_quote_freshness(fetch_results, trading=trading, fallback_used=False)
     return _build_response(marked, fallback_used=False)
+
+
+def _execute(symbols: str) -> dict[str, Any]:
+    from src.tools.symbols import resolve_symbols_csv
+
+    return get_realtime_quotes(resolve_symbols_csv(symbols))
+
+
+TOOL = ToolSpec(
+    name="get_realtime_quotes",
+    description=REALTIME_QUOTES_DESCRIPTION,
+    parameters=object_schema({
+        "symbols": {"type": "string", "description": "股票代码或名称，多个用逗号分隔，如 600519,000001"},
+    }, ["symbols"]),
+    executor=_execute,
+    category="data",
+)

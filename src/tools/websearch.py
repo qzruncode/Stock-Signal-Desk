@@ -1,251 +1,350 @@
 # -*- coding: utf-8 -*-
-"""websearch 工具 —— 复刻 OpenCode packages/opencode/src/tool/websearch.ts + mcp-websearch.ts
+"""Generic web search backed by the project's local search infrastructure.
 
-通过 MCP JSON-RPC 2.0 `tools/call` 调用 Exa / Parallel 搜索后端。
-逐行对应 websearch.ts / mcp-websearch.ts 的逻辑：
-
-- provider 选择：env OPENCODE_WEBSEARCH_PROVIDER 覆盖 > flags > hash(sessionID) % 2
-  （Exa / Parallel 双引擎 A/B 分流）
-- Exa: POST https://mcp.exa.ai/mcp，tool=web_search_exa
-  （有 EXA_API_KEY 时拼到 query string）
-- Parallel: POST https://search.parallel.ai/mcp，tool=web_search
-  （有 PARALLEL_API_KEY 时带 Authorization: Bearer；UA opencode/<version>）
-- 请求体：{jsonrpc:"2.0", id:1, method:"tools/call", params:{name, arguments}}
-- Accept: application/json, text/event-stream
-- 25 秒超时
-- 响应解析：先尝试直接 JSON，否则逐行扫 `data: ` SSE 前缀（兼容 SSE 流）
-
-不依赖项目其它模块。
+The user's query is passed through unchanged. The primary provider is the
+project-managed Firecrawl service, whose search backend is the project-managed
+SearXNG metasearch instance. Exa and Parallel are remote fallbacks only.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import logging
 import os
-from typing import Any, Dict, Optional
+import re
+import time
+from datetime import datetime, timedelta
+from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from src.tools._firecrawl import firecrawl_rest_config
+from src.tools.base import ToolSpec, object_schema
 
-# --- 常量（复刻 mcp-websearch.ts）---
-# Exa：有 EXA_API_KEY 时拼到 query string，否则用裸 URL
-EXA_URL = (
-    f"https://mcp.exa.ai/mcp?exaApiKey={os.getenv('EXA_API_KEY')}"
-    if os.getenv("EXA_API_KEY")
-    else "https://mcp.exa.ai/mcp"
+EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
+MCP_TIMEOUT_SECONDS = 25.0
+FIRECRAWL_SEARCH_TIMEOUT_SECONDS = 25.0
+
+WEBSEARCH_DESCRIPTION = (
+    "通用公开网页搜索，可搜索股票、新闻、天气、技术资料等任意主题。"
+    "查询原样交给项目内置的 Firecrawl + SearXNG 多引擎搜索；只有本地搜索失败或无结果时，"
+    "才依次使用 Exa、Parallel 兜底。返回来源链接、摘要和完整降级记录。"
+    "若已有更准确的结构化工具，应优先使用结构化工具。"
 )
-PARALLEL_URL = "https://search.parallel.ai/mcp"
-
-# MCP 调用超时（复刻 TS 里的 "25 seconds"）
-_MCP_TIMEOUT_SECONDS = 25.0
-
-# 工具版本号，用于 Parallel 请求的 User-Agent（对应 OpenCode 的 InstallationVersion）
-_TOOL_VERSION = "1.0.0-port"
 
 
-# 复刻 websearch.txt 的工具说明（保留英文原文以忠实复刻 OpenCode）
-# 注：{{year}} 占位符由 tool_registry 在注册时替换为当前年份（对应 websearch.ts 的 description getter）
-WEBSEARCH_DESCRIPTION = """- Search the web using the session's web search provider - performs real-time web searches and can scrape content from specific URLs
-- Provides up-to-date information for current events and recent data
-- Supports configurable result counts and returns the content from the most relevant websites
-- Use this tool for accessing information beyond knowledge cutoff
-- Searches are performed automatically within a single API call
-
-Usage notes:
-  - Supports live crawling modes when available: 'fallback' (backup if cached unavailable) or 'preferred' (prioritize live crawling)
-  - Search types when available: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
-  - Configurable context length for optimal LLM integration
-  - Domain filtering and advanced search options available
-
-The current year is {{year}}. You MUST use this year when searching for recent information or current events
-- Example: If the current year is 2026 and the user asks for "latest AI news", search for "AI news 2026", NOT "AI news 2025\""""
-
-
-def _env_flag(name: str) -> bool:
-    """读取布尔型环境变量。"""
-    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _checksum(value: str) -> str:
-    """对应 OpenCode @opencode-ai/core/util/encode 的 checksum。
-
-    OpenCode 用它对 sessionID 取摘要后做 `parseInt(checksum, 36) % 2` 分流。
-    这里用 sha1 hex 前 8 位（hex 是 base-36 的子集，可直接按 36 进制解析）。
-    """
-    return hashlib.sha1((value or "").encode("utf-8")).hexdigest()[:8]
-
-
-def select_websearch_provider(
-    session_id: str,
-    exa: bool = False,
-    parallel: bool = False,
-) -> str:
-    """对应 websearch.ts 的 selectWebSearchProvider。
-
-    返回 "exa" 或 "parallel"。
-    """
-    override = os.getenv("OPENCODE_WEBSEARCH_PROVIDER")
-    if override in ("exa", "parallel"):
-        return override
-    if parallel:
-        return "parallel"
-    if exa:
-        return "exa"
-    # hash(sessionID) % 2 做 A/B 分流（复刻）
-    cs = _checksum(session_id or "0")
-    try:
-        return "exa" if int(cs, 36) % 2 == 0 else "parallel"
-    except ValueError:
-        return "exa"
-
-
-def _web_search_provider_label(provider: str) -> str:
-    """对应 websearch.ts 的 webSearchProviderLabel。"""
-    if provider == "parallel":
-        return "Parallel Web Search"
-    if provider == "exa":
-        return "Exa Web Search"
-    return "Web Search"
-
-
-def _parallel_auth_headers() -> Dict[str, str]:
-    """对应 websearch.ts 的 parallelAuthHeaders。"""
-    headers = {"User-Agent": f"opencode/{_TOOL_VERSION}"}
-    if os.getenv("PARALLEL_API_KEY"):
-        headers["Authorization"] = f"Bearer {os.getenv('PARALLEL_API_KEY')}"
-    return headers
-
-
-# ---------------------------------------------------------------------------
-# MCP 调用（复刻 mcp-websearch.ts）
-# ---------------------------------------------------------------------------
-
-
-def _parse_payload(payload: str) -> Optional[str]:
-    """对应 mcp-websearch.ts 的 parsePayload：从单段 JSON 里取 result.content[].text。"""
-    payload = payload.strip()
-    if not payload.startswith("{"):
-        return None
-    try:
-        data = json.loads(payload)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    result = data.get("result") if isinstance(data, dict) else None
-    if not isinstance(result, dict):
-        return None
-    content = result.get("content")
-    if not isinstance(content, list):
-        return None
-    for item in content:
-        if isinstance(item, dict) and item.get("text"):
-            return item["text"]
-    return None
-
-
-def _parse_response(body: str) -> Optional[str]:
-    """对应 mcp-websearch.ts 的 parseResponse。
-
-    先尝试整体 JSON 解析；失败则逐行扫 `data: ` SSE 前缀。
-    """
-    trimmed = body.strip()
-    if trimmed:
-        direct = _parse_payload(trimmed)
-        if direct:
-            return direct
-
-    for line in body.split("\n"):
-        if not line.startswith("data: "):
+def _mcp_text(payload: str) -> str | None:
+    """Parse the JSON or SSE response shape used by OpenCode MCP search."""
+    candidates = [payload.strip()]
+    candidates.extend(
+        line[6:].strip() for line in payload.splitlines() if line.startswith("data: ")
+    )
+    for candidate in candidates:
+        if not candidate.startswith("{"):
             continue
-        text = _parse_payload(line[len("data: "):])
-        if text:
-            return text
+        try:
+            body = json.loads(candidate)
+        except (TypeError, ValueError):
+            continue
+        result = body.get("result") if isinstance(body, dict) else None
+        content = result.get("content") if isinstance(result, dict) else None
+        if not isinstance(content, list):
+            continue
+        texts = [
+            str(item["text"]).strip()
+            for item in content
+            if isinstance(item, dict) and item.get("text")
+        ]
+        if texts:
+            return "\n\n".join(texts)
     return None
 
 
 def _mcp_call(
     url: str,
     tool: str,
-    arguments: Dict[str, Any],
-    headers: Optional[Dict[str, str]] = None,
-) -> Optional[str]:
-    """对应 mcp-websearch.ts 的 call()。
+    arguments: dict[str, Any],
+    *,
+    headers: dict[str, str] | None = None,
+) -> str:
+    request_headers = {"Accept": "application/json, text/event-stream"}
+    request_headers.update(headers or {})
+    response = httpx.post(
+        url,
+        headers=request_headers,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        },
+        timeout=MCP_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    text = _mcp_text(response.text)
+    if not text:
+        raise RuntimeError(f"{tool} 返回了无法解析的 MCP 响应")
+    return text
 
-    POST JSON-RPC 2.0 tools/call，Accept 同时声明 JSON 与 SSE，
-    25 秒超时；返回解析后的 text 内容。
-    """
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": tool, "arguments": arguments},
+
+def _engine_query(query: str) -> str:
+    """Preserve the user's search text; trim only accidental outer whitespace."""
+    return str(query or "").strip()
+
+
+def _attempt(provider: str, started: float, **values: Any) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+        **values,
     }
-    req_headers: Dict[str, str] = {
-        "Accept": "application/json, text/event-stream",
-    }
-    if headers:
-        req_headers.update(headers)
-
-    with httpx.Client(timeout=_MCP_TIMEOUT_SECONDS) as client:
-        resp = client.post(url, headers=req_headers, json=body)
-        if resp.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                f"{tool} request failed: HTTP {resp.status_code}",
-                request=resp.request,
-                response=resp,
-            )
-        return _parse_response(resp.text)
 
 
-# ---------------------------------------------------------------------------
-# Provider 调用（对应 websearch.ts 的 callProvider）
-# ---------------------------------------------------------------------------
+def _host(url: str, fallback: str) -> str:
+    try:
+        return httpx.URL(url).host or fallback
+    except Exception:
+        return fallback
 
 
-def _call_provider(
-    provider: str,
-    query: str,
-    num_results: int,
-    livecrawl: str,
-    search_type: str,
-    context_max_characters: Optional[int],
-    session_id: str,
-) -> Optional[str]:
-    """对应 websearch.ts 的 callProvider。"""
-    if provider == "parallel":
-        # Parallel：tool=web_search，args={objective, search_queries, session_id, model_name?}
-        args: Dict[str, Any] = {
-            "objective": query,
-            "search_queries": [query],
-            "session_id": session_id or None,
-            # model_name 对应 webSearchModelName(ctx.extra)；本工具无模型上下文，省略
-        }
-        # 移除值为 None 的可选字段（JSON-RPC 不需要）
-        args = {k: v for k, v in args.items() if v is not None}
-        return _mcp_call(
-            PARALLEL_URL,
-            "web_search",
-            args,
-            headers=_parallel_auth_headers(),
+def _firecrawl_search(query: str, *, limit: int) -> dict[str, Any]:
+    """Search through Firecrawl's SearXNG backend without scraping result pages."""
+    started = time.perf_counter()
+    config = firecrawl_rest_config()
+    if config is None:
+        return _attempt(
+            "firecrawl_searxng",
+            started,
+            success=False,
+            skipped=True,
+            error="Firecrawl 本地搜索地址未配置",
+            results=[],
         )
 
-    # Exa：tool=web_search_exa，args={query, type, numResults, livecrawl, contextMaxCharacters?}
-    exa_args: Dict[str, Any] = {
-        "query": query,
-        "type": search_type or "auto",
-        "numResults": num_results or 8,
-        "livecrawl": livecrawl or "fallback",
-    }
-    if context_max_characters is not None:
-        exa_args["contextMaxCharacters"] = context_max_characters
-    return _mcp_call(EXA_URL, "web_search_exa", exa_args)
+    base_url, headers, _ = config
+    try:
+        response = httpx.post(
+            f"{base_url}/v2/search",
+            headers=headers,
+            json={
+                "query": query,
+                "limit": limit,
+                "sources": ["web"],
+                "lang": "auto",
+                "timeout": int(FIRECRAWL_SEARCH_TIMEOUT_SECONDS * 1000),
+            },
+            timeout=httpx.Timeout(
+                FIRECRAWL_SEARCH_TIMEOUT_SECONDS,
+                connect=2.0,
+            ),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            error = payload.get("error") if isinstance(payload, dict) else None
+            raise RuntimeError(str(error or "Firecrawl 搜索返回失败"))
+
+        data = payload.get("data")
+        web = data.get("web") if isinstance(data, dict) else None
+        results: list[dict[str, Any]] = []
+        for item in web if isinstance(web, list) else []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if not url or not title:
+                continue
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": str(item.get("description") or "").strip(),
+                    "source": _host(url, "web"),
+                    "published_date": item.get("publishedDate"),
+                    "result_type": "web",
+                    "search_provider": "firecrawl_searxng",
+                }
+            )
+            if len(results) >= limit:
+                break
+
+        return _attempt(
+            "firecrawl_searxng",
+            started,
+            success=bool(results),
+            skipped=False,
+            error=None if results else "Firecrawl/SearXNG 未返回网页结果",
+            results=results,
+        )
+    except Exception as exc:
+        return _attempt(
+            "firecrawl_searxng",
+            started,
+            success=False,
+            skipped=False,
+            error=str(exc),
+            results=[],
+        )
 
 
-# ---------------------------------------------------------------------------
-# 工具入口
-# ---------------------------------------------------------------------------
+def _results_from_mcp_text(
+    output: str,
+    provider: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Best-effort structure while retaining the provider's original output."""
+    url_pattern = re.compile(r"https?://[^\s<>\])}]+")
+    results: list[dict[str, Any]] = []
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        match = url_pattern.search(line)
+        if not match:
+            continue
+        url = match.group(0).rstrip(".,;，。；")
+        title = ""
+        for candidate in reversed(lines[max(0, index - 3) : index + 1]):
+            cleaned = re.sub(
+                r"^(?:#+|[-*]|\d+[.)]|Title:|标题[:：])\s*",
+                "",
+                candidate,
+            ).strip()
+            if cleaned and "http://" not in cleaned and "https://" not in cleaned:
+                title = cleaned
+                break
+        if not title:
+            title = _host(url, provider)
+        if any(item["url"] == url for item in results):
+            continue
+        results.append(
+            {
+                "title": title[:300],
+                "url": url,
+                "snippet": "",
+                "source": _host(url, provider),
+                "published_date": None,
+                "result_type": "web",
+                "search_provider": provider,
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _exa_search(
+    query: str,
+    *,
+    limit: int,
+    livecrawl: str,
+    search_type: str,
+    context_max_characters: int | None,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        url = EXA_MCP_URL
+        if os.getenv("EXA_API_KEY"):
+            url = f"{url}?{urlencode({'exaApiKey': os.environ['EXA_API_KEY']})}"
+        arguments: dict[str, Any] = {
+            "query": query,
+            "type": search_type,
+            "numResults": limit,
+            "livecrawl": livecrawl,
+        }
+        if context_max_characters is not None:
+            arguments["contextMaxCharacters"] = context_max_characters
+        output = _mcp_call(url, "web_search_exa", arguments)
+        return _attempt(
+            "exa",
+            started,
+            success=bool(output.strip()),
+            skipped=False,
+            error=None,
+            results=_results_from_mcp_text(output, "exa", limit),
+            output=output,
+            authenticated=bool(os.getenv("EXA_API_KEY")),
+        )
+    except Exception as exc:
+        return _attempt(
+            "exa",
+            started,
+            success=False,
+            skipped=False,
+            error=str(exc),
+            results=[],
+            output="",
+        )
+
+
+def _parallel_search(query: str, *, limit: int, session_id: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        headers = {"User-Agent": "opencode/stock-agent"}
+        key = os.getenv("PARALLEL_API_KEY", "").strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        arguments: dict[str, Any] = {
+            "objective": query,
+            "search_queries": [query],
+        }
+        if session_id:
+            arguments["session_id"] = session_id
+        output = _mcp_call(
+            PARALLEL_MCP_URL,
+            "web_search",
+            arguments,
+            headers=headers,
+        )
+        return _attempt(
+            "parallel",
+            started,
+            success=bool(output.strip()),
+            skipped=False,
+            error=None,
+            results=_results_from_mcp_text(output, "parallel", limit),
+            output=output,
+            authenticated=bool(key),
+        )
+    except Exception as exc:
+        return _attempt(
+            "parallel",
+            started,
+            success=False,
+            skipped=False,
+            error=str(exc),
+            results=[],
+            output="",
+        )
+
+
+def _provider_order(query: str = "") -> list[str]:
+    del query
+    return ["firecrawl", "exa", "parallel"]
+
+
+def _compact_results(
+    results: list[dict[str, Any]],
+    *,
+    limit: int,
+    max_chars: int,
+) -> tuple[list[dict[str, Any]], bool]:
+    compacted: list[dict[str, Any]] = []
+    used = 0
+    truncated = False
+    for item in results[:limit]:
+        row = dict(item)
+        snippet = str(row.get("snippet") or "")
+        remaining = max_chars - used
+        if remaining <= 0:
+            truncated = True
+            break
+        if len(snippet) > remaining:
+            snippet = snippet[:remaining].rstrip() + "…"
+            truncated = True
+        row["snippet"] = snippet
+        used += len(snippet)
+        compacted.append(row)
+    return compacted, truncated
 
 
 def websearch(
@@ -253,44 +352,151 @@ def websearch(
     num_results: int = 8,
     livecrawl: str = "fallback",
     search_type: str = "auto",
-    context_max_characters: Optional[int] = None,
+    context_max_characters: int | None = None,
     session_id: str = "",
-) -> Dict[str, Any]:
-    """执行 web 搜索（复刻 websearch.ts 的 execute）。
+) -> dict[str, Any]:
+    resolved_query = _engine_query(query)
+    if not resolved_query:
+        raise ValueError("query 不能为空")
+    if livecrawl not in {"fallback", "preferred"}:
+        raise ValueError("livecrawl 必须是 fallback 或 preferred")
+    if search_type not in {"auto", "fast", "deep"}:
+        raise ValueError("type 必须是 auto、fast 或 deep")
 
-    Args:
-        query: 搜索关键词
-        num_results: 返回结果数，默认 8
-        livecrawl: 实时爬取模式 'fallback' / 'preferred'，默认 fallback
-        search_type: 搜索类型 'auto' / 'fast' / 'deep'，默认 auto
-        context_max_characters: 上下文最大字符数，默认 None（由 provider 默认）
-        session_id: 会话 ID，用于 provider A/B 分流；为空时用 query 兜底
+    limit = max(1, min(int(num_results), 20))
+    max_chars = max(1000, min(int(context_max_characters or 12000), 50000))
+    attempts: list[dict[str, Any]] = []
+    selected: dict[str, Any] | None = None
 
-    Returns:
-        dict: {output, title, provider}
-    """
-    # provider 选择：session_id 为空时用 query 做 A/B 分流（对应 ctx.sessionID）
-    effective_session = session_id or query
-    provider = select_websearch_provider(
-        effective_session,
-        exa=_env_flag("WEBSEARCH_ENABLE_EXA"),
-        parallel=_env_flag("WEBSEARCH_ENABLE_PARALLEL"),
+    for provider in _provider_order():
+        if provider == "firecrawl":
+            current = _firecrawl_search(resolved_query, limit=limit)
+        elif provider == "exa":
+            current = _exa_search(
+                resolved_query,
+                limit=limit,
+                livecrawl=livecrawl,
+                search_type=search_type,
+                context_max_characters=context_max_characters,
+            )
+        else:
+            current = _parallel_search(
+                resolved_query,
+                limit=limit,
+                session_id=session_id,
+            )
+
+        attempts.append(
+            {
+                key: value
+                for key, value in current.items()
+                if key not in {"results", "output"}
+            }
+        )
+        if current.get("success"):
+            selected = current
+            break
+
+    selected_results = list((selected or {}).get("results") or [])
+    compacted, truncated = _compact_results(
+        selected_results,
+        limit=limit,
+        max_chars=max_chars,
     )
-    title = _web_search_provider_label(provider)
-    logger.info("websearch: provider=%s query=%r", provider, query)
+    provider_output = str((selected or {}).get("output") or "")
+    success = selected is not None and bool(compacted or provider_output)
+    provider = str((selected or {}).get("provider") or "none")
 
-    result = _call_provider(
-        provider,
-        query,
-        num_results,
-        livecrawl,
-        search_type,
-        context_max_characters,
-        session_id,
-    )
+    published: list[datetime] = []
+    for item in compacted:
+        value = item.get("published_date")
+        if not value:
+            continue
+        try:
+            published.append(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+        except ValueError:
+            continue
+    latest = max(published) if published else None
+    days = 365 if search_type == "deep" else 30
+    failures = [
+        str(item["error"])
+        for item in attempts
+        if item.get("error") and not item.get("skipped")
+    ]
 
     return {
-        "output": result or "No search results found. Please try a different query.",
-        "title": f"{title}: {query}",
+        "query": resolved_query,
+        "resolved_query": resolved_query,
+        "success": success,
+        "results": compacted,
+        "result_count": len(compacted),
+        "output": provider_output,
         "provider": provider,
+        "attempts": attempts,
+        "data_time": datetime.now().astimezone().isoformat(),
+        "fallback_used": success and provider != "firecrawl_searxng",
+        "is_stale": (
+            latest < datetime.now().astimezone() - timedelta(days=days)
+            if latest
+            else None
+        ),
+        "freshness_unknown": latest is None,
+        "latest_published_date": latest.isoformat() if latest else None,
+        "_truncated": truncated,
+        "errors": [] if success else failures,
+        "warnings": failures if success else [],
     }
+
+
+def _execute(
+    query: str,
+    numResults: int = 8,
+    livecrawl: str = "fallback",
+    type: str = "auto",
+    contextMaxCharacters: int | None = None,
+    sessionId: str = "",
+) -> dict[str, Any]:
+    return websearch(
+        query=query,
+        num_results=numResults,
+        livecrawl=livecrawl,
+        search_type=type,
+        context_max_characters=contextMaxCharacters,
+        session_id=sessionId,
+    )
+
+
+TOOL = ToolSpec(
+    name="websearch",
+    description=WEBSEARCH_DESCRIPTION,
+    parameters=object_schema(
+        {
+            "query": {"type": "string", "description": "原样发送给搜索引擎的查询内容"},
+            "numResults": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 8,
+            },
+            "livecrawl": {
+                "type": "string",
+                "enum": ["fallback", "preferred"],
+                "default": "fallback",
+            },
+            "type": {
+                "type": "string",
+                "enum": ["auto", "fast", "deep"],
+                "default": "auto",
+            },
+            "contextMaxCharacters": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 50000,
+                "default": 12000,
+            },
+        },
+        ["query"],
+    ),
+    executor=_execute,
+    category="search",
+)

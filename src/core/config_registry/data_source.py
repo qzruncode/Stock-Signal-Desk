@@ -6,6 +6,21 @@ from typing import Any, Dict
 
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    'WEBFETCH_ENABLE_BROWSER': {
+        'title': 'Webfetch Browser Fallback',
+        'description': 'Enable the resource-heavy Scrapling/Patchright browser layer after static extraction fails.',
+        'category': 'data_source',
+        'data_type': 'boolean',
+        'ui_control': 'switch',
+        'is_sensitive': False,
+        'is_required': False,
+        'is_editable': True,
+        'default_value': 'false',
+        'options': [],
+        'validation': {},
+        'display_order': 33,
+        'examples': ['WEBFETCH_ENABLE_BROWSER=false', 'WEBFETCH_ENABLE_BROWSER=true'],
+    },
     'ANSPIRE_API_KEYS': {
         'title': 'Anspire API Keys',
         'description': 'Comma-separated Anspire Open API keys. Used by Anspire Search and, by default, the Anspire OpenAI-compatible LLM gateway.',
@@ -277,4 +292,3 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         'warning_codes': ['secret_value', 'comma_separated_keys'],
     },
 }
-

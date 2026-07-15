@@ -3,21 +3,11 @@
 
 from __future__ import annotations
 
-import sys
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from src.tools.registry import ToolRegistry
-
-
-def _install_stub_module(module_name: str, **functions):
-    module = types.ModuleType(module_name)
-    for name, fn in functions.items():
-        setattr(module, name, fn)
-    sys.modules[module_name] = module
-    return module
 
 
 class ToolRegistryModelFitnessTestCase(unittest.TestCase):
@@ -37,10 +27,10 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             calls.append(symbol)
             return {"symbol": symbol}
 
-        _install_stub_module("api.v1.endpoints.stock_info", get_stock_info=fake_get_stock_info)
         registry = ToolRegistry()
 
-        with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"):
+        with patch("api.v1.endpoints.stock_info.get_stock_info", side_effect=fake_get_stock_info), \
+             patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"):
             result = registry.execute("get_stock_info", {"symbol": "贵州茅台"})
 
         self.assertEqual(calls, ["600519"])
@@ -53,17 +43,13 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             calls.append(list(symbols))
             return {"symbols": list(symbols)}
 
-        _install_stub_module(
-            "src.tools.get_realtime_quotes",
-            get_realtime_quotes=fake_get_realtime_quotes,
-            REALTIME_QUOTES_DESCRIPTION="stub",
-        )
         registry = ToolRegistry()
 
         def resolver(value: str) -> str:
             return {"贵州茅台": "600519", "宁德时代": "300750"}.get(value, value)
 
-        with patch("src.services.name_to_code_resolver.resolve_name_to_code", side_effect=resolver):
+        with patch("src.tools.get_realtime_quotes.get_realtime_quotes", side_effect=fake_get_realtime_quotes), \
+             patch("src.services.name_to_code_resolver.resolve_name_to_code", side_effect=resolver):
             result = registry.execute("get_realtime_quotes", {"symbols": "贵州茅台,宁德时代"})
 
         self.assertEqual(calls, [["600519", "300750"]])
@@ -110,6 +96,22 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         names = set(registry.get_tool_names())
 
         self.assertIn("get_risk_events", names)
+
+    def test_rss_is_exposed_as_one_semantic_tool(self) -> None:
+        names = set(ToolRegistry().get_tool_names())
+
+        self.assertIn("search_financial_news", names)
+        self.assertNotIn("list_rss_sources", names)
+        self.assertNotIn("read_rss_feed", names)
+        self.assertNotIn("read_rss_item", names)
+
+    def test_professional_stock_tools_are_registered(self) -> None:
+        names = set(ToolRegistry().get_tool_names())
+        expected = {
+            "get_business_segments", "get_consensus_estimates", "get_peer_comparison",
+            "get_stock_capital_flow", "get_technical_indicators",
+        }
+        self.assertTrue(expected.issubset(names))
 
 
 if __name__ == "__main__":

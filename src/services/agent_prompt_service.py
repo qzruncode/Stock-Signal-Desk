@@ -109,6 +109,17 @@ class AgentPromptService:
         if record is None or not (record.content or "").strip():
             return self._fallback_prompt(), True
 
+        # “系统默认”由代码版本管理。工具契约或证据规则升级后自动同步，
+        # 避免数据库里首次种下的旧 prompt 永久覆盖新能力；用户自建/改名模板不动。
+        if record.name == self.DEFAULT_TEMPLATE_NAME:
+            current = self._fallback_prompt()
+            if record.content != current:
+                try:
+                    self.db.update_agent_prompt(record.id, content=current)
+                except Exception as exc:
+                    logger.warning("[AgentPrompt] 同步系统默认 prompt 失败，当前请求仍使用新版: %s", exc)
+            return current, False
+
         return record.content, False
 
     @staticmethod

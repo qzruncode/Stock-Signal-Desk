@@ -104,29 +104,10 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertTrue(compact["_tool_payload_meta"]["compacted"])
 
     def test_empty_quotes_attach_price_search_fallback(self) -> None:
-        search_response = SimpleNamespace(
-            query="贵州茅台 600519 股价走势",
-            provider="TestSearch",
-            success=True,
-            error_message=None,
-            search_time=0.12,
-            results=[
-                SimpleNamespace(
-                    title="贵州茅台股价走势",
-                    snippet="搜索摘要",
-                    url="https://example.com/price",
-                    source="example.com",
-                    published_date="2026-06-08",
-                )
-            ],
-        )
-        search_service = SimpleNamespace(
-            is_available=True,
-            search_stock_price_fallback=lambda code, name, max_attempts=2, max_results=5: search_response,
-        )
+        search_payload = {"query": "贵州茅台 600519 今日股价", "provider": "TestSearch", "success": True, "results": [{"title": "贵州茅台股价走势", "url": "https://example.com/price"}]}
 
         with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
-             patch("src.search_service.get_search_service", return_value=search_service):
+             patch("src.tools.websearch.websearch", return_value=search_payload):
             enriched = _maybe_attach_search_fallback(
                 "get_realtime_quotes",
                 {"symbols": "贵州茅台"},
@@ -139,29 +120,10 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertTrue(enriched["search_fallback"]["success"])
 
     def test_stale_news_attach_news_search_fallback(self) -> None:
-        search_response = SimpleNamespace(
-            query="贵州茅台 600519 股票 最新消息",
-            provider="TestSearch",
-            success=True,
-            error_message=None,
-            search_time=0.08,
-            results=[
-                SimpleNamespace(
-                    title="贵州茅台最新消息",
-                    snippet="搜索摘要",
-                    url="https://example.com/news",
-                    source="example.com",
-                    published_date="2026-06-08",
-                )
-            ],
-        )
-        search_service = SimpleNamespace(
-            is_available=True,
-            search_stock_news=lambda code, name, max_results=5: search_response,
-        )
+        search_payload = {"query": "贵州茅台 600519 最新消息", "provider": "TestSearch", "success": True, "results": [{"title": "贵州茅台最新消息", "url": "https://example.com/news"}]}
 
         with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
-             patch("src.search_service.get_search_service", return_value=search_service):
+             patch("src.tools.websearch.websearch", return_value=search_payload):
             enriched = _maybe_attach_search_fallback(
                 "search_news",
                 {"symbol": "贵州茅台"},
@@ -175,6 +137,21 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertTrue(enriched["fallback_status"]["used"])
         self.assertEqual(enriched["fallback_status"]["reason"], "stale_news_family")
         self.assertEqual(enriched["search_fallback"]["type"], "news")
+
+    def test_unavailable_consensus_uses_specific_search_fallback(self) -> None:
+        search_payload = {"query": "贵州茅台 600519 最新 券商一致预期 EPS 净利润预测", "provider": "TestSearch", "success": True, "results": []}
+
+        with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
+             patch("src.tools.websearch.websearch", return_value=search_payload):
+            enriched = _maybe_attach_search_fallback(
+                "get_consensus_estimates",
+                {"symbol": "贵州茅台"},
+                {"symbol": "600519", "success": False, "is_stale": True, "metrics": {}, "errors": ["upstream down"]},
+            )
+
+        self.assertTrue(enriched["fallback_status"]["used"])
+        self.assertEqual(enriched["search_fallback"]["type"], "consensus")
+        self.assertIn("一致预期", enriched["search_fallback"]["query"])
 
     def test_health_assessment_prefers_standard_stale_flag(self) -> None:
         health = _assess_tool_data_health(
@@ -233,6 +210,36 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertIn("甲" * 50, formatted)
         self.assertNotIn("...[数据已截断]", formatted)
         self.assertGreater(len(formatted), 4000)
+
+    def test_websearch_keeps_opencode_provider_output(self) -> None:
+        compact = _compact_tool_result(
+            "websearch",
+            {
+                "query": "arbitrary topic",
+                "success": True,
+                "provider": "exa",
+                "output": "Title: Result\nURL: https://example.com",
+                "results": [{"title": "Result", "url": "https://example.com"}],
+            },
+        )
+
+        self.assertIn("Title: Result", compact["output"])
+        self.assertFalse(compact["_tool_payload_meta"]["compacted"])
+
+    def test_webfetch_binary_attachment_omission_is_explicit(self) -> None:
+        compact = _compact_tool_result(
+            "webfetch",
+            {
+                "url": "https://example.com/image.png",
+                "content": "Image fetched successfully",
+                "attachments": [{"type": "file", "mime": "image/png", "url": "data:image/png;base64,AAAA"}],
+            },
+        )
+
+        self.assertEqual(compact["attachment_count"], 1)
+        self.assertNotIn("url", compact["attachments"][0])
+        self.assertTrue(compact["_tool_payload_meta"]["compacted"])
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "web_attachment_binary_omitted")
 
     def test_compact_macro_indicator_keeps_freshness_fields(self) -> None:
         compact = _compact_tool_result(

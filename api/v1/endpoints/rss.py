@@ -121,7 +121,7 @@ def get_rss_catalog_endpoint(
 ):
     """返回 agent 友好的 RSS 源目录：基于已过滤的 ~47 条财经路由，每条带
     中文用途描述 + 参数提示（名称/必填/hint/默认/选项）。供 AI 助手的
-    ``list_rss_sources`` 工具消费，6h 缓存。
+    Infos 页面和语义财经资讯工具共用，6h 缓存。
     """
     try:
         return _get_rss_catalog(force=force)

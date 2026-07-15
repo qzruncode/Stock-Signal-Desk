@@ -313,6 +313,75 @@ class SearchService:
         """检查是否有可用的搜索引擎"""
         return any(p.is_available for p in self._providers)
 
+    def search_web(
+        self,
+        query: str,
+        max_results: int = 8,
+        days: int = 30,
+    ) -> SearchResponse:
+        """Generic deterministic provider-chain search for Agent web fallback.
+
+        Unlike ``search_stock_news`` this method does not rewrite the query or
+        impose the stock-news language filter.  It aggregates unique results
+        from configured providers in priority order and records every provider
+        that contributed data.
+        """
+        query = (query or "").strip()
+        max_results = max(1, min(int(max_results), 20))
+        days = max(1, min(int(days), 3650))
+        if not query:
+            return SearchResponse(query="", results=[], provider="None", success=False, error_message="搜索词不能为空")
+        if not self.is_available:
+            return SearchResponse(query=query, results=[], provider="None", success=False, error_message="未配置搜索能力")
+
+        cache_key = self._cache_key(f"generic:{query}", max_results, days)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        results: List[SearchResult] = []
+        seen_urls: set[str] = set()
+        contributors: List[str] = []
+        errors: List[str] = []
+        started = _ss.time.perf_counter()
+        for provider in self._providers:
+            if not provider.is_available:
+                continue
+            try:
+                response = provider.search(query, max_results=max_results, days=days)
+            except Exception as exc:
+                errors.append(f"{provider.name}: {exc}")
+                continue
+            if not response.success:
+                errors.append(f"{provider.name}: {response.error_message or '搜索失败'}")
+                continue
+            contributed = False
+            for item in response.results:
+                url = (item.url or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                results.append(item)
+                contributed = True
+                if len(results) >= max_results:
+                    break
+            if contributed:
+                contributors.append(provider.name)
+            if len(results) >= max_results:
+                break
+
+        response = SearchResponse(
+            query=query,
+            results=results,
+            provider=", ".join(contributors) if contributors else "None",
+            success=bool(results),
+            error_message=None if results else ("; ".join(errors[:5]) or "所有搜索引擎均无结果"),
+            search_time=_ss.time.perf_counter() - started,
+        )
+        if results:
+            self._put_cache(cache_key, response)
+        return response
+
     def _cache_key(self, query: str, max_results: int, days: int) -> str:
         """Build a cache key from query parameters."""
         return f"{query}|{max_results}|{days}"
@@ -1402,4 +1471,3 @@ def reset_search_service() -> None:
     global _search_service
     with _search_service_lock:
         _search_service = None
-

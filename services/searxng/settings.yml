@@ -1,0 +1,58 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - google
+      - bing
+      - yahoo
+      - 360search
+      - sogou
+
+general:
+  debug: false
+  instance_name: "Daily Stock Analysis Search"
+
+search:
+  safe_search: 0
+  default_lang: auto
+  formats:
+    - html
+    - json
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8888
+  secret_key: "daily-stock-analysis-local-search"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+valkey:
+  url: false
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 15.0
+  enable_http2: true
+
+# These engines do not require API keys. Bing/Yahoo cover global queries while
+# 360/Sogou strengthen Chinese coverage. Google remains enabled and joins the
+# aggregate whenever it is reachable from the current network.
+engines:
+  - name: google
+    inactive: false
+    disabled: false
+    timeout: 4.0
+    weight: 2.0
+  - name: bing
+    disabled: false
+    weight: 0.05
+  - name: yahoo
+    disabled: false
+    weight: 1.5
+  - name: 360search
+    disabled: false
+    weight: 0.05
+  - name: sogou
+    disabled: false
+    weight: 2.0

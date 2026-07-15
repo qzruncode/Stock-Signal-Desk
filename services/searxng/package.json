@@ -1,0 +1,10 @@
+{
+  "name": "daily-stock-analysis-searxng",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-local SearXNG source service for Daily Stock Analysis.",
+  "scripts": {
+    "install:searxng": "bash ./scripts/install-searxng.sh",
+    "start": "npm run install:searxng && bash ./scripts/start-searxng.sh"
+  }
+}

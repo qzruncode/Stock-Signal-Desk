@@ -1,94 +1,98 @@
 # -*- coding: utf-8 -*-
-"""webfetch 工具 —— 复刻 OpenCode packages/opencode/src/tool/webfetch.ts
+"""General-purpose URL fetcher with an OpenCode-compatible fast path.
 
-抓取指定 URL 的内容，按 format 返回 markdown / text / html。
-逐行对应 webfetch.ts 的 execute 逻辑：
-
-- 校验 http(s) URL
-- 按 format 构造带 q 优先级的 Accept 头
-- Chrome UA 发请求；若命中 Cloudflare challenge (403 + cf-mitigated: challenge) 则
-  用诚实 UA "opencode" 重试一次
-- 5MB 响应上限（content-length 头 + 实际字节数双重校验）
-- 图片 MIME → base64 data URL 附件
-- markdown: HTML→markdownify（对应 turndown，未安装时降级 bs4 纯文本）
-- text: HTML→extract_text_from_html（对应 extractTextFromHTML，跳过 script/style 等）
-- html: 原样
-
-不依赖项目其它模块。
+Ordinary HTTP is always attempted first.  Local Scrapling, self-hosted
+Firecrawl and Patchright are transport fallbacks for blocked or JavaScript-only
+pages; they do not replace the normal web protocol.
 """
 
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
-from typing import Any, Dict, List, Optional
+import os
+import re
+import socket
+import time
+from datetime import datetime
+from typing import Any, Callable
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from src.tools._firecrawl import firecrawl_rest_config
+from src.tools.base import ToolSpec, object_schema
+
 logger = logging.getLogger(__name__)
 
-# --- 常量（与 webfetch.ts 完全一致）---
-MAX_RESPONSE_SIZE = 5 * 1024 * 1024  # 5MB
-DEFAULT_TIMEOUT = 30  # seconds
-MAX_TIMEOUT = 120  # seconds (2 minutes)
-
-# Chrome UA（与 webfetch.ts 同款字符串）
+MAX_RESPONSE_SIZE = 5 * 1024 * 1024
+DEFAULT_TIMEOUT = 30
+MAX_TIMEOUT = 120
+MAX_REDIRECTS = 8
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/143.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 )
-# Cloudflare challenge 命中后重试用的诚实 UA（对应 webfetch.ts 里 retry 时的 "opencode"）
 _HONEST_UA = "opencode"
-
-# 需要在 text/markdown 抽取时跳过的 HTML 标签（对应 extractTextFromHTML 的 skip 列表）
 _SKIP_TAGS = ["script", "style", "noscript", "iframe", "object", "embed"]
 
-
-# 复刻 webfetch.txt 的工具说明（保留英文原文以忠实复刻 OpenCode）
-WEBFETCH_DESCRIPTION = """- Fetches content from a specified URL
-- Takes a URL and optional format as input
-- Fetches the URL content, converts to requested format (markdown by default)
-- Returns the content in the specified format
-- Use this tool when you need to retrieve and analyze web content
-
-Usage notes:
-  - IMPORTANT: if another tool is present that offers better web fetching capabilities, is more targeted to the task, or has fewer restrictions, prefer using that tool instead of this one.
-  - The URL must be a fully-formed valid URL
-  - HTTP URLs will be automatically upgraded to HTTPS
-  - Format options: "markdown" (default), "text", or "html"
-  - This tool is read-only and does not modify any files
-  - Results may be summarized if the content is very large"""
-
-
-def _is_image(mime: str) -> bool:
-    """对应 webfetch.ts 的 isImageAttachment。"""
-    return mime.startswith("image/")
+WEBFETCH_DESCRIPTION = (
+    "读取任意公开 http(s) URL，默认返回 Markdown，也可返回纯文本或 HTML。"
+    "先使用标准 HTTP；遇到反爬、空壳或 JavaScript 页面时自动降级到本地 Scrapling、"
+    "自托管 Firecrawl 和 Patchright。支持图片附件、重定向安全校验、5MB 上限及完整抓取记录。"
+)
 
 
 def _accept_header_for(fmt: str) -> str:
-    """对应 webfetch.ts 里按 format 构造 Accept 头的 switch 分支（含 q 优先级 fallback）。"""
     if fmt == "markdown":
         return "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1"
     if fmt == "text":
         return "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1"
-    if fmt == "html":
-        return "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"
-    # default（对应 webfetch.ts 的 default 分支）
-    return "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    return "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, text/markdown;q=0.7, */*;q=0.1"
+
+
+def _allow_private() -> bool:
+    return os.getenv("WEBFETCH_ALLOW_PRIVATE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_public_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL 必须是完整的 http:// 或 https:// 地址")
+    if parsed.username or parsed.password:
+        raise ValueError("URL 不允许包含用户名或密码")
+    if _allow_private():
+        return
+
+    host = parsed.hostname.lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+        raise ValueError("出于 SSRF 安全限制，不允许抓取本机或内网地址")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None and not literal.is_global:
+        raise ValueError("出于 SSRF 安全限制，不允许抓取本机、内网或保留地址")
+
+    try:
+        addresses = {
+            item[4][0]
+            for item in socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+        }
+    except socket.gaierror as exc:
+        raise ValueError(f"域名解析失败: {host}") from exc
+    synthetic_proxy = ipaddress.ip_network("198.18.0.0/15")
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global and ip not in synthetic_proxy:
+            raise ValueError("出于 SSRF 安全限制，不允许抓取本机、内网或保留地址")
 
 
 def _extract_text_from_html(html: str) -> str:
-    """对应 webfetch.ts 的 extractTextFromHTML。
-
-    用 htmlparser2 解析时跳过 script/style/noscript/iframe/object/embed。
-    Python 侧用 bs4 实现等价语义；bs4 不可用时降级正则。
-    """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        import re
-
         cleaned = re.sub(
             r"<(script|style|noscript|iframe|object|embed)\b[^>]*>.*?</\1>",
             "",
@@ -96,161 +100,374 @@ def _extract_text_from_html(html: str) -> str:
             flags=re.S | re.I,
         )
         return re.sub(r"<[^>]+>", "", cleaned).strip()
-
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(_SKIP_TAGS):
         tag.decompose()
-    return soup.get_text().strip()
+    return soup.get_text("\n", strip=True)
 
 
 def _convert_html_to_markdown(html: str) -> str:
-    """对应 webfetch.ts 的 convertHTMLToMarkdown（turndown）。
-
-    turndown 配置：headingStyle: atx, hr: ---, bulletListMarker: -, codeBlockStyle: fenced, emDelimiter: *
-    turndown 只处理 body，并用 .remove(["script","style","meta","link"]) 连标签带内容一起删。
-    Python 侧用 bs4 先做等价清理（移除 head/script/style/meta/link/title 等，只保留 body），
-    再交给 markdownify 转换；markdownify 未安装时降级到 bs4 纯文本。
-    """
-    try:
-        from markdownify import markdownify as md
-    except ImportError:
-        logger.debug("markdownify 未安装，降级为 bs4 纯文本抽取")
-        return _extract_text_from_html(html)
-
-    # 先用 bs4 移除 script/style/meta/link/title/noscript/iframe 等标签及其内容，
-    # 并只取 <body>（对应 turndown 只处理 body、不输出 <head> 内容的语义）。
     try:
         from bs4 import BeautifulSoup
+        from markdownify import markdownify as markdownify
     except ImportError:
-        # bs4 也不可用：直接交给 markdownify + strip 兜底
-        return md(
-            html,
-            heading_style="ATX",
-            bullets="-",
-            code_language="",
-            strip=["script", "style", "meta", "link", "title"],
-        )
-
+        return _extract_text_from_html(html)
     soup = BeautifulSoup(html, "lxml")
-    for tag in soup(["script", "style", "meta", "link", "title", "noscript", "iframe", "object", "embed"]):
+    for tag in soup([*_SKIP_TAGS, "meta", "link", "title"]):
         tag.decompose()
-    body = soup.body or soup
-    return md(
-        str(body),
-        heading_style="ATX",   # 对应 headingStyle: "atx"
-        bullets="-",           # 对应 bulletListMarker: "-"
-        code_language="",      # fenced code block（对应 codeBlockStyle: "fenced"）
-        strip=["script", "style", "meta", "link"],  # 双保险
+    return markdownify(str(soup.body or soup), heading_style="ATX", bullets="-").strip()
+
+
+def _convert(raw: str, fmt: str, content_type: str) -> str:
+    if "html" not in content_type.lower():
+        return raw
+    if fmt == "html":
+        return raw
+    if fmt == "text":
+        return _extract_text_from_html(raw)
+    return _convert_html_to_markdown(raw)
+
+
+def _title_from_html(html: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, flags=re.I | re.S)
+    return _extract_text_from_html(match.group(1)).strip() if match else ""
+
+
+def _looks_unusable(content: str, content_type: str) -> str | None:
+    text = content.strip()
+    if not text:
+        return "网页正文为空"
+    if "html" not in content_type.lower():
+        return None
+    probe = text[:5000].lower()
+    challenge_markers = (
+        "cf-chl-", "cloudflare ray id", "enable javascript and cookies to continue",
+        "just a moment...", "g-recaptcha", "hcaptcha",
     )
+    if any(marker in probe for marker in challenge_markers):
+        return "页面返回了反爬验证而非正文"
+    visible = _extract_text_from_html(text) if "<" in text else text
+    if len(visible.strip()) < 80:
+        return "页面只返回了空壳或过短正文"
+    return None
 
 
-def fetch_url(
-    url: str,
-    format: str = "markdown",
-    timeout: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Fetch content from a URL and return it in the requested format.
+def _quality_warning(content: str, fmt: str) -> str | None:
+    """Identify generic navigation-heavy output without rejecting usable data."""
+    if fmt == "html":
+        return None
+    text = content.strip()
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(text) >= 1500 and len(lines) >= 20:
+        markdown_link_ratio = text.count("](") / len(lines)
+        if markdown_link_ratio > 0.55:
+            return "页面正文链接密度过高，继续尝试主内容抓取器"
+    return None
 
-    复刻 OpenCode webfetch.ts 的 execute 函数。
 
-    Args:
-        url: 要抓取的 URL，必须以 http:// 或 https:// 开头
-        format: 返回格式，markdown / text / html，默认 markdown
-        timeout: 超时秒数，最大 120；不传则默认 30
-
-    Returns:
-        dict: {url, format, content_type, title, content, attachments?}
-    """
-    # 1. URL 校验（对应 webfetch.ts 开头的 startswith 检查）
-    if not url.startswith("http://") and not url.startswith("https://"):
-        raise ValueError("URL must start with http:// or https://")
-
-    fmt = format or "markdown"
-    if fmt not in ("markdown", "text", "html"):
-        raise ValueError(f"format must be one of markdown/text/html, got {fmt!r}")
-
-    # 2. 超时计算：min(timeout ?? 30s, 120s)（对应 TS 的 Math.min(...)）
-    timeout_seconds = min(
-        (timeout if timeout is not None else DEFAULT_TIMEOUT),
-        MAX_TIMEOUT,
-    )
-
-    # 3. 构造请求头（Chrome UA + 按 format 的 Accept 头）
-    headers = {
-        "User-Agent": _CHROME_UA,
-        "Accept": _accept_header_for(fmt),
-        "Accept-Language": "en-US,en;q=0.9",
+def _timed_result(provider: str, started: float, **values: Any) -> dict[str, Any]:
+    return {
+        "provider": provider,
+        "duration_ms": int((time.perf_counter() - started) * 1000),
+        **values,
     }
 
-    with httpx.Client(follow_redirects=True) as client:
-        # 4. 发请求；若命中 Cloudflare challenge 则用诚实 UA 重试一次（对应 Effect.catchIf）
-        resp = client.get(url, headers=headers, timeout=timeout_seconds)
-        if resp.status_code == 403 and resp.headers.get("cf-mitigated") == "challenge":
-            logger.debug("webfetch: Cloudflare challenge hit, retrying with honest UA 'opencode'")
-            retry_headers = {**headers, "User-Agent": _HONEST_UA}
-            resp = client.get(url, headers=retry_headers, timeout=timeout_seconds)
 
-        # 非 2xx 抛错（对应 httpOk = HttpClient.filterStatusOk(http)）
-        if resp.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                f"HTTP {resp.status_code} for {url}",
-                request=resp.request,
-                response=resp,
+def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
+    """OpenCode-compatible HTTP fetch with redirect-by-redirect SSRF checks."""
+    started = time.perf_counter()
+    try:
+        headers = {
+            "User-Agent": _CHROME_UA,
+            "Accept": _accept_header_for(fmt),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        current_url = url
+        response: httpx.Response | None = None
+        with httpx.Client(follow_redirects=False, timeout=timeout) as client:
+            for _ in range(MAX_REDIRECTS + 1):
+                _validate_public_url(current_url)
+                response = client.get(current_url, headers=headers)
+                if response.status_code == 403 and response.headers.get("cf-mitigated") == "challenge":
+                    response = client.get(current_url, headers={**headers, "User-Agent": _HONEST_UA})
+                if response.status_code not in {301, 302, 303, 307, 308}:
+                    break
+                location = response.headers.get("location")
+                if not location:
+                    break
+                current_url = urljoin(str(response.url), location)
+            else:
+                raise ValueError(f"网页重定向超过 {MAX_REDIRECTS} 次上限")
+
+        assert response is not None
+        response.raise_for_status()
+        final_url = str(response.url)
+        _validate_public_url(final_url)
+        declared_length = response.headers.get("content-length")
+        if declared_length and declared_length.isdigit() and int(declared_length) > MAX_RESPONSE_SIZE:
+            raise ValueError("Response too large (exceeds 5MB limit)")
+        body = response.content
+        if len(body) > MAX_RESPONSE_SIZE:
+            raise ValueError("Response too large (exceeds 5MB limit)")
+
+        content_type = response.headers.get("content-type", "")
+        mime = content_type.split(";", 1)[0].strip().lower()
+        title = f"{final_url} ({content_type})"
+        if mime.startswith("image/"):
+            attachment = {
+                "type": "file",
+                "mime": mime,
+                "url": f"data:{mime};base64,{base64.b64encode(body).decode('ascii')}",
+            }
+            return _timed_result(
+                "http",
+                started,
+                success=True,
+                skipped=False,
+                error=None,
+                content="Image fetched successfully",
+                attachments=[attachment],
+                final_url=final_url,
+                title=title,
+                content_type=content_type,
+                extraction_method="direct_http",
             )
 
-        # 5. content-length 头预检（对应 TS 的 content-length 检查）
-        content_length = resp.headers.get("content-length")
-        if content_length and content_length.isdigit() and int(content_length) > MAX_RESPONSE_SIZE:
-            raise ValueError("Response too large (exceeds 5MB limit)")
+        encoding = response.encoding or "utf-8"
+        raw = body.decode(encoding, errors="replace")
+        content = _convert(raw, fmt, content_type)
+        quality_error = _looks_unusable(raw if "html" in content_type.lower() else content, content_type)
+        return _timed_result(
+            "http",
+            started,
+            success=quality_error is None,
+            skipped=False,
+            error=quality_error,
+            content=content,
+            attachments=None,
+            final_url=final_url,
+            title=_title_from_html(raw) or title,
+            content_type=content_type,
+            extraction_method="direct_http",
+            quality_warning=_quality_warning(content, fmt) if quality_error is None else None,
+        )
+    except Exception as exc:
+        return _timed_result("http", started, success=False, skipped=False, error=str(exc))
 
-        # 6. 实际字节数校验（对应 TS 的 arrayBuffer.byteLength 检查）
-        content_bytes = resp.content
-        if len(content_bytes) > MAX_RESPONSE_SIZE:
-            raise ValueError("Response too large (exceeds 5MB limit)")
 
-        content_type = resp.headers.get("content-type", "") or ""
-        mime = content_type.split(";")[0].strip().lower() or ""
-        title = f"{url} ({content_type})"
+def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict[str, Any]:
+    provider = "patchright" if browser else "scrapling"
+    started = time.perf_counter()
+    try:
+        if browser:
+            from scrapling.fetchers import StealthyFetcher
 
-        # 7. 图片 → base64 data URL 附件（对应 isImageAttachment 分支）
-        if _is_image(mime):
-            b64 = base64.b64encode(content_bytes).decode("ascii")
-            return {
+            page = StealthyFetcher.fetch(
+                url,
+                headless=True,
+                network_idle=True,
+                disable_resources=True,
+                timeout=timeout * 1000,
+            )
+        else:
+            from scrapling.fetchers import Fetcher
+
+            page = Fetcher.get(
+                url,
+                timeout=timeout,
+                retries=2,
+                impersonate="chrome",
+                follow_redirects="safe",
+            )
+        raw = getattr(page, "body", None) or getattr(page, "text", None)
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not raw and hasattr(page, "get"):
+            raw = page.get()
+        raw = str(raw or "")
+        final_url = str(getattr(page, "url", None) or url)
+        _validate_public_url(final_url)
+        quality_error = _looks_unusable(raw, "text/html")
+        content = _convert(raw, fmt, "text/html")
+        return _timed_result(
+            provider,
+            started,
+            success=quality_error is None,
+            skipped=False,
+            error=quality_error,
+            content=content,
+            attachments=None,
+            final_url=final_url,
+            title=_title_from_html(raw),
+            content_type="text/html",
+            extraction_method="patchright_browser" if browser else "scrapling_http",
+            quality_warning=_quality_warning(content, fmt) if quality_error is None else None,
+        )
+    except ImportError:
+        return _timed_result(provider, started, success=False, skipped=True, error="Scrapling/Patchright 未安装")
+    except Exception as exc:
+        return _timed_result(provider, started, success=False, skipped=False, error=str(exc))
+
+
+def _firecrawl_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    config = firecrawl_rest_config()
+    if config is None:
+        return _timed_result("firecrawl", started, success=False, skipped=True, error="项目内置 Firecrawl 不可用")
+    base_url, headers, auth_mode = config
+    try:
+        requested_format = "html" if fmt == "html" else "markdown"
+        response = httpx.post(
+            f"{base_url}/v2/scrape",
+            headers=headers,
+            json={
                 "url": url,
-                "format": fmt,
-                "content_type": content_type,
-                "title": title,
-                "content": "Image fetched successfully",
-                "attachments": [
-                    {
-                        "type": "file",
-                        "mime": mime,
-                        "url": f"data:{mime};base64,{b64}",
-                    }
-                ],
-            }
+                "formats": [requested_format],
+                "onlyMainContent": True,
+                "timeout": timeout * 1000,
+            },
+            timeout=timeout + 5,
+        )
+        response.raise_for_status()
+        body = response.json()
+        data = body.get("data") if isinstance(body.get("data"), dict) else body
+        raw = str(data.get(requested_format) or data.get("markdown") or data.get("html") or "")
+        metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        final_url = str(metadata.get("sourceURL") or url)
+        _validate_public_url(final_url)
+        content_type = "text/html" if requested_format == "html" else "text/markdown"
+        content = _convert(raw, fmt, content_type)
+        quality_error = _looks_unusable(raw, content_type)
+        return _timed_result(
+            "firecrawl",
+            started,
+            success=quality_error is None,
+            skipped=False,
+            error=quality_error,
+            content=content,
+            attachments=None,
+            final_url=final_url,
+            title=str(metadata.get("title") or ""),
+            content_type=content_type,
+            extraction_method="firecrawl_main_content",
+            quality_warning=_quality_warning(content, fmt) if quality_error is None else None,
+            content_time=metadata.get("publishedTime") or metadata.get("modifiedTime"),
+            auth_mode=auth_mode,
+        )
+    except Exception as exc:
+        return _timed_result(
+            "firecrawl",
+            started,
+            success=False,
+            skipped=False,
+            error=str(exc),
+            auth_mode=auth_mode,
+        )
 
-        # 8. 按 format + 实际 content-type 转换（对应 TS 的 switch(params.format)）
-        text_content = content_bytes.decode("utf-8", errors="replace")
 
-        if fmt == "markdown":
-            if "text/html" in content_type:
-                content = _convert_html_to_markdown(text_content)
-            else:
-                content = text_content
-        elif fmt == "text":
-            if "text/html" in content_type:
-                content = _extract_text_from_html(text_content)
-            else:
-                content = text_content
-        else:  # html
-            content = text_content
+def _attempt_view(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in result.items()
+        if key not in {"content", "attachments", "title", "final_url", "content_type"}
+    }
 
+
+def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) -> dict[str, Any]:
+    fmt = format or "markdown"
+    if fmt not in {"markdown", "text", "html"}:
+        raise ValueError("format 必须是 markdown、text 或 html")
+    _validate_public_url(url)
+    timeout_seconds = max(5, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
+
+    attempts: list[dict[str, Any]] = []
+    result: dict[str, Any] | None = None
+    degraded_result: dict[str, Any] | None = None
+    candidates: list[Callable[[], dict[str, Any]]] = [
+        lambda: _http_fetch(url, fmt, timeout_seconds),
+        lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=False),
+        lambda: _firecrawl_fetch(url, fmt, timeout_seconds),
+        lambda: _scrapling_fetch(url, fmt, timeout_seconds, browser=True),
+    ]
+    for candidate in candidates:
+        current = candidate()
+        attempts.append(_attempt_view(current))
+        if current.get("success"):
+            if current.get("quality_warning"):
+                if degraded_result is None:
+                    degraded_result = current
+                continue
+            result = current
+            break
+
+    if result is None and degraded_result is not None:
+        result = degraded_result
+
+    now = datetime.now().astimezone().isoformat()
+    failures = [
+        str(item["error"])
+        for item in attempts
+        if item.get("error") and not item.get("skipped")
+    ]
+    if result is None:
         return {
             "url": url,
+            "final_url": url,
             "format": fmt,
-            "content_type": content_type,
-            "title": title,
-            "content": content,
+            "content_type": "",
+            "title": "",
+            "content": "",
             "attachments": None,
+            "success": False,
+            "provider": "none",
+            "attempts": attempts,
+            "data_time": now,
+            "content_time": None,
+            "fallback_used": False,
+            "is_stale": None,
+            "freshness_unknown": True,
+            "extraction_method": None,
+            "_truncated": False,
+            "errors": failures,
+            "warnings": [],
         }
+
+    provider = str(result.get("provider") or "unknown")
+    quality_warnings = [str(result["quality_warning"])] if result.get("quality_warning") else []
+    return {
+        "url": url,
+        "final_url": result.get("final_url") or url,
+        "format": fmt,
+        "content_type": result.get("content_type") or "",
+        "title": result.get("title") or "",
+        "content": result.get("content") or "",
+        "attachments": result.get("attachments"),
+        "success": True,
+        "provider": provider,
+        "attempts": attempts,
+        "data_time": now,
+        "content_time": result.get("content_time"),
+        "fallback_used": provider != "http",
+        "is_stale": None,
+        "freshness_unknown": not bool(result.get("content_time")),
+        "extraction_method": result.get("extraction_method"),
+        "_truncated": False,
+        "errors": [],
+        "warnings": [*failures, *quality_warnings],
+    }
+
+
+TOOL = ToolSpec(
+    name="webfetch",
+    description=WEBFETCH_DESCRIPTION,
+    parameters=object_schema(
+        {
+            "url": {"type": "string", "description": "要读取的公开 http(s) URL"},
+            "format": {"type": "string", "enum": ["markdown", "text", "html"], "default": "markdown"},
+            "timeout": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
+        },
+        ["url"],
+    ),
+    executor=fetch_url,
+    category="search",
+)

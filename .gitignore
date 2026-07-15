@@ -90,11 +90,15 @@ logs/
 excalidraw.log
 tmp.md
 todo*.md
+.playwright-cli/
 
 # local service dependencies
 services/rsshub/node_modules/
 services/rsshub/logs/
 services/rsshub/app/
+services/firecrawl/app/
+services/searxng/app/
+services/searxng/.venv/
 
 # Node.js (vitest 缓存等)
 /node_modules/

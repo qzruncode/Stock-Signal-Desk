@@ -1,0 +1,53 @@
+diff --git a/apps/api/src/config.ts b/apps/api/src/config.ts
+index 86eb734..b6eeac0 100644
+--- a/apps/api/src/config.ts
++++ b/apps/api/src/config.ts
+@@ -243,6 +243,7 @@ const configSchema = z.object({
+   SLACK_ADMIN_WEBHOOK_URL: z.string().optional(),
+   DISABLE_WEBHOOK_DELIVERY: z.stringbool().optional(),
+   ALLOW_LOCAL_WEBHOOKS: z.stringbool().optional(),
++  ALLOW_SYNTHETIC_EGRESS: z.stringbool().optional(),
+   WEBHOOK_USE_RABBITMQ: z.stringbool().optional(),
+ 
+   // Firecrawl Features
+diff --git a/apps/api/src/scraper/scrapeURL/engines/utils/safeFetch.ts b/apps/api/src/scraper/scrapeURL/engines/utils/safeFetch.ts
+index 3b0ad57..a523244 100644
+--- a/apps/api/src/scraper/scrapeURL/engines/utils/safeFetch.ts
++++ b/apps/api/src/scraper/scrapeURL/engines/utils/safeFetch.ts
+@@ -16,7 +16,11 @@ export function isIPPrivate(address: string): boolean {
+   if (!IPAddr.isValid(address)) return false;
+ 
+   const addr = IPAddr.parse(address);
+-  return addr.range() !== "unicast";
++  const isSyntheticEgress =
++    config.ALLOW_SYNTHETIC_EGRESS === true &&
++    addr.kind() === "ipv4" &&
++    addr.match(IPAddr.parseCIDR("198.18.0.0/15"));
++  return addr.range() !== "unicast" && !isSyntheticEgress;
+ }
+ 
+ function createBaseAgent(skipTlsVerification: boolean) {
+diff --git a/apps/playwright-service-ts/api.ts b/apps/playwright-service-ts/api.ts
+index 4e0f3b8..8dacb6b 100644
+--- a/apps/playwright-service-ts/api.ts
++++ b/apps/playwright-service-ts/api.ts
+@@ -16,6 +16,7 @@ app.use(express.json());
+ const BLOCK_MEDIA = (process.env.BLOCK_MEDIA || 'False').toUpperCase() === 'TRUE';
+ const MAX_CONCURRENT_PAGES = Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_PAGES ?? '10', 10) || 10);
+ const ALLOW_LOCAL_WEBHOOKS = (process.env.ALLOW_LOCAL_WEBHOOKS || 'False').toUpperCase() === 'TRUE';
++const ALLOW_SYNTHETIC_EGRESS = (process.env.ALLOW_SYNTHETIC_EGRESS || 'False').toUpperCase() === 'TRUE';
+ const DNS_CACHE_TTL_MS = 30_000;
+ 
+ const PROXY_SERVER = process.env.PROXY_SERVER || null;
+@@ -37,7 +38,10 @@ const isHttpProtocol = (protocol: string): boolean => protocol === 'http:' || pr
+ const isIPPrivate = (address: string): boolean => {
+   if (!IPAddr.isValid(address)) return false;
+   const parsedAddress = IPAddr.parse(address);
+-  return parsedAddress.range() !== 'unicast';
++  const isSyntheticEgress = ALLOW_SYNTHETIC_EGRESS
++    && parsedAddress.kind() === 'ipv4'
++    && parsedAddress.match(IPAddr.parseCIDR('198.18.0.0/15'));
++  return parsedAddress.range() !== 'unicast' && !isSyntheticEgress;
+ };
+ 
+ const isLocalHostname = (hostname: string): boolean =>

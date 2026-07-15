@@ -321,50 +321,105 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             compaction_reason="news_family_item_window",
         )
 
-    if tool_name == "list_rss_sources":
-        # Catalog listing — cap the source count to keep the payload bounded;
-        # _rss_catalog already trimmed each entry to a slim view.
-        sources = _trim_list(result.get("sources"), 30)
-        return _annotate_tool_payload(
-            tool_name,
-            {"sources": sources, "source_count": len(result.get("sources") or [])},
-            payload_policy="compacted",
-            compacted=True,
-            compaction_reason="rss_source_catalog_cap",
-        )
-
-    if tool_name == "read_rss_feed":
+    if tool_name == "search_financial_news":
         compact = _pick_fields(
             result,
-            ["feed_title", "feed_link", "item_count", "errors", "_cached"],
+            [
+                "query", "topic", "success", "item_count", "rss_routes", "rss_catalog_count",
+                "web_fallback", "source", "errors", "data_time", "is_stale", "fallback_used",
+            ],
         )
-        # _rss_reader already trimmed items (summary ≤180 chars, no content_html);
-        # cap the array the LLM sees.
         compact["items"] = _trim_list(
             result.get("items"),
             LLM_ARRAY_LIMIT,
-            ["title", "summary", "link", "published", "source", "image"],
+            ["title", "summary", "content_text", "link", "published", "source", "source_type", "rss_route", "content_fallback"],
         )
         return _annotate_tool_payload(
             tool_name,
             compact,
             payload_policy="compacted",
             compacted=True,
-            compaction_reason="rss_feed_item_window",
+            compaction_reason="semantic_rss_item_window",
         )
 
-    if tool_name == "read_rss_item":
-        # Single item — _rss_reader already capped content_text to 2000 chars.
-        compact = _pick_fields(
+    if tool_name == "get_stock_capital_flow":
+        return _annotate_tool_payload(tool_name, {
+            **_pick_fields(result, ["symbol", "market", "days", "latest", "summary", "item_count", "source", "success", "errors", "data_time", "is_stale", "fallback_used", "_cached"]),
+            "recent": _trim_list(result.get("items"), 10),
+        }, payload_policy="compacted", compacted=True, compaction_reason="capital_flow_recent_window")
+
+    if tool_name == "get_business_segments":
+        return _annotate_tool_payload(tool_name, {
+            **_pick_fields(result, ["symbol", "category", "periods", "item_count", "source", "success", "errors", "data_time", "is_stale", "fallback_used", "_cached"]),
+            "items": _trim_list(result.get("items"), 24),
+        }, payload_policy="compacted", compacted=True, compaction_reason="business_segment_window")
+
+    if tool_name in {"get_consensus_estimates", "get_peer_comparison"}:
+        return _annotate_tool_payload(
+            tool_name,
             result,
-            ["title", "content_text", "link", "published", "source", "_fallback", "_truncated", "_not_found", "errors"],
+            payload_policy="tool_bounded",
+            compacted=False,
+            source_scope="tool_defined_view",
+        )
+
+    if tool_name == "get_technical_indicators":
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="full",
+            compacted=False,
+        )
+
+    if tool_name == "websearch":
+        output = str(result.get("output") or "")
+        llm_output = output[:12000]
+        output_compacted = len(output) > 12000
+        if output_compacted:
+            llm_output = llm_output.rstrip() + "…"
+        results = result.get("results") if isinstance(result.get("results"), list) else []
+        compact = {
+            **_pick_fields(result, ["query", "resolved_query", "success", "result_count", "provider", "attempts", "data_time", "fallback_used", "is_stale", "freshness_unknown", "latest_published_date", "_truncated", "errors", "warnings"]),
+            "results": _trim_list(results, 10, ["title", "url", "snippet", "source", "source_name", "published_date", "result_type", "search_provider"]),
+        }
+        if output:
+            compact["output"] = llm_output
+            compact["output_characters"] = len(output)
+        was_compacted = len(results) > 10 or output_compacted
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted" if was_compacted else "full",
+            compacted=was_compacted,
+            compaction_reason="web_search_result_or_output_window" if was_compacted else None,
+        )
+
+    if tool_name == "webfetch":
+        content = str(result.get("content") or "")
+        llm_content = content[:12000]
+        if len(content) > 12000:
+            llm_content = llm_content.rstrip() + "…"
+        compact = _pick_fields(result, [
+            "url", "final_url", "format", "content_type", "title", "success", "provider", "attempts",
+            "data_time", "content_time", "fallback_used", "is_stale", "freshness_unknown",
+            "extraction_method", "_truncated", "errors", "warnings",
+        ])
+        compact["content"] = llm_content
+        compact["content_characters"] = len(content)
+        attachments = result.get("attachments") if isinstance(result.get("attachments"), list) else []
+        if attachments:
+            compact["attachments"] = _trim_list(attachments, 4, ["type", "mime"])
+            compact["attachment_count"] = len(attachments)
+        was_compacted = len(content) > 12000 or bool(attachments)
+        reason = "web_content_character_cap" if len(content) > 12000 else (
+            "web_attachment_binary_omitted" if attachments else None
         )
         return _annotate_tool_payload(
             tool_name,
             compact,
-            payload_policy="compacted",
-            compacted=True,
-            compaction_reason="rss_item_text_passthrough",
+            payload_policy="compacted" if was_compacted else "full",
+            compacted=was_compacted,
+            compaction_reason=reason,
         )
 
     if tool_name == "get_index_data":
@@ -428,26 +483,6 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     return _annotate_tool_payload(tool_name, result, payload_policy="full", compacted=False)
 
 
-def _serialize_search_response(response: Any) -> Dict[str, Any]:
-    return {
-        "query": getattr(response, "query", ""),
-        "provider": getattr(response, "provider", ""),
-        "success": bool(getattr(response, "success", False)),
-        "error_message": getattr(response, "error_message", None),
-        "search_time": getattr(response, "search_time", 0.0),
-        "results": [
-            {
-                "title": item.title,
-                "snippet": item.snippet,
-                "url": item.url,
-                "source": item.source,
-                "published_date": item.published_date,
-            }
-            for item in getattr(response, "results", [])[:5]
-        ],
-    }
-
-
 def _resolve_search_subject(raw_symbol: Any) -> tuple[str | None, str | None]:
     symbol = str(raw_symbol or "").strip()
     if not symbol:
@@ -465,22 +500,27 @@ def _resolve_search_subject(raw_symbol: Any) -> tuple[str | None, str | None]:
 
 def _build_search_fallback_payload(fallback_type: str, code: str, name: str) -> Dict[str, Any] | None:
     try:
-        from src.search_service import get_search_service
+        from src.tools.websearch import websearch
 
-        service = get_search_service()
-        if not service.is_available:
-            return {
-                "type": fallback_type,
-                "success": False,
-                "error_message": "未配置搜索能力",
-                "results": [],
-            }
-
-        if fallback_type == "price":
-            response = service.search_stock_price_fallback(code, name, max_attempts=2, max_results=5)
-        else:
-            response = service.search_stock_news(code, name, max_results=5)
-        payload = _serialize_search_response(response)
+        suffixes = {
+            "price": "今日股价 最新行情 涨跌",
+            "financials": "最新财报 财务指标 营收 净利润 现金流",
+            "business_segments": "最新年报 主营业务 主营构成 收入占比",
+            "valuation": "最新 PE PB 估值 市盈率 市净率",
+            "consensus": "最新 券商一致预期 EPS 净利润预测",
+            "peers": "行业同行比较 估值 成长性 ROE",
+            "capital_flow": "今日 个股资金流 主力净流入",
+            "shareholders": "最新 股东结构 十大股东 股东变动",
+            "news": "最新消息 公告 新闻",
+        }
+        suffix = suffixes.get(fallback_type, suffixes["news"])
+        payload = websearch(
+            query=f"{name} {code} {suffix}",
+            num_results=5,
+            livecrawl="fallback",
+            search_type="fast",
+            context_max_characters=8000,
+        )
         payload["type"] = fallback_type
         return payload
     except Exception as exc:
@@ -512,7 +552,23 @@ def _maybe_attach_search_fallback(tool_name: str, args: Dict[str, Any], result: 
         enriched["fallback_status"] = {"used": False, "reason": health.get("reason"), "message": "无法确定搜索对象"}
         return enriched
 
-    fallback_type = "price" if tool_name in {"get_realtime_quotes", "get_kline", "get_history_data"} else "news"
+    fallback_types = {
+        "get_realtime_quotes": "price",
+        "get_kline": "price",
+        "get_history_data": "price",
+        "get_technical_indicators": "price",
+        "get_financials": "financials",
+        "get_balance_sheet": "financials",
+        "get_income_statement": "financials",
+        "get_cashflow": "financials",
+        "get_business_segments": "business_segments",
+        "get_valuation_ratios": "valuation",
+        "get_consensus_estimates": "consensus",
+        "get_peer_comparison": "peers",
+        "get_stock_capital_flow": "capital_flow",
+        "get_shareholder_structure": "shareholders",
+    }
+    fallback_type = fallback_types.get(tool_name, "news")
     fallback_payload = _build_search_fallback_payload(fallback_type, code, name)
     enriched = dict(result)
     enriched["fallback_status"] = {

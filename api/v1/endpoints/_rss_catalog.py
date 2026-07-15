@@ -200,9 +200,8 @@ def list_catalog_routes(
     keyword: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Filter the catalog by namespace (category) and/or keyword for the
-    assistant's ``list_rss_sources`` tool. Returns a slimmed view (no params
-    detail) to keep the LLM payload small; the model calls read_feed directly
-    with route_path + params.
+    semantic finance-news selector. Returns a slimmed view for the Infos API;
+    route selection for the Agent is internal to ``search_financial_news``.
     """
     cat = get_rss_catalog(force=False)
     routes = cat.get("routes") or []
