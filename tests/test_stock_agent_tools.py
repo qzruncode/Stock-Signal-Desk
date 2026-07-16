@@ -13,7 +13,14 @@ from src.tools.get_consensus_estimates import get_consensus_estimates
 from src.tools.get_peer_comparison import get_peer_comparison
 from src.tools.get_stock_capital_flow import get_stock_capital_flow
 from src.tools.search_financial_news import _select_specs, search_financial_news
-from src.tools.webfetch import MAX_RESPONSE_SIZE, _accept_header_for, _http_fetch, fetch_url
+from src.tools.webfetch import (
+    MAX_RESPONSE_SIZE,
+    _accept_header_for,
+    _challenge_reason,
+    _extract_html,
+    _http_fetch,
+    fetch_url,
+)
 from src.tools.websearch import (
     _engine_query,
     _exa_search,
@@ -293,6 +300,98 @@ def test_webfetch_falls_back_in_transport_order() -> None:
     firecrawl.assert_not_called()
 
 
+def test_webfetch_waf_challenge_goes_directly_to_real_browser() -> None:
+    challenge = {
+        "provider": "http", "success": False, "skipped": False,
+        "error": "页面返回了 WAF 加密挑战而非正文", "failure_kind": "challenge",
+    }
+    rendered = {
+        "provider": "patchright", "success": True, "skipped": False, "error": None,
+        "content": "# 正文\n\n浏览器渲染后的完整内容", "attachments": None,
+        "final_url": "https://example.com/a", "title": "标题", "content_type": "text/html",
+        "extraction_method": "patchright_browser+semantic_dom",
+    }
+    with patch("src.tools.webfetch._validate_public_url"), \
+         patch("src.tools.webfetch._http_fetch", return_value=challenge), \
+         patch("src.tools.webfetch._scrapling_fetch", return_value=rendered) as scrapling, \
+         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl:
+        result = fetch_url("https://example.com/a")
+
+    assert result["success"] is True
+    assert result["provider"] == "patchright"
+    assert [item["provider"] for item in result["attempts"]] == ["http", "patchright"]
+    assert scrapling.call_args.kwargs["browser"] is True
+    firecrawl.assert_not_called()
+
+
+def test_webfetch_keeps_complete_rendered_dashboard_despite_link_density() -> None:
+    challenge = {
+        "provider": "http", "success": False, "skipped": False,
+        "error": "动态占位内容", "failure_kind": "challenge",
+    }
+    dashboard = {
+        "provider": "patchright", "success": True, "skipped": False, "error": None,
+        "content": "实时行情和成交数据\n" * 200, "attachments": None,
+        "final_url": "https://example.com/quote", "title": "行情", "content_type": "text/html",
+        "extraction_method": "patchright_browser+full_page_fallback",
+        "quality_warning": "页面正文链接密度过高，继续尝试主内容抓取器",
+    }
+    with patch("src.tools.webfetch._validate_public_url"), \
+         patch("src.tools.webfetch._http_fetch", return_value=challenge), \
+         patch("src.tools.webfetch._scrapling_fetch", return_value=dashboard), \
+         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl:
+        result = fetch_url("https://example.com/quote")
+
+    assert result["provider"] == "patchright"
+    assert "实时行情和成交数据" in result["content"]
+    firecrawl.assert_not_called()
+
+
+def test_webfetch_rejects_encrypted_waf_payload_even_when_http_is_200() -> None:
+    payload = '{"\\_waf\\_bd8ce2ce37":"' + ("Aa09_-" * 1000) + '"}'
+
+    assert _challenge_reason(payload, "application/json") == "页面返回了 WAF 加密挑战而非正文"
+
+
+def test_webfetch_rejects_unrendered_javascript_placeholder_page() -> None:
+    placeholders = "\n".join(["-" for _ in range(20)])
+    shell = "页面框架已经返回但业务数据仍未完成加载。" * 8
+    html = f"<html><body><h1>行情</h1><div>加载中</div><div>数据加载中...</div>{shell}{placeholders}</body></html>"
+
+    assert _challenge_reason(html, "text/html") == "页面返回了尚未加载完成的 JavaScript 动态占位内容"
+
+
+def test_webfetch_semantic_article_beats_long_comment_container() -> None:
+    html = """
+    <html><head><title>公司公告正文</title>
+    <meta name="description" content="公司公告正文：核心经营数据保持增长"></head>
+    <body><article><h1>公司公告正文</h1><p>核心经营数据保持增长，现金流同步改善。</p></article>
+    <div class="article-content comments">评论区噪声 """ + ("很长的评论 " * 300) + """</div></body></html>
+    """
+
+    content, method, metadata = _extract_html(html, "markdown")
+
+    assert method == "semantic_dom"
+    assert "核心经营数据保持增长" in content
+    assert "很长的评论" not in content
+    assert metadata["title"] == "公司公告正文"
+
+
+def test_webfetch_keeps_visible_dashboard_when_article_extractor_is_too_lossy() -> None:
+    rows = "".join(f"<tr><td>指标{i}的详细说明文字</td><td>{i * 10}</td></tr>" for i in range(300))
+    html = f"""
+    <html><head><title>数据看板</title></head><body>
+    <nav>首页 产品 设置</nav><table>{rows}</table><footer>版权信息</footer>
+    </body></html>
+    """
+
+    with patch("trafilatura.extract", return_value="被过度压缩的摘要" * 12):
+        content, method, _ = _extract_html(html, "text")
+
+    assert method == "full_page_fallback"
+    assert "指标79" in content
+
+
 def test_webfetch_blocks_private_ip() -> None:
     with pytest.raises(ValueError, match="SSRF"):
         fetch_url("http://127.0.0.1/admin")
@@ -356,3 +455,28 @@ def test_webfetch_open_http_contract_supports_images_and_five_mb_cap() -> None:
     assert image_result["attachments"][0]["url"].startswith("data:image/png;base64,")
     assert oversized_result["success"] is False
     assert "5MB" in oversized_result["error"]
+
+
+def test_webfetch_open_http_contract_parses_pdf_instead_of_decoding_binary() -> None:
+    pdf_response = Mock(
+        status_code=200,
+        headers={"content-type": "application/pdf"},
+        content=b"%PDF-1.7 test",
+        encoding=None,
+        url="https://example.com/report.pdf",
+    )
+    pdf_response.raise_for_status.return_value = None
+    client = Mock()
+    client.get.return_value = pdf_response
+    context = Mock()
+    context.__enter__ = Mock(return_value=client)
+    context.__exit__ = Mock(return_value=False)
+
+    with patch("src.tools.webfetch._validate_public_url"), \
+         patch("src.tools.webfetch.httpx.Client", return_value=context), \
+         patch("src.tools.webfetch._convert_document", return_value=("# 年报\n\n正文", "markitdown")):
+        result = _http_fetch("https://example.com/report.pdf", "markdown", 30)
+
+    assert result["success"] is True
+    assert result["content"] == "# 年报\n\n正文"
+    assert result["extraction_method"] == "markitdown"

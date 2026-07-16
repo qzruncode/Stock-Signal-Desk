@@ -42,6 +42,8 @@ lxml_html_clean             # Fix for lxml.html.clean ImportError in newer lxml 
 markdownify>=0.13.1         # HTML→Markdown（webfetch 工具，对应 OpenCode 的 turndown；未安装时降级 bs4 纯文本）
 beautifulsoup4>=4.12.0      # Web 正文清洗
 scrapling[fetchers]==0.4.11 # 本地静态抓取与 Patchright 浏览器兜底；版本固定以保证启动脚本可复现
+trafilatura==2.1.0          # 通用网页正文与元数据提取（webfetch）
+markitdown[pdf,docx,pptx,xlsx,xls]==0.1.6 # PDF/Office URL 转 Markdown（webfetch）
 
 # FastAPI Web 框架
 fastapi>=0.109.0            # 现代 Python Web 框架
