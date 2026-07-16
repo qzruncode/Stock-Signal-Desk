@@ -64,6 +64,18 @@ def test_latest_date_from_items_returns_none_for_empty_or_non_list():
     assert _latest_date_from_items([{"date": "x"}], ["date"]) is None
 
 
+def test_latest_date_from_items_can_compare_naive_and_offset_aware_values():
+    latest = _latest_date_from_items(
+        [
+            {"publish_time": "2026-07-15T10:00:00"},
+            {"publish_time": "2026-07-15T11:00:00+08:00"},
+        ],
+        ["publish_time"],
+    )
+
+    assert latest is not None
+
+
 # ---------------------------------------------------------------------------
 # _assess_tool_data_health
 # ---------------------------------------------------------------------------
@@ -145,6 +157,16 @@ def test_assess_health_news_family_recent_items_no_fallback():
     health = _assess_tool_data_health(
         "search_news", {"items": [{"publish_time": recent}], "days": 30}
     )
+    assert health["should_fallback"] is False
+
+
+def test_assess_health_news_family_accepts_offset_aware_data_time():
+    recent = datetime.now().astimezone().isoformat()
+    health = _assess_tool_data_health(
+        "get_social_sentiment",
+        {"items": [{"publish_time": recent}], "data_time": recent, "days": 30},
+    )
+
     assert health["should_fallback"] is False
 
 

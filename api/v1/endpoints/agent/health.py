@@ -10,6 +10,20 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
+def _comparison_datetime(value: datetime) -> datetime:
+    """Normalize mixed ISO timestamps for safe ordering.
+
+    Tool payloads legitimately contain both local timestamps without an
+    offset (AKShare/pages) and offset-aware timestamps (RSSHub/ISO).  Treat a
+    naive timestamp as local time and convert aware values to the same local
+    zone before comparing them.
+    """
+    local_tz = datetime.now().astimezone().tzinfo
+    if value.tzinfo is None:
+        return value.replace(tzinfo=local_tz)
+    return value.astimezone(local_tz)
+
+
 def _parse_iso_datetime(value: Any) -> datetime | None:
     if not value:
         return None
@@ -40,7 +54,10 @@ def _latest_date_from_items(items: Any, keys: List[str]) -> datetime | None:
             continue
         for key in keys:
             dt = _parse_iso_datetime(item.get(key))
-            if dt and (latest is None or dt > latest):
+            if dt and (
+                latest is None
+                or _comparison_datetime(dt) > _comparison_datetime(latest)
+            ):
                 latest = dt
     return latest
 
@@ -85,11 +102,13 @@ def _assess_tool_data_health(tool_name: str, result: Any) -> Dict[str, Any]:
         if result.get("data_time"):
             latest = _parse_iso_datetime(result.get("data_time"))
             days = int(result.get("days") or 30)
-            if latest and latest < (datetime.now() - timedelta(days=max(days, 1))):
+            cutoff = datetime.now().astimezone() - timedelta(days=max(days, 1))
+            if latest and _comparison_datetime(latest) < cutoff:
                 return {"should_fallback": True, "reason": "stale_news_family", "latest_date": latest.date().isoformat()}
         latest = _latest_date_from_items(items, ["publish_time", "publish_date", "date_str"])
         days = int(result.get("days") or 30)
-        if latest and latest < (datetime.now() - timedelta(days=max(days, 1))):
+        cutoff = datetime.now().astimezone() - timedelta(days=max(days, 1))
+        if latest and _comparison_datetime(latest) < cutoff:
             return {"should_fallback": True, "reason": "stale_news_family", "latest_date": latest.date().isoformat()}
         return {"should_fallback": False, "reason": None}
 
