@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd
@@ -61,7 +63,7 @@ def _get_stock_realtime_quote_em_push(stock_code: str) -> Optional[UnifiedRealti
             url,
             params={
                 "secid": secid,
-                "fields": "f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f116,f117,f162,f167,f168,f169,f170,f171",
+                "fields": "f43,f44,f45,f46,f47,f48,f50,f57,f58,f60,f116,f117,f124,f162,f167,f168,f169,f170,f171",
                 "ut": "fa5fd1943c7b386f172d6893dbfba10b",
             },
             headers={
@@ -80,14 +82,23 @@ def _get_stock_realtime_quote_em_push(stock_code: str) -> Optional[UnifiedRealti
             breaker.record_failure(source_key, "empty_payload")
             return None
 
+        source_timestamp = safe_int(d.get("f124"))
+        trade_time = (
+            datetime.fromtimestamp(source_timestamp).astimezone().isoformat()
+            if source_timestamp
+            else None
+        )
+        raw_volume = safe_int(d.get("f47"))
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=str(d.get("f58", "")),
             source=RealtimeSource.EASTMONEY_PUSH,
+            trade_time=trade_time,
             price=safe_float(d.get("f43")) / 100 if d.get("f43") else None,
             change_pct=safe_float(d.get("f170")) / 100 if d.get("f170") else None,
             change_amount=safe_float(d.get("f169")) / 100 if d.get("f169") else None,
-            volume=safe_int(d.get("f47")),
+            # Eastmoney f47 is lots (手); normalize the public contract to shares.
+            volume=raw_volume * 100 if raw_volume is not None else None,
             amount=safe_float(d.get("f48")),
             volume_ratio=safe_float(d.get("f50")) / 100 if d.get("f50") else None,
             turnover_rate=safe_float(d.get("f168")) / 100 if d.get("f168") else None,
@@ -170,6 +181,7 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
             return None
 
         row = row.iloc[0]
+        raw_volume = safe_int(row.get('成交量'))
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=str(row.get('名称', '')),
@@ -177,7 +189,8 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
             price=safe_float(row.get('最新价')),
             change_pct=safe_float(row.get('涨跌幅')),
             change_amount=safe_float(row.get('涨跌额')),
-            volume=safe_int(row.get('成交量')),
+            # Eastmoney spot volume is lots (手).
+            volume=raw_volume * 100 if raw_volume is not None else None,
             amount=safe_float(row.get('成交额')),
             volume_ratio=safe_float(row.get('量比')),
             turnover_rate=safe_float(row.get('换手率')),
@@ -254,10 +267,17 @@ def _get_stock_realtime_quote_xueqiu(stock_code: str) -> Optional[UnifiedRealtim
         if change_amount is None and current is not None and last_close is not None:
             change_amount = round(current - last_close, 4)
 
+        source_timestamp = safe_int(quote_data.get("timestamp"))
+        trade_time = (
+            datetime.fromtimestamp(source_timestamp / 1000).astimezone().isoformat()
+            if source_timestamp
+            else None
+        )
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=str(quote_data.get("name", "")),
             source=RealtimeSource.XUEQIU,
+            trade_time=trade_time,
             price=current,
             change_pct=safe_float(quote_data.get("percent")),
             change_amount=change_amount,
@@ -330,10 +350,19 @@ def _get_stock_realtime_quote_sina(stock_code: str) -> Optional[UnifiedRealtimeQ
         change_amount = price - pre_close if price is not None and pre_close not in (None, 0) else None
         change_pct = (change_amount / pre_close * 100) if change_amount is not None and pre_close else None
 
+        trade_time = None
+        if len(fields) > 31 and fields[30] and fields[31]:
+            try:
+                trade_time = datetime.strptime(
+                    f"{fields[30]} {fields[31]}", "%Y-%m-%d %H:%M:%S"
+                ).astimezone().isoformat()
+            except ValueError:
+                pass
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=fields[0],
             source=RealtimeSource.AKSHARE_SINA,
+            trade_time=trade_time,
             price=price,
             change_pct=change_pct,
             change_amount=change_amount,
@@ -390,14 +419,27 @@ def _get_stock_realtime_quote_tencent(stock_code: str) -> Optional[UnifiedRealti
 
         # 腾讯 qt 接口 ~ 分隔字段顺序：[3]最新价 [4]昨收 [5]今开 [6]成交量
         # [31]涨跌额 [32]涨跌幅 [33]最高 [34]最低；[35] 为"价/量/额"复合串勿用
+        trade_time = None
+        if len(fields) > 30 and re.fullmatch(r"\d{14}", fields[30] or ""):
+            trade_time = datetime.strptime(fields[30], "%Y%m%d%H%M%S").astimezone().isoformat()
+        raw_volume = safe_int(fields[6])
+        amount = None
+        if len(fields) > 35:
+            composite = fields[35].split("/")
+            amount = safe_float(composite[2]) if len(composite) > 2 else None
+        circ_mv_yi = safe_float(fields[44] if len(fields) > 44 else None)
+        total_mv_yi = safe_float(fields[45] if len(fields) > 45 else None)
         quote = UnifiedRealtimeQuote(
             code=stock_code,
             name=fields[1],
             source=RealtimeSource.AKSHARE_TENCENT,
+            trade_time=trade_time,
             price=safe_float(fields[3]),
             change_pct=safe_float(fields[32]),
             change_amount=safe_float(fields[31]),
-            volume=safe_int(fields[6]),
+            # Tencent field 6 is lots and market-cap fields are 亿元.
+            volume=raw_volume * 100 if raw_volume is not None else None,
+            amount=amount,
             open_price=safe_float(fields[5]),
             pre_close=safe_float(fields[4]),
             high=safe_float(fields[33]),
@@ -405,8 +447,8 @@ def _get_stock_realtime_quote_tencent(stock_code: str) -> Optional[UnifiedRealti
             turnover_rate=safe_float(fields[38]),
             pe_ratio=safe_float(fields[39]),
             pb_ratio=safe_float(fields[46] if len(fields) > 46 else None),
-            total_mv=safe_float(fields[45] if len(fields) > 45 else None),
-            circ_mv=safe_float(fields[44] if len(fields) > 44 else None),
+            total_mv=total_mv_yi * 1e8 if total_mv_yi is not None else None,
+            circ_mv=circ_mv_yi * 1e8 if circ_mv_yi is not None else None,
         )
         breaker.record_success(source_key)
         logger.info("[实时行情-腾讯] %s %s: 价格=%s, 涨跌=%s%% endpoint=%s", stock_code, quote.name, quote.price, quote.change_pct, TENCENT_REALTIME_ENDPOINT)
@@ -438,16 +480,13 @@ def get_realtime_quote(stock_code: str, source: str = "em") -> Optional[UnifiedR
     if quote and quote.has_basic_data():
         return quote
 
-    quote = _get_stock_realtime_quote_em(normalized_code)
-    if quote and quote.has_basic_data():
-        return quote
-
-    quote = _get_stock_realtime_quote_xueqiu(normalized_code)
-    if quote and quote.has_basic_data():
-        return quote
-
-    for fallback in (_get_stock_realtime_quote_sina, _get_stock_realtime_quote_tencent):
+    # Single-symbol sources are faster and safer than downloading the entire
+    # A-share market for every miss.  Full-scan Eastmoney is the final fallback.
+    for fallback in (_get_stock_realtime_quote_sina, _get_stock_realtime_quote_tencent, _get_stock_realtime_quote_xueqiu):
         quote = fallback(normalized_code)
         if quote and quote.has_basic_data():
             return quote
+    quote = _get_stock_realtime_quote_em(normalized_code)
+    if quote and quote.has_basic_data():
+        return quote
     return None

@@ -60,6 +60,7 @@ class UnifiedRealtimeQuote:
     code: str
     name: str = ""
     source: RealtimeSource = RealtimeSource.AKSHARE_EM
+    trade_time: Optional[str] = None
 
     # 核心价格数据
     price: Optional[float] = None
@@ -96,8 +97,12 @@ class UnifiedRealtimeQuote:
             'code': self.code,
             'name': self.name,
             'source': self.source.value,
+            'volume_unit': '股',
+            'amount_unit': '元',
+            'market_value_unit': '元',
         }
         for f in [
+            'trade_time',
             'price', 'change_pct', 'change_amount', 'volume', 'amount',
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-import sys
+import re
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -18,9 +18,6 @@ from ._helpers import (
 )
 from ._cache import _daily_cache_get, _daily_cache_put
 
-# Late-bound reference for test monkey-patching compatibility
-_pkg = sys.modules[__package__]
-
 _SENTIMENT_POSITIVE = {
     '增长', '上升', '突破', '新高', '利好', '看好', '受益', '回暖',
     '复苏', '改善', '提升', '盈利', '超额', '领先', '强劲', '大涨', '涨停',
@@ -29,6 +26,65 @@ _SENTIMENT_POSITIVE = {
     '持续增长', '净流入', '上涨', '反弹', '拉升', '领涨', '跑赢',
     '提振', '兑现', '创纪录', '高景气', '高增长', '强势',
 }
+
+
+def _fetch_direct_sentiment_sources(symbol: str, days: int) -> tuple[list[dict], list[str]]:
+    """Use structured AKShare feeds when the legacy sentiment endpoint lacks RSS samples."""
+    import akshare as ak
+
+    code = _normalize_symbol(symbol)
+    cutoff = datetime.now() - timedelta(days=days)
+    items: list[dict] = []
+    errors: list[str] = []
+    sources = (
+        (
+            "东方财富新闻直连",
+            lambda: ak.stock_news_em(symbol=code),
+            "发布时间",
+            "新闻标题",
+            "新闻内容",
+            "文章来源",
+        ),
+        (
+            "东方财富研报直连",
+            lambda: ak.stock_research_report_em(symbol=code),
+            "日期",
+            "报告名称",
+            None,
+            "机构",
+        ),
+    )
+    for label, fetcher, date_col, title_col, content_col, source_col in sources:
+        try:
+            frame = fetcher()
+            if frame is None or frame.empty:
+                continue
+            for _, row in frame.iterrows():
+                published = _parse_date(row.get(date_col))
+                if published is not None and published < cutoff:
+                    continue
+                content = _safe_str(row.get(content_col)) if content_col else ""
+                if label.endswith("研报直连"):
+                    rating = _safe_str(row.get("东财评级"))
+                    content = f"机构评级: {rating}" if rating else ""
+                items.append({
+                    "title": _safe_str(row.get(title_col)),
+                    "content": content,
+                    "date_str": published.date().isoformat() if published else None,
+                    "source": _safe_str(row.get(source_col)) or label,
+                })
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('date_str', '')}").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped, errors
 
 _SENTIMENT_NEGATIVE = {
     '下跌', '暴跌', '亏损', '下滑', '减持', '套牢', '风险',
@@ -84,8 +140,7 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
     keywords = _rss_stock_keywords(code)
     feed_specs = _rss_stock_feed_specs(keywords) + [
         ("eastmoney_report", {"category": "stock"}, "东方财富个股研报", True),
-        ("ulapia", {"category": "stock_research"}, "ulapia个股研报", True),
-        ("ulapia", {"category": "brokerage_news"}, "ulapia券商晨报", True),
+        ("wkjyqh_research", {}, "五矿期货研究", True),
     ]
     entries, _, fetch_errors = _fetch_rsshub_entries(
         code,
@@ -108,7 +163,7 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
         })
 
     if len(unique_items) < 5:
-        direct_items, direct_errors = _pkg._fetch_direct_sentiment_sources(code, days)
+        direct_items, direct_errors = _fetch_direct_sentiment_sources(code, days)
         errors.extend(direct_errors)
         existing_keys = {
             re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('date_str', '')}").lower()

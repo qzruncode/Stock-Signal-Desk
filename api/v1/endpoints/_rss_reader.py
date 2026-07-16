@@ -52,6 +52,7 @@ def read_feed(
     namespace: Optional[str] = None,
     limit: int = DEFAULT_FEED_LIMIT,
     force: bool = False,
+    fallback_to_xml: bool = True,
 ) -> Dict[str, Any]:
     """Fetch a feed by FeedSpec and return a compact, assistant-friendly dict.
 
@@ -71,6 +72,10 @@ def read_feed(
         effective_limit = max(1, min(MAX_FEED_LIMIT, int(effective_options.get("limit") or limit)))
     except (TypeError, ValueError):
         effective_limit = limit
+    # ``limit`` must reach RSSHub, not only trim the already-returned payload.
+    # Otherwise the first cached 8-item read permanently starves later research
+    # searches that ask for a 40-50 item candidate window.
+    effective_options["limit"] = effective_limit
 
     try:
         feed_url = _build_feed_url_generic(route_path, params, effective_options, namespace=namespace)
@@ -94,7 +99,7 @@ def read_feed(
 
     # Default to JSON (rich items); fall back to XML parse if JSON path fails.
     result = _fetch_rss_feed_json(feed_url, limit=effective_limit)
-    if result.get("errors") and not result.get("items"):
+    if fallback_to_xml and result.get("errors") and not result.get("items"):
         logger.info("[RSS-reader] JSON fetch failed, falling back to XML: %s", result["errors"][0])
         result = _fetch_rss_feed(feed_url, limit=effective_limit)
 

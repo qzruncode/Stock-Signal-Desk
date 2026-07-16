@@ -43,12 +43,11 @@ def _is_etf_code(stock_code: str) -> bool:
 
 def _to_sina_tx_symbol(stock_code: str) -> str:
     code = stock_code.strip()
+    if is_bse_code(code):
+        return f"bj{code}"
     if code.startswith(('6', '5', '90')):
         return f"sh{code}"
-    elif code.startswith(('8', '4', '9')):
-        return f"bj{code}"
-    else:
-        return f"sz{code}"
+    return f"sz{code}"
 
 
 def _normalize_data(df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -142,6 +141,8 @@ def fetch_stock_data_em(
         api_elapsed = _time.time() - api_start
         if df is not None and not df.empty:
             logger.info("[API返回] ak.stock_zh_a_hist 成功: %d 行, 耗时 %.2fs", len(df), api_elapsed)
+            if "成交量" in df.columns:
+                df["成交量"] = pd.to_numeric(df["成交量"], errors="coerce") * 100
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -210,9 +211,11 @@ def fetch_stock_data_tx(
         if df is not None and not df.empty:
             rename_map = {
                 'date': '日期', 'open': '开盘', 'high': '最高',
-                'low': '最低', 'close': '收盘', 'volume': '成交量', 'amount': '成交额',
+                'low': '最低', 'close': '收盘', 'amount': '成交量',
             }
             df = df.rename(columns=rename_map)
+            if '成交量' in df.columns:
+                df['成交量'] = pd.to_numeric(df['成交量'], errors='coerce') * 100
             if 'pct_chg' in df.columns:
                 df = df.rename(columns={'pct_chg': '涨跌幅'})
             elif '收盘' in df.columns:
@@ -252,6 +255,8 @@ def fetch_etf_data(
         api_elapsed = _time.time() - api_start
         if df is not None and not df.empty:
             logger.info("[API返回] ak.fund_etf_hist_em 成功: %d 行, 耗时 %.2fs", len(df), api_elapsed)
+            if "成交量" in df.columns:
+                df["成交量"] = pd.to_numeric(df["成交量"], errors="coerce") * 100
             return df
         return pd.DataFrame()
     except Exception as e:
@@ -411,6 +416,8 @@ def fetch_stock_kline_history(
                 '成交额': 'amount', '涨跌幅': 'pct_chg',
             }
             df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+            if 'volume' in df.columns:
+                df['volume'] = pd.to_numeric(df['volume'], errors='coerce') * 100
             keep_cols = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
             df = df[[c for c in keep_cols if c in df.columns]]
             df = df.tail(days)

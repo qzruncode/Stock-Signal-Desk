@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time, timedelta
 from typing import Any
 
@@ -35,7 +37,7 @@ _fetcher: AkshareFetcher | None = None
 
 
 def _quote_data_time(item: dict) -> str | None:
-    return item.get("_fetched_at") or item.get("data_time") or item.get("trade_time")
+    return item.get("trade_time") or item.get("data_time") or item.get("_fetched_at")
 
 
 def _get_fetcher() -> AkshareFetcher:
@@ -51,9 +53,16 @@ def _get_fetcher() -> AkshareFetcher:
 
 def _is_trading_hours() -> bool:
     """判断当前是否在 A 股交易时段（周一至周五 9:30-11:30, 13:00-15:00）。"""
-    now = datetime.now()
+    now = datetime.now().astimezone()
     if now.weekday() >= 5:  # 周末
         return False
+    try:
+        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
+
+        if expected_trade_day(now, _fetch_trade_dates()) != now.date():
+            return False
+    except Exception:
+        pass
     t = now.time()
     return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
 
@@ -63,50 +72,77 @@ def _last_trading_day() -> datetime:
 
     例如：周二 8:00 → 返回周一 0:00，周一写入的缓存 >= 周一 0:00 → 有效。
     """
-    now = datetime.now()
-    today = now.date()
-    # 如果今天是交易日且已过 9:30（交易已开始或即将开始），最近交易日就是今天
-    if today.weekday() < 5 and now.time() >= time(9, 30):
-        return datetime.combine(today, time(0, 0))
-    # 否则往前找最近一个交易日
-    d = today - timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return datetime.combine(d, time(0, 0))
+    now = datetime.now().astimezone()
+    try:
+        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
+
+        day = expected_trade_day(now, _fetch_trade_dates())
+    except Exception:
+        day = now.date()
+        if day.weekday() >= 5 or now.time() < time(9, 15):
+            day -= timedelta(days=1)
+            while day.weekday() >= 5:
+                day -= timedelta(days=1)
+    return datetime.combine(day, time(0, 0))
 
 
 def _mark_quote_freshness(items: list[dict], *, trading: bool, fallback_used: bool) -> list[dict]:
-    today = datetime.now().date()
+    now = datetime.now().astimezone()
+    expected_day = _last_trading_day().date()
     for item in items:
         data_time = _quote_data_time(item)
-        is_stale = False
+        is_stale = data_time is None
         if data_time:
             try:
                 parsed = datetime.fromisoformat(str(data_time).replace("Z", "+00:00"))
-                # 交易时段：行情应反映当日，早于今天即视为陈旧。
-                # 非交易时段：缓存来自最近一次交易，用"最近交易日"而非"今天"
-                # 作新鲜度下限——否则周末/夜间会把上一交易日收盘缓存全部误判为 stale。
-                if trading:
-                    is_stale = parsed.date() < today
-                else:
-                    is_stale = parsed.date() < _last_trading_day().date()
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=now.tzinfo)
+                is_stale = parsed.date() < expected_day
+                if trading and parsed.date() == expected_day:
+                    is_stale = (now - parsed).total_seconds() > 15 * 60
             except ValueError:
-                pass
+                is_stale = True
         item["data_time"] = data_time
         item["is_stale"] = is_stale
-        item["fallback_used"] = fallback_used
+        source = str(item.get("source") or "")
+        item["fallback_used"] = source != "eastmoney_push" if source else fallback_used
     return items
 
 
-def _build_response(items: list[dict], *, fallback_used: bool) -> dict[str, Any]:
+def _build_response(
+    items: list[dict],
+    *,
+    requested: list[str],
+    invalid: list[str] | None = None,
+) -> dict[str, Any]:
     """组装统一的行情响应体。"""
     marked = items  # freshness 已由调用方在合并后标记
+    returned = {str(item.get("code")) for item in marked}
+    invalid_set = set(invalid or [])
+    missing = [symbol for symbol in requested if symbol not in returned and symbol not in invalid_set]
+    errors = []
+    if invalid:
+        errors.append(f"无法识别或不支持的证券代码: {', '.join(invalid)}")
+    if missing:
+        errors.append(f"实时行情无数据: {', '.join(missing)}")
+    success = bool(marked)
     return {
+        "success": success,
+        "partial": success and bool(errors),
         "items": marked,
         "total": len(marked),
         "data_time": max((_quote_data_time(item) for item in marked if _quote_data_time(item)), default=None),
-        "is_stale": any(item.get("is_stale") for item in marked),
-        "fallback_used": fallback_used,
+        "is_stale": not marked or any(item.get("is_stale") for item in marked),
+        "fallback_used": any(item.get("fallback_used") for item in marked),
+        "_cached": bool(marked) and all(item.get("_cached") for item in marked),
+        "source": sorted({str(item.get("source")) for item in marked if item.get("source")}),
+        "requested_symbols": requested,
+        "missing_symbols": missing,
+        "invalid_symbols": invalid or [],
+        "volume_unit": "股",
+        "amount_unit": "元",
+        "market_value_unit": "元",
+        "errors": errors,
     }
 
 
@@ -120,7 +156,14 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
         dict: {items, total, data_time, is_stale, fallback_used}
     """
     if not symbols:
-        return {"items": [], "total": 0}
+        return _build_response([], requested=[])
+
+    requested = list(dict.fromkeys(str(symbol).strip() for symbol in symbols if str(symbol).strip()))[:20]
+    valid = [symbol for symbol in requested if re.fullmatch(r"\d{6}", symbol)]
+    invalid = [symbol for symbol in requested if symbol not in valid]
+    if not valid:
+        return _build_response([], requested=requested, invalid=invalid)
+    symbols = valid
 
     from src.storage import DatabaseManager
     db = DatabaseManager.get_instance()
@@ -140,8 +183,8 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
                 logger.info(f"[行情缓存] 缓存命中 {len(cached)} 只, 需拉取 {len(missing)} 只")
             else:
                 logger.info(f"[行情缓存] 全部命中 {len(cached)} 只，跳过 API")
-                marked = _mark_quote_freshness(results, trading=trading, fallback_used=True)
-                return _build_response(marked, fallback_used=True)
+                marked = _mark_quote_freshness(results, trading=trading, fallback_used=False)
+                return _build_response(marked, requested=requested, invalid=invalid)
             symbols = missing
         else:
             logger.info("[行情缓存] 无缓存，需全量拉取")
@@ -149,24 +192,34 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
 
     # --- 拉取实时数据 ---
     fetcher = _get_fetcher()
-    fetch_results = []
-    now_ts = datetime.now().isoformat()
-    for sym in symbols:
-        quote = fetcher.get_realtime_quote(sym)
-        if quote and quote.has_basic_data():
-            d = quote.to_dict()
-            d['_fetched_at'] = now_ts
-            fetch_results.append(d)
-            # 写入缓存
-            db.save_quote_snapshot(sym, json.dumps(d, ensure_ascii=False))
+    fetch_results_by_symbol: dict[str, dict[str, Any]] = {}
+    now_ts = datetime.now().astimezone().isoformat()
+    with ThreadPoolExecutor(max_workers=min(8, len(symbols)), thread_name_prefix="realtime-quote") as executor:
+        futures = {executor.submit(fetcher.get_realtime_quote, sym): sym for sym in symbols}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                quote = future.result()
+            except Exception as exc:
+                logger.warning("[实时行情] %s 获取失败: %s", sym, exc)
+                continue
+            if quote and quote.has_basic_data():
+                data = quote.to_dict()
+                data['_fetched_at'] = now_ts
+                data['_cached'] = False
+                fetch_results_by_symbol[sym] = data
+                db.save_quote_snapshot(sym, json.dumps(data, ensure_ascii=False))
+    fetch_results = [fetch_results_by_symbol[symbol] for symbol in symbols if symbol in fetch_results_by_symbol]
 
     if not trading:
         # 合并缓存结果和拉取结果
-        merged = _mark_quote_freshness(results + fetch_results, trading=trading, fallback_used=bool(results))
-        return _build_response(merged, fallback_used=bool(results))
+        combined = {str(item.get("code")): item for item in results + fetch_results}
+        merged = [combined[symbol] for symbol in requested if symbol in combined]
+        marked = _mark_quote_freshness(merged, trading=trading, fallback_used=False)
+        return _build_response(marked, requested=requested, invalid=invalid)
 
     marked = _mark_quote_freshness(fetch_results, trading=trading, fallback_used=False)
-    return _build_response(marked, fallback_used=False)
+    return _build_response(marked, requested=requested, invalid=invalid)
 
 
 def _execute(symbols: str) -> dict[str, Any]:

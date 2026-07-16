@@ -112,6 +112,8 @@ def _compact_time_series(result: Dict[str, Any], key: str = "data") -> Dict[str,
         return result
     latest = series[-1] if series else {}
     compact = {
+        "success": result.get("success"),
+        "partial": result.get("partial"),
         "symbol": result.get("symbol") or result.get("index_code"),
         "count": len(series),
         "latest": latest,
@@ -120,8 +122,15 @@ def _compact_time_series(result: Dict[str, Any], key: str = "data") -> Dict[str,
         "data_time": result.get("data_time") or latest.get("date"),
         "is_stale": result.get("is_stale"),
         "fallback_used": result.get("fallback_used"),
+        "errors": result.get("errors", []),
+        "warnings": result.get("warnings", []),
         "_cached": result.get("_cached"),
         "_fetched_at": result.get("_fetched_at"),
+        "adjust": result.get("adjust"),
+        "period": result.get("period"),
+        "volume_unit": result.get("volume_unit"),
+        "amount_unit": result.get("amount_unit"),
+        "bar_complete": result.get("bar_complete"),
     }
     if series:
         compact["range"] = {
@@ -152,7 +161,8 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         }
         _QUOTE_PASSTHROUGH = (
             "name", "price", "high", "low", "volume", "amount",
-            "turnover_rate", "total_mv", "circ_mv",
+            "turnover_rate", "total_mv", "circ_mv", "source", "trade_time", "data_time",
+            "is_stale", "fallback_used", "volume_unit", "amount_unit", "market_value_unit",
         )
         raw_items = result.get("items", []) if isinstance(result, dict) else []
         compact_items: list[Any] = []
@@ -169,12 +179,22 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
                     mapped[f] = item.get(f)
             compact_items.append(mapped)
         return _annotate_tool_payload(tool_name, {
+            "success": result.get("success"),
+            "partial": result.get("partial"),
             "total": result.get("total", len(compact_items)),
             "items": compact_items,
             "data_time": result.get("data_time"),
             "is_stale": result.get("is_stale"),
             "fallback_used": result.get("fallback_used"),
+            "source": result.get("source"),
+            "errors": result.get("errors", []),
             "_cached": result.get("_cached"),
+            "requested_symbols": result.get("requested_symbols"),
+            "missing_symbols": result.get("missing_symbols"),
+            "invalid_symbols": result.get("invalid_symbols"),
+            "volume_unit": result.get("volume_unit"),
+            "amount_unit": result.get("amount_unit"),
+            "market_value_unit": result.get("market_value_unit"),
         }, payload_policy="compacted", compacted=True, compaction_reason="quotes_item_window")
 
     if tool_name in {"get_kline", "get_history_data"}:
@@ -192,7 +212,10 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             [
                 "is_trading_time", "up_count", "down_count", "flat_count",
                 "limit_up_count", "limit_down_count", "total_amount", "north_flow",
-                "breadth_source", "sh_index", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
+                "halt_count", "total_amount_unit", "turnover_scope", "breadth_scope",
+                "breadth_source", "indices", "sh_index", "north_flow_available", "north_flow_note",
+                "source", "errors", "warnings", "market_date", "data_time", "is_stale",
+                "fallback_used", "success", "partial", "_cached", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="market_status_key_fields")
 
@@ -214,6 +237,8 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             ["name", "code", "change_pct", "lead_stock", "lead_stock_change_pct", "up_count", "down_count", "net_flow"],
         )
         return _annotate_tool_payload(tool_name, {
+            "success": result.get("success"),
+            "partial": result.get("partial"),
             "type": result.get("type"),
             "total": len(items),
             "top_movers": top,
@@ -221,20 +246,24 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "data_time": result.get("data_time"),
             "is_stale": result.get("is_stale"),
             "fallback_used": result.get("fallback_used"),
+            "source": result.get("source"),
+            "errors": result.get("errors", []),
             "_cached": result.get("_cached"),
             "_fetched_at": result.get("_fetched_at"),
         }, payload_policy="compacted", compacted=True, compaction_reason="sector_top_bottom_window")
 
     if tool_name == "get_stock_info":
-        # endpoint 返回嵌套中文结构,先归一化成英文 key 再挑字段,
-        # 否则白名单里除 symbol 外全部取不到值(只剩 symbol + meta)。
-        normalized = _normalize_stock_info(result)
         return _annotate_tool_payload(tool_name, _pick_fields(
-            normalized,
+            result,
             [
-                "symbol", "name", "short_name", "industry", "market", "listing_date",
-                "main_business", "total_shares", "circ_shares", "pe_dynamic",
-                "pe_static", "pb_ratio", "total_mv", "circ_mv", "_cached", "_fetched_at",
+                "symbol", "company_name", "company_name_en", "short_name", "former_names",
+                "market", "market_code", "industry", "industry_eastmoney", "legal_representative",
+                "registered_capital", "registered_capital_unit", "established_date", "listing_date",
+                "official_website", "email", "phone", "registered_address", "office_address",
+                "main_business", "business_scope", "company_profile", "included_indices",
+                "capital_snapshot", "profile_available", "capital_snapshot_available", "sources", "source",
+                "success", "errors", "warnings", "data_time", "is_stale", "fallback_used",
+                "_cached", "cache_detail", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="stock_info_key_fields")
 
@@ -249,10 +278,26 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         series = result.get(series_key, [])
         return _annotate_tool_payload(tool_name, {
             "symbol": result.get("symbol"),
+            "requested_periods": result.get("requested_periods"),
             "periods": len(series) if isinstance(series, list) else result.get("periods"),
             "latest": series[-1] if isinstance(series, list) and series else {},
             "recent_periods": series[-6:] if isinstance(series, list) else [],
+            "amount_unit": result.get("amount_unit"),
+            "ratio_unit": result.get("ratio_unit"),
+            "per_share_unit": result.get("per_share_unit"),
+            "currency": result.get("currency"),
+            "basis": result.get("basis"),
+            "flow_basis": result.get("flow_basis"),
+            "balance_basis": result.get("balance_basis"),
             "source": result.get("source"),
+            "sources": result.get("sources"),
+            "source_url": result.get("source_url"),
+            "success": result.get("success"),
+            "partial": result.get("partial"),
+            "errors": result.get("errors"),
+            "data_time": result.get("data_time"),
+            "is_stale": result.get("is_stale"),
+            "fallback_used": result.get("fallback_used"),
             "_cached": result.get("_cached"),
             "_fetched_at": result.get("_fetched_at"),
         }, payload_policy="compacted", compacted=True, compaction_reason="financial_recent_periods")
@@ -261,9 +306,15 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         return _annotate_tool_payload(tool_name, _pick_fields(
             result,
             [
-                "symbol", "trade_date", "pe_static", "pe_dynamic", "pe_ttm", "pb", "ps",
-                "pcf", "peg", "dividend_yield", "dividend_date", "pe_percentiles",
-                "industry_average", "price_overdraft_signal", "source_chain", "errors", "_cached", "_fetched_at",
+                "symbol", "name", "trade_date", "history_trade_date", "current_price", "pe_static", "pe_dynamic",
+                "pe_ttm", "pb_mrq", "pb_annual", "ps_ttm", "pcf_ttm", "peg_trailing", "peg_forward",
+                "peg_basis", "forward_pe", "forward_ps", "forward_pe_current_year", "forward_pe_next_year",
+                "dividend_yield_ttm_pct", "cash_dividend_per_share_ttm", "dividend_count_ttm", "dividends_ttm",
+                "pe_percentiles", "pe_history_stats", "industry_rank", "industry_benchmark",
+                "price_overdraft_signal", "total_market_cap", "circulating_market_cap", "price_unit",
+                "market_cap_unit", "ratio_unit", "percent_unit", "valuation_basis", "sources", "source_urls",
+                "success", "partial", "errors", "data_time", "data_time_inferred", "is_stale", "fallback_used",
+                "cache_detail", "_cached", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="valuation_key_fields")
 
@@ -272,39 +323,73 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             **_pick_fields(
                 result,
                 [
-                    "symbol", "holder_count", "holder_count_previous", "holder_count_change",
-                    "holder_count_change_pct", "holder_report_date", "institution_holding_ratio",
-                    "actual_controller", "control_change_date", "source_chain", "errors",
-                    "_cached", "_fetched_at",
+                    "symbol", "holder_count", "top_holders_report_date", "top_holder_item_count",
+                    "institution_holding", "institution_holding_ratio", "institution_holding_ratio_basis",
+                    "actual_controller", "holder_change_item_count", "units", "source", "sources",
+                    "source_urls", "source_scope", "section_availability", "success", "partial", "errors",
+                    "warnings", "data_time", "holder_report_date", "expected_latest_report_date",
+                    "freshness_unknown", "is_stale", "fallback_used", "cache_detail", "_cached", "_fetched_at",
                 ],
             ),
             "top_holders": _trim_list(
                 result.get("top_holders"),
                 10,
-                ["rank", "holder_name", "holding_amount", "holding_ratio", "holder_type"],
+                [
+                    "rank", "holder_name", "holder_type", "share_type", "holding_shares",
+                    "holding_ratio_pct", "change_direction", "change_shares", "change_ratio_pct",
+                ],
             ),
             "holder_changes": _trim_list(
                 result.get("holder_changes"),
                 8,
-                ["holder_name", "change_type", "change_amount", "change_ratio", "date"],
+                [
+                    "announcement_date", "holder_name", "change_direction", "change_shares",
+                    "signed_change_shares", "average_price_yuan", "remaining_shares",
+                    "change_period", "transaction_method",
+                ],
             ),
         }, payload_policy="compacted", compacted=True, compaction_reason="shareholder_top_lists")
 
     if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_research_report", "get_social_sentiment"}:
         item_fields_map = {
-            "search_news": ["title", "publish_time", "source", "category", "event_type", "polarity", "importance", "summary"],
-            "get_announcements": ["title", "publish_date", "notice_type", "url"],
-            "get_risk_events": ["title", "date", "source", "source_type", "severity", "risk_label", "risk_summary", "tags"],
-            "get_research_report": ["title", "org", "rating", "publish_date", "industry", "profit_forecasts", "monthly_report_count"],
-            "get_social_sentiment": ["title", "publish_time", "source", "label", "sentiment_score", "read_count", "reply_count"],
+            "search_news": [
+                "title", "published", "source", "url", "source_type", "rss_route", "relevance",
+                "relevance_score", "event_type", "event_label", "importance", "tags", "classification_method", "summary",
+            ],
+            "get_announcements": [
+                "title", "publish_date", "notice_type", "source_notice_type", "url",
+                "importance", "tags", "classification_method",
+            ],
+            "get_risk_events": [
+                "title", "date", "source", "source_type", "url", "severity", "status",
+                "risk_category", "risk_label", "risk_summary", "tags", "confidence",
+                "evidence_basis", "requires_fulltext_verification", "classification_method",
+            ],
+            "get_research_report": [
+                "title", "org", "rating", "publish_date", "industry", "url", "summary",
+                "profit_forecasts", "monthly_report_count", "source", "source_type",
+            ],
+            "get_social_sentiment": [
+                "title", "publish_time", "source", "author", "post_kind", "url", "label",
+                "sentiment_score", "positive_hits", "negative_hits", "read_count", "reply_count",
+                "classification_method", "page_number",
+            ],
         }
         compact = _pick_fields(
             result,
             [
-                "symbol", "days", "type", "source", "sentiment_score", "overall_score",
-                "positive_count", "negative_count", "neutral_count", "total_discussion",
-                "total_read", "total_reply", "diagnose_score", "top_keywords",
-                "analysis", "source_chain", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
+                "symbol", "name", "days", "limit", "type", "source", "sources", "sentiment_score", "overall_score",
+                "positive_count", "negative_count", "neutral_count", "total_discussion", "user_post_count",
+                "syndicated_info_count", "xueqiu_hot_count", "returned_item_order", "sentiment_sample_scope", "engagement_weighted_score",
+                "sentiment_confidence",
+                "total_read", "total_reply", "diagnose_score", "eastmoney_diagnose_score", "diagnose_score_semantics", "top_keywords",
+                "analysis", "source_chain", "rss_routes", "item_count", "excluded_weak_mention_count",
+                "success", "partial", "errors", "warnings", "data_time", "retrieved_at", "freshness_unknown", "is_stale",
+                "has_announcements", "coverage_start", "coverage_end", "source_scope", "fallback_attempted",
+                "has_risk_events",
+                "has_reports",
+                "max_pages", "coverage_complete",
+                "fallback_used", "fallback_recommended", "fallback_query", "cache_detail", "_cached", "_fetched_at",
             ],
         )
         if "daily_trend" in result:
@@ -325,8 +410,10 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         compact = _pick_fields(
             result,
             [
-                "query", "topic", "success", "item_count", "rss_routes", "rss_catalog_count",
-                "web_fallback", "source", "errors", "data_time", "is_stale", "fallback_used",
+                "query", "topic", "days", "success", "partial", "item_count", "rss_routes", "rss_catalog_count",
+                "attempted_route_count", "successful_route_count", "web_fallback", "source", "errors", "warnings",
+                "data_time", "retrieved_at", "is_stale", "freshness_unknown", "fallback_attempted", "fallback_used",
+                "fallback_recommended",
             ],
         )
         compact["items"] = _trim_list(
@@ -344,24 +431,67 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
 
     if tool_name == "get_stock_capital_flow":
         return _annotate_tool_payload(tool_name, {
-            **_pick_fields(result, ["symbol", "market", "days", "latest", "summary", "item_count", "source", "success", "errors", "data_time", "is_stale", "fallback_used", "_cached"]),
-            "recent": _trim_list(result.get("items"), 10),
+            **_pick_fields(result, [
+                "symbol", "market", "days", "latest", "summary", "item_count", "available_history_count",
+                "amount_unit", "ratio_unit", "price_unit", "main_flow_definition", "interpretation_warning",
+                "source", "source_url", "source_transport", "success", "errors", "warnings", "data_time",
+                "source_data_time_granularity", "is_stale", "fallback_used", "_cached", "_fetched_at",
+            ]),
+            "recent": _trim_list(result.get("items"), 10, [
+                "date", "close", "pct_chg", "main_net_inflow", "main_net_inflow_pct",
+                "super_large_net_inflow", "super_large_net_inflow_pct", "large_net_inflow",
+                "large_net_inflow_pct", "medium_net_inflow", "medium_net_inflow_pct",
+                "small_net_inflow", "small_net_inflow_pct", "data_time", "bar_complete",
+            ]),
         }, payload_policy="compacted", compacted=True, compaction_reason="capital_flow_recent_window")
 
     if tool_name == "get_business_segments":
         return _annotate_tool_payload(tool_name, {
-            **_pick_fields(result, ["symbol", "category", "periods", "item_count", "source", "success", "errors", "data_time", "is_stale", "fallback_used", "_cached"]),
-            "items": _trim_list(result.get("items"), 24),
+            **_pick_fields(result, [
+                "symbol", "category", "requested_periods", "periods", "available_categories", "item_count",
+                "summaries", "amount_unit", "ratio_unit", "currency", "flow_basis", "source", "source_url",
+                "success", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
+            ]),
+            "items": _trim_list(result.get("items"), 24, [
+                "report_date", "flow_basis", "category", "segment_name", "revenue", "revenue_share_pct",
+                "cost", "cost_share_pct", "gross_profit", "gross_profit_share_pct", "gross_margin_pct",
+            ]),
         }, payload_policy="compacted", compacted=True, compaction_reason="business_segment_window")
 
-    if tool_name in {"get_consensus_estimates", "get_peer_comparison"}:
-        return _annotate_tool_payload(
-            tool_name,
-            result,
-            payload_policy="tool_bounded",
-            compacted=False,
-            source_scope="tool_defined_view",
-        )
+    if tool_name == "get_consensus_estimates":
+        return _annotate_tool_payload(tool_name, {
+            **_pick_fields(result, [
+                "symbol", "metric", "estimates", "institution_item_count", "latest_institution_report_date",
+                "actuals", "financial_forecasts", "coverage_available", "coverage_count_latest", "eps_unit",
+                "net_profit_unit", "amount_unit_note", "forecast_warning", "source", "source_url", "success",
+                "partial", "errors", "warnings", "data_time", "freshness_unknown", "is_stale", "fallback_used",
+                "cache_detail", "_cached", "_fetched_at",
+            ]),
+            "institutions": _trim_list(result.get("institutions"), 10, [
+                "institution", "analysts", "report_date", "forecasts",
+            ]),
+        }, payload_policy="compacted", compacted=True, compaction_reason="consensus_estimate_window")
+
+    if tool_name == "get_peer_comparison":
+        dimensions = {}
+        for name, bucket in (result.get("dimensions") or {}).items():
+            if not isinstance(bucket, dict):
+                continue
+            dimensions[name] = {
+                **_pick_fields(bucket, [
+                    "label", "report_date", "report_period", "sample_size", "target", "industry_median",
+                    "industry_average", "target_rank", "ranking", "top_peer_item_count", "source_scope", "success",
+                ]),
+                "top_peers": _trim_list(bucket.get("top_peers"), 5),
+            }
+        return _annotate_tool_payload(tool_name, {
+            **_pick_fields(result, [
+                "symbol", "dimension", "amount_unit", "ratio_unit", "source", "source_url", "success", "partial",
+                "errors", "data_time", "freshness_unknown", "is_stale", "fallback_used", "cache_detail", "_cached",
+                "_fetched_at",
+            ]),
+            "dimensions": dimensions,
+        }, payload_policy="compacted", compacted=True, compaction_reason="peer_dimension_evidence_window")
 
     if tool_name == "get_technical_indicators":
         return _annotate_tool_payload(
@@ -425,7 +555,12 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     if tool_name == "get_index_data":
         compact = _pick_fields(
             result,
-            ["index_code", "index_name", "latest", "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at"],
+            [
+                "index_code", "index_name", "days", "latest", "history_count", "units",
+                "source", "source_chain", "success", "partial", "errors", "warnings",
+                "data_time", "retrieved_at", "is_stale", "freshness_unknown",
+                "fallback_used", "fallback_recommended", "_cached", "_fetched_at",
+            ],
         )
         compact["history"] = _trim_list(result.get("history"), 12)
         return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="index_history_window")
@@ -433,7 +568,13 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     if tool_name == "get_bond_yield":
         compact = _pick_fields(
             result,
-            ["country", "term", "latest_yield", "spread", "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at"],
+            [
+                "country", "country_name", "term", "term_label", "latest", "latest_yield",
+                "spread_10y_minus_2y", "spread", "spread_date", "history_count", "units",
+                "source", "success", "partial", "errors", "warnings", "data_time",
+                "retrieved_at", "is_stale", "freshness_unknown", "fallback_used",
+                "fallback_recommended", "_cached", "_fetched_at",
+            ],
         )
         compact["history"] = _trim_list(result.get("history"), 12)
         return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="bond_history_window")
@@ -441,7 +582,12 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     if tool_name == "get_macro_indicator":
         compact = _pick_fields(
             result,
-            ["indicator", "indicator_name", "latest", "trend", "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at"],
+            [
+                "indicator", "indicator_name", "frequency", "unit", "threshold", "latest",
+                "trend", "history_count", "expected_latest_period_end", "source", "success",
+                "partial", "errors", "warnings", "data_time", "retrieved_at", "is_stale",
+                "freshness_unknown", "fallback_used", "fallback_recommended", "_cached", "_fetched_at",
+            ],
         )
         compact["history"] = _trim_list(result.get("history"), 12)
         return _annotate_tool_payload(tool_name, compact, payload_policy="compacted", compacted=True, compaction_reason="macro_history_window")
@@ -449,19 +595,37 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     if tool_name == "get_sector_flow":
         return _annotate_tool_payload(tool_name, {
             "type": result.get("type"),
+            "period": result.get("period"),
+            "period_label": result.get("period_label"),
             "top_n": result.get("top_n"),
+            "sector_count": result.get("sector_count"),
             "inflow_top": _trim_list(
                 result.get("inflow_top"),
                 10,
-                ["name", "pct_chg", "main_net_inflow", "super_large_net_inflow", "large_net_inflow", "leading_stock"],
+                [
+                    "sector_code", "name", "pct_chg", "main_net_inflow", "main_net_inflow_pct",
+                    "super_large_net_inflow", "super_large_net_inflow_pct", "large_net_inflow",
+                    "large_net_inflow_pct", "leading_stock", "leading_stock_code", "main_flow_rank",
+                ],
             ),
             "outflow_top": _trim_list(
                 result.get("outflow_top"),
                 10,
-                ["name", "pct_chg", "main_net_inflow", "super_large_net_inflow", "large_net_inflow", "leading_stock"],
+                [
+                    "sector_code", "name", "pct_chg", "main_net_inflow", "main_net_inflow_pct",
+                    "super_large_net_inflow", "super_large_net_inflow_pct", "large_net_inflow",
+                    "large_net_inflow_pct", "leading_stock", "leading_stock_code", "main_flow_rank",
+                ],
             ),
+            "amount_unit": result.get("amount_unit"),
+            "ratio_unit": result.get("ratio_unit"),
+            "price_unit": result.get("price_unit"),
+            "main_flow_definition": result.get("main_flow_definition"),
             "source": result.get("source"),
+            "source_url": result.get("source_url"),
+            "success": result.get("success"),
             "errors": result.get("errors"),
+            "warnings": result.get("warnings"),
             "data_time": result.get("data_time"),
             "is_stale": result.get("is_stale"),
             "fallback_used": result.get("fallback_used"),
@@ -474,11 +638,92 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             result,
             [
                 "up_count", "down_count", "flat_count", "advance_decline_ratio",
-                "new_high_60d", "new_low_60d", "consecutive_up_days", "consecutive_down_days",
-                "limit_up_count", "limit_down_count", "broken_board_rate", "volume",
-                "source", "errors", "data_time", "is_stale", "fallback_used", "_cached", "_fetched_at",
+                "advance_rate_pct", "decline_rate_pct", "market_activity_pct", "halt_count",
+                "consecutive_up_days", "consecutive_down_days", "limit_up_count", "limit_down_count",
+                "real_limit_up_count", "real_limit_down_count", "broken_board_count", "broken_board_rate",
+                "total_amount", "total_amount_unit", "turnover_scope", "breadth_scope", "breadth_source",
+                "source", "errors", "warnings", "market_date", "data_time", "is_stale",
+                "fallback_used", "success", "partial", "_cached", "_fetched_at",
             ],
         ), payload_policy="compacted", compacted=True, compaction_reason="market_breadth_key_fields")
+
+    if tool_name == "search_research_library":
+        compact = _pick_fields(
+            result,
+            [
+                "query", "requested_category", "research_category", "days", "item_count",
+                "source_coverage", "source", "success", "partial", "data_time", "retrieved_at",
+                "is_stale", "freshness_unknown", "fallback_attempted", "fallback_used",
+                "fallback_recommended", "errors", "warnings",
+            ],
+        )
+        compact["items"] = _trim_list(
+            result.get("items"),
+            LLM_ARRAY_LIMIT,
+            [
+                "title", "summary", "link", "published", "author", "source", "source_type",
+                "research_category", "rating", "industry", "profit_forecasts", "rss_route", "content_text",
+            ],
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="rss_intelligence_item_window",
+        )
+
+    if tool_name == "get_regulatory_updates":
+        compact = _pick_fields(
+            result,
+            [
+                "keyword", "resolved_code", "resolved_name", "event_type", "market", "days",
+                "project_filters", "item_count", "has_updates", "rss_routes", "source",
+                "source_scope", "success", "partial", "data_time", "retrieved_at", "is_stale",
+                "freshness_unknown", "fallback_attempted", "fallback_used", "fallback_recommended",
+                "fallback_channel", "errors", "warnings",
+            ],
+        )
+        compact["items"] = _trim_list(
+            result.get("items"), LLM_ARRAY_LIMIT,
+            [
+                "title", "published", "summary", "link", "source", "exchange", "event_type",
+                "project_status", "company_code", "official", "source_type", "content_text",
+            ],
+        )
+        return _annotate_tool_payload(
+            tool_name, compact, payload_policy="compacted", compacted=True,
+            compaction_reason="regulatory_item_window",
+        )
+
+    if tool_name == "get_monetary_policy_operations":
+        compact = _pick_fields(
+            result,
+            [
+                "days", "instrument_filter", "item_count", "total_operation_amount_yi",
+                "net_liquidity_injection_yi", "net_liquidity_note", "rss_route",
+                "coverage_start", "coverage_end", "coverage_complete", "source", "success",
+                "partial", "data_time", "retrieved_at", "is_stale", "freshness_unknown",
+                "fallback_attempted", "fallback_used", "fallback_recommended", "errors", "warnings",
+            ],
+        )
+        compact["operations"] = _trim_list(
+            result.get("operations"),
+            10,
+            [
+                "title", "published", "link", "bulletin_year", "bulletin_number",
+                "instrument_code", "instrument", "term_days", "term_months", "amount_yi",
+                "rate_pct", "operation_legs", "tender_method", "fully_satisfied", "official",
+                "source", "content",
+            ],
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="monetary_operations_window",
+        )
 
     return _annotate_tool_payload(tool_name, result, payload_policy="full", compacted=False)
 
@@ -543,15 +788,10 @@ def _maybe_attach_search_fallback(tool_name: str, args: Dict[str, Any], result: 
     if not isinstance(result, dict):
         return result
 
-    symbol_arg = args.get("symbol") or args.get("symbols")
-    if isinstance(symbol_arg, str) and "," in symbol_arg:
-        symbol_arg = symbol_arg.split(",", 1)[0]
-    code, name = _resolve_search_subject(symbol_arg)
-    if not code or not name:
-        enriched = dict(result)
-        enriched["fallback_status"] = {"used": False, "reason": health.get("reason"), "message": "无法确定搜索对象"}
-        return enriched
-
+    # Only structured, stock-scoped tools use this generic approximation
+    # layer. News/research/regulatory/macro tools own their domain-specific
+    # fallback logic and must not be decorated with an unrelated symbol search
+    # merely because their freshness metadata says ``is_stale``.
     fallback_types = {
         "get_realtime_quotes": "price",
         "get_kline": "price",
@@ -568,7 +808,19 @@ def _maybe_attach_search_fallback(tool_name: str, args: Dict[str, Any], result: 
         "get_stock_capital_flow": "capital_flow",
         "get_shareholder_structure": "shareholders",
     }
-    fallback_type = fallback_types.get(tool_name, "news")
+    fallback_type = fallback_types.get(tool_name)
+    if fallback_type is None:
+        return result
+
+    symbol_arg = args.get("symbol") or args.get("symbols")
+    if isinstance(symbol_arg, str) and "," in symbol_arg:
+        symbol_arg = symbol_arg.split(",", 1)[0]
+    code, name = _resolve_search_subject(symbol_arg)
+    if not code or not name:
+        enriched = dict(result)
+        enriched["fallback_status"] = {"used": False, "reason": health.get("reason"), "message": "无法确定搜索对象"}
+        return enriched
+
     fallback_payload = _build_search_fallback_payload(fallback_type, code, name)
     enriched = dict(result)
     enriched["fallback_status"] = {

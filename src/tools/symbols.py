@@ -23,4 +23,13 @@ def resolve_symbol(value: str) -> str:
 
 
 def resolve_symbols_csv(value: str) -> list[str]:
-    return [resolve_symbol(part) for part in (value or "").split(",") if part.strip()]
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in (value or "").replace("，", ",").split(","):
+        if not part.strip():
+            continue
+        symbol = resolve_symbol(part).strip()
+        if symbol and symbol not in seen:
+            seen.add(symbol)
+            result.append(symbol)
+    return result

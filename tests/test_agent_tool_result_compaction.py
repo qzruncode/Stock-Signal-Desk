@@ -12,6 +12,7 @@ from api.v1.endpoints.agent import (
     _maybe_attach_search_fallback,
     _run_react_loop,
 )
+from src.tools.registry import ToolRegistry
 
 
 class AgentToolResultCompactionTestCase(unittest.TestCase):
@@ -44,7 +45,8 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["item_count"], 20)
         self.assertEqual(len(compact["items"]), 8)
         self.assertIn("analysis", compact)
-        self.assertNotIn("url", compact["items"][0])
+        # The Agent needs the URL to cite the source or call webfetch.
+        self.assertEqual(compact["items"][0]["url"], "https://example.com/0")
         self.assertNotIn("extra", compact["items"][0])
         self.assertTrue(compact["_tool_payload_meta"]["compacted"])
         self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "news_family_item_window")
@@ -67,6 +69,36 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["bottom_movers"][0]["name"], "B")
         self.assertNotIn("items", compact)
         self.assertEqual(compact["_tool_payload_meta"]["payload_policy"], "compacted")
+
+    def test_shareholder_compaction_keeps_normalized_tool_fields(self) -> None:
+        payload = {
+            "symbol": "600519",
+            "institution_holding_ratio": 72.5,
+            "institution_holding_ratio_basis": "percent_of_total_shares",
+            "institution_holding": {"report_date": "2026-03-31", "percent_of_total_shares": 72.5},
+            "top_holders": [{
+                "rank": 1,
+                "holder_name": "中国贵州茅台酒厂（集团）有限责任公司",
+                "holding_shares": 680000000,
+                "holding_ratio_pct": 54.0,
+                "holder_type": "国有法人",
+            }],
+            "holder_changes": [{
+                "holder_name": "测试股东",
+                "change_direction": "增持",
+                "change_shares": 10000,
+                "announcement_date": "2026-07-01",
+            }],
+            "data_time": "2026-06-30",
+            "is_stale": False,
+        }
+
+        compact = _compact_tool_result("get_shareholder_structure", payload)
+
+        self.assertEqual(compact["top_holders"][0]["holder_name"], payload["top_holders"][0]["holder_name"])
+        self.assertEqual(compact["holder_changes"][0]["change_direction"], "增持")
+        self.assertEqual(compact["institution_holding_ratio"], 72.5)
+        self.assertEqual(compact["institution_holding_ratio_basis"], "percent_of_total_shares")
 
     def test_kline_keeps_recent_window_not_full_series(self) -> None:
         payload = {
@@ -119,24 +151,21 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(enriched["search_fallback"]["type"], "price")
         self.assertTrue(enriched["search_fallback"]["success"])
 
-    def test_stale_news_attach_news_search_fallback(self) -> None:
-        search_payload = {"query": "贵州茅台 600519 最新消息", "provider": "TestSearch", "success": True, "results": [{"title": "贵州茅台最新消息", "url": "https://example.com/news"}]}
-
-        with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
-             patch("src.tools.websearch.websearch", return_value=search_payload):
+    def test_stale_news_is_left_for_agent_domain_fallback(self) -> None:
+        original = {
+            "symbol": "600519",
+            "days": 30,
+            "items": [{"title": "旧闻", "publish_time": "2026-01-01T00:00:00"}],
+        }
+        with patch("src.tools.websearch.websearch") as websearch:
             enriched = _maybe_attach_search_fallback(
                 "search_news",
                 {"symbol": "贵州茅台"},
-                {
-                    "symbol": "600519",
-                    "days": 30,
-                    "items": [{"title": "旧闻", "publish_time": "2026-01-01T00:00:00"}],
-                },
+                original,
             )
 
-        self.assertTrue(enriched["fallback_status"]["used"])
-        self.assertEqual(enriched["fallback_status"]["reason"], "stale_news_family")
-        self.assertEqual(enriched["search_fallback"]["type"], "news")
+        self.assertIs(enriched, original)
+        websearch.assert_not_called()
 
     def test_unavailable_consensus_uses_specific_search_fallback(self) -> None:
         search_payload = {"query": "贵州茅台 600519 最新 券商一致预期 EPS 净利润预测", "provider": "TestSearch", "success": True, "results": []}
@@ -259,55 +288,45 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "macro_history_window")
 
     def test_compact_stock_info_flattens_nested_chinese_sources(self) -> None:
-        # endpoint `_fetch_all` 的真实结构:按数据源嵌套 + 中文字段名。
-        # 归一化前 _pick_fields 顶层只能取到 symbol,其余字段全丢。
         payload = {
             "symbol": "301004",
-            "_sources": ["cninfo", "eastmoney", "ths"],
-            "cninfo": {
-                "A股简称": "嘉益股份",
-                "公司名称": "浙江嘉益保温科技股份有限公司",
-                "所属行业": "金属制品业",
-                "所属市场": "深交所创业板",
-                "上市日期": "2021-06-25",
-                "主营业务": "饮品、食品容器的研发设计、生产与销售",
+            "company_name": "浙江嘉益保温科技股份有限公司",
+            "short_name": "嘉益股份",
+            "industry": "金属制品业",
+            "market": "深交所创业板",
+            "listing_date": "2021-06-25",
+            "main_business": "饮品、食品容器的研发设计、生产与销售",
+            "capital_snapshot": {
+                "total_shares": 145806262,
+                "circulating_shares": 90000000,
+                "total_market_cap": 4.8e9,
+                "circulating_market_cap": 3.0e9,
+                "share_unit": "股",
+                "market_cap_unit": "元",
             },
-            "eastmoney": {
-                "总股本": 145806262,
-                "流通股本": 90000000,
-                "市盈率(动态)": 18.5,
-                "市盈率(静态)": 20.1,
-                "市净率": 3.2,
-                "总市值": 4.8e9,
-                "流通市值": 3.0e9,
-            },
-            "ths_business": {"_revenue_breakdown": []},
+            "sources": ["巨潮资讯/AKShare", "东方财富"],
+            "success": True,
         }
 
         compact = _compact_tool_result("get_stock_info", payload)
 
-        # 关键字段必须从中文子结构归一化出来,不再只剩 symbol
         self.assertEqual(compact["symbol"], "301004")
-        self.assertEqual(compact["name"], "嘉益股份")
         self.assertEqual(compact["short_name"], "嘉益股份")
+        self.assertEqual(compact["company_name"], "浙江嘉益保温科技股份有限公司")
         self.assertEqual(compact["industry"], "金属制品业")
         self.assertEqual(compact["market"], "深交所创业板")
         self.assertEqual(compact["listing_date"], "2021-06-25")
         self.assertIn("饮品", compact["main_business"])
-        self.assertEqual(compact["total_shares"], 145806262)
-        self.assertEqual(compact["circ_shares"], 90000000)
-        self.assertEqual(compact["pe_dynamic"], 18.5)
-        self.assertEqual(compact["pe_static"], 20.1)
-        self.assertEqual(compact["pb_ratio"], 3.2)
-        self.assertEqual(compact["total_mv"], 4.8e9)
-        self.assertEqual(compact["circ_mv"], 3.0e9)
-        # 噪声子结构不应外泄给 LLM/前端
-        self.assertNotIn("cninfo", compact)
-        self.assertNotIn("eastmoney", compact)
-        self.assertNotIn("ths_business", compact)
+        self.assertEqual(compact["capital_snapshot"]["total_shares"], 145806262)
+        self.assertEqual(compact["capital_snapshot"]["market_cap_unit"], "元")
         self.assertEqual(
             compact["_tool_payload_meta"]["compaction_reason"], "stock_info_key_fields"
         )
+
+    def test_every_registered_tool_preserves_explicit_success_when_compacted(self) -> None:
+        for tool_name in ToolRegistry().get_tool_names():
+            compact = _compact_tool_result(tool_name, {"success": True, "partial": False})
+            self.assertIs(compact.get("success"), True, msg=tool_name)
 
 
 if __name__ == "__main__":

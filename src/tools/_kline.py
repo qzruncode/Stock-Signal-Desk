@@ -36,7 +36,6 @@ KLINE_SOURCE_TENCENT = "tencent"
 
 # Fixed defaults
 DEFAULT_COUNT = 500
-LATEST_KLINE_MIN_LOOKBACK_DAYS = DEFAULT_COUNT
 KLINE_SINGLE_SOURCE_RETRY_ATTEMPTS = 2
 KLINE_SINGLE_SOURCE_RETRY_BASE_DELAY = 0.6
 KLINE_FALLBACK_DELAY_MIN_SECONDS = 0.8
@@ -48,7 +47,7 @@ _kline_source_circuit_breaker = RealtimeCircuitBreaker()
 
 KLINE_DESCRIPTION = (
     "获取股票日线K线数据（前复权），包含日期、开盘价、收盘价、最高价、最低价、"
-    "成交量、成交额、涨跌幅、换手率"
+    "成交量（股）、成交额（元）、涨跌幅、换手率；盘中当日 K 线会标记为未完成。"
 )
 
 KLINE_HISTORY_DESCRIPTION = (
@@ -63,6 +62,26 @@ def _kline_data_time(records: list[dict]) -> str | None:
     return latest.get("date")
 
 
+def _expected_latest_kline_date(now: datetime | None = None) -> date:
+    now = now or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    try:
+        from src.tools._market_snapshot import _fetch_trade_dates
+
+        calendar = [day for day in _fetch_trade_dates() if day <= now.date()]
+        if now.time() < datetime.strptime("09:30", "%H:%M").time():
+            calendar = [day for day in calendar if day < now.date()]
+        return calendar[-1]
+    except Exception:
+        expected = now.date()
+        if now.weekday() >= 5 or now.time() < datetime.strptime("09:30", "%H:%M").time():
+            expected -= timedelta(days=1)
+            while expected.weekday() >= 5:
+                expected -= timedelta(days=1)
+        return expected
+
+
 def _kline_is_stale(records: list[dict]) -> bool:
     data_time = _kline_data_time(records)
     if not data_time:
@@ -70,8 +89,61 @@ def _kline_is_stale(records: list[dict]) -> bool:
     try:
         latest_date = datetime.strptime(str(data_time)[:10], "%Y-%m-%d").date()
     except ValueError:
-        return False
-    return latest_date < (datetime.now().date() - timedelta(days=7))
+        return True
+    return latest_date < _expected_latest_kline_date()
+
+
+def _normalize_record_units(record: dict[str, Any], source: str | None = None) -> dict[str, Any]:
+    """Normalize K-line volume to shares and turnover to percent.
+
+    Eastmoney/Tencent expose volume in lots while Sina exposes shares.  Older
+    StockDaily rows may contain either unit, so amount/volume/price is used as
+    a source-independent detector before falling back to the source label.
+    """
+
+    normalized = dict(record)
+    volume = normalized.get("volume")
+    amount = normalized.get("amount")
+    close = normalized.get("close")
+    try:
+        volume_value = float(volume) if volume is not None else None
+    except (TypeError, ValueError):
+        volume_value = None
+    detected = str(normalized.get("volume_unit") or "") == "股"
+    if volume_value and amount is not None and close not in (None, 0):
+        try:
+            ratio = float(amount) / volume_value / float(close)
+            if 30 <= ratio <= 300:
+                volume_value *= 100
+                detected = True
+            elif 0.3 <= ratio <= 3:
+                detected = True
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    source_name = str(source or normalized.get("data_source") or normalized.get("_source") or "").lower()
+    if volume_value is not None and not detected and source_name in {
+        KLINE_SOURCE_EM, KLINE_SOURCE_TENCENT, "akshare", "东方财富", "腾讯财经",
+    }:
+        volume_value *= 100
+    if volume_value is not None:
+        normalized["volume"] = volume_value
+
+    turnover = normalized.get("turnover_rate")
+    if turnover is not None:
+        try:
+            turnover_value = float(turnover)
+            if source_name in {KLINE_SOURCE_SINA, "新浪财经"} and 0 <= turnover_value <= 1:
+                turnover_value *= 100
+            normalized["turnover_rate"] = turnover_value
+        except (TypeError, ValueError):
+            pass
+    normalized["volume_unit"] = "股"
+    normalized["amount_unit"] = "元"
+    return normalized
+
+
+def _normalize_record_list(records: list[dict], source: str | None = None) -> list[dict]:
+    return [_normalize_record_units(record, source) for record in records]
 
 
 def _latest_kline_cache_key(symbol: str, count: int) -> str:
@@ -107,7 +179,7 @@ def _get_kline_from_stock_daily(symbol: str, count: int) -> list[dict] | None:
             # Convert to records (oldest first for chart display)
             records = []
             for row in reversed(rows):
-                records.append({
+                records.append(_normalize_record_units({
                     'date': row.date.isoformat() if hasattr(row.date, 'isoformat') else str(row.date),
                     'open': row.open,
                     'high': row.high,
@@ -122,7 +194,8 @@ def _get_kline_from_stock_daily(symbol: str, count: int) -> list[dict] | None:
                     'volume_ratio': row.volume_ratio,
                     'data_source': row.data_source,
                     '_source': 'stock_daily',
-                })
+                    '_updated_at': row.updated_at.isoformat() if row.updated_at else None,
+                }, row.data_source))
             logger.info(f"[K线本地] {symbol} 命中 StockDaily: {len(records)} 条")
             return records
     except Exception as e:
@@ -145,11 +218,13 @@ def _market_prefixed_symbol(symbol: str) -> str:
     """Return akshare symbol with sh/sz/bj prefix for providers that require it."""
     code = _bare_stock_code(symbol)
 
-    # Shanghai: 60xx, 68xx(科创板), 5xx(ETF), 90xx(B股); Beijing: 8xx/4xx/9xx
-    if code.startswith(('6', '5', '90')):
-        prefix = 'sh'
-    elif code.startswith(('8', '4', '9')):
+    from data_provider.utils import is_bse_code
+
+    # Shanghai: 60xx, 68xx(科创板), 5xx(ETF), 90xx(B股).
+    if is_bse_code(code):
         prefix = 'bj'
+    elif code.startswith(('6', '5', '90')):
+        prefix = 'sh'
     else:
         prefix = 'sz'
     return f"{prefix}{code}"
@@ -173,8 +248,9 @@ def _is_beijing_exchange(symbol: str) -> bool:
     else 0，北交所股票会被拼成深市 secid（0.830xxx）而东财对此返回空数据。
     故北交所应跳过东财源，直接走新浪/腾讯。
     """
-    code = _bare_stock_code(symbol)
-    return code.startswith(('8', '4', '9'))
+    from data_provider.utils import is_bse_code
+
+    return is_bse_code(_bare_stock_code(symbol))
 
 
 def _get_kline_range_from_stock_daily(
@@ -208,7 +284,7 @@ def _get_kline_range_from_stock_daily(
             return None
         records = []
         for row in rows:
-            records.append({
+            records.append(_normalize_record_units({
                 'date': row.date.isoformat() if hasattr(row.date, 'isoformat') else str(row.date),
                 'open': row.open,
                 'high': row.high,
@@ -223,7 +299,8 @@ def _get_kline_range_from_stock_daily(
                 'volume_ratio': row.volume_ratio,
                 'data_source': row.data_source,
                 '_source': 'stock_daily',
-            })
+                '_updated_at': row.updated_at.isoformat() if row.updated_at else None,
+            }, row.data_source))
 
         # 完整性校验：优先交易日历精确判断，不可用则回退首尾对齐。
         trading_days = db.get_trading_days(start_dt, end_dt)
@@ -273,9 +350,11 @@ def _normalize_kline_df(df, stock_code: str, source: str) -> list[dict]:
     df = df.where(pd.notnull(df), None)
 
     records = df.to_dict(orient='records')
+    normalized_records = []
     for r in records:
         r['_source'] = source
-    return records
+        normalized_records.append(_normalize_record_units(r, source))
+    return normalized_records
 
 
 # ---------------------------------------------------------------------------
@@ -386,18 +465,14 @@ def _fetch_kline_tencent(symbol: str, start_date: str, end_date: str):
             "腾讯",
             lambda: ak.stock_zh_a_hist_tx(
                 symbol=tx_symbol, start_date=start_date,
-                end_date=end_date, adjust="",
+                end_date=end_date, adjust="qfq",
             ),
         )
         elapsed = time.time() - t0
         if df is not None and not df.empty:
             logger.info(f"[K线-腾讯] 成功 {len(df)} 行, {elapsed:.2f}s")
-            # 腾讯 stock_zh_a_hist_tx 仅 6 列: date/open/close/high/low/amount，
-            # 无 turnover，也无独立的 volume。其 amount 单位是“手”（成交量）而非
-            # “元”（成交额）——对照 akshare 源码 big_df.columns 末列即 amount，且
-            # 实测量级为百万级、与东财/新浪的“成交额（亿元级）”差三个数量级。
-            # 故映射到 成交量(volume)，成交额腾讯不提供则留空（None），避免把
-            # 手数冒充成交额回写 StockDaily 污染下游。
+            # 腾讯末列 amount 实际是成交量（手），映射到 volume 后由统一层换算成股；
+            # 腾讯不提供成交额，留空以免污染 StockDaily。
             rename_map = {
                 'date': '日期', 'open': '开盘', 'high': '最高',
                 'low': '最低', 'close': '收盘', 'amount': '成交量',
@@ -477,9 +552,16 @@ def _fetch_kline_with_fallback(
 # ---------------------------------------------------------------------------
 
 def _is_trading_hours() -> bool:
-    now = datetime.now()
+    now = datetime.now().astimezone()
     if now.weekday() >= 5:
         return False
+    try:
+        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
+
+        if expected_trade_day(now, _fetch_trade_dates()) != now.date():
+            return False
+    except Exception:
+        pass
     from datetime import time
     t = now.time()
     return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
@@ -492,6 +574,77 @@ def _get_kline_from_cache(cache_key: str) -> dict | None:
     except Exception as e:
         logger.debug(f"[K线缓存] 读取失败: {e}")
     return None
+
+
+def _timestamp_is_recent(value: Any, max_age_seconds: int = 120) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = datetime.now().astimezone()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=now.tzinfo)
+    return 0 <= (now - parsed).total_seconds() <= max_age_seconds
+
+
+def _local_records_are_fresh(records: list[dict]) -> bool:
+    if not records or _kline_is_stale(records):
+        return False
+    if not _is_trading_hours():
+        return True
+    return _timestamp_is_recent(records[-1].get("_updated_at"))
+
+
+def _append_realtime_daily_bar(symbol: str, records: list[dict]) -> tuple[list[dict], bool]:
+    """Append/replace today's incomplete daily bar when daily APIs lag intraday."""
+
+    expected = _expected_latest_kline_date()
+    now = datetime.now().astimezone()
+    if expected != now.date() or now.time() < datetime.strptime("09:30", "%H:%M").time():
+        return records, False
+    latest_date = None
+    if records:
+        try:
+            latest_date = date.fromisoformat(str(records[-1].get("date"))[:10])
+        except ValueError:
+            pass
+    if latest_date is not None and latest_date >= expected:
+        return records, False
+
+    try:
+        from src.tools.get_realtime_quotes import get_realtime_quotes
+
+        response = get_realtime_quotes([symbol])
+        quote = (response.get("items") or [None])[0]
+    except Exception as exc:
+        logger.warning("[K线] %s 无法补充实时日线: %s", symbol, exc)
+        return records, False
+    if not isinstance(quote, dict) or quote.get("price") is None:
+        return records, False
+
+    bar = _normalize_record_units(
+        {
+            "date": expected.isoformat(),
+            "open": quote.get("open_price"),
+            "high": quote.get("high"),
+            "low": quote.get("low"),
+            "close": quote.get("price"),
+            "volume": quote.get("volume"),
+            "amount": quote.get("amount"),
+            "pct_chg": quote.get("change_pct"),
+            "turnover_rate": quote.get("turnover_rate"),
+            "_source": f"{quote.get('source') or 'realtime'}_partial_daily",
+            "_updated_at": quote.get("data_time") or quote.get("trade_time") or quote.get("_fetched_at"),
+            "volume_unit": "股",
+        },
+        str(quote.get("source") or "realtime"),
+    )
+    required = ("open", "high", "low", "close")
+    if any(bar.get(key) is None for key in required):
+        return records, False
+    return [*records, bar], True
 
 
 def _save_kline_to_cache(cache_key: str, symbol: str, data: list, source: str) -> None:
@@ -559,7 +712,7 @@ def _save_to_stock_daily(symbol: str, data: list, source: str = "api_fallback") 
                 )
 
         db = DatabaseManager.get_instance()
-        db.save_daily_data(df, symbol, data_source=source)
+        db.save_daily_data(df, symbol, data_source=f"{source}_shares")
         logger.debug(f"[K线-stock_daily] 写入 {symbol} {len(df)} 条 (source={source})")
     except Exception as e:
         logger.debug(f"[K线-stock_daily] 写入失败 {symbol}: {e}")
@@ -590,25 +743,30 @@ def fetch_and_persist_kline(
     else:
         if use_cache:
             records = _get_kline_from_stock_daily(symbol, count)
-            if records and len(records) >= count:
+            if records and len(records) >= count and _local_records_are_fresh(records):
                 return records, "stock_daily"
         cache_key = _latest_kline_cache_key(symbol, count)
 
-    if use_cache and not _is_trading_hours():
+    if use_cache:
         cached = _get_kline_from_cache(cache_key)
         if cached:
-            cached_records = cached.get('data') or []
-            if cached_records:
+            cached_records = _normalize_record_list(cached.get('data') or [], cached.get('source'))
+            cache_recent_enough = not _is_trading_hours() or _timestamp_is_recent(cached.get('_fetched_at'))
+            if cached_records and (range_mode or (not _kline_is_stale(cached_records) and cache_recent_enough)):
                 return cached_records, cached.get('source') or "cache"
 
     if range_mode:
         fetch_start, fetch_end = start, end
     else:
         fetch_end = datetime.now().strftime("%Y%m%d")
-        lookback_days = max(count, LATEST_KLINE_MIN_LOOKBACK_DAYS)
+        # Trading days are roughly 70% of calendar days.  Add margin for long
+        # holiday closures so count=500 can actually return about 500 bars.
+        lookback_days = max(120, int(count * 1.7) + 30)
         fetch_start = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y%m%d")
 
     records, source = _fetch_kline_with_fallback(symbol, fetch_start, fetch_end)
+    if not range_mode:
+        records, _ = _append_realtime_daily_bar(symbol, records)
     if not range_mode and len(records) > count:
         records = records[-count:]
 
@@ -643,15 +801,26 @@ def get_kline(symbol: str, count: int = DEFAULT_COUNT, use_cache: bool = True) -
         use_cache: 是否使用缓存。
     """
     records, source = fetch_and_persist_kline(symbol, count=count, use_cache=use_cache)
-    now_ts = datetime.now().isoformat()
+    now_ts = datetime.now().astimezone().isoformat()
 
     return {
+        'success': bool(records),
+        'partial': False,
         'symbol': symbol, 'source': source,
         'count': len(records), 'data': records,
         '_fetched_at': now_ts, '_cached': source in ("stock_daily", "cache"),
         'data_time': _kline_data_time(records),
         'is_stale': _kline_is_stale(records),
         'fallback_used': _fallback_used(symbol, source),
+        'adjust': 'qfq', 'period': 'daily',
+        'volume_unit': '股', 'amount_unit': '元',
+        'bar_complete': not (
+            records
+            and str(records[-1].get('date'))[:10] == datetime.now().date().isoformat()
+            and datetime.now().time() < datetime.strptime("15:00", "%H:%M").time()
+        ),
+        'errors': [] if records else [f'{symbol} 未获取到 K 线数据'],
+        'warnings': [],
     }
 
 
@@ -670,9 +839,11 @@ def get_history_data(symbol: str, start_date: str, end_date: str, use_cache: boo
         end_date=end_date,
         use_cache=use_cache,
     )
-    now_ts = datetime.now().isoformat()
+    now_ts = datetime.now().astimezone().isoformat()
 
     return {
+        'success': bool(records),
+        'partial': False,
         'symbol': symbol, 'source': source,
         'count': len(records), 'data': records,
         '_fetched_at': now_ts, '_cached': source in ("stock_daily", "cache"),
@@ -682,4 +853,8 @@ def get_history_data(symbol: str, start_date: str, end_date: str, use_cache: boo
         # 该字段仅对 get_kline（取最新 N 条）有意义，range 模式置 None。
         'is_stale': None,
         'fallback_used': _fallback_used(symbol, source),
+        'adjust': 'qfq', 'period': 'daily',
+        'volume_unit': '股', 'amount_unit': '元',
+        'errors': [] if records else [f'{symbol} 在请求区间内没有 K 线数据'],
+        'warnings': [],
     }

@@ -160,7 +160,7 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
         self.assertTrue(pd.isna(df.iloc[0]["涨跌幅"]))
 
     def test_tencent_normalize_drops_amount_field(self) -> None:
-        """腾讯源经 fetcher+normalize 后：volume 来自 amount（手），无 amount 键。"""
+        """腾讯源经 normalize 后统一为股，无虚假的成交额。"""
         # 用 date 对象模拟 akshare 真实输出（akshare 内部 .dt.date）
         tx_df = pd.DataFrame({
             "date": [date(2026, 1, 5)], "open": [10.0], "close": [10.5],
@@ -172,8 +172,9 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
         records = kline._normalize_kline_df(df, "000001", kline.KLINE_SOURCE_TENCENT)
         self.assertEqual(len(records), 1)
         rec = records[0]
-        # 成交量来自腾讯 amount（手）
-        self.assertEqual(rec["volume"], 1000.0)
+        # 腾讯 amount=1000 手，统一输出为 100000 股
+        self.assertEqual(rec["volume"], 100000.0)
+        self.assertEqual(rec["volume_unit"], "股")
         # 成交额缺失：不应出现 amount 键，防止回写错值
         self.assertNotIn("amount", rec)
         self.assertEqual(rec["_source"], kline.KLINE_SOURCE_TENCENT)
@@ -198,10 +199,11 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
                 }]),
                 "000001", data_source="eastmoney",
             )
-            # 腾讯兜底回写：amount 缺失（无该键），volume=1000（手）
+            # 腾讯统一层已经把 1000 手换算为 100000 股；成交额仍缺失。
             kline._save_to_stock_daily("000001", [{
                 "date": "2026-01-05", "open": 10.0, "close": 10.5,
-                "high": 10.6, "low": 9.9, "volume": 1000.0,
+                "high": 10.6, "low": 9.9, "volume": 100000.0,
+                "volume_unit": "股",
                 "pct_chg": None, "_source": kline.KLINE_SOURCE_TENCENT,
             }], source=kline.KLINE_SOURCE_TENCENT)
             from sqlalchemy import select
@@ -211,9 +213,9 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
                 ).scalars().one()
             # amount 不被 None 覆盖，保持东财真实值
             self.assertEqual(row.amount, 1e8)
-            # volume 被腾讯兜底更新（1000 手）
-            self.assertEqual(row.volume, 1000.0)
-            self.assertEqual(row.data_source, kline.KLINE_SOURCE_TENCENT)
+            # volume 被腾讯兜底更新，数据库统一保存为股。
+            self.assertEqual(row.volume, 100000.0)
+            self.assertEqual(row.data_source, f"{kline.KLINE_SOURCE_TENCENT}_shares")
         finally:
             DatabaseManager.reset_instance()
 
@@ -248,7 +250,7 @@ class PersistStockDailyTestCase(unittest.TestCase):
             ).scalars().one()
         self.assertEqual(row.amount, 1e8)
         self.assertEqual(row.volume, 1e6)
-        self.assertEqual(row.data_source, kline.KLINE_SOURCE_EM)
+        self.assertEqual(row.data_source, f"{kline.KLINE_SOURCE_EM}_shares")
 
     def test_string_date_is_accepted(self) -> None:
         """_normalize_kline_df 产出的字符串日期（YYYY-MM-DD）应能正常回写。"""

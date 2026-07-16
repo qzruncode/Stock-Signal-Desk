@@ -31,10 +31,12 @@ def bare_symbol(symbol: str) -> str:
 
 def exchange_prefix(symbol: str, *, upper: bool = True, suffix: bool = False) -> str:
     code = bare_symbol(symbol)
-    if code.startswith(("6", "5", "9")):
-        market = "SH"
-    elif code.startswith(("8", "4")):
+    from data_provider.utils import is_bse_code
+
+    if is_bse_code(code):
         market = "BJ"
+    elif code.startswith(("6", "5", "90")):
+        market = "SH"
     else:
         market = "SZ"
     if suffix:

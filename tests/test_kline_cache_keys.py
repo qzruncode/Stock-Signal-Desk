@@ -2,6 +2,7 @@
 """K-line endpoint cache-key behavior tests."""
 
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from src.tools import _kline as kline
@@ -9,7 +10,11 @@ from src.tools import _kline as kline
 
 class KlineCacheKeyTestCase(unittest.TestCase):
     def test_latest_kline_cache_key_includes_count(self) -> None:
-        cached = {"symbol": "600519", "data": [{"date": "20260101"}], "count": 1}
+        cached = {
+            "symbol": "600519",
+            "data": [{"date": datetime.now().strftime("%Y-%m-%d")}],
+            "count": 1,
+        }
 
         with patch.object(kline, "_is_trading_hours", return_value=False), \
              patch.object(kline, "_get_kline_from_stock_daily", return_value=None), \
@@ -18,6 +23,21 @@ class KlineCacheKeyTestCase(unittest.TestCase):
 
         self.assertTrue(result["_cached"])
         get_cache.assert_called_once_with("kline:latest:600519:30")
+
+    def test_latest_kline_rejects_stale_local_and_snapshot_cache(self) -> None:
+        stale = [{"date": "2020-01-01", "close": 100.0}]
+        fresh = [{"date": datetime.now().strftime("%Y-%m-%d"), "close": 101.0}]
+        with patch.object(kline, "_is_trading_hours", return_value=False), \
+             patch.object(kline, "_get_kline_from_stock_daily", return_value=stale), \
+             patch.object(kline, "_get_kline_from_cache", return_value={"data": stale, "source": "cache"}), \
+             patch.object(kline, "_fetch_kline_with_fallback", return_value=(fresh, "eastmoney")) as fetch, \
+             patch.object(kline, "_save_kline_to_cache"), \
+             patch.object(kline, "_save_to_stock_daily"):
+            result = kline.get_kline(symbol="600519", count=1, use_cache=True)
+
+        self.assertEqual(result["source"], "eastmoney")
+        self.assertEqual(result["data"], fresh)
+        fetch.assert_called_once()
 
     def test_history_kline_cache_key_includes_date_range(self) -> None:
         cached = {"symbol": "600519", "data": [{"date": "20260102"}], "count": 1}

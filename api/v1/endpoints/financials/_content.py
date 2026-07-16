@@ -104,20 +104,20 @@ def _rss_stock_feed_specs(keywords: list[str]) -> list[tuple[str, dict, str, boo
             f"东方财富搜索:{keyword}",
             True,
         ))
+        feed_specs.append((
+            "gelonghui_keyword",
+            {"keyword": keyword},
+            f"格隆汇搜索:{keyword}",
+            True,
+        ))
     feed_specs.extend([
         ("cls", {"category": "telegraph"}, "财联社电报", True),
         ("cls", {"category": "depth"}, "财联社深度", True),
         ("wallstreetcn_live", {}, "华尔街见闻实时快讯", True),
         ("wallstreetcn", {"category": "shares"}, "华尔街见闻股市", True),
         ("wallstreetcn_hot", {}, "华尔街见闻热门", True),
-        ("sina_roll", {"category": "2517"}, "新浪股市滚动", True),
-        ("sina_roll", {"category": "2516"}, "新浪财经滚动", True),
-        ("sina_finance", {"category": "rollnews"}, "新浪财经频道", True),
-        ("yicai", {"category": "brief"}, "第一财经快讯", True),
-        ("yicai", {"category": "latest"}, "第一财经最新", True),
-        ("yicai", {"category": "news"}, "第一财经新闻", True),
-        ("36kr", {"category": "newsflashes"}, "36氪快讯", True),
-        ("36kr", {"category": "information/web_news"}, "36氪网页新闻", True),
+        ("jqka_realtime", {}, "同花顺7×24快讯", True),
+        ("stcn_kx", {}, "证券时报快讯", True),
     ])
     return feed_specs
 
@@ -127,17 +127,13 @@ def _rsshub_is_slow_spec(spec: tuple[str, dict, str, bool]) -> bool:
     category = _safe_str(params.get("category"))
     keyword = _safe_str(params.get("keyword"))
 
-    if source_id == "36kr" and category == "information/web_news":
-        return True
-    if source_id == "yicai" and category in {"latest", "news"}:
-        return True
-    if source_id == "sina_finance" and category == "rollnews":
-        return True
     if source_id == "cls" and category == "depth":
         return True
     if source_id == "wallstreetcn_hot":
         return True
     if source_id == "eastmoney_search" and keyword and len(keyword) > 6:
+        return True
+    if source_id == "gelonghui_keyword" and keyword and len(keyword) > 6:
         return True
     return False
 

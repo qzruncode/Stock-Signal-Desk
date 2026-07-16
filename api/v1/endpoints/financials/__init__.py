@@ -17,7 +17,6 @@ from ._helpers import _normalize_symbol
 from ._cache import (
     CACHE_KEY,
     VALUATION_CACHE_KEY,
-    SHAREHOLDER_CACHE_KEY,
     FINS_STATEMENTS_CACHE_KEY,
     NEWS_CACHE_KEY,
     ANNOUNCEMENTS_CACHE_KEY,
@@ -35,14 +34,8 @@ from ._cache import (
 
 from ._fetch_financials import _fetch_financials, _fetch_from_ths, _fetch_from_sina
 from ._fetch_valuation import _fetch_valuation_ratios, _build_price_overdraft_signal
-from ._fetch_shareholders import _fetch_shareholder_structure
 from ._fetch_statements_fallback import _fetch_financial_statements
-from ._fetch_news import _fetch_news, _fetch_rss_stock_news, _fetch_direct_news_sources, _fetch_direct_sentiment_sources
-from ._fetch_announcements import _fetch_announcements, _fetch_rss_announcements
-from ._fetch_risk_events import _build_risk_events
 from ._fetch_sentiment import _fetch_sentiment
-from ._fetch_research import _fetch_research_reports, _fetch_rss_research_reports
-from ._fetch_social_sentiment import _fetch_social_sentiment
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,7 +51,7 @@ _fins_lock = threading.Lock()
 @router.get("/financials", summary="获取核心财务指标")
 def get_financials(
     symbol: str = Query(..., description="股票代码，如 600519"),
-    periods: int = Query(12, ge=1, le=40, description="返回最近 N 个报告期数据（默认12=3年）"),
+    periods: int = Query(6, ge=2, le=20, description="返回最近 N 个报告期数据"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取单只股票的核心财务指标（单季度数据）。
@@ -66,32 +59,13 @@ def get_financials(
     包含盈利能力（ROE、毛利率、净利率）、成长性（营收/利润增长率）、
     偿债能力（资产负债率、流动/速动比率）、每股指标（EPS、BPS）。
 
-    数据源（按优先级）：
-    1. 同花顺 (stock_financial_abstract_new_ths)
-    2. 新浪财经 (stock_financial_abstract)
-
-    按天缓存。
+    数据源：同花顺/AKShare 核心指标与东方财富单季度财报，缓存 6 小时。
     """
-    symbol = _normalize_symbol(symbol)
+    from src.tools.get_financials import get_financials as tool_get_financials
 
-    if not force:
-        cached = _cache_get(symbol)
-        if cached:
-            cached['_cached'] = True
-
-            if _lock.acquire(blocking=False):
-                def _bg_refresh():
-                    try:
-                        _cache_put(symbol, _fetch_financials(symbol, periods))
-                    finally:
-                        _lock.release()
-                threading.Thread(target=_bg_refresh, daemon=True).start()
-
-            return cached
-
-    data = _fetch_financials(symbol, periods)
-    _cache_put(symbol, data)
-    return data
+    force_value = force if isinstance(force, bool) else False
+    period_value = periods if isinstance(periods, int) else 6
+    return tool_get_financials(_normalize_symbol(symbol), periods=period_value, use_cache=not force_value)
 
 
 # ---------------------------------------------------------------------------
@@ -104,19 +78,14 @@ def get_valuation_ratios(
     with_history: bool = Query(True, description="是否包含历史 PE 分位数"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
-    """获取当前及历史估值指标。"""
-    symbol = _normalize_symbol(symbol)
-    cache_part = "hist" if with_history else "latest"
-    if not force:
-        cached = _daily_cache_get(VALUATION_CACHE_KEY, symbol, cache_part)
-        if cached:
-            if not cached.get("price_overdraft_signal"):
-                cached["price_overdraft_signal"] = _build_price_overdraft_signal(cached)
-            cached["_cached"] = True
-            return cached
-    data = _fetch_valuation_ratios(symbol, with_history=with_history)
-    _daily_cache_put(VALUATION_CACHE_KEY, symbol, data, cache_part)
-    return data
+    """获取当前、历史及行业相对估值，口径与 Agent 工具一致。"""
+    from src.tools.get_valuation_ratios import get_valuation_ratios as tool_get_valuation_ratios
+
+    history_value = with_history if isinstance(with_history, bool) else True
+    force_value = force if isinstance(force, bool) else False
+    return tool_get_valuation_ratios(
+        _normalize_symbol(symbol), with_history=history_value, use_cache=not force_value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -150,16 +119,11 @@ def get_shareholder_structure(
     symbol: str = Query(..., description="股票代码，如 600519"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
-    """获取股东人数、前十大股东、机构持股、重要股东增减持与实际控制人。"""
-    symbol = _normalize_symbol(symbol)
-    if not force:
-        cached = _daily_cache_get(SHAREHOLDER_CACHE_KEY, symbol)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _fetch_shareholder_structure(symbol)
-    _daily_cache_put(SHAREHOLDER_CACHE_KEY, symbol, data)
-    return data
+    """获取报告期明确且与 Agent 工具同口径的股东结构。"""
+    from src.tools.get_shareholder_structure import get_shareholder_structure as tool_get_shareholders
+
+    force_value = force if isinstance(force, bool) else False
+    return tool_get_shareholders(_normalize_symbol(symbol), use_cache=not force_value)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +133,7 @@ def get_shareholder_structure(
 @router.get("/financials/statements", summary="获取三大财务报表")
 def get_financial_statements(
     symbol: str = Query(..., description="股票代码，如 600519"),
-    periods: int = Query(12, ge=4, le=40, description="返回最近 N 个报告期数据（默认12=3年单季度）"),
+    periods: int = Query(6, ge=2, le=20, description="返回最近 N 个报告期数据"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """获取单只股票的三大财务报表（单季度数据）。
@@ -182,29 +146,15 @@ def get_financial_statements(
     - 现金流量表：经营活动现金流净额、投资活动现金流净额、筹资活动现金流净额、
       自由现金流、经营现金流/净利润（利润含金量）
 
-    数据源：东方财富 (stock_*_by_report_em)，按天缓存。
+    数据源：东方财富财务分析公开接口，缓存 6 小时。
     """
-    symbol = _normalize_symbol(symbol)
+    from src.tools._financial_statements import get_financial_statements as tool_get_financial_statements
 
-    if not force:
-        cached = _fins_cache_get(symbol, periods)
-        if cached:
-            cached['_cached'] = True
-
-            # Background refresh — keep cache warm, same pattern as stock_info and financials
-            if _fins_lock.acquire(blocking=False):
-                def _bg_refresh():
-                    try:
-                        _fins_cache_put(symbol, periods, _fetch_financial_statements(symbol, periods))
-                    finally:
-                        _fins_lock.release()
-                threading.Thread(target=_bg_refresh, daemon=True).start()
-
-            return cached
-
-    data = _fetch_financial_statements(symbol, periods)
-    _fins_cache_put(symbol, periods, data)
-    return data
+    force_value = force if isinstance(force, bool) else False
+    period_value = periods if isinstance(periods, int) else 6
+    return tool_get_financial_statements(
+        _normalize_symbol(symbol), periods=period_value, use_cache=not force_value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +164,7 @@ def get_financial_statements(
 @router.get("/news", summary="搜索相关新闻")
 def search_news(
     symbol: str = Query(..., description="股票代码 或 关键词"),
-    days: int = Query(90, ge=1, le=90, description="查询最近N天的新闻"),
+    days: int = Query(30, ge=1, le=365, description="查询最近N天的新闻"),
     source: str = Query("all", description="来源: all | eastmoney | news | research"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
@@ -229,15 +179,20 @@ def search_news(
     按天缓存。
     """
     symbol = _normalize_symbol(symbol)
-    cache_part = f"d{days}:{source}"
-    if not force:
-        cached = _daily_cache_get(NEWS_CACHE_KEY, symbol, cache_part)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _fetch_news(symbol, days, source)
-    _daily_cache_put(NEWS_CACHE_KEY, symbol, data, cache_part)
-    return data
+    if source == "research":
+        from src.tools.get_research_report import get_research_report as tool_get_research_report
+
+        force_value = force if isinstance(force, bool) else False
+        return tool_get_research_report(
+            symbol,
+            days=days,
+            limit=50,
+            use_cache=not force_value,
+        )
+    from src.tools.search_news import search_news as tool_search_news
+
+    force_value = force if isinstance(force, bool) else False
+    return tool_search_news(symbol, days=days, limit=50, use_cache=not force_value)
 
 
 # ---------------------------------------------------------------------------
@@ -259,16 +214,18 @@ def get_announcements(
 
     按天缓存。
     """
-    symbol = _normalize_symbol(symbol)
-    cache_part = f"d{days}:{type}"
-    if not force:
-        cached = _daily_cache_get(ANNOUNCEMENTS_CACHE_KEY, symbol, cache_part)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _fetch_announcements(symbol, days, type)
-    _daily_cache_put(ANNOUNCEMENTS_CACHE_KEY, symbol, data, cache_part)
-    return data
+    from src.tools.get_announcements import get_announcements as tool_get_announcements
+
+    force_value = force if isinstance(force, bool) else False
+    days_value = days if isinstance(days, int) else 90
+    type_value = type if isinstance(type, str) else "all"
+    return tool_get_announcements(
+        _normalize_symbol(symbol),
+        days=days_value,
+        type=type_value,
+        limit=100,
+        use_cache=not force_value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -282,16 +239,10 @@ def get_risk_events(
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
     """聚合相关新闻和公司公告中的风险事件。"""
-    symbol = _normalize_symbol(symbol)
-    cache_part = f"d{days}"
-    if not force:
-        cached = _daily_cache_get(RISK_EVENTS_CACHE_KEY, symbol, cache_part)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _build_risk_events(symbol, days)
-    _daily_cache_put(RISK_EVENTS_CACHE_KEY, symbol, data, cache_part)
-    return data
+    from src.tools.get_risk_events import get_risk_events as tool_get_risk_events
+
+    days_value = days if isinstance(days, int) else 90
+    return tool_get_risk_events(_normalize_symbol(symbol), days=days_value, limit=50)
 
 
 # ---------------------------------------------------------------------------
@@ -344,16 +295,16 @@ def get_research_report(
 
     按天缓存。
     """
-    symbol = _normalize_symbol(symbol)
-    cache_part = f"d{days}"
-    if not force:
-        cached = _daily_cache_get(RESEARCH_CACHE_KEY, symbol, cache_part)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _fetch_research_reports(symbol, days)
-    _daily_cache_put(RESEARCH_CACHE_KEY, symbol, data, cache_part)
-    return data
+    from src.tools.get_research_report import get_research_report as tool_get_research_report
+
+    force_value = force if isinstance(force, bool) else False
+    days_value = days if isinstance(days, int) else 1095
+    return tool_get_research_report(
+        _normalize_symbol(symbol),
+        days=days_value,
+        limit=100,
+        use_cache=not force_value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -379,16 +330,17 @@ def get_social_sentiment(
 
     按天缓存。
     """
-    symbol = _normalize_symbol(symbol)
-    cache_part = f"d{days}"
-    if not force:
-        cached = _daily_cache_get(SOCIAL_SENTIMENT_CACHE_KEY, symbol, cache_part)
-        if cached:
-            cached["_cached"] = True
-            return cached
-    data = _fetch_social_sentiment(symbol, days)
-    _daily_cache_put(SOCIAL_SENTIMENT_CACHE_KEY, symbol, data, cache_part)
-    return data
+    from src.tools.get_social_sentiment import get_social_sentiment as tool_get_social_sentiment
+
+    force_value = force if isinstance(force, bool) else False
+    days_value = days if isinstance(days, int) else 90
+    return tool_get_social_sentiment(
+        _normalize_symbol(symbol),
+        days=days_value,
+        limit=100,
+        max_pages=3,
+        use_cache=not force_value,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,8 +353,3 @@ from ._helpers import (
     _resolve_post_publish_time,
 )
 from ._fetch_statements import _fetch_from_ths_triple
-from ._fetch_risk_events import (
-    _classify_risk_event,
-    _extract_risk_summary,
-    _match_risk_keywords,
-)

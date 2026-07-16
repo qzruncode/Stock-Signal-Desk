@@ -4,6 +4,7 @@
 Data sources:
   - 行业板块: ak.stock_board_industry_name_em() — 东方财富行业板块
   - 概念板块: ak.stock_board_change_em() — 东方财富板块异动 (此接口可用), 过滤后约 200+ 条, 全量含涨跌幅
+  - 降级源: ak.stock_sector_spot() — 新浪行业/概念板块
   - 地区板块: 暂不支持
 """
 
@@ -176,8 +177,50 @@ def _normalize_name(name: str) -> str:
 # Fetch
 # ---------------------------------------------------------------------------
 
+def _fetch_sector_sina(indicator: str) -> list[dict]:
+    """Fetch industry/concept boards from Sina as an independent fallback."""
+    import time as _time
+    import akshare as ak
+
+    t0 = _time.time()
+    result: list[dict] = []
+    try:
+        df = ak.stock_sector_spot(indicator=indicator)
+        if df is None or df.empty:
+            return result
+        for _, row in df.iterrows():
+            name = str(row.get("板块", "")).strip()
+            if not name:
+                continue
+            result.append({
+                "name": name,
+                "code": str(row.get("label", "")).strip(),
+                "change_pct": _safe_float(row.get("涨跌幅")),
+                "lead_stock": str(row.get("股票名称", "")).strip(),
+                "lead_stock_price": _safe_float(row.get("个股-当前价")),
+                "lead_stock_change_pct": _safe_float(row.get("个股-涨跌幅")),
+                "up_count": None,
+                "down_count": None,
+                "company_count": _safe_int(row.get("公司家数")),
+                "total_volume": _safe_float(row.get("总成交量")),
+                "total_amount": _safe_float(row.get("总成交额")),
+                "net_flow": None,
+                "data_source": "新浪",
+            })
+        result.sort(
+            key=lambda item: (
+                item.get("change_pct") is not None,
+                item.get("change_pct") or 0,
+            ),
+            reverse=True,
+        )
+        logger.info("[Sectors] sina %s: %s 条, %.1fs", indicator, len(result), _time.time() - t0)
+    except Exception as exc:
+        logger.warning("[Sectors] sina %s 获取失败: %s", indicator, exc)
+    return result
+
 def _fetch_industry() -> list[dict]:
-    """Fetch industry board list from Eastmoney."""
+    """Fetch industry boards from Eastmoney, then Sina when EM is unavailable."""
     import time as _time
     import akshare as ak
 
@@ -199,13 +242,14 @@ def _fetch_industry() -> list[dict]:
                     'down_count': _safe_int(row.get('下跌家数')),
                     'total_amount': None,
                     'net_flow': None,
+                    'data_source': '东方财富',
                 }
                 result.append(item)
         logger.info(f"[Sectors] industry: {len(result)} 条, {_time.time() - t0:.1f}s")
     except Exception as e:
         logger.error(f"[Sectors] industry 获取失败: {e}")
 
-    return result
+    return result or _fetch_sector_sina("行业")
 
 
 def _fetch_concept() -> list[dict]:
@@ -236,7 +280,7 @@ def _fetch_concept() -> list[dict]:
         change_df = ak.stock_board_change_em()
         if change_df is None or change_df.empty:
             logger.warning("[Sectors] concept: EM board_change returned empty")
-            return result
+            return _fetch_sector_sina("概念")
 
         for _, row in change_df.iterrows():
             name = str(row.get('板块名称', '')).strip()
@@ -270,6 +314,7 @@ def _fetch_concept() -> list[dict]:
                 'lead_stock': '',
                 'up_count': None,
                 'down_count': None,
+                'data_source': '东方财富',
             }
             result.append(item)
 
@@ -280,7 +325,16 @@ def _fetch_concept() -> list[dict]:
     except Exception as e:
         logger.error(f"[Sectors] concept 获取失败: {e}")
 
-    return result
+    return result or _fetch_sector_sina("概念")
+
+
+def _sector_source(items: list[dict]) -> str:
+    sources = {
+        str(item.get("data_source") or "").strip()
+        for item in items
+        if isinstance(item, dict) and item.get("data_source")
+    }
+    return "+".join(sorted(sources)) if sources else "none"
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +388,8 @@ def get_sector_list(
 
             return {"type": sector_type, "items": cached_items,
                     "_fetched_at": cached_ts or fetched_at, "_cached": True,
-                    "data_time": (cached_ts or fetched_at)[:10], "is_stale": is_fallback, "fallback_used": is_fallback}
+                    "data_time": (cached_ts or fetched_at)[:10], "is_stale": is_fallback,
+                    "fallback_used": is_fallback, "source": _sector_source(cached_items), "errors": []}
 
     if sector_type == "industry":
         items = _fetch_industry()
@@ -349,4 +404,7 @@ def get_sector_list(
 
     return {"type": sector_type, "items": items,
             "_fetched_at": fetched_at, "_cached": False,
-            "data_time": _sector_data_time(), "is_stale": False, "fallback_used": False}
+            "data_time": _sector_data_time(), "is_stale": False,
+            "fallback_used": _sector_source(items) == "新浪",
+            "source": _sector_source(items),
+            "errors": [] if items else [f"未获取到 {sector_type} 板块数据"]}

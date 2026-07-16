@@ -42,6 +42,9 @@ TOOL_MODULES: tuple[str, ...] = (
     # Information and event evidence
     "search_news",
     "search_financial_news",
+    "search_research_library",
+    "get_regulatory_updates",
+    "get_monetary_policy_operations",
     "get_announcements",
     "get_risk_events",
     "get_research_report",

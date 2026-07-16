@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -11,8 +12,11 @@ import pytest
 
 from src.tools.get_consensus_estimates import get_consensus_estimates
 from src.tools.get_peer_comparison import get_peer_comparison
-from src.tools.get_stock_capital_flow import get_stock_capital_flow
-from src.tools.search_financial_news import _select_specs, search_financial_news
+from src.tools.get_sector_flow import _fetch_all as fetch_all_sector_flow, get_sector_flow
+from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
+from src.tools.get_monetary_policy_operations import _operation_item
+from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
+from src.tools.search_financial_news import _infer_topic, _select_specs, search_financial_news
 from src.tools.webfetch import (
     MAX_RESPONSE_SIZE,
     _accept_header_for,
@@ -64,6 +68,60 @@ def test_semantic_rss_selector_can_choose_non_default_catalog_route() -> None:
     assert selected[0][1] == {"industry": "全部"}
 
 
+def test_all_47_infos_routes_have_an_explicit_business_capability() -> None:
+    assert len(RSS_ROUTE_CAPABILITIES) == 47
+    assert "research" in RSS_ROUTE_CAPABILITIES["/wkjyqh/research"]
+    assert "regulatory" in RSS_ROUTE_CAPABILITIES["/sse/inquire"]
+    assert "monetary_policy" in RSS_ROUTE_CAPABILITIES["/gov/pbc/tradeAnnouncement"]
+
+
+def test_research_selector_never_uses_exchange_inquiry_routes() -> None:
+    routes = [
+        _catalog_route("/szse/inquire/:category?/:select?/:keyword?", "半导体研究问询", params=[
+            {"name": "category", "required": False},
+            {"name": "select", "required": False},
+            {"name": "keyword", "required": False},
+        ]),
+        _catalog_route("/wkjyqh/research", "五矿期货研究报告"),
+    ]
+
+    selected = _select_specs(routes, "半导体研报", "research")
+
+    assert [path for path, _, _ in selected] == ["/wkjyqh/research"]
+
+
+def test_szse_inquiry_fills_all_path_segments_before_keyword() -> None:
+    route = _catalog_route(
+        "/szse/inquire/:category?/:select?/:keyword?",
+        "深交所问询",
+        params=[
+            {"name": "category", "required": False},
+            {"name": "select", "required": False},
+            {"name": "keyword", "required": False},
+        ],
+    )
+
+    selected = _select_specs([route], "000001 问询函", "announcement")
+
+    assert selected[0][1] == {
+        "category": "0",
+        "select": "全部函件类别",
+        "keyword": "000001",
+    }
+
+
+def test_monetary_operation_parser_extracts_amount_term_and_rate() -> None:
+    parsed = _operation_item(
+        {"title": "公开市场业务交易公告", "published": "2026-07-16"},
+        "人民银行以固定利率、数量招标方式开展了7天期逆回购操作，操作量为1000亿元，操作利率1.40%。",
+    )
+
+    assert parsed["instrument"] == "逆回购"
+    assert parsed["term_days"] == 7
+    assert parsed["amount_yi"] == 1000
+    assert parsed["rate_pct"] == 1.40
+
+
 def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     catalog = {
         "count": 47,
@@ -82,14 +140,157 @@ def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     }
     with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
          patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}), \
-         patch("src.tools.websearch.websearch", return_value=fallback):
+         patch("src.tools.websearch.websearch", return_value=fallback) as mocked_websearch:
         result = search_financial_news("贵州茅台最新公告", topic="announcement")
 
+    assert mocked_websearch.call_args.kwargs["query"] == "贵州茅台最新公告"
     assert result["success"] is True
+    assert result["fallback_attempted"] is True
     assert result["fallback_used"] is True
     assert result["source"] == "websearch/test_search"
     assert result["items"][0]["source_type"] == "websearch"
     assert result["items"][0]["link"] == "https://example.com/a"
+
+
+def test_semantic_rss_plain_stock_name_infers_company_topic() -> None:
+    with patch(
+        "src.data.stock_index_loader.get_stock_name_index_map",
+        return_value={"600519": "贵州茅台", "000001": "平安银行"},
+    ):
+        assert _infer_topic("贵州茅台") == "company"
+
+
+def test_semantic_rss_central_bank_reverse_repo_is_macro_not_company_buyback() -> None:
+    assert _infer_topic("央行逆回购") == "macro"
+    assert _infer_topic("贵州茅台回购公告") == "announcement"
+
+
+def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text() -> None:
+    catalog = {
+        "count": 47,
+        "routes": [_catalog_route("/gov/pbc/tradeAnnouncement", "公开市场交易公告")],
+    }
+    feed = {
+        "items": [
+            {
+                "title": "公开市场业务交易公告 [2026]第136号",
+                "summary": "中国人民银行开展6260亿元7天期逆回购操作",
+                "link": "https://www.pbc.gov.cn/example",
+                "published": datetime.now().astimezone().isoformat(),
+            },
+            {
+                "title": "韩国叫停单一股票杠杆ETF产品上市",
+                "summary": "韩国央行表示将继续关注市场",
+                "link": "https://example.com/korea-etf",
+                "published": datetime.now().astimezone().isoformat(),
+            },
+        ],
+        "errors": [],
+    }
+    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
+         patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
+        result = search_financial_news(
+            "央行逆回购",
+            fallback_to_web=False,
+        )
+
+    assert result["topic"] == "macro"
+    assert result["item_count"] == 1
+    assert result["items"][0]["link"] == "https://www.pbc.gov.cn/example"
+
+
+def test_semantic_rss_exact_query_route_beats_broad_topic_description() -> None:
+    routes = [
+        _catalog_route(
+            "/eastmoney/search/:keyword",
+            "东方财富搜索",
+            params=[{"name": "keyword", "required": True}],
+        ),
+        {
+            **_catalog_route("/hexun/pe/news", "和讯PE资讯"),
+            "description": "覆盖半导体等行业景气资讯",
+        },
+    ]
+
+    selected = _select_specs(routes, "半导体景气", "industry", max_routes=2)
+
+    assert selected[0][0] == "/eastmoney/search/:keyword"
+
+
+def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
+    catalog = {
+        "count": 47,
+        "routes": [_catalog_route(
+            "/eastmoney/search/:keyword",
+            "东方财富搜索",
+            params=[{"name": "keyword", "required": True}],
+        )],
+    }
+    feed = {
+        "items": [
+            {
+                "title": "贵州茅台发布经营数据",
+                "summary": "公司披露最新数据",
+                "link": "https://example.com/current",
+                "published": datetime.now().astimezone().isoformat(),
+            },
+            {
+                "title": "北交所公司行情汇总",
+                "summary": "表格中包含贵州茅台等大量公司",
+                "link": "https://example.com/table",
+                "published": datetime.now().astimezone().isoformat(),
+            },
+            {
+                "title": "贵州茅台历史新闻",
+                "summary": "过期内容",
+                "link": "https://example.com/old",
+                "published": "2020-01-01T00:00:00+08:00",
+            },
+            {
+                "title": "11136,贵州茅台",
+                "summary": "错误泄漏的图表标签",
+                "link": "https://example.com/chart-label",
+                "published": datetime.now().astimezone().isoformat(),
+            },
+        ],
+        "errors": [],
+        "_cached": False,
+    }
+    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
+         patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
+        result = search_financial_news(
+            "贵州茅台最新消息",
+            topic="company",
+            days=30,
+            fallback_to_web=False,
+        )
+
+    assert [item["link"] for item in result["items"]] == ["https://example.com/current"]
+    assert result["days"] == 30
+    assert any("过滤 1 条过期" in warning for warning in result["warnings"])
+
+
+def test_semantic_rss_failed_web_fallback_is_not_reported_as_used() -> None:
+    catalog = {
+        "count": 47,
+        "routes": [_catalog_route("/cls/telegraph/:category?", "财联社电报")],
+    }
+    fallback = {
+        "success": False,
+        "provider": "none",
+        "results": [],
+        "errors": ["all providers failed"],
+    }
+    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
+         patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}), \
+         patch("src.tools.websearch.websearch", return_value=fallback):
+        result = search_financial_news("市场发生了什么")
+
+    assert result["success"] is False
+    assert result["source"] == "none"
+    assert result["fallback_attempted"] is True
+    assert result["fallback_used"] is False
+    assert result["fallback_recommended"] is True
 
 
 def test_semantic_rss_rejects_empty_query_and_invalid_topic() -> None:
@@ -99,29 +300,67 @@ def test_semantic_rss_rejects_empty_query_and_invalid_topic() -> None:
         search_financial_news("贵州茅台", topic="other")
 
 
-def test_capital_flow_uses_bounded_direct_fallback() -> None:
+def test_capital_flow_normalizes_units_and_window_observations() -> None:
     direct = pd.DataFrame([
-        {"日期": "2026-07-14", "主力净流入-净额": "10"},
-        {"日期": "2026-07-15", "主力净流入-净额": "-3"},
+        {"date": pd.Timestamp("2026-07-14").date(), "main_net_inflow": 10, "main_net_inflow_pct": 1.0},
+        {"date": pd.Timestamp("2026-07-15").date(), "main_net_inflow": -3, "main_net_inflow_pct": -0.5},
     ])
+    direct.attrs["history_transport"] = "curl_cffi"
 
-    def fake_cached_call(key, fn, **kwargs):
-        if key.startswith("stock_capital_flow:direct"):
-            return direct, False
-        raise RuntimeError("akshare disconnected")
-
-    with patch("src.tools.get_stock_capital_flow.cached_call", side_effect=fake_cached_call):
+    with patch("src.tools.get_stock_capital_flow.cached_call", return_value=(direct, False)), \
+         patch("src.tools.get_stock_capital_flow._is_stale", return_value=(False, None)):
         result = get_stock_capital_flow("600519", days=20)
 
     assert result["success"] is True
-    assert result["fallback_used"] is True
+    assert result["fallback_used"] is False
     assert result["item_count"] == 2
     assert result["summary"]["main_net_inflow_5d"] == 7
-    assert "AKShare 资金流接口失败" in result["errors"][0]
+    assert result["summary"]["observations_5d"] == 2
+    assert result["summary"]["windows"]["5d"]["complete_window"] is False
+    assert result["amount_unit"] == "元"
+    assert result["ratio_unit"] == "%"
+
+
+def test_capital_flow_recognizes_bse_920_codes() -> None:
+    assert _market_for("920000") == "bj"
+    assert _market_for("600519") == "sh"
+    assert _market_for("000001") == "sz"
+
+
+def test_sector_flow_paginates_and_preserves_true_money_flow_fields() -> None:
+    page_one = [
+        {"f12": "BK1", "f14": "流入行业", "f3": 1.2, "f62": 100, "f184": 2.0, "f66": 60, "f72": 40, "f78": -20, "f84": -80, "f124": 1784180000},
+    ]
+    page_two = [
+        {"f12": "BK2", "f14": "流出行业", "f3": -1.2, "f62": -90, "f184": -3.0, "f66": -50, "f72": -40, "f78": 10, "f84": 80, "f124": 1784180000},
+    ]
+
+    def fake_page(params, page):
+        return (page_one, 101) if page == 1 else (page_two, 101)
+
+    with patch("src.tools.get_sector_flow._request_page", side_effect=fake_page):
+        records = fetch_all_sector_flow("industry", "today")
+
+    assert len(records) == 2
+    assert records[0]["main_net_inflow"] == 100
+    assert records[0]["super_large_net_inflow"] == 60
+    assert records[1]["main_net_inflow"] == -90
+    assert records[1]["main_flow_rank"] == 2
+
+
+def test_sector_flow_never_substitutes_price_performance_for_money_flow() -> None:
+    with patch("src.tools.get_sector_flow.cached_call", side_effect=RuntimeError("upstream down")):
+        result = get_sector_flow(type="industry", period="today", top_n=5)
+
+    assert result["success"] is False
+    assert result["inflow_top"] == []
+    assert result["outflow_top"] == []
+    assert result["fallback_used"] is False
 
 
 def test_consensus_total_failure_is_not_marked_fresh() -> None:
-    with patch("src.tools.get_consensus_estimates._forecast", side_effect=RuntimeError("upstream down")):
+    with patch("src.tools.get_consensus_estimates._forecast", side_effect=RuntimeError("upstream down")), \
+         patch("src.tools.get_consensus_estimates._detail", side_effect=RuntimeError("upstream down")):
         result = get_consensus_estimates("600519")
 
     assert result["success"] is False
@@ -131,14 +370,28 @@ def test_consensus_total_failure_is_not_marked_fresh() -> None:
 
 
 def test_peer_result_is_bounded_but_preserves_total_count() -> None:
-    rows = pd.DataFrame([{"股票代码": f"{index:06d}", "市盈率": index} for index in range(30)])
-    with patch("src.tools.get_peer_comparison.cached_call", return_value=(rows, False)):
+    rows = [
+        {
+            "CORRE_SECURITY_CODE": f"{index:06d}", "CORRE_SECURITY_NAME": f"peer-{index}",
+            "TOTAL_COUNT": 30, "PAIMING": index + 1, "REPORT_DATE": "2025-12-31",
+            "PEG": index / 10, "PE_TTM": 10 + index, "PB_MRQ": 2 + index / 10,
+        }
+        for index in range(15)
+    ]
+    rows.append({
+        "CORRE_SECURITY_CODE": "600519", "CORRE_SECURITY_NAME": "贵州茅台",
+        "TOTAL_COUNT": 30, "PAIMING": 20, "REPORT_DATE": "2025-12-31",
+        "PEG": 1.5, "PE_TTM": 20, "PB_MRQ": 5,
+    })
+    with patch("src.tools.get_peer_comparison._request_rows", return_value=rows), \
+         patch("src.tools.get_peer_comparison.cached_call", side_effect=lambda _, fn, **__: (fn(), False)):
         result = get_peer_comparison("600519", dimension="valuation")
 
     bucket = result["dimensions"]["valuation"]
     assert result["success"] is True
-    assert bucket["item_count"] == 30
-    assert len(bucket["items"]) == 12
+    assert bucket["sample_size"] == 30
+    assert bucket["target_rank"] == 20
+    assert len(bucket["top_peers"]) == 10
 
 
 def test_websearch_is_generic_and_preserves_the_original_query() -> None:

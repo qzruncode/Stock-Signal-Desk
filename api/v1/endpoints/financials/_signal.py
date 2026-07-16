@@ -11,7 +11,9 @@ from api.v1.endpoints.financials._calc import _clamp
 
 def _build_price_overdraft_signal(payload: dict) -> dict:
     pe_ttm = _safe_float(payload.get("pe_ttm"))
+    forward_pe = _safe_float(payload.get("forward_pe"))
     pe_dynamic = _safe_float(payload.get("pe_dynamic"))
+    expectation_pe = forward_pe if forward_pe is not None else pe_dynamic
     pb = _safe_float(payload.get("pb"))
     peg = _safe_float(payload.get("peg"))
     dividend_yield = _safe_float(payload.get("dividend_yield"))
@@ -35,8 +37,8 @@ def _build_price_overdraft_signal(payload: dict) -> dict:
         else None
     )
     dynamic_pe_discount_vs_ttm = (
-        round((pe_ttm - pe_dynamic) / pe_ttm * 100, 2)
-        if pe_ttm not in (None, 0) and pe_dynamic is not None
+        round((pe_ttm - expectation_pe) / pe_ttm * 100, 2)
+        if pe_ttm not in (None, 0) and expectation_pe is not None
         else None
     )
 
@@ -83,15 +85,15 @@ def _build_price_overdraft_signal(payload: dict) -> dict:
         if dynamic_pe_discount_vs_ttm >= 25:
             expectation_support_score += 20
             signals.append("forward_pe_improving")
-            reasoning.append(f"动态 PE 较 TTM 下降 {dynamic_pe_discount_vs_ttm:.2f}%，说明市场预期未来盈利改善能够部分消化高估值。")
+            reasoning.append(f"远期 PE 较 TTM 下降 {dynamic_pe_discount_vs_ttm:.2f}%，说明市场预期未来盈利改善能够部分消化高估值。")
         elif dynamic_pe_discount_vs_ttm >= 10:
             expectation_support_score += 10
         elif dynamic_pe_discount_vs_ttm <= 0:
             expectation_support_score -= 15
             signals.append("forward_pe_not_improving")
-            reasoning.append("动态 PE 没有明显低于 TTM PE，意味着盈利改善预期对当前高估值的消化能力有限。")
+            reasoning.append("远期 PE 没有明显低于 TTM PE，意味着盈利改善预期对当前高估值的消化能力有限。")
     else:
-        limitations.append("缺少动态 PE 或 TTM PE，无法判断未来盈利预期是否显著改善。")
+        limitations.append("缺少远期 PE 或 TTM PE，无法判断未来盈利预期是否显著改善。")
 
     if peg is not None:
         if peg <= 1:
@@ -163,6 +165,7 @@ def _build_price_overdraft_signal(payload: dict) -> dict:
         "metrics": {
             "pe_ttm": pe_ttm,
             "pe_dynamic": pe_dynamic,
+            "forward_pe": forward_pe,
             "pb": pb,
             "peg": peg,
             "dividend_yield": dividend_yield,

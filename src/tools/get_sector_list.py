@@ -7,7 +7,14 @@ from src.tools.base import ToolSpec, object_schema
 
 def get_sector_list(type: str = "industry") -> Any:
     from api.v1.endpoints.sectors import get_sector_list as endpoint
-    return endpoint(type=type)
+    result = endpoint(type=type)
+    if not isinstance(result, dict):
+        return result
+    normalized = dict(result)
+    normalized["success"] = bool(normalized.get("items"))
+    normalized["partial"] = normalized["success"] and bool(normalized.get("errors"))
+    normalized.setdefault("warnings", [])
+    return normalized
 
 
 TOOL = ToolSpec(

@@ -49,6 +49,29 @@ RSSHUB_ROUTES: dict[str, dict[str, Any]] = {
         "label": "华尔街见闻实时快讯",
         "group": "快讯",
     },
+    "jqka_realtime": {
+        "path": "/10jqka/realtimenews/{category}",
+        "label": "同花顺7×24快讯",
+        "group": "快讯",
+        "requires_category": False,
+        "default_category": "",
+    },
+    "stcn_kx": {
+        "path": "/stcn/article/list/kx",
+        "label": "证券时报快讯",
+        "group": "快讯",
+    },
+    "gelonghui_keyword": {
+        "path": "/gelonghui/keyword/{keyword}",
+        "label": "格隆汇关键词",
+        "group": "个股",
+        "requires_keyword": True,
+    },
+    "wkjyqh_research": {
+        "path": "/wkjyqh/research",
+        "label": "五矿期货研究",
+        "group": "研报",
+    },
     "wallstreetcn_calendar": {
         "path": "/wallstreetcn/calendar",
         "label": "华尔街见闻财经日历",

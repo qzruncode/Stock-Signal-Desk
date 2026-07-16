@@ -64,7 +64,43 @@ class DatabaseManager(
             return value.date()
         if isinstance(value, date):
             return value
-        return value
+        if value is None:
+            return None
+
+        # AKShare does not use one stable date type across endpoints: depending
+        # on the upstream it may return pandas.Timestamp, YYYY-MM-DD,
+        # YYYYMMDD, slash-separated dates, or a full ISO timestamp.  SQLAlchemy
+        # Date columns accept only ``date`` objects, so normalize all supported
+        # variants at the storage boundary instead of requiring every caller to
+        # know the database driver's rules.
+        to_pydatetime = getattr(value, "to_pydatetime", None)
+        if callable(to_pydatetime):
+            try:
+                converted = to_pydatetime()
+                if isinstance(converted, datetime):
+                    return converted.date()
+                if isinstance(converted, date):
+                    return converted
+            except (TypeError, ValueError, OverflowError):
+                pass
+
+        text = str(value).strip()
+        if not text or text.lower() in {"none", "nan", "nat"}:
+            return None
+        normalized = text.replace("年", "-").replace("月", "-").replace("日", "")
+        normalized = normalized.replace("/", "-").strip("-")
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(normalized).date()
+        except ValueError:
+            pass
+        for fmt in ("%Y%m%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(normalized, fmt).date()
+            except ValueError:
+                continue
+        return None
 
     @staticmethod
     def _normalize_sql_value(value: Any) -> Any:

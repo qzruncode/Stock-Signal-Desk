@@ -25,11 +25,9 @@ def disable_auth():
 
 
 def test_financials_accepts_ts_code_suffix(client, monkeypatch):
-    from api.v1.endpoints import financials
-
     seen = {}
 
-    def fake_fetch(symbol: str, periods: int):
+    def fake_fetch(symbol: str, periods: int, use_cache: bool):
         seen["symbol"] = symbol
         seen["periods"] = periods
         return {
@@ -41,21 +39,19 @@ def test_financials_accepts_ts_code_suffix(client, monkeypatch):
             "source": "fake",
         }
 
-    monkeypatch.setattr(financials, "_fetch_financials", fake_fetch)
+    monkeypatch.setattr("src.tools.get_financials.get_financials", fake_fetch)
 
     response = client.get("/api/v1/stocks/financials", params={"symbol": "300850.SZ", "force": True})
 
     assert response.status_code == 200
     assert response.json()["symbol"] == "300850"
-    assert seen == {"symbol": "300850", "periods": 12}
+    assert seen == {"symbol": "300850", "periods": 6}
 
 
 def test_financial_statements_accepts_ts_code_suffix(client, monkeypatch):
-    from api.v1.endpoints import financials
-
     seen = {}
 
-    def fake_fetch(symbol: str, periods: int):
+    def fake_fetch(symbol: str, periods: int, use_cache: bool):
         seen["symbol"] = symbol
         seen["periods"] = periods
         return {
@@ -69,169 +65,122 @@ def test_financial_statements_accepts_ts_code_suffix(client, monkeypatch):
             "source": "fake",
         }
 
-    monkeypatch.setattr(financials, "_fetch_financial_statements", fake_fetch)
+    monkeypatch.setattr("src.tools._financial_statements.get_financial_statements", fake_fetch)
 
     response = client.get("/api/v1/stocks/financials/statements", params={"symbol": "300850.SZ", "force": True})
 
     assert response.status_code == 200
     assert response.json()["symbol"] == "300850"
-    assert seen == {"symbol": "300850", "periods": 12}
+    assert seen == {"symbol": "300850", "periods": 6}
 
 
 def test_news_uses_direct_fallback_when_rsshub_is_empty(client, monkeypatch):
-    from api.v1.endpoints import financials
+    import pandas as pd
 
-    monkeypatch.setattr(financials, "_fetch_rss_stock_news", lambda symbol, days: ([], [], ["rss timeout"]))
+    monkeypatch.setattr("src.tools.search_news._stock_name", lambda symbol: "新强联")
     monkeypatch.setattr(
-        financials,
-        "_fetch_direct_news_sources",
-        lambda symbol, days: (
-            [{
-                "title": "直连新闻",
-                "summary": "fallback",
-                "publish_time": "2026-06-08T00:00:00",
-                "source": "东方财富新闻",
-                "url": "https://example.com/news",
-                "category": "新闻",
-                "event_type": "general",
-                "event_label": "一般资讯",
-                "polarity": "neutral",
-                "importance": "low",
-                "tags": [],
-            }],
-            ["东方财富新闻直连(1条)"],
-            [],
-        ),
+        "src.tools.search_news._fetch_direct",
+        lambda symbol: pd.DataFrame([{
+            "新闻标题": "新强联直连新闻",
+            "新闻内容": "新强联 300850 生产经营正常",
+            "发布时间": "2026-07-15T00:00:00",
+            "文章来源": "东方财富新闻",
+            "新闻链接": "https://example.com/news",
+        }]),
+    )
+    monkeypatch.setattr(
+        "src.tools.search_news._fetch_rss",
+        lambda name, limit: {"items": [], "errors": ["rss timeout"], "_cached": False},
     )
 
     response = client.get("/api/v1/stocks/news", params={"symbol": "300850.SZ", "source": "news", "force": True})
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["items"][0]["title"] == "直连新闻"
-    assert payload["fallback_used"] is True
+    assert payload["items"][0]["title"] == "新强联直连新闻"
+    assert payload["partial"] is True
+    assert payload["fallback_used"] is False
 
 
 def test_announcements_uses_rsshub_fallback_when_direct_source_is_empty(client, monkeypatch):
-    from api.v1.endpoints import financials
+    import importlib
 
-    class _EmptyFrame:
-        empty = True
-
-    import akshare as ak
-
-    monkeypatch.setattr(ak, "stock_individual_notice_report", lambda **kwargs: _EmptyFrame())
-    monkeypatch.setattr(
-        financials,
-        "_fetch_rss_announcements",
-        lambda symbol, days, ann_type: (
-            [{
-                "title": "交易所公告",
-                "notice_type": "公告",
-                "publish_date": "2026-06-08",
-                "url": "https://example.com/announcement",
-                "source": "深交所公告",
-            }],
-            ["RSSHub深交所公告(1条)"],
-            [],
-        ),
-    )
+    tool_module = importlib.import_module("src.tools.get_announcements")
+    monkeypatch.setattr(tool_module, "cached_call", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(tool_module, "_fetch_exchange_rss", lambda *args, **kwargs: (
+        [{
+            "代码": "300850",
+            "名称": "新强联",
+            "公告标题": "交易所公告",
+            "公告类型": "交易所公告",
+            "公告日期": "2026-06-08",
+            "网址": "https://example.com/announcement",
+        }],
+        "/szse/disclosure/listed/notice/:query?",
+        [],
+    ))
 
     response = client.get("/api/v1/stocks/announcements", params={"symbol": "300850.SZ", "force": True})
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["items"][0]["title"] == "交易所公告"
-    assert payload["source_chain"] == ["RSSHub深交所公告(1条)"]
+    assert payload["source_chain"] == [
+        "RSSHub/交易所官方披露:/szse/disclosure/listed/notice/:query?"
+    ]
     assert payload["fallback_used"] is True
 
 
 def test_announcements_return_notice_type_distribution(client, monkeypatch):
-    from api.v1.endpoints import financials
+    import importlib
 
-    monkeypatch.setattr(
-        financials,
-        "_fetch_announcements",
-        lambda symbol, days, ann_type: {
-            "symbol": symbol,
-            "days": days,
-            "type": ann_type,
-            "items": [
-                {"title": "年报", "notice_type": "定期报告", "publish_date": "2026-06-08", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "neutral", "tags": []},
-                {"title": "分红方案", "notice_type": "分红派息", "publish_date": "2026-06-07", "url": "", "event_type": "earnings", "importance": "high", "polarity": "positive", "tags": []},
-                {"title": "董事辞任", "notice_type": "高管变动", "publish_date": "2026-06-06", "url": "", "event_type": "governance", "importance": "medium", "polarity": "neutral", "tags": []},
-                {"title": "利润分配补充", "notice_type": "分红派息", "publish_date": "2026-06-05", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "positive", "tags": []},
-            ],
-            "analysis": financials._build_structured_analysis(
-                [
-                    {"title": "年报", "notice_type": "定期报告", "publish_date": "2026-06-08", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "neutral", "tags": []},
-                    {"title": "分红方案", "notice_type": "分红派息", "publish_date": "2026-06-07", "url": "", "event_type": "earnings", "importance": "high", "polarity": "positive", "tags": []},
-                    {"title": "董事辞任", "notice_type": "高管变动", "publish_date": "2026-06-06", "url": "", "event_type": "governance", "importance": "medium", "polarity": "neutral", "tags": []},
-                    {"title": "利润分配补充", "notice_type": "分红派息", "publish_date": "2026-06-05", "url": "", "event_type": "earnings", "importance": "medium", "polarity": "positive", "tags": []},
-                ],
-                days=days,
-                dimension="公司公告",
-            ),
-            "source_chain": [],
-            "errors": [],
-            "data_time": "2026-06-08",
-            "is_stale": False,
-            "fallback_used": False,
-            "_fetched_at": "2026-06-08T00:00:00",
-            "_cached": False,
+    tool_module = importlib.import_module("src.tools.get_announcements")
+    monkeypatch.setattr(tool_module, "get_announcements", lambda *args, **kwargs: {
+        "symbol": "300850",
+        "items": [],
+        "item_count": 4,
+        "analysis": {
+            "notice_type_distribution": {"分红": 2, "业绩": 1, "高管变动": 1},
         },
-    )
+        "success": True,
+    })
 
     response = client.get("/api/v1/stocks/announcements", params={"symbol": "300850.SZ", "force": True})
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["analysis"]["notice_type_distribution"] == {
-        "分红派息": 2,
-        "定期报告": 1,
+        "分红": 2,
+        "业绩": 1,
         "高管变动": 1,
     }
 
 
 def test_research_uses_rsshub_fallback_when_direct_source_is_empty(client, monkeypatch):
-    from api.v1.endpoints import financials
+    import importlib
 
-    class _EmptyFrame:
-        empty = True
-
-    import akshare as ak
-
-    monkeypatch.setattr(ak, "stock_research_report_em", lambda **kwargs: _EmptyFrame())
-    monkeypatch.setattr(
-        financials,
-        "_fetch_rss_research_reports",
-        lambda symbol, days: (
-            [{
-                "title": "RSSHub研报",
-                "org": "RSSHub研报源",
-                "rating": None,
-                "industry": None,
-                "publish_date": "2026-06-08",
-                "url": "https://example.com/report",
-                "profit_forecasts": [],
-                "monthly_report_count": None,
-                "event_type": "research",
-                "event_label": "研究评级",
-                "polarity": "neutral",
-                "importance": "medium",
-                "tags": [],
-            }],
-            ["RSSHub东方财富个股研报(1条)"],
-            [],
-        ),
-    )
+    tool_module = importlib.import_module("src.tools.get_research_report")
+    monkeypatch.setattr(tool_module, "cached_call", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(tool_module, "_fetch_rss_fallback", lambda *args, **kwargs: ([{
+        "symbol": "300850",
+        "name": "新强联",
+        "title": "RSSHub研报",
+        "org": "RSSHub研报源",
+        "rating": None,
+        "industry": None,
+        "publish_date": "2026-06-08",
+        "url": "https://example.com/report",
+        "summary": "",
+        "profit_forecasts": [],
+        "monthly_report_count": None,
+        "source": "RSSHub/东方财富个股研报",
+        "source_type": "rss_research_report",
+    }], []))
 
     response = client.get("/api/v1/stocks/research-report", params={"symbol": "300850.SZ", "force": True})
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["items"][0]["title"] == "RSSHub研报"
-    assert payload["source_chain"] == ["RSSHub东方财富个股研报(1条)"]
+    assert payload["source_chain"] == ["RSSHub/东方财富个股研报"]
     assert payload["fallback_used"] is True
-
-
