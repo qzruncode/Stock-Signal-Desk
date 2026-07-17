@@ -393,8 +393,9 @@ def search_research_library(
 TOOL = ToolSpec(
     name="search_research_library",
     description=(
-        "跨机构检索行业、宏观、期货与评级研究资料。按业务主题直接选择东方财富、中指研究院、麦肯锡、穆迪、"
-        "南华期货、国家金融与发展实验室、前瞻和五矿期货的可运行 RSS 路由；单只股票券商研报仍优先用 get_research_report。"
+        "仅用于行业、宏观、期货、评级及跨机构专题研究资料检索。若用户询问一只具体 A 股的券商个股研报，"
+        "必须使用 get_research_report；若询问公司新闻或公告，不要调用本工具。数据来自东方财富、中指研究院、"
+        "麦肯锡、穆迪、南华期货、国家金融与发展实验室、前瞻和五矿期货等 Infos/RSSHub 路由。"
     ),
     parameters=object_schema({
         "query": {"type": "string", "description": "研究主题或股票代码/简称"},

@@ -149,7 +149,7 @@ def get_macro_indicator(
 
     actual = latest_date(records, "period")
     expected = expected_indicator_period(indicator)
-    stale = actual is None or actual < expected
+    stale = actual < expected if actual else None
     if stale and actual:
         warnings.append(f"{indicator} 最新期间为 {actual.isoformat()}，正常发布日历下预期至少为 {expected.isoformat()}")
     success = bool(records)
@@ -174,7 +174,7 @@ def get_macro_indicator(
         "is_stale": stale,
         "freshness_unknown": actual is None,
         "fallback_used": fallback_used,
-        "fallback_recommended": not success or stale,
+        "fallback_recommended": not success or stale is True,
         "errors": errors[:10],
         "warnings": warnings[:10],
         "_cached": cached if not fallback_used else True,

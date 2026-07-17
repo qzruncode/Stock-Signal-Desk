@@ -27,6 +27,7 @@ from typing import Any
 from fastapi import HTTPException
 from data_provider.circuit_breaker import RealtimeCircuitBreaker
 from data_provider.rate_limiter import akshare_rate_limiter
+from src.tools._trading_calendar import is_trading_time, trade_dates
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,7 @@ def _expected_latest_kline_date(now: datetime | None = None) -> date:
     if now.tzinfo is None:
         now = now.replace(tzinfo=datetime.now().astimezone().tzinfo)
     try:
-        from src.tools._market_snapshot import _fetch_trade_dates
-
-        calendar = [day for day in _fetch_trade_dates() if day <= now.date()]
+        calendar = [day for day in trade_dates() if day <= now.date()]
         if now.time() < datetime.strptime("09:30", "%H:%M").time():
             calendar = [day for day in calendar if day < now.date()]
         return calendar[-1]
@@ -551,20 +550,7 @@ def _fetch_kline_with_fallback(
 # Cache
 # ---------------------------------------------------------------------------
 
-def _is_trading_hours() -> bool:
-    now = datetime.now().astimezone()
-    if now.weekday() >= 5:
-        return False
-    try:
-        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
-
-        if expected_trade_day(now, _fetch_trade_dates()) != now.date():
-            return False
-    except Exception:
-        pass
-    from datetime import time
-    t = now.time()
-    return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
+_is_trading_hours = is_trading_time
 
 
 def _get_kline_from_cache(cache_key: str) -> dict | None:

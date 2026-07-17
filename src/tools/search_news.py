@@ -283,7 +283,7 @@ def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = 
         "warnings": warnings,
         "data_time": latest.isoformat() if latest else None,
         "freshness_unknown": latest is None,
-        "is_stale": latest < cutoff if latest else True,
+        "is_stale": latest < cutoff if latest else None,
         "fallback_used": False,
         "fallback_recommended": not items,
         "fallback_query": f"{name or code} {code} 最新新闻" if not items else None,

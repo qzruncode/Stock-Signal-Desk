@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.tools._akshare import bare_symbol, cached_call
+from src.tools._akshare import bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 
@@ -178,6 +178,73 @@ def _fetch_guba_sample(
     return items, bool(pages), errors, any_cached if pages else False, reached_cutoff
 
 
+def _fetch_stock_news_fallback(
+    code: str,
+    *,
+    days: int,
+    limit: int,
+    use_cache: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return company-news summaries when the public Guba list is unavailable.
+
+    These rows are explicitly marked as syndicated information.  They preserve
+    useful context for the Agent but never masquerade as user-authored social
+    sentiment evidence.
+    """
+    import akshare as ak
+
+    def fetch():
+        frame = ak.stock_news_em(symbol=code)
+        if frame is None or frame.empty:
+            raise RuntimeError("AKShare stock_news_em 没有返回公司新闻")
+        return frame
+
+    frame, cached = cached_call(
+        f"social-news-fallback:{code}",
+        fetch,
+        ttl_seconds=1800 if use_cache else 0,
+        attempts=2,
+    )
+    cutoff = datetime.now().astimezone() - timedelta(days=days)
+    items: list[dict[str, Any]] = []
+    for row in frame_records(frame):
+        title = re.sub(r"\s+", " ", str(row.get("新闻标题") or "")).strip()
+        if not title:
+            continue
+        summary = re.sub(r"\s+", " ", str(row.get("新闻内容") or "")).strip()[:700]
+        published = None
+        raw_time = str(row.get("发布时间") or "").strip()
+        if raw_time:
+            try:
+                published = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                if published.tzinfo is None:
+                    published = published.astimezone()
+            except ValueError:
+                published = _post_time(raw_time)
+        if published and published < cutoff:
+            continue
+        score, positive_hits, negative_hits = _classify_sentiment(f"{title} {summary}")
+        items.append({
+            "title": title,
+            "summary": summary,
+            "source": str(row.get("文章来源") or "东方财富公司新闻").strip(),
+            "author": None,
+            "post_kind": "syndicated_info",
+            "url": str(row.get("新闻链接") or "").strip(),
+            "read_count": None,
+            "reply_count": None,
+            "sentiment_score": score,
+            "label": "positive" if score > 0 else "negative" if score < 0 else "neutral",
+            "positive_hits": positive_hits,
+            "negative_hits": negative_hits,
+            "publish_time": published.isoformat() if published else None,
+            "classification_method": "deterministic_title_and_summary_phrase_rules_non_social_fallback",
+            "page_number": None,
+        })
+    items.sort(key=lambda item: item.get("publish_time") or "", reverse=True)
+    return items[:limit], cached
+
+
 def _fetch_xueqiu_mentions(code: str, name: str | None, *, days: int) -> tuple[list[dict[str, Any]], list[str]]:
     from api.v1.endpoints._rss_reader import read_feed
 
@@ -309,10 +376,24 @@ def get_social_sentiment(
         max_pages=max_pages,
         use_cache=use_cache,
     )
+    fallback_items: list[dict[str, Any]] = []
+    fallback_cached = False
+    fallback_used = False
+    if not guba_available:
+        try:
+            fallback_items, fallback_cached = _fetch_stock_news_fallback(
+                code,
+                days=days,
+                limit=limit,
+                use_cache=use_cache,
+            )
+            fallback_used = bool(fallback_items)
+        except Exception as exc:
+            guba_errors.append(f"AKShare公司新闻降级: {exc}")
     xueqiu_items, xueqiu_errors = _fetch_xueqiu_mentions(code, name, days=days)
     score_trend, diagnose_score, diagnose_errors = _fetch_diagnose_score(code, days=days)
 
-    combined = [*guba_items, *xueqiu_items]
+    combined = [*guba_items, *xueqiu_items, *fallback_items]
     combined.sort(key=lambda item: item.get("publish_time") or "", reverse=True)
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -330,7 +411,10 @@ def get_social_sentiment(
     # newest-first order but prioritize user posts in the returned window.
     items = [*user_items, *xueqiu_sample, *syndicated_sample][:limit]
 
-    scoring_items = user_items or deduped
+    # Syndicated headlines are context, not investor speech.  If Guba user
+    # posts are unavailable, only Xueqiu discussion evidence may contribute to
+    # the score; company-news fallback rows never do.
+    scoring_items = user_items or xueqiu_sample
     positive_count = sum(item.get("label") == "positive" for item in scoring_items)
     negative_count = sum(item.get("label") == "negative" for item in scoring_items)
     neutral_count = sum(item.get("label") == "neutral" for item in scoring_items)
@@ -344,8 +428,10 @@ def get_social_sentiment(
         for item in deduped
         if item.get("publish_time")
     ]
-    earliest = min(known_times).isoformat() if known_times else None
-    latest = max(known_times).isoformat() if known_times else None
+    earliest_time = min(known_times) if known_times else None
+    latest_time = max(known_times) if known_times else None
+    earliest = earliest_time.isoformat() if earliest_time else None
+    latest = latest_time.isoformat() if latest_time else None
     cutoff = datetime.now().astimezone() - timedelta(days=days)
     if guba_available and not coverage_complete:
         coverage_warning = (
@@ -357,11 +443,13 @@ def get_social_sentiment(
 
     errors = list(dict.fromkeys([*guba_errors, *diagnose_errors]))
     warnings = [f"RSSHub/雪球热榜: {error}" for error in xueqiu_errors]
+    if fallback_used:
+        warnings.append("东方财富股吧抓取失败，已降级为 AKShare/东方财富公司新闻摘要；这些资讯不计入用户情绪分数")
     if coverage_warning:
         warnings.append(coverage_warning)
     if len(user_items) < 5:
         warnings.append(f"时间窗内仅采到 {len(user_items)} 条用户帖，社交情绪分数置信度较低")
-    acquisition_succeeded = guba_available or bool(xueqiu_items)
+    acquisition_succeeded = guba_available or bool(xueqiu_items) or fallback_used
     if not items and acquisition_succeeded:
         warnings.append("已完成公开讨论源采样，但没有取得时间窗内可用帖子")
     daily: dict[str, dict[str, int]] = {}
@@ -396,7 +484,7 @@ def get_social_sentiment(
         "syndicated_info_count": len(syndicated_sample),
         "xueqiu_hot_count": len(xueqiu_sample),
         "returned_item_order": "user_posts_then_xueqiu_hot_then_syndicated_info_each_newest_first",
-        "sentiment_sample_scope": "user_posts_when_available_otherwise_all_retrieved_items",
+        "sentiment_sample_scope": "guba_user_posts_then_xueqiu_discussion; syndicated_information_excluded",
         "sentiment_score": sentiment_score,
         "overall_score": sentiment_score,
         "sentiment_confidence": sentiment_confidence,
@@ -425,20 +513,30 @@ def get_social_sentiment(
         "coverage_start": earliest,
         "coverage_end": latest,
         "coverage_complete": coverage_complete,
-        "source": "东方财富股吧/Scrapling + RSSHub雪球热榜 + 东方财富千股千评",
-        "sources": ["东方财富股吧/Scrapling", "RSSHub:/xueqiu/hots", "东方财富千股千评"],
+        "source": " + ".join([
+            *(["东方财富股吧/Scrapling"] if guba_available else []),
+            *(["AKShare/东方财富公司新闻摘要"] if fallback_used else []),
+            "RSSHub:/xueqiu/hots",
+            "东方财富千股千评",
+        ]),
+        "sources": [
+            *(["东方财富股吧/Scrapling"] if guba_available else []),
+            *(["AKShare/东方财富公司新闻摘要"] if fallback_used else []),
+            "RSSHub:/xueqiu/hots",
+            "东方财富千股千评",
+        ],
         "source_scope": "bounded_public_discussion_sample",
         "success": acquisition_succeeded,
         "partial": bool(errors) and acquisition_succeeded,
         "data_time": latest,
         "retrieved_at": retrieved_at,
-        "is_stale": False if acquisition_succeeded else None,
+        "is_stale": latest_time < cutoff if latest_time else None,
         "freshness_unknown": not bool(known_times),
-        "fallback_used": False,
+        "fallback_used": fallback_used,
         "fallback_recommended": not acquisition_succeeded,
         "errors": errors[:10],
         "warnings": list(dict.fromkeys(warnings))[:10],
-        "_cached": cached,
+        "_cached": fallback_cached if fallback_used else cached,
         "_fetched_at": retrieved_at,
     }
 

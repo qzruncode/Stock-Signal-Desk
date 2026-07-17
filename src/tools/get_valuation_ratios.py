@@ -261,7 +261,7 @@ def _scale(value: float | None, current_price: float | None, history_price: floa
 
 def _expected_completed_trade_day(now: datetime) -> date:
     try:
-        from src.tools._market_snapshot import _fetch_trade_dates
+        from src.tools._trading_calendar import _fetch_trade_dates
 
         dates = [day for day in _fetch_trade_dates() if day <= now.date()]
         if now.date() in dates and now.time() >= time(15, 30):
@@ -391,10 +391,12 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
     quote_live = bool(quote and quote.get("price") is not None)
     history_trade_date = history.get("trade_date")
     expected_completed = _expected_completed_trade_day(now)
-    stale = not success or (
-        not quote_live
-        and (not history_trade_date or datetime.fromisoformat(history_trade_date).date() < expected_completed)
-    )
+    if quote_live:
+        stale: bool | None = False
+    elif history_trade_date:
+        stale = datetime.fromisoformat(history_trade_date).date() < expected_completed
+    else:
+        stale = None
     sources = []
     if history_frame is not None:
         sources.append("东方财富估值历史/AKShare")
@@ -475,6 +477,7 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         "data_time": quote.get("quote_time") or (now.isoformat() if quote_live else history_trade_date),
         "data_time_inferred": quote_live and not quote.get("quote_time"),
         "is_stale": stale,
+        "freshness_unknown": stale is None,
         "fallback_used": history_frame is None and quote_live,
         "cache_detail": cache_detail,
         "_cached": bool(cache_detail) and all(cache_detail.values()),

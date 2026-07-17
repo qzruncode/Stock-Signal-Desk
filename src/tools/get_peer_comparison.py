@@ -180,14 +180,39 @@ def _profitability_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _scale_row(row: dict[str, Any]) -> dict[str, Any]:
-    free_cap_yi = _number(row.get("FREECAP"))
+    total_market_cap = _number(row.get("TOTAL_CAP"))
+    free_cap_raw = _number(row.get("FREECAP"))
+    circulating_market_cap = None
+    circulating_market_cap_source_unit = None
+    if free_cap_raw is not None:
+        # The current Eastmoney scale report exposes TOTAL_CAP in yuan but
+        # FREECAP in 100m yuan.  Validate that assumption against total market
+        # cap so an upstream unit change cannot silently multiply an already-
+        # yuan value by 1e8.
+        yi_candidate = free_cap_raw * 100_000_000
+        yuan_candidate = free_cap_raw
+        if total_market_cap is None:
+            circulating_market_cap = yi_candidate if abs(free_cap_raw) < 10_000_000 else yuan_candidate
+            circulating_market_cap_source_unit = "亿元" if circulating_market_cap == yi_candidate else "元"
+        else:
+            tolerance = abs(total_market_cap) * 1.05
+            yi_valid = 0 <= yi_candidate <= tolerance
+            yuan_valid = 0 <= yuan_candidate <= tolerance
+            if yi_valid and (not yuan_valid or abs(free_cap_raw) < 10_000_000):
+                circulating_market_cap = yi_candidate
+                circulating_market_cap_source_unit = "亿元"
+            elif yuan_valid:
+                circulating_market_cap = yuan_candidate
+                circulating_market_cap_source_unit = "元"
     return {
         "symbol": str(row.get("CORRE_SECURITY_CODE") or ""),
         "name": str(row.get("CORRE_SECURITY_NAME") or ""),
         "report_period": str(row.get("REPORT_TYPE") or "").strip() or None,
-        "total_market_cap": _number(row.get("TOTAL_CAP")),
+        "total_market_cap": total_market_cap,
         "total_market_cap_rank": _integer(row.get("TOTAL_CAP_RANK")),
-        "circulating_market_cap": free_cap_yi * 100_000_000 if free_cap_yi is not None else None,
+        "circulating_market_cap": circulating_market_cap,
+        "circulating_market_cap_source_unit": circulating_market_cap_source_unit,
+        "market_cap_output_unit": "元",
         "circulating_market_cap_rank": _integer(row.get("FREECAP_RANK")),
         "revenue": _number(row.get("TOTAL_OPERATEINCOME")),
         "revenue_rank": _integer(row.get("TOTAL_OPERATEINCOME_RANK")),
@@ -307,8 +332,9 @@ def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
         "errors": errors,
         "data_time": data_time,
         "freshness_unknown": success and data_time is None,
-        "is_stale": not success or (
-            bool(data_time) and datetime.fromisoformat(data_time).date() < expected_annual
+        "is_stale": (
+            datetime.fromisoformat(data_time).date() < expected_annual
+            if data_time else None
         ),
         "fallback_used": False,
         "cache_detail": cache_detail,

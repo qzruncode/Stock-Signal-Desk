@@ -98,3 +98,45 @@ def test_social_sentiment_empty_successful_page_is_valid_sample_result() -> None
     assert result["success"] is True
     assert result["item_count"] == 0
     assert result["sentiment_score"] == 0.0
+
+
+def test_social_sentiment_uses_stock_news_as_non_social_fallback_when_guba_fails() -> None:
+    fallback = [{
+        "title": "贵州茅台经营稳健",
+        "summary": "公司新闻摘要",
+        "source": "东方财富新闻",
+        "author": None,
+        "post_kind": "syndicated_info",
+        "url": "https://example.com/news",
+        "read_count": None,
+        "reply_count": None,
+        "sentiment_score": 1.0,
+        "label": "positive",
+        "positive_hits": ["稳健"],
+        "negative_hits": [],
+        "publish_time": datetime.now().astimezone().isoformat(),
+        "classification_method": "non_social_fallback",
+        "page_number": None,
+    }]
+    with patch(
+        "src.tools.get_social_sentiment._fetch_guba_sample",
+        return_value=([], False, ["股吧 unavailable"], False, False),
+    ), patch(
+        "src.tools.get_social_sentiment._fetch_stock_news_fallback",
+        return_value=(fallback, False),
+    ), patch(
+        "src.tools.get_social_sentiment._fetch_xueqiu_mentions",
+        return_value=([], []),
+    ), patch(
+        "src.tools.get_social_sentiment._fetch_diagnose_score",
+        return_value=([], None, []),
+    ):
+        result = get_social_sentiment("600519", limit=10)
+
+    assert result["success"] is True
+    assert result["partial"] is True
+    assert result["fallback_used"] is True
+    assert result["syndicated_info_count"] == 1
+    assert result["user_post_count"] == 0
+    assert result["sentiment_score"] == 0.0
+    assert any("不计入用户情绪" in warning for warning in result["warnings"])

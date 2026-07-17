@@ -206,10 +206,11 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
     report_dates = [item["report_date"] for item in institutions if item.get("report_date")]
     latest_report_date = max(report_dates) if report_dates else None
     success = bool(estimates or institutions or financial_forecasts)
-    freshness_unknown = success and latest_report_date is None
-    stale = not success
-    if latest_report_date:
-        stale = datetime.fromisoformat(latest_report_date).date() < (now.date() - timedelta(days=180))
+    freshness_unknown = latest_report_date is None
+    stale = (
+        datetime.fromisoformat(latest_report_date).date() < (now.date() - timedelta(days=180))
+        if latest_report_date else None
+    )
     return {
         "symbol": code,
         "metric": metric,

@@ -51,4 +51,19 @@ def test_scale_converts_circulating_market_cap_from_yi_to_yuan() -> None:
 
     assert result["sample_size"] == 2
     assert result["target"]["circulating_market_cap"] == 1_563_927_000_000.0
+    assert result["target"]["circulating_market_cap_source_unit"] == "亿元"
+    assert result["target"]["market_cap_output_unit"] == "元"
     assert result["target_rank"] == 1
+
+
+def test_scale_does_not_multiply_freecap_when_provider_already_returns_yuan() -> None:
+    rows = [{
+        "CORRE_SECURITY_CODE": "600519", "CORRE_SECURITY_NAME": "贵州茅台",
+        "REPORT_TYPE": "2026年一季报", "TOTAL_CAP": 1.56e12,
+        "FREECAP": 1.50e12, "TOTAL_CAP_RANK": 1,
+    }]
+
+    result = _dimension_result("600519", "scale", rows)
+
+    assert result["target"]["circulating_market_cap"] == 1.50e12
+    assert result["target"]["circulating_market_cap_source_unit"] == "元"

@@ -16,7 +16,7 @@ import pandas as pd
 
 from data_provider.utils import is_bse_code
 from src.tools._akshare import bare_symbol, cached_call
-from src.tools._market_snapshot import _fallback_trade_day, _fetch_trade_dates, expected_trade_day, is_trading_time
+from src.tools._trading_calendar import _fallback_trade_day, _fetch_trade_dates, expected_trade_day, is_trading_time
 from src.tools.base import ToolSpec, object_schema
 
 DESCRIPTION = (
@@ -239,9 +239,9 @@ def _window_summary(items: list[dict[str, Any]], window: int) -> dict[str, Any]:
     }
 
 
-def _is_stale(latest_date: date | None, now: datetime) -> tuple[bool, str | None]:
+def _is_stale(latest_date: date | None, now: datetime) -> tuple[bool | None, str | None]:
     if latest_date is None:
-        return True, "没有可用的资金流交易日"
+        return None, "没有可用的资金流交易日，无法判断新鲜度"
     try:
         expected = expected_trade_day(now, _fetch_trade_dates())
     except Exception:
@@ -312,7 +312,8 @@ def get_stock_capital_flow(symbol: str, days: int = 20) -> dict[str, Any]:
         "warnings": warnings,
         "data_time": (latest.get("data_time") or latest.get("date")) if latest else None,
         "source_data_time_granularity": "timestamp" if latest and latest.get("data_time") else "trading_date",
-        "is_stale": stale if success else True,
+        "is_stale": stale if success else None,
+        "freshness_unknown": stale is None,
         "fallback_used": source_transport in {"scrapling_dynamic", "unavailable"},
         "_cached": cached,
         "_fetched_at": now.isoformat(),

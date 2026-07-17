@@ -12,7 +12,7 @@ import httpx
 
 from data_provider.utils import is_bse_code
 from src.tools._akshare import bare_symbol, cached_call, json_value
-from src.tools._market_snapshot import is_trading_time
+from src.tools._trading_calendar import is_trading_time
 from src.tools.base import ToolSpec, object_schema
 
 _EM_URL = "https://push2delay.eastmoney.com/api/qt/stock/get"
@@ -193,8 +193,10 @@ def get_stock_info(symbol: str, *, use_cache: bool = True) -> dict[str, Any]:
         "success": success,
         "errors": errors,
         "warnings": ["公司概况不完整"] if success and not profile_available else [],
-        "data_time": now.isoformat(),
-        "is_stale": not success,
+        "data_time": now.isoformat() if success else None,
+        "data_time_inferred": success,
+        "is_stale": False if success else None,
+        "freshness_unknown": not success,
         "fallback_used": not profile_available and capital_available,
         "_cached": profile_cached and (capital_cached if capital_available else True),
         "cache_detail": {"profile": profile_cached, "capital_snapshot": capital_cached},

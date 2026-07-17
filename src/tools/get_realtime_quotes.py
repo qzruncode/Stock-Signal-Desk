@@ -25,6 +25,7 @@ from typing import Any
 
 from data_provider.akshare_fetcher import AkshareFetcher
 from src.tools.base import ToolSpec, object_schema
+from src.tools._trading_calendar import expected_trade_day, is_trading_time, trade_dates
 
 logger = logging.getLogger(__name__)
 
@@ -51,20 +52,7 @@ def _get_fetcher() -> AkshareFetcher:
     return _fetcher
 
 
-def _is_trading_hours() -> bool:
-    """判断当前是否在 A 股交易时段（周一至周五 9:30-11:30, 13:00-15:00）。"""
-    now = datetime.now().astimezone()
-    if now.weekday() >= 5:  # 周末
-        return False
-    try:
-        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
-
-        if expected_trade_day(now, _fetch_trade_dates()) != now.date():
-            return False
-    except Exception:
-        pass
-    t = now.time()
-    return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
+_is_trading_hours = is_trading_time
 
 
 def _last_trading_day() -> datetime:
@@ -74,9 +62,7 @@ def _last_trading_day() -> datetime:
     """
     now = datetime.now().astimezone()
     try:
-        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
-
-        day = expected_trade_day(now, _fetch_trade_dates())
+        day = expected_trade_day(now, trade_dates())
     except Exception:
         day = now.date()
         if day.weekday() >= 5 or now.time() < time(9, 15):
@@ -91,7 +77,7 @@ def _mark_quote_freshness(items: list[dict], *, trading: bool, fallback_used: bo
     expected_day = _last_trading_day().date()
     for item in items:
         data_time = _quote_data_time(item)
-        is_stale = data_time is None
+        is_stale: bool | None = None
         if data_time:
             try:
                 parsed = datetime.fromisoformat(str(data_time).replace("Z", "+00:00"))
@@ -101,7 +87,7 @@ def _mark_quote_freshness(items: list[dict], *, trading: bool, fallback_used: bo
                 if trading and parsed.date() == expected_day:
                     is_stale = (now - parsed).total_seconds() > 15 * 60
             except ValueError:
-                is_stale = True
+                is_stale = None
         item["data_time"] = data_time
         item["is_stale"] = is_stale
         source = str(item.get("source") or "")
@@ -126,13 +112,21 @@ def _build_response(
     if missing:
         errors.append(f"实时行情无数据: {', '.join(missing)}")
     success = bool(marked)
+    freshness_states = [item.get("is_stale") for item in marked]
+    if any(state is True for state in freshness_states):
+        is_stale: bool | None = True
+    elif freshness_states and all(state is False for state in freshness_states):
+        is_stale = False
+    else:
+        is_stale = None
     return {
         "success": success,
         "partial": success and bool(errors),
         "items": marked,
         "total": len(marked),
         "data_time": max((_quote_data_time(item) for item in marked if _quote_data_time(item)), default=None),
-        "is_stale": not marked or any(item.get("is_stale") for item in marked),
+        "is_stale": is_stale,
+        "freshness_unknown": is_stale is None,
         "fallback_used": any(item.get("fallback_used") for item in marked),
         "_cached": bool(marked) and all(item.get("_cached") for item in marked),
         "source": sorted({str(item.get("source")) for item in marked if item.get("source")}),

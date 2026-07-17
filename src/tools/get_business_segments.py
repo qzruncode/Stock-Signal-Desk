@@ -129,7 +129,8 @@ def _empty(code: str, category: str, message: str, *, fetched_at: str) -> dict[s
         "source": "东方财富主营构成（AKShare）",
         "source_url": None,
         "data_time": None,
-        "is_stale": True,
+        "is_stale": None,
+        "freshness_unknown": True,
         "fallback_used": False,
         "_cached": False,
         "_fetched_at": fetched_at,
@@ -192,7 +193,11 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
         "success": bool(selected),
         "errors": errors,
         "data_time": latest_report,
-        "is_stale": not latest_report or datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date()),
+        "is_stale": (
+            datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
+            if latest_report else None
+        ),
+        "freshness_unknown": latest_report is None,
         "fallback_used": False,
         "_cached": cached,
         "_fetched_at": now.isoformat(),

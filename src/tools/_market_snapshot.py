@@ -26,10 +26,15 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
-from functools import lru_cache
 from typing import Any, Callable
 
 import httpx
+from src.tools._trading_calendar import (
+    _fallback_trade_day,
+    _fetch_trade_dates,
+    expected_trade_day,
+    is_trading_time,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,62 +87,6 @@ def _parse_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return parsed
-
-
-@lru_cache(maxsize=1)
-def _fetch_trade_dates() -> list[date]:
-    import akshare as ak
-
-    frame = ak.tool_trade_date_hist_sina()
-    if frame is None or frame.empty or "trade_date" not in frame.columns:
-        raise RuntimeError("交易日历为空")
-    values: list[date] = []
-    for value in frame["trade_date"].tolist():
-        if isinstance(value, datetime):
-            values.append(value.date())
-        elif isinstance(value, date):
-            values.append(value)
-        else:
-            try:
-                values.append(datetime.fromisoformat(str(value)[:10]).date())
-            except ValueError:
-                continue
-    if not values:
-        raise RuntimeError("交易日历没有可解析日期")
-    return sorted(set(values))
-
-
-def expected_trade_day(now: datetime, trade_dates: list[date]) -> date:
-    """Return the session whose intraday pools should be queried.
-
-    On a trading day we switch to today's pool at 09:15 (call auction); before
-    that, and on holidays, the most recent earlier session is used.
-    """
-
-    calendar = sorted(day for day in trade_dates if day <= now.date())
-    if not calendar:
-        raise RuntimeError("交易日历中找不到当前日期之前的交易日")
-    if now.date() in calendar and now.time() >= time(9, 15):
-        return now.date()
-    earlier = [day for day in calendar if day < now.date()]
-    return earlier[-1] if earlier else calendar[-1]
-
-
-def _fallback_trade_day(now: datetime) -> date:
-    day = now.date()
-    if day.weekday() < 5 and now.time() >= time(9, 15):
-        return day
-    day -= timedelta(days=1)
-    while day.weekday() >= 5:
-        day -= timedelta(days=1)
-    return day
-
-
-def is_trading_time(now: datetime) -> bool:
-    if now.weekday() >= 5:
-        return False
-    current = now.time()
-    return time(9, 30) <= current <= time(11, 30) or time(13, 0) <= current <= time(15, 0)
 
 
 def _parse_legu_activity(html: str) -> dict[str, Any]:
@@ -425,7 +374,9 @@ def fetch_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
 
     data_time = breadth.get("data_time")
     parsed_data_time = _parse_datetime(data_time)
-    is_stale = parsed_data_time is None or parsed_data_time.date() < trade_day
+    is_stale: bool | None = (
+        parsed_data_time.date() < trade_day if parsed_data_time is not None else None
+    )
     if (
         parsed_data_time is not None
         and parsed_data_time.date() == trade_day
@@ -482,8 +433,9 @@ def fetch_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
         "source": " + ".join(dict.fromkeys(sources)) or "未知",
         "errors": errors,
         "warnings": warnings,
-        "data_time": data_time or fetched_at,
+        "data_time": data_time,
         "is_stale": is_stale,
+        "freshness_unknown": parsed_data_time is None,
         "fallback_used": fallback_used,
         "_fetched_at": fetched_at,
         "_cached": False,
@@ -535,7 +487,7 @@ def _cache_ttl(now: datetime) -> int:
 
 def _cache_is_fresh(cached: dict[str, Any], now: datetime) -> bool:
     fetched_at = _parse_datetime(cached.get("_fetched_at"))
-    if fetched_at is None or cached.get("is_stale") is True:
+    if fetched_at is None or cached.get("is_stale") is not False:
         return False
     current = now if now.tzinfo is not None else now.replace(tzinfo=fetched_at.tzinfo)
     return (current - fetched_at).total_seconds() <= _cache_ttl(now)

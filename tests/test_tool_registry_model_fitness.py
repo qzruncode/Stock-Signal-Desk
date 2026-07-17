@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.tools.registry import ToolRegistry
+from src.tools.base import enforce_result_contract
 
 
 class ToolRegistryModelFitnessTestCase(unittest.TestCase):
@@ -67,7 +68,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
         def fake_get_realtime_quotes(symbols: list[str]):
             calls.append(list(symbols))
-            return {"symbols": list(symbols)}
+            return {"success": True, "symbols": list(symbols), "errors": []}
 
         registry = ToolRegistry()
 
@@ -141,6 +142,29 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             "get_stock_capital_flow", "get_technical_indicators",
         }
         self.assertTrue(expected.issubset(names))
+
+    def test_result_contract_completes_nullable_freshness_fields(self) -> None:
+        result = enforce_result_contract("demo", {"success": True, "errors": []})
+
+        self.assertIs(result["partial"], False)
+        self.assertIsNone(result["data_time"])
+        self.assertIsNone(result["is_stale"])
+        self.assertIs(result["freshness_unknown"], True)
+        self.assertEqual(result["warnings"], [])
+
+    def test_result_contract_rejects_impossible_partial_failure(self) -> None:
+        with self.assertRaisesRegex(ValueError, "partial cannot be true"):
+            enforce_result_contract(
+                "demo",
+                {"success": False, "partial": True, "errors": ["failed"]},
+            )
+
+    def test_result_contract_rejects_claimed_freshness_without_data_time(self) -> None:
+        with self.assertRaisesRegex(ValueError, "is_stale must be null"):
+            enforce_result_contract(
+                "demo",
+                {"success": False, "errors": ["failed"], "data_time": None, "is_stale": True},
+            )
 
     def test_core_market_tools_return_explicit_success_contract(self) -> None:
         """The Agent must never infer acquisition success from an arbitrary payload shape."""

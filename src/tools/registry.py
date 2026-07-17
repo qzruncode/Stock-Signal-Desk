@@ -12,7 +12,7 @@ import importlib
 from collections import OrderedDict
 from typing import Any
 
-from src.tools.base import ToolSpec
+from src.tools.base import ToolSpec, enforce_result_contract
 
 ToolDef = ToolSpec  # compatibility for existing API metadata imports
 
@@ -89,7 +89,7 @@ class ToolRegistry:
             raise KeyError(f"Tool not found: {name}")
         if not isinstance(arguments, dict):
             raise TypeError("tool arguments must be an object")
-        return tool.executor(**arguments)
+        return enforce_result_contract(name, tool.executor(**arguments))
 
 
 __all__ = ["TOOL_MODULES", "ToolDef", "ToolRegistry"]

@@ -55,7 +55,7 @@ def _daily_records(frame: Any, days: int) -> list[dict[str, Any]]:
 
 def _expected_session_date(now: datetime) -> str | None:
     try:
-        from src.tools._market_snapshot import _fetch_trade_dates, expected_trade_day
+        from src.tools._trading_calendar import _fetch_trade_dates, expected_trade_day
 
         return expected_trade_day(now, _fetch_trade_dates()).isoformat()
     except Exception:
@@ -169,7 +169,10 @@ def get_index_data(index_code: str = "000001", days: int = 20) -> dict[str, Any]
         "partial": success and bool(errors or warnings),
         "data_time": data_date.isoformat() if data_date else None,
         "retrieved_at": retrieved_at,
-        "is_stale": not data_date or (expected is not None and data_date.isoformat() < expected),
+        "is_stale": (
+            expected is not None and data_date.isoformat() < expected
+            if data_date else None
+        ),
         "freshness_unknown": data_date is None,
         "fallback_used": fallback_used,
         "fallback_recommended": not success,

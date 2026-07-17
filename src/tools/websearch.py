@@ -433,7 +433,7 @@ def websearch(
         "output": provider_output,
         "provider": provider,
         "attempts": attempts,
-        "data_time": datetime.now().astimezone().isoformat(),
+        "data_time": latest.isoformat() if latest else None,
         "fallback_used": success and provider != "firecrawl_searxng",
         "is_stale": (
             latest < datetime.now().astimezone() - timedelta(days=days)

@@ -219,10 +219,28 @@ def _normalize_balance(row: dict[str, Any]) -> dict[str, Any]:
     current_assets = item.get("total_current_assets")
     current_liabilities = item.get("total_current_liabilities")
     inventory = item.get("inventory")
-    item["debt_ratio"] = round(liabilities / assets * 100, 4) if assets and liabilities is not None else None
-    item["equity_multiplier"] = round(assets / equity, 4) if assets and equity else None
-    item["current_ratio"] = round(current_assets / current_liabilities, 4) if current_assets and current_liabilities else None
-    item["quick_ratio"] = round((current_assets - (inventory or 0)) / current_liabilities, 4) if current_assets and current_liabilities else None
+    # Zero is valid financial data, not a missing-value marker.  Only reject a
+    # ratio when its denominator is absent or zero; keep zero numerators as 0.
+    item["debt_ratio"] = (
+        round(liabilities / assets * 100, 4)
+        if liabilities is not None and assets not in (None, 0)
+        else None
+    )
+    item["equity_multiplier"] = (
+        round(assets / equity, 4)
+        if assets is not None and equity not in (None, 0)
+        else None
+    )
+    item["current_ratio"] = (
+        round(current_assets / current_liabilities, 4)
+        if current_assets is not None and current_liabilities not in (None, 0)
+        else None
+    )
+    item["quick_ratio"] = (
+        round((current_assets - (inventory or 0)) / current_liabilities, 4)
+        if current_assets is not None and current_liabilities not in (None, 0)
+        else None
+    )
     return item
 
 
@@ -305,8 +323,12 @@ def _bundle(symbol: str, periods: int) -> dict[str, Any]:
     ]
     latest_report = max(report_dates) if report_dates else None
     now = datetime.now().astimezone()
-    stale = not latest_report or datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
-    success = all(normalized[section] for section in normalized)
+    stale = (
+        datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
+        if latest_report else None
+    )
+    complete = all(normalized[section] for section in normalized)
+    success = any(normalized[section] for section in normalized)
     return {
         "symbol": code,
         "requested_periods": periods,
@@ -321,7 +343,7 @@ def _bundle(symbol: str, periods: int) -> dict[str, Any]:
         "source": "东方财富财务分析公开接口",
         "source_url": f"{_BASE}/Index?type=web&code={prefixed.lower()}",
         "success": success,
-        "partial": any(normalized.values()) and not success,
+        "partial": success and not complete,
         "errors": errors,
         "data_time": latest_report,
         "is_stale": stale,
@@ -373,7 +395,10 @@ def _section_result(symbol: str, section: str, periods: int) -> dict[str, Any]:
         "partial": False,
         "errors": [] if items else [f"{section} 没有可用报告期"],
         "data_time": latest_report,
-        "is_stale": not latest_report or datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date()),
+        "is_stale": (
+            datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
+            if latest_report else None
+        ),
         "fallback_used": False,
         "_cached": False,
         "_fetched_at": now.isoformat(),

@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from src.tools._akshare import cached_call
-from src.tools._market_snapshot import (
+from src.tools._trading_calendar import (
     _fallback_trade_day,
     _fetch_trade_dates,
     expected_trade_day,
@@ -198,13 +198,13 @@ def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
     return records
 
 
-def _freshness(data_time: str | None, now: datetime) -> tuple[bool, str | None]:
+def _freshness(data_time: str | None, now: datetime) -> tuple[bool | None, str | None]:
     if not data_time:
-        return True, "上游没有返回数据时间"
+        return None, "上游没有返回数据时间，无法判断新鲜度"
     try:
         observed = datetime.fromisoformat(data_time)
     except ValueError:
-        return True, "上游数据时间无法解析"
+        return None, "上游数据时间无法解析，无法判断新鲜度"
     try:
         expected = expected_trade_day(now, _fetch_trade_dates())
     except Exception:
@@ -273,7 +273,8 @@ def get_sector_flow(type: str = "industry", top_n: int = 10, period: str = "toda
         "errors": errors if not success else errors,
         "warnings": warnings,
         "data_time": data_time,
-        "is_stale": is_stale if success else True,
+        "is_stale": is_stale if success else None,
+        "freshness_unknown": is_stale is None,
         "fallback_used": False,
         "_cached": cached,
         "_fetched_at": now.isoformat(),

@@ -358,14 +358,14 @@ def test_sector_flow_never_substitutes_price_performance_for_money_flow() -> Non
     assert result["fallback_used"] is False
 
 
-def test_consensus_total_failure_is_not_marked_fresh() -> None:
+def test_consensus_total_failure_has_unknown_freshness_without_data_time() -> None:
     with patch("src.tools.get_consensus_estimates._forecast", side_effect=RuntimeError("upstream down")), \
          patch("src.tools.get_consensus_estimates._detail", side_effect=RuntimeError("upstream down")):
         result = get_consensus_estimates("600519")
 
     assert result["success"] is False
     assert result["coverage_available"] is False
-    assert result["is_stale"] is True
+    assert result["is_stale"] is None
     assert len(result["errors"]) == 2
 
 

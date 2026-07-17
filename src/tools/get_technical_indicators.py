@@ -28,7 +28,7 @@ def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
     try:
         raw = get_kline(code, count=max(80, min(int(count), 250)), use_cache=True)
     except Exception as exc:
-        return {"symbol": code, "indicators": {}, "errors": [str(exc)], "source": "K线多源链", "success": False, "is_stale": True, "fallback_used": True}
+        return {"symbol": code, "indicators": {}, "errors": [str(exc)], "source": "K线多源链", "success": False, "is_stale": None, "fallback_used": True}
     rows = raw.get("data") or []
     if len(rows) < 30:
         return {"symbol": code, "indicators": {}, "errors": ["有效 K 线少于 30 条，无法稳定计算技术指标"], "success": False, **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")}}

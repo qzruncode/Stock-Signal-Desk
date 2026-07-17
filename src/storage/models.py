@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from sqlalchemy import (
     Column, String, Float, Boolean, Date, DateTime, Integer,
-    ForeignKey, Index, UniqueConstraint, Text,
+    ForeignKey, Index, UniqueConstraint, Text, LargeBinary,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -763,6 +763,21 @@ class RssCache(Base):
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
+class ToolCache(Base):
+    """Persistent cache for typed tool/AKShare results.
+
+    Payloads are trusted application-generated serialized values (including
+    pandas DataFrames), so a binary column is used instead of lossy JSON.
+    """
+    __tablename__ = 'tool_cache'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cache_key = Column(String(255), nullable=False, unique=True, index=True)
+    payload = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class MacroIndexDaily(Base):
     """大盘指数日线数据"""
     __tablename__ = 'macro_index_daily'
@@ -878,5 +893,4 @@ class AgentPromptTemplate(Base):
 
 class WatchlistGroupNameConflict(Exception):
     """分组名称与已有分组冲突。"""
-
 

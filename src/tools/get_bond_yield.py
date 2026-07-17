@@ -108,7 +108,7 @@ def get_bond_yield(country: str = "cn", term: str = "10y", days: int = 30) -> di
 
     data_date = latest_date(history, "date")
     success = bool(history)
-    stale = data_date is None or data_date < datetime.now().date() - timedelta(days=7)
+    stale = data_date < datetime.now().date() - timedelta(days=7) if data_date else None
     latest = history[-1] if history else {}
     retrieved_at = datetime.now().astimezone().isoformat()
     return {
@@ -132,7 +132,7 @@ def get_bond_yield(country: str = "cn", term: str = "10y", days: int = 30) -> di
         "is_stale": stale,
         "freshness_unknown": data_date is None,
         "fallback_used": fallback_used,
-        "fallback_recommended": not success or stale,
+        "fallback_recommended": not success or stale is True,
         "errors": errors[:10],
         "warnings": warnings[:10],
         "_cached": cached if not fallback_used else True,

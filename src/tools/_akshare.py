@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+import pickle
 import threading
 import time
 from datetime import date, datetime
@@ -13,8 +14,36 @@ import pandas as pd
 
 from data_provider.rate_limiter import akshare_rate_limiter
 
-_CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_LOCK = threading.RLock()
+
+
+def _persistent_cache_get(key: str, ttl_seconds: int) -> Any | None:
+    if ttl_seconds <= 0:
+        return None
+    try:
+        from src.storage import DatabaseManager
+
+        cached = DatabaseManager.get_instance().get_tool_cache(f"akshare:{key}")
+        if not cached:
+            return None
+        updated_at = cached.get("updated_at")
+        if updated_at is None or time.time() - updated_at.timestamp() >= ttl_seconds:
+            return None
+        return pickle.loads(cached["payload"])
+    except Exception:
+        return None
+
+
+def _persistent_cache_put(key: str, value: Any) -> None:
+    try:
+        from src.storage import DatabaseManager
+
+        DatabaseManager.get_instance().save_tool_cache(
+            f"akshare:{key}",
+            pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL),
+        )
+    except Exception:
+        pass
 
 
 def bare_symbol(symbol: str) -> str:
@@ -82,11 +111,10 @@ def cached_call(
     attempts: int = 2,
 ) -> tuple[Any, bool]:
     """Run a rate-limited AKShare call with short TTL cache and one retry."""
-    now = time.time()
     with _CACHE_LOCK:
-        cached = _CACHE.get(key)
-        if cached and now - cached[0] < ttl_seconds:
-            return cached[1], True
+        cached = _persistent_cache_get(key, ttl_seconds)
+        if cached is not None:
+            return cached, True
 
     last_error: Exception | None = None
     for attempt in range(max(1, attempts)):
@@ -94,7 +122,7 @@ def cached_call(
             akshare_rate_limiter.wait(min_interval=0.4, max_jitter=1.0)
             value = fn()
             with _CACHE_LOCK:
-                _CACHE[key] = (time.time(), value)
+                _persistent_cache_put(key, value)
             return value, False
         except Exception as exc:  # upstream APIs fail in many transport-specific ways
             last_error = exc

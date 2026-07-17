@@ -86,6 +86,5 @@ def test_business_segments_uses_bse_prefix_and_reports_empty_category() -> None:
 
     assert captured == ["BJ920000"]
     assert result["success"] is False
-    assert result["is_stale"] is True
+    assert result["is_stale"] is None
     assert result["items"] == []
-

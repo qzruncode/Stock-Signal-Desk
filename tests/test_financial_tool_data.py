@@ -30,6 +30,22 @@ def test_balance_sheet_keeps_bank_fields_distinct_and_uses_period_end_basis() ->
     assert item["current_ratio"] is None
 
 
+def test_balance_sheet_keeps_zero_numerators_instead_of_treating_them_as_missing() -> None:
+    item = data._normalize_balance({
+        "REPORT_DATE": "2026-03-31",
+        "TOTAL_ASSETS": 1_000.0,
+        "TOTAL_LIABILITIES": 0.0,
+        "TOTAL_EQUITY": 1_000.0,
+        "TOTAL_CURRENT_ASSETS": 0.0,
+        "TOTAL_CURRENT_LIAB": 100.0,
+        "INVENTORY": 0.0,
+    })
+
+    assert item["debt_ratio"] == 0.0
+    assert item["current_ratio"] == 0.0
+    assert item["quick_ratio"] == 0.0
+
+
 def test_income_and_cashflow_are_single_quarter_not_ytd() -> None:
     income = data._normalize_income({
         "REPORT_DATE": "2026-06-30",
@@ -105,3 +121,24 @@ def test_section_result_has_explicit_units_freshness_and_source(monkeypatch) -> 
     assert result["source_url"].startswith("https://emweb.securities.eastmoney.com/")
     assert result["data_time"] == "2026-03-31"
 
+
+def test_financial_bundle_treats_one_available_statement_as_partial_success(monkeypatch) -> None:
+    monkeypatch.setattr(data, "_company_type", lambda _: "4")
+    monkeypatch.setattr(
+        data,
+        "_fetch_section",
+        lambda _, __, section, ___: [{
+            "REPORT_DATE": "2026-03-31",
+            "TOTAL_OPERATE_INCOME": 100.0,
+            "OPERATE_COST": 60.0,
+            "PARENT_NETPROFIT": 20.0,
+        }] if section == "income_statement" else [],
+    )
+
+    result = data.get_financial_bundle("600519", 4, use_cache=False)
+
+    assert result["success"] is True
+    assert result["partial"] is True
+    assert result["income_statement"]
+    assert result["balance_sheet"] == []
+    assert result["cashflow"] == []

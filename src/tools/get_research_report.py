@@ -235,11 +235,11 @@ def get_research_report(
         "source_chain": source_chain,
         "source_scope": "broker_individual_stock_research_reports",
         "success": acquisition_succeeded,
-        "partial": False,
+        "partial": acquisition_succeeded and bool(errors),
         "data_time": latest,
         "retrieved_at": now.isoformat(),
-        "is_stale": False if acquisition_succeeded else None,
-        "freshness_unknown": not acquisition_succeeded,
+        "is_stale": False if latest else None,
+        "freshness_unknown": latest is None,
         "fallback_attempted": fallback_attempted,
         "fallback_used": fallback_used,
         "fallback_recommended": not acquisition_succeeded,
@@ -252,9 +252,9 @@ def get_research_report(
 TOOL = ToolSpec(
     name="get_research_report",
     description=(
-        "获取单只 A 股的券商个股研报，返回报告日期、机构、评级、行业、PDF 链接及各预测年度的"
-        "EPS（元/股）和预测 PE（倍）。这是机构观点证据，不应当作公司已实现业绩；跨机构行业和宏观"
-        "资料请使用 search_research_library。"
+        "仅用于查询单只 A 股的券商个股研报；输入必须能定位到具体股票。返回报告日期、机构、评级、"
+        "PDF 链接及预测 EPS（元/股）和 PE（倍）。不要用于公司新闻、公告、已实现财务数据、行业、"
+        "宏观、期货或评级研究；后五类必须使用 search_research_library。"
     ),
     parameters=object_schema({
         "symbol": {"type": "string", "description": "A 股代码或名称"},

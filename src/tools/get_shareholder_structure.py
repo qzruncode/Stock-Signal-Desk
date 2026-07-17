@@ -370,7 +370,10 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
     ]
     data_time = max((value for value in dated_values if value), default=None)
     expected_report_date = _expected_latest_report_date(as_of)
-    is_stale = not holder_report_date or holder_report_date < expected_report_date.isoformat()
+    is_stale = (
+        holder_report_date < expected_report_date.isoformat()
+        if holder_report_date else None
+    )
 
     core_sections = {
         "holder_count": bool(holder_count),
@@ -413,7 +416,7 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
             "holder_changes": change_frame is not None,
         },
         "success": success,
-        "partial": not all(core_sections.values()) or bool(errors),
+        "partial": success and (not all(core_sections.values()) or bool(errors)),
         "errors": errors,
         "warnings": warnings,
         "data_time": data_time,
