@@ -3,12 +3,18 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
 
 from src.tools._akshare import bare_symbol, json_value
-from src.tools._kline import get_kline
+from src.tools._kline import (
+    _get_kline_from_stock_daily,
+    _kline_data_time,
+    _kline_is_stale,
+    get_kline,
+)
 from src.tools.base import ToolSpec, object_schema
 
 DESCRIPTION = (
@@ -25,10 +31,29 @@ def _round(value: Any, digits: int = 4) -> Any:
 
 def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
     code = bare_symbol(symbol)
-    try:
-        raw = get_kline(code, count=max(80, min(int(count), 250)), use_cache=True)
-    except Exception as exc:
-        return {"symbol": code, "indicators": {}, "errors": [str(exc)], "source": "K线多源链", "success": False, "is_stale": None, "fallback_used": True}
+    safe_count = max(80, min(int(count), 250))
+    local_rows = _get_kline_from_stock_daily(code, safe_count) or []
+    if len(local_rows) >= 30:
+        data_time = _kline_data_time(local_rows)
+        today = datetime.now().date().isoformat()
+        raw = {
+            "success": True,
+            "data": local_rows,
+            "source": "stock_daily",
+            "data_time": data_time,
+            "is_stale": _kline_is_stale(local_rows),
+            "fallback_used": False,
+            "_cached": True,
+            "bar_complete": not (
+                str(data_time or "")[:10] == today
+                and datetime.now().time() < datetime.strptime("15:00", "%H:%M").time()
+            ),
+        }
+    else:
+        try:
+            raw = get_kline(code, count=safe_count, use_cache=True)
+        except Exception as exc:
+            return {"symbol": code, "indicators": {}, "errors": [str(exc)], "source": "K线多源链", "success": False, "is_stale": None, "fallback_used": True}
     rows = raw.get("data") or []
     if len(rows) < 30:
         return {"symbol": code, "indicators": {}, "errors": ["有效 K 线少于 30 条，无法稳定计算技术指标"], "success": False, **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")}}

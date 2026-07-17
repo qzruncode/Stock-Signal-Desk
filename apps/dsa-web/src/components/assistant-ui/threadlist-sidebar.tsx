@@ -1,6 +1,6 @@
 import type { FC } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EllipsisIcon, MessageSquareIcon, PencilIcon, PlusIcon, Trash2Icon } from 'lucide-react';
+import { EllipsisIcon, MessageSquareIcon, PencilIcon, PlusIcon, SearchIcon, Trash2Icon } from 'lucide-react';
 import type { ChatConversationItem } from '../../api/agent';
 import { cn } from '../../utils/cn';
 import { TooltipIconButton } from './tooltip-icon-button';
@@ -35,6 +35,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   const [actionMenuPosition, setActionMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const sidebarRef = useRef<HTMLDivElement | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -128,6 +129,13 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   };
 
   const allSelected = conversations.length > 0 && selectedConversationIds.length === conversations.length;
+  const visibleConversations = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    if (!query) return conversations;
+    return conversations.filter((conversation) => (
+      `${conversation.title || ''} ${conversation.previewText || ''}`.toLocaleLowerCase().includes(query)
+    ));
+  }, [conversations, searchQuery]);
 
   const handleSelectConversation = (conversationId: string) => {
     if (isBatchMode) {
@@ -178,6 +186,18 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
         </div>
       </div>
 
+      <div className="border-b border-border px-3 py-2.5">
+        <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-2 text-muted-foreground focus-within:border-primary/40 focus-within:text-foreground">
+          <SearchIcon className="size-3.5 shrink-0" />
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="搜索对话"
+            className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
+          />
+        </label>
+      </div>
+
       {isBatchMode ? (
         <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
           <button
@@ -221,7 +241,11 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
           <div className="px-3 py-6 text-xs text-muted-foreground">还没有对话，先新建一个。</div>
         ) : null}
 
-        {conversations.map((conversation) => {
+        {!isLoading && conversations.length > 0 && visibleConversations.length === 0 ? (
+          <div className="px-3 py-6 text-xs text-muted-foreground">没有匹配的对话。</div>
+        ) : null}
+
+        {visibleConversations.map((conversation) => {
           const isActive = conversation.id === selectedConversationId;
           return (
             <div

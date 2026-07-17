@@ -45,7 +45,7 @@ const GenericToolUI = ({
   const label = TOOL_LABELS[toolName] || toolName;
   const argsDisplay = stringifyCompact(args) || argsText;
   const failed = isError || (status.type === 'incomplete' && status.reason === 'error');
-  const statusText = status.type === 'running' ? 'running' : failed ? 'failed' : 'complete';
+  const statusText = status.type === 'running' ? '运行中' : failed ? '失败' : '已完成';
   const resultDisplay = failed
     ? getToolError(result) || getStatusError(status.type === 'incomplete' ? status.error : undefined)
     : stringifyCompact(result);
@@ -91,7 +91,7 @@ const GenericToolUI = ({
           >
             <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
               <div className="min-w-0">
-                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tool Call</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">研究工具详情</div>
                 <h3 className="mt-1 truncate text-base font-semibold text-foreground">{label}</h3>
                 <p className="mt-1 break-all text-xs text-muted-foreground">{toolName}</p>
               </div>
@@ -108,24 +108,24 @@ const GenericToolUI = ({
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-5 py-4 text-xs text-muted-foreground">
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
-                  <div className="font-medium text-foreground">Tool</div>
+                  <div className="font-medium text-foreground">工具</div>
                   <code className="mt-1 block break-words rounded-md bg-muted px-3 py-2 text-[11px] text-foreground">{toolName}</code>
                 </div>
                 <div>
-                  <div className="font-medium text-foreground">Status</div>
+                  <div className="font-medium text-foreground">状态</div>
                   <code className="mt-1 block rounded-md bg-muted px-3 py-2 text-[11px] text-foreground">{statusText}</code>
                 </div>
               </div>
 
               <div className="mt-4">
-                <div className="font-medium text-foreground">Arguments</div>
+                <div className="font-medium text-foreground">查询参数</div>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-[11px] leading-relaxed text-foreground">
                   {argsDisplay || '{}'}
                 </pre>
               </div>
 
               <div className="mt-4">
-                <div className="font-medium text-foreground">{failed ? 'Error' : 'Result'}</div>
+                <div className="font-medium text-foreground">{failed ? '错误信息' : '完整结果'}</div>
                 <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-[11px] leading-relaxed text-foreground">
                   {resultDisplay || (status.type === 'running' ? '等待工具返回...' : '无返回内容')}
                 </pre>
@@ -142,10 +142,10 @@ const GenericToolUI = ({
       <button
         type="button"
         onClick={() => setDrawerState('open')}
-        className={`inline-flex max-w-full items-center gap-2 overflow-hidden rounded-full border px-3 py-1.5 text-left text-sm shadow-sm transition hover:-translate-y-0.5 hover:bg-white hover:shadow-md ${tone}`}
+        className={`inline-flex max-w-full items-center gap-2 overflow-hidden rounded-lg border px-3 py-2 text-left text-xs font-medium shadow-sm transition hover:-translate-y-0.5 hover:bg-white hover:shadow-md ${tone}`}
       >
         <BotIcon className="size-4 shrink-0" />
-        <span className="min-w-0 truncate">{label}</span>
+        <span className="min-w-0 truncate">{status.type === 'running' ? `正在查询 · ${label}` : label}</span>
         <StatusIcon className={`size-4 shrink-0 ${status.type === 'running' ? 'animate-spin' : ''}`} />
       </button>
       {drawer}

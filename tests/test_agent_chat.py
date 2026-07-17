@@ -39,13 +39,13 @@ def disable_auth():
     auth._auth_enabled = None
 
 
-def _mock_llm_chunk(content=None, tool_calls=None):
+def _mock_llm_chunk(content=None, tool_calls=None, finish_reason=None):
     """Build a litellm streaming chunk mock."""
     delta = MagicMock()
     delta.content = content
     delta.tool_calls = tool_calls
     chunk = MagicMock()
-    chunk.choices = [MagicMock(delta=delta)]
+    chunk.choices = [MagicMock(delta=delta, finish_reason=finish_reason)]
     return chunk
 
 
@@ -89,11 +89,13 @@ class _FakeController:
     def __init__(self):
         self.texts = []
         self._stream_tasks = []
+        self.tool_calls = []
 
     def append_text(self, text):
         self.texts.append(text)
 
     async def add_tool_call(self, name, tool_call_id=None):
+        self.tool_calls.append((name, tool_call_id))
         tool = MagicMock()
         tool.append_args_text = MagicMock()
         tool.set_response = MagicMock()
@@ -109,6 +111,23 @@ class _FakeController:
 # ---------------------------------------------------------------------------
 # _run_react_loop
 # ---------------------------------------------------------------------------
+
+def test_turn_policy_keeps_all_tools_available_for_arbitrary_research():
+    policy = chat_mod._resolve_turn_policy([
+        {"role": "user", "content": "分析人形机器人产业链，哪些领域最受益？"},
+    ])
+    assert policy["name"] == "general_agent"
+    assert policy["max_tool_calls"] == chat_mod.MAX_TOOL_CALLS_PER_RUN
+    assert policy["require_tools"] is False
+    assert policy["allowed_tools"] is None
+
+
+def test_turn_policy_disables_tools_only_for_exact_casual_messages():
+    policy = chat_mod._resolve_turn_policy([
+        {"role": "user", "content": "你好"},
+    ])
+    assert policy["name"] == "casual"
+    assert policy["allowed_tools"] == set()
 
 def test_run_react_loop_exits_when_no_tool_calls():
     """LLM returns content without tool_calls -> loop exits returning content."""
@@ -132,7 +151,7 @@ def test_run_react_loop_exits_when_no_tool_calls():
              patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
             llm_mod.acompletion = fake_acompletion
             return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "hi"}], fake_cfg
+                controller, [{"role": "user", "content": "解释市盈率是什么"}], fake_cfg
             )
 
     result = asyncio.run(run())
@@ -167,7 +186,7 @@ def test_run_react_loop_handles_unknown_tool_name():
              patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
             llm_mod.acompletion = fake_acompletion
             return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "hi"}], fake_cfg
+                controller, [{"role": "user", "content": "做一个通用分析"}], fake_cfg
             )
 
     result = asyncio.run(run())
@@ -202,7 +221,7 @@ def test_run_react_loop_executes_known_tool_and_continues():
              patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
             llm_mod.acompletion = fake_acompletion
             return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "hi"}], fake_cfg
+                controller, [{"role": "user", "content": "分析这些股票"}], fake_cfg
             )
 
     result = asyncio.run(run())
@@ -220,6 +239,7 @@ def test_run_react_loop_executes_multiple_tools_concurrently():
 
     controller = _FakeController()
     call_count = {"n": 0}
+    model_requests = []
     sleep_seconds = 0.3
 
     def _execute(name, args):
@@ -228,6 +248,7 @@ def test_run_react_loop_executes_multiple_tools_concurrently():
 
     async def fake_acompletion(**kwargs):
         call_count["n"] += 1
+        model_requests.append(list(kwargs["messages"]))
         if call_count["n"] == 1:
             tc_a = _mock_tool_call_delta(idx=0, name="get_kline", arguments='{"symbol":"000001"}', tc_id="call_a")
             tc_b = _mock_tool_call_delta(idx=1, name="get_realtime_quotes", arguments='{"symbols":"000001"}', tc_id="call_b")
@@ -250,7 +271,7 @@ def test_run_react_loop_executes_multiple_tools_concurrently():
             llm_mod.acompletion = fake_acompletion
             start = time.monotonic()
             text = await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "hi"}], fake_cfg
+                controller, [{"role": "user", "content": "比较两个测试对象"}], fake_cfg
             )
             elapsed = time.monotonic() - start
             return text, elapsed
@@ -260,8 +281,154 @@ def test_run_react_loop_executes_multiple_tools_concurrently():
     # 两个工具都被执行
     executed_names = {call.args[0] for call in registry.execute.call_args_list}
     assert executed_names == {"get_kline", "get_realtime_quotes"}
+    # Parallel calls must be represented by one assistant message owning both
+    # tool_calls, followed by two tool results.  Splitting them into separate
+    # assistant messages breaks Anthropic adapters.
+    second_request = model_requests[1]
+    tool_assistant_messages = [
+        message for message in second_request
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    assert len(tool_assistant_messages) == 1
+    assert {call["id"] for call in tool_assistant_messages[0]["tool_calls"]} == {"call_a", "call_b"}
     # 并发而非串行：串行需 2*sleep，并发约 sleep；0.5s 阈值居中
     assert elapsed < sleep_seconds * 1.5, f"工具疑似串行执行，耗时 {elapsed:.2f}s"
+
+
+def test_run_react_loop_hides_duplicate_and_over_budget_tool_requests():
+    """Only genuinely executed research calls should appear in the tool UI."""
+    controller = _FakeController()
+    llm_calls = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        llm_calls["n"] += 1
+        if llm_calls["n"] == 1:
+            symbols = ["000001", "000001", "000002", "000003", "000004", "000005"]
+            calls = [
+                _mock_tool_call_delta(
+                    idx=index,
+                    name="get_kline",
+                    arguments=json.dumps({"symbol": symbol}),
+                    tc_id=f"call_{index}",
+                )
+                for index, symbol in enumerate(symbols)
+            ]
+            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=calls)])
+        return _AsyncChunkStream([_mock_llm_chunk(content="done")])
+
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = ["get_kline"]
+    registry.execute.return_value = {"success": True}
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._run_react_loop(
+                controller, [{"role": "user", "content": "分析这些股票"}], fake_cfg
+            )
+
+    assert asyncio.run(run()) == "done"
+    assert len(controller.tool_calls) == chat_mod.MAX_TOOL_CALLS_PER_ROUND
+    assert registry.execute.call_count == chat_mod.MAX_TOOL_CALLS_PER_ROUND
+
+
+def test_referential_multi_stock_calls_are_coalesced_with_verified_entities():
+    calls = [
+        {"id": "a", "name": "get_realtime_quotes", "arguments": '{"symbols":"003021,603662"}'},
+        {"id": "b", "name": "get_technical_indicators", "arguments": '{"symbol":"300682"}'},
+        {"id": "c", "name": "get_technical_indicators", "arguments": '{"symbol":"002520"}'},
+    ]
+    entities = [
+        {"name": "兆威机电", "symbol": "003021"},
+        {"name": "柯力传感", "symbol": "603662"},
+        {"name": "汉威科技", "symbol": "300007"},
+        {"name": "南方精工", "symbol": "002553"},
+    ]
+    coalesced = chat_mod._coalesce_multi_security_calls(
+        calls,
+        verified_entities=entities,
+        referential_followup=True,
+    )
+    assert len(coalesced) == 1
+    assert coalesced[0]["name"] == "get_multi_stock_snapshot"
+    assert json.loads(coalesced[0]["arguments"])["symbols"] == "003021,603662,300007,002553"
+
+
+def test_verified_entity_context_scopes_referential_followup_to_previous_table_rows():
+    messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "| 公司 | 证据 |\n"
+                "|---|---|\n"
+                "| **维宏股份** | 正文还提到绿的谐波和中大力德作为例子 |\n"
+                "| **兆威机电 (003021)** | 灵巧手 |\n\n"
+                "风险提示中再次提到机器人产业。"
+            ),
+        },
+        {"role": "user", "content": "上面提到的这些公司现在能买吗"},
+    ]
+
+    context, entities = chat_mod._verified_entity_context(messages)
+
+    assert entities == [
+        {"name": "维宏股份", "symbol": "300508"},
+        {"name": "兆威机电", "symbol": "003021"},
+    ]
+    assert "禁止扩展范围" in context
+
+
+def test_multi_stock_round_keeps_symmetric_risk_pair_and_drops_redundant_valuation():
+    calls = [
+        {"id": "batch", "name": "get_multi_stock_snapshot", "arguments": '{"symbols":"600519,000858"}'},
+        {"id": "v1", "name": "get_valuation_ratios", "arguments": '{"symbol":"600519"}'},
+        {"id": "v2", "name": "get_valuation_ratios", "arguments": '{"symbol":"000858"}'},
+        {"id": "b1", "name": "get_business_segments", "arguments": '{"symbol":"600519"}'},
+        {"id": "b2", "name": "get_business_segments", "arguments": '{"symbol":"000858"}'},
+        {"id": "r1", "name": "get_risk_events", "arguments": '{"symbol":"600519"}'},
+        {"id": "r2", "name": "get_risk_events", "arguments": '{"symbol":"000858"}'},
+    ]
+    selected = chat_mod._select_balanced_multi_security_calls(
+        calls,
+        latest_user_text="比较两家公司基本面、估值与主要风险",
+    )
+    assert [call["id"] for call in selected] == ["batch", "r1", "r2"]
+
+
+def test_multi_stock_round_preserves_detailed_valuation_pair_when_history_requested():
+    calls = [
+        {"id": "batch", "name": "get_multi_stock_snapshot", "arguments": '{"symbols":"600519,000858"}'},
+        {"id": "v1", "name": "get_valuation_ratios", "arguments": '{"symbol":"600519"}'},
+        {"id": "v2", "name": "get_valuation_ratios", "arguments": '{"symbol":"000858"}'},
+    ]
+    selected = chat_mod._select_balanced_multi_security_calls(
+        calls,
+        latest_user_text="比较两家公司五年估值历史分位",
+    )
+    assert [call["id"] for call in selected] == ["batch", "v1", "v2"]
+
+
+def test_multi_stock_round_synthesizes_symmetric_risk_calls_when_plan_only_has_batch():
+    calls = [
+        {"id": "batch", "name": "get_multi_stock_snapshot", "arguments": '{"symbols":"600519,000858"}'},
+    ]
+    selected = chat_mod._select_balanced_multi_security_calls(
+        calls,
+        latest_user_text="比较两家公司基本面、估值与主要风险",
+    )
+    assert [call["name"] for call in selected] == [
+        "get_multi_stock_snapshot",
+        "get_risk_events",
+        "get_risk_events",
+    ]
+    assert [json.loads(call["arguments"])["symbol"] for call in selected[1:]] == [
+        "600519",
+        "000858",
+    ]
 
 
 def test_slim_tool_content_strips_detail_arrays_keeps_summary():
@@ -434,7 +601,709 @@ def test_stream_final_answer_normal_output():
 
     result = asyncio.run(run())
     assert result == "总结内容"
-    assert controller.texts == ["总结", "内容"]
+    # Final synthesis is buffered until completion so a length/timeout failure
+    # can be atomically replaced with a complete evidence-backed fallback.
+    assert controller.texts == ["总结内容"]
+
+
+def test_industry_playbook_executes_runtime_owned_evidence_plan_before_model():
+    controller = _FakeController()
+    llm_calls = []
+
+    async def fake_acompletion(**kwargs):
+        llm_calls.append(kwargs)
+        valid = (
+            "## 受益优先级\n最受益环节按价值量排序。\n"
+            "## 产业链地图\n上游核心部件、中游整机、下游应用。\n"
+            "受益机制是价值量提升，兑现指标看订单和产能。\n"
+            "反证与风险包括量产不及预期。\n"
+            "持续跟踪量化指标。来源：研究资料；截至2026-07-17；"
+            "置信度中等；证据缺口已列示。"
+            "[来源一](https://example.com/a) [来源二](https://example.org/b)"
+        )
+        return _AsyncChunkStream([_mock_llm_chunk(content=valid, finish_reason="stop")])
+
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = ["search_financial_news", "search_research_library"]
+    registry.execute.side_effect = lambda name, args: {
+        "success": True,
+        "items": [{"title": name, "published": "2026-07-01", "source": "测试源"}],
+    }
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
+             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._run_react_loop(
+                controller,
+                [{"role": "user", "content": "帮我分析下人形机器人产业链，哪些领域最受益？"}],
+                cfg,
+            )
+
+    result = asyncio.run(run())
+    assert "受益优先级" in result
+    assert registry.execute.call_count == 4
+    assert {call.args[0] for call in registry.execute.call_args_list} == {
+        "search_financial_news",
+        "search_research_library",
+    }
+    # There is no model-planning turn before the mandatory evidence calls;
+    # the only model request is the final synthesis.
+    assert len(llm_calls) == 1
+    assert "强制分析标准" in llm_calls[0]["messages"][0]["content"]
+
+
+def test_industry_playbook_repairs_an_answer_that_drops_required_sections():
+    controller = _FakeController()
+    call_count = {"value": 0}
+    requests = []
+
+    async def fake_acompletion(**kwargs):
+        call_count["value"] += 1
+        requests.append(kwargs)
+        if call_count["value"] == 1:
+            return _AsyncChunkStream([_mock_llm_chunk(content="机器人行业会受益。", finish_reason="stop")])
+        repaired = (
+            "优先级与最受益排序如下。上游、中游、下游构成产业链。"
+            "受益机制看价值量，兑现指标看订单与产能。反证和风险是不及预期。"
+            "后续跟踪量化指标。来源见工具证据，截至2026-07-17，置信度中等，证据缺口明确。"
+            "[来源一](https://example.com/a) [来源二](https://example.org/b)"
+        )
+        return _AsyncChunkStream([_mock_llm_chunk(content=repaired, finish_reason="stop")])
+
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+    evidence = [{"tool": "search_financial_news", "result": {"success": True, "items": []}}]
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "分析人形机器人产业链"}],
+                cfg,
+                evidence=evidence,
+                playbook=chat_mod.INDUSTRY_CHAIN,
+            )
+
+    result = asyncio.run(run())
+    assert result.startswith("优先级")
+    assert "机器人行业会受益" not in result
+    assert call_count["value"] == 2
+    assert "运行时输出验收未通过" in requests[-1]["messages"][-1]["content"]
+
+
+def test_playbook_timeout_keeps_buffered_text_only_when_contract_is_complete():
+    controller = _FakeController()
+    complete = (
+        "优先级和最受益排序。上游、中游、下游产业链。"
+        "受益机制看价值量，兑现指标看订单产能。反证与风险是不及预期。"
+        "后续跟踪量化指标，来源截至2026-07-17，置信度中等，证据缺口明确。"
+        "[来源一](https://example.com/a) [来源二](https://example.org/b)"
+    )
+
+    class _TimeoutAfterContent:
+        def __aiter__(self):
+            self.done = False
+            return self
+
+        async def __anext__(self):
+            if not self.done:
+                self.done = True
+                return _mock_llm_chunk(content=complete)
+            raise TimeoutError("terminal frame missing")
+
+    async def fake_acompletion(**kwargs):
+        return _TimeoutAfterContent()
+
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "分析产业链"}],
+                cfg,
+                evidence=[],
+                playbook=chat_mod.INDUSTRY_CHAIN,
+            )
+
+    assert asyncio.run(run()) == complete
+    assert controller.texts == [complete]
+
+
+def test_playbook_timeout_retries_once_when_buffer_is_incomplete():
+    controller = _FakeController()
+    calls = {"value": 0}
+    repaired = (
+        "优先级和最受益排序。上游、中游、下游产业链。"
+        "受益机制看价值量，兑现指标看订单产能。反证与风险是不及预期。"
+        "后续跟踪量化指标，来源截至2026-07-17，置信度中等，证据缺口明确。"
+        "[来源一](https://example.com/a) [来源二](https://example.org/b)"
+    )
+
+    class _ImmediateTimeout:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise TimeoutError("provider stalled")
+
+    async def fake_acompletion(**kwargs):
+        calls["value"] += 1
+        if calls["value"] == 1:
+            return _ImmediateTimeout()
+        return _AsyncChunkStream([_mock_llm_chunk(content=repaired, finish_reason="stop")])
+
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "分析产业链"}],
+                cfg,
+                evidence=[],
+                playbook=chat_mod.INDUSTRY_CHAIN,
+            )
+
+    assert asyncio.run(run()) == repaired
+    assert calls["value"] == 2
+
+
+def test_playbook_empty_completion_retries_once_before_failing_closed():
+    controller = _FakeController()
+    calls = {"value": 0}
+    repaired = (
+        "优先级和最受益排序。上游、中游、下游产业链。"
+        "受益机制看价值量，兑现指标看订单产能。反证与风险是不及预期。"
+        "后续跟踪量化指标，来源截至2026-07-17，置信度中等，证据缺口明确。"
+        "[来源一](https://example.com/a) [来源二](https://example.org/b)"
+    )
+
+    async def fake_acompletion(**kwargs):
+        calls["value"] += 1
+        if calls["value"] == 1:
+            return _AsyncChunkStream([_mock_llm_chunk(content=None, finish_reason="stop")])
+        return _AsyncChunkStream([_mock_llm_chunk(content=repaired, finish_reason="stop")])
+
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "分析产业链"}],
+                cfg,
+                evidence=[],
+                playbook=chat_mod.INDUSTRY_CHAIN,
+            )
+
+    assert asyncio.run(run()) == repaired
+    assert calls["value"] == 2
+
+
+def test_professional_contract_requires_every_company_and_decision_axis():
+    evidence = [{
+        "tool": "get_multi_stock_decision_evidence",
+        "result": {
+            "success": True,
+            "resolved_entities": [
+                {"name": "兆威机电", "symbol": "003021"},
+                {"name": "绿的谐波", "symbol": "688017"},
+            ],
+        },
+    }]
+    incomplete = "003021：主营业务不错，财务和估值需要看。"
+    issues = chat_mod._playbook_answer_contract_issues(
+        chat_mod.INVESTMENT_DECISION,
+        incomplete,
+        evidence,
+    )
+    assert any("688017" in issue or "绿的谐波" in issue for issue in issues)
+    assert any("交易状态" in issue for issue in issues)
+    assert any("风险催化" in issue for issue in issues)
+
+    complete = (
+        "003021、688017：主营业务兑现；财务营收、净利和现金流；"
+        "估值PE与一致预期；交易趋势与资金；公告催化和风险；"
+        "结论等待验证，并给出成立条件与失效条件。"
+    )
+    assert chat_mod._playbook_answer_contract_issues(
+        chat_mod.INVESTMENT_DECISION,
+        complete,
+        evidence,
+    ) == []
+
+
+def test_professional_contract_fails_closed_when_evidence_packet_is_unavailable():
+    issues = chat_mod._playbook_answer_contract_issues(
+        chat_mod.INVESTMENT_DECISION,
+        "我认为可以买入。",
+        [{"tool": "get_multi_stock_decision_evidence", "result": {"success": False}}],
+    )
+    assert issues == ["专业决策证据未成功取得，必须停止买入判断并说明证据缺口"]
+    assert chat_mod._playbook_answer_contract_issues(
+        chat_mod.INVESTMENT_DECISION,
+        "本轮专业证据不足，因此暂不做买入判断。",
+        [{"tool": "get_multi_stock_decision_evidence", "result": {"success": False}}],
+    ) == []
+
+
+def test_mapping_contract_requires_first_column_entities_for_next_turn_scope():
+    prose_only = (
+        "兆威机电003021属于上游环节，L2证据为已披露送样；"
+        "订单收入缺口待核验，来源为2026年公告。"
+    )
+    issues = chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        prose_only,
+        [],
+    )
+    assert any("表格第一列" in issue for issue in issues)
+
+    table = (
+        "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源与日期 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 兆威机电 (003021) | 上游 | L2 | 已披露送样 | 订单收入待核验 | [公司公告](https://example.com/003021)，2026-06-01 |\n"
+        "\n本轮仅列上述代表公司，其他环节未覆盖，需进一步核验；仅概念公司未列入。\n\n"
+        "| 未覆盖环节 | 原因 |\n|---|---|\n| 减速器 | 本轮证据不足 |"
+    )
+    assert chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        table,
+        [],
+    ) == []
+
+    pending_code = (
+        "| 公司/代码 | 环节 | 证据等级 | 已验证事实 | 缺口 | 来源日期 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 雷迪克（代码待核验） | 上游 | L2 | 已披露送样 | 收入待核验 | [来源](https://example.com/a)，2026-07-01 |\n"
+        "本轮仅列代表公司，未覆盖环节需进一步核验。"
+    )
+    pending_issues = chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        pending_code,
+        [],
+    )
+    assert any("缺少六位代码" in issue for issue in pending_issues)
+    assert "存在未核验证券代码" in pending_issues
+
+
+def test_mapping_contract_rejects_answers_that_omit_returned_candidates():
+    table = (
+        "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源与日期 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 兆威机电 (003021) | 上游 | L1 | 已验证概念关联 | 订单收入待核验 | "
+        "[概念板块](https://example.com/theme)，2026-07-17 |\n\n"
+        "本轮仅列代表公司，未覆盖环节需进一步核验。"
+    )
+    candidate_names = [
+        ("兆威机电", "003021"), ("绿的谐波", "688017"), ("汇川技术", "300124"),
+        ("机器人", "300024"), ("秦川机床", "000837"), ("巨轮智能", "002031"),
+        ("新时达", "002527"), ("博实股份", "002698"),
+    ]
+    evidence = [{
+        "tool": "get_theme_stock_candidates",
+        "result": {
+            "success": True,
+            "items": [{"name": name, "symbol": symbol} for name, symbol in candidate_names],
+        },
+    }]
+
+    issues = chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        table,
+        evidence,
+    )
+
+    assert any("最终答案遗漏7家" in issue and "完整候选索引" in issue for issue in issues)
+
+
+def test_mapping_contract_rejects_business_claims_supported_only_by_concept_board():
+    table = (
+        "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源与日期 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 汇川技术 (300124) | 伺服电机/驱动 | L1 | 属于机器人概念板块成分股，是工业自动化龙头 | "
+        "订单收入待核验 | [新浪概念板块](http://vip.stock.finance.sina.com.cn/mkt/#gn_zjqrgn)，2026-07-17 |\n\n"
+        "本轮仅列代表公司，未覆盖环节需进一步核验。"
+    )
+
+    issues = chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        table,
+        [],
+    )
+
+    assert any("不能直接确定产业链环节" in issue for issue in issues)
+    assert any("未经核验的公司业务事实" in issue for issue in issues)
+
+
+def test_theme_mapping_fallback_returns_complete_local_verified_l1_inventory():
+    candidate_names = [
+        ("兆威机电", "003021"), ("绿的谐波", "688017"), ("汇川技术", "300124"),
+        ("机器人", "300024"), ("秦川机床", "000837"), ("巨轮智能", "002031"),
+        ("新时达", "002527"), ("博实股份", "002698"),
+    ]
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 45,
+        "data_time": "2026-07-17",
+        "items": [
+            {
+                "name": name,
+                "symbol": symbol,
+                "sector": "专用设备制造业",
+                "boards": ["机器人概念"],
+                "sources": [{
+                    "name": "新浪概念板块",
+                    "url": "https://example.com/theme",
+                    "date": "2026-07-17",
+                }],
+            }
+            for name, symbol in candidate_names
+        ],
+    }
+
+    fallback = chat_mod._build_verified_evidence_fallback([
+        {"tool": "get_theme_stock_candidates", "result": result},
+    ])
+
+    assert "本地 **5534 只**证券" in fallback
+    assert "完整候选池（L1，共 8 家）" in fallback
+    assert all(f"{name} ({symbol})" in fallback for name, symbol in candidate_names)
+    assert "不等同订单或收入兑现" in fallback
+    assert chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        fallback,
+        [{"tool": "get_theme_stock_candidates", "result": result}],
+    ) == []
+
+
+def test_theme_mapping_fallback_promotes_company_level_validation_evidence_to_l2():
+    result = {
+        "success": True,
+        "local_universe_count": 5534,
+        "candidate_count": 20,
+        "data_time": "2026-07-17",
+        "items": [
+            {
+                "name": name,
+                "symbol": symbol,
+                "boards": ["机器人概念"],
+                "sources": [{
+                    "name": "新浪概念板块",
+                    "url": "https://example.com/theme",
+                    "date": "2026-07-17",
+                }],
+            }
+            for name, symbol in [
+                ("兆丰股份", "300695"), ("机器人", "300024"), ("汇川技术", "300124"),
+                ("秦川机床", "000837"), ("巨轮智能", "002031"), ("新时达", "002527"),
+                ("博实股份", "002698"), ("兆威机电", "003021"),
+            ]
+        ],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [{
+                    "title": "东方财富机器人频道：兆丰股份丝杠送样进入性能测试阶段",
+                    "summary": "部分产品进入小批量试制，具体客户和订单金额未披露。汇川技术出现在文章其他章节。",
+                    "link": "https://example.com/300695",
+                    "published": "2026-07-14T08:00:00",
+                    "source": "测试财经",
+                }],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_verified_evidence_fallback(evidence)
+
+    assert "兆丰股份 (300695) | 丝杠 | L2" in fallback
+    assert "送样进入性能测试阶段" in fallback
+    assert "完整候选池（L1，共 8 家）" in fallback
+    assert "东方财富 (300059)" not in fallback
+    assert "机器人 (300024) | 丝杠 | L2" not in fallback
+
+
+def test_theme_mapping_fallback_does_not_promote_unrelated_company_sampling_news():
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 8,
+        "items": [
+            {
+                "name": name,
+                "symbol": symbol,
+                "boards": ["人形机器人"],
+                "sources": [{
+                    "name": "概念板块",
+                    "url": "https://example.com/theme",
+                    "date": "2026-07-17",
+                }],
+            }
+            for name, symbol in [
+                ("英力股份", "300956"), ("美的集团", "000333"),
+                ("南钢股份", "600282"), ("许继电气", "000400"),
+                ("金固股份", "002488"), ("美格智能", "002881"),
+                ("美力科技", "300611"), ("盛通股份", "002599"),
+            ]
+        ],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [{
+                    "title": "英力股份AI眼镜结构件已向客户送样",
+                    "summary": "公司同时被市场归入人形机器人概念板块。",
+                    "link": "https://example.com/300956",
+                    "published": "2026-07-13T08:00:00",
+                    "source": "测试财经",
+                }],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_verified_evidence_fallback(evidence)
+
+    assert "英力股份 (300956)" in fallback
+    assert "| L2 |" not in fallback
+    assert "| L3 |" not in fallback
+
+
+def test_theme_mapping_uses_company_revenue_in_title_not_generic_small_batch_language():
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 1,
+        "items": [{
+            "name": "贝斯特",
+            "symbol": "300580",
+            "boards": ["人形机器人"],
+        }],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [{
+                    "title": "贝斯特回应：人形机器人相关业务半年营收22万元",
+                    "summary": "产业链企业普遍需要经历研发、送样、客户验证、小批量供货再到规模量产。",
+                    "link": "https://example.com/300580",
+                    "published": "2026-07-06T08:00:00",
+                    "source": "测试财经",
+                }],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_theme_mapping_fallback(result, evidence)
+
+    assert "贝斯特 (300580) | 人形机器人相关业务 | L3" in fallback
+    assert "半年营收22万元" in fallback
+    assert "本轮公司级资料明确出现批量供货" not in fallback
+
+
+def test_theme_mapping_fallback_binds_validation_sentence_to_unique_title_company():
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 8,
+        "items": [
+            {
+                "name": name,
+                "symbol": symbol,
+                "boards": ["机器人概念"],
+                "sources": [{
+                    "name": "概念板块",
+                    "url": "https://example.com/theme",
+                    "date": "2026-07-17",
+                }],
+            }
+            for name, symbol in [
+                ("雷迪克", "300652"), ("美的集团", "000333"),
+                ("南钢股份", "600282"), ("许继电气", "000400"),
+                ("金固股份", "002488"), ("美格智能", "002881"),
+                ("美力科技", "300611"), ("盛通股份", "002599"),
+            ]
+        ],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [{
+                    "title": "雷迪克形成机器人丝杠及精密轴承产品矩阵",
+                    "summary": "公司部分重点客户项目已处于定点、关键验证或送样阶段。",
+                    "link": "https://example.com/300652",
+                    "published": "2026-07-16T08:00:00",
+                    "source": "测试财经",
+                }],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_verified_evidence_fallback(evidence)
+
+    assert "雷迪克 (300652) | 丝杠 | L2" in fallback
+    assert "定点、关键验证或送样阶段" in fallback
+
+
+def test_mapping_synthesis_receives_runtime_verified_candidate_codes():
+    messages = chat_mod._build_synthesis_messages(
+        [{"role": "user", "content": "这些领域有哪些公司"}],
+        [{
+            "tool": "search_financial_news",
+            "result": {"success": True, "items": [{"title": "雷迪克推进机器人丝杠送样"}]},
+        }],
+        chat_mod.THEME_COMPANY_MAPPING,
+    )
+    evidence_text = messages[-1]["content"]
+    assert "runtime_security_entity_map" in evidence_text
+    assert "雷迪克" in evidence_text
+    assert "300652" in evidence_text
+
+
+def test_mapping_sanitizer_drops_only_rows_without_company_level_evidence():
+    mixed = (
+        "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源日期 |\n"
+        "|---|---|---|---|---|---|\n"
+        "| 兆威机电 (003021) | 上游 | L2 | 已披露送样 | 收入待核验 | [公告](https://example.com/003021)，2026-06-01 |\n"
+        "| 机器人 (300024) | 中游 | L1 | 概念关联 | 订单缺失 | 无 |\n\n"
+        "本轮仅列代表公司，未覆盖环节需进一步核验。"
+    )
+
+    sanitized = chat_mod._sanitize_mapping_answer(mixed)
+
+    assert "兆威机电 (003021)" in sanitized
+    assert "| 机器人 (300024) |" not in sanitized
+    assert "因证据不足未列入" in sanitized
+    assert "机器人 (300024)" in sanitized
+    assert "最终保留 **1 家**" in sanitized
+    assert chat_mod._playbook_answer_contract_issues(
+        chat_mod.THEME_COMPANY_MAPPING,
+        sanitized,
+        [],
+    ) == []
+
+
+def test_professional_fallback_preserves_missing_amounts_instead_of_zero_filling():
+    text = chat_mod._build_professional_decision_fallback({
+        "success": True,
+        "data_time": "2026-07-17",
+        "quote_basis": "盘中快照",
+        "items": [{
+            "symbol": "003021",
+            "name": "兆威机电",
+            "snapshot": {"technical": {"indicators": {}}},
+            "financials": {"items": [{"revenue_yoy": 10, "parent_net_profit_yoy": 5}]},
+            "valuation": {"pe_ttm": 80, "pb_mrq": 8},
+            "capital_flow": {"windows": {"10d": {}}},
+            "risk_events": {"items": [], "analysis": {}},
+            "announcements": {},
+            "evidence_coverage": {"complete": False, "missing": ["expectations"]},
+            "screening_flags": {"positive": [], "negative": []},
+        }],
+    })
+
+    assert "OCF 缺失" in text
+    assert "10日资金 缺失" in text
+    assert "OCF 0.00亿" not in text
+
+
+def test_stream_final_answer_converts_tool_history_to_text_evidence():
+    """Final synthesis sends no tool messages or tools schema to Anthropic."""
+    controller = _FakeController()
+    captured = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+        return _AsyncChunkStream([_mock_llm_chunk(content="最终总结")])
+
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "分析机器人产业链"},
+        {"role": "assistant", "content": "先查资料", "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "search_financial_news", "arguments": "{}"},
+        }]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"success":true,"items":[1]}'},
+    ]
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(controller, history, cfg)
+
+    assert asyncio.run(run()) == "最终总结"
+    assert "tools" not in captured
+    assert all(message["role"] != "tool" for message in captured["messages"])
+    assert all(not message.get("tool_calls") for message in captured["messages"])
+    evidence_message = captured["messages"][-1]["content"]
+    assert "本轮已核验的工具证据" in evidence_message
+    assert "search_financial_news" in evidence_message
+
+
+def test_react_loop_hides_planning_prose_when_tools_are_called():
+    """Model planning prose stays internal; users see progress + final answer only."""
+    controller = _FakeController()
+    round_n = {"value": 0}
+
+    async def fake_acompletion(**kwargs):
+        round_n["value"] += 1
+        if round_n["value"] == 1:
+            tc = _mock_tool_call_delta(name="get_kline", arguments='{"symbol":"600519"}')
+            return _AsyncChunkStream([
+                _mock_llm_chunk(content="第一步：我先查行情"),
+                _mock_llm_chunk(tool_calls=[tc]),
+            ])
+        return _AsyncChunkStream([_mock_llm_chunk(content="这是最终答案")])
+
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = ["get_kline"]
+    registry.execute.return_value = {"success": True}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
+             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
+             patch("api.v1.endpoints.agent.chat._format_result", return_value='{"success":true}'), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._run_react_loop(
+                controller, [{"role": "user", "content": "分析"}], cfg
+            )
+
+    assert asyncio.run(run()) == "这是最终答案"
+    assert all("第一步：我先查行情" not in text for text in controller.texts)
+    assert any("这是最终答案" in text for text in controller.texts)
 
 
 def test_stream_final_answer_llm_failure_appends_error_text():
@@ -453,8 +1322,8 @@ def test_stream_final_answer_llm_failure_appends_error_text():
             )
 
     result = asyncio.run(run())
-    assert result == ""
-    assert any("生成最终总结时出错" in t for t in controller.texts)
+    assert "模型本次没有返回最终文本" in result
+    assert any("模型本次没有返回最终文本" in t for t in controller.texts)
 
 
 def test_stream_final_answer_empty_content_appends_hint():
@@ -471,8 +1340,129 @@ def test_stream_final_answer_empty_content_appends_hint():
             )
 
     result = asyncio.run(run())
-    assert result == ""
-    assert any("没有产出最终总结" in t for t in controller.texts)
+    assert "模型本次没有返回最终文本" in result
+    assert any("模型本次没有返回最终文本" in t for t in controller.texts)
+
+
+def test_empty_final_answer_uses_and_persists_verified_multi_stock_fallback():
+    controller = _FakeController()
+    fake_acompletion = _async_completion([_mock_llm_chunk(content=None)])
+    state = {"assistant_text": ""}
+    evidence = [{
+        "tool": "get_multi_stock_snapshot",
+        "result": {
+            "success": True,
+            "data_time": "2026-07-17T14:49:21+08:00",
+            "quote_basis": "盘中实时快照（不是收盘价）",
+            "warnings": ["维宏股份技术指标陈旧"],
+            "items": [{
+                "symbol": "300508",
+                "name": "维宏股份",
+                "quote": {
+                    "price": 38.03,
+                    "change_pct": -10.41,
+                    "pe_dynamic": -57.72,
+                    "pb_ratio": 4.97,
+                },
+                "financial": {"net_profit": -17928308.77, "debt_ratio_pct": 25.9},
+                "technical": {"is_stale": True},
+            }],
+        },
+    }]
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "这些公司能买吗"}],
+                fake_cfg,
+                state=state,
+                evidence=evidence,
+            )
+
+    result = asyncio.run(run())
+    assert "维宏股份 (300508)" in result
+    assert "亏损，先观察" in result
+    assert "不是 PE(TTM)" in result
+    assert state["assistant_text"] == result
+
+
+def test_truncated_final_answer_discards_partial_text_and_uses_complete_fallback():
+    controller = _FakeController()
+    fake_acompletion = _async_completion([
+        _mock_llm_chunk(content="写到一半的残稿", finish_reason="length"),
+    ])
+    evidence = [{
+        "tool": "get_multi_stock_snapshot",
+        "result": {
+            "success": True,
+            "data_time": "2026-07-17T14:49:21+08:00",
+            "quote_basis": "盘中实时快照（不是收盘价）",
+            "items": [{
+                "symbol": "300508",
+                "name": "维宏股份",
+                "quote": {"price": 38.03, "change_pct": -10.41, "pe_dynamic": -57.72, "pb_ratio": 4.97},
+                "financial": {"net_profit": -1.0, "debt_ratio_pct": 25.9},
+                "technical": {"is_stale": False},
+            }],
+        },
+    }]
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "这些公司能买吗"}],
+                fake_cfg,
+                evidence=evidence,
+            )
+
+    result = asyncio.run(run())
+    assert "维宏股份 (300508)" in result
+    assert "写到一半的残稿" not in result
+    assert all("写到一半的残稿" not in text for text in controller.texts)
+
+
+def test_final_answer_rejects_claims_from_an_uncalled_evidence_dimension():
+    controller = _FakeController()
+    fake_acompletion = _async_completion([
+        _mock_llm_chunk(content="盘中价格下跌，说明主力资金仍在流出。", finish_reason="stop"),
+    ])
+    evidence = [{
+        "tool": "get_multi_stock_snapshot",
+        "result": {
+            "success": True,
+            "data_time": "2026-07-17T14:49:21+08:00",
+            "quote_basis": "盘中实时快照（不是收盘价）",
+            "quote_is_intraday": True,
+            "items": [{
+                "symbol": "300508",
+                "name": "维宏股份",
+                "quote": {"price": 38.03, "change_pct": -10.41, "pe_dynamic": -57.72, "pb_ratio": 4.97},
+                "financial": {"net_profit": -1.0, "debt_ratio_pct": 25.9},
+                "technical": {"is_stale": False},
+            }],
+        },
+    }]
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "能买吗"}],
+                fake_cfg,
+                evidence=evidence,
+            )
+
+    result = asyncio.run(run())
+    assert "主力资金" not in result
+    assert "维宏股份 (300508)" in result
 
 
 # ---------------------------------------------------------------------------

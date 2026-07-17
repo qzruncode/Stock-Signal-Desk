@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.storage import DatabaseManager
+from src.agent.progress import strip_agent_progress
 
 
 class ChatSessionService:
@@ -171,6 +172,8 @@ class ChatSessionService:
                 continue
             role = str(raw.get("role") or "user").strip() or "user"
             content = self._extract_text(raw.get("content"))
+            if role == "assistant":
+                content = strip_agent_progress(content)
             if not content:
                 continue
             normalized_messages.append(
@@ -197,6 +200,8 @@ class ChatSessionService:
                 continue
             role = str(message.get("role") or "user").strip() or "user"
             content = self._extract_thread_message_text(message)
+            if role == "assistant":
+                content = strip_agent_progress(content)
             if not content:
                 continue
             normalized_messages.append(

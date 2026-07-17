@@ -26,7 +26,12 @@ def _pick_fields(item: Dict[str, Any], fields: List[str]) -> Dict[str, Any]:
     }
 
 
-def _trim_list(items: Any, limit: int, fields: List[str] | None = None) -> list[Any]:
+def _trim_list(
+    items: Any,
+    limit: int,
+    fields: List[str] | None = None,
+    text_limits: Dict[str, int] | None = None,
+) -> list[Any]:
     if not isinstance(items, list):
         return []
     trimmed = items[:limit]
@@ -35,7 +40,15 @@ def _trim_list(items: Any, limit: int, fields: List[str] | None = None) -> list[
     result: list[Any] = []
     for item in trimmed:
         if isinstance(item, dict):
-            result.append(_pick_fields(item, fields))
+            picked = _pick_fields(item, fields)
+            for field, character_limit in (text_limits or {}).items():
+                value = picked.get(field)
+                if not isinstance(value, str) or len(value) <= character_limit:
+                    continue
+                picked[field] = value[:character_limit].rstrip() + "…"
+                picked[f"{field}_characters"] = len(value)
+                picked[f"{field}_compacted"] = True
+            result.append(picked)
         else:
             result.append(item)
     return result
@@ -196,6 +209,118 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "amount_unit": result.get("amount_unit"),
             "market_value_unit": result.get("market_value_unit"),
         }, payload_policy="compacted", compacted=True, compaction_reason="quotes_item_window")
+
+    if tool_name == "get_multi_stock_snapshot":
+        compact_items: list[Dict[str, Any]] = []
+        for item in _trim_list(result.get("items", []), 12):
+            if not isinstance(item, dict):
+                continue
+            quote = item.get("quote") if isinstance(item.get("quote"), dict) else {}
+            technical = (
+                item.get("technical") if isinstance(item.get("technical"), dict) else {}
+            )
+            financial = (
+                item.get("financial") if isinstance(item.get("financial"), dict) else None
+            )
+            compact_items.append({
+                "symbol": item.get("symbol"),
+                "name": item.get("name"),
+                "quote": {
+                    **_pick_fields(quote, [
+                        "price", "change_pct", "turnover_rate", "pb_ratio",
+                        "total_mv", "data_time", "is_stale", "source",
+                    ]),
+                    **({"pe_dynamic": quote.get("pe_ratio")} if quote.get("pe_ratio") is not None else {}),
+                },
+                "technical": _pick_fields(technical, [
+                    "success", "data_time", "is_stale", "source", "indicators", "errors",
+                ]),
+                "financial": financial,
+            })
+        return _annotate_tool_payload(tool_name, {
+            "success": result.get("success"),
+            "partial": result.get("partial"),
+            "items": compact_items,
+            "resolved_entities": result.get("resolved_entities", []),
+            "unresolved_entities": result.get("unresolved_entities", []),
+            "total": result.get("total", len(compact_items)),
+            "data_time": result.get("data_time"),
+            "quote_basis": result.get("quote_basis"),
+            "quote_is_intraday": result.get("quote_is_intraday"),
+            "is_stale": result.get("is_stale"),
+            "fallback_used": result.get("fallback_used"),
+            "source": result.get("source"),
+            "valuation_basis": {
+                "pe_dynamic": "实时行情动态市盈率，不是 PE(TTM)",
+                "pb_ratio": "实时行情市净率字段",
+            },
+            "errors": result.get("errors", []),
+            "warnings": result.get("warnings", []),
+            "decision_boundary": result.get("decision_boundary"),
+        }, payload_policy="compacted", compacted=True, compaction_reason="multi_stock_decision_fields")
+
+    if tool_name == "get_multi_stock_decision_evidence":
+        # This tool already returns its own bounded professional evidence view:
+        # all requested companies and all seven dimensions remain present, while
+        # each upstream source is compacted inside the tool.  Mark that contract
+        # explicitly instead of silently presenting it as a full raw payload.
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="professional_decision_evidence_view",
+            source_scope="seven_dimension_multi_stock_evidence",
+        )
+
+    if tool_name == "get_theme_stock_candidates":
+        # 保留全部公司/代码，但去掉每家公司重复的财务快照和冗长说明。完整候选
+        # 索引是后续写作的硬约束，不能再用 generic list trimming 截成前几家公司。
+        compact_items = []
+        for item in result.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            sources = item.get("sources") if isinstance(item.get("sources"), list) else []
+            source = next((value for value in sources if isinstance(value, dict)), {})
+            compact_items.append({
+                "symbol": item.get("symbol"),
+                "name": item.get("name"),
+                "sector": item.get("sector"),
+                "boards": item.get("boards", []),
+                "primary_theme_membership": item.get("primary_theme_membership"),
+                "evidence_level": item.get("evidence_level"),
+                "source": {
+                    "name": source.get("name"),
+                    "url": source.get("url"),
+                    "date": source.get("date"),
+                },
+            })
+        compact_result = {
+            "success": result.get("success"),
+            "partial": result.get("partial"),
+            "theme": result.get("theme"),
+            "local_universe_count": result.get("local_universe_count"),
+            "raw_constituent_records": result.get("raw_constituent_records"),
+            "candidate_count": result.get("candidate_count"),
+            "returned_count": result.get("returned_count"),
+            "omitted_count": result.get("omitted_count"),
+            "coverage_complete": result.get("coverage_complete"),
+            "items": compact_items,
+            "matched_boards": result.get("matched_boards", []),
+            "source_scope": result.get("source_scope"),
+            "decision_boundary": result.get("decision_boundary"),
+            "data_time": result.get("data_time"),
+            "warnings": result.get("warnings", []),
+            "errors": result.get("errors", []),
+        }
+        return _annotate_tool_payload(
+            tool_name,
+            compact_result,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="all_candidate_identity_index_without_repeated_financial_fields",
+            source_scope="public_board_constituents_x_local_stock_meta",
+        )
 
     if tool_name in {"get_kline", "get_history_data"}:
         return _annotate_tool_payload(
@@ -418,15 +543,16 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         )
         compact["items"] = _trim_list(
             result.get("items"),
-            LLM_ARRAY_LIMIT,
+            6,
             ["title", "summary", "content_text", "link", "published", "source", "source_type", "rss_route", "content_fallback"],
+            {"summary": 800, "content_text": 1800},
         )
         return _annotate_tool_payload(
             tool_name,
             compact,
             payload_policy="compacted",
             compacted=True,
-            compaction_reason="semantic_rss_item_window",
+            compaction_reason="semantic_rss_item_and_text_window",
         )
 
     if tool_name == "get_stock_capital_flow":
@@ -659,18 +785,19 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         )
         compact["items"] = _trim_list(
             result.get("items"),
-            LLM_ARRAY_LIMIT,
+            6,
             [
                 "title", "summary", "link", "published", "author", "source", "source_type",
                 "research_category", "rating", "industry", "profit_forecasts", "rss_route", "content_text",
             ],
+            {"summary": 800, "content_text": 1800},
         )
         return _annotate_tool_payload(
             tool_name,
             compact,
             payload_policy="compacted",
             compacted=True,
-            compaction_reason="rss_intelligence_item_window",
+            compaction_reason="rss_intelligence_item_and_text_window",
         )
 
     if tool_name == "get_regulatory_updates":

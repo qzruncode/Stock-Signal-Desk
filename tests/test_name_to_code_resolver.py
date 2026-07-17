@@ -122,6 +122,15 @@ class TestResolveNameToCode:
         assert resolve_name_to_code("贵州茅台") == "600519"
         assert resolve_name_to_code("腾讯控股") == "00700"
 
+    @patch(
+        "src.services.name_to_code_resolver.get_database_stock_indexes",
+        return_value=({"维宏股份": "300508"}, {"300508": "维宏股份"}),
+    )
+    def test_full_local_stock_universe_precedes_network_fallback(self, _mock_database):
+        with patch("src.services.name_to_code_resolver._get_akshare_name_to_code") as online:
+            assert resolve_name_to_code("维宏股份") == "300508"
+            online.assert_not_called()
+
     def test_returns_none_for_empty_or_invalid_input(self):
         assert resolve_name_to_code("") is None
         assert resolve_name_to_code("   ") is None
@@ -131,8 +140,9 @@ class TestResolveNameToCode:
         # "阿里巴巴" maps to both BABA and 09988 in STOCK_NAME_MAP
         assert resolve_name_to_code("阿里巴巴") is None
 
+    @patch("src.services.name_to_code_resolver.get_database_stock_indexes", return_value=({}, {}))
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_akshare_fallback_when_not_in_local(self, mock_akshare):
+    def test_akshare_fallback_when_not_in_local(self, mock_akshare, _mock_database):
         mock_akshare.return_value = {"平安银行": "000001"}
         # 000001 is in local map as 平安银行, so we use a name that's only in akshare
         # Actually local has 000001 -> 平安银行. So "平安银行" would hit local first.

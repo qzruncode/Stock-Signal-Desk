@@ -24,7 +24,6 @@ import json
 import logging
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable
 
@@ -316,14 +315,15 @@ def fetch_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
         "broken_pool": lambda: _fetch_pool("stock_zt_pool_zbgc_em", trade_day_text),
     }
     fetched: dict[str, Any] = {}
-    with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="market-snapshot") as executor:
-        futures = {executor.submit(_call_named, name, function): name for name, function in jobs.items()}
-        for future in as_completed(futures):
-            name, value, error = future.result()
-            if error:
-                errors.append(error)
-            else:
-                fetched[name] = value
+    # Several AKShare endpoints initialize libmini_racer/V8 process-global
+    # state.  Concurrent first-use can abort the interpreter instead of raising
+    # a Python exception, so initialize/fetch these sources sequentially.
+    for job_name, function in jobs.items():
+        name, value, error = _call_named(job_name, function)
+        if error:
+            errors.append(error)
+        else:
+            fetched[name] = value
 
     breadth = fetched.get("breadth")
     if breadth is None:

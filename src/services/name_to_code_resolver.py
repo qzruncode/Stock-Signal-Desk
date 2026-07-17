@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # AkShare result cache: (timestamp, name_to_code_dict)
 _akshare_cache: Optional[tuple[float, Dict[str, str]]] = None
 _AKSHARE_CACHE_TTL = 1800  # 30 MIN
+_database_cache: Optional[tuple[float, Dict[str, str], Dict[str, str]]] = None
+_DATABASE_CACHE_TTL = 300
 
 
 def _contains_cjk(text: str) -> bool:
@@ -86,6 +88,40 @@ def _build_local_name_indexes(code_to_name: Dict[str, str]) -> Tuple[Dict[str, s
 
 
 _LOCAL_REVERSE_MAP, _LOCAL_AMBIGUOUS_NAMES = _build_local_name_indexes(STOCK_NAME_MAP)
+
+
+def get_database_stock_indexes() -> tuple[Dict[str, str], Dict[str, str]]:
+    """Return authoritative active A-share name/code indexes from ``stock_meta``.
+
+    ``STOCK_NAME_MAP`` is intentionally small and cannot resolve most current
+    A-share names.  The Stocks page already maintains a full local universe,
+    so Agent tools must use that same source before attempting network or
+    fuzzy fallbacks.  A short cache keeps per-tool resolution inexpensive.
+    """
+    global _database_cache
+    now = time.time()
+    if _database_cache is not None and now - _database_cache[0] < _DATABASE_CACHE_TTL:
+        return _database_cache[1], _database_cache[2]
+
+    try:
+        from src.storage import DatabaseManager, StockMeta
+
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            rows = session.query(StockMeta.code, StockMeta.name).filter(
+                StockMeta.status == "active"
+            ).all()
+        code_to_name = {
+            str(code).strip(): "".join(str(name).split())
+            for code, name in rows
+            if str(code or "").strip() and str(name or "").strip()
+        }
+        name_to_code = _build_reverse_map_no_duplicates(code_to_name)
+        _database_cache = (now, name_to_code, code_to_name)
+        return name_to_code, code_to_name
+    except Exception as exc:
+        logger.warning("[NameResolver] local stock_meta lookup failed: %s", exc)
+        return {}, {}
 
 
 def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
@@ -171,6 +207,11 @@ def resolve_name_to_code(name: str) -> Optional[str]:
         logger.debug(f"[NameResolver] 命中本地歧义名称，快速返回 None: {s}")
         return None
 
+    # 2b. Full local A-share universe maintained by the Stocks page.
+    database_reverse, _ = get_database_stock_indexes()
+    if s in database_reverse:
+        return database_reverse[s]
+
     # 3. Pinyin match (exact)
     try:
         from pypinyin import lazy_pinyin
@@ -198,7 +239,8 @@ def resolve_name_to_code(name: str) -> Optional[str]:
         return akshare_map[s]
 
     # 5. Fuzzy match (local + akshare, local takes precedence)
-    all_name_to_code = dict(local_reverse)
+    all_name_to_code = dict(database_reverse)
+    all_name_to_code.update(local_reverse)
     if akshare_map:
         all_name_to_code.update(akshare_map)
     # Skip fuzzy matching for very short inputs (<=2 chars) to avoid false positives,

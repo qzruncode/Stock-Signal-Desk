@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 import src.auth as auth
+from src.services.chat_session_service import ChatSessionService
 
 
 @pytest.fixture
@@ -125,6 +126,7 @@ def test_rename_conversation_404_when_missing(client, mock_service):
 # ---------------------------------------------------------------------------
 
 def test_delete_conversation_returns_deleted_flag(client, mock_service):
+    mock_service.get_conversation.return_value = {"id": "c1"}
     mock_service.delete_conversation.return_value = 1
     with patch(
         "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
@@ -137,6 +139,7 @@ def test_delete_conversation_returns_deleted_flag(client, mock_service):
 
 
 def test_delete_conversation_404_when_missing(client, mock_service):
+    mock_service.get_conversation.return_value = None
     mock_service.delete_conversation.return_value = 0
     with patch(
         "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
@@ -183,3 +186,15 @@ def test_snapshot_coerces_non_list_messages_to_empty(client, mock_service):
     args, kwargs = mock_service.save_conversation_snapshot.call_args
     assert args[1] == []
     assert kwargs["thread_state"] is None
+
+
+def test_assistant_progress_copy_is_not_persisted():
+    service = object.__new__(ChatSessionService)
+    messages = service._normalize_messages([
+        {
+            "id": "assistant-1",
+            "role": "assistant",
+            "content": "正在拆解问题并规划研究路径...\n\n## 最终结论\n证据充分。",
+        }
+    ])
+    assert messages[0]["content"] == "## 最终结论\n证据充分。"

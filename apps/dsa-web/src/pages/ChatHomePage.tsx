@@ -211,6 +211,9 @@ const ChatHomePage: React.FC = () => {
 
   const handleSelectConversation = useCallback((conversationId: string) => {
     resumeExistingRef.current = null;
+    if (selectedConversationIdRef.current === conversationId) {
+      return;
+    }
     setSelectedConversationDetail(null);
     setSelectedConversationId(conversationId);
   }, []);

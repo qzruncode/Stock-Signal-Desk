@@ -22,6 +22,9 @@ import {
   ChevronDownIcon,
   BrainCircuitIcon,
   CheckCircle2Icon,
+  DatabaseIcon,
+  FileSearchIcon,
+  GitCompareArrowsIcon,
   Loader2Icon,
   SparklesIcon,
   SquareIcon,
@@ -59,12 +62,14 @@ const Thread: FC = () => {
           <EmptyState />
         </AuiIf>
 
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            AssistantMessage,
-          }}
-        />
+        <div className="mx-auto w-full max-w-4xl">
+          <ThreadPrimitive.Messages
+            components={{
+              UserMessage,
+              AssistantMessage,
+            }}
+          />
+        </div>
 
         <AuiIf condition={(s) => !s.thread.isEmpty}>
           <ThreadPrimitive.ViewportFooter className="sticky bottom-0 pt-2">
@@ -91,24 +96,40 @@ const Thread: FC = () => {
 /* ── Empty State ─────────────────────────────────────────────────────── */
 
 const EmptyState: FC = () => (
-  <div className="flex flex-col items-center gap-5 px-2 pt-16 text-center sm:pt-20">
-    <div className="flex size-16 items-center justify-center rounded-2xl border border-primary/20 bg-card text-primary shadow-[0_18px_50px_hsl(var(--primary)/0.14)]">
-      <SparklesIcon className="size-7" />
+  <div className="mx-auto flex w-full max-w-4xl flex-col items-center px-2 pb-5 pt-2 text-center sm:pt-4">
+    <div className="flex size-12 items-center justify-center rounded-2xl border border-primary/20 bg-card text-primary shadow-[0_18px_50px_hsl(var(--primary)/0.14)]">
+      <SparklesIcon className="size-6" />
     </div>
-    <div>
-      <h2 className="text-xl font-semibold text-foreground">AI 投研助手</h2>
-      <p className="mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">
-        输入股票、指数或市场问题，助手会自动规划数据、调用工具并生成投研回答。
+    <div className="mt-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">A-SHARE RESEARCH AGENT</p>
+      <h2 className="mt-2 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">把问题交给会查数据的投研助手</h2>
+      <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+        支持产业链研究、公司比较、财务与估值核验、行情和事件追踪。回答会保留数据时间、来源与风险边界，并能沿着上一轮继续追问。
       </p>
     </div>
-    <div className="mt-2 flex flex-wrap justify-center gap-2">
+
+    <div className="mt-5 grid w-full gap-3 text-left sm:grid-cols-3">
+      {CAPABILITIES.map(({ title, description, icon: Icon }) => (
+        <div key={title} className="rounded-2xl border border-border/80 bg-card/80 p-3.5 shadow-sm">
+          <div className="flex size-8 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Icon className="size-4" />
+          </div>
+          <p className="mt-2.5 text-sm font-semibold text-foreground">{title}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{description}</p>
+        </div>
+      ))}
+    </div>
+
+    <div className="mt-5 w-full text-left">
+      <p className="mb-2 px-1 text-xs font-medium text-muted-foreground">你可以这样问</p>
+      <div className="grid gap-2 sm:grid-cols-2">
       {SUGGESTIONS.map((suggestion) => (
         <ThreadPrimitive.Suggestion
           key={suggestion}
           className={cn(
-            'rounded-full border border-border bg-card px-3.5 py-1.5',
-            'text-xs text-muted-foreground transition',
-            'hover:border-primary/30 hover:bg-primary/5 hover:text-foreground',
+            'rounded-xl border border-border bg-card px-4 py-2.5 text-left',
+            'text-sm leading-6 text-foreground/85 shadow-sm transition',
+            'hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground hover:shadow-md',
           )}
           prompt={suggestion}
           send
@@ -117,14 +138,22 @@ const EmptyState: FC = () => (
           {suggestion}
         </ThreadPrimitive.Suggestion>
       ))}
+      </div>
     </div>
   </div>
 );
 
+const CAPABILITIES = [
+  { title: '多源数据核验', description: '行情、财务、公告、研报与新闻按问题自动组合。', icon: DatabaseIcon },
+  { title: '产业链研究', description: '拆解受益环节、兑现路径、催化与主要反证。', icon: FileSearchIcon },
+  { title: '连续比较追问', description: '沿用本次研究上下文继续映射公司和比较标的。', icon: GitCompareArrowsIcon },
+];
+
 const SUGGESTIONS = [
-  '贵州茅台今天涨了多少？',
-  '601318 K线走势如何？',
-  '比亚迪最新新闻',
+  '帮我分析下人形机器人产业链，哪些领域最受益？',
+  '比较贵州茅台与五粮液的盈利质量和当前估值',
+  '宁德时代最近有哪些重要公告和风险事件？',
+  '当前 A 股市场宽度如何，哪些板块资金更强？',
 ];
 
 /* ── User Message ────────────────────────────────────────────────────── */
@@ -186,7 +215,7 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root className="group/message mb-1 flex w-full min-w-0 items-start justify-start gap-2.5 sm:gap-3">
       <Avatar fallback={<BotIcon className="size-3.5" />} className="chat-avatar-ai" />
       <div className="min-w-0 flex-1">
-        <div className="w-full min-w-0 overflow-hidden rounded-2xl rounded-bl-md border border-border bg-card/95 px-3 py-3 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.08)] backdrop-blur sm:px-4">
+        <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-border/80 bg-card/95 px-4 py-4 text-sm text-foreground shadow-[0_12px_34px_hsl(220_22%_34%/0.07)] backdrop-blur sm:px-5 sm:py-5">
           <MessagePrimitive.Parts
             components={{
               Text: AssistantMarkdownText,
@@ -278,13 +307,21 @@ const Avatar: FC<{ fallback: React.ReactNode; className?: string }> = ({
 
 const PROCESS_STEPS = [
   {
-    marker: '正在理解问题并规划需要查询的数据...',
-    label: '理解问题与规划数据',
+    marker: '正在拆解问题并规划研究路径...',
+    label: '拆解问题与确定研究边界',
   },
   {
-    marker: '正在调用数据工具...',
-    label: '调用行情与分析工具',
+    marker: '正在检索和核验关键证据...',
+    label: '检索数据并交叉核验证据',
   },
+  {
+    marker: '正在整理证据并形成结论...',
+    label: '整理证据与形成最终结论',
+  },
+  // 兼容升级前仍在运行或已持久化的对话。
+  { marker: '正在理解问题并规划需要查询的数据...', label: '理解问题与规划数据' },
+  { marker: '正在调用数据工具...', label: '调用行情与分析工具' },
+  { marker: '已完成多轮数据查询，正在生成最终总结...', label: '整理证据与形成结论' },
 ];
 
 function splitAssistantText(text: string) {
@@ -395,6 +432,16 @@ const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
                 </div>
               ),
               strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+              a: ({ href, children }) => (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-medium text-primary underline decoration-primary/30 underline-offset-4 transition hover:decoration-primary"
+                >
+                  {children}
+                </a>
+              ),
             }}
           >
             {content}
@@ -426,7 +473,7 @@ const BranchPicker: FC = () => (
 const Composer: FC = () => {
   const isRunning = useThread((s) => s.isRunning);
   return (
-    <div className="shrink-0 border-t border-border/70 bg-background/85 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
+    <div className="shrink-0 border-t border-border/70 bg-background/90 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
       <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-4xl flex-col rounded-2xl border border-border bg-card shadow-[0_18px_50px_hsl(220_22%_34%/0.12)] transition focus-within:border-primary/45 focus-within:shadow-[0_20px_60px_hsl(var(--primary)/0.16)]">
         <ComposerAttachmentDropzone />
 
@@ -493,6 +540,9 @@ const Composer: FC = () => {
           )}
         </div>
       </ComposerPrimitive.Root>
+      <p className="mx-auto mt-2 max-w-4xl text-center text-[11px] leading-4 text-muted-foreground">
+        AI 可能出错，关键投资事实请结合原始公告与数据来源复核；内容不构成投资建议。
+      </p>
     </div>
   );
 };

@@ -13,11 +13,13 @@ export const TooltipIconButton: FC<TooltipIconButtonProps> = ({
   children,
   variant = 'ghost',
   className,
+  'aria-label': ariaLabel,
   ...props
 }) => (
   <Tooltip content={tooltip}>
     <button
       type="button"
+      aria-label={ariaLabel ?? tooltip}
       className={cn(
         'inline-flex size-8 items-center justify-center rounded-lg transition-colors',
         variant === 'ghost' && 'text-muted-foreground hover:bg-accent hover:text-foreground',

@@ -16,6 +16,29 @@ from src.tools.registry import ToolRegistry
 
 
 class AgentToolResultCompactionTestCase(unittest.TestCase):
+    def test_theme_candidate_payload_keeps_bounded_local_verified_pool(self) -> None:
+        payload = {
+            "success": True,
+            "theme": "人形机器人",
+            "local_universe_count": 5534,
+            "candidate_count": 45,
+            "items": [
+                {"symbol": f"0000{i:02d}", "name": f"公司{i}", "evidence_level": "L1"}
+                for i in range(40)
+            ],
+            "errors": [],
+        }
+
+        compact = _compact_tool_result("get_theme_stock_candidates", payload)
+
+        self.assertEqual(len(compact["items"]), 40)
+        self.assertEqual(compact["local_universe_count"], 5534)
+        self.assertTrue(compact["_tool_payload_meta"]["compacted"])
+        self.assertEqual(
+            compact["_tool_payload_meta"]["compaction_reason"],
+            "all_candidate_identity_index_without_repeated_financial_fields",
+        )
+
     def test_search_news_keeps_analysis_and_limits_items(self) -> None:
         payload = {
             "symbol": "600519",
@@ -69,6 +92,61 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["bottom_movers"][0]["name"], "B")
         self.assertNotIn("items", compact)
         self.assertEqual(compact["_tool_payload_meta"]["payload_policy"], "compacted")
+
+    def test_multi_stock_snapshot_labels_realtime_pe_as_dynamic_not_ttm(self) -> None:
+        compact = _compact_tool_result("get_multi_stock_snapshot", {
+            "success": True,
+            "items": [{
+                "symbol": "600519",
+                "name": "贵州茅台",
+                "quote": {"price": 100.0, "pe_ratio": 14.4, "pb_ratio": 6.7},
+                "technical": {"success": True, "indicators": {}},
+                "financial": {"report_date": "2026-03-31"},
+            }],
+            "total": 1,
+        })
+
+        quote = compact["items"][0]["quote"]
+        self.assertEqual(quote["pe_dynamic"], 14.4)
+        self.assertNotIn("pe_ratio", quote)
+        self.assertIn("不是 PE(TTM)", compact["valuation_basis"]["pe_dynamic"])
+
+    def test_professional_decision_payload_declares_compacted_seven_dimension_view(self) -> None:
+        payload = {
+            "success": True,
+            "items": [{"symbol": "003021", "evidence_coverage": {"covered_count": 7}}],
+            "evidence_standard": ["business_reality", "financial_quality"],
+        }
+
+        compact = _compact_tool_result("get_multi_stock_decision_evidence", payload)
+
+        self.assertEqual(compact["items"], payload["items"])
+        self.assertTrue(compact["_tool_payload_meta"]["compacted"])
+        self.assertEqual(
+            compact["_tool_payload_meta"]["compaction_reason"],
+            "professional_decision_evidence_view",
+        )
+        self.assertEqual(
+            compact["_tool_payload_meta"]["source_scope"],
+            "seven_dimension_multi_stock_evidence",
+        )
+
+    def test_semantic_search_compacts_each_long_body_with_explicit_length(self) -> None:
+        body = "证据" * 4000
+        compact = _compact_tool_result("search_financial_news", {
+            "success": True,
+            "items": [{"title": "测试", "summary": body, "content_text": body}],
+        })
+
+        item = compact["items"][0]
+        self.assertLessEqual(len(item["content_text"]), 1801)
+        self.assertTrue(item["content_text_compacted"])
+        self.assertEqual(item["content_text_characters"], len(body))
+        self.assertTrue(item["summary_compacted"])
+        self.assertEqual(
+            compact["_tool_payload_meta"]["compaction_reason"],
+            "semantic_rss_item_and_text_window",
+        )
 
     def test_shareholder_compaction_keeps_normalized_tool_fields(self) -> None:
         payload = {
@@ -414,10 +492,11 @@ class AgentReactLoopFallbackTestCase(unittest.IsolatedAsyncioTestCase):
              patch("api.v1.endpoints.agent.chat.litellm.acompletion", side_effect=[first_response, final_response]):
             await _run_react_loop(
                 controller,
-                [{"role": "user", "content": "分析A股广电计量和亚太股份谁更值得买"}],
+                [{"role": "user", "content": "做一次需要风险工具的通用研究"}],
                 llm_cfg,
             )
 
         combined = "".join(controller.text_parts)
-        self.assertIn("已完成多轮数据查询，正在生成最终总结", combined)
+        self.assertEqual(combined.count("正在拆解问题并规划研究路径"), 1)
+        self.assertNotIn("正在整理证据并形成结论", combined)
         self.assertIn("最终结论：亚太股份短线弹性更高，但风险也更大。", combined)

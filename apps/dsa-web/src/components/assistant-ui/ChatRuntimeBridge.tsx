@@ -141,10 +141,22 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       ? removeTrailingAssistant(messagesWithoutPending)
       : conversationDetail.messages;
 
-    if (!shouldReplayStream && conversationDetail.threadState?.messages?.length) {
-      threadRuntime.import(
-        conversationDetail.threadState as unknown as ExportedMessageRepository,
-      );
+    // 纯文本历史以 messages 为权威来源。threadState 是 assistant-ui 的内部
+    // 导出格式，旧版本或外部写入的精简快照可能缺少 createdAt/metadata 等字段；
+    // 无条件 import 会让消息区只剩空白 assistant 气泡。只有工具消息确实需要
+    // 保留工具卡片时才导入，并在格式不兼容时可靠回退到标准消息列表。
+    const canImportThreadState = !shouldReplayStream
+      && threadStateHasToolParts
+      && Boolean(conversationDetail.threadState?.messages?.length);
+    if (canImportThreadState) {
+      try {
+        threadRuntime.import(
+          conversationDetail.threadState as unknown as ExportedMessageRepository,
+        );
+      } catch (error) {
+        console.warn('[Chat] Invalid conversation thread state, falling back to messages', error);
+        threadRuntime.reset(toRuntimeMessages(visibleMessages));
+      }
     } else {
       threadRuntime.reset(toRuntimeMessages(visibleMessages));
     }
