@@ -3,6 +3,7 @@ export const TOOL_LABELS: Record<string, string> = {
   get_multi_stock_snapshot: '多股决策快照',
   get_multi_stock_decision_evidence: '专业买入决策证据',
   get_theme_stock_candidates: '主题股票候选池',
+  screen_atr_volatility_stocks: '全市场 ATR 量化筛选',
   get_realtime_quotes: '实时行情',
   get_kline: 'K线数据',
   get_history_data: '历史行情',

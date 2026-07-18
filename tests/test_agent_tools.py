@@ -62,6 +62,20 @@ def test_compact_non_dict_returned_as_is():
     assert _compact_tool_result("get_kline", ["raw", "list"]) == ["raw", "list"]
 
 
+def test_quantitative_screen_result_keeps_rows_formula_and_download() -> None:
+    payload = {
+        "success": True,
+        "items": [{"code": "000001", "qualified_ratio_pct": 72}],
+        "formula": {"atr": "14日简单移动平均"},
+        "download_url": "/api/v1/agent/exports/result.csv",
+    }
+    out = _compact_tool_result("screen_atr_volatility_stocks", payload)
+    assert out["items"] == payload["items"]
+    assert out["formula"] == payload["formula"]
+    assert out["download_url"] == payload["download_url"]
+    assert out["_tool_payload_meta"]["compacted"] is False
+
+
 def test_compact_realtime_quotes_trims_and_annotates():
     items = [{"code": str(i), "price": i, "pe_ratio": 10 + i} for i in range(20)]
     out = _compact_tool_result("get_realtime_quotes", {"items": items, "total": 20})

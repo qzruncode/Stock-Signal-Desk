@@ -50,6 +50,7 @@ from src.agent.analysis_playbooks import (
     INVESTMENT_DECISION,
     STOCK_DEEP_RESEARCH,
     THEME_COMPANY_MAPPING,
+    QUANTITATIVE_SCREENING,
     mandatory_tool_calls,
     select_analysis_playbook,
     select_playbook_for_intent,
@@ -80,6 +81,7 @@ MAX_TOOL_CALLS_PER_ROUND = 4
 MAX_AGENT_RUN_SECONDS = 120.0
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
 PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS = 90.0
+QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
 FINAL_SYNTHESIS_TIMEOUT_SECONDS = 60.0
 
 # controller 产出层:当前生产路径走自建后台运行时的 RunBroadcaster (方法名与
@@ -1814,6 +1816,89 @@ def _build_realtime_quote_answer(
     )
 
 
+def _build_atr_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
+    """Render exact screener output without a second model changing conclusions."""
+    results = [
+        item.get("result")
+        for item in evidence or []
+        if isinstance(item, dict)
+        and item.get("tool") == "screen_atr_volatility_stocks"
+        and isinstance(item.get("result"), dict)
+    ]
+    if not results:
+        return "## 筛选未完成\n\n量化筛选工具没有返回结构化结果，因此本轮不输出股票结论。"
+    result = results[-1]
+    coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
+    coverage_text = (
+        f"全市场 active {coverage.get('active', '—')} 只；财务覆盖 {coverage.get('financial_covered', '—')} 只；"
+        f"财务初筛 {coverage.get('financial_eligible', '—')} 只；有效行情 {coverage.get('fresh_kline', '—')} 只。"
+    )
+    fallback_count = int(coverage.get("financial_fallback_count") or 0)
+    recent_listing_count = int(coverage.get("recent_listing_without_ttm") or 0)
+    if fallback_count or recent_listing_count:
+        coverage_text += (
+            f" 其中财务补源 {fallback_count} 只；上市未满一年（最终仍由K线根数硬校验）{recent_listing_count} 只。"
+        )
+    if result.get("success") is not True:
+        errors = [str(item) for item in result.get("errors") or [] if item]
+        failed = [str(item) for item in result.get("failed_symbols") or [] if item]
+        detail = "\n".join(f"- {item}" for item in errors) or "- 工具没有提供失败原因。"
+        failed_text = ("\n- 失败样例：" + "；".join(failed[:10])) if failed else ""
+        return (
+            "## 筛选未完成\n\n"
+            "**本轮不输出任何股票结论。** 数据刷新或全市场覆盖没有通过硬校验，继续给名单会产生遗漏或错误排序。\n\n"
+            f"{detail}{failed_text}\n\n- 覆盖校验：{coverage_text}"
+        )
+
+    def number(value: Any, digits: int = 2) -> str:
+        try:
+            return f"{float(value):,.{digits}f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    def yi(value: Any) -> str:
+        try:
+            return f"{float(value) / 100_000_000:,.2f}亿"
+        except (TypeError, ValueError):
+            return "—"
+
+    rows: List[str] = []
+    for item in result.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            f"| {item.get('name', '—')} ({item.get('code', '—')}) | "
+            f"{number(item.get('current_atr_pct'))}% | {number(item.get('long_term_mean_pct'))}% | "
+            f"{number(item.get('dynamic_warning_pct'))}% | {item.get('qualified_days', '—')} / "
+            f"{number(item.get('qualified_ratio_pct'))}% | {yi(item.get('revenue_ttm'))} | "
+            f"{yi(item.get('deducted_net_profit_ttm'))} | {number(item.get('debt_ratio'))}% |"
+            f" {item.get('financial_report_period', '—')} |"
+        )
+    total = int(result.get("total") or 0)
+    if rows:
+        table = (
+            "| 公司/代码 | 当前ATR% | 60日均值 | 动态线 | 250日达标 | 营收TTM | 扣非净利TTM | 负债率 | 财务期 |\n"
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|\n" + "\n".join(rows)
+        )
+    else:
+        table = "严格执行全部条件后，合格股票为 **0 只**。这不是空结果错误，而是完整筛选后的有效结论。"
+    download_url = str(result.get("download_url") or "").strip()
+    download = f"\n\n[下载完整 {total} 只筛选结果（CSV）]({download_url})" if download_url else ""
+    return (
+        f"## 筛选结论\n\n共 **{total} 只**股票同时满足全部条件，按近250日达标比例降序。"
+        + ("下表展示前10只。\n\n" if total > 10 else "\n\n")
+        + table
+        + download
+        + "\n\n### 口径与覆盖\n\n"
+        + "- 公式：TR取三者最大值；ATR为14日TR简单均值；ATR相对波动率为ATR/收盘价；"
+          "动态线为60日长期均值/1.27；近250日需至少175日高于动态线且比例不低于70%。\n"
+        + "- 财务：营业收入TTM>5亿元、扣非净利润TTM>0、资产负债率<70%，缺一项即排除。\n"
+        + f"- 数据日期：行情截至 {result.get('data_time', '—')}；主财务报告期 {result.get('financial_report_period', '—')}，补源公司的最新报告期逐行展示。\n"
+        + f"- 覆盖：{coverage_text}\n"
+        + f"- 来源：{result.get('source', '工具返回来源')}。"
+    )
+
+
 def _unsupported_final_claims(
     content: str,
     evidence: Optional[List[Dict[str, Any]]],
@@ -2818,7 +2903,7 @@ async def _run_react_loop(
             for call in executed_calls.values()
             if isinstance(call, dict)
         }
-        single_shot_tool_names = {"get_theme_stock_candidates"}
+        single_shot_tool_names = {"get_theme_stock_candidates", "screen_atr_volatility_stocks"}
         reserved_new_calls = 0
         available_call_slots = min(
             MAX_TOOL_CALLS_PER_ROUND,
@@ -2989,7 +3074,9 @@ async def _run_react_loop(
             tool = await controller.add_tool_call(tool_name, tool_call_id=tool_call_id)
             tool.append_args_text(normalized_arguments)
             tool_timeout = (
-                PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS
+                QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
+                if tool_name == "screen_atr_volatility_stocks"
+                else PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS
                 if (
                     tool_name in {"get_multi_stock_decision_evidence", "get_theme_stock_candidates"}
                     or (tool_name == "websearch" and bool(args.get("includeContent")))
@@ -3178,6 +3265,15 @@ async def _run_react_loop(
         # is sufficient and answer immediately.
         if tools:
             kwargs["tool_choice"] = "auto"
+
+    if playbook is not None and playbook.id == QUANTITATIVE_SCREENING.id:
+        content_text = _build_atr_screen_answer(evidence)
+        controller.append_text(content_text)
+        if state is not None:
+            state["assistant_text"] = content_text
+            controller.assistant_text_snapshot = content_text
+        logger.info("[Agent] rendered deterministic quantitative screening answer")
+        return content_text
 
     if playbook is not None and playbook.id == THEME_COMPANY_MAPPING.id:
         # 公司映射的全量候选索引可能包含数百家公司。让模型重写这份索引既慢，

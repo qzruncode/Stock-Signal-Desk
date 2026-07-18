@@ -158,6 +158,16 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     if not isinstance(result, dict):
         return result
 
+    if tool_name == "screen_atr_volatility_stocks":
+        # The service already bounds the inline rows to ten and exports the
+        # complete set. Preserve every decision field and the download link.
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
+        )
+
     if tool_name == "get_realtime_quotes":
         # 后端 UnifiedRealtimeQuote.to_dict() 的字段名(code/change_pct/change_amount/
         # open_price/pe_ratio/pb_ratio)与前端 RealtimeQuotesToolUI 期望的

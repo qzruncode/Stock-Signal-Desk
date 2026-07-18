@@ -110,6 +110,24 @@ STOCK_DEEP_RESEARCH = AnalysisPlaybook(
 )
 
 
+QUANTITATIVE_SCREENING = AnalysisPlaybook(
+    id="quantitative_screening",
+    title="全市场确定性量化筛选",
+    evidence_standard=(
+        "证券候选池必须来自本地 stock_meta 全部 active A股，不得由模型枚举候选。",
+        "筛选工具必须先刷新财务和前复权日线，并校验来源覆盖与数据日期。",
+        "ATR、长期均值、动态警戒线、250日比例和TTM财务条件全部由工具精确计算。",
+        "任何一项缺失或不满足的股票不得进入结果；模型不得补数、改阈值或扩展名单。",
+    ),
+    output_contract=(
+        "只展示工具返回的完全合格股票，并保留工具排序。",
+        "明确列出公式、数据日期、报告期、全市场覆盖统计和来源。",
+        "结果超过10条时展示前10条并提供完整文件下载链接。",
+        "工具刷新失败时不得给选股结论，必须展示具体失败阶段和覆盖情况。",
+    ),
+)
+
+
 _REFERENTIAL_MARKERS = ("这些", "上述", "上面", "前面", "它们", "他们", "those", "them")
 _DECISION_MARKERS = (
     "能买吗", "能不能买", "是否能买", "值得买", "买入", "抄底", "入场", "介入",
@@ -266,6 +284,7 @@ def select_playbook_for_intent(intent: ResearchIntent) -> Optional[AnalysisPlayb
         "stock_research": STOCK_DEEP_RESEARCH,
         "comparison": STOCK_DEEP_RESEARCH,
         "risk_check": STOCK_DEEP_RESEARCH,
+        "quantitative_screening": QUANTITATIVE_SCREENING,
     }.get(intent.kind)
 
 
@@ -298,6 +317,8 @@ def mandatory_tool_calls(
     """Build the evidence calls that must run before model synthesis."""
     if playbook is None:
         return []
+    if playbook.id == QUANTITATIVE_SCREENING.id:
+        return [_call("screen_atr_volatility_stocks", {"refresh_if_stale": True})]
     topic = intent.normalized_topic if intent is not None else infer_research_topic(messages)
     if not topic:
         topic = infer_research_topic(messages)
@@ -389,6 +410,7 @@ __all__ = [
     "INVESTMENT_DECISION",
     "STOCK_DEEP_RESEARCH",
     "THEME_COMPANY_MAPPING",
+    "QUANTITATIVE_SCREENING",
     "infer_research_topic",
     "mandatory_tool_calls",
     "select_analysis_playbook",

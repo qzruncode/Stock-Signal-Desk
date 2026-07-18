@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.agent.analysis_playbooks import (
+    QUANTITATIVE_SCREENING,
     THEME_COMPANY_MAPPING,
     mandatory_tool_calls,
     select_playbook_for_intent,
@@ -114,6 +115,19 @@ def test_playbook_selection_is_enum_driven_not_wording_driven() -> None:
     )
 
     assert select_playbook_for_intent(intent).id == "industry_chain_research"
+
+
+def test_quantitative_screening_routes_to_one_deterministic_tool() -> None:
+    intent = ResearchIntent(
+        kind="quantitative_screening",
+        topic="ATR相对波动率全市场筛选",
+        objective="按精确公式筛选全部A股",
+    )
+    playbook = select_playbook_for_intent(intent)
+    assert playbook == QUANTITATIVE_SCREENING
+    calls = mandatory_tool_calls(playbook, [], [], intent=intent)
+    assert [call["name"] for call in calls] == ["screen_atr_volatility_stocks"]
+    assert json.loads(calls[0]["arguments"]) == {"refresh_if_stale": True}
 
 
 def test_semantic_intent_normalizes_gateway_null_and_topic_only_scope() -> None:

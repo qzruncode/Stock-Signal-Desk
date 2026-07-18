@@ -18,6 +18,32 @@ def ensure_compatible_schema(engine, is_sqlite_engine: bool) -> None:
     if is_sqlite_engine:
         _migrate_legacy_kline_tables(engine)
         _migrate_financial_fields_rename(engine)
+        _migrate_quant_screen_fields(engine)
+
+
+def _migrate_quant_screen_fields(engine) -> None:
+    """Add the financial fields required by deterministic TTM screening."""
+    inspector = inspect(engine)
+    if "stock_meta" not in inspector.get_table_names():
+        return
+    columns = {c["name"] for c in inspector.get_columns("stock_meta")}
+    additions = {
+        "revenue_ttm": "FLOAT",
+        "deducted_net_profit_ttm": "FLOAT",
+    }
+    missing = [(name, sql_type) for name, sql_type in additions.items() if name not in columns]
+    if not missing:
+        return
+    session = Session(bind=engine)
+    try:
+        for name, sql_type in missing:
+            session.execute(text(f'ALTER TABLE stock_meta ADD COLUMN "{name}" {sql_type}'))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def _migrate_financial_fields_rename(engine) -> None:
@@ -47,7 +73,15 @@ def _migrate_financial_fields_rename(engine) -> None:
         "interest_bearing_debt_ratio",
         "cash_debt_ratio",
     ]
-    needs_rename = any(old in columns for old in rename_map)
+    # A current schema intentionally contains both revenue_ttm and
+    # revenue_latest: they now have different meanings. Rename only a legacy
+    # source column whose destination does not exist yet.
+    effective_rename_map = {
+        old: new
+        for old, new in rename_map.items()
+        if old in columns and new not in columns
+    }
+    needs_rename = bool(effective_rename_map)
     needs_drop = any(col in columns for col in drop_cols)
     if not needs_rename and not needs_drop:
         return
@@ -73,8 +107,8 @@ def _migrate_financial_fields_rename(engine) -> None:
         existing_ordered = [c["name"] for c in inspector.get_columns("stock_meta")]
         new_ordered = []
         for col in existing_ordered:
-            if col in rename_map:
-                new_ordered.append(rename_map[col])
+            if col in effective_rename_map:
+                new_ordered.append(effective_rename_map[col])
             elif col in drop_cols:
                 continue
             else:
@@ -93,7 +127,7 @@ def _migrate_financial_fields_rename(engine) -> None:
         # INSERT ... SELECT 从旧表映射列
         new_cols_csv = ", ".join(f'"{c}"' for c in new_ordered)
         select_exprs = []
-        reverse_rename_map = {new: old for old, new in rename_map.items()}
+        reverse_rename_map = {new: old for old, new in effective_rename_map.items()}
         for new_col in new_ordered:
             if new_col in existing_ordered:
                 select_exprs.append(f'"{new_col}"')

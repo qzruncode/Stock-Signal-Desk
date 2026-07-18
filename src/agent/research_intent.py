@@ -30,6 +30,7 @@ IntentKind = Literal[
     "investment_decision",
     "comparison",
     "risk_check",
+    "quantitative_screening",
 ]
 EntityScope = Literal[
     "none",
@@ -123,6 +124,7 @@ _INTENT_TOOL = {
                         "casual", "general_question", "market_snapshot", "industry_chain",
                         "theme_company_mapping", "stock_research", "investment_decision",
                         "comparison", "risk_check",
+                        "quantitative_screening",
                     ],
                 },
                 "topic": {"type": ["string", "null"]},
@@ -183,6 +185,8 @@ _INTENT_SYSTEM_PROMPT = """\
    - investment_decision：问能否买入、持有、卖出、仓位或入场条件；
    - stock_research：完整研究一家或多家公司；
    - comparison/risk_check/market_snapshot/general_question/casual 按字面语义选择。
+   - quantitative_screening：用户给出技术/财务公式、阈值或排序条件，要求从全市场自动选股；
+     这类任务必须交给确定性筛选工具，不能让回答模型自行拉数据或计算。
 9. research_dimensions 写本轮真正需要研究的业务维度，例如 GPU、训练芯片、推理芯片、订单、收入；
    不要套用其他行业的零部件词。
 10. 只有缺少对象且无法从紧邻上下文唯一确定时，needs_clarification 才为 true。
