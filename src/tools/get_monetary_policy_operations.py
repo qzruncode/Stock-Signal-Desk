@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from src.tools.base import ToolSpec, object_schema
 
 
 _ROUTE = "/gov/pbc/tradeAnnouncement"
+_OFFICIAL_LIST_URL = (
+    "https://www.pbc.gov.cn/zhengcehuobisi/125207/125213/125431/125475/index.html"
+)
 _INSTRUMENTS = {
     "outright_reverse_repo": ("买断式逆回购",),
     "reverse_repo": ("逆回购",),
     "mlf": ("中期借贷便利", "MLF"),
     "treasury_deposit": ("国库现金定存", "国库现金管理"),
+    "central_bank_bill": ("央行票据",),
 }
 
 
@@ -49,20 +54,30 @@ def _operation_legs(text: str) -> list[dict[str, Any]]:
 
 def _operation_item(item: dict[str, Any], content: str) -> dict[str, Any]:
     text = re.sub(r"\s+", " ", f"{item.get('title', '')} {content}").strip()
+    # PBOC HTML tables sometimes split decimals and units into separate spans
+    # (``1. 40 %``, ``7 天``). Normalize only numeric punctuation so the
+    # structured parser sees the same values as a human reader.
+    text = re.sub(r"(?<=\d)\s*\.\s*(?=\d)", ".", text)
     instrument_code, instrument = _instrument(text)
     legs = _operation_legs(text)
     rate_pct = legs[0]["rate_pct"] if len(legs) == 1 else _number(text, r"(?:中标|操作)利率(?:为)?\s*(\d+(?:\.\d+)?)\s*%")
     if rate_pct is None:
         rate_pct = _number(text, r"\d+(?:\.\d+)?\s*天(?:期)?\s+(\d+(?:\.\d+)?)\s*%")
+    if rate_pct is None and instrument_code == "central_bank_bill":
+        rate_pct = _number(text, r"(\d+(?:\.\d+)?)\s*%")
     amount = sum(leg["awarded_amount_yi"] for leg in legs) if legs else None
     if amount is None:
         amount = _number(text, r"(?:开展了|操作量为|中标量(?:为)?)\s*(\d+(?:\.\d+)?)\s*亿元")
+    if amount is None and instrument_code == "central_bank_bill":
+        amount = _number(text, r"央行票据[^。]{0,120}?(\d+(?:\.\d+)?)\s*亿元")
     if len(legs) == 1:
         term_days = legs[0]["term"] if legs[0]["term_unit"] == "day" else None
         term_months = legs[0]["term"] if legs[0]["term_unit"] == "month" else None
     else:
         term_days = _number(text, r"(\d+(?:\.\d+)?)\s*天期")
         term_months = _number(text, r"(\d+(?:\.\d+)?)\s*个?月期")
+    if instrument_code == "central_bank_bill" and term_months is None:
+        term_months = _number(text, r"(\d+(?:\.\d+)?)\s*个?月")
     bulletin = re.search(r"\[(\d{4})\]第(\d+)号", str(item.get("title") or ""))
     return {
         "title": item.get("title"),
@@ -93,6 +108,93 @@ def _time(value: Any) -> datetime | None:
         return None
 
 
+def _fetch_official_listing(cutoff: datetime) -> tuple[list[dict[str, Any]], list[str], bool]:
+    """Read the PBOC directory directly and prove requested-window coverage."""
+    import requests
+    from bs4 import BeautifulSoup
+
+    items: list[dict[str, Any]] = []
+    errors: list[str] = []
+    coverage_complete = False
+    seen_links: set[str] = set()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (compatible; DailyStockAnalysis/1.0)",
+        "Cache-Control": "no-cache",
+    }
+    # 20 announcements per page.  Twenty pages safely cover the longest
+    # supported 365-day query while remaining bounded.
+    for page in range(1, 21):
+        url = (
+            _OFFICIAL_LIST_URL
+            if page == 1
+            else _OFFICIAL_LIST_URL.rsplit("/", 1)[0] + f"/17081-{page}.html"
+        )
+        try:
+            response = requests.get(url, timeout=15, headers=headers)
+            response.raise_for_status()
+            response.encoding = "utf-8"
+            soup = BeautifulSoup(response.text, "html.parser")
+        except Exception as exc:
+            errors.append(f"人民银行公告目录第{page}页: {type(exc).__name__}: {exc}")
+            break
+
+        page_dates: list[datetime] = []
+        page_count = 0
+        for anchor in soup.find_all("a"):
+            title = re.sub(r"\s+", " ", anchor.get_text(" ", strip=True))
+            if not re.search(r"公开市场业务交易公告\s*\[\d{4}\]第\d+号", title):
+                continue
+            link = urljoin(_OFFICIAL_LIST_URL, str(anchor.get("href") or ""))
+            date_match = re.search(r"/(20\d{6})\d+/index\.html", link)
+            if not date_match:
+                parent_text = anchor.parent.get_text(" ", strip=True) if anchor.parent else ""
+                date_match = re.search(r"(20\d{2})-(\d{2})-(\d{2})", parent_text)
+                published = "-".join(date_match.groups()) if date_match else ""
+            else:
+                raw_date = date_match.group(1)
+                published = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+            parsed = _time(published)
+            if not parsed or link in seen_links:
+                continue
+            seen_links.add(link)
+            page_dates.append(parsed)
+            page_count += 1
+            if parsed >= cutoff:
+                items.append({
+                    "title": title,
+                    "published": published,
+                    "link": link,
+                    "id": link,
+                    "summary": "",
+                    "source_type": "official_directory",
+                })
+        if not page_count:
+            errors.append(f"人民银行公告目录第{page}页没有解析到公告")
+            break
+        if page_dates and min(page_dates) <= cutoff:
+            coverage_complete = True
+            break
+
+    items.sort(key=lambda item: str(item.get("published") or ""), reverse=True)
+    return items, errors, coverage_complete
+
+
+def _fetch_official_detail(url: str) -> str:
+    import requests
+    from bs4 import BeautifulSoup
+
+    response = requests.get(
+        url,
+        timeout=15,
+        headers={"User-Agent": "Mozilla/5.0 (compatible; DailyStockAnalysis/1.0)"},
+    )
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    soup = BeautifulSoup(response.text, "html.parser")
+    content = soup.select_one("#zoom") or soup.select_one(".content") or soup
+    return re.sub(r"\s+", " ", content.get_text(" ", strip=True))
+
+
 def get_monetary_policy_operations(
     days: int = 30,
     instrument: str = "all",
@@ -109,29 +211,72 @@ def get_monetary_policy_operations(
     if instrument not in {"all", *_INSTRUMENTS.keys(), "other"}:
         raise ValueError(f"不支持的 instrument: {instrument}")
 
-    feed = read_feed(route_path=_ROUTE, params={}, limit=50)
-    feed_errors = [str(error) for error in feed.get("errors") or []]
     warnings: list[str] = []
     cutoff = datetime.now() - timedelta(days=days)
-    all_feed_items = feed.get("items") or []
-    operations: list[dict[str, Any]] = []
+    official_items, official_errors, official_coverage_complete = _fetch_official_listing(cutoff)
+    acquisition_type = "official_directory" if official_items else "rsshub"
+    if official_items:
+        all_feed_items = official_items
+        feed_errors = official_errors
+    else:
+        feed = read_feed(route_path=_ROUTE, params={}, limit=50)
+        all_feed_items = feed.get("items") or []
+        feed_errors = [*official_errors, *(str(error) for error in feed.get("errors") or [])]
+    recent_feed_items: list[dict[str, Any]] = []
     for item in all_feed_items:
         published = _time(item.get("published"))
         if published and published < cutoff:
             continue
-        content = str(item.get("summary") or "")
-        if include_content:
+        if isinstance(item, dict):
+            recent_feed_items.append(item)
+
+    detail_content: dict[int, str] = {}
+    if recent_feed_items and (include_content or acquisition_type == "official_directory"):
+        # Reading each announcement body serially made ten-item requests exceed
+        # the Agent's entire tool timeout. For the unfiltered path only the
+        # first ``limit`` rows can be returned; a specific instrument gets a
+        # wider bounded candidate window before filtering.
+        detail_candidates = recent_feed_items[:(
+            limit if instrument == "all" else min(len(recent_feed_items), max(limit * 3, 12))
+        )]
+
+        def _read_detail(index: int, item: dict[str, Any]) -> tuple[int, str, list[str]]:
+            summary = str(item.get("summary") or "")
             try:
+                if item.get("source_type") == "official_directory":
+                    return index, _fetch_official_detail(str(item.get("link") or "")), []
                 detail = read_item(
                     route_path=_ROUTE, params={}, title=str(item.get("title") or ""),
                     item_id=str(item.get("id") or ""), link=str(item.get("link") or ""),
-                    list_summary=content,
+                    list_summary=summary,
                 )
-                content = str(detail.get("content_text") or content)
-                warnings.extend(f"正文读取: {error}" for error in detail.get("errors") or [])
+                return (
+                    index,
+                    str(detail.get("content_text") or summary),
+                    [f"正文读取: {error}" for error in detail.get("errors") or []],
+                )
             except Exception as exc:
-                warnings.append(f"正文读取失败: {exc}")
+                return index, summary, [f"正文读取失败: {exc}"]
+
+        with ThreadPoolExecutor(max_workers=min(6, len(detail_candidates))) as pool:
+            futures = {
+                pool.submit(_read_detail, index, item): index
+                for index, item in enumerate(detail_candidates)
+            }
+            detail_warnings: dict[int, list[str]] = {}
+            for future in as_completed(futures):
+                index, content, item_warnings = future.result()
+                detail_content[index] = content
+                detail_warnings[index] = item_warnings
+        for index in range(len(detail_candidates)):
+            warnings.extend(detail_warnings.get(index, []))
+
+    operations: list[dict[str, Any]] = []
+    for index, item in enumerate(recent_feed_items):
+        content = detail_content.get(index, str(item.get("summary") or ""))
         operation = _operation_item(item, content)
+        if not include_content:
+            operation["content"] = ""
         if instrument == "all" or operation["instrument_code"] == instrument:
             operations.append(operation)
         if len(operations) >= limit:
@@ -141,9 +286,16 @@ def get_monetary_policy_operations(
     earliest_feed = min(known_feed_times, default=None)
     # The upstream PBOC listing itself is bounded, so receiving fewer than the
     # requested 50 rows does not prove the whole requested window was covered.
-    coverage_complete = earliest_feed is not None and earliest_feed <= cutoff
+    coverage_complete = (
+        official_coverage_complete
+        if acquisition_type == "official_directory"
+        else earliest_feed is not None and earliest_feed <= cutoff
+    )
     if not coverage_complete:
-        warnings.append(f"RSSHub 最多读取最近 50 条公告，尚未完整覆盖最近 {days} 天")
+        if acquisition_type == "official_directory":
+            warnings.append(f"人民银行公告目录读取未能证明完整覆盖最近 {days} 天")
+        else:
+            warnings.append(f"RSSHub 最多读取最近 50 条公告，尚未完整覆盖最近 {days} 天")
 
     fallback_attempted = False
     fallback_used = False
@@ -182,6 +334,10 @@ def get_monetary_policy_operations(
         "operations": operations,
         "items": operations,
         "item_count": len(operations),
+        "available_item_count": len(recent_feed_items),
+        "result_truncated": (
+            len(recent_feed_items) > len(operations) if instrument == "all" else None
+        ),
         "total_operation_amount_yi": round(total_amount, 4),
         "net_liquidity_injection_yi": None,
         "net_liquidity_note": "本路由仅披露当日操作，不含完整到期量，不能据此计算净投放",
@@ -191,6 +347,7 @@ def get_monetary_policy_operations(
         "coverage_complete": coverage_complete,
         "source": (
             "中国人民银行官网/websearch" if fallback_used
+            else "中国人民银行官网公告目录" if acquisition_type == "official_directory" and acquisition_success
             else "中国人民银行/RSSHub" if acquisition_success
             else "none"
         ),
@@ -217,7 +374,7 @@ TOOL = ToolSpec(
     ),
     parameters=object_schema({
         "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30},
-        "instrument": {"type": "string", "enum": ["all", "reverse_repo", "outright_reverse_repo", "mlf", "treasury_deposit", "other"], "default": "all"},
+        "instrument": {"type": "string", "enum": ["all", "reverse_repo", "outright_reverse_repo", "mlf", "treasury_deposit", "central_bank_bill", "other"], "default": "all"},
         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
         "include_content": {"type": "boolean", "default": False},
         "fallback_to_web": {"type": "boolean", "default": True},

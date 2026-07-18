@@ -90,6 +90,12 @@ def _mark_quote_freshness(items: list[dict], *, trading: bool, fallback_used: bo
                 is_stale = None
         item["data_time"] = data_time
         item["is_stale"] = is_stale
+        item["quote_mode"] = "live" if trading else "latest_trading_day_snapshot"
+        item["quote_mode_label"] = (
+            "交易时段实时行情"
+            if trading
+            else "非交易时段的最近交易日快照，不是当前时刻实时成交"
+        )
         source = str(item.get("source") or "")
         item["fallback_used"] = source != "eastmoney_push" if source else fallback_used
     return items
@@ -100,6 +106,7 @@ def _build_response(
     *,
     requested: list[str],
     invalid: list[str] | None = None,
+    trading: bool | None = None,
 ) -> dict[str, Any]:
     """组装统一的行情响应体。"""
     marked = items  # freshness 已由调用方在合并后标记
@@ -119,6 +126,8 @@ def _build_response(
         is_stale = False
     else:
         is_stale = None
+    if trading is None:
+        trading = _is_trading_hours()
     return {
         "success": success,
         "partial": success and bool(errors),
@@ -127,6 +136,13 @@ def _build_response(
         "data_time": max((_quote_data_time(item) for item in marked if _quote_data_time(item)), default=None),
         "is_stale": is_stale,
         "freshness_unknown": is_stale is None,
+        "is_trading_session": trading,
+        "quote_mode": "live" if trading else "latest_trading_day_snapshot",
+        "quote_mode_label": (
+            "交易时段实时行情"
+            if trading
+            else "非交易时段的最近交易日快照，不是当前时刻实时成交"
+        ),
         "fallback_used": any(item.get("fallback_used") for item in marked),
         "_cached": bool(marked) and all(item.get("_cached") for item in marked),
         "source": sorted({str(item.get("source")) for item in marked if item.get("source")}),
@@ -178,7 +194,7 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
             else:
                 logger.info(f"[行情缓存] 全部命中 {len(cached)} 只，跳过 API")
                 marked = _mark_quote_freshness(results, trading=trading, fallback_used=False)
-                return _build_response(marked, requested=requested, invalid=invalid)
+                return _build_response(marked, requested=requested, invalid=invalid, trading=trading)
             symbols = missing
         else:
             logger.info("[行情缓存] 无缓存，需全量拉取")
@@ -210,10 +226,10 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
         combined = {str(item.get("code")): item for item in results + fetch_results}
         merged = [combined[symbol] for symbol in requested if symbol in combined]
         marked = _mark_quote_freshness(merged, trading=trading, fallback_used=False)
-        return _build_response(marked, requested=requested, invalid=invalid)
+        return _build_response(marked, requested=requested, invalid=invalid, trading=trading)
 
     marked = _mark_quote_freshness(fetch_results, trading=trading, fallback_used=False)
-    return _build_response(marked, requested=requested, invalid=invalid)
+    return _build_response(marked, requested=requested, invalid=invalid, trading=trading)
 
 
 def _execute(symbols: str) -> dict[str, Any]:

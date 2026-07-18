@@ -185,3 +185,96 @@ def test_theme_candidates_keep_successful_source_when_another_source_fails() -> 
     assert result["partial"] is True
     assert result["candidate_count"] == 1
     assert "upstream blocked" in result["warnings"][0]
+
+
+def test_exact_humanoid_board_excludes_broad_robot_alias_when_fully_covered() -> None:
+    local = {
+        "300024": {
+            "symbol": "300024", "name": "机器人", "sector": "专用设备",
+            "revenue_latest": 1, "net_profit_latest": 1, "report_date": "2026-03-31",
+        },
+        "300580": {
+            "symbol": "300580", "name": "贝斯特", "sector": "汽车零部件",
+            "revenue_latest": 1, "net_profit_latest": 1, "report_date": "2026-03-31",
+        },
+    }
+    exact = [{
+        "symbol": "300580", "source_name": "贝斯特", "board": "人形机器人",
+        "board_score": 100, "primary_theme": True,
+        "source": "东方财富概念板块", "source_url": "https://example.com/humanoid",
+    }]
+    broad = [{
+        "symbol": "300024", "source_name": "机器人", "board": "机器人概念",
+        "board_score": 99, "primary_theme": False,
+        "source": "新浪概念板块", "source_url": "https://example.com/robot",
+    }]
+
+    with patch(
+        "src.tools.get_theme_stock_candidates._load_local_universe", return_value=local,
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
+        return_value=(exact, [{
+            "name": "人形机器人", "source": "东方财富概念板块",
+            "coverage": "full", "primary_theme": True,
+        }], []),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
+        return_value=(broad, [{
+            "name": "机器人概念", "source": "新浪概念板块",
+            "coverage": "full", "primary_theme": False,
+        }], []),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
+        return_value=([], [], []),
+    ):
+        result = get_theme_stock_candidates("人形机器人")
+
+    assert [item["symbol"] for item in result["items"]] == ["300580"]
+    assert all(board["primary_theme"] is True for board in result["matched_boards"])
+
+
+def test_conversational_theme_argument_keeps_exact_board_boundary() -> None:
+    local = {
+        "300580": {
+            "symbol": "300580", "name": "贝斯特", "sector": "汽车零部件",
+            "revenue_latest": 1, "net_profit_latest": 1, "report_date": "2026-03-31",
+        },
+        "300024": {
+            "symbol": "300024", "name": "机器人", "sector": "专用设备",
+            "revenue_latest": 1, "net_profit_latest": 1, "report_date": "2026-03-31",
+        },
+    }
+    exact = [{
+        "symbol": "300580", "source_name": "贝斯特", "board": "人形机器人",
+        "board_score": 100, "primary_theme": True,
+        "source": "东方财富概念板块", "source_url": "https://example.com/humanoid",
+    }]
+    broad = [{
+        "symbol": "300024", "source_name": "机器人", "board": "机器人概念",
+        "board_score": 99, "primary_theme": False,
+        "source": "新浪概念板块", "source_url": "https://example.com/robot",
+    }]
+
+    with patch(
+        "src.tools.get_theme_stock_candidates._load_local_universe", return_value=local,
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
+        return_value=(exact, [{
+            "name": "人形机器人", "source": "东方财富概念板块",
+            "coverage": "full", "primary_theme": True,
+        }], []),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
+        return_value=(broad, [{
+            "name": "机器人概念", "source": "新浪概念板块",
+            "coverage": "full", "primary_theme": False,
+        }], []),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
+        return_value=([], [], []),
+    ):
+        result = get_theme_stock_candidates("只梳理精确的人形机器人主题A股候选")
+
+    assert result["theme"] == "人形机器人"
+    assert [item["symbol"] for item in result["items"]] == ["300580"]
+    assert all(board["primary_theme"] is True for board in result["matched_boards"])

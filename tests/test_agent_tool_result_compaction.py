@@ -285,12 +285,18 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                 "data_time": "2026-06-08T10:00:00",
                 "is_stale": False,
                 "fallback_used": False,
+                "is_trading_session": False,
+                "quote_mode": "latest_trading_day_snapshot",
+                "quote_mode_label": "非交易时段的最近交易日快照，不是当前时刻实时成交",
             },
         )
 
         self.assertEqual(compact["data_time"], "2026-06-08T10:00:00")
         self.assertFalse(compact["is_stale"])
         self.assertFalse(compact["fallback_used"])
+        self.assertFalse(compact["is_trading_session"])
+        self.assertEqual(compact["quote_mode"], "latest_trading_day_snapshot")
+        self.assertIn("不是当前时刻实时成交", compact["quote_mode_label"])
         self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "quotes_item_window")
 
     def test_compact_market_status_keeps_freshness_fields(self) -> None:
@@ -308,6 +314,33 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertFalse(compact["is_stale"])
         self.assertTrue(compact["fallback_used"])
         self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "market_status_key_fields")
+
+    def test_monetary_operations_keep_complete_window_without_article_bodies(self) -> None:
+        operations = [
+            {
+                "title": f"公开市场业务交易公告 [2026]第{index}号",
+                "published": f"2026-07-{index:02d}",
+                "link": f"https://www.pbc.gov.cn/{index}",
+                "amount_yi": float(index),
+                "content": "正文" * 1000,
+            }
+            for index in range(1, 22)
+        ]
+        compact = _compact_tool_result(
+            "get_monetary_policy_operations",
+            {
+                "success": True,
+                "item_count": 21,
+                "available_item_count": 21,
+                "result_truncated": False,
+                "operations": operations,
+            },
+        )
+
+        self.assertEqual(len(compact["operations"]), 21)
+        self.assertEqual(compact["available_item_count"], 21)
+        self.assertFalse(compact["result_truncated"])
+        self.assertNotIn("content", compact["operations"][0])
 
     def test_format_result_does_not_silently_truncate(self) -> None:
         payload = {"text": "甲" * 6000}

@@ -63,6 +63,7 @@ THEME_COMPANY_MAPPING = AnalysisPlaybook(
         "主题板块成员只能作为 L1 候选证据；不能因为属于概念板块就写成业务受益、订单兑现或主营收入。",
         "若某行唯一来源是新浪/同花顺概念板块，该行产业链环节必须写待公司级业务核验，已验证事实只能写板块成员关系和本地代码核验；不得补写龙头、主营、产品用途、订单、收入或客户。",
         "媒体转述、券商推测、公司公告和财报披露必须分开；低等级证据不能写成高等级兑现。",
+        "RSS、跨机构研报、通用网页搜索与网页正文爬取必须全部执行并记录覆盖；不得因为 RSS 已返回少量结果就跳过网页搜索，也不得把未执行补证写成公开资料不足。",
         "每家公司至少给一个可核验来源与日期；没有直接证据则明确写缺口。",
         "公司与证券代码必须来自本地证券库核验，禁止猜代码。",
     ),
@@ -149,7 +150,11 @@ def infer_research_topic(messages: list[dict[str, Any]]) -> str:
             previous = None
             while topic != previous:
                 previous = topic
-                topic = re.sub(r"^(?:帮我|请|分析下|分析一下|看看)", "", topic)
+                topic = re.sub(
+                    r"^(?:帮我|请|重新|完整|系统地?|仔细|只|梳理|分析下|分析一下|看看)",
+                    "",
+                    topic,
+                )
             return topic or match.group(1)
     for text in reversed(texts):
         cleaned = re.sub(
@@ -181,7 +186,17 @@ def select_analysis_playbook(
         and any(marker in latest for marker in ("公司", "标的", "映射", "名单"))
     ):
         return THEME_COMPANY_MAPPING
-    if "产业链" in latest and any(marker in latest for marker in ("受益", "环节", "领域", "分析")):
+    # Industry-chain research may mention a listed-company name incidentally
+    # (for example the stock ``机器人`` inside ``人形机器人``).  Select the
+    # topic workflow before generic entity-based deep research whenever the
+    # question itself asks for industry-chain dimensions.
+    if "产业链" in latest and any(
+        marker in latest
+        for marker in (
+            "受益", "环节", "领域", "分析", "研究", "价值量", "市场空间",
+            "竞争格局", "国产替代", "订单", "产能",
+        )
+    ):
         return INDUSTRY_CHAIN
     if has_entities and any(
         marker in latest
@@ -259,12 +274,13 @@ def mandatory_tool_calls(
                 "limit": 30,
                 "include_content": True,
             }),
-            _call("search_financial_news", {
-                "query": f"{topic} A股 上市公司 公告 主营构成 量产交付 订单金额 营业收入",
-                "topic": "industry",
-                "days": 730,
-                "limit": 30,
-                "include_content": True,
+            _call("websearch", {
+                "query": f"{topic} A股 上市公司 公司公告 互动平台 送样 定点 客户验证 订单 收入 批量供货 量产交付",
+                "numResults": 12,
+                "livecrawl": "preferred",
+                "type": "deep",
+                "contextMaxCharacters": 50000,
+                "includeContent": True,
             }),
         ]
     if playbook.id in {INVESTMENT_DECISION.id, STOCK_DEEP_RESEARCH.id}:

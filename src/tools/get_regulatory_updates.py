@@ -298,7 +298,10 @@ def get_regulatory_updates(
         )
         return spec, result
 
-    with ThreadPoolExecutor(max_workers=min(4, max(1, len(specs)))) as pool:
+    # ``event_type=all`` fans out to as many as ten independent exchange
+    # routes. Four workers forced three serial waves and regularly exhausted
+    # the Agent's 45-second tool budget even though every upstream was healthy.
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(specs)))) as pool:
         futures = [pool.submit(fetch, spec) for spec in specs]
         for future in as_completed(futures):
             try:
@@ -360,23 +363,38 @@ def get_regulatory_updates(
             errors.append(f"深交所上市公告官网直读: {official_page_fallback['error']}")
 
     if include_content:
-        for item in items[:3]:
+        def fetch_content(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, Exception | None]:
             try:
                 if item.get("source_type") == "official_exchange_html":
                     from src.tools.webfetch import fetch_url
 
                     detail = fetch_url(item["link"], format="text")
-                    item["content_text"] = detail.get("content") or item["summary"]
-                    item["content_fallback"] = True
                 else:
                     detail = read_item(
                         route_path=item["rss_route"], params=item["rss_params"], title=item["title"],
                         link=item["link"], list_summary=item["summary"],
                     )
+                return item, detail, None
+            except Exception as exc:
+                return item, None, exc
+
+        detail_items = items[:3]
+        # Full-text requests are independent. Serial 45-second RSS detail
+        # fallbacks made a healthy three-item result take minutes in the worst
+        # case, so run the bounded detail window concurrently.
+        with ThreadPoolExecutor(max_workers=max(1, len(detail_items))) as pool:
+            futures = [pool.submit(fetch_content, item) for item in detail_items]
+            for future in as_completed(futures):
+                item, detail, error = future.result()
+                if error is not None or detail is None:
+                    warnings.append(f"{item['title'][:40]} 正文读取失败: {error}")
+                    continue
+                if item.get("source_type") == "official_exchange_html":
+                    item["content_text"] = detail.get("content") or item["summary"]
+                    item["content_fallback"] = True
+                else:
                     item["content_text"] = detail.get("content_text") or item["summary"]
                     item["content_fallback"] = bool(detail.get("_fallback"))
-            except Exception as exc:
-                warnings.append(f"{item['title'][:40]} 正文读取失败: {exc}")
 
     acquisition_success = rss_acquisition_success or bool(official_page_fallback and official_page_fallback["success"])
     fallback_attempted = False

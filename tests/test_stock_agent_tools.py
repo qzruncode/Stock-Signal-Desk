@@ -16,7 +16,13 @@ from src.tools.get_sector_flow import _fetch_all as fetch_all_sector_flow, get_s
 from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
-from src.tools.search_financial_news import _infer_topic, _select_specs, search_financial_news
+from src.tools.search_financial_news import (
+    _infer_topic,
+    _matches_subject,
+    _select_specs,
+    _subject_terms,
+    search_financial_news,
+)
 from src.tools.webfetch import (
     MAX_RESPONSE_SIZE,
     _accept_header_for,
@@ -66,6 +72,24 @@ def test_semantic_rss_selector_can_choose_non_default_catalog_route() -> None:
 
     assert selected[0][0] == "/moodysmismicrosite/report/:industry?"
     assert selected[0][1] == {"industry": "全部"}
+
+
+def test_industry_news_uses_named_topic_not_generic_progress_words_as_subject():
+    query = "人形机器人 A股 公司 订单 送样 定点 客户验证 收入 批量供货"
+    terms = _subject_terms(query)
+
+    assert "人形机器人" in terms
+    assert "送样" not in terms
+    assert _matches_subject(
+        {"title": "金刚石散热进入送样阶段", "summary": "客户已完成定点"},
+        terms,
+        "industry",
+    ) is False
+    assert _matches_subject(
+        {"title": "人形机器人丝杠进入送样阶段", "summary": "客户验证中"},
+        terms,
+        "industry",
+    ) is True
 
 
 def test_all_47_infos_routes_have_an_explicit_business_capability() -> None:
@@ -120,6 +144,20 @@ def test_monetary_operation_parser_extracts_amount_term_and_rate() -> None:
     assert parsed["term_days"] == 7
     assert parsed["amount_yi"] == 1000
     assert parsed["rate_pct"] == 1.40
+
+
+def test_monetary_parser_handles_spaced_html_numbers_and_central_bank_bill() -> None:
+    parsed = _operation_item(
+        {"title": "公开市场业务交易公告 [2026]第118号", "published": "2026-06-22"},
+        "发行了2026年第六期央行票据。期次 发行量（人民币）期限 中标利率 "
+        "2026年第六期央行票据（香港） 400 亿元 6 个月（182天） 1. 34 %",
+    )
+
+    assert parsed["instrument_code"] == "central_bank_bill"
+    assert parsed["instrument"] == "央行票据"
+    assert parsed["amount_yi"] == 400
+    assert parsed["term_months"] == 6
+    assert parsed["rate_pct"] == 1.34
 
 
 def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
@@ -270,7 +308,7 @@ def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
     assert any("过滤 1 条过期" in warning for warning in result["warnings"])
 
 
-def test_semantic_rss_failed_web_fallback_is_not_reported_as_used() -> None:
+def test_semantic_rss_empty_success_is_distinct_from_failed_web_fallback() -> None:
     catalog = {
         "count": 47,
         "routes": [_catalog_route("/cls/telegraph/:category?", "财联社电报")],
@@ -286,8 +324,11 @@ def test_semantic_rss_failed_web_fallback_is_not_reported_as_used() -> None:
          patch("src.tools.websearch.websearch", return_value=fallback):
         result = search_financial_news("市场发生了什么")
 
-    assert result["success"] is False
-    assert result["source"] == "none"
+    # The RSS route itself was reached successfully and legitimately returned
+    # zero rows.  The separate web fallback failed; neither fact may overwrite
+    # the other or turn a valid empty feed into an upstream transport failure.
+    assert result["success"] is True
+    assert result["source"] == "RSSHub"
     assert result["fallback_attempted"] is True
     assert result["fallback_used"] is False
     assert result["fallback_recommended"] is True
@@ -490,6 +531,78 @@ def test_firecrawl_search_passes_original_query_to_local_v2_search() -> None:
     assert post.call_args.kwargs["json"]["query"] == query
     assert post.call_args.kwargs["json"]["limit"] == 7
     assert post.call_args.args[0].endswith("/v2/search")
+
+
+def test_firecrawl_search_can_crawl_result_content_in_same_request() -> None:
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "success": True,
+        "data": {"web": [{
+            "title": "五洲新春人形机器人丝杠已送样",
+            "url": "https://example.com/2025/03/05/a",
+            "description": "摘要",
+            "markdown": "2025-03-05 五洲新春人形机器人丝杠已向客户送样。",
+            "metadata": {"publishedTime": "2025-03-05T08:00:00+08:00"},
+        }]},
+    }
+
+    with patch("src.tools.websearch.httpx.post", return_value=response) as post:
+        result = _firecrawl_search("人形机器人送样", limit=7, include_content=True)
+
+    payload = post.call_args.kwargs["json"]
+    assert payload["scrapeOptions"]["formats"] == ["markdown"]
+    assert result["results"][0]["content_text"].startswith("2025-03-05")
+    assert result["results"][0]["published_date"].startswith("2025-03-05")
+
+
+def test_websearch_include_content_survives_context_compaction() -> None:
+    local = {
+        "provider": "firecrawl_searxng", "success": True, "skipped": False, "error": None,
+        "results": [{
+            "title": "Result",
+            "url": "https://example.com/a",
+            "snippet": "body",
+            "content_text": "company evidence",
+            "search_provider": "firecrawl_searxng",
+        }],
+    }
+    with patch("src.tools.websearch._firecrawl_search", return_value=local):
+        result = websearch(
+            "human robot evidence",
+            num_results=8,
+            context_max_characters=4000,
+            include_content=True,
+        )
+
+    assert result["content_requested"] is True
+    assert result["content_result_count"] == 1
+    assert result["results"][0]["content_text"] == "company evidence"
+
+
+def test_websearch_normalizes_mixed_published_timezones() -> None:
+    local = {
+        "provider": "firecrawl_searxng", "success": True, "skipped": False, "error": None,
+        "results": [
+            {
+                "title": "Naive",
+                "url": "https://example.com/naive",
+                "snippet": "body",
+                "published_date": "2025-03-20 08:51:32",
+            },
+            {
+                "title": "Aware",
+                "url": "https://example.com/aware",
+                "snippet": "body",
+                "published_date": "2025-03-21T08:51:32+08:00",
+            },
+        ],
+    }
+    with patch("src.tools.websearch._firecrawl_search", return_value=local):
+        result = websearch("mixed timezone dates")
+
+    assert result["success"] is True
+    assert result["latest_published_date"].startswith("2025-03-21")
 
 
 def test_opencode_mcp_parser_supports_json_and_sse() -> None:

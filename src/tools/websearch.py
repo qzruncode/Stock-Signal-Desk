@@ -108,8 +108,13 @@ def _host(url: str, fallback: str) -> str:
         return fallback
 
 
-def _firecrawl_search(query: str, *, limit: int) -> dict[str, Any]:
-    """Search through Firecrawl's SearXNG backend without scraping result pages."""
+def _firecrawl_search(
+    query: str,
+    *,
+    limit: int,
+    include_content: bool = False,
+) -> dict[str, Any]:
+    """Search through SearXNG and optionally crawl each result in one request."""
     started = time.perf_counter()
     config = firecrawl_rest_config()
     if config is None:
@@ -124,18 +129,25 @@ def _firecrawl_search(query: str, *, limit: int) -> dict[str, Any]:
 
     base_url, headers, _ = config
     try:
+        timeout_seconds = 70.0 if include_content else FIRECRAWL_SEARCH_TIMEOUT_SECONDS
+        request_payload: dict[str, Any] = {
+            "query": query,
+            "limit": limit,
+            "sources": ["web"],
+            "lang": "auto",
+            "timeout": int(timeout_seconds * 1000),
+        }
+        if include_content:
+            request_payload["scrapeOptions"] = {
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+            }
         response = httpx.post(
             f"{base_url}/v2/search",
             headers=headers,
-            json={
-                "query": query,
-                "limit": limit,
-                "sources": ["web"],
-                "lang": "auto",
-                "timeout": int(FIRECRAWL_SEARCH_TIMEOUT_SECONDS * 1000),
-            },
+            json=request_payload,
             timeout=httpx.Timeout(
-                FIRECRAWL_SEARCH_TIMEOUT_SECONDS,
+                timeout_seconds,
                 connect=2.0,
             ),
         )
@@ -155,17 +167,34 @@ def _firecrawl_search(query: str, *, limit: int) -> dict[str, Any]:
             title = str(item.get("title") or "").strip()
             if not url or not title:
                 continue
-            results.append(
-                {
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            content = str(item.get("markdown") or "").strip() if include_content else ""
+            if re.search(
+                r"(?:Access Verification|slide to complete the verification|人机验证|验证码)",
+                content[:1200],
+                flags=re.I,
+            ):
+                content = ""
+            published_date = (
+                item.get("publishedDate")
+                or metadata.get("publishedTime")
+                or metadata.get("article:published_time")
+                or metadata.get("date")
+            )
+            row = {
                     "title": title,
                     "url": url,
                     "snippet": str(item.get("description") or "").strip(),
                     "source": _host(url, "web"),
-                    "published_date": item.get("publishedDate"),
+                    "published_date": published_date,
                     "result_type": "web",
                     "search_provider": "firecrawl_searxng",
                 }
-            )
+            if content:
+                row["content_text"] = content
+                row["content_characters"] = len(content)
+                row["crawl_provider"] = "firecrawl"
+            results.append(row)
             if len(results) >= limit:
                 break
 
@@ -327,11 +356,14 @@ def _compact_results(
     *,
     limit: int,
     max_chars: int,
+    include_content: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     compacted: list[dict[str, Any]] = []
     used = 0
     truncated = False
-    for item in results[:limit]:
+    selected = results[:limit]
+    per_item_content_limit = max(1000, min(6000, max_chars // max(1, len(selected))))
+    for item in selected:
         row = dict(item)
         snippet = str(row.get("snippet") or "")
         remaining = max_chars - used
@@ -343,6 +375,17 @@ def _compact_results(
             truncated = True
         row["snippet"] = snippet
         used += len(snippet)
+        if include_content:
+            content = str(row.get("content_text") or "")
+            content_limit = min(per_item_content_limit, max(0, max_chars - used))
+            if len(content) > content_limit:
+                content = content[:content_limit].rstrip() + "…" if content_limit else ""
+                truncated = True
+            row["content_text"] = content
+            used += len(content)
+        else:
+            row.pop("content_text", None)
+            row.pop("content_characters", None)
         compacted.append(row)
     return compacted, truncated
 
@@ -354,6 +397,7 @@ def websearch(
     search_type: str = "auto",
     context_max_characters: int | None = None,
     session_id: str = "",
+    include_content: bool = False,
 ) -> dict[str, Any]:
     resolved_query = _engine_query(query)
     if not resolved_query:
@@ -370,7 +414,11 @@ def websearch(
 
     for provider in _provider_order():
         if provider == "firecrawl":
-            current = _firecrawl_search(resolved_query, limit=limit)
+            current = _firecrawl_search(
+                resolved_query,
+                limit=limit,
+                include_content=include_content,
+            )
         elif provider == "exa":
             current = _exa_search(
                 resolved_query,
@@ -402,6 +450,7 @@ def websearch(
         selected_results,
         limit=limit,
         max_chars=max_chars,
+        include_content=include_content,
     )
     provider_output = str((selected or {}).get("output") or "")
     success = selected is not None and bool(compacted or provider_output)
@@ -413,7 +462,10 @@ def websearch(
         if not value:
             continue
         try:
-            published.append(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.astimezone()
+            published.append(parsed)
         except ValueError:
             continue
     latest = max(published) if published else None
@@ -433,6 +485,7 @@ def websearch(
         "output": provider_output,
         "provider": provider,
         "attempts": attempts,
+        "retrieved_at": datetime.now().astimezone().isoformat(),
         "data_time": latest.isoformat() if latest else None,
         "fallback_used": success and provider != "firecrawl_searxng",
         "is_stale": (
@@ -445,6 +498,8 @@ def websearch(
         "_truncated": truncated,
         "errors": [] if success else failures,
         "warnings": failures if success else [],
+        "content_requested": bool(include_content),
+        "content_result_count": sum(bool(item.get("content_text")) for item in compacted),
     }
 
 
@@ -455,6 +510,7 @@ def _execute(
     type: str = "auto",
     contextMaxCharacters: int | None = None,
     sessionId: str = "",
+    includeContent: bool = False,
 ) -> dict[str, Any]:
     return websearch(
         query=query,
@@ -463,6 +519,7 @@ def _execute(
         search_type=type,
         context_max_characters=contextMaxCharacters,
         session_id=sessionId,
+        include_content=includeContent,
     )
 
 
@@ -493,6 +550,11 @@ TOOL = ToolSpec(
                 "minimum": 1000,
                 "maximum": 50000,
                 "default": 12000,
+            },
+            "includeContent": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否让本地 Firecrawl 在搜索时同步抓取结果页正文",
             },
         },
         ["query"],

@@ -63,12 +63,15 @@ def test_compact_non_dict_returned_as_is():
 
 
 def test_compact_realtime_quotes_trims_and_annotates():
-    items = [{"symbol": str(i), "price": i} for i in range(20)]
+    items = [{"code": str(i), "price": i, "pe_ratio": 10 + i} for i in range(20)]
     out = _compact_tool_result("get_realtime_quotes", {"items": items, "total": 20})
     assert out["_tool_payload_meta"]["tool_name"] == "get_realtime_quotes"
     assert out["_tool_payload_meta"]["compacted"] is True
     assert out["total"] == 20
     assert len(out["items"]) == 12  # quotes item window
+    assert out["items"][0]["pe_dynamic"] == 10
+    assert "pe" not in out["items"][0]
+    assert "不是 PE(TTM)" in out["valuation_basis"]["pe_dynamic"]
 
 
 def test_compact_kline_compacts_time_series():

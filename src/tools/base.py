@@ -25,6 +25,11 @@ def enforce_result_contract(tool_name: str, result: Any) -> Dict[str, Any]:
     elif not isinstance(errors, list):
         raise ValueError(f"{tool_name} result.errors must be an array")
     payload.setdefault("partial", payload["success"] and bool(payload["errors"]))
+    # A successful fallback can still carry primary-source errors. Such a
+    # response is usable but necessarily partial; never let an executor hide
+    # that distinction by returning partial=False alongside real errors.
+    if payload["success"] and payload["errors"]:
+        payload["partial"] = True
     if not isinstance(payload.get("partial"), bool):
         raise ValueError(f"{tool_name} result.partial must be boolean")
     if payload["partial"] and not payload["success"]:

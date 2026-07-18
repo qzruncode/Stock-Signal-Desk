@@ -171,7 +171,7 @@ def _is_single_char_typo(input_name: str, candidate_name: str) -> bool:
     return diff == 1
 
 
-def resolve_name_to_code(name: str) -> Optional[str]:
+def resolve_name_to_code(name: str, *, allow_fuzzy: bool = True) -> Optional[str]:
     """
     Resolve stock name to code.
 
@@ -237,6 +237,10 @@ def resolve_name_to_code(name: str) -> Optional[str]:
     if akshare_map and s in akshare_map:
         logger.debug(f"[NameResolver] 命中 AkShare 映射: {s} -> {akshare_map[s]}")
         return akshare_map[s]
+
+    if not allow_fuzzy:
+        logger.debug(f"[NameResolver] strict exact resolution failed: {s}")
+        return None
 
     # 5. Fuzzy match (local + akshare, local takes precedence)
     all_name_to_code = dict(database_reverse)

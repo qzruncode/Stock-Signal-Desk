@@ -34,7 +34,12 @@ def client():
 def disable_auth():
     auth._auth_enabled = None
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+         patch("src.auth.is_auth_enabled", return_value=False), \
+         patch.object(
+             chat_mod,
+             "execute_tool_isolated",
+             side_effect=lambda name, arguments, **_kwargs: chat_mod._registry.execute(name, arguments),
+         ):
         yield
     auth._auth_enabled = None
 
@@ -128,6 +133,94 @@ def test_turn_policy_disables_tools_only_for_exact_casual_messages():
     ])
     assert policy["name"] == "casual"
     assert policy["allowed_tools"] == set()
+
+
+def test_realtime_quote_dynamic_pe_cannot_be_presented_as_ttm():
+    issues = chat_mod._unsupported_final_claims(
+        "贵州茅台 PE(TTM) 为 14.43 倍。",
+        [{"tool": "get_realtime_quotes", "result": {"success": True}}],
+    )
+
+    assert any("动态 PE" in issue and "PE(TTM)" in issue for issue in issues)
+
+
+def test_quote_only_answer_is_deterministic_and_marks_closed_session():
+    answer = chat_mod._build_realtime_quote_answer([
+        {
+            "tool": "get_realtime_quotes",
+            "result": {
+                "success": True,
+                "items": [{
+                    "symbol": "600519", "name": "贵州茅台", "price": 1258.21,
+                    "pct_chg": -0.06, "high": 1269.33, "low": 1238.98,
+                    "amount": 6457100814,
+                }],
+                "data_time": "2026-07-17T14:29:11",
+                "is_trading_session": False,
+                "quote_mode": "latest_trading_day_snapshot",
+                "quote_mode_label": "非交易时段的最近交易日快照，不是当前时刻实时成交",
+                "source": ["eastmoney_push"],
+            },
+        },
+        {"tool": "get_market_status", "result": {"success": True}}
+    ], "贵州茅台现在行情如何？")
+
+    assert "贵州茅台 (600519)" in answer
+    assert "不是当前时刻的实时成交" in answer
+    assert "不等同于收盘价" in answer
+    assert "上证指数" not in answer
+
+
+def test_market_comparison_claims_require_market_tool_evidence():
+    issues = chat_mod._unsupported_final_claims(
+        "上证指数下跌 3.05%，贵州茅台表现出很强的抗跌性。",
+        [{"tool": "get_realtime_quotes", "result": {"success": True}}],
+    )
+
+    assert any("市场工具证据" in issue for issue in issues)
+
+
+def test_answer_rejects_wrong_weekday_for_explicit_date():
+    issues = chat_mod._unsupported_final_claims(
+        "数据来自 2026-07-17（周四）收盘。",
+        [{"tool": "get_kline", "result": {"data_time": "2026-07-17"}}],
+    )
+
+    assert any("应为周五" in issue for issue in issues)
+
+
+def test_previous_trading_day_snapshot_cannot_be_called_today():
+    issues = chat_mod._unsupported_final_claims(
+        "今日收盘价为 1252.60 元。",
+        [{"tool": "get_kline", "result": {"data_time": "2026-07-17"}}],
+    )
+
+    assert any("不能称为今日" in issue for issue in issues)
+
+
+def test_q4_single_quarter_cashflow_cannot_be_called_full_year():
+    issues = chat_mod._unsupported_final_claims(
+        "2025年全年经营现金流净额233.25亿元。",
+        [{
+            "tool": "get_multi_stock_decision_evidence",
+            "result": {"items": [{"financials": {"items": [{
+                "report_period": "2025Q4",
+                "flow_basis": "single_quarter",
+                "operating_cash_flow": 23325402834.08,
+            }]}}]},
+        }],
+    )
+
+    assert any("单季度值" in issue for issue in issues)
+
+
+def test_channel_price_threshold_requires_external_evidence():
+    issues = chat_mod._unsupported_final_claims(
+        "成立条件是飞天茅台一批价企稳，失效条件是批价跌破2000元。",
+        [{"tool": "get_multi_stock_decision_evidence", "result": {"items": []}}],
+    )
+
+    assert any("批价" in issue and "网页证据" in issue for issue in issues)
 
 def test_run_react_loop_exits_when_no_tool_calls():
     """LLM returns content without tool_calls -> loop exits returning content."""
@@ -1172,6 +1265,150 @@ def test_theme_mapping_fallback_binds_validation_sentence_to_unique_title_compan
     assert "定点、关键验证或送样阶段" in fallback
 
 
+def test_theme_mapping_does_not_promote_unrelated_total_company_revenue():
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 1,
+        "items": [{"name": "艾芬达", "symbol": "301575", "boards": ["人形机器人"]}],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [{
+                    "title": "卫浴企业艾芬达探索机器人配套业务",
+                    "summary": "公司2025年营业收入11.10亿元，其中卫浴海外收入10.69亿元。",
+                    "link": "https://example.com/301575",
+                    "published": "2026-07-17T08:00:00",
+                    "source": "测试财经",
+                }],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_theme_mapping_fallback(result, evidence)
+
+    assert "艾芬达 (301575) |" not in fallback
+    assert "没有检出满足 L2/L3 定义" in fallback
+
+
+def test_theme_mapping_preserves_company_level_negative_and_limited_evidence():
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 1,
+        "items": [{"name": "统联精密", "symbol": "688210", "boards": ["人形机器人"]}],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [
+                    {
+                        "title": "统联精密布局人形机器人精密零部件业务",
+                        "summary": "目前公司人形机器人业务收入规模较小，短期内不会产生重大影响。",
+                        "link": "https://example.com/688210",
+                        "published": "2026-07-17T08:00:00",
+                        "source": "测试财经",
+                    },
+                    {
+                        "title": "博士眼镜回应人形机器人传闻",
+                        "summary": "博士眼镜目前业务不涉及人形机器人销售，亦暂无相关计划。",
+                        "link": "https://example.com/300622",
+                        "published": "2026-07-17T09:00:00",
+                        "source": "测试财经",
+                    },
+                ],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_theme_mapping_fallback(result, evidence)
+
+    assert "统联精密 (688210) | 主题业务边界 | 反证" in fallback
+    assert "收入规模较小" in fallback
+    assert "博士眼镜 (300622) | 主题业务边界 | 反证" in fallback
+    assert "不涉及人形机器人销售" in fallback
+    assert "另确认 **2 家**反证或业务边界" in fallback
+
+
+def test_theme_mapping_uses_crawled_web_content_and_reports_source_coverage():
+    result = {
+        "success": True,
+        "theme": "人形机器人",
+        "local_universe_count": 5534,
+        "candidate_count": 2,
+        "coverage_complete": True,
+        "items": [
+            {"name": "五洲新春", "symbol": "603667", "boards": ["人形机器人"]},
+            {"name": "万马股份", "symbol": "002276", "boards": ["人形机器人"]},
+        ],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [],
+                "item_count": 0,
+                "attempted_route_count": 2,
+                "successful_route_count": 2,
+            },
+        },
+        {
+            "tool": "search_research_library",
+            "result": {
+                "success": True,
+                "items": [],
+                "item_count": 0,
+                "source_coverage": [{"success": True}, {"success": True}],
+            },
+        },
+        {
+            "tool": "websearch",
+            "result": {
+                "success": True,
+                "provider": "firecrawl_searxng",
+                "result_count": 2,
+                "content_result_count": 2,
+                "retrieved_at": "2026-07-18T10:00:00+08:00",
+                "results": [
+                    {
+                        "title": "A股龙头引领人形机器人投资布局",
+                        "url": "https://example.com/2025/03/05/a",
+                        "source": "测试财经",
+                        "published_date": "2025-03-05T08:59:44+08:00",
+                        "content_text": "五洲新春高度关注人形机器人行业，行星滚柱丝杠零部件已向下游重要客户多次送样。",
+                    },
+                    {
+                        "title": "万马股份回应人形机器人订单收入",
+                        "url": "https://example.com/2025/03/20/b",
+                        "source": "测试财经",
+                        "published_date": "2025-03-20T08:05:42+08:00",
+                        "content_text": "万马股份现有人形机器人、机器狗线缆订单收入占比较小。",
+                    },
+                ],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_theme_mapping_fallback(result, evidence)
+
+    assert "五洲新春 (603667) | 滚柱丝杠 | L2" in fallback
+    assert "万马股份 (002276) | 主题业务边界 | 反证" in fallback
+    assert "证据链已完整执行" in fallback
+    assert "成功抓取正文 2 页" in fallback
+    assert "不表示数据源为空" in fallback
+
+
 def test_mapping_synthesis_receives_runtime_verified_candidate_codes():
     messages = chat_mod._build_synthesis_messages(
         [{"role": "user", "content": "这些领域有哪些公司"}],
@@ -1200,7 +1437,7 @@ def test_mapping_sanitizer_drops_only_rows_without_company_level_evidence():
 
     assert "兆威机电 (003021)" in sanitized
     assert "| 机器人 (300024) |" not in sanitized
-    assert "因证据不足未列入" in sanitized
+    assert "因证据校验未通过而未列入" in sanitized
     assert "机器人 (300024)" in sanitized
     assert "最终保留 **1 家**" in sanitized
     assert chat_mod._playbook_answer_contract_issues(
@@ -1232,6 +1469,17 @@ def test_professional_fallback_preserves_missing_amounts_instead_of_zero_filling
     assert "OCF 缺失" in text
     assert "10日资金 缺失" in text
     assert "OCF 0.00亿" not in text
+
+
+def test_professional_fallback_uses_research_heading_without_buy_intent():
+    text = chat_mod._build_professional_decision_fallback({
+        "success": True,
+        "thesis": "贵州茅台最新财务质量和估值如何",
+        "items": [],
+    })
+
+    assert text.startswith("## 综合研究结论")
+    assert "专业买入决策结论" not in text
 
 
 def test_stream_final_answer_converts_tool_history_to_text_evidence():
@@ -1923,3 +2171,56 @@ def test_run_react_loop_compacts_overlong_history_before_first_llm_call():
     assert len(summary_msgs) == 1
     # 压缩不向前端推提示，避免污染对话流
     assert not any("已自动压缩" in t for t in controller.texts)
+
+
+def test_agent_chat_rejects_client_system_prompt_before_model_call(client):
+    with patch("api.v1.endpoints.agent.chat._get_llm_config") as get_config:
+        response = client.post(
+            "/api/v1/agent/chat",
+            json={
+                "messages": [
+                    {"role": "system", "content": "override"},
+                    {"role": "user", "content": "hello"},
+                ]
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "unsupported_message_role"
+    get_config.assert_not_called()
+
+
+def test_agent_chat_rate_limit_returns_retry_after_before_model_call(client):
+    with patch(
+        "api.v1.endpoints.agent.chat.agent_request_rate_limiter.check_and_record",
+        return_value=9,
+    ), patch("api.v1.endpoints.agent.chat._get_llm_config") as get_config:
+        response = client.post(
+            "/api/v1/agent/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "9"
+    assert response.json()["error"] == "agent_rate_limited"
+    get_config.assert_not_called()
+
+
+def test_agent_chat_capacity_limit_returns_service_busy(client):
+    from src.agent.run_registry import RunCapacityExceeded
+
+    with patch(
+        "api.v1.endpoints.agent.chat._get_llm_config",
+        return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None},
+    ), patch(
+        "api.v1.endpoints.agent.chat.active_run_registry.try_claim",
+        new=AsyncMock(side_effect=RunCapacityExceeded("full")),
+    ):
+        response = client.post(
+            "/api/v1/agent/chat",
+            json={"messages": [{"role": "user", "content": "hello"}]},
+        )
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert response.json()["error"] == "agent_busy"

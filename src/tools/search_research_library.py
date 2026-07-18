@@ -189,6 +189,34 @@ def _terms(query: str) -> list[str]:
     return list(dict.fromkeys([query.lower(), *values]))
 
 
+_GENERIC_RESEARCH_TERMS = frozenset({
+    "产业链", "价值链", "价值量", "市场空间", "竞争格局", "核心零部件",
+    "受益环节", "国产替代", "订单", "量产", "产能", "交付", "降本",
+    "业务", "主营", "收入", "客户", "验证", "公告", "实际", "检索", "查询",
+    "搜索", "a股", "标的", "上市公司",
+})
+
+_HIGH_PRECISION_RESEARCH_SUBJECTS = (
+    "人形机器人", "具身智能", "低空经济", "商业航天", "固态电池", "光模块",
+)
+
+
+def _subject_terms(query: str) -> list[str]:
+    """Return topic-identifying terms, excluding generic research dimensions."""
+    query_lower = query.lower().strip()
+    precise = [term for term in _HIGH_PRECISION_RESEARCH_SUBJECTS if term in query_lower]
+    terms = [
+        term for term in _terms(query)
+        if term != query_lower and term not in _GENERIC_RESEARCH_TERMS
+    ]
+    # Common compound topics are sometimes shortened in report titles.  Keep
+    # the original high-precision term first, with a conservative alias after
+    # it, instead of allowing generic words such as ``产业链`` to pass alone.
+    if precise:
+        return list(dict.fromkeys(precise))
+    return list(dict.fromkeys(terms))
+
+
 def _parse_time(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
@@ -266,6 +294,7 @@ def search_research_library(
     specs = _route_specs(query, resolved)
     cutoff = datetime.now() - timedelta(days=days)
     terms = _terms(query)
+    subject_terms = _subject_terms(query)
     errors: list[str] = []
     warnings: list[str] = []
     coverage: list[dict[str, Any]] = []
@@ -302,15 +331,20 @@ def search_research_library(
                 summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
                 text = f"{title} {summary}".lower()
                 score = sum(5 if term in title.lower() else 2 if term in text else 0 for term in terms)
+                subject_match = not subject_terms or any(term in text for term in subject_terms)
                 candidates.append({
                     "title": title, "published": raw.get("published"), "summary": summary,
                     "link": link, "author": raw.get("author") or raw.get("source"),
                     "source": spec["source"], "source_type": "institutional_research_rss",
                     "research_category": resolved, "relevance_score": score,
+                    "subject_match": subject_match,
                     "rss_route": spec["path"], "rss_params": spec["params"],
                 })
 
-    relevant = [item for item in candidates if item["relevance_score"] > 0]
+    relevant = [
+        item for item in candidates
+        if item["relevance_score"] > 0 and item["subject_match"]
+    ]
     relevant.sort(key=lambda row: (row["relevance_score"], str(row.get("published") or "")), reverse=True)
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()

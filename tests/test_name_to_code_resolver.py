@@ -160,6 +160,12 @@ class TestResolveNameToCode:
         assert result == "600519"
 
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
+    def test_strict_resolution_does_not_guess_similar_company(self, mock_akshare):
+        mock_akshare.return_value = {"龙星科技": "002442"}
+
+        assert resolve_name_to_code("火星科技", allow_fuzzy=False) is None
+
+    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
     def test_returns_none_when_no_match(self, mock_akshare):
         mock_akshare.return_value = {}
         result = resolve_name_to_code("不存在的股票名称xyz")

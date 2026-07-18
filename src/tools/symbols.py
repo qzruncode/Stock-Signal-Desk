@@ -18,7 +18,11 @@ def resolve_symbol(value: str) -> str:
     try:
         from src.services.name_to_code_resolver import resolve_name_to_code
 
-        return resolve_name_to_code(raw) or raw
+        # Tool execution must never guess a security from a similar-looking
+        # company name.  Fuzzy correction remains available to interactive
+        # search surfaces, but financial/valuation calls require an exact
+        # code, exact name or exact alias.
+        return resolve_name_to_code(raw, allow_fuzzy=False) or raw
     except Exception as exc:
         logger.debug("symbol resolve failed for %s: %s", raw, exc)
         return raw

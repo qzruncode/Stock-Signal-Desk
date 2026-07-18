@@ -122,6 +122,16 @@ _MACRO_SPECIFIC_TERMS = frozenset({
     "利率",
 })
 
+_SUBJECT_QUALIFIER_TERMS = frozenset({
+    "订单", "订单金额", "送样", "定点", "客户验证", "关键验证", "收入", "营收",
+    "营业收入", "批量供货", "小批量供货", "量产", "量产交付", "交付", "公司",
+    "上市公司", "标的", "a股", "核心零部件", "主营构成", "公告", "实际",
+})
+
+_HIGH_PRECISION_SUBJECTS = (
+    "人形机器人", "具身智能", "低空经济", "商业航天", "固态电池", "光模块",
+)
+
 
 def _infer_topic(query: str) -> str:
     text = query.lower()
@@ -174,11 +184,17 @@ def _query_terms(query: str) -> list[str]:
 
 def _subject_terms(query: str) -> list[str]:
     subject = _INTENT_WORDS.sub(" ", query)
-    return list(dict.fromkeys(
+    terms = list(dict.fromkeys(
         part.lower()
         for part in re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", subject)
-        if len(part) >= 2
+        if len(part) >= 2 and part.lower() not in _SUBJECT_QUALIFIER_TERMS
     ))
+    precise = [term for term in _HIGH_PRECISION_SUBJECTS if term.lower() in query.lower()]
+    if precise:
+        # The named topic is the admission anchor; progress words such as
+        # “送样/订单” are ranking dimensions, not independent subjects.
+        return [term.lower() for term in precise]
+    return terms
 
 
 def _matching_terms(query: str, topic: str) -> list[str]:
@@ -612,7 +628,10 @@ def search_financial_news(
                     or _matches_subject(item, subject_terms, resolved_topic)
                 )
             ),
-            "success": bool(result["result"].get("items")),
+            # A feed that was read successfully can legitimately contain no
+            # items (or no items matching the requested subject/time window).
+            # Treat transport/parser errors as failures, not an empty result.
+            "success": not bool(result["result"].get("errors")),
             "cached": bool(result["result"].get("_cached")),
             "errors": [str(error) for error in result["result"].get("errors") or []],
         }
@@ -637,8 +656,13 @@ def search_financial_news(
         "announcement": 90,
         "research": 120,
     }[resolved_topic]
+    acquisition_success = successful_route_count > 0 or bool(
+        web_fallback and web_fallback.get("success")
+    )
     if selected:
         source = f"websearch/{web_fallback.get('provider', 'unknown')}" if fallback_used and web_fallback else "RSSHub"
+    elif successful_route_count > 0:
+        source = "RSSHub"
     else:
         source = "none"
     partial = bool(selected) and (fallback_used or (failed_route_count > 0 and successful_route_count > 0))
@@ -654,7 +678,9 @@ def search_financial_news(
         "successful_route_count": successful_route_count,
         "web_fallback": web_fallback,
         "source": source,
-        "success": bool(selected),
+        # `success` describes whether the tool executed and reached a data
+        # source. `item_count == 0` describes a valid empty search result.
+        "success": acquisition_success,
         "partial": partial,
         "data_time": latest_time.astimezone().isoformat() if latest_time and latest_time.tzinfo else latest_time.isoformat() if latest_time else None,
         "retrieved_at": datetime.now().astimezone().isoformat(),

@@ -27,12 +27,32 @@ _RELATED_THEME_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+def _canonical_theme(theme: str) -> str:
+    """Collapse conversational tool arguments to the actual board topic.
+
+    Models occasionally pass a phrase such as ``只梳理精确的人形机器人主题A股候选``
+    instead of the bare topic.  Treating that entire phrase as the requested
+    board makes every real board look approximate and re-introduces broad alias
+    boards.  Prefer the longest known theme embedded in the phrase.
+    """
+    normalized = str(theme or "").strip()
+    known = sorted(
+        {
+            *(_RELATED_THEME_ALIASES.keys()),
+            *(alias for aliases in _RELATED_THEME_ALIASES.values() for alias in aliases),
+        },
+        key=len,
+        reverse=True,
+    )
+    return next((candidate for candidate in known if candidate in normalized), normalized)
+
+
 def _compact(value: Any) -> str:
     return re.sub(r"[\s·•（）()\-_/]+", "", str(value or "")).lower()
 
 
 def _theme_aliases(theme: str) -> list[str]:
-    normalized = str(theme or "").strip()
+    normalized = _canonical_theme(theme)
     aliases = list(_RELATED_THEME_ALIASES.get(normalized, (normalized,)))
     if normalized.endswith("产业链"):
         aliases.append(normalized[:-3])
@@ -95,6 +115,12 @@ def _fetch_sina_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dic
         if score and label:
             matched.append((score, name, label))
     matched.sort(key=lambda item: (-item[0], item[1]))
+    # A precise board such as “人形机器人” must not be widened to the much
+    # broader “机器人概念” board.  The latter contains hundreds of industrial,
+    # medical and consumer names that are not evidence for the requested
+    # humanoid-robot chain.
+    exact_matches = [item for item in matched if item[0] >= 100]
+    matched = exact_matches or matched[:3]
 
     items: list[dict[str, Any]] = []
     boards: list[dict[str, Any]] = []
@@ -347,7 +373,7 @@ def _financial_scale(value: Any) -> float:
 
 
 def get_theme_stock_candidates(theme: str, limit: int = 500) -> dict[str, Any]:
-    topic = str(theme or "").strip()
+    topic = _canonical_theme(theme)
     if not topic:
         raise ValueError("theme 不能为空")
     bounded_limit = max(20, min(int(limit or 500), 1000))
@@ -377,6 +403,13 @@ def get_theme_stock_candidates(theme: str, limit: int = 500) -> dict[str, Any]:
             "没有任何精确主题源完成全分页抓取，本轮候选池不是主题全量成分股；"
             "已保留逐来源覆盖范围，不能把 returned_count 写成全市场主题公司总数。"
         )
+    else:
+        # Once at least one source has fully covered the exact requested board,
+        # only exact-board records belong in the returned candidate inventory.
+        # Approximate aliases remain useful solely as a fallback when no exact
+        # board can be completed.
+        raw_items = [item for item in raw_items if item.get("primary_theme") is True]
+        boards = [board for board in boards if board.get("primary_theme") is True]
 
     merged: dict[str, dict[str, Any]] = {}
     for raw in raw_items:
