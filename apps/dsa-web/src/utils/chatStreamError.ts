@@ -17,3 +17,19 @@ export async function readStreamErrorMessage(response: Response): Promise<string
     return rawText;
   }
 }
+
+/** Extract the backend's structured message from data-stream adapter errors. */
+export function readThrownStreamErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error || '');
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const payload = JSON.parse(raw.slice(jsonStart)) as unknown;
+      const message = extractErrorPayloadText(payload);
+      if (message) return message;
+    } catch {
+      // Fall through to the adapter's original message.
+    }
+  }
+  return raw || '对话请求失败，请稍后重试';
+}

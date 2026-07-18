@@ -1,7 +1,7 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { ExternalLinkIcon } from 'lucide-react';
 import { cn } from '../../../utils/cn';
-import { type RssFeedToolResult, type RssFeedItem } from '../../../utils/toolResults';
+import { describeRssEmptyResult, type RssFeedToolResult, type RssFeedItem } from '../../../utils/toolResults';
 import { ToolStatusPill } from './shared';
 
 function formatDateTime(iso?: string | null): string {
@@ -19,22 +19,30 @@ type RssFeedArgs = { query?: string; topic?: string; include_content?: boolean }
 
 /** One-call semantic RSS aggregation used by search_financial_news. */
 const RssFeedToolUI = ({
+  toolName,
   args,
   result,
   status,
   isError,
 }: ToolCallMessagePartProps<RssFeedArgs, RssFeedToolResult | undefined>) => {
+  const isResearchLibrary = toolName === 'search_research_library';
   const runningLabel = args?.include_content ? '正在聚合资讯并读取正文' : '正在聚合财经资讯';
   if (status.type === 'running' && !result) {
     return <ToolStatusPill status={status} isError={isError} streamingFields={['query', 'topic']} label={runningLabel} />;
   }
-  if ((isError || (status.type === 'incomplete' && status.reason === 'error')) && !result) {
-    return <ToolStatusPill status={status} isError label="财经资讯获取失败" />;
+  const failed = isError || (status.type === 'incomplete' && status.reason === 'error') || result?.success === false;
+  if (failed) {
+    return <ToolStatusPill status={status} isError label={isResearchLibrary ? '研究资料检索失败' : '财经资讯获取失败'} />;
   }
 
   const items = result?.items ?? [];
   if (!result || items.length === 0) {
-    return <ToolStatusPill status={status} isError label="未找到相关财经资讯" />;
+    return (
+      <ToolStatusPill
+        status={status}
+        label={result ? describeRssEmptyResult(result, isResearchLibrary) : (isResearchLibrary ? '未找到匹配的研究资料' : '未找到相关财经资讯')}
+      />
+    );
   }
   return (
     <div className="my-2 w-full min-w-0 space-y-2">

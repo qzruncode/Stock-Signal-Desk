@@ -226,6 +226,7 @@ const AssistantMessage: FC = () => {
                   get_financials: FinancialsToolUI,
                   search_news: NewsToolUI,
                   search_financial_news: RssFeedToolUI,
+                  search_research_library: RssFeedToolUI,
                 },
                 Fallback: GenericToolUI,
               },

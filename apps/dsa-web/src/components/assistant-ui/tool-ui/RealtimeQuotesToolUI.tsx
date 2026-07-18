@@ -51,7 +51,7 @@ const RealtimeQuotesToolUI = ({
               <Field label="低" value={formatNum(item.low)} tone={tone} />
               <Field label="量" value={formatAmount(item.volume)} />
               <Field label="额" value={formatAmount(item.amount)} />
-              {item.pe != null && <Field label="PE" value={formatNum(item.pe)} />}
+              {item.pe_dynamic != null && <Field label="动态PE" value={formatNum(item.pe_dynamic)} />}
               {item.pb != null && <Field label="PB" value={formatNum(item.pb)} />}
               {item.total_mv != null && <Field label="总市值" value={formatAmount(item.total_mv)} />}
             </div>

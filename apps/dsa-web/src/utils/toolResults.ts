@@ -27,7 +27,7 @@ export interface RealtimeQuoteItem {
   volume: number | null;
   amount: number | null;
   turnover_rate?: number | null;
-  pe?: number | null;
+  pe_dynamic?: number | null;
   pb?: number | null;
   total_mv?: number | null;
   circ_mv?: number | null;
@@ -117,11 +117,52 @@ export interface RssFeedItem {
   source_type?: 'rss' | 'websearch';
   content_fallback?: boolean;
 }
+export interface RssFeedSourceCoverage {
+  item_count?: number;
+  recent_item_count?: number;
+  relevant_item_count?: number;
+  success?: boolean;
+}
 export interface RssFeedToolResult {
   query?: string;
   topic?: string;
+  days?: number;
   item_count?: number;
   items?: RssFeedItem[];
   errors?: string[];
+  warnings?: string[];
+  success?: boolean;
+  fallback_attempted?: boolean;
   fallback_used?: boolean;
+  rss_routes?: RssFeedSourceCoverage[];
+  source_coverage?: RssFeedSourceCoverage[];
+}
+
+/** Explain a valid empty search without conflating it with a source failure. */
+export function describeRssEmptyResult(result: RssFeedToolResult, isResearchLibrary: boolean): string {
+  const coverage = result.rss_routes ?? result.source_coverage ?? [];
+  const rawCount = coverage.reduce((sum, row) => sum + (row.item_count ?? 0), 0);
+  const successfulSources = coverage.filter((row) => row.success).length;
+  const rowsWithRecentCount = coverage.filter((row) => row.recent_item_count != null);
+  const rowsWithRelevantCount = coverage.filter((row) => row.relevant_item_count != null);
+  const recentCount = rowsWithRecentCount.reduce((sum, row) => sum + (row.recent_item_count ?? 0), 0);
+  const relevantCount = rowsWithRelevantCount.reduce((sum, row) => sum + (row.relevant_item_count ?? 0), 0);
+
+  let reason: string;
+  if (rawCount > 0 && rowsWithRecentCount.length > 0 && recentCount === 0) {
+    reason = `数据源返回 ${rawCount} 条，但均不在最近 ${result.days ?? '-'} 天内`;
+  } else if (rawCount > 0 && rowsWithRelevantCount.length > 0 && relevantCount === 0) {
+    reason = `数据源返回 ${rawCount} 条，但时间窗内没有主题匹配`;
+  } else if (rawCount > 0) {
+    reason = `数据源返回 ${rawCount} 条，但没有匹配当前查询`;
+  } else if (successfulSources > 0 || result.success) {
+    reason = '数据源连接正常，本次查询没有匹配记录';
+  } else {
+    reason = isResearchLibrary ? '研究资料检索失败' : '财经资讯获取失败';
+  }
+
+  if (result.fallback_attempted && !result.fallback_used) {
+    return `${reason}；联网兜底也未找到结果`;
+  }
+  return reason;
 }

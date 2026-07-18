@@ -108,4 +108,11 @@ export const agentApi = {
     await apiClient.delete(`/api/v1/agent/conversations/${conversationId}`);
   },
 
+  async cancelConversationRun(conversationId: string): Promise<boolean> {
+    const response = await apiClient.post<{ cancelled: boolean }>(
+      `/api/v1/agent/conversations/${conversationId}/cancel`,
+    );
+    return response.data.cancelled === true;
+  },
+
 };

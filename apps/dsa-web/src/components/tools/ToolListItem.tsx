@@ -14,6 +14,10 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
   macro: '宏观',
   search: '联网',
   analysis: '分析',
+  research: '研究',
+  regulatory: '监管',
+  events: '公告',
+  risk: '风险',
 };
 
 const CATEGORY_VARIANT = {
@@ -24,6 +28,10 @@ const CATEGORY_VARIANT = {
   macro: 'success' as const,
   search: 'default' as const,
   analysis: 'history' as const,
+  research: 'history' as const,
+  regulatory: 'warning' as const,
+  events: 'info' as const,
+  risk: 'warning' as const,
 };
 
 function formatDefault(value: unknown): string {

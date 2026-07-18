@@ -5,7 +5,11 @@ export type ToolCategory =
   | 'sentiment'
   | 'macro'
   | 'search'
-  | 'analysis';
+  | 'analysis'
+  | 'research'
+  | 'regulatory'
+  | 'events'
+  | 'risk';
 
 export interface ToolParameterSpec {
   name: string;

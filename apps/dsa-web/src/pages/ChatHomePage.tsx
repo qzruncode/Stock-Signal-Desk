@@ -11,8 +11,9 @@ import {
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
 import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
+import { toApiErrorMessage } from '../api/error';
 import { ChatRuntimeBridge } from '../components/assistant-ui/ChatRuntimeBridge';
-import { readStreamErrorMessage } from '../utils/chatStreamError';
+import { readStreamErrorMessage, readThrownStreamErrorMessage } from '../utils/chatStreamError';
 
 const Thread = lazy(() => import('../components/assistant-ui/thread'));
 import { ThreadListSidebar } from '../components/assistant-ui/threadlist-sidebar';
@@ -47,7 +48,11 @@ const ChatHomePage: React.FC = () => {
 
   const loadConversationDetail = useCallback(async (conversationId: string) => {
     const detail = await agentApi.getConversation(conversationId);
-    setSelectedConversationDetail(detail);
+    // A slower previous request must never overwrite the conversation the
+    // user has selected in the meantime.
+    if (selectedConversationIdRef.current === conversationId) {
+      setSelectedConversationDetail(detail);
+    }
     return detail;
   }, []);
 
@@ -68,6 +73,8 @@ const ChatHomePage: React.FC = () => {
         return;
       }
       setSelectedConversationId((current) => current || items[0]?.id || null);
+    } catch (error) {
+      setStreamError(toApiErrorMessage(error, '会话列表加载失败，请检查服务后重试'));
     } finally {
       setIsLoadingConversations(false);
     }
@@ -81,7 +88,11 @@ const ChatHomePage: React.FC = () => {
     if (!selectedConversationId) {
       return;
     }
-    void loadConversationDetail(selectedConversationId);
+    void loadConversationDetail(selectedConversationId).catch((error) => {
+      if (selectedConversationIdRef.current === selectedConversationId) {
+        setStreamError(toApiErrorMessage(error, '会话内容加载失败，请稍后重试'));
+      }
+    });
   }, [loadConversationDetail, selectedConversationId]);
 
   const prepareResumeExisting = useCallback((conversationId: string, afterChunkIndex: number | null) => {
@@ -98,7 +109,9 @@ const ChatHomePage: React.FC = () => {
   // 而非报错(详情带 isGenerating=true → ChatRuntimeBridge 走续流分支)。
   const handleRunInProgress = useCallback(() => {
     if (!selectedConversationId) return;
-    void loadConversationDetail(selectedConversationId);
+    void loadConversationDetail(selectedConversationId).catch((error) => {
+      setStreamError(toApiErrorMessage(error, '恢复生成状态失败，请稍后重试'));
+    });
   }, [loadConversationDetail, selectedConversationId]);
 
   const runtime = useDataStreamRuntime({
@@ -171,42 +184,57 @@ const ChatHomePage: React.FC = () => {
       }
       activeStreamRef.current = null;
       console.error('[Chat] Stream error:', error);
-      setStreamError(error.message || '对话请求失败，请稍后重试');
+      setStreamError(readThrownStreamErrorMessage(error));
     },
     onCancel: () => {
-      // 取消由 onError 的 AbortError 过滤兜底,这里仅确保不残留错误态
+      // Aborting the browser stream does not stop the retained backend run.
+      // Cancel it explicitly so tools/model generation and billing stop too.
+      const cancelledStream = activeStreamRef.current;
       activeStreamRef.current = null;
       setStreamError(null);
+      const conversationId = cancelledStream?.conversationId || selectedConversationIdRef.current;
+      if (conversationId) {
+        void agentApi.cancelConversationRun(conversationId)
+          .then(() => loadConversationDetail(conversationId))
+          .catch((error) => {
+            setStreamError(toApiErrorMessage(error, '停止生成失败，请稍后重试'));
+          });
+      }
     },
     onFinish: async () => {
-      setStreamError(null);
       const finishedStream = activeStreamRef.current;
       activeStreamRef.current = null;
-      if (!finishedStream) {
-        await refreshConversations();
-        return;
-      }
-      const conversationId = finishedStream.conversationId;
-      if (selectedConversationIdRef.current !== conversationId) {
-        await refreshConversations();
-        return;
-      }
-      const exportedThread = threadRuntimeRef.current?.export();
-      if (exportedThread) {
-        const detail = await agentApi.syncConversationSnapshot(conversationId, {
-          threadState: exportedThread,
-        });
-        if (selectedConversationIdRef.current === conversationId) {
-          setSelectedConversationDetail(detail);
+      try {
+        if (!finishedStream) {
+          await refreshConversations();
+          return;
         }
+        const conversationId = finishedStream.conversationId;
+        if (selectedConversationIdRef.current !== conversationId) {
+          await refreshConversations();
+          return;
+        }
+        const exportedThread = threadRuntimeRef.current?.export();
+        if (exportedThread) {
+          const detail = await agentApi.syncConversationSnapshot(conversationId, {
+            threadState: exportedThread,
+          });
+          if (selectedConversationIdRef.current === conversationId) {
+            setSelectedConversationDetail(detail);
+          }
+        }
+        await refreshConversations();
+      } catch (error) {
+        setStreamError(toApiErrorMessage(error, '回答已生成，但会话同步失败，请刷新后重试'));
       }
-      await refreshConversations();
     },
   });
 
   const handleCreateConversation = useCallback(() => {
     resumeExistingRef.current = null;
-    void createConversation();
+    void createConversation().catch((error) => {
+      setStreamError(toApiErrorMessage(error, '新建会话失败，请稍后重试'));
+    });
   }, [createConversation]);
 
   const handleSelectConversation = useCallback((conversationId: string) => {
@@ -224,10 +252,14 @@ const ChatHomePage: React.FC = () => {
       return;
     }
     void (async () => {
-      await agentApi.renameConversation(conversation.id, nextTitle.trim());
-      await refreshConversations();
-      if (conversation.id === selectedConversationId) {
-        await loadConversationDetail(conversation.id);
+      try {
+        await agentApi.renameConversation(conversation.id, nextTitle.trim());
+        await refreshConversations();
+        if (conversation.id === selectedConversationId) {
+          await loadConversationDetail(conversation.id);
+        }
+      } catch (error) {
+        setStreamError(toApiErrorMessage(error, '会话重命名失败，请稍后重试'));
       }
     })();
   }, [loadConversationDetail, refreshConversations, selectedConversationId]);
@@ -238,17 +270,21 @@ const ChatHomePage: React.FC = () => {
       return;
     }
     void (async () => {
-      await agentApi.deleteConversation(conversation.id);
-      const items = await refreshConversations();
-      if (conversation.id !== selectedConversationId) {
-        return;
+      try {
+        await agentApi.deleteConversation(conversation.id);
+        const items = await refreshConversations();
+        if (conversation.id !== selectedConversationId) {
+          return;
+        }
+        setSelectedConversationDetail(null);
+        if (items.length === 0) {
+          await createConversation();
+          return;
+        }
+        setSelectedConversationId(items[0]?.id || null);
+      } catch (error) {
+        setStreamError(toApiErrorMessage(error, '删除会话失败，请稍后重试'));
       }
-      setSelectedConversationDetail(null);
-      if (items.length === 0) {
-        await createConversation();
-        return;
-      }
-      setSelectedConversationId(items[0]?.id || null);
     })();
   }, [createConversation, refreshConversations, selectedConversationId]);
 
@@ -282,15 +318,19 @@ const ChatHomePage: React.FC = () => {
             return;
           }
 
-          await Promise.all(conversationIds.map((conversationId) => agentApi.deleteConversation(conversationId)));
-          const items = await refreshConversations();
-          if (selectedConversationId && conversationIds.includes(selectedConversationId)) {
-            setSelectedConversationDetail(null);
-            if (items.length === 0) {
-              await createConversation();
-              return;
+          try {
+            await Promise.all(conversationIds.map((conversationId) => agentApi.deleteConversation(conversationId)));
+            const items = await refreshConversations();
+            if (selectedConversationId && conversationIds.includes(selectedConversationId)) {
+              setSelectedConversationDetail(null);
+              if (items.length === 0) {
+                await createConversation();
+                return;
+              }
+              setSelectedConversationId(items[0]?.id || null);
             }
-            setSelectedConversationId(items[0]?.id || null);
+          } catch (error) {
+            setStreamError(toApiErrorMessage(error, '批量删除会话失败，请稍后重试'));
           }
         }}
       />
