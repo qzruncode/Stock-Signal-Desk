@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from types import SimpleNamespace
 
@@ -29,6 +30,40 @@ def _tool_response(payload: dict) -> SimpleNamespace:
         content=None,
     )
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def _quantitative_spec(**updates) -> dict:
+    spec = {
+        "version": "1.0",
+        "universe": {
+            "status": "active", "markets": ["sh", "sz", "bj"],
+            "include_st": True, "min_listing_trading_days": 250,
+            "price_adjustment": "qfq",
+        },
+        "technical_rule": {
+            "strategy": "atr_relative_frequency", "atr_period": 14,
+            "atr_average": "sma", "baseline_period": 60,
+            "baseline_average": "sma", "threshold_operator": "divide",
+            "threshold_value": 1.27, "daily_comparison": "gt",
+            "lookback_days": 250, "min_qualified_days": 175,
+            "min_qualified_ratio_pct": 70,
+        },
+        "financial_filters": [
+            {"field": "revenue_ttm", "operator": "gt", "value": 500_000_000},
+            {"field": "deducted_net_profit_ttm", "operator": "gt", "value": 0},
+            {"field": "debt_ratio", "operator": "lt", "value": 70},
+        ],
+        "sort": {"field": "qualified_ratio_pct", "order": "desc"},
+        "output_fields": [
+            "current_atr_pct", "long_term_mean_pct", "dynamic_warning_pct",
+            "qualified_days", "qualified_ratio_pct", "revenue_ttm",
+            "deducted_net_profit_ttm", "debt_ratio", "financial_report_period",
+            "financial_source", "latest_trade_date",
+        ],
+        "preview_limit": 10,
+    }
+    spec.update(updates)
+    return spec
 
 
 def test_semantic_intent_uses_latest_explicit_subtopic_and_structured_dimensions() -> None:
@@ -122,12 +157,104 @@ def test_quantitative_screening_routes_to_one_deterministic_tool() -> None:
         kind="quantitative_screening",
         topic="ATR相对波动率全市场筛选",
         objective="按精确公式筛选全部A股",
+        quantitative_screen_spec=_quantitative_spec(),
     )
     playbook = select_playbook_for_intent(intent)
     assert playbook == QUANTITATIVE_SCREENING
     calls = mandatory_tool_calls(playbook, [], [], intent=intent)
     assert [call["name"] for call in calls] == ["screen_atr_volatility_stocks"]
-    assert json.loads(calls[0]["arguments"]) == {"refresh_if_stale": True}
+    arguments = json.loads(calls[0]["arguments"])
+    assert arguments["refresh_if_stale"] is True
+    assert arguments["screen_spec"]["technical_rule"]["atr_period"] == 14
+    assert arguments["screen_spec"]["financial_filters"][0]["value"] == 500_000_000
+
+
+def test_quantitative_intent_rejects_silent_defaults_and_dropped_unsupported_conditions() -> None:
+    with pytest.raises(ValueError, match="完整 quantitative_screen_spec"):
+        ResearchIntent(
+            kind="quantitative_screening",
+            topic="ATR筛选",
+            objective="按ATR筛选",
+        )
+    with pytest.raises(ValueError, match="不能静默丢弃"):
+        ResearchIntent(
+            kind="quantitative_screening",
+            topic="RSI与ATR筛选",
+            objective="同时满足RSI与ATR",
+            quantitative_screen_spec=_quantitative_spec(),
+            unsupported_requirements=["RSI>70"],
+            needs_clarification=False,
+        )
+
+
+def test_quantitative_intent_can_request_clarification_for_unsupported_metric() -> None:
+    intent = ResearchIntent(
+        kind="quantitative_screening",
+        topic="RSI与ATR筛选",
+        objective="同时满足RSI与ATR",
+        quantitative_screen_spec=None,
+        unsupported_requirements=["RSI>70"],
+        needs_clarification=True,
+        clarification_question="当前筛选器尚不支持RSI，是否仅保留ATR条件？",
+    )
+    assert intent.needs_clarification is True
+    assert intent.unsupported_requirements == ["RSI>70"]
+
+
+def test_semantic_quantitative_spec_preserves_changed_user_conditions_end_to_end() -> None:
+    captured = {}
+    changed_spec = copy.deepcopy(_quantitative_spec())
+    changed_spec["technical_rule"].update({
+        "atr_period": 20,
+        "atr_average": "ema",
+        "baseline_period": 90,
+        "baseline_average": "ema",
+        "threshold_operator": "multiply",
+        "threshold_value": 1.1,
+        "lookback_days": 120,
+        "min_qualified_days": 72,
+        "min_qualified_ratio_pct": 60,
+    })
+    changed_spec["financial_filters"][0]["value"] = 1_000_000_000
+
+    async def completion(**kwargs):
+        captured.update(kwargs)
+        return _tool_response({
+            "kind": "quantitative_screening",
+            "topic": "可配置ATR相对波动率筛选",
+            "discovery_theme": None,
+            "selection_mode": "complete_inventory",
+            "thesis_requirements": [],
+            "entity_scope": "none",
+            "entities": [],
+            "objective": "使用修改后的条件筛选全部A股",
+            "research_dimensions": ["ATR", "TTM财务"],
+            "output_requirements": ["完整CSV"],
+            "quantitative_screen_spec": changed_spec,
+            "unsupported_requirements": [],
+            "needs_clarification": False,
+            "clarification_question": None,
+            "confidence": 0.99,
+        })
+
+    intent = asyncio.run(resolve_research_intent(
+        [
+            {"role": "assistant", "content": "上一轮按14日SMA、60日均线、营收5亿元执行。"},
+            {"role": "user", "content": "改成20日EMA、90日EMA、长期线乘1.1、近120日72天和60%，营收改成10亿元。"},
+        ],
+        {"model": "test-model"},
+        completion=completion,
+    ))
+
+    rule = intent.quantitative_screen_spec.technical_rule
+    assert rule.atr_period == 20 and rule.atr_average == "ema"
+    assert rule.baseline_period == 90 and rule.threshold_operator == "multiply"
+    assert rule.lookback_days == 120 and rule.min_qualified_days == 72
+    calls = mandatory_tool_calls(QUANTITATIVE_SCREENING, [], [], intent=intent)
+    arguments = json.loads(calls[0]["arguments"])
+    assert arguments["screen_spec"]["technical_rule"]["atr_period"] == 20
+    assert arguments["screen_spec"]["financial_filters"][0]["value"] == 1_000_000_000
+    assert "不能只给本轮修改的字段" in captured["messages"][0]["content"]
 
 
 def test_semantic_intent_normalizes_gateway_null_and_topic_only_scope() -> None:

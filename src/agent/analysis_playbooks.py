@@ -116,12 +116,13 @@ QUANTITATIVE_SCREENING = AnalysisPlaybook(
     evidence_standard=(
         "证券候选池必须来自本地 stock_meta 全部 active A股，不得由模型枚举候选。",
         "筛选工具必须先刷新财务和前复权日线，并校验来源覆盖与数据日期。",
-        "ATR、长期均值、动态警戒线、250日比例和TTM财务条件全部由工具精确计算。",
+        "用户条件必须先解析为完整强类型规格；周期、均线类型、动态线、比较符、窗口、财务条件和排序全部由工具按规格精确计算。",
+        "工具必须回传实际执行规格和指纹；任何缺失、越界或不支持的条件都必须失败或澄清，禁止静默套用示例默认值。",
         "任何一项缺失或不满足的股票不得进入结果；模型不得补数、改阈值或扩展名单。",
     ),
     output_contract=(
         "只展示工具返回的完全合格股票，并保留工具排序。",
-        "明确列出公式、数据日期、报告期、全市场覆盖统计和来源。",
+        "明确列出实际执行规格、公式、规格指纹、数据日期、报告期、全市场覆盖统计和来源。",
         "结果超过10条时展示前10条并提供完整文件下载链接。",
         "工具刷新失败时不得给选股结论，必须展示具体失败阶段和覆盖情况。",
     ),
@@ -318,7 +319,12 @@ def mandatory_tool_calls(
     if playbook is None:
         return []
     if playbook.id == QUANTITATIVE_SCREENING.id:
-        return [_call("screen_atr_volatility_stocks", {"refresh_if_stale": True})]
+        if intent is None or intent.quantitative_screen_spec is None:
+            return []
+        return [_call("screen_atr_volatility_stocks", {
+            "screen_spec": intent.quantitative_screen_spec.model_dump(mode="json"),
+            "refresh_if_stale": True,
+        })]
     topic = intent.normalized_topic if intent is not None else infer_research_topic(messages)
     if not topic:
         topic = infer_research_topic(messages)

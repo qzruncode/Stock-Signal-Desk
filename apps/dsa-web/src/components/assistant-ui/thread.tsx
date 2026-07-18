@@ -123,21 +123,21 @@ const EmptyState: FC = () => (
     <div className="mt-5 w-full text-left">
       <p className="mb-2 px-1 text-xs font-medium text-muted-foreground">你可以这样问</p>
       <div className="grid gap-2 sm:grid-cols-2">
-      {SUGGESTIONS.map((suggestion) => (
-        <ThreadPrimitive.Suggestion
-          key={suggestion}
-          className={cn(
-            'rounded-xl border border-border bg-card px-4 py-2.5 text-left',
-            'text-sm leading-6 text-foreground/85 shadow-sm transition',
-            'hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground hover:shadow-md',
-          )}
-          prompt={suggestion}
-          send
-          method="replace"
-        >
-          {suggestion}
-        </ThreadPrimitive.Suggestion>
-      ))}
+        {SUGGESTIONS.map((suggestion) => (
+          <ThreadPrimitive.Suggestion
+            key={suggestion.label}
+            className={cn(
+              'rounded-xl border border-border bg-card px-4 py-2.5 text-left',
+              'text-sm leading-6 text-foreground/85 shadow-sm transition',
+              'hover:-translate-y-0.5 hover:border-primary/30 hover:bg-primary/5 hover:text-foreground hover:shadow-md',
+            )}
+            prompt={suggestion.prompt}
+            send
+            method="replace"
+          >
+            {suggestion.label}
+          </ThreadPrimitive.Suggestion>
+        ))}
       </div>
     </div>
   </div>
@@ -150,10 +150,27 @@ const CAPABILITIES = [
 ];
 
 const SUGGESTIONS = [
-  '帮我分析下人形机器人产业链，哪些领域最受益？',
-  '比较贵州茅台与五粮液的盈利质量和当前估值',
-  '宁德时代最近有哪些重要公告和风险事件？',
-  '当前 A 股市场宽度如何，哪些板块资金更强？',
+  {
+    label: '帮我分析下人形机器人产业链，哪些领域最受益？',
+    prompt: '帮我分析下人形机器人产业链，哪些领域最受益？',
+  },
+  {
+    label: '比较贵州茅台与五粮液的盈利质量和当前估值',
+    prompt: '比较贵州茅台与五粮液的盈利质量和当前估值',
+  },
+  {
+    label: '宁德时代最近有哪些重要公告和风险事件？',
+    prompt: '宁德时代最近有哪些重要公告和风险事件？',
+  },
+  {
+    label: '当前 A 股市场宽度如何，哪些板块资金更强？',
+    prompt: '当前 A 股市场宽度如何，哪些板块资金更强？',
+  },
+  {
+    label: '按 14 日 ATR 相对波动率与财务条件筛选全部 A 股',
+    prompt:
+      '请从全部 active A 股（沪深北，包含 ST）中筛选：使用 14 日 SMA ATR 相对波动率，以其 60 日 SMA 作为长期均值，动态线为长期均值除以 1.27；当 ATR 相对波动率大于动态线时记为达标。统计最近 250 个交易日，要求至少 175 天达标且达标比例不低于 70%，上市交易历史不少于 250 日；营业收入 TTM 大于 5 亿元、扣非净利润 TTM 大于 0、资产负债率低于 70%。按近 250 日达标比例降序。输出当前 ATR%、60 日长期均值、动态线、250 日达标天数及比例、三项财务指标、财务报告期和来源、行情日期；超过 10 只给完整 CSV。',
+  },
 ];
 
 /* ── User Message ────────────────────────────────────────────────────── */

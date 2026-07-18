@@ -15,9 +15,13 @@ import json
 import re
 from typing import Any, Awaitable, Callable, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.llm.anthropic_gateway import build_litellm_kwargs
+from src.services.stock_screening.screen_spec import (
+    QuantitativeScreenSpec,
+    quantitative_screen_spec_schema,
+)
 
 
 IntentKind = Literal[
@@ -56,6 +60,8 @@ class ResearchIntent(BaseModel):
     objective: str
     research_dimensions: list[str] = Field(default_factory=list)
     output_requirements: list[str] = Field(default_factory=list)
+    quantitative_screen_spec: Optional[QuantitativeScreenSpec] = None
+    unsupported_requirements: list[str] = Field(default_factory=list)
     needs_clarification: bool = False
     clarification_question: Optional[str] = None
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
@@ -100,6 +106,20 @@ class ResearchIntent(BaseModel):
                 cleaned.append(requirement)
         return cleaned
 
+    @model_validator(mode="after")
+    def _validate_quantitative_contract(self) -> "ResearchIntent":
+        if self.kind == "quantitative_screening":
+            if self.unsupported_requirements and not self.needs_clarification:
+                raise ValueError("量化筛选包含不支持条件时必须请求澄清，不能静默丢弃")
+            if (
+                not self.needs_clarification
+                and self.quantitative_screen_spec is None
+            ):
+                raise ValueError("量化筛选必须提供完整 quantitative_screen_spec")
+        elif self.quantitative_screen_spec is not None or self.unsupported_requirements:
+            raise ValueError("非量化筛选不得携带量化执行规格或不支持条件")
+        return self
+
     @property
     def normalized_topic(self) -> str:
         return str(self.topic or "").strip()
@@ -142,6 +162,8 @@ _INTENT_TOOL = {
                 "objective": {"type": "string"},
                 "research_dimensions": {"type": "array", "items": {"type": "string"}},
                 "output_requirements": {"type": "array", "items": {"type": "string"}},
+                "quantitative_screen_spec": quantitative_screen_spec_schema(nullable=True),
+                "unsupported_requirements": {"type": "array", "items": {"type": "string"}},
                 "needs_clarification": {"type": "boolean"},
                 "clarification_question": {"type": ["string", "null"]},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -149,7 +171,8 @@ _INTENT_TOOL = {
             "required": [
                 "kind", "topic", "discovery_theme", "selection_mode", "thesis_requirements",
                 "entity_scope", "entities", "objective",
-                "research_dimensions", "output_requirements", "needs_clarification",
+                "research_dimensions", "output_requirements", "quantitative_screen_spec",
+                "unsupported_requirements", "needs_clarification",
                 "clarification_question", "confidence",
             ],
         },
@@ -189,8 +212,27 @@ _INTENT_SYSTEM_PROMPT = """\
      这类任务必须交给确定性筛选工具，不能让回答模型自行拉数据或计算。
 9. research_dimensions 写本轮真正需要研究的业务维度，例如 GPU、训练芯片、推理芯片、订单、收入；
    不要套用其他行业的零部件词。
-10. 只有缺少对象且无法从紧邻上下文唯一确定时，needs_clarification 才为 true。
-11. 必须通过 resolve_research_intent 工具返回结构化结果。\
+10. quantitative_screening 必须同时遵守以下合同：
+   - quantitative_screen_spec 必须是完整的执行规格，不能只给本轮修改的字段。
+   - 当前支持的技术策略只有 atr_relative_frequency；支持ATR的SMA/EMA/Wilder平滑、长期基线
+     SMA/EMA、动态线乘法或除法、gt/gte/lt/lte/eq比较、回看天数、达标天数与比例。
+   - 财务字段只支持 revenue_ttm、deducted_net_profit_ttm、debt_ratio；金额统一换算为人民币元，
+     百分比保留百分数，例如5亿元=500000000、70%=70。
+   - 用户没有指定ST范围时 include_st=true；“全部A股”markets=[sh,sz,bj]；前复权为qfq。
+     这些是范围标准化，不得为用户未说明的技术周期、阈值、财务条件或排序擅自补默认值。
+   - 用户只说“按ATR选股”但没有给出执行所需周期、动态线、窗口或达标条件，必须澄清，
+     quantitative_screen_spec=null。
+   - 多轮追问如“营收改成10亿”“改为20日ATR”必须从紧邻上一轮完整规格继承其他条件，
+     仅修改用户明确改变的字段，再返回一份完整新规格。
+   - 用户要求RSI、MACD、PE或任何不在上述字段/策略中的条件时，逐项写入
+     unsupported_requirements，needs_clarification=true，不能删除这些条件后继续筛选。
+   - output_fields 只列用户要求展示的指标；始终无需列code/name，工具会自动添加。用户未指定
+     展示列时，使用技术判定字段、所有参与财务过滤/排序的字段、财务报告期/来源和行情日期；
+     preview_limit 未指定时仅可使用界面标准值10。这两项不改变入选结论。
+   - 非 quantitative_screening 必须返回 quantitative_screen_spec=null、unsupported_requirements=[]。
+11. 只有缺少对象、量化条件不完整或存在不支持条件且无法从紧邻上下文唯一确定时，
+    needs_clarification 才为 true。澄清问题必须指出具体缺失或不支持的条件。
+12. 必须通过 resolve_research_intent 工具返回结构化结果。\
 """
 
 

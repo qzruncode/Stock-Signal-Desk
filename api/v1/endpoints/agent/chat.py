@@ -1816,8 +1816,8 @@ def _build_realtime_quote_answer(
     )
 
 
-def _build_atr_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
-    """Render exact screener output without a second model changing conclusions."""
+def _build_quantitative_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
+    """Render a validated screen verbatim without changing its conditions."""
     results = [
         item.get("result")
         for item in evidence or []
@@ -1829,25 +1829,48 @@ def _build_atr_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
         return "## 筛选未完成\n\n量化筛选工具没有返回结构化结果，因此本轮不输出股票结论。"
     result = results[-1]
     coverage = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
-    coverage_text = (
-        f"全市场 active {coverage.get('active', '—')} 只；财务覆盖 {coverage.get('financial_covered', '—')} 只；"
-        f"财务初筛 {coverage.get('financial_eligible', '—')} 只；有效行情 {coverage.get('fresh_kline', '—')} 只。"
-    )
+    coverage_parts = [f"本轮股票范围 {coverage.get('universe', '—')} 只"]
+    if coverage.get("history_preexcluded") is not None:
+        coverage_parts.append(f"上市历史确定不足预排除 {coverage.get('history_preexcluded')} 只")
+    if coverage.get("financial_covered") is not None:
+        coverage_parts.append(f"必需财务字段覆盖 {coverage.get('financial_covered')} 只")
+    if coverage.get("financial_eligible") is not None:
+        coverage_parts.append(f"财务条件后候选 {coverage.get('financial_eligible')} 只")
+    if coverage.get("fresh_kline") is not None:
+        coverage_parts.append(f"取得行情 {coverage.get('fresh_kline')} 只")
     fallback_count = int(coverage.get("financial_fallback_count") or 0)
-    recent_listing_count = int(coverage.get("recent_listing_without_ttm") or 0)
-    if fallback_count or recent_listing_count:
-        coverage_text += (
-            f" 其中财务补源 {fallback_count} 只；上市未满一年（最终仍由K线根数硬校验）{recent_listing_count} 只。"
-        )
+    cache_count = int(coverage.get("financial_cache_count") or 0)
+    if cache_count:
+        coverage_parts.append(f"本日财务快照接管 {cache_count} 只")
+    if fallback_count:
+        coverage_parts.append(f"财务补源 {fallback_count} 只")
+    coverage_text = "；".join(coverage_parts) + "。"
     if result.get("success") is not True:
         errors = [str(item) for item in result.get("errors") or [] if item]
         failed = [str(item) for item in result.get("failed_symbols") or [] if item]
         detail = "\n".join(f"- {item}" for item in errors) or "- 工具没有提供失败原因。"
         failed_text = ("\n- 失败样例：" + "；".join(failed[:10])) if failed else ""
+        stage = str(result.get("failure_stage") or "unknown")
         return (
             "## 筛选未完成\n\n"
-            "**本轮不输出任何股票结论。** 数据刷新或全市场覆盖没有通过硬校验，继续给名单会产生遗漏或错误排序。\n\n"
-            f"{detail}{failed_text}\n\n- 覆盖校验：{coverage_text}"
+            "**本轮不输出任何股票结论。** 条件、数据刷新或全市场覆盖没有通过硬校验。\n\n"
+            f"- 失败阶段：`{stage}`\n{detail}{failed_text}\n\n- 覆盖校验：{coverage_text}"
+        )
+
+    screen_spec = result.get("screen_spec")
+    columns = result.get("columns")
+    applied_rules = result.get("applied_rules")
+    if (
+        not isinstance(screen_spec, dict)
+        or not isinstance(columns, list)
+        or not columns
+        or not isinstance(applied_rules, list)
+        or not applied_rules
+        or coverage.get("complete") is not True
+    ):
+        return (
+            "## 筛选未完成\n\n**本轮不输出任何股票结论。** 工具虽返回成功，"
+            "但缺少实际执行规格、动态列定义、规则回显或完整覆盖证明。"
         )
 
     def number(value: Any, digits: int = 2) -> str:
@@ -1856,47 +1879,113 @@ def _build_atr_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
         except (TypeError, ValueError):
             return "—"
 
-    def yi(value: Any) -> str:
-        try:
-            return f"{float(value) / 100_000_000:,.2f}亿"
-        except (TypeError, ValueError):
+    def format_value(value: Any, format_name: str) -> str:
+        if value is None:
             return "—"
+        if format_name == "currency_yuan":
+            try:
+                return f"{float(value) / 100_000_000:,.2f}亿"
+            except (TypeError, ValueError):
+                return "—"
+        if format_name == "percent":
+            return number(value) + "%"
+        if format_name == "integer":
+            try:
+                return f"{int(value):,}"
+            except (TypeError, ValueError):
+                return "—"
+        return str(value)
+
+    normalized_columns: List[Dict[str, str]] = []
+    for column in columns:
+        if not isinstance(column, dict):
+            continue
+        field = str(column.get("field") or "").strip()
+        label = str(column.get("label") or "").strip()
+        if field and label:
+            normalized_columns.append({
+                "field": field,
+                "label": label,
+                "format": str(column.get("format") or "text"),
+            })
+    if not normalized_columns:
+        return "## 筛选未完成\n\n工具返回的结果列合同无效，本轮不输出股票结论。"
+
+    preview_items = result.get("items") or []
+    for item in preview_items:
+        if not isinstance(item, dict) or any(
+            column["field"] not in item for column in normalized_columns
+        ):
+            return (
+                "## 筛选未完成\n\n工具返回的预览行缺少请求字段，"
+                "结果合同不完整，因此本轮不输出股票结论。"
+            )
 
     rows: List[str] = []
-    for item in result.get("items") or []:
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            f"| {item.get('name', '—')} ({item.get('code', '—')}) | "
-            f"{number(item.get('current_atr_pct'))}% | {number(item.get('long_term_mean_pct'))}% | "
-            f"{number(item.get('dynamic_warning_pct'))}% | {item.get('qualified_days', '—')} / "
-            f"{number(item.get('qualified_ratio_pct'))}% | {yi(item.get('revenue_ttm'))} | "
-            f"{yi(item.get('deducted_net_profit_ttm'))} | {number(item.get('debt_ratio'))}% |"
-            f" {item.get('financial_report_period', '—')} |"
-        )
+    for item in preview_items:
+        cells = [
+            format_value(item.get(column["field"]), column["format"])
+            for column in normalized_columns
+        ]
+        rows.append("| " + " | ".join(cells) + " |")
     total = int(result.get("total") or 0)
+    preview_limit = int(screen_spec.get("preview_limit") or 10)
+    download_url = str(result.get("download_url") or "").strip()
+    if total > preview_limit and not download_url:
+        return (
+            "## 筛选未完成\n\n完整结果超过页面预览上限，但工具没有生成下载文件；"
+            "为避免交付不完整名单，本轮不输出股票结论。"
+        )
     if rows:
         table = (
-            "| 公司/代码 | 当前ATR% | 60日均值 | 动态线 | 250日达标 | 营收TTM | 扣非净利TTM | 负债率 | 财务期 |\n"
-            "|---|---:|---:|---:|---:|---:|---:|---:|---|\n" + "\n".join(rows)
+            "| " + " | ".join(column["label"] for column in normalized_columns) + " |\n"
+            "| " + " | ".join("---" for _ in normalized_columns) + " |\n"
+            + "\n".join(rows)
         )
     else:
-        table = "严格执行全部条件后，合格股票为 **0 只**。这不是空结果错误，而是完整筛选后的有效结论。"
-    download_url = str(result.get("download_url") or "").strip()
+        table = "完整执行本轮全部条件后，合格股票为 **0 只**。"
+    sort_spec = screen_spec.get("sort") if isinstance(screen_spec.get("sort"), dict) else {}
+    sort_text = f"{sort_spec.get('field', '工具指定字段')} {sort_spec.get('order', '—')}"
     download = f"\n\n[下载完整 {total} 只筛选结果（CSV）]({download_url})" if download_url else ""
+    rules_text = "\n".join(f"- {item}" for item in applied_rules if str(item).strip())
+    fingerprint = str(result.get("spec_fingerprint") or "—")
+    data_times = result.get("data_times") if isinstance(result.get("data_times"), dict) else {}
+    kline_time = str(data_times.get("kline_expected_date") or "").strip()
+    financial_period = str(
+        data_times.get("financial_report_period")
+        or result.get("financial_report_period")
+        or ""
+    ).strip()
+    time_parts: List[str] = []
+    if kline_time:
+        time_parts.append(f"行情刷新基准日 {kline_time}")
+    if financial_period:
+        time_parts.append(f"主财务报告期 {financial_period}")
+    if not time_parts:
+        time_parts.append(f"数据日期 {result.get('data_time', '—')}")
+    warnings = [str(item) for item in result.get("warnings") or [] if item]
+    warnings_text = ""
+    if warnings:
+        warnings_text = "\n- 数据源切换：" + "；".join(warnings)
     return (
-        f"## 筛选结论\n\n共 **{total} 只**股票同时满足全部条件，按近250日达标比例降序。"
-        + ("下表展示前10只。\n\n" if total > 10 else "\n\n")
+        f"## 筛选结论\n\n共 **{total} 只**股票满足本轮完整规格，排序为 `{sort_text}`。"
+        + (f"下表展示前{preview_limit}只。\n\n" if total > preview_limit else "\n\n")
         + table
         + download
-        + "\n\n### 口径与覆盖\n\n"
-        + "- 公式：TR取三者最大值；ATR为14日TR简单均值；ATR相对波动率为ATR/收盘价；"
-          "动态线为60日长期均值/1.27；近250日需至少175日高于动态线且比例不低于70%。\n"
-        + "- 财务：营业收入TTM>5亿元、扣非净利润TTM>0、资产负债率<70%，缺一项即排除。\n"
-        + f"- 数据日期：行情截至 {result.get('data_time', '—')}；主财务报告期 {result.get('financial_report_period', '—')}，补源公司的最新报告期逐行展示。\n"
+        + "\n\n### 本轮实际执行规格\n\n"
+        + rules_text
+        + f"\n- 规格指纹：`{fingerprint}`"
+        + "\n\n### 数据与覆盖\n\n"
+        + f"- 数据日期：{'；'.join(time_parts)}。\n"
         + f"- 覆盖：{coverage_text}\n"
         + f"- 来源：{result.get('source', '工具返回来源')}。"
+        + warnings_text
     )
+
+
+def _build_atr_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
+    """Compatibility alias for existing imports while the tool keeps its name."""
+    return _build_quantitative_screen_answer(evidence)
 
 
 def _unsupported_final_claims(
@@ -3267,7 +3356,7 @@ async def _run_react_loop(
             kwargs["tool_choice"] = "auto"
 
     if playbook is not None and playbook.id == QUANTITATIVE_SCREENING.id:
-        content_text = _build_atr_screen_answer(evidence)
+        content_text = _build_quantitative_screen_answer(evidence)
         controller.append_text(content_text)
         if state is not None:
             state["assistant_text"] = content_text

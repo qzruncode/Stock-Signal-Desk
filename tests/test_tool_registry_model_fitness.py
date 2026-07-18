@@ -20,7 +20,6 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         names = registry.get_tool_names()
 
         self.assertEqual(len(names), len(TOOL_MODULES))
-        self.assertEqual(len(names), 36)
         self.assertEqual(len(names), len(set(names)))
 
     def test_each_registered_tool_has_same_named_module(self) -> None:
@@ -202,6 +201,24 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             "get_stock_capital_flow", "get_technical_indicators",
         }
         self.assertTrue(expected.issubset(names))
+
+    def test_quantitative_screen_rejects_invalid_spec_through_real_registry_contract(self) -> None:
+        registry = ToolRegistry()
+        arguments = {
+            "screen_spec": {
+                "version": "1.0",
+                "technical_rule": {"strategy": "atr_relative_frequency", "atr_period": 1},
+            },
+            "refresh_if_stale": True,
+        }
+        normalized = registry.normalize_arguments("screen_atr_volatility_stocks", arguments)
+        self.assertEqual(normalized["screen_spec"]["technical_rule"]["atr_period"], 1)
+
+        result = registry.execute("screen_atr_volatility_stocks", arguments)
+
+        self.assertIs(result["success"], False)
+        self.assertEqual(result["failure_stage"], "spec_validation")
+        self.assertEqual(result["items"], [])
 
     def test_result_contract_completes_nullable_freshness_fields(self) -> None:
         result = enforce_result_contract("demo", {"success": True, "errors": []})

@@ -159,8 +159,9 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         return result
 
     if tool_name == "screen_atr_volatility_stocks":
-        # The service already bounds the inline rows to ten and exports the
-        # complete set. Preserve every decision field and the download link.
+        # The service bounds inline rows according to the validated spec and
+        # exports the complete set. Preserve the spec, rule echo, every
+        # decision field and the download link without model-facing compaction.
         return _annotate_tool_payload(
             tool_name,
             result,
