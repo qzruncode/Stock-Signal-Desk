@@ -429,6 +429,56 @@ def test_run_react_loop_hides_duplicate_and_over_budget_tool_requests():
     assert registry.execute.call_count == chat_mod.MAX_TOOL_CALLS_PER_ROUND
 
 
+def test_run_react_loop_executes_theme_candidate_tool_once_per_turn():
+    """Topic wording drift must not create duplicate theme-candidate cards."""
+    controller = _FakeController()
+    llm_calls = {"n": 0}
+
+    async def fake_acompletion(**kwargs):
+        llm_calls["n"] += 1
+        if llm_calls["n"] == 1:
+            calls = [
+                _mock_tool_call_delta(
+                    idx=0,
+                    name="get_theme_stock_candidates",
+                    arguments='{"theme":"人形机器人","limit":500}',
+                    tc_id="call_theme_exact",
+                ),
+                _mock_tool_call_delta(
+                    idx=1,
+                    name="get_theme_stock_candidates",
+                    arguments='{"theme":"具身智能","limit":300}',
+                    tc_id="call_theme_drifted",
+                ),
+            ]
+            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=calls)])
+        return _AsyncChunkStream([_mock_llm_chunk(content="done")])
+
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = ["get_theme_stock_candidates"]
+    registry.execute.return_value = {"success": True, "items": []}
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat.select_analysis_playbook", return_value=None), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._run_react_loop(
+                controller, [{"role": "user", "content": "研究这个机器人主题"}], fake_cfg
+            )
+
+    assert asyncio.run(run()) == "done"
+    assert registry.execute.call_count == 1
+    assert len(controller.tool_calls) == 1
+    assert registry.execute.call_args.args == (
+        "get_theme_stock_candidates",
+        {"theme": "人形机器人", "limit": 500},
+    )
+
+
 def test_referential_multi_stock_calls_are_coalesced_with_verified_entities():
     calls = [
         {"id": "a", "name": "get_realtime_quotes", "arguments": '{"symbols":"003021,603662"}'},
@@ -473,6 +523,36 @@ def test_verified_entity_context_scopes_referential_followup_to_previous_table_r
         {"name": "兆威机电", "symbol": "003021"},
     ]
     assert "禁止扩展范围" in context
+
+
+def test_verified_entity_context_uses_previous_table_non_first_company_column_only():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "更早一轮提到机器人 (300024)。",
+        },
+        {"role": "user", "content": "只看最核心公司"},
+        {
+            "role": "assistant",
+            "content": (
+                "| 细分环节 | 最核心公司 | 核心逻辑 |\n"
+                "|---|---|---|\n"
+                "| 谐波减速器 | 绿的谐波 (688017) | 人形机器人主业相关 |\n"
+                "| 伺服系统 | 汇川技术 (300124) | 人形机器人增量业务 |\n\n"
+                "跟踪整机厂量产，但不把美的集团加入本轮名单。"
+            ),
+        },
+        {"role": "user", "content": "这些核心公司现在能买吗？"},
+    ]
+
+    context, entities = chat_mod._verified_entity_context(messages)
+
+    assert entities == [
+        {"name": "绿的谐波", "symbol": "688017"},
+        {"name": "汇川技术", "symbol": "300124"},
+    ]
+    assert "300024" not in context
+    assert "000333" not in context
 
 
 def test_multi_stock_round_keeps_symmetric_risk_pair_and_drops_redundant_valuation():
@@ -699,6 +779,75 @@ def test_stream_final_answer_normal_output():
     assert controller.texts == ["总结内容"]
 
 
+def test_generic_contract_rejects_header_only_table_and_missing_batch_rows():
+    evidence = [{
+        "tool": "get_multi_stock_snapshot",
+        "result": {
+            "success": True,
+            "items": [
+                {"name": "绿的谐波", "symbol": "688017"},
+                {"name": "汇川技术", "symbol": "300124"},
+            ],
+        },
+    }]
+    header_only = (
+        "| 公司/代码 | 判断 |\n"
+        "|---|---|"
+    )
+
+    issues = chat_mod._generic_answer_contract_issues(header_only, evidence)
+
+    assert "Markdown表格只有表头，没有任何数据行" in issues
+    assert any("最终答案遗漏2家" in issue for issue in issues)
+
+
+def test_generic_final_synthesis_repairs_header_only_table():
+    controller = _FakeController()
+    calls = {"value": 0}
+    evidence = [{
+        "tool": "get_multi_stock_snapshot",
+        "result": {
+            "success": True,
+            "items": [{
+                "name": "绿的谐波", "symbol": "688017",
+                "quote": {"price": 330.12, "change_pct": -12.81, "pe_dynamic": 463.63, "pb_ratio": 17.14},
+                "financial": {"net_profit": 32634147.52, "debt_ratio_pct": 9.44},
+                "technical": {"is_stale": False},
+            }],
+            "data_time": "2026-07-18T13:39:02+08:00",
+            "quote_basis": "非交易时段的最近市场快照",
+        },
+    }]
+
+    async def fake_acompletion(**kwargs):
+        calls["value"] += 1
+        if calls["value"] == 1:
+            return _AsyncChunkStream([_mock_llm_chunk(
+                content="| 公司/代码 | 判断 |\n|---|---|",
+                finish_reason="stop",
+            )])
+        return _AsyncChunkStream([_mock_llm_chunk(
+            content="| 公司/代码 | 判断 |\n|---|---|\n| 绿的谐波 (688017) | 等业绩兑现 |",
+            finish_reason="stop",
+        )])
+
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "找出这些股票"}],
+                cfg,
+                evidence=evidence,
+            )
+
+    result = asyncio.run(run())
+    assert "绿的谐波 (688017)" in result
+    assert calls["value"] == 2
+
+
 def test_industry_playbook_executes_runtime_owned_evidence_plan_before_model():
     controller = _FakeController()
     llm_calls = []
@@ -749,6 +898,86 @@ def test_industry_playbook_executes_runtime_owned_evidence_plan_before_model():
     # the only model request is the final synthesis.
     assert len(llm_calls) == 1
     assert "强制分析标准" in llm_calls[0]["messages"][0]["content"]
+
+
+def test_investment_playbook_renders_tool_evidence_without_model_synthesis():
+    controller = _FakeController()
+    entities = [
+        {"name": "绿的谐波", "symbol": "688017"},
+        {"name": "兆威机电", "symbol": "003021"},
+    ]
+    decision_result = {
+        "success": True,
+        "thesis": "人形机器人",
+        "data_time": "2026-07-18",
+        "quote_basis": "非交易时段的最近市场快照",
+        "resolved_entities": entities,
+        "items": [
+            {
+                "name": entity["name"],
+                "symbol": entity["symbol"],
+                "snapshot": {"technical": {"indicators": {}}},
+                "financials": {"items": [{}]},
+                "valuation": {},
+                "capital_flow": {"windows": {"10d": {}}},
+                "risk_events": {"items": [], "analysis": {}},
+                "announcements": {},
+                "evidence_coverage": {"complete": False, "missing": ["expectations"]},
+                "screening_flags": {"positive": [], "negative": []},
+            }
+            for entity in entities
+        ],
+    }
+    breadth_result = {
+        "success": True,
+        "up_count": 3210,
+        "down_count": 1840,
+        "advance_decline_ratio": 1.745,
+        "total_amount": 15000,
+        "total_amount_unit": "亿元",
+        "data_time": "2026-07-18T14:00:00+08:00",
+    }
+
+    def fake_execute(name, args, **kwargs):
+        return decision_result if name == "get_multi_stock_decision_evidence" else breadth_result
+
+    registry = MagicMock()
+    registry.get_all_schemas.return_value = []
+    registry.get_tool_names.return_value = [
+        "get_multi_stock_decision_evidence",
+        "get_market_breadth",
+    ]
+    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+    messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "| 公司/代码 | 结论 |\n|---|---|\n"
+                "| 绿的谐波 (688017) | 核心公司 |\n"
+                "| 兆威机电 (003021) | 核心公司 |"
+            ),
+        },
+        {"role": "user", "content": "这些核心公司现在能买吗？"},
+    ]
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+             patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat.execute_tool_isolated", side_effect=fake_execute), \
+             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
+             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            llm_mod.acompletion = AsyncMock(side_effect=AssertionError("不应进入模型最终综合"))
+            return await chat_mod._run_react_loop(controller, messages, cfg)
+
+    result = asyncio.run(run())
+
+    assert result.startswith("## 专业买入决策结论")
+    assert "绿的谐波 (688017)" in result
+    assert "兆威机电 (003021)" in result
+    assert "### 市场宽度" in result
+    assert "上涨 **3210** 家" in result
+    assert len(controller.tool_calls) == 2
 
 
 def test_industry_playbook_repairs_an_answer_that_drops_required_sections():
@@ -1296,6 +1525,242 @@ def test_theme_mapping_does_not_promote_unrelated_total_company_revenue():
     assert "没有检出满足 L2/L3 定义" in fallback
 
 
+def test_ai_chip_mapping_rejects_humanoid_robot_progress_evidence():
+    result = {
+        "success": True,
+        "theme": "AI芯片",
+        "local_universe_count": 5534,
+        "candidate_count": 2,
+        "items": [
+            {"name": "海光信息", "symbol": "688041", "boards": ["AI芯片"]},
+            {"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]},
+        ],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "items": [
+                    {
+                        "title": "海光信息AI芯片进入批量交付阶段",
+                        "summary": "海光信息AI芯片已实现批量交付，订单持续增长。",
+                        "link": "https://example.com/688041",
+                        "published": "2026-07-18T08:00:00",
+                        "source": "测试财经",
+                    },
+                    {
+                        "title": "盟固利人形机器人电池材料实现批量供货",
+                        "summary": "公司NCA材料在人形机器人用电池领域实现批量供货。",
+                        "link": "https://example.com/301487",
+                        "published": "2026-07-18T09:00:00",
+                        "source": "测试财经",
+                    },
+                ],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_theme_mapping_fallback(result, evidence)
+
+    assert "海光信息 (688041) | AI芯片相关业务 | L3" in fallback
+    assert "盟固利" not in fallback
+    assert "人形机器人用电池" not in fallback
+
+
+def test_ai_chip_mapping_extracts_realized_mass_production_from_mixed_article():
+    result = {
+        "success": True,
+        "theme": "AI芯片",
+        "local_universe_count": 5534,
+        "candidate_count": 1,
+        "items": [{"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]}],
+    }
+    evidence = [
+        {"tool": "get_theme_stock_candidates", "result": result},
+        {
+            "tool": "websearch",
+            "result": {
+                "success": True,
+                "retrieved_at": "2026-07-18T10:00:00",
+                "results": [{
+                    "title": "公司已量产多款AI芯片",
+                    "content_text": (
+                        "全志科技算力芯片产品已在多个领域实现量产。"
+                        "全志科技A733 AI芯片已实现量产，V系列已在AI眼镜领域批量落地。"
+                        "盟固利NCA材料在人形机器人用电池领域实现批量供货。"
+                    ),
+                    "url": "https://example.com/mixed",
+                    "source": "测试财经",
+                }],
+            },
+        },
+    ]
+
+    fallback = chat_mod._build_theme_mapping_fallback(result, evidence)
+
+    assert "全志科技 (300458) | 算力芯片 | L3" in fallback
+    assert "实现量产" in fallback
+    assert "盟固利" not in fallback
+
+
+def test_theme_mapping_prefers_semantic_facts_over_legacy_word_markers():
+    from src.agent.evidence_facts import BoundEvidenceFact
+
+    result = {
+        "success": True,
+        "theme": "AI芯片",
+        "local_universe_count": 5534,
+        "candidate_count": 1,
+        "items": [{"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]}],
+    }
+    legacy_evidence = [{
+        "tool": "websearch",
+        "result": {
+            "success": True,
+            "retrieved_at": "2026-07-18T10:00:00",
+            "results": [{
+                "title": "盟固利人形机器人电池材料实现批量供货",
+                "content_text": "盟固利NCA材料在人形机器人用电池领域实现批量供货。",
+                "url": "https://example.com/unrelated",
+                "source": "测试财经",
+            }],
+        },
+    }]
+    semantic_facts = [BoundEvidenceFact(
+        company_name="全志科技",
+        symbol="300458",
+        stage="L3",
+        relationship="算力芯片",
+        fact="全志科技A733 AI芯片已实现量产",
+        support_quote="全志科技A733 AI芯片已实现量产",
+        source_id="s1",
+        source_name="公司公告解读",
+        source_url="https://example.com/allwinner",
+        source_date="2026-07-18",
+        confidence=0.97,
+    )]
+
+    rendered = chat_mod._build_theme_mapping_fallback(
+        result,
+        legacy_evidence,
+        semantic_facts=semantic_facts,
+    )
+
+    assert "全志科技 (300458) | 算力芯片 | L3" in rendered
+    assert "盟固利" not in rendered
+
+    empty_semantic = chat_mod._build_theme_mapping_fallback(
+        result,
+        legacy_evidence,
+        semantic_facts=[],
+    )
+    assert "没有检出满足 L2/L3 定义" in empty_semantic
+    assert "盟固利" not in empty_semantic
+
+
+def test_react_loop_uses_semantic_intent_dimensions_and_bound_facts_end_to_end():
+    from src.agent.evidence_facts import BoundEvidenceFact
+    from src.agent.research_intent import ResearchIntent
+
+    controller = _FakeController()
+    intent = ResearchIntent(
+        kind="theme_company_mapping",
+        topic="AI芯片",
+        discovery_theme="AI芯片",
+        entity_scope="none",
+        objective="找出真正核心受益的A股公司",
+        research_dimensions=["GPU", "训练芯片", "推理芯片", "量产", "收入"],
+        output_requirements=["完整候选池", "公司级证据"],
+        confidence=0.98,
+    )
+    bound_facts = [BoundEvidenceFact(
+        company_name="全志科技",
+        symbol="300458",
+        stage="L3",
+        relationship="算力芯片",
+        fact="全志科技算力芯片产品已在多个领域实现量产",
+        support_quote="全志科技算力芯片产品已在多个领域实现量产",
+        source_id="s1",
+        source_name="财联社",
+        source_url="https://example.com/allwinner",
+        source_date="2026-07-17",
+        confidence=0.96,
+    )]
+    executed = []
+
+    def execute(name, arguments, **_kwargs):
+        executed.append((name, dict(arguments)))
+        if name == "get_theme_stock_candidates":
+            return {
+                "success": True,
+                "theme": "AI芯片",
+                "local_universe_count": 5534,
+                "candidate_count": 2,
+                "returned_count": 2,
+                "items": [
+                    {"name": "全志科技", "symbol": "300458", "boards": ["AI芯片"]},
+                    {"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]},
+                ],
+            }
+        return {"success": True, "retrieved_at": "2026-07-18T10:00:00", "items": []}
+
+    tool_names = [
+        "get_theme_stock_candidates",
+        "search_financial_news",
+        "search_research_library",
+        "websearch",
+    ]
+    registry = MagicMock()
+    registry.get_tool_names.return_value = tool_names
+    registry.get_all_schemas.return_value = [
+        {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+        for name in tool_names
+    ]
+    registry.normalize_arguments.side_effect = lambda _name, args: args
+    fake_cfg = {
+        "model": "test-model",
+        "api_key": None,
+        "api_base": None,
+        "extra_headers": None,
+        "semantic_intent_enabled": True,
+        "semantic_evidence_enabled": True,
+    }
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat._registry", registry), \
+             patch("api.v1.endpoints.agent.chat.resolve_research_intent", new=AsyncMock(return_value=intent)), \
+             patch("api.v1.endpoints.agent.chat.bind_company_evidence", new=AsyncMock(return_value=bound_facts)) as binder, \
+             patch("api.v1.endpoints.agent.chat.execute_tool_isolated", side_effect=execute), \
+             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda _name, result: result), \
+             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda _name, _args, result: result), \
+             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
+            result = await chat_mod._run_react_loop(
+                controller,
+                [
+                    {"role": "user", "content": "帮我分析AI产业链"},
+                    {"role": "assistant", "content": "上游还有服务器和光模块。"},
+                    {"role": "user", "content": "聚焦计算芯片这一段，A股里谁真正吃到量产？"},
+                ],
+                fake_cfg,
+            )
+            return result, binder
+
+    rendered, binder = asyncio.run(run())
+    assert "全志科技 (300458) | 算力芯片 | L3" in rendered
+    assert "寒武纪 (688256)" in rendered
+    assert "盟固利" not in rendered
+    assert binder.await_count == 1
+    assert {name for name, _arguments in executed} == set(tool_names)
+    theme_args = next(arguments for name, arguments in executed if name == "get_theme_stock_candidates")
+    research_args = next(arguments for name, arguments in executed if name == "search_research_library")
+    assert theme_args["theme"] == "AI芯片"
+    assert "GPU" in research_args["query"]
+    assert "训练芯片" in research_args["query"]
+    assert "丝杠" not in research_args["query"]
+
+
 def test_theme_mapping_preserves_company_level_negative_and_limited_evidence():
     result = {
         "success": True,
@@ -1480,6 +1945,52 @@ def test_professional_fallback_uses_research_heading_without_buy_intent():
 
     assert text.startswith("## 综合研究结论")
     assert "专业买入决策结论" not in text
+
+
+def test_professional_fallback_accepts_explicit_buy_intent_from_playbook():
+    text = chat_mod._build_professional_decision_fallback(
+        {
+            "success": True,
+            "thesis": "人形机器人",
+            "items": [],
+        },
+        decision_requested=True,
+    )
+
+    assert text.startswith("## 专业买入决策结论")
+    assert "横向优先级" in text
+
+
+def test_professional_fallback_distinguishes_zero_coverage_from_missing_evidence():
+    text = chat_mod._build_professional_decision_fallback(
+        {
+            "success": True,
+            "items": [{
+                "symbol": "301368",
+                "name": "丰立智能",
+                "snapshot": {"technical": {"indicators": {"return_20d_pct": -21}}},
+                "financials": {"items": [{"parent_net_profit": 1}]},
+                "valuation": {"pe_ttm": -10},
+                "consensus": {
+                    "success": True,
+                    "coverage_available": False,
+                    "coverage_status": "no_sell_side_coverage",
+                },
+                "capital_flow": {"windows": {"10d": {"main_net_inflow": -1}}},
+                "risk_events": {"items": [], "analysis": {}},
+                "announcements": {},
+                "evidence_coverage": {"complete": True, "missing": []},
+                "screening_flags": {"positive": [], "negative": []},
+            }],
+        },
+        decision_requested=True,
+    )
+
+    assert "机构一致预期覆盖0家（查询完成）" in text
+    assert "暂不介入（条件未满足）" in text
+    assert "等待补证" not in text
+    assert "数据源执行缺口：无" in text
+    assert "主题业务订单/收入仍需公司级原文持续核验" in text
 
 
 def test_stream_final_answer_converts_tool_history_to_text_evidence():

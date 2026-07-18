@@ -111,4 +111,29 @@ describe('ChatRuntimeBridge', () => {
     });
     warn.mockRestore();
   });
+
+  it('does not restart a cancelled run whose persisted history ends with a user message', async () => {
+    const detail = makeDetail(false);
+    detail.messages = detail.messages.slice(0, 1);
+    detail.threadState = null;
+    detail.resumeState = {
+      active: false,
+      status: 'cancelled',
+      afterChunkIndex: 0,
+      assistantText: '',
+    };
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.reset).toHaveBeenCalled();
+      expect(runtime.startRun).not.toHaveBeenCalled();
+    });
+  });
 });

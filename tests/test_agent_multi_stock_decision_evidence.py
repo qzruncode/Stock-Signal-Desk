@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.tools.get_multi_stock_decision_evidence import get_multi_stock_decision_evidence
+from src.tools.get_multi_stock_decision_evidence import _coverage, get_multi_stock_decision_evidence
 
 
 def test_decision_evidence_collects_all_seven_dimensions_without_early_stop() -> None:
@@ -117,3 +117,29 @@ def test_decision_evidence_marks_a_failed_dimension_instead_of_dropping_it() -> 
     assert "RuntimeError" in item["profile"]["errors"][0]
     assert result["partial"] is True
     assert "business_reality" in item["evidence_coverage"]["missing"]
+
+
+def test_decision_evidence_treats_verified_zero_consensus_as_complete() -> None:
+    item = {
+        "profile": {"success": True},
+        "business_segments": {"success": True},
+        "financials": {"success": True, "items": [{}, {}, {}, {}]},
+        "valuation": {"success": True, "pe_ttm": 50},
+        "consensus": {
+            "success": True,
+            "coverage_available": False,
+            "coverage_status": "no_sell_side_coverage",
+            "source_query_complete": True,
+        },
+        "peer_comparison": {"success": True, "dimensions": {"roe": {}}},
+        "snapshot": {"technical": {"success": True}},
+        "capital_flow": {"success": True},
+        "announcements": {"success": True},
+        "risk_events": {"success": True},
+    }
+
+    coverage = _coverage(item)
+
+    assert coverage["dimensions"]["expectations"] is True
+    assert coverage["complete"] is True
+    assert coverage["missing"] == []

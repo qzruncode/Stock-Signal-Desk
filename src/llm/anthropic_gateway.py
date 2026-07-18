@@ -90,6 +90,12 @@ def resolve_anthropic_gateway_config() -> Dict[str, Any]:
         "api_base": base_url,
         "extra_headers": {"authorization": f"Bearer {auth_token}"},
         "context_window": context_window,
+        # Production Agent turns use a small forced-schema model call for
+        # semantic intent resolution.  Test/local callers that construct a
+        # minimal config explicitly opt in, so existing low-level loop tests
+        # remain isolated from this extra orchestration stage.
+        "semantic_intent_enabled": True,
+        "semantic_evidence_enabled": True,
     }
 
 

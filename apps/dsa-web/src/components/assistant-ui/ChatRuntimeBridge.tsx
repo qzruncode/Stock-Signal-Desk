@@ -162,15 +162,11 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     }
 
     if (!shouldReplayStream) {
-      const lastMessage = conversationDetail.messages.at(-1);
-      if (lastMessage?.role === 'user') {
-        onPrepareResumeExisting(conversationDetail.id, null);
-        threadRuntime.startRun({
-          parentId: lastMessage.id,
-          sourceId: lastMessage.id,
-          runConfig: {},
-        });
-      }
+      // A normal send starts its run inside assistant-ui before hydration.  If
+      // persisted history ends with a user message while the backend reports
+      // no resumable run, it represents a cancelled/failed/interrupted turn.
+      // Starting here would silently resurrect Stop requests and can loop on
+      // every snapshot refresh.  Only the resumable branch below may auto-run.
       return;
     }
 

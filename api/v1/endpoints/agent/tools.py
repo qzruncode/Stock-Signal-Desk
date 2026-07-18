@@ -596,7 +596,8 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         return _annotate_tool_payload(tool_name, {
             **_pick_fields(result, [
                 "symbol", "metric", "estimates", "institution_item_count", "latest_institution_report_date",
-                "actuals", "financial_forecasts", "coverage_available", "coverage_count_latest", "eps_unit",
+                "actuals", "financial_forecasts", "coverage_available", "coverage_status",
+                "source_query_complete", "coverage_count_latest", "eps_unit",
                 "net_profit_unit", "amount_unit_note", "forecast_warning", "source", "source_url", "success",
                 "partial", "errors", "warnings", "data_time", "freshness_unknown", "is_stale", "fallback_used",
                 "cache_detail", "_cached", "_fetched_at",

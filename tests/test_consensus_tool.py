@@ -59,3 +59,22 @@ def test_metric_specific_result_does_not_claim_net_profit_data() -> None:
     assert "net_profit" not in result["estimates"][0]
     assert result["freshness_unknown"] is True
 
+
+def test_no_analyst_coverage_is_valid_negative_evidence() -> None:
+    with patch(
+        "src.tools.get_consensus_estimates._forecast",
+        return_value=([], True),
+    ), patch(
+        "src.tools.get_consensus_estimates._detail",
+        side_effect=IndexError("no detail table"),
+    ):
+        result = get_consensus_estimates("301368")
+
+    assert result["success"] is True
+    assert result["partial"] is False
+    assert result["coverage_available"] is False
+    assert result["coverage_status"] == "no_sell_side_coverage"
+    assert result["source_query_complete"] is True
+    assert result["coverage_count_latest"] == 0
+    assert result["errors"] == []
+    assert any("无机构一致预测覆盖" in warning for warning in result["warnings"])

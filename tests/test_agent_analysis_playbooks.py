@@ -98,3 +98,56 @@ def test_research_topic_strips_repeated_mapping_directives() -> None:
     }]
 
     assert infer_research_topic(messages) == "人形机器人"
+
+
+def test_referential_a_share_stock_followup_selects_theme_mapping() -> None:
+    messages = [
+        {"role": "user", "content": "帮我分析下人形机器人产业链，哪些领域最受益？"},
+        {"role": "assistant", "content": "上游核心零部件最受益。"},
+        {"role": "user", "content": "找出这些领域最受益的A股股票"},
+    ]
+
+    assert select_analysis_playbook(messages, []) == THEME_COMPANY_MAPPING
+    calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, messages, [])
+    assert _names(calls).count("get_theme_stock_candidates") == 1
+    assert json.loads(calls[0]["arguments"])["theme"] == "人形机器人"
+
+
+def test_latest_explicit_subtopic_overrides_older_industry_topic() -> None:
+    messages = [
+        {"role": "user", "content": "帮我分析下AI产业链"},
+        {
+            "role": "assistant",
+            "content": "上游包括AI芯片、AI服务器和高速光模块。",
+        },
+        {
+            "role": "user",
+            "content": "看下上面说的 AI芯片，有哪些公司核心受益",
+        },
+    ]
+
+    assert infer_research_topic(messages) == "AI芯片"
+    assert select_analysis_playbook(messages, []) == THEME_COMPANY_MAPPING
+
+    calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, messages, [])
+    assert json.loads(calls[0]["arguments"])["theme"] == "AI芯片"
+    for call in calls:
+        arguments = json.loads(call["arguments"])
+        query = str(arguments.get("query") or arguments.get("theme") or "")
+        assert "AI芯片" in query
+        assert "AI产业链" not in query
+        assert "丝杠" not in query
+        assert "减速器" not in query
+    research_query = json.loads(calls[2]["arguments"])["query"]
+    assert "GPU" in research_query
+    assert "NPU" in research_query
+
+
+def test_stacked_referential_prefix_does_not_leak_into_topic() -> None:
+    messages = [
+        {"role": "user", "content": "帮我分析下AI产业链"},
+        {"role": "assistant", "content": "上游包括AI芯片。"},
+        {"role": "user", "content": "请只看上面说的AI芯片，哪些A股公司是真正核心受益？"},
+    ]
+
+    assert infer_research_topic(messages) == "AI芯片"

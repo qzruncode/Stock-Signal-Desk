@@ -52,7 +52,10 @@ from src.agent.analysis_playbooks import (
     THEME_COMPANY_MAPPING,
     mandatory_tool_calls,
     select_analysis_playbook,
+    select_playbook_for_intent,
 )
+from src.agent.research_intent import ResearchIntent, resolve_research_intent
+from src.agent.evidence_facts import BoundEvidenceFact, bind_company_evidence
 from src.tools.registry import ToolRegistry
 from src.tools.process_runner import execute_tool_isolated
 from src.llm.anthropic_gateway import (
@@ -186,13 +189,49 @@ def _verified_entity_context(messages: List[Dict[str, Any]]) -> tuple[str, List[
             content = message.get("content")
             text = content if isinstance(content, str) else _join_text_parts(content or [])
             listed = find_securities_in_markdown_table_first_column(text, limit=20)
+            if not listed:
+                # Some comparison tables put the company in the second or
+                # third column (for example "细分环节 / 核心公司 / 逻辑").
+                # Read only table rows from the immediately preceding answer;
+                # prose may mention benchmark companies or old examples that
+                # are not part of “这些公司”.
+                table_entities: List[Dict[str, str]] = []
+                seen_symbols: set[str] = set()
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if not stripped.startswith("|"):
+                        continue
+                    if re.fullmatch(r"\|?[\s|:\-]+\|?", stripped):
+                        continue
+                    # Company cells in deliverable tables carry their verified
+                    # six-digit code. Do not scan the whole row: phrases such
+                    # as “人形机器人” would otherwise resolve the generic word
+                    # “机器人” to the listed company 300024.
+                    coded_cells = [
+                        cell
+                        for cell in stripped.strip("|").split("|")
+                        if re.search(r"(?<!\d)[036]\d{5}(?!\d)", cell)
+                    ]
+                    for cell in coded_cells:
+                        for entity in find_securities_in_text(cell, limit=20):
+                            if entity["symbol"] in seen_symbols:
+                                continue
+                            seen_symbols.add(entity["symbol"])
+                            table_entities.append(entity)
+                            if len(table_entities) >= 20:
+                                break
+                        if len(table_entities) >= 20:
+                            break
+                    if len(table_entities) >= 20:
+                        break
+                listed = table_entities
             if listed:
                 mapping = "、".join(f"{item['name']}={item['symbol']}" for item in listed)
                 return (
                     "已核验证券实体（上一条回答表格中明确列出的公司，禁止扩展范围）：" + mapping,
                     listed,
                 )
-            break
+            return "上一条回答没有可核验的证券实体；禁止从更早历史扩展‘这些公司’的范围。", []
 
     collected: List[Dict[str, str]] = []
     seen: set[str] = set()
@@ -217,6 +256,75 @@ def _verified_entity_context(messages: List[Dict[str, Any]]) -> tuple[str, List[
         "已核验证券实体（来自本地 stock_meta，禁止改写或猜测代码）：" + mapping,
         collected,
     )
+
+
+def _previous_answer_table_entities(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Return only coded securities from the immediately previous answer table."""
+    for message in reversed(messages[:-1]):
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        text = content if isinstance(content, str) else _join_text_parts(content or [])
+        listed = find_securities_in_markdown_table_first_column(text, limit=20)
+        if listed:
+            return listed
+        table_entities: List[Dict[str, str]] = []
+        seen_symbols: set[str] = set()
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("|") or re.fullmatch(r"\|?[\s|:\-]+\|?", stripped):
+                continue
+            for cell in stripped.strip("|").split("|"):
+                if not re.search(r"(?<!\d)[036]\d{5}(?!\d)", cell):
+                    continue
+                for entity in find_securities_in_text(cell, limit=20):
+                    if entity["symbol"] in seen_symbols:
+                        continue
+                    seen_symbols.add(entity["symbol"])
+                    table_entities.append(entity)
+                    if len(table_entities) >= 20:
+                        return table_entities
+        return table_entities
+    return []
+
+
+def _entities_for_semantic_intent(
+    intent: ResearchIntent,
+    *,
+    current_entities: List[Dict[str, str]],
+    previous_answer_entities: List[Dict[str, str]],
+) -> List[Dict[str, str]]:
+    """Resolve the model-selected scope against the local security dictionary."""
+    if intent.entity_scope == "previous_answer":
+        return previous_answer_entities
+    semantic_entities = find_securities_in_text("、".join(intent.entities), limit=20)
+    if intent.entity_scope == "current_message":
+        candidates = [*current_entities, *semantic_entities]
+    elif intent.entity_scope == "conversation":
+        candidates = [*semantic_entities, *previous_answer_entities]
+    else:
+        candidates = semantic_entities
+    resolved: List[Dict[str, str]] = []
+    seen_symbols: set[str] = set()
+    for entity in candidates:
+        symbol = str(entity.get("symbol") or "")
+        if not symbol or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        resolved.append(entity)
+    return resolved[:20]
+
+
+def _entity_context_text(
+    entities: List[Dict[str, str]],
+    *,
+    semantic_scope: Optional[str] = None,
+) -> str:
+    if not entities:
+        return "本轮语义范围没有已核验证券实体；禁止猜测证券代码。"
+    mapping = "、".join(f"{item['name']}={item['symbol']}" for item in entities)
+    scope = f"，语义范围={semantic_scope}" if semantic_scope else ""
+    return f"已核验证券实体（来自本地 stock_meta{scope}，禁止扩展范围）：{mapping}"
 
 
 def _coalesce_multi_security_calls(
@@ -819,14 +927,19 @@ def _build_synthesis_messages(
     return result
 
 
-def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
+def _build_professional_decision_fallback(
+    batch: Dict[str, Any],
+    *,
+    decision_requested: Optional[bool] = None,
+) -> str:
     """Render a complete seven-dimension decision when model synthesis fails."""
 
     thesis = str(batch.get("thesis") or "")
-    decision_requested = bool(re.search(
-        r"能买吗|能不能买|是否能买|值得买|买入|抄底|入场|介入|加仓|减仓|卖出|持有|仓位|止损|止盈|追高",
-        thesis,
-    ))
+    if decision_requested is None:
+        decision_requested = bool(re.search(
+            r"能买吗|能不能买|是否能买|值得买|买入|抄底|入场|介入|加仓|减仓|卖出|持有|仓位|止损|止盈|追高",
+            thesis,
+        ))
     heading = "专业买入决策结论" if decision_requested else "综合研究结论"
     intro = (
         "本轮按七个维度逐家公司完成介入条件检查。"
@@ -852,6 +965,7 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
 
     rows: List[str] = []
     details: List[str] = []
+    priority_groups: Dict[str, List[str]] = {}
     for item in batch.get("items") or []:
         if not isinstance(item, dict):
             continue
@@ -892,15 +1006,16 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
         flow_weak = flow_10d.get("main_net_inflow") is not None and flow_10d.get("main_net_inflow") < 0
 
         if not coverage.get("complete"):
-            verdict = "等待补证"
+            verdict = "数据源异常（证据链未完成）"
         elif negative_profit or high_debt or high_risk:
             verdict = "风险规避"
         elif expensive and weak_growth:
             verdict = "暂不买入"
         elif expensive or trend_weak or flow_weak:
-            verdict = "等待验证"
+            verdict = "暂不介入（条件未满足）"
         else:
             verdict = "可研究候选"
+        priority_groups.setdefault(verdict, []).append(f"{name} ({symbol})")
 
         business = short("、".join(segment_names) or profile.get("main_business"), 28)
         financial = (
@@ -908,7 +1023,11 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
             f"净利YoY {number(latest.get('parent_net_profit_yoy'), 1, '%')}；"
             f"OCF {amount_yi(latest.get('operating_cash_flow'))}"
         )
-        expectation = "无一致预期"
+        expectation = (
+            "机构一致预期覆盖0家（查询完成）"
+            if consensus.get("coverage_status") == "no_sell_side_coverage"
+            else "一致预期来源异常"
+        )
         if first_estimate:
             np_forecast = first_estimate.get("net_profit") if isinstance(first_estimate.get("net_profit"), dict) else {}
             expectation = (
@@ -938,9 +1057,23 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
         missing = "、".join(str(value) for value in coverage.get("missing") or []) or "无"
         details.append(
             f"- **{name} ({symbol})**：支持证据：{positives}。反证/风险：{negatives}。"
-            f"证据缺口：{missing}。成立条件：主营相关订单或收入可核验、盈利与估值匹配、"
+            f"数据源执行缺口：{missing}。主题业务订单/收入仍需公司级原文持续核验。"
+            "成立条件：主营相关订单或收入可核验、盈利与估值匹配、"
             "交易状态止跌；失效条件：业绩/现金流继续恶化或风险事件升级。"
         )
+
+    priority_order = (
+        "可研究候选",
+        "暂不介入（条件未满足）",
+        "暂不买入",
+        "风险规避",
+        "数据源异常（证据链未完成）",
+    )
+    priority_lines = [
+        f"- **{verdict}**：{'、'.join(priority_groups[verdict])}"
+        for verdict in priority_order
+        if priority_groups.get(verdict)
+    ]
 
     return (
         f"## {heading}\n\n"
@@ -950,6 +1083,8 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
         + "\n".join(rows)
         + "\n\n### 逐家公司成立条件与反证\n\n"
         + "\n".join(details)
+        + "\n\n### 横向优先级\n\n"
+        + ("\n".join(priority_lines) if priority_lines else "本轮没有可排序的公司证据。")
         + "\n\n### 组合层面的共同边界\n\n"
         "- 业务关联必须以财报收入、正式订单或客户验证为准；主营构成只能证明业务基础，不能自动证明主题收入。\n"
         "- 高估值不会单独终止分析，但需要更高的盈利增速和订单兑现来消化；资金流是成交单大小口径，不是机构持仓。\n"
@@ -964,17 +1099,18 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
 def _build_theme_mapping_fallback(
     result: Dict[str, Any],
     evidence: Optional[List[Dict[str, Any]]] = None,
+    semantic_facts: Optional[List[BoundEvidenceFact]] = None,
 ) -> str:
     """Render company-level evidence plus the complete locally verified recall index."""
     selected_by_symbol: Dict[str, Dict[str, Any]] = {}
     boundary_by_symbol: Dict[str, Dict[str, Any]] = {}
     l3_markers = (
         "批量订单", "订单金额", "获得订单", "实现收入", "营业收入", "营收", "批量供货",
-        "量产交付", "批量交付", "收入占比",
+        "实现量产", "已量产", "量产交付", "批量交付", "批量落地", "收入占比",
     )
     l2_markers = (
         "送样", "定点", "客户验证", "关键验证", "性能测试", "小批量试制",
-        "小批量供货", "客户测试", "客户认证",
+        "小批量供货", "客户测试", "客户认证", "成功切入", "加速放量",
     )
     progress_markers = (*l3_markers, *l2_markers)
     boundary_markers = (
@@ -983,18 +1119,83 @@ def _build_theme_mapping_fallback(
         "尚未形成收入", "未形成收入", "未产生实质性业务", "未有产生实质性业务",
         "未产生实质性订单", "没有实质性订单",
     )
-    segment_markers = (
+    robot_segment_markers = (
         "滚柱丝杠", "丝杠", "谐波减速器", "RV减速器", "减速器", "力矩传感器",
         "传感器", "伺服电机", "伺服", "空心杯电机", "电机", "执行器", "灵巧手",
         "机器视觉", "轴承", "编码器", "控制器", "整机", "系统集成",
     )
-    theme = str(result.get("theme") or "").strip()
-    theme_markers = tuple(
-        marker
-        for marker in (theme, "人形机器人", "具身智能", "机器人", *segment_markers)
-        if marker
+    ai_chip_segment_markers = (
+        "训练芯片", "推理芯片", "AI加速芯片", "算力芯片", "GPU", "GPGPU", "NPU",
+        "ASIC", "加速卡", "存算一体", "HBM", "先进封装", "Chiplet", "芯片设计",
     )
+    theme = str(result.get("theme") or "").strip()
+    if not theme:
+        matched_board_names = [
+            str(board.get("name") or "").strip()
+            for board in result.get("matched_boards") or []
+            if isinstance(board, dict) and board.get("name")
+        ]
+        item_board_names = [
+            str(board).strip()
+            for item in result.get("items") or []
+            if isinstance(item, dict)
+            for board in item.get("boards") or []
+            if board
+        ]
+        theme = next((name for name in (*matched_board_names, *item_board_names) if name), "")
+    lowered_theme = theme.lower()
+    if any(marker in lowered_theme for marker in ("人形机器人", "具身智能", "机器人")):
+        segment_markers = robot_segment_markers
+        theme_markers = tuple(
+            marker for marker in (theme, "人形机器人", "具身智能", *segment_markers) if marker
+        )
+    elif any(marker in lowered_theme for marker in ("ai芯片", "人工智能芯片", "算力芯片")):
+        segment_markers = ai_chip_segment_markers
+        theme_markers = tuple(
+            marker
+            for marker in (theme, "AI芯片", "人工智能芯片", "AI算力芯片", *segment_markers)
+            if marker
+        )
+    else:
+        # For other themes, require the requested topic itself.  Reusing the
+        # humanoid-robot vocabulary here promoted unrelated robot news into
+        # every theme's L2/L3 evidence table.
+        segment_markers = ()
+        theme_markers = (theme,) if theme else ()
     ambiguous_entity_names = {"机器人", "东方财富"}
+
+    if semantic_facts is not None:
+        for fact_model in semantic_facts:
+            fact = fact_model.model_dump() if isinstance(fact_model, BoundEvidenceFact) else dict(fact_model)
+            symbol = str(fact.get("symbol") or "")
+            name = str(fact.get("company_name") or symbol)
+            stage = str(fact.get("stage") or "")
+            if not symbol or not name or stage == "L1":
+                continue
+            rendered = {
+                "symbol": symbol,
+                "name": name,
+                "segment": str(fact.get("relationship") or f"{theme}相关业务"),
+                "level": "反证" if stage == "boundary" else stage,
+                "fact": str(fact.get("fact") or fact.get("support_quote") or "").replace("|", "／")[:180],
+                "gap": (
+                    "反证或业务边界仍需用最新公告、财报与后续订单持续复核"
+                    if stage == "boundary"
+                    else (
+                        "继续核验订单口径、持续性与主题收入占比"
+                        if stage == "L3"
+                        else "继续核验客户阶段、订单金额与收入贡献"
+                    )
+                ),
+                "source_name": str(fact.get("source_name") or "公开资料"),
+                "source_url": str(fact.get("source_url") or ""),
+                "source_date": str(fact.get("source_date") or ""),
+                "source_date_is_retrieval": bool(fact.get("source_date_is_retrieval")),
+            }
+            target = boundary_by_symbol if stage == "boundary" else selected_by_symbol
+            previous = target.get(symbol)
+            if previous is None or (previous.get("level") == "L2" and stage == "L3"):
+                target[symbol] = rendered
 
     def source_date_for_item(source_item: Dict[str, Any], search_result: Dict[str, Any]) -> tuple[str, bool]:
         raw = str(
@@ -1051,6 +1252,12 @@ def _build_theme_mapping_fallback(
         return positives
 
     for packet in evidence or []:
+        # Semantic binding is the production path.  An empty list is a valid
+        # extraction result and must not silently fall back to wording-based
+        # promotion.  The legacy binder runs only when semantic extraction was
+        # unavailable (``None``).
+        if semantic_facts is not None:
+            break
         if not isinstance(packet, dict) or packet.get("tool") not in {
             "search_financial_news", "search_research_library", "websearch",
         }:
@@ -1150,7 +1357,7 @@ def _build_theme_mapping_fallback(
                     not window_entities
                     and (window_is_theme_relevant or title_is_theme_relevant)
                     and len(title_entities) == 1
-                    and re.search(r"(?:^公司|该公司|公司称|公司表示|其产品|该产品)", window)
+                    and re.search(r"(?:^|[，,；;])公司|该公司|公司称|公司表示|其产品|该产品", window)
                 ):
                     # 新闻标题明确绑定唯一公司与主题/环节时，允许把紧随其后的
                     # “该公司/产品/客户”进展句回指到标题公司。不能用整篇文本窗口，
@@ -1348,7 +1555,12 @@ def _build_theme_mapping_fallback(
     )
 
 
-def _build_verified_evidence_fallback(evidence: Optional[List[Dict[str, Any]]]) -> str:
+def _build_verified_evidence_fallback(
+    evidence: Optional[List[Dict[str, Any]]],
+    *,
+    professional_decision_requested: Optional[bool] = None,
+    semantic_facts: Optional[List[BoundEvidenceFact]] = None,
+) -> str:
     """Return a complete deterministic answer when final model text is empty.
 
     A provider can occasionally finish a streaming request without emitting a
@@ -1363,14 +1575,45 @@ def _build_verified_evidence_fallback(evidence: Optional[List[Dict[str, Any]]]) 
             continue
         result = item.get("result")
         if isinstance(result, dict) and result.get("success") is not False:
-            return _build_theme_mapping_fallback(result, evidence)
+            return _build_theme_mapping_fallback(result, evidence, semantic_facts=semantic_facts)
 
     for item in evidence or []:
         if not isinstance(item, dict) or item.get("tool") != "get_multi_stock_decision_evidence":
             continue
         result = item.get("result")
         if isinstance(result, dict) and result.get("success") is not False:
-            return _build_professional_decision_fallback(result)
+            answer = _build_professional_decision_fallback(
+                result,
+                decision_requested=professional_decision_requested,
+            )
+            market = next(
+                (
+                    packet.get("result")
+                    for packet in evidence or []
+                    if isinstance(packet, dict)
+                    and packet.get("tool") == "get_market_breadth"
+                    and isinstance(packet.get("result"), dict)
+                    and packet["result"].get("success") is not False
+                ),
+                None,
+            )
+            if isinstance(market, dict):
+                answer += (
+                    "\n\n### 市场宽度\n\n"
+                    f"- 上涨 **{market.get('up_count', '缺失')}** 家，下跌 **{market.get('down_count', '缺失')}** 家，"
+                    f"涨跌比 **{market.get('advance_decline_ratio', '缺失')}**；"
+                    f"成交额 **{market.get('total_amount', '缺失')} {market.get('total_amount_unit') or ''}**。\n"
+                    f"- 数据时间：{market.get('data_time') or market.get('market_date') or '缺失'}；"
+                    "市场宽度只用于判断介入环境，不改变单家公司基本面结论。"
+                )
+            return answer
+
+    if professional_decision_requested is not None:
+        return (
+            "## 专业决策证据未完成\n\n"
+            "本轮未成功取得覆盖全部公司的专业决策证据，因此停止买入判断。"
+            "请重试本轮查询；在专业证据工具成功前，不输出买入、持有或卖出结论。"
+        )
 
     for item in evidence or []:
         if not isinstance(item, dict) or item.get("tool") != "get_multi_stock_snapshot":
@@ -1698,7 +1941,9 @@ def _professional_answer_contract_issues(
         "估值预期": ("估值", "PE", "PEG", "一致预期"),
         "交易状态": ("交易", "趋势", "技术", "资金"),
         "风险催化": ("风险", "公告", "催化"),
-        "决策边界": ("成立条件", "失效条件", "等待验证", "暂不买入", "风险规避"),
+        "决策边界": (
+            "成立条件", "失效条件", "等待验证", "暂不介入", "暂不买入", "风险规避",
+        ),
     }
     for label, markers in required_groups.items():
         if not any(marker in content for marker in markers):
@@ -1948,6 +2193,79 @@ def _playbook_answer_contract_issues(
     return []
 
 
+def _generic_answer_contract_issues(
+    content: str,
+    evidence: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Reject structurally incomplete answers even without a Playbook.
+
+    A provider can terminate normally after emitting only a Markdown table
+    header.  That is not a valid answer, especially when a successful batch
+    tool already returned every requested company.
+    """
+    issues: List[str] = []
+    lines = content.splitlines()
+    for index in range(len(lines) - 1):
+        header = lines[index].strip()
+        separator = lines[index + 1].strip()
+        if not header.startswith("|") or not separator.startswith("|"):
+            continue
+        separator_cells = [cell.strip() for cell in separator.strip("|").split("|")]
+        if not separator_cells or not all(re.fullmatch(r":?-{3,}:?", cell) for cell in separator_cells):
+            continue
+        data_row_count = 0
+        for row in lines[index + 2:]:
+            stripped = row.strip()
+            if not stripped:
+                break
+            if not stripped.startswith("|"):
+                break
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if cells and not all(re.fullmatch(r"[:\- ]+", cell or "") for cell in cells):
+                data_row_count += 1
+        if data_row_count == 0:
+            issues.append("Markdown表格只有表头，没有任何数据行")
+
+    batch_result = next(
+        (
+            packet.get("result")
+            for packet in evidence or []
+            if isinstance(packet, dict)
+            and packet.get("tool") == "get_multi_stock_snapshot"
+            and isinstance(packet.get("result"), dict)
+            and packet["result"].get("success") is not False
+        ),
+        None,
+    )
+    batch_items = batch_result.get("items") if isinstance(batch_result, dict) else None
+    if isinstance(batch_items, list):
+        expected_codes = {
+            str(item.get("symbol") or "")
+            for item in batch_items
+            if isinstance(item, dict) and re.fullmatch(r"\d{6}", str(item.get("symbol") or ""))
+        }
+        answer_codes = set(re.findall(r"(?<!\d)(\d{6})(?!\d)", content))
+        missing_codes = sorted(expected_codes - answer_codes)
+        if missing_codes:
+            issues.append(
+                f"多股快照返回{len(expected_codes)}家公司，最终答案遗漏{len(missing_codes)}家："
+                + "、".join(missing_codes)
+            )
+    return issues
+
+
+def _final_answer_contract_issues(
+    playbook: Optional[AnalysisPlaybook],
+    content: str,
+    evidence: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    return (
+        _unsupported_final_claims(content, evidence)
+        + _generic_answer_contract_issues(content, evidence)
+        + _playbook_answer_contract_issues(playbook, content, evidence)
+    )
+
+
 async def _stream_final_answer_without_tools(
     controller: ControllerLike,
     messages: List[Dict[str, Any]],
@@ -1996,10 +2314,7 @@ async def _stream_final_answer_without_tools(
         # only if the same evidence and Playbook validators prove the required
         # structure is complete; otherwise fail closed with the deterministic
         # evidence fallback.
-        timed_out_issues = (
-            _unsupported_final_claims(content_text, evidence)
-            + _playbook_answer_contract_issues(playbook, content_text, evidence)
-        )
+        timed_out_issues = _final_answer_contract_issues(playbook, content_text, evidence)
         if not content_text.strip() or timed_out_issues:
             logger.warning(
                 "[Agent] timed-out synthesis incomplete: %s",
@@ -2038,17 +2353,10 @@ async def _stream_final_answer_without_tools(
                             retry_text += delta.content
             except Exception:
                 logger.exception("[Agent] timed-out synthesis retry failed")
-            retry_issues = (
-                # Row-level evidence failures in mapping answers are removed
-                # deterministically before the whole report is judged.
-                _unsupported_final_claims(retry_text, evidence)
-                + _playbook_answer_contract_issues(
-                    playbook,
-                    _prepare_playbook_answer(playbook, retry_text),
-                    evidence,
-                )
-            )
             retry_text = _prepare_playbook_answer(playbook, retry_text)
+            # Row-level evidence failures in mapping answers are removed
+            # deterministically before the whole report is judged.
+            retry_issues = _final_answer_contract_issues(playbook, retry_text, evidence)
             if (
                 retry_text.strip()
                 and retry_finish_reason.lower() not in {"length", "max_tokens"}
@@ -2075,10 +2383,8 @@ async def _stream_final_answer_without_tools(
 
     content_text = _prepare_playbook_answer(playbook, content_text)
     if content_text.strip() and finish_reason.lower() not in {"length", "max_tokens"}:
-        unsupported = _unsupported_final_claims(content_text, evidence)
-        contract_issues = _playbook_answer_contract_issues(playbook, content_text, evidence)
-        if unsupported or contract_issues:
-            reasons = unsupported + contract_issues
+        reasons = _final_answer_contract_issues(playbook, content_text, evidence)
+        if reasons:
             logger.warning("[Agent] final answer needs repair: %s", "; ".join(reasons))
             repair_messages = [
                 *forced_messages,
@@ -2117,10 +2423,7 @@ async def _stream_final_answer_without_tools(
                 logger.exception("[Agent] final answer repair failed")
 
             repaired_text = _prepare_playbook_answer(playbook, repaired_text)
-            repair_issues = (
-                _unsupported_final_claims(repaired_text, evidence)
-                + _playbook_answer_contract_issues(playbook, repaired_text, evidence)
-            )
+            repair_issues = _final_answer_contract_issues(playbook, repaired_text, evidence)
             if (
                 repaired_text.strip()
                 and repaired_finish_reason.lower() not in {"length", "max_tokens"}
@@ -2179,10 +2482,7 @@ async def _stream_final_answer_without_tools(
         except Exception:
             logger.exception("[Agent] empty/truncated synthesis retry failed")
         retry_text = _prepare_playbook_answer(playbook, retry_text)
-        retry_issues = (
-            _unsupported_final_claims(retry_text, evidence)
-            + _playbook_answer_contract_issues(playbook, retry_text, evidence)
-        )
+        retry_issues = _final_answer_contract_issues(playbook, retry_text, evidence)
         if (
             retry_text.strip()
             and retry_finish_reason.lower() not in {"length", "max_tokens"}
@@ -2239,18 +2539,75 @@ async def _run_react_loop(
         "search_financial_news", "search_research_library", "websearch", "webfetch",
     }
 
-    entity_context, verified_entities = _verified_entity_context(messages)
     latest_user_text = _last_user_text(messages)
     latest_user_entities = find_securities_in_text(latest_user_text, limit=20)
-    referential_followup = (
-        not latest_user_entities
-        and any(
-            marker in latest_user_text.lower()
-            for marker in ("这些", "上述", "上面", "前面", "它们", "他们", "those", "them")
+    previous_answer_entities = _previous_answer_table_entities(messages)
+    semantic_intent: Optional[ResearchIntent] = None
+    if llm_cfg.get("semantic_intent_enabled"):
+        try:
+            async with asyncio.timeout(25.0):
+                semantic_intent = await resolve_research_intent(
+                    messages,
+                    llm_cfg,
+                    completion=litellm.acompletion,
+                    current_entities=latest_user_entities,
+                    previous_answer_entities=previous_answer_entities,
+                )
+            logger.info(
+                "[AgentIntent] source=semantic kind=%s topic=%s discovery_theme=%s entity_scope=%s confidence=%.2f",
+                semantic_intent.kind,
+                semantic_intent.normalized_topic,
+                semantic_intent.normalized_discovery_theme,
+                semantic_intent.entity_scope,
+                semantic_intent.confidence,
+            )
+        except Exception:
+            logger.warning("[AgentIntent] semantic resolution failed; using availability fallback", exc_info=True)
+
+    if semantic_intent is not None:
+        verified_entities = _entities_for_semantic_intent(
+            semantic_intent,
+            current_entities=latest_user_entities,
+            previous_answer_entities=previous_answer_entities,
         )
+        entity_context = _entity_context_text(
+            verified_entities,
+            semantic_scope=semantic_intent.entity_scope,
+        )
+        referential_followup = semantic_intent.entity_scope == "previous_answer"
+        playbook = select_playbook_for_intent(semantic_intent)
+        required_playbook_calls = mandatory_tool_calls(
+            playbook,
+            messages,
+            verified_entities,
+            intent=semantic_intent,
+        )
+    else:
+        entity_context, verified_entities = _verified_entity_context(messages)
+        referential_followup = (
+            not latest_user_entities
+            and any(
+                marker in latest_user_text.lower()
+                for marker in ("这些", "上述", "上面", "前面", "它们", "他们", "those", "them")
+            )
+        )
+        playbook = select_analysis_playbook(messages, verified_entities)
+        required_playbook_calls = mandatory_tool_calls(playbook, messages, verified_entities)
+
+    if semantic_intent is not None and semantic_intent.needs_clarification:
+        clarification = semantic_intent.clarification_question or "请明确本轮要研究的主题或公司范围。"
+        controller.append_text(clarification)
+        if state is not None:
+            state["assistant_text"] = clarification
+            controller.assistant_text_snapshot = clarification
+        return clarification
+
+    semantic_context = (
+        "## 结构化研究意图（语义模型已解析，禁止重新按关键词猜测）\n"
+        + json.dumps(semantic_intent.model_dump(), ensure_ascii=False)
+        if semantic_intent is not None
+        else "## 结构化研究意图\n语义解析不可用，本轮使用兼容降级路径。"
     )
-    playbook = select_analysis_playbook(messages, verified_entities)
-    required_playbook_calls = mandatory_tool_calls(playbook, messages, verified_entities)
     playbook_context = (
         playbook.system_instruction()
         if playbook is not None
@@ -2263,6 +2620,7 @@ async def _run_react_loop(
                 f"{system_prompt or SYSTEM_PROMPT}\n\n"
                 f"## 本轮执行边界（{policy['name']}）\n{policy['guidance']}\n\n"
                 f"## 确定性实体上下文\n{entity_context}\n\n"
+                f"{semantic_context}\n\n"
                 f"{playbook_context}"
             ),
         },
@@ -2365,10 +2723,7 @@ async def _run_react_loop(
                 # claim and playbook checks before it is emitted.
                 final_text = _build_realtime_quote_answer(evidence, latest_user_text) or _strip_progress_markers(content_text)
                 if final_text:
-                    final_issues = (
-                        _unsupported_final_claims(final_text, evidence)
-                        + _playbook_answer_contract_issues(playbook, final_text, evidence)
-                    )
+                    final_issues = _final_answer_contract_issues(playbook, final_text, evidence)
                     if final_issues:
                         logger.warning(
                             "[Agent] regular ReAct answer needs repair: %s",
@@ -2414,6 +2769,12 @@ async def _run_react_loop(
         # duplicate calls in the same parallel batch from racing each other,
         # and lets the UI show only requests that are actually executed.
         reserved_signatures = set(executed_calls)
+        reserved_single_shot_tools = {
+            str(call.get("tool") or "")
+            for call in executed_calls.values()
+            if isinstance(call, dict)
+        }
+        single_shot_tool_names = {"get_theme_stock_candidates"}
         reserved_new_calls = 0
         available_call_slots = min(
             MAX_TOOL_CALLS_PER_ROUND,
@@ -2473,6 +2834,25 @@ async def _run_react_loop(
             )
 
             nonlocal reserved_new_calls, reserved_discovery_calls
+            if (
+                tool_name in single_shot_tool_names
+                and tool_name in reserved_single_shot_tools
+            ):
+                result_payload = {
+                    "success": True,
+                    "reused": True,
+                    "message": f"{tool_name} 本轮已经安排执行，复用同轮主题候选请求，避免主题漂移和重复请求。",
+                    "previous_tool": tool_name,
+                }
+                return {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "arguments": normalized_arguments,
+                    "result_str": _format_result(result_payload),
+                    "evidence": None,
+                    "executed": False,
+                    "succeeded": True,
+                }
             if signature in reserved_signatures:
                 result_payload = {
                     "success": True,
@@ -2557,6 +2937,8 @@ async def _run_react_loop(
                 }
 
             reserved_signatures.add(signature)
+            if tool_name in single_shot_tool_names:
+                reserved_single_shot_tools.add(tool_name)
             reserved_new_calls += 1
             if tool_name in discovery_tool_names:
                 reserved_discovery_calls += 1
@@ -2758,12 +3140,59 @@ async def _run_react_loop(
         # 又容易在 token 上限处截断或擅自只保留“代表公司”。运行时已经拥有完整
         # 证券主数据和公司级检索证据，因此直接用确定性渲染器交付，保证不漏代码、
         # 不把否定表述升级成订单，也不会再次卡在最终综合。
-        content_text = _build_verified_evidence_fallback(evidence)
+        semantic_facts: Optional[List[BoundEvidenceFact]] = None
+        if semantic_intent is not None and llm_cfg.get("semantic_evidence_enabled"):
+            try:
+                async with asyncio.timeout(40.0):
+                    semantic_facts = await bind_company_evidence(
+                        evidence,
+                        semantic_intent,
+                        llm_cfg,
+                        completion=litellm.acompletion,
+                    )
+                logger.info(
+                    "[AgentEvidence] source=semantic topic=%s accepted_facts=%d",
+                    semantic_intent.normalized_topic,
+                    len(semantic_facts),
+                )
+            except Exception:
+                # Availability fallback is observable and only used when the
+                # semantic binder itself is unavailable, never when it returns
+                # a valid empty fact set.
+                logger.warning(
+                    "[AgentEvidence] semantic binding failed; using availability fallback",
+                    exc_info=True,
+                )
+                semantic_facts = None
+        content_text = _build_verified_evidence_fallback(
+            evidence,
+            semantic_facts=semantic_facts,
+        )
         controller.append_text(content_text)
         if state is not None:
             state["assistant_text"] = content_text
             controller.assistant_text_snapshot = content_text
         logger.info("[Agent] rendered deterministic complete theme-company mapping")
+        return content_text
+
+    if playbook is not None and playbook.id in {
+        INVESTMENT_DECISION.id,
+        STOCK_DEEP_RESEARCH.id,
+    }:
+        # The professional evidence packet already contains every company and
+        # every decision axis required by the playbook. Sending it through a
+        # second model synthesis can take minutes, omit rows during repair, or
+        # leave a tool-only blank turn if cancelled. Render that verified
+        # packet directly so successful tools always produce a persisted body.
+        content_text = _build_verified_evidence_fallback(
+            evidence,
+            professional_decision_requested=(playbook.id == INVESTMENT_DECISION.id),
+        )
+        controller.append_text(content_text)
+        if state is not None:
+            state["assistant_text"] = content_text
+            controller.assistant_text_snapshot = content_text
+        logger.info("[Agent] rendered deterministic professional research answer")
         return content_text
 
     quote_text = _build_realtime_quote_answer(evidence, latest_user_text)
@@ -2994,17 +3423,22 @@ async def agent_chat(
             # 后台 task 不被 HTTP 断连取消,仅进程关闭/显式 cancel 会到这。
             # 把已生成文本落定,避免残留 {conv_id}-assistant-pending 半截消息。
             partial = state.get("assistant_text", "")
-            if partial.strip():
-                partial = partial.rstrip() + "\n\n[已停止]"
+            partial = (
+                partial.rstrip() + "\n\n[已停止]"
+                if partial.strip()
+                else "[已停止]"
+            )
+            try:
+                await asyncio.shield(asyncio.to_thread(
+                    session_service.save_partial_assistant_text, conv_id, partial,
+                ))
+            except asyncio.CancelledError:
                 try:
-                    await asyncio.shield(asyncio.to_thread(
-                        session_service.save_partial_assistant_text, conv_id, partial,
-                    ))
-                except asyncio.CancelledError:
-                    try:
-                        session_service.save_partial_assistant_text(conv_id, partial)
-                    except Exception:
-                        logger.warning("[Agent] cancel-time partial save failed", exc_info=True)
+                    session_service.save_partial_assistant_text(conv_id, partial)
+                except Exception:
+                    logger.warning("[Agent] cancel-time partial save failed", exc_info=True)
+            except Exception:
+                logger.warning("[Agent] cancel-time partial save failed", exc_info=True)
             await active_run_registry.mark_done(conv_id, "cancelled", final_text=partial)
             raise
         except Exception as exc:

@@ -327,18 +327,20 @@ const PROCESS_STEPS = [
 
 function splitAssistantText(text: string) {
   const steps = PROCESS_STEPS.filter((step) => text.includes(step.marker));
+  const stopped = text.includes('[已停止]');
   let content = text;
   for (const step of PROCESS_STEPS) {
     content = content.replaceAll(step.marker, '');
   }
   return {
     steps,
-    content: content.replace(/^\s+/, '').replace(/\n{3,}/g, '\n\n'),
+    stopped,
+    content: content.replaceAll('[已停止]', '').replace(/^\s+/, '').replace(/\n{3,}/g, '\n\n'),
   };
 }
 
 const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
-  const { steps, content } = splitAssistantText(text);
+  const { steps, content, stopped } = splitAssistantText(text);
   const [expanded, setExpanded] = useState(status.type === 'running');
 
   return (
@@ -355,8 +357,14 @@ const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
               <span>Thinking</span>
             </span>
             <span className="flex items-center gap-2 text-xs text-muted-foreground">
-              {status.type === 'running' ? <Loader2Icon className="size-3.5 animate-spin" /> : <CheckCircle2Icon className="size-3.5 text-emerald-500" />}
-              {status.type === 'running' ? '运行中' : '完成'}
+              {status.type === 'running' ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : stopped ? (
+                <SquareIcon className="size-3.5 text-amber-500" />
+              ) : (
+                <CheckCircle2Icon className="size-3.5 text-emerald-500" />
+              )}
+              {status.type === 'running' ? '运行中' : stopped ? '已停止' : '完成'}
               <ChevronDownIcon className={`size-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
             </span>
           </button>
@@ -376,6 +384,10 @@ const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text, status }) => {
             </div>
           )}
         </div>
+      )}
+
+      {stopped && !content.trim() && (
+        <p className="text-sm text-muted-foreground">本次生成已停止，未产生最终回答。</p>
       )}
 
       {content.trim() && (

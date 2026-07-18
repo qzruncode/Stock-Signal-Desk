@@ -177,6 +177,7 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
     cache_detail: dict[str, bool] = {}
     errors: list[str] = []
     warnings: list[str] = []
+    completed_summary_queries: set[str] = set()
     calls = {name: (lambda name=name: _forecast(code, name)) for name in requested}
     if metric == "all":
         calls.update({name: (lambda name=name: _detail(code, name)) for name in _DETAIL_INDICATORS})
@@ -187,8 +188,10 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
                 rows, cached = future.result()
                 raw[name] = rows
                 cache_detail[name] = cached
+                if name in requested:
+                    completed_summary_queries.add(name)
                 if name in requested and not rows:
-                    errors.append(f"{name} 暂无机构一致预测")
+                    warnings.append(f"{name} 无机构一致预测覆盖")
                 elif name not in requested and not rows:
                     warnings.append(f"{name} 明细不可用")
             except Exception as exc:
@@ -205,7 +208,18 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
     actuals, financial_forecasts = _normalize_financial_metrics(raw.get("financial_metrics", []))
     report_dates = [item["report_date"] for item in institutions if item.get("report_date")]
     latest_report_date = max(report_dates) if report_dates else None
-    success = bool(estimates or institutions or financial_forecasts)
+    source_query_complete = all(name in completed_summary_queries for name in requested)
+    coverage_status = (
+        "covered"
+        if estimates
+        else "no_sell_side_coverage"
+        if source_query_complete
+        else "source_unavailable"
+    )
+    # A completed query with zero analyst rows is valid negative evidence, not
+    # a failed tool call. It means the company has no sell-side consensus
+    # coverage in this source and should be evaluated without forward figures.
+    success = bool(estimates or institutions or financial_forecasts) or source_query_complete
     freshness_unknown = latest_report_date is None
     stale = (
         datetime.fromisoformat(latest_report_date).date() < (now.date() - timedelta(days=180))
@@ -222,6 +236,8 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
         "actuals": actuals,
         "financial_forecasts": financial_forecasts,
         "coverage_available": bool(estimates),
+        "coverage_status": coverage_status,
+        "source_query_complete": source_query_complete,
         "coverage_count_latest": estimates[0].get("coverage_count") if estimates else 0,
         "eps_unit": "元/股",
         "net_profit_unit": "亿元",

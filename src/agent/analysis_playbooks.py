@@ -15,6 +15,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
+from src.agent.research_intent import ResearchIntent
+
 
 @dataclass(frozen=True)
 class AnalysisPlaybook:
@@ -84,8 +86,8 @@ INVESTMENT_DECISION = AnalysisPlaybook(
         "估值同时检查 PE(TTM)、PB、历史/行业相对水平、远期 PE/PEG 与一致预期覆盖，不得只看动态 PE。",
         "交易状态同时检查趋势、波动、量价和 5/10/20 日资金持续性；资金流口径不等同机构持仓。",
         "检查正式公告、规则筛查风险、催化兑现条件和市场宽度；无风险事件不等于公司没有风险。",
-        "逐家公司给证据完整度；缺少业务收入、历史估值或一致预期时只能给等待验证，不能给确定性买入。",
-        "结论必须结合期限与风险边界，使用可研究候选/等待验证/暂不买入/风险规避，不承诺收益。",
+        "逐家公司给证据完整度；必查来源执行异常时必须重试或补证。机构一致预期覆盖为0是有效负面事实，不是证据缺失。",
+        "结论必须结合期限与风险边界，使用可研究候选/暂不介入（条件未满足）/暂不买入/风险规避；只有来源调用确实失败时才标数据源异常，不承诺收益。",
     ),
     output_contract=(
         "先回答当前是否具备介入条件，再给全部公司的决策矩阵，不能只挑一两家公司。",
@@ -137,25 +139,69 @@ def _user_texts(messages: Iterable[dict[str, Any]]) -> list[str]:
     ]
 
 
+_TOPIC_PREFIX_RE = re.compile(
+    r"^(?:帮我|请|麻烦|重新|完整|系统地?|仔细|只|梳理|找出|查下|查一下|"
+    r"分析下|分析一下|看看|看下|看一下|看(?=上面|前面)|关于|"
+    r"上面(?:说的|提到的|分析的)?|前面(?:说的|提到的|分析的)?|上述|这些)\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_topic_prefixes(value: str) -> str:
+    """Remove stacked conversational prefixes without eating the topic."""
+    topic = value.strip()
+    previous = None
+    while topic and topic != previous:
+        previous = topic
+        topic = _TOPIC_PREFIX_RE.sub("", topic).strip()
+    return topic
+
+
+def _topic_from_text(text: str) -> str:
+    """Extract an explicit topic from one user turn.
+
+    A follow-up may name a narrower topic (for example ``AI芯片``) even when
+    an older turn contains ``AI产业链``.  Extraction therefore happens one
+    turn at a time so that the latest explicit subject can win.
+    """
+    normalized = re.sub(r"[？?。；;：:]", " ", text).strip()
+
+    industry_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9·+\-\s]{2,40})产业链", normalized)
+    if industry_match:
+        topic = _strip_topic_prefixes(industry_match.group(1))
+        return " ".join(topic.split())
+
+    # Keep the subject before a company-mapping or benefit-ranking request.
+    # This turns “看下上面说的 AI芯片，有哪些公司核心受益” into ``AI芯片``
+    # instead of falling back to an older, broader ``AI产业链`` topic.
+    subject = re.split(
+        r"[，,\s]*(?:有)?哪些(?:A股|上市)?(?:公司|标的|股票|个股)|"
+        r"[，,\s]*(?:哪些|什么)(?:领域|环节)(?:最|核心)?受益|"
+        r"[，,\s]*(?:最|核心)受益(?:的)?(?:A股|上市)?(?:公司|标的|股票|个股)",
+        normalized,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    subject = _strip_topic_prefixes(subject)
+    subject = re.sub(r"(?:这些|上述)?(?:领域|环节|板块)(?:在)?A股$", "", subject).strip()
+    subject = re.sub(r"(?:相关)?(?:公司|标的|股票|个股)$", "", subject).strip()
+    subject = " ".join(subject.split())
+    if len(subject) >= 2 and subject.lower() not in {
+        "a股", "公司", "领域", "环节", "板块", "这些领域", "上述领域",
+    }:
+        return subject[:80]
+    return ""
+
+
 def infer_research_topic(messages: list[dict[str, Any]]) -> str:
     """Return a stable research topic from the current conversation."""
     texts = _user_texts(messages)
+    # Resolve each turn from newest to oldest.  Scanning every historical
+    # ``产业链`` mention first made an old broad topic override a narrower
+    # subject explicitly named in the current question.
     for text in reversed(texts):
-        match = re.search(r"([\u4e00-\u9fffA-Za-z0-9·+\-]{2,24})产业链", text)
-        if match:
-            topic = match.group(1)
-            # Strip conversational prefixes repeatedly.  A single alternation
-            # only removed ``帮我`` from ``帮我分析下人形机器人`` and leaked
-            # ``分析下`` into every discovery query.
-            previous = None
-            while topic != previous:
-                previous = topic
-                topic = re.sub(
-                    r"^(?:帮我|请|重新|完整|系统地?|仔细|只|梳理|分析下|分析一下|看看)",
-                    "",
-                    topic,
-                )
-            return topic or match.group(1)
+        if topic := _topic_from_text(text):
+            return topic
     for text in reversed(texts):
         cleaned = re.sub(
             r"(?:帮我|请|分析下|分析一下|看看|上面提到的|这些|上述|现在能买吗|能不能买|有哪些公司|哪些公司)",
@@ -183,7 +229,7 @@ def select_analysis_playbook(
         return INVESTMENT_DECISION
     if (
         ("a股" in latest or "上市公司" in latest or "哪些公司" in latest or "哪些标的" in latest)
-        and any(marker in latest for marker in ("公司", "标的", "映射", "名单"))
+        and any(marker in latest for marker in ("公司", "标的", "映射", "名单", "股票", "个股"))
     ):
         return THEME_COMPANY_MAPPING
     # Industry-chain research may mention a listed-company name incidentally
@@ -206,6 +252,23 @@ def select_analysis_playbook(
     return None
 
 
+def select_playbook_for_intent(intent: ResearchIntent) -> Optional[AnalysisPlaybook]:
+    """Map a validated semantic intent to an execution contract.
+
+    Unlike :func:`select_analysis_playbook`, this function does not inspect
+    wording.  The model has already resolved the meaning into a closed enum;
+    runtime code only selects the corresponding evidence contract.
+    """
+    return {
+        "industry_chain": INDUSTRY_CHAIN,
+        "theme_company_mapping": THEME_COMPANY_MAPPING,
+        "investment_decision": INVESTMENT_DECISION,
+        "stock_research": STOCK_DEEP_RESEARCH,
+        "comparison": STOCK_DEEP_RESEARCH,
+        "risk_check": STOCK_DEEP_RESEARCH,
+    }.get(intent.kind)
+
+
 def _call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": f"playbook_{uuid.uuid4().hex}",
@@ -214,15 +277,36 @@ def _call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _topic_chain_terms(topic: str) -> str:
+    """Return topic-specific discovery dimensions instead of one hard-coded chain."""
+    lowered = topic.lower()
+    if any(marker in lowered for marker in ("人形机器人", "具身智能", "机器人")):
+        return "丝杠 减速器 伺服 电机 传感器 灵巧手 机器视觉"
+    if any(marker in lowered for marker in ("ai芯片", "人工智能芯片", "算力芯片")):
+        return "GPU NPU ASIC 训练芯片 推理芯片 加速卡 HBM 先进封装 国产替代"
+    if lowered in {"ai", "人工智能"} or "ai产业" in lowered or "人工智能产业" in lowered:
+        return "AI芯片 AI服务器 光模块 液冷 数据中心 云服务 大模型 应用"
+    return "核心环节 上游 中游 下游 价值量 国产替代 订单 产能"
+
+
 def mandatory_tool_calls(
     playbook: Optional[AnalysisPlaybook],
     messages: list[dict[str, Any]],
     verified_entities: list[dict[str, str]],
+    intent: Optional[ResearchIntent] = None,
 ) -> list[dict[str, Any]]:
     """Build the evidence calls that must run before model synthesis."""
     if playbook is None:
         return []
-    topic = infer_research_topic(messages)
+    topic = intent.normalized_topic if intent is not None else infer_research_topic(messages)
+    if not topic:
+        topic = infer_research_topic(messages)
+    semantic_dimensions = " ".join(
+        re.sub(r"[^\u4e00-\u9fffA-Za-z0-9·+\-/]", "", str(item))[:32]
+        for item in ((intent.research_dimensions if intent is not None else [])[:12])
+        if str(item).strip()
+    ).strip()
+    chain_terms = semantic_dimensions or _topic_chain_terms(topic)
     if playbook.id == INDUSTRY_CHAIN.id:
         return [
             _call("search_financial_news", {
@@ -240,7 +324,7 @@ def mandatory_tool_calls(
                 "include_content": True,
             }),
             _call("search_research_library", {
-                "query": f"{topic} 核心零部件 价值量 国产替代 降本 丝杠 减速器 伺服 传感器",
+                "query": f"{topic} 产业链 价值量 国产替代 降本 {chain_terms}",
                 "category": "industry",
                 "days": 1095,
                 "limit": 20,
@@ -257,7 +341,7 @@ def mandatory_tool_calls(
     if playbook.id == THEME_COMPANY_MAPPING.id:
         return [
             _call("get_theme_stock_candidates", {
-                "theme": topic,
+                "theme": intent.normalized_discovery_theme if intent is not None else topic,
                 "limit": 1000,
             }),
             _call("search_financial_news", {
@@ -268,7 +352,7 @@ def mandatory_tool_calls(
                 "include_content": True,
             }),
             _call("search_research_library", {
-                "query": f"{topic} 产业链 A股 标的 丝杠 减速器 伺服 电机 传感器 灵巧手 机器视觉",
+                "query": f"{topic} 产业链 A股 标的 {chain_terms}",
                 "category": "industry",
                 "days": 1095,
                 "limit": 30,
@@ -308,4 +392,5 @@ __all__ = [
     "infer_research_topic",
     "mandatory_tool_calls",
     "select_analysis_playbook",
+    "select_playbook_for_intent",
 ]

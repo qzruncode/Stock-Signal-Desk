@@ -99,7 +99,8 @@ def _compact_consensus(data: dict[str, Any]) -> dict[str, Any]:
     return {
         **_pick(data, (
             "success", "partial", "symbol", "coverage_available", "coverage_count_latest",
-            "latest_institution_report_date", "forecast_warning", "source", "data_time",
+            "coverage_status", "source_query_complete", "latest_institution_report_date",
+            "forecast_warning", "source", "data_time",
             "is_stale", "errors", "warnings",
         )),
         "estimates": estimates,
@@ -243,7 +244,13 @@ def _coverage(item: dict[str, Any]) -> dict[str, Any]:
         "business_reality": _ok(item.get("profile")) and _ok(item.get("business_segments")),
         "financial_quality": _ok(financials) and len(financials.get("items") or []) >= 4,
         "valuation": _ok(valuation) and any(valuation.get(key) is not None for key in ("pe_ttm", "pb_mrq", "ps_ttm")),
-        "expectations": _ok(consensus) and bool(consensus.get("coverage_available")),
+        # Zero analyst coverage is itself a verified expectation state when
+        # both summary queries completed. Only an unavailable source is a
+        # missing evidence dimension.
+        "expectations": _ok(consensus) and (
+            bool(consensus.get("coverage_available"))
+            or consensus.get("coverage_status") == "no_sell_side_coverage"
+        ),
         "peer_context": _ok(peers) and bool(peers.get("dimensions")),
         "trading_state": bool(technical.get("success")) and _ok(item.get("capital_flow")),
         "catalyst_and_risk": _ok(item.get("announcements")) and _ok(item.get("risk_events")),
