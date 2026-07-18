@@ -11,7 +11,11 @@ from src.agent.analysis_playbooks import (
     mandatory_tool_calls,
     select_playbook_for_intent,
 )
-from src.agent.research_intent import ResearchIntent, resolve_research_intent
+from src.agent.research_intent import (
+    ResearchIntent,
+    _conversation_for_resolution,
+    resolve_research_intent,
+)
 
 
 def _tool_response(payload: dict) -> SimpleNamespace:
@@ -35,6 +39,8 @@ def test_semantic_intent_uses_latest_explicit_subtopic_and_structured_dimensions
             "kind": "theme_company_mapping",
             "topic": "AI芯片",
             "discovery_theme": "AI芯片",
+            "selection_mode": "ranked_shortlist",
+            "thesis_requirements": ["AI芯片", "量产或收入兑现"],
             "entity_scope": "none",
             "entities": [],
             "objective": "找出AI芯片核心受益的A股公司",
@@ -77,6 +83,8 @@ def test_semantic_intent_rejects_missing_clarification_question() -> None:
             "kind": "investment_decision",
             "topic": None,
             "discovery_theme": None,
+            "selection_mode": "none",
+            "thesis_requirements": [],
             "entity_scope": "none",
             "entities": [],
             "objective": "判断能否买入",
@@ -114,6 +122,8 @@ def test_semantic_intent_normalizes_gateway_null_and_topic_only_scope() -> None:
             "kind": "theme_company_mapping",
             "topic": "AI计算芯片（训练与推理）",
             "discovery_theme": "AI芯片",
+            "selection_mode": "ranked_shortlist",
+            "thesis_requirements": ["训练或推理芯片", "量产或收入兑现"],
             "entity_scope": "current_message",
             "entities": [],
             "objective": "找出核心受益公司",
@@ -134,3 +144,39 @@ def test_semantic_intent_normalizes_gateway_null_and_topic_only_scope() -> None:
     assert intent.clarification_question is None
     assert intent.entity_scope == "none"
     assert intent.normalized_discovery_theme == "AI芯片"
+    assert intent.selection_mode == "ranked_shortlist"
+
+
+def test_intent_context_keeps_conclusion_boundary_without_full_report_body() -> None:
+    long_answer = "第一梯队：端侧AI SoC与推理芯片\n" + ("正文数据" * 2000) + "\n量产、订单或收入兑现"
+    compact = _conversation_for_resolution([
+        {"role": "user", "content": "按消费终端逻辑分析"},
+        {"role": "assistant", "content": long_answer},
+        {"role": "user", "content": "按上面第一梯队找最符合公司"},
+    ])
+
+    assert len(compact[1]["content"]) < 3500
+    assert "第一梯队：端侧AI SoC与推理芯片" in compact[1]["content"]
+    assert "量产、订单或收入兑现" in compact[1]["content"]
+
+
+def test_intent_does_not_treat_output_shape_as_company_eligibility() -> None:
+    intent = ResearchIntent(
+        kind="theme_company_mapping",
+        topic="消费级端侧AI SoC与推理芯片",
+        discovery_theme="AI芯片",
+        selection_mode="ranked_shortlist",
+        thesis_requirements=[
+            "消费级终端场景（手机、PC、可穿戴、IoT）",
+            "端侧AI SoC或端侧推理芯片",
+            "已有量产、订单或收入兑现",
+            "不输出泛AI芯片概念名单，只给符合命题的排序短名单",
+        ],
+        objective="筛选最符合的A股公司",
+    )
+
+    assert intent.thesis_requirements == [
+        "消费级终端场景（手机、PC、可穿戴、IoT）",
+        "端侧AI SoC或端侧推理芯片",
+        "已有量产、订单或收入兑现",
+    ]

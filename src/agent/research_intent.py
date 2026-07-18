@@ -37,6 +37,7 @@ EntityScope = Literal[
     "previous_answer",
     "conversation",
 ]
+SelectionMode = Literal["none", "complete_inventory", "ranked_shortlist"]
 
 
 class ResearchIntent(BaseModel):
@@ -47,6 +48,8 @@ class ResearchIntent(BaseModel):
     kind: IntentKind
     topic: Optional[str] = None
     discovery_theme: Optional[str] = None
+    selection_mode: SelectionMode = "none"
+    thesis_requirements: list[str] = Field(default_factory=list)
     entity_scope: EntityScope = "none"
     entities: list[str] = Field(default_factory=list)
     objective: str
@@ -66,6 +69,35 @@ class ResearchIntent(BaseModel):
         if isinstance(value, str) and value.strip().lower() in {"", "null", "none", "nil"}:
             return None
         return value
+
+    @field_validator("thesis_requirements", mode="before")
+    @classmethod
+    def _keep_only_business_requirements(cls, value: Any) -> Any:
+        """Keep presentation instructions out of company eligibility rules.
+
+        The semantic model occasionally copied phrases such as "不要输出泛概念
+        名单" into ``thesis_requirements``.  Evidence binding then correctly
+        required every company to satisfy an impossible presentation rule and
+        rejected otherwise valid operating evidence.  Output-shape constraints
+        belong to ``output_requirements`` and must never participate in thesis
+        fit.
+        """
+        if not isinstance(value, list):
+            return value
+        output_only_markers = (
+            "不输出", "不要输出", "只输出", "只给", "仅给", "名单", "短名单",
+            "排序", "排名", "展示", "呈现", "回答格式", "输出格式", "篇幅",
+        )
+        cleaned: list[str] = []
+        for item in value:
+            requirement = str(item or "").strip(" ，,；;。")
+            if not requirement:
+                continue
+            if any(marker in requirement for marker in output_only_markers):
+                continue
+            if requirement not in cleaned:
+                cleaned.append(requirement)
+        return cleaned
 
     @property
     def normalized_topic(self) -> str:
@@ -95,6 +127,11 @@ _INTENT_TOOL = {
                 },
                 "topic": {"type": ["string", "null"]},
                 "discovery_theme": {"type": ["string", "null"]},
+                "selection_mode": {
+                    "type": "string",
+                    "enum": ["none", "complete_inventory", "ranked_shortlist"],
+                },
+                "thesis_requirements": {"type": "array", "items": {"type": "string"}},
                 "entity_scope": {
                     "type": "string",
                     "enum": ["none", "current_message", "previous_answer", "conversation"],
@@ -108,7 +145,8 @@ _INTENT_TOOL = {
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             },
             "required": [
-                "kind", "topic", "discovery_theme", "entity_scope", "entities", "objective",
+                "kind", "topic", "discovery_theme", "selection_mode", "thesis_requirements",
+                "entity_scope", "entities", "objective",
                 "research_dimensions", "output_requirements", "needs_clarification",
                 "clarification_question", "confidence",
             ],
@@ -130,16 +168,25 @@ _INTENT_SYSTEM_PROMPT = """\
    - “用于训练和推理的 AI 计算芯片”可写 topic="AI计算芯片（训练与推理）"，discovery_theme="AI芯片"；
    - “低空经济产业链”可写 topic="低空经济产业链"，discovery_theme="低空经济"；
    - 只有 theme_company_mapping 需要 discovery_theme，其他 kind 填 null。
-6. kind 表示用户要的研究产物，而不是消息里碰巧出现的词：
+6. selection_mode 表示最终公司结论的形态：
+   - complete_inventory：用户明确要完整名单或全量候选；
+   - ranked_shortlist：用户要“最符合、最核心、真正受益、优先级”，必须横向比较后只给符合命题的排序短名单；
+   - none：非公司映射任务。
+7. thesis_requirements 写进入最终结论必须同时满足的条件。必须继承紧邻回答中用户引用的限定条件。
+   例如“按照上面第一梯队找最符合公司”，若第一梯队是消费级端侧 AI SoC，则条件至少包括
+   “消费级终端场景”“端侧 AI SoC/推理芯片”“量产、订单或收入兑现”，不能退化为泛 AI 芯片。
+   “不要输出泛概念名单”“按匹配度排序”“只给短名单”等是展示要求，必须放入
+   output_requirements，绝不能写入 thesis_requirements。
+8. kind 表示用户要的研究产物，而不是消息里碰巧出现的词：
    - industry_chain：研究产业环节、价值量、竞争格局或受益顺序；
    - theme_company_mapping：把主题映射为上市公司、完整名单或核心受益公司；
    - investment_decision：问能否买入、持有、卖出、仓位或入场条件；
    - stock_research：完整研究一家或多家公司；
    - comparison/risk_check/market_snapshot/general_question/casual 按字面语义选择。
-7. research_dimensions 写本轮真正需要研究的业务维度，例如 GPU、训练芯片、推理芯片、订单、收入；
+9. research_dimensions 写本轮真正需要研究的业务维度，例如 GPU、训练芯片、推理芯片、订单、收入；
    不要套用其他行业的零部件词。
-8. 只有缺少对象且无法从紧邻上下文唯一确定时，needs_clarification 才为 true。
-9. 必须通过 resolve_research_intent 工具返回结构化结果。\
+10. 只有缺少对象且无法从紧邻上下文唯一确定时，needs_clarification 才为 true。
+11. 必须通过 resolve_research_intent 工具返回结构化结果。\
 """
 
 
@@ -159,7 +206,7 @@ def _message_text(message: dict[str, Any]) -> str:
 def _conversation_for_resolution(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Keep branch semantics while excluding old tool payloads and UI metadata."""
     compact: list[dict[str, str]] = []
-    for message in messages[-10:]:
+    for message in messages[-8:]:
         if not isinstance(message, dict):
             continue
         role = str(message.get("role") or "")
@@ -168,7 +215,15 @@ def _conversation_for_resolution(messages: list[dict[str, Any]]) -> list[dict[st
         text = _message_text(message)
         if not text:
             continue
-        compact.append({"role": role, "content": text[:5000]})
+        # Intent resolution needs the prior conclusion boundary, not the full
+        # report body.  Keeping giant assistant answers here made a semantic
+        # routing call time out and silently changed a ranked-shortlist request
+        # back into the legacy broad-inventory path.
+        if role == "assistant" and len(text) > 3600:
+            text = text[:2800] + "\n...[中间正文省略]...\n" + text[-600:]
+        elif role == "user":
+            text = text[:1600]
+        compact.append({"role": role, "content": text})
     return compact
 
 

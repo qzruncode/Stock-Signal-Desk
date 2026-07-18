@@ -1660,6 +1660,65 @@ def test_theme_mapping_prefers_semantic_facts_over_legacy_word_markers():
     assert "盟固利" not in empty_semantic
 
 
+def test_ranked_shortlist_requires_exact_thesis_fit_and_does_not_dump_concept_pool():
+    from src.agent.evidence_facts import BoundEvidenceFact
+    from src.agent.research_intent import ResearchIntent
+
+    result = {
+        "success": True,
+        "theme": "AI芯片",
+        "local_universe_count": 5528,
+        "candidate_count": 2,
+        "coverage_complete": True,
+        "items": [
+            {"name": "云天励飞", "symbol": "688343", "boards": ["AI芯片"]},
+            {"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]},
+        ],
+    }
+    intent = ResearchIntent(
+        kind="theme_company_mapping",
+        topic="消费级终端端侧AI SoC与推理芯片",
+        discovery_theme="AI芯片",
+        selection_mode="ranked_shortlist",
+        thesis_requirements=["消费级终端场景", "端侧AI SoC或推理芯片", "批量交付、订单或收入"],
+        objective="找出最符合第一梯队的A股公司",
+        research_dimensions=["AI手机", "AI眼镜", "端侧推理", "批量交付"],
+        confidence=0.98,
+    )
+    facts = [
+        BoundEvidenceFact(
+            company_name="安凯微", symbol="688620", stage="L3", thesis_fit="exact",
+            commercialization_signal="batch_delivery", relationship="消费级AI眼镜SoC",
+            fact="安凯微AI眼镜芯片2025年四季度已实现批量交付",
+            support_quote="安凯微AI眼镜芯片2025年四季度已实现批量交付",
+            source_id="s1", source_name="中国证券报", source_url="https://example.com/ankai",
+            source_date="2026-07-16", confidence=0.98,
+        ),
+        BoundEvidenceFact(
+            company_name="云天励飞", symbol="688343", stage="L3", thesis_fit="partial",
+            commercialization_signal="batch_delivery", relationship="通用边缘AI推理芯片",
+            fact="云天励飞芯片用于机器人、边缘网关和服务器",
+            support_quote="云天励飞芯片用于机器人、边缘网关和服务器",
+            source_id="s2", source_name="测试来源", source_url="https://example.com/yuntian",
+            source_date="2026-07-16", confidence=0.95,
+        ),
+    ]
+
+    rendered = chat_mod._build_theme_mapping_fallback(
+        result,
+        [],
+        semantic_facts=facts,
+        semantic_intent=intent,
+    )
+
+    assert "与投资命题精确匹配的 A 股短名单" in rendered
+    assert "安凯微 (688620)" in rendered
+    assert "云天励飞" not in rendered
+    assert "寒武纪" not in rendered
+    assert "完整候选池" not in rendered
+    assert "概念成员关系不参与最终排名" in rendered
+
+
 def test_react_loop_uses_semantic_intent_dimensions_and_bound_facts_end_to_end():
     from src.agent.evidence_facts import BoundEvidenceFact
     from src.agent.research_intent import ResearchIntent

@@ -1100,6 +1100,7 @@ def _build_theme_mapping_fallback(
     result: Dict[str, Any],
     evidence: Optional[List[Dict[str, Any]]] = None,
     semantic_facts: Optional[List[BoundEvidenceFact]] = None,
+    semantic_intent: Optional[ResearchIntent] = None,
 ) -> str:
     """Render company-level evidence plus the complete locally verified recall index."""
     selected_by_symbol: Dict[str, Dict[str, Any]] = {}
@@ -1171,6 +1172,12 @@ def _build_theme_mapping_fallback(
             name = str(fact.get("company_name") or symbol)
             stage = str(fact.get("stage") or "")
             if not symbol or not name or stage == "L1":
+                continue
+            if (
+                semantic_intent is not None
+                and semantic_intent.selection_mode == "ranked_shortlist"
+                and fact.get("thesis_fit") != "exact"
+            ):
                 continue
             rendered = {
                 "symbol": symbol,
@@ -1527,6 +1534,37 @@ def _build_theme_mapping_fallback(
         if boundary_rows
         else "本轮未检出公司明确否认、尚未形成收入或收入占比较小等反证。"
     )
+    if semantic_intent is not None and semantic_intent.selection_mode == "ranked_shortlist":
+        requirements = "、".join(semantic_intent.thesis_requirements) or semantic_intent.objective
+        shortlist = (
+            "| 排名 | 公司/代码 | 精确匹配环节 | 兑现等级 | 已验证事实 | 仍需核验 | 来源日期 |\n"
+            "|---|---|---|---|---|---|---|\n"
+            + "\n".join(
+                row.replace("| ", f"| {index} | ", 1)
+                for index, row in enumerate(selected_rows, 1)
+            )
+            if selected_rows
+            else (
+                "本轮没有公司同时满足全部命题条件，因此不能从宽泛概念池中强行选出‘最符合’公司。"
+            )
+        )
+        return (
+            "## 与投资命题精确匹配的 A 股短名单\n\n"
+            f"> 必须同时满足：{requirements}。宽泛主题池召回 **{len(candidates)} 家**，"
+            "但概念成员关系不参与最终排名。\n\n"
+            + shortlist
+            + "\n\n### 结论边界\n\n"
+            + (
+                f"本轮仅有 **{len(selected)} 家**取得与命题精确匹配的 L2/L3 公司级证据；"
+                "排名按兑现等级优先，不把服务器、机器人、通用边缘计算等相邻场景冒充消费终端兑现。"
+                if selected
+                else "当前证据不足以形成可信短名单；应继续逐家公司补充同口径订单、批量交付和收入证据。"
+            )
+            + "\n\n### 召回与检索覆盖\n\n"
+            + ("\n".join(source_lines) if source_lines else "候选来源明细缺失。")
+            + "\n\n"
+            + ("\n".join(evidence_source_lines) if evidence_source_lines else "没有取得证据源执行记录。")
+        )
     return (
         "## 产业主题 A 股候选公司\n\n"
         f"> 已从本地 **{result.get('local_universe_count') or '全量'} 只**证券中交叉核验代码；"
@@ -1560,6 +1598,7 @@ def _build_verified_evidence_fallback(
     *,
     professional_decision_requested: Optional[bool] = None,
     semantic_facts: Optional[List[BoundEvidenceFact]] = None,
+    semantic_intent: Optional[ResearchIntent] = None,
 ) -> str:
     """Return a complete deterministic answer when final model text is empty.
 
@@ -1575,7 +1614,12 @@ def _build_verified_evidence_fallback(
             continue
         result = item.get("result")
         if isinstance(result, dict) and result.get("success") is not False:
-            return _build_theme_mapping_fallback(result, evidence, semantic_facts=semantic_facts)
+            return _build_theme_mapping_fallback(
+                result,
+                evidence,
+                semantic_facts=semantic_facts,
+                semantic_intent=semantic_intent,
+            )
 
     for item in evidence or []:
         if not isinstance(item, dict) or item.get("tool") != "get_multi_stock_decision_evidence":
@@ -2545,7 +2589,7 @@ async def _run_react_loop(
     semantic_intent: Optional[ResearchIntent] = None
     if llm_cfg.get("semantic_intent_enabled"):
         try:
-            async with asyncio.timeout(25.0):
+            async with asyncio.timeout(50.0):
                 semantic_intent = await resolve_research_intent(
                     messages,
                     llm_cfg,
@@ -3167,6 +3211,7 @@ async def _run_react_loop(
         content_text = _build_verified_evidence_fallback(
             evidence,
             semantic_facts=semantic_facts,
+            semantic_intent=semantic_intent,
         )
         controller.append_text(content_text)
         if state is not None:
