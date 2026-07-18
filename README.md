@@ -51,10 +51,11 @@ cp .env.example .env
 
 ```dotenv
 STOCK_LIST=600519,300750,002594
-GEMINI_API_KEY=your_key
+ANTHROPIC_AUTH_TOKEN=your_token
+ANTHROPIC_MODEL=claude-sonnet-4-6
 ```
 
-也可以使用 DeepSeek、OpenAI / OpenAI-compatible、Anthropic、Moonshot、DashScope、Ollama 等渠道。多渠道配置使用 `LLM_CHANNELS`，具体示例见 `.env.example`。
+如使用中转服务，再配置 `ANTHROPIC_BASE_URL`。完整配置示例见 `.env.example`。
 
 ## 运行
 
@@ -69,6 +70,8 @@ python main.py --serve-only
 - WebUI: `http://localhost:8000`
 - API 文档: `http://localhost:8000/docs`
 - 健康检查: `http://localhost:8000/api/health`
+
+生产部署前必须执行 AI 助手预检，单 worker、认证、限流、模型和前端产物任一不合格都会阻止启动。详见 [AI 助手生产部署](AI_ASSISTANT_PRODUCTION.md)。
 
 ### 指定端口
 

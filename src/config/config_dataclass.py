@@ -187,6 +187,7 @@ class Config:
     # --- Post-init validation ---
     _WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS = frozenset(
         {
+            "ADMIN_AUTH_ENABLED",
             "STOCK_LIST",
             "RUN_IMMEDIATELY",
             "SCHEDULE_ENABLED",

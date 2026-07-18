@@ -21,8 +21,6 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
-from dotenv import dotenv_values
-
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "dsa_session"
@@ -59,15 +57,16 @@ def _get_credential_path() -> Path:
 
 
 def _is_auth_enabled_from_env() -> bool:
-    """Read ADMIN_AUTH_ENABLED from .env file."""
-    _ensure_env_loaded()
-    env_file = os.getenv("ENV_FILE")
-    env_path = Path(env_file) if env_file else Path(__file__).resolve().parent.parent / ".env"
-    if not env_path.exists():
-        return False
-    values = dotenv_values(env_path)
-    val = (values.get("ADMIN_AUTH_ENABLED") or "").strip().lower()
-    return val in ("true", "1", "yes")
+    """Read ADMIN_AUTH_ENABLED without losing runtime or env-file overrides."""
+    from src.config.config_dataclass import Config
+
+    value = Config._resolve_env_value(
+        "ADMIN_AUTH_ENABLED",
+        default="false",
+        prefer_env_file=True,
+    )
+    value = (value or "").strip().lower()
+    return value in ("true", "1", "yes")
 
 
 def rotate_session_secret() -> bool:

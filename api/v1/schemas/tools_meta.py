@@ -19,6 +19,10 @@ ToolCategory = Literal[
     "macro",
     "search",
     "analysis",
+    "research",
+    "regulatory",
+    "events",
+    "risk",
 ]
 
 

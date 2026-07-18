@@ -30,14 +30,32 @@ from api.v1.endpoints.agent.tools import (
     _maybe_attach_search_fallback,
 )
 from src.tools.registry import ToolRegistry
+from src.tools.process_runner import execute_tool_isolated
 
 logger = logging.getLogger(__name__)
 
 
 _DESCRIPTION_MAX_LEN = 500
-_VALID_CATEGORIES = {"data", "market", "financials", "sentiment", "macro", "search", "analysis"}
+_VALID_CATEGORIES = {
+    "data", "market", "financials", "sentiment", "macro", "search", "analysis",
+    "research", "regulatory", "events", "risk",
+}
+_TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
+_PROFESSIONAL_TOOL_TIMEOUT_SECONDS = 90.0
 
 _registry = ToolRegistry()
+
+
+def _execution_timeout(tool_name: str, arguments: Dict[str, Any]) -> float:
+    if tool_name in {"get_multi_stock_decision_evidence", "get_theme_stock_candidates"}:
+        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
+    if tool_name == "websearch" and bool(arguments.get("includeContent")):
+        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
+    if tool_name == "get_monetary_policy_operations" and bool(arguments.get("include_content")):
+        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
+    if tool_name == "get_regulatory_updates" and bool(arguments.get("include_content")):
+        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
+    return _TOOL_EXECUTION_TIMEOUT_SECONDS
 
 
 def _truncate_description(text: str, limit: int = _DESCRIPTION_MAX_LEN) -> str:
@@ -126,10 +144,11 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
     使 setting 页「测试」结果与 LLM 实际看到的相同。同步网络 IO 丢进线程池,
     避免阻塞事件循环(与 chat.py 的 _execute_one_tool 同思路)。工具不存在、
     参数错误或任意异常均以 success=False + error 返回,保持响应结构统一,
-    供前端按 success 字段判断。服务端不设硬超时(对齐 chat.py,工具跑到自然结束)。
+    供前端按 success 字段判断。执行使用与 chat.py 相同的超时档位和原生风险
+    工具进程隔离，避免设置页试运行拖死 API worker 或把上游失败误报为成功。
     """
     tool_name = (req.tool_name or "").strip()
-    args = req.arguments or {}
+    args = _registry.normalize_arguments(tool_name, req.arguments or {})
     start = time.perf_counter()
 
     def _elapsed_ms() -> int:
@@ -137,16 +156,39 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
 
     try:
         def _sync_fetch() -> Any:
-            result = _registry.execute(tool_name, args)
+            timeout = _execution_timeout(tool_name, args)
+            # Every registered tool runs out-of-process.  Several apparently
+            # harmless tools can enter AKShare/libmini_racer indirectly when a
+            # cache misses.  Running only a hand-maintained subset in isolation
+            # leaves the FastAPI worker vulnerable to a native abort during
+            # concurrent probes.
+            result = execute_tool_isolated(
+                tool_name,
+                args,
+                timeout_seconds=timeout - 3,
+            )
             compacted = _compact_tool_result(tool_name, result)
             return _maybe_attach_search_fallback(tool_name, args, compacted)
 
-        payload = await asyncio.to_thread(_sync_fetch)
+        timeout = _execution_timeout(tool_name, args)
+        payload = await asyncio.wait_for(asyncio.to_thread(_sync_fetch), timeout=timeout)
+        succeeded = not (isinstance(payload, dict) and payload.get("success") is False)
+        errors = payload.get("errors") if isinstance(payload, dict) else None
         return ToolExecuteResponse(
             tool_name=tool_name,
             arguments=args,
-            success=True,
+            success=succeeded,
             result=payload,
+            error=(str(errors[0]) if not succeeded and isinstance(errors, list) and errors else None),
+            duration_ms=_elapsed_ms(),
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("[tool-registry] execute timed out: %s", tool_name)
+        return ToolExecuteResponse(
+            tool_name=tool_name,
+            arguments=args,
+            success=False,
+            error="工具执行超时",
             duration_ms=_elapsed_ms(),
         )
     except KeyError:

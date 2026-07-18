@@ -150,6 +150,31 @@ def test_delete_conversation_404_when_missing(client, mock_service):
     cancel_run.assert_not_called()
 
 
+def test_cancel_conversation_stops_retained_run(client, mock_service):
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    with patch(
+        "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
+        return_value=True,
+    ) as cancel_run:
+        resp = client.post("/api/v1/agent/conversations/c1/cancel")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": True}
+    cancel_run.assert_awaited_once_with("c1", remove=False)
+
+
+def test_cancel_conversation_404_when_missing(client, mock_service):
+    mock_service.get_conversation.return_value = None
+    with patch(
+        "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
+        return_value=False,
+    ) as cancel_run:
+        resp = client.post("/api/v1/agent/conversations/missing/cancel")
+
+    assert resp.status_code == 404
+    cancel_run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # snapshot
 # ---------------------------------------------------------------------------

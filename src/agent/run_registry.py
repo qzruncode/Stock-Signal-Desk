@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
@@ -215,17 +216,23 @@ class RunBroadcaster:
 RunStatus = str  # "running" | "completed" | "failed" | "cancelled"
 
 
+class RunCapacityExceeded(RuntimeError):
+    """Raised when the process-wide Agent concurrency budget is exhausted."""
+
+
 @dataclass
 class ActiveRun:
     """一个进行中(或刚结束、保留期内)的 agent 生成 run。"""
 
     conversation_id: str
     broadcaster: RunBroadcaster
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     task: Optional["asyncio.Task"] = None
     status: RunStatus = "running"
     started_at: datetime = field(default_factory=datetime.now)
     final_text: Optional[str] = None
     error: Optional[str] = None
+    terminal_recorded: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -253,6 +260,14 @@ class ActiveRunRegistry:
     def __init__(self) -> None:
         self._runs: Dict[str, ActiveRun] = {}
         self._lock = asyncio.Lock()
+        self._cleanup_handles: Set["asyncio.TimerHandle"] = set()
+        self._cleanup_tasks: Set["asyncio.Task"] = set()
+        self._total_started = 0
+        self._terminal_counts: Dict[str, int] = {
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
 
     async def start_or_get(self, conversation_id: str) -> ActiveRun:
         """若有 running run 则返回它 (首连复用),否则建一个新 run (尚未启动 task)。
@@ -270,9 +285,15 @@ class ActiveRunRegistry:
                 broadcaster=broadcaster,
             )
             self._runs[conversation_id] = run
+            self._total_started += 1
             return run
 
-    async def try_claim(self, conversation_id: str) -> Optional[ActiveRun]:
+    async def try_claim(
+        self,
+        conversation_id: str,
+        *,
+        max_active_runs: Optional[int] = None,
+    ) -> Optional[ActiveRun]:
         """原子地「判定无活跃 run + 创建新 run」。
 
         与 ``start_or_get`` 的区别:后者在已有 running run 时复用(返回已有 run),
@@ -287,12 +308,24 @@ class ActiveRunRegistry:
             existing = self._runs.get(conversation_id)
             if existing is not None and existing.is_running:
                 return None
+            active_count = sum(1 for candidate in self._runs.values() if candidate.is_running)
+            if max_active_runs is not None and active_count >= max_active_runs:
+                raise RunCapacityExceeded(
+                    f"active Agent run capacity exhausted ({active_count}/{max_active_runs})"
+                )
             broadcaster = RunBroadcaster()
             run = ActiveRun(
                 conversation_id=conversation_id,
                 broadcaster=broadcaster,
             )
             self._runs[conversation_id] = run
+            self._total_started += 1
+            logger.info(
+                "[AgentRun] claimed run_id=%s conversation_id=%s active=%s",
+                run.run_id,
+                conversation_id,
+                active_count + 1,
+            )
             return run
 
     def get(self, conversation_id: str) -> Optional[ActiveRun]:
@@ -318,16 +351,43 @@ class ActiveRunRegistry:
             run.final_text = final_text
             run.error = error
             run.broadcaster.mark_finished()
+            if not run.terminal_recorded:
+                self._terminal_counts[status] = self._terminal_counts.get(status, 0) + 1
+                run.terminal_recorded = True
+            duration_ms = int((datetime.now() - run.started_at).total_seconds() * 1000)
+            logger.info(
+                "[AgentRun] finished run_id=%s conversation_id=%s status=%s duration_ms=%s chunks=%s",
+                run.run_id,
+                conversation_id,
+                status,
+                duration_ms,
+                run.broadcaster.history_length,
+            )
 
         # 延迟清理:让最后断开的连接仍能拿到 final chunk / None 哨兵。
         retention = _RUN_RETENTION_SECONDS
 
-        async def _cleanup():
-            await asyncio.sleep(retention)
-            async with self._lock:
-                self._runs.pop(conversation_id, None)
+        expected_run_id = run.run_id
 
-        asyncio.create_task(_cleanup())
+        async def _cleanup():
+            async with self._lock:
+                current = self._runs.get(conversation_id)
+                # A new run may have replaced this retained terminal run.  An
+                # old timer must never delete the replacement.
+                if current is not None and current.run_id == expected_run_id:
+                    self._runs.pop(conversation_id, None)
+
+        def _start_cleanup() -> None:
+            self._cleanup_handles.discard(cleanup_handle)
+            cleanup_task = asyncio.create_task(_cleanup())
+            self._cleanup_tasks.add(cleanup_task)
+            cleanup_task.add_done_callback(self._cleanup_tasks.discard)
+
+        # A timer handle does not leave a pending asyncio Task behind when a
+        # short-lived request/test loop closes.  The actual coroutine is only
+        # created after the retention window expires.
+        cleanup_handle = asyncio.get_running_loop().call_later(retention, _start_cleanup)
+        self._cleanup_handles.add(cleanup_handle)
 
     async def cancel(self, conversation_id: str, *, remove: bool = True) -> bool:
         """显式取消一个 run,用于删除会话/用户放弃任务。
@@ -337,34 +397,86 @@ class ActiveRunRegistry:
         """
         async with self._lock:
             run = self._runs.get(conversation_id)
-            if run is None:
+            if run is None or not run.is_running:
                 return False
             task = run.task
             run.status = "cancelled"
             run.error = "cancelled"
             run.broadcaster.mark_finished()
+            if not run.terminal_recorded:
+                self._terminal_counts["cancelled"] += 1
+                run.terminal_recorded = True
             if remove:
                 self._runs.pop(conversation_id, None)
 
         if task is not None and not task.done():
             task.cancel()
+            # task.cancel() only schedules cancellation. Wait until the run
+            # callback has persisted its partial answer before returning.
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        logger.info(
+            "[AgentRun] cancelled run_id=%s conversation_id=%s remove=%s",
+            run.run_id,
+            conversation_id,
+            remove,
+        )
         return True
+
+    def stats(self) -> Dict[str, Any]:
+        """Return non-sensitive process-local runtime metrics for readiness."""
+        now = datetime.now()
+        active = [run for run in self._runs.values() if run.is_running]
+        oldest_seconds = max(
+            ((now - run.started_at).total_seconds() for run in active),
+            default=0.0,
+        )
+        return {
+            "active_runs": len(active),
+            "retained_runs": len(self._runs),
+            "oldest_active_seconds": round(max(0.0, oldest_seconds), 3),
+            "total_started": self._total_started,
+            "terminal": dict(self._terminal_counts),
+        }
 
     async def shutdown(self) -> None:
         """进程关闭时取消所有进行中的后台 task (lifespan 调用)。"""
         async with self._lock:
             runs = list(self._runs.values())
+            cleanup_handles = list(self._cleanup_handles)
+            for handle in cleanup_handles:
+                handle.cancel()
+            self._cleanup_handles.clear()
+            cleanup_tasks = list(self._cleanup_tasks)
         for run in runs:
             if run.task is not None and not run.task.done():
                 run.task.cancel()
         for run in runs:
+            if run.task is None:
+                continue
             try:
                 await run.task
             except (asyncio.CancelledError, Exception):
                 pass
+        for task in cleanup_tasks:
+            task.cancel()
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        self._cleanup_tasks.clear()
         self._runs.clear()
 
 
 # 模块级单例:与 chat.py 的 _pending_approvals 同级,便于 approve.py /
 # conversations.py / chat.py 直接 import。
 active_run_registry = ActiveRunRegistry()
+
+
+__all__ = [
+    "ActiveRun",
+    "ActiveRunRegistry",
+    "RunBroadcaster",
+    "RunCapacityExceeded",
+    "active_run_registry",
+]

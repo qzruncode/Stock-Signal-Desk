@@ -49,6 +49,7 @@ def get_agent_conversation(
     is_generating = active_run_registry.is_active(conversation_id)
     conversation["is_generating"] = is_generating
     conversation["resume_state"] = {
+        "run_id": run.run_id if run else None,
         "active": run is not None,
         "is_generating": is_generating,
         "status": run.status if run else None,
@@ -98,6 +99,19 @@ async def delete_agent_conversation(
     if not deleted:
         raise HTTPException(status_code=404, detail="对话不存在")
     return {"deleted": deleted}
+
+
+@router.post("/agent/conversations/{conversation_id}/cancel")
+async def cancel_agent_conversation_run(
+    conversation_id: str,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """Stop the backend Agent run and preserve the generated partial answer."""
+    service = ChatSessionService(db_manager)
+    if not service.get_conversation(conversation_id):
+        raise HTTPException(status_code=404, detail="对话不存在")
+    cancelled = await active_run_registry.cancel(conversation_id, remove=False)
+    return {"cancelled": cancelled}
 
 
 @router.put("/agent/conversations/{conversation_id}/snapshot")

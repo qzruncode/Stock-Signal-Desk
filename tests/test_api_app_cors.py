@@ -36,6 +36,33 @@ class AppCorsConfigTestCase(unittest.TestCase):
         self.assertIn("http://localhost:5173", cors.kwargs["allow_origins"])
         self.assertTrue(cors.kwargs["allow_credentials"])
 
+    def test_production_does_not_trust_localhost_origins_by_default(self):
+        with patch.dict(
+            os.environ,
+            {"APP_ENV": "production", "CORS_ALLOW_ALL": "false", "CORS_ORIGINS": ""},
+            clear=False,
+        ):
+            app = self._build_app()
+
+        cors = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+        self.assertEqual(cors.kwargs["allow_origins"], [])
+        self.assertTrue(cors.kwargs["allow_credentials"])
+
+    def test_production_accepts_only_explicit_cross_origin_list(self):
+        with patch.dict(
+            os.environ,
+            {
+                "APP_ENV": "production",
+                "CORS_ALLOW_ALL": "false",
+                "CORS_ORIGINS": "https://stocks.example.com",
+            },
+            clear=False,
+        ):
+            app = self._build_app()
+
+        cors = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+        self.assertEqual(cors.kwargs["allow_origins"], ["https://stocks.example.com"])
+
 
 if __name__ == "__main__":
     unittest.main()

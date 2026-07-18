@@ -34,7 +34,14 @@ from api.v1.endpoints.agent.tools import (
 from src.agent.run_registry import (
     ActiveRun,
     RunBroadcaster,
+    RunCapacityExceeded,
     active_run_registry,
+)
+from src.agent.runtime_safety import (
+    AgentRequestValidationError,
+    agent_request_rate_limiter,
+    get_agent_runtime_limits,
+    validate_chat_request_body,
 )
 from src.agent.progress import strip_agent_progress
 from src.agent.analysis_playbooks import (
@@ -47,7 +54,7 @@ from src.agent.analysis_playbooks import (
     select_analysis_playbook,
 )
 from src.tools.registry import ToolRegistry
-from src.tools.process_runner import ISOLATED_TOOL_NAMES, execute_tool_isolated
+from src.tools.process_runner import execute_tool_isolated
 from src.llm.anthropic_gateway import (
     AnthropicGatewayConfigError,
     build_litellm_kwargs,
@@ -55,6 +62,7 @@ from src.llm.anthropic_gateway import (
 )
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
+from src.auth import get_client_ip
 from src.tools.symbols import (
     find_securities_in_markdown_table_first_column,
     find_securities_in_text,
@@ -814,6 +822,18 @@ def _build_synthesis_messages(
 def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
     """Render a complete seven-dimension decision when model synthesis fails."""
 
+    thesis = str(batch.get("thesis") or "")
+    decision_requested = bool(re.search(
+        r"能买吗|能不能买|是否能买|值得买|买入|抄底|入场|介入|加仓|减仓|卖出|持有|仓位|止损|止盈|追高",
+        thesis,
+    ))
+    heading = "专业买入决策结论" if decision_requested else "综合研究结论"
+    intro = (
+        "本轮按七个维度逐家公司完成介入条件检查。"
+        if decision_requested
+        else "本轮按七个维度逐家公司完成基本面与风险研究。"
+    )
+
     def number(value: Any, digits: int = 2, suffix: str = "") -> str:
         try:
             return f"{float(value):,.{digits}f}{suffix}"
@@ -923,9 +943,8 @@ def _build_professional_decision_fallback(batch: Dict[str, Any]) -> str:
         )
 
     return (
-        "## 专业买入决策结论\n\n"
-        "本轮按业务兑现、连续财务、估值与预期、同行、交易状态、资金、公告与风险七个维度"
-        "逐家公司完成检查。结论是研究分层，不是收益承诺。\n\n"
+        f"## {heading}\n\n"
+        f"{intro}结论是研究分层，不是收益承诺。\n\n"
         "| 公司/代码 | 主营与兑现基础 | 财务质量 | 估值与预期 | 交易与资金 | 公告/风险 | 当前结论 |\n"
         "|---|---|---|---|---|---|---|\n"
         + "\n".join(rows)
@@ -948,6 +967,7 @@ def _build_theme_mapping_fallback(
 ) -> str:
     """Render company-level evidence plus the complete locally verified recall index."""
     selected_by_symbol: Dict[str, Dict[str, Any]] = {}
+    boundary_by_symbol: Dict[str, Dict[str, Any]] = {}
     l3_markers = (
         "批量订单", "订单金额", "获得订单", "实现收入", "营业收入", "营收", "批量供货",
         "量产交付", "批量交付", "收入占比",
@@ -957,6 +977,12 @@ def _build_theme_mapping_fallback(
         "小批量供货", "客户测试", "客户认证",
     )
     progress_markers = (*l3_markers, *l2_markers)
+    boundary_markers = (
+        "不涉及", "暂无相关计划", "尚无相关计划", "收入规模较小", "营收规模较小",
+        "收入占比较小", "营收占比较小",
+        "尚未形成收入", "未形成收入", "未产生实质性业务", "未有产生实质性业务",
+        "未产生实质性订单", "没有实质性订单",
+    )
     segment_markers = (
         "滚柱丝杠", "丝杠", "谐波减速器", "RV减速器", "减速器", "力矩传感器",
         "传感器", "伺服电机", "伺服", "空心杯电机", "电机", "执行器", "灵巧手",
@@ -969,6 +995,45 @@ def _build_theme_mapping_fallback(
         if marker
     )
     ambiguous_entity_names = {"机器人", "东方财富"}
+
+    def source_date_for_item(source_item: Dict[str, Any], search_result: Dict[str, Any]) -> tuple[str, bool]:
+        raw = str(
+            source_item.get("published")
+            or source_item.get("publish_date")
+            or source_item.get("published_date")
+            or source_item.get("content_time")
+            or ""
+        ).strip()
+        direct_match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", raw)
+        if direct_match:
+            return "-".join(
+                (direct_match.group(1), direct_match.group(2).zfill(2), direct_match.group(3).zfill(2))
+            ), False
+        source_text = "\n".join(
+            str(source_item.get(key) or "")
+            for key in ("title", "snippet", "summary", "content_text", "content")
+        )
+        for text_match in re.finditer(
+            r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})",
+            source_text[:1200],
+        ):
+            vicinity = source_text[max(0, text_match.start() - 24):text_match.end() + 24]
+            if text_match.start() > 100 and not re.search(
+                r"(?:发布|发布时间|更新|日期|来源|时间)",
+                vicinity,
+            ):
+                continue
+            return "-".join(
+                (text_match.group(1), text_match.group(2).zfill(2), text_match.group(3).zfill(2))
+            ), False
+        url_match = re.search(r"/(20\d{2})(\d{2})(\d{2})(?:/|[^0-9])", str(source_item.get("url") or source_item.get("link") or ""))
+        if url_match:
+            return "-".join(url_match.groups()), False
+        retrieved = str(search_result.get("retrieved_at") or "").strip()
+        retrieved_match = re.search(r"(20\d{2})-(\d{2})-(\d{2})", retrieved)
+        if retrieved_match:
+            return "-".join(retrieved_match.groups()), True
+        return "", False
 
     def positive_markers(text: str, markers: tuple[str, ...]) -> List[str]:
         positives: List[str] = []
@@ -987,23 +1052,24 @@ def _build_theme_mapping_fallback(
 
     for packet in evidence or []:
         if not isinstance(packet, dict) or packet.get("tool") not in {
-            "search_financial_news", "search_research_library",
+            "search_financial_news", "search_research_library", "websearch",
         }:
             continue
         search_result = packet.get("result")
         if not isinstance(search_result, dict):
             continue
-        for source_item in search_result.get("items") or []:
+        source_items = search_result.get("items") or search_result.get("results") or []
+        for source_item in source_items:
             if not isinstance(source_item, dict):
                 continue
             title_text = str(source_item.get("title") or "")
             source_text = "\n".join(
                 str(source_item.get(key) or "")
-                for key in ("title", "summary", "content_text")
+                for key in ("title", "summary", "snippet", "content_text", "content")
             )
             source_url = str(source_item.get("link") or source_item.get("url") or "").strip()
-            source_date = str(source_item.get("published") or source_item.get("publish_date") or "").strip()
-            if not source_url or not re.search(r"20\d{2}[-/.年]\d{1,2}", source_date):
+            source_date, date_is_retrieval = source_date_for_item(source_item, search_result)
+            if not source_url or not source_date:
                 continue
             title_entities = [
                 entity
@@ -1011,19 +1077,68 @@ def _build_theme_mapping_fallback(
                 if str(entity.get("name") or "") not in ambiguous_entity_names
             ]
             title_is_theme_relevant = any(marker in title_text for marker in theme_markers)
-            evidence_windows = [
+            source_sentences = [
                 sentence.strip()
                 for sentence in re.split(r"(?<=[。！？!?；;])|\n+", source_text)
+                if sentence.strip()
+            ]
+            for window in source_sentences:
+                matched_boundary = next(
+                    (marker for marker in boundary_markers if marker in window),
+                    None,
+                )
+                if not matched_boundary or not any(marker in window for marker in theme_markers):
+                    continue
+                window_entities = [
+                    entity
+                    for entity in find_securities_in_text(window, limit=10)
+                    if str(entity.get("name") or "") not in ambiguous_entity_names
+                ]
+                promotable_entities = window_entities or (
+                    title_entities if len(title_entities) == 1 and title_is_theme_relevant else []
+                )
+                fact = re.sub(r"\s+", " ", window).replace("|", "／").strip()
+                if len(fact) > 120:
+                    fact = fact[:119] + "…"
+                for entity in promotable_entities:
+                    symbol = str(entity.get("symbol") or "")
+                    entity_name = str(entity.get("name") or "")
+                    if not symbol or entity_name in ambiguous_entity_names:
+                        continue
+                    boundary_by_symbol[symbol] = {
+                        "symbol": symbol,
+                        "name": entity_name or symbol,
+                        "segment": "主题业务边界",
+                        "level": "反证",
+                        "fact": fact,
+                        "gap": "反证或业务边界仍需用最新公告、财报与后续订单持续复核",
+                        "source_name": source_item.get("source") or source_item.get("author") or "公司级资料",
+                        "source_url": source_url,
+                        "source_date": source_date[:10],
+                        "source_date_is_retrieval": date_is_retrieval,
+                    }
+            evidence_windows = [
+                sentence.strip()
+                for sentence in source_sentences
                 if any(marker in sentence for marker in progress_markers)
             ]
             for window in evidence_windows:
+                if any(marker in window for marker in boundary_markers):
+                    continue
                 matched_l3 = positive_markers(window, l3_markers)
                 matched_l2 = positive_markers(window, l2_markers)
+                window_is_theme_relevant = any(marker in window for marker in theme_markers)
+                # Revenue/order language is only L3 when the same evidence
+                # sentence explicitly binds it to the requested theme or a
+                # named chain segment.  A robot-themed title followed by the
+                # company's unrelated total revenue (for example bathrooms or
+                # textiles) must not be promoted as robot revenue.
+                if matched_l3 and not window_is_theme_relevant:
+                    matched_l3 = []
                 matched_markers = matched_l3 or matched_l2
                 if not matched_markers:
                     continue
                 level = "L3" if matched_l3 else "L2"
-                window_is_theme_relevant = any(marker in window for marker in theme_markers)
                 window_entities = [
                     entity
                     for entity in find_securities_in_text(window, limit=10)
@@ -1069,6 +1184,7 @@ def _build_theme_mapping_fallback(
                         "source_name": source_item.get("source") or source_item.get("author") or "公司级资料",
                         "source_url": source_url,
                         "source_date": source_date[:10],
+                        "source_date_is_retrieval": date_is_retrieval,
                     }
                     previous = selected_by_symbol.get(symbol)
                     if previous is None or (previous.get("level") == "L2" and level == "L3"):
@@ -1082,16 +1198,73 @@ def _build_theme_mapping_fallback(
         selected_by_symbol.values(),
         key=lambda item: (item.get("level") != "L3", item.get("segment") or "", item.get("symbol") or ""),
     )
-    rows: List[str] = []
-    for item in selected:
-        link = (
-            f"[{item['source_name']}]({item['source_url']})"
-            if item.get("source_url") else str(item.get("source_name") or "来源缺失")
-        )
-        rows.append(
-            f"| {item['name']} ({item['symbol']}) | {item['segment']} | {item['level']} | {item['fact']} | "
-            f"{item['gap']} | {link}，{item['source_date']} |"
-        )
+    boundaries = sorted(
+        boundary_by_symbol.values(),
+        key=lambda item: (item.get("name") or "", item.get("symbol") or ""),
+    )
+    def render_evidence_rows(items: List[Dict[str, Any]]) -> List[str]:
+        rows: List[str] = []
+        for item in items:
+            link = (
+                f"[{item['source_name']}]({item['source_url']})"
+                if item.get("source_url") else str(item.get("source_name") or "来源缺失")
+            )
+            date_label = (
+                f"检索于 {item['source_date']}（原页未标日期）"
+                if item.get("source_date_is_retrieval")
+                else item["source_date"]
+            )
+            rows.append(
+                f"| {item['name']} ({item['symbol']}) | {item['segment']} | {item['level']} | {item['fact']} | "
+                f"{item['gap']} | {link}，{date_label} |"
+            )
+        return rows
+
+    selected_rows = render_evidence_rows(selected)
+    boundary_rows = render_evidence_rows(boundaries)
+
+    evidence_source_lines: List[str] = []
+    successful_evidence_tools: set[str] = set()
+    for packet in evidence or []:
+        if not isinstance(packet, dict):
+            continue
+        tool_name = str(packet.get("tool") or "")
+        search_result = packet.get("result")
+        if not isinstance(search_result, dict) or tool_name not in {
+            "search_financial_news", "search_research_library", "websearch",
+        }:
+            continue
+        if search_result.get("success") is not False:
+            successful_evidence_tools.add(tool_name)
+        if tool_name == "search_financial_news":
+            evidence_source_lines.append(
+                "- RSS/财经资讯："
+                f"尝试 {search_result.get('attempted_route_count') or 0} 条路由，"
+                f"成功 {search_result.get('successful_route_count') or 0} 条，"
+                f"返回 {search_result.get('item_count') or 0} 条。"
+            )
+        elif tool_name == "search_research_library":
+            coverage_rows = search_result.get("source_coverage") or []
+            successful_sources = sum(
+                1 for row in coverage_rows
+                if isinstance(row, dict) and row.get("success")
+            )
+            evidence_source_lines.append(
+                "- 跨机构研报："
+                f"尝试 {len(coverage_rows)} 个资料源，成功 {successful_sources} 个，"
+                f"返回 {search_result.get('item_count') or 0} 篇。"
+            )
+        else:
+            evidence_source_lines.append(
+                "- 网页搜索与正文爬取："
+                f"搜索引擎 `{search_result.get('provider') or 'unknown'}` 返回 "
+                f"{search_result.get('result_count') or 0} 条，成功抓取正文 "
+                f"{search_result.get('content_result_count') or 0} 页。"
+            )
+
+    evidence_chain_complete = {
+        "search_financial_news", "search_research_library", "websearch",
+    }.issubset(successful_evidence_tools)
 
     grouped: Dict[str, List[str]] = {}
     for item in candidates:
@@ -1125,30 +1298,53 @@ def _build_theme_mapping_fallback(
         )
 
     coverage_complete = bool(result.get("coverage_complete")) and not int(result.get("omitted_count") or 0)
-    coverage_text = "候选源分页已完整抓取" if coverage_complete else "候选源仍有失败页或返回上限，以下是本轮完整返回集"
+    coverage_text = (
+        "至少一个精确主题源已完成全分页抓取，跨来源差异与其他来源覆盖限制见下方"
+        if coverage_complete
+        else "精确主题源仍有失败页或返回上限，以下仅是本轮完整返回集，不代表主题全量"
+    )
     company_evidence = (
         "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 仍需核验 | 来源日期 |\n"
         "|---|---|---|---|---|---|\n"
-        + "\n".join(rows)
-        if rows
-        else "本轮公开资料没有形成可安全升级为 L2/L3 的公司级直接证据；以下仍完整展示 L1 候选池，不再伪造产业链环节。"
+        + "\n".join(selected_rows)
+        if selected_rows
+        else (
+            "本轮已执行 RSS、研报、网页搜索与正文爬取，但没有检出满足 L2/L3 定义的正向公司级事实；"
+            "这是证据分级结果，不是‘数据源没有数据’。"
+        )
+    )
+    boundary_evidence = (
+        "| 公司/代码 | 产业链环节 | 类型 | 已验证事实 | 仍需核验 | 来源日期 |\n"
+        "|---|---|---|---|---|---|\n"
+        + "\n".join(boundary_rows)
+        if boundary_rows
+        else "本轮未检出公司明确否认、尚未形成收入或收入占比较小等反证。"
     )
     return (
         "## 产业主题 A 股候选公司\n\n"
         f"> 已从本地 **{result.get('local_universe_count') or '全量'} 只**证券中交叉核验代码；"
         f"主题候选池共 **{result.get('candidate_count') or len(candidates)} 家**，本轮返回 "
         f"**{len(candidates)} 家**；{coverage_text}。\n\n"
-        "### 已取得公司级进展证据\n\n"
+        "### 已核验公司级业务进展\n\n"
         + company_evidence
+        + "\n\n### 已核验反证与业务边界\n\n"
+        + boundary_evidence
         + f"\n\n### 完整候选池（L1，共 {len(candidates)} 家）\n\n"
-        "> 下列公司只证明主题板块成员关系与证券代码有效，不等同订单或收入兑现。\n\n"
+        "> 下列公司只证明主题板块成员关系与证券代码有效，不自动分配产业链环节，也不等同订单或收入兑现。\n\n"
         + "\n".join(inventory_lines)
         + "\n\n### 候选来源与覆盖\n\n"
         + ("\n".join(source_lines) if source_lines else "候选来源明细缺失。")
+        + "\n\n### 公司证据检索覆盖\n\n"
+        + (
+            "证据链已完整执行。\n\n"
+            if evidence_chain_complete
+            else "证据链存在来源失败，不能据此声称公开资料不足。\n\n"
+        )
+        + ("\n".join(evidence_source_lines) if evidence_source_lines else "没有取得证据源执行记录。")
         + "\n\n### 证据口径\n\n"
-        f"本轮公司级资料将 **{len(selected)} 家**升级为 L2/L3，其余统一保留为 L1 候选。"
-        "下一步应优先核验公告、财报主营构成、客户定点、送样、订单与主题收入占比；"
-        "不再为每家 L1 公司重复输出同一句‘证据缺失’。"
+        f"本轮确认 **{len(selected)} 家** L2/L3 正向业务进展，另确认 **{len(boundaries)} 家**反证或业务边界；"
+        "其余统一保留为 L1 候选。L1 表示本轮多源主题检索尚未出现满足升级标准的公司级事实，"
+        "不表示数据源为空，也不允许把概念关系写成订单或收入。"
     )
 
 
@@ -1264,6 +1460,73 @@ def _build_verified_evidence_fallback(evidence: Optional[List[Dict[str, Any]]]) 
     )
 
 
+def _build_realtime_quote_answer(
+    evidence: Optional[List[Dict[str, Any]]],
+    user_text: str = "",
+) -> str:
+    """Render quote-only turns without letting synthesis invent market context."""
+    normalized_user = str(user_text or "").strip()
+    if normalized_user:
+        if re.search(r"分析|趋势|技术|估值|财务|能买|可以买|能买吗|比较|原因|为什么", normalized_user):
+            return ""
+        if not re.search(r"现在行情|最新行情|最新价|股价|报价|多少钱", normalized_user):
+            return ""
+    packets = [item for item in evidence or [] if isinstance(item, dict)]
+    quote_only_support_tools = {
+        "get_realtime_quotes", "get_market_status", "get_market_breadth",
+    }
+    if not packets or any(item.get("tool") not in quote_only_support_tools for item in packets):
+        return ""
+    results = [
+        item.get("result")
+        for item in packets
+        if item.get("tool") == "get_realtime_quotes" and isinstance(item.get("result"), dict)
+    ]
+    if not results:
+        return ""
+    result = results[-1]
+    items = [item for item in result.get("items") or [] if isinstance(item, dict)]
+    if not items:
+        return ""
+
+    def number(value: Any, digits: int = 2) -> str:
+        try:
+            return f"{float(value):,.{digits}f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    rows: List[str] = []
+    for item in items:
+        symbol = str(item.get("symbol") or item.get("code") or "")
+        name = str(item.get("name") or symbol)
+        pct = number(item.get("pct_chg", item.get("change_pct")))
+        rows.append(
+            f"| {name} ({symbol}) | {number(item.get('price'))} 元 | {pct}% | "
+            f"{number(item.get('high'))} / {number(item.get('low'))} | "
+            f"{number(item.get('amount'), 0)} 元 |"
+        )
+
+    quote_mode = str(result.get("quote_mode") or "")
+    is_live = quote_mode == "live" or result.get("is_trading_session") is True
+    mode_label = str(result.get("quote_mode_label") or "").strip() or (
+        "交易时段实时行情" if is_live else "最近交易日行情快照"
+    )
+    data_time = str(result.get("data_time") or "时间未知").replace("T", " ")
+    sources = result.get("source") or []
+    source_text = "、".join(map(str, sources)) if isinstance(sources, list) else str(sources)
+    stale_note = "；数据已陈旧，请勿据此判断当前价格" if result.get("is_stale") is True else ""
+    return (
+        "## 最新行情\n\n"
+        "| 股票 | 最新价 | 涨跌幅 | 最高 / 最低 | 成交额 |\n"
+        "|---|---:|---:|---:|---:|\n"
+        + "\n".join(rows)
+        + f"\n\n- 数据时间：{data_time}\n"
+        + f"- 行情口径：{mode_label}{stale_note}\n"
+        + f"- 数据来源：{source_text or '行情工具返回来源'}\n"
+        + ("" if is_live else "- 当前为非交易时段；以上不是当前时刻的实时成交，也不等同于收盘价。\n")
+    )
+
+
 def _unsupported_final_claims(
     content: str,
     evidence: Optional[List[Dict[str, Any]]],
@@ -1285,6 +1548,95 @@ def _unsupported_final_claims(
     ):
         reasons.append("资金流结论没有资金流工具证据")
 
+    has_channel_price_evidence = bool(tool_names.intersection({
+        "search_news", "search_financial_news", "search_research_library", "websearch", "webfetch",
+    }))
+    if not has_channel_price_evidence and re.search(r"(?:一)?批价", content):
+        reasons.append("白酒批价或阈值没有新闻、公告或网页证据")
+
+    has_market_evidence = bool(
+        tool_names.intersection({"get_market_status", "get_market_breadth", "get_index_data"})
+    )
+    if not has_market_evidence and re.search(
+        r"(?:上证指数|深证成指|创业板指)[^。\n]{0,30}\d+(?:\.\d+)?%|"
+        r"(?:上涨|下跌)(?:个股)?\s*\d+\s*家|"
+        r"(?:两市|沪深两市)成交额[^。\n]{0,20}\d|"
+        r"抗跌(?:性)?|跑赢大盘|弱于大盘",
+        content,
+    ):
+        reasons.append("大盘涨跌、市场宽度或相对强弱结论没有市场工具证据")
+
+    weekday_labels = "一二三四五六日"
+    for match in re.finditer(
+        r"(20\d{2})[-年](\d{1,2})[-月](\d{1,2})日?\s*[（(]周([一二三四五六日天])[）)]",
+        content,
+    ):
+        try:
+            stated_date = datetime(
+                int(match.group(1)), int(match.group(2)), int(match.group(3))
+            ).date()
+        except ValueError:
+            continue
+        stated_weekday = "日" if match.group(4) == "天" else match.group(4)
+        actual_weekday = weekday_labels[stated_date.weekday()]
+        if stated_weekday != actual_weekday:
+            reasons.append(
+                f"日期星期不一致：{stated_date.isoformat()} 应为周{actual_weekday}"
+            )
+
+    market_snapshot_tools = {
+        "get_realtime_quotes", "get_kline", "get_history_data",
+        "get_technical_indicators", "get_market_status", "get_market_breadth",
+        "get_index_data", "get_multi_stock_snapshot",
+    }
+    if tool_names and tool_names.issubset(market_snapshot_tools) and re.search(r"今日|当天", content):
+        evidence_dates = []
+        for packet in evidence or []:
+            result = packet.get("result") if isinstance(packet, dict) else None
+            if not isinstance(result, dict):
+                continue
+            for raw_date in (result.get("data_time"), result.get("latest_trade_date")):
+                match = re.search(r"20\d{2}-\d{2}-\d{2}", str(raw_date or ""))
+                if match:
+                    try:
+                        evidence_dates.append(datetime.fromisoformat(match.group(0)).date())
+                    except ValueError:
+                        pass
+        if evidence_dates and max(evidence_dates) < datetime.now().astimezone().date():
+            reasons.append("行情证据全部来自之前的交易日，不能称为今日或当天数据")
+
+    # Eastmoney single-quarter statements label Q4 as ``flow_basis=single_quarter``.
+    # A model must not silently promote that Q4 cash flow into a full-year value.
+    for packet in evidence or []:
+        result = packet.get("result") if isinstance(packet, dict) else None
+        if not isinstance(result, dict):
+            continue
+        for company in result.get("items") or []:
+            if not isinstance(company, dict):
+                continue
+            financials = company.get("financials")
+            if not isinstance(financials, dict):
+                continue
+            for period in financials.get("items") or []:
+                if not isinstance(period, dict):
+                    continue
+                if period.get("flow_basis") != "single_quarter" or not str(period.get("report_period") or "").endswith("Q4"):
+                    continue
+                cash_flow = period.get("operating_cash_flow")
+                try:
+                    amount_yi = f"{float(cash_flow) / 100000000:.2f}"
+                except (TypeError, ValueError):
+                    continue
+                if re.search(
+                    rf"(?:全年|年度)[^。\n]{{0,24}}(?:经营现金流|OCF)[^。\n]{{0,16}}{re.escape(amount_yi)}|"
+                    rf"(?:经营现金流|OCF)[^。\n]{{0,16}}{re.escape(amount_yi)}[^。\n]{{0,24}}(?:全年|年度)",
+                    content,
+                    flags=re.I,
+                ):
+                    reasons.append(
+                        f"{period.get('report_period')} 经营现金流是单季度值，不能写成全年数据"
+                    )
+
     batch_results = [
         item.get("result")
         for item in evidence or []
@@ -1299,8 +1651,12 @@ def _unsupported_final_claims(
         result.get("playbook") != "professional_investment_decision"
         for result in batch_results
     )
-    if only_simple_snapshots and "PE(TTM)" in content:
-        reasons.append("批量快照只提供动态 PE，不能写成 PE(TTM)")
+    has_structured_valuation = "get_valuation_ratios" in tool_names
+    only_dynamic_quote_pe = (
+        "get_realtime_quotes" in tool_names or bool(only_simple_snapshots)
+    ) and not has_structured_valuation
+    if only_dynamic_quote_pe and "PE(TTM)" in content:
+        reasons.append("实时行情或批量快照只提供动态 PE，不能写成 PE(TTM)")
     if any(result.get("quote_is_intraday") for result in batch_results):
         cleaned = content.replace("不是收盘价", "")
         if re.search(r"(?:今日|当日|截至[^，。；]{0,12})?收盘价", cleaned):
@@ -1426,7 +1782,7 @@ def _sanitize_mapping_answer(content: str) -> str:
     suffix = ""
     if removed:
         suffix = (
-            "\n\n### 因证据不足未列入\n\n"
+            "\n\n### 因证据校验未通过而未列入\n\n"
             + "、".join(dict.fromkeys(removed))
             + "：公司/代码、可点击来源或来源日期未同时通过本轮核验，故未列入代表公司；"
             "如需覆盖这些公司，应进一步核验公告、财报或公司级证据。"
@@ -2001,8 +2357,25 @@ async def _run_react_loop(
                 break
 
             if not tool_calls_acc:
-                final_text = _strip_progress_markers(content_text)
+                # A normal ReAct completion used to return here before the
+                # evidence-contract checks applied by forced synthesis.  That
+                # allowed unsupported market statistics to leak into an
+                # otherwise valid quote answer.  Quote-only turns are safer as
+                # deterministic rendering; every other turn must pass the same
+                # claim and playbook checks before it is emitted.
+                final_text = _build_realtime_quote_answer(evidence, latest_user_text) or _strip_progress_markers(content_text)
                 if final_text:
+                    final_issues = (
+                        _unsupported_final_claims(final_text, evidence)
+                        + _playbook_answer_contract_issues(playbook, final_text, evidence)
+                    )
+                    if final_issues:
+                        logger.warning(
+                            "[Agent] regular ReAct answer needs repair: %s",
+                            "; ".join(final_issues),
+                        )
+                        force_synthesis_reason = "answer_contract_repair"
+                        break
                     controller.append_text(final_text)
                     if state is not None:
                         state["assistant_text"] = final_text
@@ -2062,6 +2435,14 @@ async def _run_react_loop(
                 args = json.loads(tc["arguments"]) if tc["arguments"].strip() else {}
             except json.JSONDecodeError:
                 args = {}
+            # Canonicalize transport/model drift before security resolution,
+            # deduplication and UI rendering. This keeps the displayed args,
+            # execution signature and Python keyword arguments identical.
+            normalize_arguments = getattr(_registry, "normalize_arguments", None)
+            if callable(normalize_arguments):
+                normalized_args = normalize_arguments(tool_name, args)
+                if isinstance(normalized_args, dict):
+                    args = normalized_args
             args, unresolved_entities = normalize_tool_security_arguments(tool_name, args)
             normalized_arguments = json.dumps(args, ensure_ascii=False)
 
@@ -2183,20 +2564,29 @@ async def _run_react_loop(
             tool.append_args_text(normalized_arguments)
             tool_timeout = (
                 PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS
-                if tool_name in {"get_multi_stock_decision_evidence", "get_theme_stock_candidates"}
+                if (
+                    tool_name in {"get_multi_stock_decision_evidence", "get_theme_stock_candidates"}
+                    or (tool_name == "websearch" and bool(args.get("includeContent")))
+                    or (
+                        tool_name == "get_monetary_policy_operations"
+                        and bool(args.get("include_content"))
+                    )
+                )
                 else TOOL_EXECUTION_TIMEOUT_SECONDS
             )
+            tool_started = time.monotonic()
 
             try:
                 def _sync_fetch() -> Any:
-                    if tool_name in ISOLATED_TOOL_NAMES:
-                        result = execute_tool_isolated(
-                            tool_name,
-                            args,
-                            timeout_seconds=tool_timeout - 3,
-                        )
-                    else:
-                        result = _registry.execute(tool_name, args)
+                    # Isolate every tool, not just a static risk list.  Cache
+                    # misses can route otherwise simple tools through
+                    # AKShare/libmini_racer, whose native abort cannot be caught
+                    # inside the API worker.
+                    result = execute_tool_isolated(
+                        tool_name,
+                        args,
+                        timeout_seconds=tool_timeout - 3,
+                    )
                     llm_result = _compact_tool_result(tool_name, result)
                     return _maybe_attach_search_fallback(tool_name, args, llm_result)
 
@@ -2215,6 +2605,20 @@ async def _run_react_loop(
                     "arguments": args,
                     "result": llm_result,
                 }
+                duration_ms = int((time.monotonic() - tool_started) * 1000)
+                logger.info(
+                    "[AgentTool] tool=%s success=%s partial=%s fallback=%s item_count=%s duration_ms=%s",
+                    tool_name,
+                    succeeded,
+                    llm_result.get("partial") if isinstance(llm_result, dict) else None,
+                    llm_result.get("fallback_used") if isinstance(llm_result, dict) else None,
+                    (
+                        llm_result.get("item_count", llm_result.get("count"))
+                        if isinstance(llm_result, dict)
+                        else None
+                    ),
+                    duration_ms,
+                )
                 return {
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
@@ -2225,11 +2629,19 @@ async def _run_react_loop(
                     "succeeded": succeeded,
                 }
             except asyncio.TimeoutError:
-                logger.warning("[Agent] Tool execution timed out: %s", tool_name)
+                logger.warning(
+                    "[AgentTool] tool=%s success=false timeout=true duration_ms=%s",
+                    tool_name,
+                    int((time.monotonic() - tool_started) * 1000),
+                )
                 result_str = f"工具执行超时（>{tool_timeout:.0f}s）"
                 tool.set_response({"error": result_str}, is_error=True)
             except Exception as e:
-                logger.exception("[Agent] Tool execution failed: %s", tool_name)
+                logger.exception(
+                    "[AgentTool] tool=%s success=false duration_ms=%s",
+                    tool_name,
+                    int((time.monotonic() - tool_started) * 1000),
+                )
                 result_str = f"工具执行失败: {e}"
                 tool.set_response({"error": result_str}, is_error=True)
 
@@ -2354,6 +2766,15 @@ async def _run_react_loop(
         logger.info("[Agent] rendered deterministic complete theme-company mapping")
         return content_text
 
+    quote_text = _build_realtime_quote_answer(evidence, latest_user_text)
+    if quote_text:
+        controller.append_text(quote_text)
+        if state is not None:
+            state["assistant_text"] = quote_text
+            controller.assistant_text_snapshot = quote_text
+        logger.info("[Agent] rendered deterministic quote-only answer")
+        return quote_text
+
     logger.info("[Agent] entering final synthesis: %s", force_synthesis_reason)
     return await _stream_final_answer_without_tools(
         controller,
@@ -2375,46 +2796,121 @@ async def agent_chat(
     生成逻辑跑在独立后台 task (detach 于 HTTP 连接),首连接 attach 为第一个订阅者。
     断连不杀生成 —— 后端继续跑完落库,用户刷新后可通过 /agent/chat/resume 续流。
     """
-    body = await request.json()
-    messages = body.get("messages", [])
-    conversation_id = body.get("conversation_id")
-    try:
-        llm_cfg = _get_llm_config()
-    except AgentModelConfigError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    session_service = ChatSessionService(db_manager)
-    conversation = session_service.ensure_conversation(conversation_id)
-    conv_id = conversation["id"]
-
-    # 同一对话已有 run:默认拒绝并发发起;刷新恢复时前端会用
-    # resume_existing=true 走同一个 /agent/chat data-stream 管道,这样 tool UI
-    # 的解码与初次生成完全一致。即使 run 刚完成但仍在保留期内,也重放
-    # chunk 历史,避免竞态下误开第二轮生成。
-    active_run = active_run_registry.get(conv_id)
-    if body.get("resume_existing") is True:
+    limits = get_agent_runtime_limits()
+    content_length = request.headers.get("content-length")
+    if content_length:
         try:
-            replay_from = int(body.get("after_chunk_index") or 0)
+            # JSON UTF-8 can use up to four bytes per character.  Reject a
+            # clearly oversized body before parsing it into memory; the exact
+            # character limit is enforced again after parsing.
+            if int(content_length) > limits.max_request_chars * 4:
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "request_too_large", "message": "请求内容过大"},
+                )
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_content_length", "message": "Content-Length 格式不合法"},
+            )
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_json", "message": "请求体不是有效 JSON"},
+        )
+    try:
+        messages, conversation_id, resume_existing = validate_chat_request_body(body)
+    except AgentRequestValidationError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.code, "message": str(exc)},
+        )
+
+    session_service = ChatSessionService(db_manager)
+
+    # Resume is an attachment operation, not a new model request.  It must not
+    # require the current model configuration and must never create a new blank
+    # conversation when a stale/invalid id is supplied.
+    if resume_existing:
+        if not conversation_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "conversation_id_required", "message": "恢复运行必须提供 conversation_id"},
+            )
+        if not session_service.get_conversation(conversation_id):
+            return JSONResponse(
+                status_code=404,
+                content={"error": "conversation_not_found", "message": "对话不存在"},
+            )
+        active_run = active_run_registry.get(conversation_id)
+        try:
+            replay_from = max(0, int(body.get("after_chunk_index") or 0))
         except (TypeError, ValueError):
             replay_from = 0
         if active_run is not None:
             logger.info(
-                "[Agent] chat attach existing run for %s from chunk %s status=%s",
-                conv_id,
+                "[Agent] chat attach existing run_id=%s conversation_id=%s from chunk %s status=%s",
+                active_run.run_id,
+                conversation_id,
                 replay_from,
                 active_run.status,
             )
             return DataStreamResponse(subscriber_stream(active_run, replay_from=replay_from))
-        logger.info("[Agent] chat resume requested but no retained run for %s", conv_id)
+        logger.info("[Agent] chat resume requested but no retained run for %s", conversation_id)
         return JSONResponse(
             status_code=409,
-            content={"error": "run_not_active", "conversation_id": conv_id},
+            content={"error": "run_not_active", "conversation_id": conversation_id},
         )
+
+    retry_after = agent_request_rate_limiter.check_and_record(
+        get_client_ip(request),
+        limit=limits.requests_per_minute,
+    )
+    if retry_after:
+        return JSONResponse(
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+            content={
+                "error": "agent_rate_limited",
+                "message": "请求过于频繁，请稍后再试",
+                "retry_after_seconds": retry_after,
+            },
+        )
+
+    try:
+        llm_cfg = _get_llm_config()
+    except AgentModelConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    conversation = session_service.ensure_conversation(conversation_id)
+    conv_id = conversation["id"]
 
     # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
     # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
     # 都通过检查、各自落库 messages 后第二个静默 attach 到第一个 run 而丢消息。
     # 拿到 None 表示已有活跃 run → 409 触发前端续流。
-    run = await active_run_registry.try_claim(conv_id)
+    try:
+        run = await active_run_registry.try_claim(
+            conv_id,
+            max_active_runs=limits.max_active_runs,
+        )
+    except RunCapacityExceeded:
+        logger.warning(
+            "[Agent] global capacity exhausted conversation_id=%s active=%s limit=%s",
+            conv_id,
+            active_run_registry.stats()["active_runs"],
+            limits.max_active_runs,
+        )
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "5"},
+            content={
+                "error": "agent_busy",
+                "message": "AI 助手当前任务较多，请稍后重试",
+                "retry_after_seconds": 5,
+            },
+        )
     if run is None:
         logger.info("[Agent] chat rejected: run already in progress for %s", conv_id)
         return JSONResponse(
@@ -2424,18 +2920,23 @@ async def agent_chat(
 
     logger.info(
         f"[Agent] Chat request with {len(messages)} messages, "
-        f"model={llm_cfg['model']}, conversation_id={conv_id}"
+        f"model={llm_cfg['model']}, conversation_id={conv_id}, run_id={run.run_id}"
     )
 
     # 生成开始前同步落库本次完整 messages(含刚发的 user 消息)。
     # 这一步不能放在后台 task 里:用户一发送就刷新时,conversation detail 会
     # 先于后台 task 执行,如果库里还没有本次 user,前端只能恢复出空白历史。
-    await asyncio.to_thread(
-        session_service.save_conversation_snapshot,
-        conv_id,
-        list(messages),
-        skip_title=True,
-    )
+    try:
+        await asyncio.to_thread(
+            session_service.save_conversation_snapshot,
+            conv_id,
+            list(messages),
+            skip_title=True,
+        )
+    except Exception as exc:
+        logger.exception("[Agent] failed to persist request snapshot conversation_id=%s", conv_id)
+        await active_run_registry.mark_done(conv_id, "failed", error="request_snapshot_failed")
+        raise HTTPException(status_code=500, detail="保存对话失败，请重试") from exc
 
     async def run_callback(controller: RunBroadcaster):
         from src.services.agent_prompt_service import AgentPromptService
@@ -2481,7 +2982,11 @@ async def agent_chat(
                         "created_at": datetime.now().isoformat(),
                     }
                 )
-            session_service.save_conversation_snapshot(conv_id, persisted_messages)
+            await asyncio.to_thread(
+                session_service.save_conversation_snapshot,
+                conv_id,
+                persisted_messages,
+            )
             await active_run_registry.mark_done(
                 conv_id, "completed", final_text=final_response_text
             )
@@ -2522,7 +3027,13 @@ async def agent_chat(
     # subscribe 再启动后台 task,否则 task 可能在首个订阅者 subscribe 之前就
     # emit 完所有 chunk,导致首连收不到内容。
     first_queue = run.broadcaster.subscribe()
-    await run.start(factory)
+    try:
+        await run.start(factory)
+    except Exception as exc:
+        run.broadcaster.unsubscribe(first_queue)
+        await active_run_registry.mark_done(conv_id, "failed", error="run_start_failed")
+        logger.exception("[Agent] failed to start run_id=%s", run.run_id)
+        raise HTTPException(status_code=500, detail="AI 助手任务启动失败，请重试") from exc
     return DataStreamResponse(subscriber_stream(run, first_queue))
 
 
@@ -2561,15 +3072,34 @@ async def agent_chat_resume(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
     """续流端点:attach 到进行中的 run;无活跃 run 返回 {active: false}。"""
-    body = await request.json()
-    conversation_id = body.get("conversation_id")
+    try:
+        body = await request.json()
+        body_for_validation = dict(body) if isinstance(body, dict) else body
+        if isinstance(body_for_validation, dict):
+            body_for_validation["resume_existing"] = True
+        _, conversation_id, _ = validate_chat_request_body(body_for_validation)
+    except AgentRequestValidationError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.code, "message": str(exc)},
+        )
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_json", "message": "请求体不是有效 JSON"},
+        )
     if not conversation_id:
         raise HTTPException(status_code=400, detail="conversation_id is required")
+    session_service = ChatSessionService(db_manager)
+    if not session_service.get_conversation(conversation_id):
+        # This endpoint is an idempotent attachment probe.  A deleted or stale
+        # conversation has no resumable run, which is equivalent to inactive.
+        return JSONResponse(status_code=200, content={"active": False})
     run = active_run_registry.get(conversation_id)
     if run is None or not run.is_running:
         return JSONResponse(status_code=200, content={"active": False})
     try:
-        replay_from = int(body.get("after_chunk_index") or 0)
+        replay_from = max(0, int(body.get("after_chunk_index") or 0))
     except (TypeError, ValueError):
         replay_from = 0
     return DataStreamResponse(subscriber_stream(run, replay_from=replay_from))

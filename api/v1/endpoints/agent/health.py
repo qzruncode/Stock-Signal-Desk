@@ -7,7 +7,26 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
+from fastapi import Depends, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+
+from api.deps import get_database_manager
+from api.v1.endpoints.agent import router
+from src.agent.run_registry import active_run_registry
+from src.agent.runtime_safety import (
+    agent_production_issues,
+    configured_worker_count,
+    get_agent_runtime_limits,
+    is_production_environment,
+)
+from src.auth import is_auth_enabled
+from src.storage import DatabaseManager
+from src.tools.registry import ToolRegistry
+
 logger = logging.getLogger(__name__)
+
+_health_registry = ToolRegistry()
 
 
 def _comparison_datetime(value: datetime) -> datetime:
@@ -113,3 +132,62 @@ def _assess_tool_data_health(tool_name: str, result: Any) -> Dict[str, Any]:
         return {"should_fallback": False, "reason": None}
 
     return {"should_fallback": False, "reason": None}
+
+
+@router.get("/agent/readiness")
+def agent_readiness(
+    request: Request,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """Return a non-secret production readiness and runtime-capacity snapshot."""
+    checks: Dict[str, Any] = {}
+    try:
+        with db_manager.get_session() as session:
+            session.execute(text("SELECT 1"))
+        checks["database"] = {"ok": True}
+    except Exception as exc:
+        logger.exception("[AgentReadiness] database check failed")
+        checks["database"] = {"ok": False, "error": type(exc).__name__}
+
+    try:
+        from src.llm.anthropic_gateway import resolve_anthropic_gateway_config
+
+        model_config = resolve_anthropic_gateway_config()
+        checks["model"] = {
+            "ok": True,
+            "model": model_config.get("model"),
+        }
+    except Exception as exc:
+        checks["model"] = {"ok": False, "error": str(exc)}
+
+    runtime_issues = agent_production_issues(
+        getattr(request.app.state, "static_dir", None)
+    )
+    limits = get_agent_runtime_limits()
+    checks["runtime"] = {
+        "ok": not runtime_issues,
+        "production": is_production_environment(),
+        "workers": configured_worker_count(),
+        "auth_enabled": is_auth_enabled(),
+        "issues": runtime_issues,
+        "limits": {
+            "max_active_runs": limits.max_active_runs,
+            "requests_per_minute": limits.requests_per_minute,
+            "max_messages": limits.max_messages,
+            "max_request_chars": limits.max_request_chars,
+        },
+        **active_run_registry.stats(),
+    }
+    checks["tools"] = {
+        "ok": True,
+        "registered": len(_health_registry.get_tool_names()),
+    }
+
+    ready = all(check.get("ok") is True for check in checks.values())
+    payload = {
+        "status": "ready" if ready else "not_ready",
+        "ready": ready,
+        "checked_at": datetime.now().astimezone().isoformat(),
+        "checks": checks,
+    }
+    return JSONResponse(status_code=200 if ready else 503, content=payload)

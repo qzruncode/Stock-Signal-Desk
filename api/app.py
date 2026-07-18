@@ -125,12 +125,21 @@ from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.agent.run_registry import active_run_registry
+from src.agent.runtime_safety import (
+    enforce_agent_runtime_configuration,
+    is_production_environment,
+)
 from src.services.system_config_service import SystemConfigService
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
+    # Fail closed on unsupported multi-worker or unsafe production settings.
+    # The interactive Agent keeps resumable stream state in this process; a
+    # seemingly healthy multi-worker deployment would otherwise lose stop and
+    # resume requests nondeterministically.
+    enforce_agent_runtime_configuration(getattr(app.state, "static_dir", None))
     app.state.system_config_service = SystemConfigService()
     try:
         from api.v1.endpoints.batches.helpers import resume_incomplete_batches_on_startup
@@ -180,12 +189,17 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         version="1.0.0",
         lifespan=app_lifespan,
     )
+    app.state.static_dir = static_dir
     
     # ============================================================
     # CORS 配置
     # ============================================================
     
-    allowed_origins = [
+    # Production serves the SPA from the same origin, so no cross-origin
+    # allowance is needed by default.  Keeping localhost origins enabled in
+    # production would let an unrelated local web page issue credentialed API
+    # requests from a user's browser.
+    allowed_origins = [] if is_production_environment() else [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://localhost:3000",

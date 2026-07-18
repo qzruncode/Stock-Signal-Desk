@@ -20,6 +20,7 @@ from src.agent.run_registry import (
     ActiveRun,
     ActiveRunRegistry,
     RunBroadcaster,
+    RunCapacityExceeded,
 )
 
 
@@ -206,5 +207,58 @@ def test_subscriber_disconnect_does_not_kill_generation(reset_registry):
         await run_obj.task
         assert completion_log == ["generation_done"]
         assert not registry.is_active("c2")
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_registry_enforces_process_wide_capacity(reset_registry):
+    registry = reset_registry
+
+    async def run():
+        first = await registry.try_claim("capacity-1", max_active_runs=1)
+        assert first is not None
+        with pytest.raises(RunCapacityExceeded):
+            await registry.try_claim("capacity-2", max_active_runs=1)
+        await registry.cancel("capacity-1")
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_old_retention_timer_cannot_delete_replacement_run(reset_registry, monkeypatch):
+    """A completed run's cleanup timer must be scoped to that exact run id."""
+    import src.agent.run_registry as run_registry_module
+
+    monkeypatch.setattr(run_registry_module, "_RUN_RETENTION_SECONDS", 0.01)
+    registry = reset_registry
+
+    async def run():
+        first = await registry.try_claim("same-conversation")
+        assert first is not None
+        await registry.mark_done("same-conversation", "completed", final_text="old")
+
+        replacement = await registry.try_claim("same-conversation")
+        assert replacement is not None
+        assert replacement.run_id != first.run_id
+        await asyncio.sleep(0.03)
+
+        assert registry.get("same-conversation") is replacement
+        await registry.cancel("same-conversation")
+        await registry.shutdown()
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_cancel_does_not_rewrite_completed_status(reset_registry):
+    registry = reset_registry
+
+    async def run():
+        completed = await registry.try_claim("completed")
+        assert completed is not None
+        await registry.mark_done("completed", "completed", final_text="done")
+
+        assert await registry.cancel("completed") is False
+        assert completed.status == "completed"
+        assert registry.stats()["terminal"]["completed"] == 1
+        await registry.shutdown()
 
     asyncio.new_event_loop().run_until_complete(run())

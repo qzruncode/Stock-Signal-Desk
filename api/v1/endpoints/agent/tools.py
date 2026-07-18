@@ -169,13 +169,14 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "change_pct": "pct_chg",
             "change_amount": "change",
             "open_price": "open",
-            "pe_ratio": "pe",
+            "pe_ratio": "pe_dynamic",
             "pb_ratio": "pb",
         }
         _QUOTE_PASSTHROUGH = (
             "name", "price", "high", "low", "volume", "amount",
             "turnover_rate", "total_mv", "circ_mv", "source", "trade_time", "data_time",
             "is_stale", "fallback_used", "volume_unit", "amount_unit", "market_value_unit",
+            "quote_mode", "quote_mode_label",
         )
         raw_items = result.get("items", []) if isinstance(result, dict) else []
         compact_items: list[Any] = []
@@ -198,6 +199,9 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "items": compact_items,
             "data_time": result.get("data_time"),
             "is_stale": result.get("is_stale"),
+            "is_trading_session": result.get("is_trading_session"),
+            "quote_mode": result.get("quote_mode"),
+            "quote_mode_label": result.get("quote_mode_label"),
             "fallback_used": result.get("fallback_used"),
             "source": result.get("source"),
             "errors": result.get("errors", []),
@@ -208,6 +212,10 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "volume_unit": result.get("volume_unit"),
             "amount_unit": result.get("amount_unit"),
             "market_value_unit": result.get("market_value_unit"),
+            "valuation_basis": {
+                "pe_dynamic": "实时行情动态市盈率，不是 PE(TTM)",
+                "pb": "实时行情市净率字段",
+            },
         }, payload_policy="compacted", compacted=True, compaction_reason="quotes_item_window")
 
     if tool_name == "get_multi_stock_snapshot":
@@ -635,13 +643,17 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             llm_output = llm_output.rstrip() + "…"
         results = result.get("results") if isinstance(result.get("results"), list) else []
         compact = {
-            **_pick_fields(result, ["query", "resolved_query", "success", "result_count", "provider", "attempts", "data_time", "fallback_used", "is_stale", "freshness_unknown", "latest_published_date", "_truncated", "errors", "warnings"]),
-            "results": _trim_list(results, 10, ["title", "url", "snippet", "source", "source_name", "published_date", "result_type", "search_provider"]),
+            **_pick_fields(result, ["query", "resolved_query", "success", "result_count", "provider", "attempts", "retrieved_at", "data_time", "fallback_used", "is_stale", "freshness_unknown", "latest_published_date", "content_requested", "content_result_count", "_truncated", "errors", "warnings"]),
+            "results": _trim_list(results, 12, [
+                "title", "url", "snippet", "content_text", "content_characters",
+                "source", "source_name", "published_date", "result_type",
+                "search_provider", "crawl_provider",
+            ]),
         }
         if output:
             compact["output"] = llm_output
             compact["output_characters"] = len(output)
-        was_compacted = len(results) > 10 or output_compacted
+        was_compacted = len(results) > 12 or output_compacted
         return _annotate_tool_payload(
             tool_name,
             compact,
@@ -828,6 +840,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             result,
             [
                 "days", "instrument_filter", "item_count", "total_operation_amount_yi",
+                "available_item_count", "result_truncated",
                 "net_liquidity_injection_yi", "net_liquidity_note", "rss_route",
                 "coverage_start", "coverage_end", "coverage_complete", "source", "success",
                 "partial", "data_time", "retrieved_at", "is_stale", "freshness_unknown",
@@ -836,12 +849,12 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         )
         compact["operations"] = _trim_list(
             result.get("operations"),
-            10,
+            50,
             [
                 "title", "published", "link", "bulletin_year", "bulletin_number",
                 "instrument_code", "instrument", "term_days", "term_months", "amount_yi",
                 "rate_pct", "operation_legs", "tender_method", "fully_satisfied", "official",
-                "source", "content",
+                "source",
             ],
         )
         return _annotate_tool_payload(
