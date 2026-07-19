@@ -129,6 +129,51 @@ class StockMeta(Base):
         }
 
 
+class DataMaintenanceJob(Base):
+    """Persistent audit record for automatic dataset maintenance."""
+    __tablename__ = 'data_maintenance_jobs'
+
+    id = Column(String(36), primary_key=True)
+    dataset = Column(String(32), nullable=False, index=True)
+    scope_key = Column(String(128), nullable=False, default='all', index=True)
+    target_data_time = Column(String(32), nullable=False, default='latest')
+    trigger = Column(String(32), nullable=False, default='agent')
+    status = Column(String(16), nullable=False, default='queued', index=True)
+    progress = Column(Integer, nullable=False, default=0)
+    total = Column(Integer, nullable=False, default=0)
+    message = Column(Text)
+    error = Column(Text)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_maintenance_dataset_status', 'dataset', 'status'),
+        UniqueConstraint(
+            'dataset', 'scope_key', 'target_data_time',
+            name='uix_maintenance_dataset_scope_target',
+        ),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'dataset': self.dataset,
+            'scope_key': self.scope_key,
+            'target_data_time': self.target_data_time,
+            'trigger': self.trigger,
+            'status': self.status,
+            'progress': self.progress,
+            'total': self.total,
+            'message': self.message,
+            'error': self.error,
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'finished_at': self.finished_at.isoformat() if self.finished_at else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class NewsIntel(Base):
     """新闻情报数据模型"""
     __tablename__ = 'news_intel'

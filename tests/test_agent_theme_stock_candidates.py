@@ -3,12 +3,28 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from src.tools.get_theme_stock_candidates import (
     _fetch_eastmoney_constituents,
     _fetch_ths_constituents,
     get_theme_stock_candidates,
 )
+
+
+@pytest.fixture(autouse=True)
+def _skip_real_universe_maintenance():
+    with patch(
+        "src.services.data_maintenance.ensure_stock_universe",
+        return_value={
+            "total": 12,
+            "data_time": "2026-07-19T00:00:00",
+            "is_stale": False,
+            "refreshed": False,
+            "maintenance_status": "ready",
+        },
+    ):
+        yield
 
 
 def test_eastmoney_theme_candidates_fetch_every_constituent_page() -> None:

@@ -563,7 +563,11 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         compact["items"] = _trim_list(
             result.get("items"),
             6,
-            ["title", "summary", "content_text", "link", "published", "source", "source_type", "rss_route", "content_fallback"],
+            [
+                "id", "title", "summary", "content_text", "link", "published", "author", "tags",
+                "image", "attachments", "source", "source_type", "rss_route", "rss_params",
+                "content_fallback",
+            ],
             {"summary": 800, "content_text": 1800},
         )
         return _annotate_tool_payload(
@@ -572,6 +576,64 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             payload_policy="compacted",
             compacted=True,
             compaction_reason="semantic_rss_item_and_text_window",
+        )
+
+    if tool_name == "list_financial_sources":
+        compact = _pick_fields(result, [
+            "success", "partial", "catalog_count", "matched_count", "item_count", "returned_count", "has_more",
+            "query_scope", "query_note", "applied_filters",
+            "data_time", "is_stale", "freshness_unknown", "errors", "warnings",
+        ])
+        compact["items"] = _trim_list(result.get("items"), 50, [
+            "route_path", "name", "namespace", "namespace_name", "description",
+            "example", "params", "capabilities", "categories", "features", "maintainers",
+            "requires_configuration",
+        ], {"description": 600})
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="financial_source_catalog_window",
+        )
+
+    if tool_name == "inspect_financial_source":
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
+        )
+
+    if tool_name in {"read_financial_feed", "transform_webpage_to_feed"}:
+        compact = _pick_fields(result, [
+            "success", "partial", "route_path", "namespace", "params", "options",
+            "feed_title", "feed_link", "item_count", "data_time", "is_stale",
+            "freshness_unknown", "errors", "warnings", "_cached", "_fetched_at",
+        ])
+        compact["items"] = _trim_list(
+            result.get("items"),
+            20,
+            [
+                "id", "title", "link", "summary", "published", "author", "tags",
+                "image", "content_html", "attachments",
+            ],
+            {"summary": 1200, "content_html": 6000},
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="financial_feed_item_window",
+        )
+
+    if tool_name in {"read_financial_article", "export_financial_feed"}:
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
         )
 
     if tool_name == "get_stock_capital_flow":
@@ -811,8 +873,9 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             result.get("items"),
             6,
             [
-                "title", "summary", "link", "published", "author", "source", "source_type",
-                "research_category", "rating", "industry", "profit_forecasts", "rss_route", "content_text",
+                "id", "title", "summary", "link", "published", "author", "tags", "image", "attachments",
+                "source", "source_type", "research_category", "rating", "industry", "profit_forecasts",
+                "rss_route", "rss_params", "content_text",
             ],
             {"summary": 800, "content_text": 1800},
         )

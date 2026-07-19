@@ -89,6 +89,10 @@ def normalize_tool_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[
     return normalized
 
 TOOL_MODULES: tuple[str, ...] = (
+    # Local universe and user portfolio operations
+    "search_stocks",
+    "manage_watchlist",
+    "get_data_health",
     # Quotes and price history
     "get_realtime_quotes",
     "get_kline",
@@ -118,6 +122,12 @@ TOOL_MODULES: tuple[str, ...] = (
     # Information and event evidence
     "search_news",
     "search_financial_news",
+    "list_financial_sources",
+    "inspect_financial_source",
+    "read_financial_feed",
+    "read_financial_article",
+    "transform_webpage_to_feed",
+    "export_financial_feed",
     "search_research_library",
     "get_regulatory_updates",
     "get_monetary_policy_operations",

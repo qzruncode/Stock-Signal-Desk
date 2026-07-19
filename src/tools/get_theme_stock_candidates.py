@@ -377,8 +377,11 @@ def get_theme_stock_candidates(theme: str, limit: int = 500) -> dict[str, Any]:
     if not topic:
         raise ValueError("theme 不能为空")
     bounded_limit = max(20, min(int(limit or 500), 1000))
+    from src.services.data_maintenance import ensure_stock_universe
+
+    maintenance = ensure_stock_universe(trigger="agent_theme_candidates")
     local = _load_local_universe()
-    warnings: list[str] = []
+    warnings: list[str] = [maintenance["warning"]] if maintenance.get("warning") else []
     raw_items: list[dict[str, Any]] = []
     boards: list[dict[str, Any]] = []
 
@@ -471,6 +474,7 @@ def get_theme_stock_candidates(theme: str, limit: int = 500) -> dict[str, Any]:
         "coverage_complete": coverage_complete,
         "items": returned,
         "matched_boards": boards,
+        "maintenance": maintenance,
         "source_scope": "public_concept_constituents_intersected_with_local_stock_meta",
         "decision_boundary": (
             "items 是完整性优先的候选召回，不是受益公司定论。回答必须同时给出完整候选索引，"

@@ -868,6 +868,16 @@ def run_atr_volatility_screen(
             stage="freshness_policy",
             spec=spec,
         )
+    from src.services.data_maintenance import ensure_stock_universe
+
+    try:
+        universe_maintenance = ensure_stock_universe(trigger="agent_quantitative_screen")
+    except Exception as exc:
+        return _failure(
+            f"股票基础库自动维护失败: {type(exc).__name__}: {exc}",
+            stage="universe_maintenance",
+            spec=spec,
+        )
     expected_trade_date = _expected_latest_kline_date().isoformat()
     required_bars = _required_bar_count(spec)
     required_financial_fields = spec.required_financial_fields()
@@ -1213,6 +1223,7 @@ def run_atr_volatility_screen(
         "is_stale": False,
         "freshness_unknown": False,
         "financial_report_period": report_period,
+        "maintenance": {"stock_universe": universe_maintenance},
         "coverage": coverage,
         "source": " + ".join(source_parts),
     }

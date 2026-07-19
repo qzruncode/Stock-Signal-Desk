@@ -108,7 +108,9 @@ def test_sse_acw_challenge_cookie_is_computed_deterministically():
 
 def test_detail_uses_list_item_when_fulltext_upstream_fails(monkeypatch):
     failed = {"items": [], "errors": ["RSSHub 503"]}
+    cached = []
     monkeypatch.setattr(rss, "_cache_get", lambda _key: None)
+    monkeypatch.setattr(rss, "_cache_put", lambda key, value: cached.append((key, value)))
     monkeypatch.setattr(rss, "_fetch_rss_feed_json", lambda *_args, **_kwargs: failed)
     monkeypatch.setattr(rss, "_fetch_rss_feed", lambda *_args, **_kwargs: failed)
 
@@ -121,6 +123,7 @@ def test_detail_uses_list_item_when_fulltext_upstream_fails(monkeypatch):
 
     assert item["title"] == "可读消息"
     assert item["content_html"] == "<p>列表中已有完整正文。</p>"
+    assert cached[0][1]["items"][0]["content_html"] == "<p>列表中已有完整正文。</p>"
 
 
 def test_assistant_reader_uses_list_item_when_fulltext_upstream_fails(monkeypatch):

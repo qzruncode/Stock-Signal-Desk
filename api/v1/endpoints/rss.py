@@ -479,6 +479,7 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         # turn that readable item into a dead-end detail error.
         fallback = _build_detail_fallback(body)
         if fallback is not None:
+            _cache_put(cache_key, {"items": [fallback]})
             return fallback
         raise HTTPException(
             status_code=502,
@@ -513,6 +514,7 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         # user simply gets the list body (still readable) rather than a dead end.
         fallback = _build_detail_fallback(body)
         if fallback is not None:
+            _cache_put(cache_key, {"items": [fallback]})
             return fallback
         raise HTTPException(
             status_code=404,

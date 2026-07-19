@@ -12,23 +12,19 @@ from typing import Callable
 
 import chinese_calendar
 from fastapi import Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
 from api.deps import get_system_config_service
 from src.tools._kline import fetch_and_persist_kline
 from api.v1.endpoints.stocks import router
 from api.v1.schemas.common import ErrorResponse
-from data_provider.akshare_fetcher import AkshareFetcher
-from data_provider.fetchers.market import get_last_a_stock_list_error, reset_a_stock_list_fetch_state
+from src.services.data_maintenance import ensure_stock_universe
 from src.services.system_config_service import SystemConfigService
 from src.storage import DatabaseManager, StockDaily, StockMeta
 
 logger = logging.getLogger(__name__)
 
-LIST_SYNC_BATCH_SIZE = 200
 KLINE_SYNC_MAX_WORKERS = 5
-LIST_SYNC_FETCH_ATTEMPTS = 3
-LIST_SYNC_FETCH_RETRY_DELAY_SECONDS = 2.0
 KLINE_SYNC_ATTEMPTS = 2
 KLINE_SYNC_RETRY_DELAY_SECONDS = 1.5
 STATUS_DB_FALLBACK_TTL_SECONDS = 30.0
@@ -166,107 +162,23 @@ def _get_active_stock_codes() -> list[str]:
 
 def _run_list_sync() -> None:
     try:
-        db = DatabaseManager.get_instance()
-        fetcher = AkshareFetcher()
-        stocks_raw = None
-        _set_list_state(message="股票列表拉取中")
-        for attempt in range(1, LIST_SYNC_FETCH_ATTEMPTS + 1):
-            _set_list_state(message=f"股票列表拉取中 {attempt}/{LIST_SYNC_FETCH_ATTEMPTS}")
-            stocks_raw = fetcher.get_all_a_stocks()
-            if stocks_raw:
-                break
-            if attempt < LIST_SYNC_FETCH_ATTEMPTS:
-                delay = LIST_SYNC_FETCH_RETRY_DELAY_SECONDS * attempt
-                logger.warning("[StocksSync] 股票列表拉取为空，%.1fs 后重试(%d/%d)", delay, attempt + 1, LIST_SYNC_FETCH_ATTEMPTS)
-                time.sleep(delay)
-
-        if not stocks_raw:
-            detail = get_last_a_stock_list_error()
-            message = "未能从数据源获取股票列表"
-            if detail:
-                message = f"{message}: {detail}"
-            _set_list_state(
-                status="failed",
-                message=message,
-                error=detail,
-                finished_at=_utc_now_iso(),
-            )
-            return
-
-        _set_list_state(total=len(stocks_raw), progress=0, message="股票列表写入中")
-        now = datetime.now()
-        added, updated, delisted, delisted_daily = 0, 0, 0, 0
-        all_codes = [s["code"] for s in stocks_raw]
-
-        for start in range(0, len(stocks_raw), LIST_SYNC_BATCH_SIZE):
-            batch = stocks_raw[start:start + LIST_SYNC_BATCH_SIZE]
-            batch_codes = [s["code"] for s in batch]
-            with db.get_session() as session:
-                existing = {
-                    row.code: row
-                    for row in session.query(StockMeta).filter(StockMeta.code.in_(batch_codes)).all()
-                }
-
-                for item in batch:
-                    code = item["code"]
-                    meta = existing.get(code)
-                    if meta:
-                        meta.name = item["name"]
-                        meta.market = item["market"]
-                        meta.status = "active"
-                        if item.get("sector"):
-                            meta.sector = item.get("sector")
-                        if item.get("ipo_date"):
-                            meta.ipo_date = item.get("ipo_date")
-                        meta.last_sync_at = now
-                        updated += 1
-                    else:
-                        session.add(StockMeta(
-                            code=code,
-                            name=item["name"],
-                            market=item["market"],
-                            status="active",
-                            sector=item.get("sector"),
-                            ipo_date=item.get("ipo_date"),
-                            last_sync_at=now,
-                        ))
-                        added += 1
-                session.commit()
-            processed = min(start + len(batch), len(stocks_raw))
-            _set_list_state(progress=processed, message=f"股票列表写入中 {processed}/{len(stocks_raw)}")
-
-        with db.get_session() as session:
-            current_codes = set(all_codes)
-            delisted_codes = [
-                row.code
-                for row in session.query(StockMeta.code)
-                .filter(StockMeta.code.notin_(current_codes), StockMeta.status == "active")
-                .all()
-            ]
-            if delisted_codes:
-                result = session.execute(delete(StockDaily).where(StockDaily.code.in_(delisted_codes)))
-                delisted_daily = result.rowcount or 0
-                delisted = len(delisted_codes)
-
-            session.query(StockMeta).filter(
-                StockMeta.code.notin_(current_codes),
-                StockMeta.status == "active",
-            ).update({"status": "delisted", "updated_at": now}, synchronize_session=False)
-            session.commit()
-
+        maintenance = ensure_stock_universe(trigger="legacy_stocks_api", force=True)
+        result = maintenance.get("changes") or {
+            "total": maintenance["total"],
+            "added": 0,
+            "updated": 0,
+            "delisted": 0,
+            "delisted_daily": 0,
+        }
         _set_list_state(
             status="success",
-            progress=len(stocks_raw),
-            total=len(stocks_raw),
+            progress=result["total"],
+            total=result["total"],
             finished_at=_utc_now_iso(),
-            message=f"同步列表完成(基础资料): 新增 {added}, 更新 {updated}, 退市 {delisted}(清理日线 {delisted_daily})",
-        )
-        logger.info(
-            "[StocksSync] 列表同步完成: total=%d added=%d updated=%d delisted=%d",
-            len(stocks_raw),
-            added,
-            updated,
-            delisted,
+            message=(
+                f"同步列表完成(基础资料): 新增 {result['added']}, 更新 {result['updated']}, "
+                f"退市 {result['delisted']}(清理日线 {result['delisted_daily']})"
+            ),
         )
     except Exception as e:
         _set_list_state(status="failed", error=str(e), finished_at=_utc_now_iso())
@@ -435,7 +347,6 @@ def sync_stock_list(
     """Trigger stock metadata sync only."""
     if not _mark_list_sync_started():
         raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "股票列表同步正在进行中，请稍后再试"})
-    reset_a_stock_list_fetch_state()
     thread = threading.Thread(target=_run_list_sync, daemon=True)
     thread.start()
     return {"success": True, "message": "同步列表已启动", "status": "running"}

@@ -27,18 +27,18 @@ from api.v1.endpoints._rss_namespace import get_namespaces_flat
 
 logger = logging.getLogger(__name__)
 
-CATALOG_CACHE_KEY = "rss:catalog:v1"
+CATALOG_CACHE_KEY = "rss:catalog:v3"
 CATALOG_TTL_SECONDS = 6 * 3600  # same as namespace blob
 
 # Routes whose params come from a remote picker (the explore page has dedicated
 # picker components for these). In the catalog we just flag them so the model
 # knows the param needs a chosen id rather than a free value.
 _REMOTE_PICKER_ROUTES: set[str] = {
-    "/gelonghui/subject/:id?",
+    "/gelonghui/subject/:id",
     "/nanhua/report/:type1/:type2",
     "/cih-index/report/list/:report?",
     "/cls/subject/:id?",
-    "/futunn/topic/:topicId?",
+    "/futunn/topic/:id",
 }
 
 # Express-style path param matcher: :name, :name?, :name{regex}?, :name{regex}
@@ -121,7 +121,8 @@ def _merge_param_hints(
                     for o in opts if isinstance(o, dict) and o.get("value") is not None
                 ]
         if is_picker:
-            entry["hint"] = (entry["hint"] + "（需选择具体值，可参考 example 或询问用户）").strip("（）")
+            picker_hint = "需选择具体值，可通过 inspect_financial_source 获取可选项"
+            entry["hint"] = f"{entry['hint']}（{picker_hint}）" if entry["hint"] else picker_hint
         out.append(entry)
     return out
 
@@ -153,6 +154,11 @@ def _build_catalog_entry(route: Dict[str, Any]) -> Dict[str, Any]:
     params = _merge_param_hints(_path_params(route_path), route.get("parameters") or {}, route_path)
     # The finance category is a single bucket; derive a sub-category hint from
     # the namespace for the model to filter by (e.g. wallstreetcn/cls/xueqiu).
+    features = {
+        str(key): bool(value)
+        for key, value in (route.get("features") or {}).items()
+        if value
+    }
     return {
         "route_path": route_path,
         "name": str(route.get("name") or ""),
@@ -161,6 +167,11 @@ def _build_catalog_entry(route: Dict[str, Any]) -> Dict[str, Any]:
         "description": _build_description(route),
         "example": str(route.get("example") or ""),
         "params": params,
+        "url": str(route.get("url") or ""),
+        "categories": [str(value) for value in route.get("categories") or []],
+        "features": features,
+        "maintainers": [str(value) for value in route.get("maintainers") or []],
+        "requires_configuration": bool(features.get("requireConfig")),
     }
 
 
