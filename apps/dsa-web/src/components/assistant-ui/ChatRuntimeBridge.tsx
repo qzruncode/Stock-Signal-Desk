@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useEffect, useRef } from 'react';
-import { useThreadRuntime } from '@assistant-ui/react';
+import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import type { ExportedMessageRepository } from '@assistant-ui/core';
 import { type ChatConversationDetail } from '../../api/agent';
 
@@ -92,6 +92,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
   onPrepareResumeExisting,
 }) => {
   const threadRuntime = useThreadRuntime();
+  const isThreadRunning = useThread((state) => state.isRunning);
   const appliedHydrationKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -104,6 +105,15 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       onPrepareResumeExisting('', null);
       threadRuntime.cancelRun();
       threadRuntime.reset([]);
+      return;
+    }
+
+    // A delayed detail request can resolve after the user has already sent a
+    // message.  Hydrating that stale snapshot would call cancelRun/reset and
+    // erase the live assistant turn.  Keep the local run authoritative until
+    // it finishes; switching conversations passes through the null branch
+    // above first, so the next conversation still hydrates normally.
+    if (isThreadRunning) {
       return;
     }
 
@@ -180,7 +190,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       sourceId: parentId,
       runConfig: {},
     });
-  }, [conversationDetail, threadRuntime, onPrepareResumeExisting]);
+  }, [conversationDetail, isThreadRunning, threadRuntime, onPrepareResumeExisting]);
 
   return null;
 };

@@ -146,7 +146,7 @@ def get_research_report(
             f"research-report:{code}",
             lambda: _fetch_akshare(code),
             ttl_seconds=86400 if use_cache else 0,
-            attempts=2,
+            attempts=1,
         )
         primary_available = True
         rows = frame_records(frame)
@@ -172,11 +172,13 @@ def get_research_report(
 
     fallback_attempted = not primary_available
     fallback_used = False
+    fallback_available = False
     if fallback_attempted:
         rss_items, rss_errors = _fetch_rss_fallback(code, name, days=days, limit=limit)
         if rss_items:
             items = rss_items
             fallback_used = True
+        fallback_available = bool(rss_items) or not rss_errors
         if rss_errors:
             warnings.extend(f"RSSHub {error}" for error in rss_errors)
 
@@ -190,7 +192,7 @@ def get_research_report(
         deduped.append(item)
     items = deduped[:limit]
 
-    acquisition_succeeded = primary_available or fallback_used
+    acquisition_succeeded = primary_available or fallback_available
     if not items and acquisition_succeeded:
         warnings.append(f"最近 {days} 天没有检索到该股票的个股研报")
     rating_distribution: dict[str, int] = {}
@@ -210,7 +212,7 @@ def get_research_report(
     if primary_available:
         source = "AKShare/东方财富个股研报"
         source_chain = [source]
-    elif fallback_used:
+    elif fallback_available:
         source = "RSSHub/东方财富个股研报"
         source_chain = [source]
     else:

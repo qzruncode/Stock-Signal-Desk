@@ -74,6 +74,20 @@ def test_deterministic_answer_uses_dynamic_spec_columns_and_download_link() -> N
     assert "近250日" not in answer
 
 
+def test_deterministic_answer_confirms_saved_watchlist_group() -> None:
+    result = _successful_result()
+    result["saved_group"] = {"id": 3, "name": "高波动观察", "count": 11}
+
+    answer = _build_quantitative_screen_answer([{
+        "tool": "screen_atr_volatility_stocks",
+        "result": result,
+    }])
+
+    assert "已保存到自选分组" in answer
+    assert "高波动观察" in answer
+    assert "共 11 只股票" in answer
+
+
 def test_deterministic_answer_fails_closed_without_tool_coverage() -> None:
     answer = _build_quantitative_screen_answer([{
         "tool": "screen_atr_volatility_stocks",

@@ -38,7 +38,10 @@ export function NotificationSettingsView() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- settings are initialized from the persisted API config
+    void load();
+  }, [load]);
 
   const fields = useMemo<SystemConfigFieldSchema[]>(() => (
     schema?.categories.find((category) => category.category === 'notification')?.fields ?? []

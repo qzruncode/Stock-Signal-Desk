@@ -1,6 +1,7 @@
 import type { FC } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EllipsisIcon, MessageSquareIcon, PencilIcon, PlusIcon, SearchIcon, Trash2Icon } from 'lucide-react';
+import { EllipsisIcon, MessageSquareIcon, PencilIcon, PlusIcon, SearchIcon, SettingsIcon, Trash2Icon } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import type { ChatConversationItem } from '../../api/agent';
 import { cn } from '../../utils/cn';
 import { TooltipIconButton } from './tooltip-icon-button';
@@ -41,7 +42,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   const longPressTriggeredRef = useRef(false);
 
   useEffect(() => {
-    if (typeof window === 'undefined') {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
       return undefined;
     }
     const mediaQuery = window.matchMedia('(hover: none), (pointer: coarse)');
@@ -328,6 +329,17 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
             </div>
           );
         })}
+      </div>
+
+      <div className="flex items-center border-t border-border px-3 py-2.5">
+        <Link
+          to="/setting"
+          className="inline-flex size-9 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          aria-label="AI 助手设置"
+          title="AI 助手设置"
+        >
+          <SettingsIcon className="size-4" />
+        </Link>
       </div>
 
       {actionConversation && actionMenuPosition ? (

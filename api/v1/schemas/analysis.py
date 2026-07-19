@@ -13,7 +13,7 @@
 from typing import Optional, List, Any
 from enum import Enum
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from src.utils.analysis_metadata import SELECTION_SOURCE_PATTERN
 
 
@@ -29,14 +29,12 @@ class AnalyzeRequest(BaseModel):
     """Analysis request parameters"""
     
     stock_code: Optional[str] = Field(
-        None, 
-        description="单只股票代码", 
-        example="600519"
+        None,
+        description="单只股票代码",
     )
     stock_codes: Optional[List[str]] = Field(
         None, 
         description="多只股票代码（与 stock_code 二选一）",
-        example=["600519", "000858"]
     )
     report_type: str = Field(
         "detailed",
@@ -54,18 +52,15 @@ class AnalyzeRequest(BaseModel):
     stock_name: Optional[str] = Field(
         None,
         description="用户选中的股票名称（自动补全时提供）",
-        example="贵州茅台"
     )
     original_query: Optional[str] = Field(
         None,
         description="用户原始输入（如茅台、gzmt、600519）",
-        example="茅台"
     )
     selection_source: Optional[str] = Field(
         None,
         description="股票选择来源：manual(手动输入) | autocomplete(自动补全) | import(导入)",
         pattern=SELECTION_SOURCE_PATTERN,
-        example="autocomplete"
     )
     notify: bool = Field(
         True,
@@ -76,19 +71,18 @@ class AnalyzeRequest(BaseModel):
         description="提示词模板 ID，不传则使用默认模板"
     )
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "stock_code": "600519",
-                "report_type": "detailed",
-                "force_refresh": False,
-                "async_mode": False,
-                "stock_name": "贵州茅台",
-                "original_query": "茅台",
-                "selection_source": "autocomplete",
-                "notify": True,
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "stock_code": "600519",
+            "report_type": "detailed",
+            "force_refresh": False,
+            "async_mode": False,
+            "stock_name": "贵州茅台",
+            "original_query": "茅台",
+            "selection_source": "autocomplete",
+            "notify": True,
         }
+    })
 
 
 class AnalysisResultResponse(BaseModel):
@@ -100,21 +94,20 @@ class AnalysisResultResponse(BaseModel):
     report: Optional[Any] = Field(None, description="分析报告")
     created_at: str = Field(..., description="创建时间")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "query_id": "abc123def456",
-                "stock_code": "600519",
-                "stock_name": "贵州茅台",
-                "report": {
-                    "summary": {
-                        "sentiment_score": 75,
-                        "operation_advice": "持有"
-                    }
-                },
-                "created_at": "2024-01-01T12:00:00"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "query_id": "abc123def456",
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "report": {
+                "summary": {
+                    "sentiment_score": 75,
+                    "operation_advice": "持有",
+                }
+            },
+            "created_at": "2024-01-01T12:00:00",
         }
+    })
 
 
 class TaskAccepted(BaseModel):
@@ -128,14 +121,13 @@ class TaskAccepted(BaseModel):
     )
     message: Optional[str] = Field(None, description="提示信息")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "task_id": "task_abc123",
-                "status": "pending",
-                "message": "Analysis task accepted"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "task_id": "task_abc123",
+            "status": "pending",
+            "message": "Analysis task accepted",
         }
+    })
 
 
 class BatchTaskAcceptedItem(BaseModel):
@@ -150,15 +142,14 @@ class BatchTaskAcceptedItem(BaseModel):
     )
     message: Optional[str] = Field(None, description="提示信息")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "task_id": "task_abc123",
-                "stock_code": "600519",
-                "status": "pending",
-                "message": "分析任务已加入队列: 600519"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "task_id": "task_abc123",
+            "stock_code": "600519",
+            "status": "pending",
+            "message": "分析任务已加入队列: 600519",
         }
+    })
 
 
 class BatchDuplicateTaskItem(BaseModel):
@@ -168,14 +159,13 @@ class BatchDuplicateTaskItem(BaseModel):
     existing_task_id: str = Field(..., description="已存在的任务 ID")
     message: str = Field(..., description="错误信息")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "stock_code": "600519",
-                "existing_task_id": "task_existing_123",
-                "message": "股票 600519 正在分析中 (task_id: task_existing_123)"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "stock_code": "600519",
+            "existing_task_id": "task_existing_123",
+            "message": "股票 600519 正在分析中 (task_id: task_existing_123)",
         }
+    })
 
 
 class BatchTaskAcceptedResponse(BaseModel):
@@ -185,27 +175,26 @@ class BatchTaskAcceptedResponse(BaseModel):
     duplicates: List[BatchDuplicateTaskItem] = Field(default_factory=list, description="重复而跳过的任务列表")
     message: str = Field(..., description="汇总信息")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "accepted": [
-                    {
-                        "task_id": "task_abc123",
-                        "stock_code": "600519",
-                        "status": "pending",
-                        "message": "分析任务已加入队列: 600519"
-                    }
-                ],
-                "duplicates": [
-                    {
-                        "stock_code": "000858",
-                        "existing_task_id": "task_existing_456",
-                        "message": "股票 000858 正在分析中 (task_id: task_existing_456)"
-                    }
-                ],
-                "message": "已提交 1 个任务，1 个重复跳过"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "accepted": [
+                {
+                    "task_id": "task_abc123",
+                    "stock_code": "600519",
+                    "status": "pending",
+                    "message": "分析任务已加入队列: 600519",
+                }
+            ],
+            "duplicates": [
+                {
+                    "stock_code": "000858",
+                    "existing_task_id": "task_existing_456",
+                    "message": "股票 000858 正在分析中 (task_id: task_existing_456)",
+                }
+            ],
+            "message": "已提交 1 个任务，1 个重复跳过",
         }
+    })
 
 
 class TaskStatus(BaseModel):
@@ -243,20 +232,19 @@ class TaskStatus(BaseModel):
     prompt_template_name: Optional[str] = Field(None, description="提示词模板名称")
     conversation: Optional[Any] = Field(None, description="任务对话记录草稿或完整结果")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "task_id": "task_abc123",
-                "status": "completed",
-                "progress": 100,
-                "result": None,
-                "market_review_report": None,
-                "error": None,
-                "stock_name": "贵州茅台",
-                "original_query": "茅台",
-                "selection_source": "autocomplete",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "task_id": "task_abc123",
+            "status": "completed",
+            "progress": 100,
+            "result": None,
+            "market_review_report": None,
+            "error": None,
+            "stock_name": "贵州茅台",
+            "original_query": "茅台",
+            "selection_source": "autocomplete",
         }
+    })
 
 
 class TaskInfo(BaseModel):
@@ -287,24 +275,23 @@ class TaskInfo(BaseModel):
     prompt_template_name: Optional[str] = Field(None, description="提示词模板名称")
     conversation: Optional[Any] = Field(None, description="任务对话记录草稿或完整结果")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "task_id": "abc123def456",
-                "stock_code": "600519",
-                "stock_name": "贵州茅台",
-                "status": "processing",
-                "progress": 50,
-                "message": "正在分析中...",
-                "report_type": "detailed",
-                "created_at": "2026-02-05T10:30:00",
-                "started_at": "2026-02-05T10:30:01",
-                "completed_at": None,
-                "error": None,
-                "original_query": "茅台",
-                "selection_source": "autocomplete",
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "task_id": "abc123def456",
+            "stock_code": "600519",
+            "stock_name": "贵州茅台",
+            "status": "processing",
+            "progress": 50,
+            "message": "正在分析中...",
+            "report_type": "detailed",
+            "created_at": "2026-02-05T10:30:00",
+            "started_at": "2026-02-05T10:30:01",
+            "completed_at": None,
+            "error": None,
+            "original_query": "茅台",
+            "selection_source": "autocomplete",
         }
+    })
 
 
 class TaskListResponse(BaseModel):
@@ -315,15 +302,14 @@ class TaskListResponse(BaseModel):
     processing: int = Field(..., description="处理中的任务数")
     tasks: List[TaskInfo] = Field(..., description="任务列表")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "total": 3,
-                "pending": 1,
-                "processing": 2,
-                "tasks": []
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "total": 3,
+            "pending": 1,
+            "processing": 2,
+            "tasks": [],
         }
+    })
 
 
 class DuplicateTaskErrorResponse(BaseModel):
@@ -334,12 +320,11 @@ class DuplicateTaskErrorResponse(BaseModel):
     stock_code: str = Field(..., description="股票代码")
     existing_task_id: str = Field(..., description="已存在的任务 ID")
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "error": "duplicate_task",
-                "message": "股票 600519 正在分析中",
-                "stock_code": "600519",
-                "existing_task_id": "abc123def456"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "error": "duplicate_task",
+            "message": "股票 600519 正在分析中",
+            "stock_code": "600519",
+            "existing_task_id": "abc123def456",
         }
+    })

@@ -110,10 +110,10 @@ SYSTEM_PROMPT = """\
 6. 对话里出现多家公司时，优先一次调用 get_multi_stock_snapshot；它已包含行情、估值、技术与最新报告期财务快照。拿到成功结果后直接回答，不要再为每家公司分别重复调用行情、技术或财务工具；只有用户明确要求深挖某一家公司时再补充单股证据。
 7. 不得凭记忆猜证券代码。系统给出的“已核验证券实体”是唯一可信的名称/代码映射；缺失时把公司名称原样传给工具解析。
 8. 浏览或搜索股票使用 search_stocks；股票池缺失或过期时工具会自动维护，不要要求用户先手动同步。用户询问数据覆盖和更新时间时使用 get_data_health。
-9. 只有用户明确要求查看、添加或删除自选股时才调用 manage_watchlist；分析、推荐或筛选结果不得自动写入自选股。
+9. 默认自选股使用 manage_watchlist；自定义分组使用 manage_watchlist_groups。只有用户明确要求查看或修改时才调用；分析、推荐或筛选结果不得擅自写入自选股。删除分组必须先确认具体分组。
 10. 用户明确要求生成会保存的正式分析报告或重新分析时调用 run_stock_analysis；用 get_analysis_status 查询进度，完成后用 read_analysis_report 读取正式结果。询问过去结论时先用 search_analysis_history，禁止凭对话记忆冒充历史报告。
-11. 用户明确要求批量分析时调用 run_batch_analysis；范围超过 10 只必须先列明范围并请求确认。批量进度、暂停、继续、失败续跑和报告通过 manage_batch_run 管理。定时分析通过 manage_analysis_schedule 管理。
-12. 模板管理只使用 manage_analysis_templates。删除历史、删除模板、停止或删除批量任务、修改定时计划属于高影响操作，必须得到用户对具体对象的明确确认后才传 confirmed=true。
+11. 用户明确要求批量分析时调用 run_batch_analysis；指定自选分组时使用 scope=group 和 group_name。范围超过 10 只必须先列明范围并请求确认。批量进度、暂停、继续、失败续跑和报告通过 manage_batch_run 管理。定时分析通过 manage_analysis_schedule 管理。
+12. 模板管理只使用 manage_analysis_templates。删除历史、删除模板、删除自选分组、停止或删除批量任务、修改定时计划属于高影响操作，必须得到用户对具体对象的明确确认后才传 confirmed=true。
 13. 通知渠道状态用 get_notification_status。只有用户明确说“发送、推送、通知我”时才调用 send_notification 或把 run_stock_analysis.notify_on_complete 设为 true；普通分析和生成报告默认不发送。通知凭据只能在设置页配置，禁止索取或展示 Webhook/Token。
 
 ## 专业分析框架
@@ -1602,6 +1602,206 @@ def _build_theme_mapping_fallback(
     )
 
 
+def _template_purpose(content: Any) -> str:
+    headings = []
+    for match in re.findall(r"^###\s+(?:\d+[.、]?\s*)?(.+?)\s*$", str(content or ""), re.MULTILINE):
+        heading = match.strip()
+        if heading and heading not in headings and "输出" not in heading:
+            headings.append(heading)
+    if headings:
+        return "覆盖" + "、".join(headings[:6])
+    return "自定义股票分析框架"
+
+
+def _build_workflow_evidence_fallback(
+    evidence: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Render successful workflow reads/actions without another model pass."""
+    workflow_names = {
+        "manage_watchlist",
+        "manage_watchlist_groups",
+        "run_stock_analysis",
+        "get_analysis_status",
+        "search_analysis_history",
+        "delete_analysis_history",
+        "manage_analysis_templates",
+        "run_batch_analysis",
+        "manage_batch_run",
+        "manage_analysis_schedule",
+        "get_notification_status",
+        "send_notification",
+    }
+    for item in reversed(evidence or []):
+        if not isinstance(item, dict) or item.get("tool") not in workflow_names:
+            continue
+        tool_name = str(item.get("tool"))
+        result = item.get("result")
+        if not isinstance(result, dict) or result.get("success") is False:
+            continue
+
+        if tool_name == "manage_watchlist":
+            codes = [str(code) for code in result.get("codes") or []]
+            if result.get("action") == "list":
+                return (
+                    f"当前默认自选股共有 **{len(codes)} 只**："
+                    + ("\n\n" + "、".join(codes) if codes else "列表为空。")
+                )
+            changed = [str(code) for code in result.get("changed") or []]
+            verb = "添加" if result.get("action") == "add" else "移除"
+            return f"已{verb} **{len(changed)} 只**股票：" + ("、".join(changed) if changed else "没有发生变化。")
+
+        if tool_name == "manage_watchlist_groups":
+            if result.get("action") == "list":
+                groups = result.get("groups") if isinstance(result.get("groups"), list) else []
+                if not groups:
+                    return "当前没有自选分组。"
+                lines = [
+                    f"当前共有 **{len(groups)} 个自选分组**：\n",
+                    "| 分组 | 类型 | 股票数量 | 成员 |",
+                    "|---|---|---:|---|",
+                ]
+                for group in groups:
+                    if not isinstance(group, dict):
+                        continue
+                    codes = [str(code) for code in group.get("codes") or []]
+                    preview = "、".join(codes[:8]) or "—"
+                    if len(codes) > 8:
+                        preview += f" 等 {len(codes)} 只"
+                    lines.append(
+                        f"| {group.get('name') or '未命名'} | "
+                        f"{'默认' if group.get('is_default') else '自定义'} | "
+                        f"{group.get('count', len(codes))} | {preview} |"
+                    )
+                return "\n".join(lines)
+            message = str(result.get("message") or "").strip()
+            if message:
+                return message
+
+        if tool_name == "manage_analysis_templates":
+            action = result.get("action")
+            templates = result.get("items") if isinstance(result.get("items"), list) else []
+            if action == "list":
+                if not templates:
+                    return "当前没有分析模板。你可以告诉我模板名称和分析框架，我会在确认后创建。"
+                lines = [
+                    f"当前共有 **{len(templates)} 个分析模板**：\n",
+                    "| 模板 | 状态 | 用途 |",
+                    "|---|---|---|",
+                ]
+                default_name = ""
+                for template in templates:
+                    if not isinstance(template, dict):
+                        continue
+                    name = str(template.get("name") or "未命名模板")
+                    is_default = bool(template.get("is_default"))
+                    if is_default:
+                        default_name = name
+                    lines.append(
+                        f"| {name} | {'默认' if is_default else '可选'} | "
+                        f"{_template_purpose(template.get('content'))} |"
+                    )
+                if default_name:
+                    lines.append(f"\n当前默认模板是 **{default_name}**。发起正式分析时未指定模板，就会使用它。")
+                return "\n".join(lines)
+
+            template = result.get("template")
+            if isinstance(template, dict):
+                name = str(template.get("name") or "未命名模板")
+                status = "默认模板" if template.get("is_default") else "可选模板"
+                content = str(template.get("content") or "").strip()
+                answer = f"## {name}\n\n- 状态：{status}\n- 用途：{_template_purpose(content)}"
+                if action == "get" and content:
+                    answer += f"\n\n### 模板内容\n\n{content}"
+                else:
+                    answer += "\n\n模板操作已完成。"
+                return answer
+            if result.get("deleted"):
+                return "分析模板已删除。"
+
+        if tool_name == "search_analysis_history":
+            records = result.get("items") if isinstance(result.get("items"), list) else []
+            if not records:
+                return "没有找到符合条件的正式分析报告。"
+            lines = [
+                f"找到 **{result.get('total', len(records))} 份**正式分析报告，本页显示 {len(records)} 份：\n",
+                "| ID | 股票 | 报告时间 | 类型 |",
+                "|---|---|---|---|",
+            ]
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                stock = record.get("stock_name") or record.get("stock_code") or "—"
+                code = record.get("stock_code") or ""
+                lines.append(
+                    f"| {record.get('id', '—')} | {stock}{f'（{code}）' if code else ''} | "
+                    f"{record.get('created_at', '—')} | {record.get('report_type', '—')} |"
+                )
+            lines.append("\n告诉我报告 ID 或股票名称，我可以继续读取完整报告。")
+            return "\n".join(lines)
+
+        if tool_name == "get_analysis_status":
+            if result.get("mode") == "detail" and isinstance(result.get("task"), dict):
+                task = result["task"]
+                return (
+                    f"分析任务 **{task.get('task_id') or task.get('taskId') or '—'}**："
+                    f"{task.get('status') or '未知状态'}，进度 {task.get('progress', 0)}%。\n\n"
+                    f"{task.get('message') or task.get('error') or ''}"
+                ).rstrip()
+            stats = result.get("stats") if isinstance(result.get("stats"), dict) else {}
+            return (
+                f"当前共 **{stats.get('total', result.get('item_count', 0))} 个**分析任务："
+                f"等待 {stats.get('pending', 0)}、运行中 {stats.get('processing', 0)}、"
+                f"已完成 {stats.get('completed', 0)}、失败 {stats.get('failed', 0)}。"
+            )
+
+        if tool_name == "manage_analysis_schedule" and isinstance(result.get("schedule"), dict):
+            schedule = result["schedule"]
+            times = schedule.get("times") if isinstance(schedule.get("times"), list) else []
+            return (
+                f"自动分析计划当前 **{'已启用' if schedule.get('enabled') else '未启用'}**。\n\n"
+                f"- 执行时间：{', '.join(map(str, times)) if times else '未设置'}\n"
+                f"- 分析模板：{schedule.get('template_id') or '未设置'}"
+            )
+
+        if tool_name == "get_notification_status":
+            channels = result.get("channels") if isinstance(result.get("channels"), list) else []
+            configured = [str(channel.get("name") or channel.get("channel")) for channel in channels if isinstance(channel, dict) and channel.get("configured")]
+            if configured:
+                return f"已配置通知渠道：**{'、'.join(configured)}**。只有你明确要求发送时，助手才会推送通知。"
+            return "通知渠道尚未配置。请先到设置页的“通知设置”中填写企业微信 Webhook。"
+
+        if tool_name == "manage_batch_run" and result.get("action") == "report" and result.get("markdown"):
+            return str(result["markdown"]).strip()
+
+        if tool_name == "manage_batch_run" and result.get("action") == "list":
+            count = int(result.get("item_count") or 0)
+            return f"当前有 **{count} 个**批量分析任务。" if count else "当前没有批量分析任务。"
+
+        if tool_name == "run_stock_analysis":
+            return (
+                f"正式分析任务已{'存在并继续运行' if result.get('duplicate') else '提交'}："
+                f"股票 **{result.get('stock_code') or '—'}**，任务 ID `{result.get('task_id') or '—'}`，"
+                f"当前状态 {result.get('status') or '等待中'}。"
+            )
+
+        if tool_name == "run_batch_analysis":
+            count = len(result.get("stock_codes") or [])
+            return f"批量分析已启动，共 **{count} 只股票**。你可以继续问我批次进度。"
+
+        if tool_name == "delete_analysis_history":
+            return f"已删除 **{result.get('deleted_count', 0)} 条**分析历史。"
+
+        if tool_name == "send_notification":
+            return f"通知已发送至 **{result.get('channel') or '已配置渠道'}**。"
+
+        message = str(result.get("message") or "").strip()
+        if message:
+            return message
+        action = str(result.get("action") or "操作")
+        return f"{action} 已完成。"
+    return None
+
+
 def _build_verified_evidence_fallback(
     evidence: Optional[List[Dict[str, Any]]],
     *,
@@ -1618,6 +1818,88 @@ def _build_verified_evidence_fallback(
     inventing business facts or pretending this mechanical screen is advice.
     """
     batch: Optional[Dict[str, Any]] = None
+
+    # Reading a persisted report is retrieval, not a new model judgement.  If
+    # the provider emits no final text after the tool succeeds, return the
+    # stored report itself instead of asking the user to retry.  The LLM-facing
+    # tool payload may contain only a Markdown excerpt, so reload the complete
+    # local report when necessary; this path never invents or rewrites facts.
+    for item in reversed(evidence or []):
+        if not isinstance(item, dict) or item.get("tool") != "read_analysis_report":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict) or result.get("success") is False:
+            continue
+
+        markdown = str(result.get("markdown") or "").strip()
+        arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+        record_id = str(
+            result.get("record_id")
+            or arguments.get("record_id")
+            or ""
+        ).strip()
+        complete_report_reloaded = False
+        if result.get("markdown_excerpt") and record_id:
+            try:
+                from src.services.history_service import HistoryService
+
+                complete_markdown = HistoryService().get_markdown_report(record_id)
+                if complete_markdown and complete_markdown.strip():
+                    markdown = complete_markdown.strip()
+                    complete_report_reloaded = True
+            except Exception:
+                logger.exception(
+                    "[Agent] failed to reload complete persisted report record_id=%s",
+                    record_id,
+                )
+
+        if markdown:
+            try:
+                expected_length = int(result.get("markdown_length") or 0)
+            except (TypeError, ValueError):
+                expected_length = 0
+            if (
+                result.get("markdown_excerpt")
+                and not complete_report_reloaded
+                and len(markdown) < expected_length
+            ):
+                markdown += (
+                    "\n\n> 报告正文较长，当前只取得工具上下文中的节选；"
+                    "请指定报告章节继续读取。"
+                )
+            return markdown
+
+        report = result.get("report")
+        if isinstance(report, dict):
+            meta = report.get("meta") if isinstance(report.get("meta"), dict) else {}
+            summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+            strategy = report.get("strategy") if isinstance(report.get("strategy"), dict) else {}
+            stock_name = meta.get("stock_name") or meta.get("stock_code") or "股票"
+            stock_code = meta.get("stock_code") or ""
+            title = f"# {stock_name}{f'（{stock_code}）' if stock_code else ''}正式分析报告"
+            lines = [title]
+            if meta.get("created_at"):
+                lines.append(f"\n> 报告时间：{meta['created_at']}")
+            fields = (
+                ("关键结论", summary.get("analysis_summary")),
+                ("操作建议", summary.get("operation_advice")),
+                ("趋势判断", summary.get("trend_prediction")),
+                ("情绪", summary.get("sentiment_label")),
+                ("理想买入价", strategy.get("ideal_buy")),
+                ("第二买入价", strategy.get("secondary_buy")),
+                ("止损价", strategy.get("stop_loss")),
+                ("止盈价", strategy.get("take_profit")),
+            )
+            for label, value in fields:
+                if value not in (None, ""):
+                    lines.append(f"\n## {label}\n\n{value}")
+            if len(lines) > 1:
+                return "".join(lines)
+
+    workflow_answer = _build_workflow_evidence_fallback(evidence)
+    if workflow_answer:
+        return workflow_answer
+
     for item in evidence or []:
         if not isinstance(item, dict) or item.get("tool") != "get_theme_stock_candidates":
             continue
@@ -1974,6 +2256,14 @@ def _build_quantitative_screen_answer(evidence: Optional[List[Dict[str, Any]]]) 
     warnings_text = ""
     if warnings:
         warnings_text = "\n- 数据源切换：" + "；".join(warnings)
+    saved_group = result.get("saved_group") if isinstance(result.get("saved_group"), dict) else None
+    saved_group_text = ""
+    if saved_group:
+        saved_group_text = (
+            f"\n\n### 已保存到自选分组\n\n"
+            f"完整筛选结果已保存为 **{saved_group.get('name') or '未命名分组'}**，"
+            f"共 {saved_group.get('count', total)} 只股票。"
+        )
     return (
         f"## 筛选结论\n\n共 **{total} 只**股票满足本轮完整规格，排序为 `{sort_text}`。"
         + (f"下表展示前{preview_limit}只。\n\n" if total > preview_limit else "\n\n")
@@ -1987,6 +2277,7 @@ def _build_quantitative_screen_answer(evidence: Optional[List[Dict[str, Any]]]) 
         + f"- 覆盖：{coverage_text}\n"
         + f"- 来源：{result.get('source', '工具返回来源')}。"
         + warnings_text
+        + saved_group_text
     )
 
 

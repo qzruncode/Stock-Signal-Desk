@@ -18,15 +18,9 @@ function lazyWithPreload<T extends { default: React.ComponentType }>(factory: ()
 export const ChatHomePage = lazyWithPreload(() => import('../pages/ChatHomePage'));
 export const NotFoundPage = lazyWithPreload(() => import('../pages/NotFoundPage'));
 export const SettingPage = lazyWithPreload(() => import('../pages/SettingPage'));
-export const WatchlistManagePage = lazyWithPreload(() => import('../pages/WatchlistManagePage'));
-export const WorkflowBuilderPage = lazyWithPreload(() => import('../pages/WorkflowBuilderPage'));
-export const ToolsPage = lazyWithPreload(() => import('../pages/ToolsPage'));
 
 const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/': ChatHomePage.preload!,
-  '/portfolio': WatchlistManagePage.preload!,
-  '/tools': ToolsPage.preload!,
-  '/workflows': WorkflowBuilderPage.preload!,
   '/setting': SettingPage.preload!,
 };
 

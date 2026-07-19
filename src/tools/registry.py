@@ -92,6 +92,7 @@ TOOL_MODULES: tuple[str, ...] = (
     # Local universe and user portfolio operations
     "search_stocks",
     "manage_watchlist",
+    "manage_watchlist_groups",
     "get_data_health",
     # Persisted analysis workflows formerly exposed by Dashboard
     "run_stock_analysis",

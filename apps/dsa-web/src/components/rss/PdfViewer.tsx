@@ -91,6 +91,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ proxyUrl }) => {
   // Load the document when the proxy URL changes.
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a new PDF source must reset the viewer before async loading
     setStatus('loading');
     setErrorMsg('');
     setNumPages(0);

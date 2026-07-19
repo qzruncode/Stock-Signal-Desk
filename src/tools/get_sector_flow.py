@@ -232,7 +232,9 @@ def get_sector_flow(type: str = "industry", top_n: int = 10, period: str = "toda
             f"sector_flow:v2:{type}:{period}",
             lambda: _fetch_all(type, period),
             ttl_seconds=ttl,
-            attempts=2,
+            # _request_page already performs one bounded retry.  Retrying the
+            # whole paginated query here can exceed the Agent tool envelope.
+            attempts=1,
         )
     except Exception as exc:
         records, cached = [], False

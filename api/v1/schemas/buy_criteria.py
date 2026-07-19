@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 class CriteriaAnalyzeRequest(BaseModel):
     """Request body for starting a criteria analysis."""
-    symbol: str = Field(..., description="股票代码", example="300308")
+    symbol: str = Field(..., description="股票代码")
 
 
 class CriterionEvidence(BaseModel):
@@ -20,8 +20,8 @@ class CriterionEvidence(BaseModel):
 
 class CriterionResultPayload(BaseModel):
     """Result of a single criterion evaluation."""
-    criterion_id: str = Field(..., description="准则ID", example="mainline_position")
-    criterion_name: str = Field(..., description="准则名称", example="市场主线属性")
+    criterion_id: str = Field(..., description="准则ID")
+    criterion_name: str = Field(..., description="准则名称")
     index: int = Field(..., ge=0, le=7, description="准则序号 0-7")
     passed: bool = Field(..., description="是否通过")
     verdict: str = Field(..., description="LLM 2-3句话定性判断")

@@ -82,3 +82,15 @@ def test_research_report_uses_rss_only_when_structured_source_failed() -> None:
     assert result["fallback_attempted"] is True
     assert result["fallback_used"] is True
     assert result["items"][0]["url"] == "https://example.com/rss-report"
+
+
+def test_research_report_empty_successful_rss_fallback_is_valid_zero_result() -> None:
+    with patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")), \
+         patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([], [])):
+        result = get_research_report("300850")
+
+    assert result["success"] is True
+    assert result["fallback_attempted"] is True
+    assert result["fallback_used"] is False
+    assert result["item_count"] == 0
+    assert result["source"] == "RSSHub/东方财富个股研报"

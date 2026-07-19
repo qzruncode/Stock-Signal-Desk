@@ -119,3 +119,32 @@ def test_professional_evidence_keeps_snapshot_when_one_shard_times_out():
     fallback_items = [item for item in result["items"] if item["symbol"] in {"000003", "000004"}]
     assert all(item["snapshot"]["quote"]["price"] == 10 for item in fallback_items)
     assert any("000003,000004" in error for error in result["errors"])
+
+
+def test_two_stock_professional_evidence_also_falls_back_before_deadline():
+    def run_process(name, arguments, *, timeout_seconds):
+        del timeout_seconds
+        if name == "get_multi_stock_decision_evidence":
+            raise TimeoutError("upstream stalled")
+        assert name == "get_multi_stock_snapshot"
+        return {
+            "success": True,
+            "items": [
+                {"symbol": symbol, "name": symbol, "quote": {"price": 10}}
+                for symbol in arguments["symbols"].split(",")
+            ],
+            "resolved_entities": [],
+            "unresolved_entities": [],
+        }
+
+    with patch("src.tools.process_runner._execute_tool_process", side_effect=run_process):
+        result = execute_tool_isolated(
+            "get_multi_stock_decision_evidence",
+            {"symbols": "000001,000002", "thesis": "测试"},
+            timeout_seconds=87,
+        )
+
+    assert result["success"] is True
+    assert result["partial"] is True
+    assert result["fallback_used"] is True
+    assert [item["symbol"] for item in result["items"]] == ["000001", "000002"]

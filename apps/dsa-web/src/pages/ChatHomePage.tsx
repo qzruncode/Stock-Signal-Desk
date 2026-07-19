@@ -84,6 +84,7 @@ const ChatHomePage: React.FC = () => {
   }, [createConversation, refreshConversations]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial conversation hydration is an API synchronization
     void ensureInitialConversation();
   }, [ensureInitialConversation]);
 
@@ -107,6 +108,16 @@ const ChatHomePage: React.FC = () => {
     }
     resumeExistingRef.current = { conversationId, afterChunkIndex };
   }, []);
+
+  const handleUserCancelRun = useCallback(() => {
+    const conversationId = selectedConversationIdRef.current;
+    if (!conversationId) return;
+    void agentApi.cancelConversationRun(conversationId)
+      .then(() => loadConversationDetail(conversationId))
+      .catch((error) => {
+        setStreamError(toApiErrorMessage(error, '停止生成失败，请稍后重试'));
+      });
+  }, [loadConversationDetail]);
 
   // 同一对话已有活跃 run 时,/agent/chat 返回 409。改为重新拉取详情触发续流,
   // 而非报错(详情带 isGenerating=true → ChatRuntimeBridge 走续流分支)。
@@ -190,19 +201,11 @@ const ChatHomePage: React.FC = () => {
       setStreamError(readThrownStreamErrorMessage(error));
     },
     onCancel: () => {
-      // Aborting the browser stream does not stop the retained backend run.
-      // Cancel it explicitly so tools/model generation and billing stop too.
-      const cancelledStream = activeStreamRef.current;
+      // Runtime hydration and conversation switching also cancel the local
+      // stream.  They must not kill the detached backend run; only the visible
+      // Stop button calls handleUserCancelRun explicitly.
       activeStreamRef.current = null;
       setStreamError(null);
-      const conversationId = cancelledStream?.conversationId || selectedConversationIdRef.current;
-      if (conversationId) {
-        void agentApi.cancelConversationRun(conversationId)
-          .then(() => loadConversationDetail(conversationId))
-          .catch((error) => {
-            setStreamError(toApiErrorMessage(error, '停止生成失败，请稍后重试'));
-          });
-      }
     },
     onFinish: async () => {
       const finishedStream = activeStreamRef.current;
@@ -310,6 +313,7 @@ const ChatHomePage: React.FC = () => {
         onSelectConversation={handleSelectConversation}
         onRenameConversation={handleRenameConversation}
         onDeleteConversation={handleDeleteConversation}
+        onCancelRun={handleUserCancelRun}
         onBatchDeleteConversations={async (conversationIds) => {
           const titles = conversations
             .filter((conversation) => conversationIds.includes(conversation.id))
@@ -351,6 +355,7 @@ const ChatLayout: React.FC<{
   onSelectConversation: (conversationId: string) => void;
   onRenameConversation: (conversation: ChatConversationItem) => void;
   onDeleteConversation: (conversation: ChatConversationItem) => void;
+  onCancelRun: () => void;
   onBatchDeleteConversations: (conversationIds: string[]) => Promise<void>;
 }> = ({
   streamError,
@@ -362,6 +367,7 @@ const ChatLayout: React.FC<{
   onSelectConversation,
   onRenameConversation,
   onDeleteConversation,
+  onCancelRun,
   onBatchDeleteConversations,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
@@ -490,7 +496,7 @@ const ChatLayout: React.FC<{
 
         <div className="min-h-0 flex-1">
           <Suspense fallback={<ChatLoadingFallback />}>
-            <Thread />
+            <Thread onUserCancel={onCancelRun} />
           </Suspense>
         </div>
       </div>

@@ -75,3 +75,18 @@ def test_announcements_primary_failure_uses_exchange_rss_with_real_filter_shape(
     assert result["fallback_used"] is True
     assert result["source"] == "RSSHub/交易所官方披露"
     assert result["items"][0]["url"] == "https://example.com/notice"
+
+
+def test_announcements_empty_successful_rss_fallback_is_valid_zero_result() -> None:
+    with patch("src.tools.get_announcements.cached_call", side_effect=RuntimeError("upstream down")), \
+         patch(
+             "src.tools.get_announcements._fetch_exchange_rss",
+             return_value=([], "/szse/disclosure/listed/notice/:query?", []),
+         ):
+        result = get_announcements("000001")
+
+    assert result["success"] is True
+    assert result["fallback_attempted"] is True
+    assert result["fallback_used"] is False
+    assert result["item_count"] == 0
+    assert result["source"] == "RSSHub/交易所官方披露"

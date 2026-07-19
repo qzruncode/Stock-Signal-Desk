@@ -159,6 +159,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         return result
 
     workflow_tools = {
+        "manage_watchlist", "manage_watchlist_groups",
         "run_stock_analysis", "get_analysis_status", "search_analysis_history",
         "delete_analysis_history", "manage_analysis_templates", "run_batch_analysis",
         "manage_batch_run", "manage_analysis_schedule", "get_notification_status",

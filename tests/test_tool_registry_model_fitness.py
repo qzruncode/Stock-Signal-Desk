@@ -266,8 +266,14 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         ), patch("src.tools._kline._expected_latest_kline_date", return_value=datetime(2026, 7, 16).date()):
             kline = registry.execute("get_kline", {"symbol": "600519", "count": 20})
         with patch(
-            "api.v1.endpoints.sectors.get_sector_list",
-            return_value={"items": [{"name": "白酒"}], "errors": []},
+            "src.tools.get_sector_list.get_sector_flow",
+            return_value={
+                "success": True,
+                "records": [{"name": "白酒", "sector_code": "BK0477"}],
+                "errors": [],
+                "warnings": [],
+                "freshness_unknown": True,
+            },
         ):
             sectors = registry.execute("get_sector_list", {"type": "industry"})
 

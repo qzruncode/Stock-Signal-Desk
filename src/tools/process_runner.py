@@ -170,20 +170,20 @@ def _execute_professional_evidence_chunked(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
-    if len(symbols) <= _PROFESSIONAL_EVIDENCE_CHUNK_SIZE:
+    if not symbols:
         return _execute_tool_process(
             _PROFESSIONAL_EVIDENCE_TOOL,
             arguments,
             timeout_seconds=timeout_seconds,
         )
-
     symbol_chunks = [
         symbols[index:index + _PROFESSIONAL_EVIDENCE_CHUNK_SIZE]
         for index in range(0, len(symbols), _PROFESSIONAL_EVIDENCE_CHUNK_SIZE)
     ]
-    # Two-stock cold-cache shards complete well inside the Agent's 90-second
-    # envelope.  Running four shards concurrently avoids one process issuing
-    # 70+ rate-limited upstream calls serially and timing out as a whole.
+    # Reserve time for the snapshot fallback even when only one two-stock
+    # shard was requested.  Previously the <=2 path consumed the entire
+    # envelope in the deep worker and returned a hard timeout instead of the
+    # documented partial snapshot.
     deep_timeout = min(max(10.0, timeout_seconds), 65.0)
     fallback_timeout = max(8.0, timeout_seconds - deep_timeout - 3.0)
     thesis = str(arguments.get("thesis") or "").strip()

@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
-import { BellIcon, FileTextIcon, ListChecksIcon, PlayIcon, Settings2Icon } from 'lucide-react';
+import { BellIcon, FileTextIcon, ListChecksIcon, PlayIcon, Settings2Icon, StarIcon } from 'lucide-react';
 import { ToolStatusPill } from './shared';
 
 type WorkflowResult = {
@@ -28,6 +28,8 @@ type WorkflowResult = {
 };
 
 const LABELS: Record<string, { running: string; done: string }> = {
+  manage_watchlist: { running: '正在管理默认自选股', done: '默认自选股已更新' },
+  manage_watchlist_groups: { running: '正在管理自选分组', done: '自选分组已更新' },
   run_stock_analysis: { running: '正在提交正式分析任务', done: '正式分析任务已提交' },
   get_analysis_status: { running: '正在查询分析进度', done: '分析任务状态已更新' },
   search_analysis_history: { running: '正在查询历史报告', done: '历史报告查询完成' },
@@ -60,7 +62,17 @@ export default function WorkflowToolsUI({
   const isNotification = toolName.includes('notification');
   const isReport = toolName.includes('report') || toolName.includes('history');
   const isSettings = toolName.includes('template') || toolName.includes('schedule');
-  const Icon = isNotification ? BellIcon : isReport ? FileTextIcon : isSettings ? Settings2Icon : toolName.includes('batch') ? ListChecksIcon : PlayIcon;
+  const Icon = toolName.includes('watchlist')
+    ? StarIcon
+    : isNotification
+      ? BellIcon
+      : isReport
+        ? FileTextIcon
+        : isSettings
+          ? Settings2Icon
+          : toolName.includes('batch')
+            ? ListChecksIcon
+            : PlayIcon;
   const taskId = result?.task_id;
   const count = result?.returned_count ?? result?.item_count ?? result?.total;
 

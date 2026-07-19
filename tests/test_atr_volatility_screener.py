@@ -294,6 +294,14 @@ def _install_fake_market(monkeypatch, financials: dict[str, dict]) -> None:
         for index, (high, low) in enumerate([(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1)
     ]
     monkeypatch.setattr(screener.DatabaseManager, "get_instance", classmethod(lambda _cls: DB()))
+    monkeypatch.setattr(
+        "src.services.data_maintenance.ensure_stock_universe",
+        lambda **_kwargs: {
+            "maintenance_status": "ready",
+            "refreshed": False,
+            "is_stale": False,
+        },
+    )
     monkeypatch.setattr(screener, "_expected_latest_kline_date", lambda: date(2026, 1, 5))
     monkeypatch.setattr(screener, "_build_ttm_financials", lambda: (financials, "2025-12-31"))
     monkeypatch.setattr(screener, "_persist_financials", lambda *_args: None)

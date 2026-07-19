@@ -8,9 +8,6 @@ import {
   ChatHomePage,
   NotFoundPage,
   SettingPage,
-  WatchlistManagePage,
-  WorkflowBuilderPage,
-  ToolsPage,
 } from './utils/routePreload';
 import './App.css';
 
@@ -67,10 +64,10 @@ const AppContent: React.FC = () => {
           <Route path="/dashboard" element={<Navigate to="/" replace />} />
           <Route path="/batch/runs/:runId" element={<Navigate to="/" replace />} />
           <Route path="/stocks" element={<Navigate to="/" replace />} />
-          <Route path="/portfolio" element={<WatchlistManagePage />} />
+          <Route path="/portfolio" element={<Navigate to="/" replace />} />
           <Route path="/infos" element={<Navigate to="/" replace />} />
-          <Route path="/tools" element={<ToolsPage />} />
-          <Route path="/workflows" element={<WorkflowBuilderPage />} />
+          <Route path="/tools" element={<Navigate to="/setting?tab=tools" replace />} />
+          <Route path="/workflows" element={<Navigate to="/" replace />} />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

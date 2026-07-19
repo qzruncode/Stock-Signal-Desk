@@ -2162,6 +2162,132 @@ def test_stream_final_answer_empty_content_appends_hint():
     assert any("模型本次没有返回最终文本" in t for t in controller.texts)
 
 
+def test_empty_final_answer_returns_persisted_report_markdown():
+    controller = _FakeController()
+    fake_acompletion = _async_completion([_mock_llm_chunk(content=None)])
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+    evidence = [{
+        "tool": "read_analysis_report",
+        "arguments": {"record_id": "report-1"},
+        "result": {
+            "success": True,
+            "record_id": "report-1",
+            "markdown": "# 宁德时代正式分析报告\n\n这是数据库中保存的完整报告。",
+            "markdown_length": 30,
+        },
+    }]
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "读取刚完成的报告"}],
+                fake_cfg,
+                evidence=evidence,
+            )
+
+    result = asyncio.run(run())
+    assert result == evidence[0]["result"]["markdown"]
+    assert "模型本次没有返回最终文本" not in result
+    assert controller.texts == [result]
+
+
+def test_persisted_report_fallback_reloads_full_markdown_after_llm_compaction():
+    evidence = [{
+        "tool": "read_analysis_report",
+        "arguments": {"record_id": "report-2"},
+        "result": {
+            "success": True,
+            "record_id": "report-2",
+            "markdown": "# 报告节选",
+            "markdown_excerpt": True,
+            "markdown_length": 24000,
+        },
+    }]
+    complete_markdown = "# 完整正式报告\n\n" + "完整内容" * 5000
+
+    with patch("src.services.history_service.HistoryService") as service_cls:
+        service_cls.return_value.get_markdown_report.return_value = complete_markdown
+        result = chat_mod._build_verified_evidence_fallback(evidence)
+
+    assert result == complete_markdown
+    service_cls.return_value.get_markdown_report.assert_called_once_with("report-2")
+
+
+def test_empty_final_answer_renders_analysis_template_list():
+    controller = _FakeController()
+    fake_acompletion = _async_completion([_mock_llm_chunk(content=None)])
+    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
+    evidence = [{
+        "tool": "manage_analysis_templates",
+        "arguments": {"action": "list"},
+        "result": {
+            "success": True,
+            "action": "list",
+            "item_count": 1,
+            "items": [{
+                "id": "template-1",
+                "name": "综合多维分析",
+                "is_default": True,
+                "content": "### 1. 技术面\n内容\n### 2. 基本面\n内容\n### 3. 资金面\n内容",
+            }],
+        },
+    }]
+
+    async def run():
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+            llm_mod.acompletion = fake_acompletion
+            return await chat_mod._stream_final_answer_without_tools(
+                controller,
+                [{"role": "user", "content": "列出我的分析模板"}],
+                fake_cfg,
+                evidence=evidence,
+            )
+
+    result = asyncio.run(run())
+    assert "当前共有 **1 个分析模板**" in result
+    assert "综合多维分析" in result
+    assert "当前默认模板" in result
+    assert "技术面、基本面、资金面" in result
+    assert "模型本次没有返回最终文本" not in result
+
+
+def test_empty_final_answer_renders_complete_watchlist_group_inventory():
+    evidence = [{
+        "tool": "manage_watchlist_groups",
+        "arguments": {"action": "list"},
+        "result": {
+            "success": True,
+            "action": "list",
+            "item_count": 2,
+            "groups": [
+                {
+                    "id": "default",
+                    "name": "我的自选股",
+                    "codes": ["600519"],
+                    "count": 1,
+                    "is_default": True,
+                },
+                {
+                    "id": 2,
+                    "name": "新能源",
+                    "codes": ["300750", "002594"],
+                    "count": 2,
+                    "is_default": False,
+                },
+            ],
+        },
+    }]
+
+    result = chat_mod._build_verified_evidence_fallback(evidence)
+
+    assert "当前共有 **2 个自选分组**" in result
+    assert "我的自选股" in result and "新能源" in result
+    assert "300750、002594" in result
+    assert "模型本次没有返回最终文本" not in result
+
+
 def test_empty_final_answer_uses_and_persists_verified_multi_stock_fallback():
     controller = _FakeController()
     fake_acompletion = _async_completion([_mock_llm_chunk(content=None)])

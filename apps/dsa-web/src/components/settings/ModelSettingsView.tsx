@@ -71,6 +71,7 @@ export const ModelSettingsView: React.FC = () => {
       if (fieldValues[key]) obj[key] = fieldValues[key];
     }
     const canonical = Object.keys(obj).length > 0 ? JSON.stringify(obj, null, 2) : '';
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- keep the JSON editor synchronized with form state
     setPasteText((current) => (current === canonical ? current : canonical));
   }, [fieldValues]);
 
@@ -113,6 +114,7 @@ export const ModelSettingsView: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- model settings are initialized from the persisted API config
     void fetchConfig();
   }, [fetchConfig]);
 

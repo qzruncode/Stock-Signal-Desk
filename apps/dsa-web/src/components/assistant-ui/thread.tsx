@@ -61,7 +61,7 @@ import { cn } from '../../utils/cn';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
 
-const Thread: FC = () => {
+const Thread: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
       <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-[radial-gradient(circle_at_50%_0%,hsl(var(--primary)/0.08),transparent_34%),linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pt-16 pb-5 sm:gap-6 sm:px-4 sm:pt-6 sm:pb-6 lg:px-6">
@@ -95,7 +95,7 @@ const Thread: FC = () => {
         </AuiIf>
       </ThreadPrimitive.Viewport>
 
-      <Composer />
+      <Composer onUserCancel={onUserCancel} />
     </ThreadPrimitive.Root>
   );
 };
@@ -235,6 +235,8 @@ const AssistantMessage: FC = () => {
                   transform_webpage_to_feed: FinancialFeedToolUI,
                   read_financial_article: FinancialArticleToolUI,
                   export_financial_feed: FinancialExportToolUI,
+                  manage_watchlist: WorkflowToolsUI,
+                  manage_watchlist_groups: WorkflowToolsUI,
                   run_stock_analysis: WorkflowToolsUI,
                   get_analysis_status: WorkflowToolsUI,
                   search_analysis_history: WorkflowToolsUI,
@@ -502,7 +504,7 @@ const BranchPicker: FC = () => (
 
 /* ── Composer ────────────────────────────────────────────────────────── */
 
-const Composer: FC = () => {
+const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
   const isRunning = useThread((s) => s.isRunning);
   return (
     <div className="shrink-0 border-t border-border/70 bg-background/90 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
@@ -550,6 +552,7 @@ const Composer: FC = () => {
 
           {isRunning ? (
             <ComposerPrimitive.Cancel
+              onClick={onUserCancel}
               className={cn(
                 'flex size-9 items-center justify-center rounded-xl',
                 'border border-border bg-card text-foreground shadow-sm transition',

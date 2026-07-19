@@ -1,10 +1,11 @@
 import { render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useThreadRuntime } from '@assistant-ui/react';
+import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import type { ChatConversationDetail } from '../../api/agent';
 import { ChatRuntimeBridge } from './ChatRuntimeBridge';
 
 vi.mock('@assistant-ui/react', () => ({
+  useThread: vi.fn(),
   useThreadRuntime: vi.fn(),
 }));
 
@@ -67,6 +68,7 @@ describe('ChatRuntimeBridge', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useThread).mockReturnValue(false);
     vi.mocked(useThreadRuntime).mockReturnValue(
       runtime as unknown as ReturnType<typeof useThreadRuntime>,
     );
@@ -134,6 +136,24 @@ describe('ChatRuntimeBridge', () => {
     await waitFor(() => {
       expect(runtime.reset).toHaveBeenCalled();
       expect(runtime.startRun).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not hydrate a stale detail snapshot over a locally running turn', async () => {
+    vi.mocked(useThread).mockReturnValue(true);
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={makeDetail(false)}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.cancelRun).not.toHaveBeenCalled();
+      expect(runtime.reset).not.toHaveBeenCalled();
+      expect(runtime.import).not.toHaveBeenCalled();
     });
   });
 });

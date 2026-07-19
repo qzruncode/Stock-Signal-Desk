@@ -850,7 +850,10 @@ def _failure(
 
 
 def run_atr_volatility_screen(
-    *, screen_spec: dict[str, Any] | None = None, refresh_if_stale: bool = True,
+    *,
+    screen_spec: dict[str, Any] | None = None,
+    refresh_if_stale: bool = True,
+    include_matched_codes: bool = False,
 ) -> dict[str, Any]:
     """Execute a caller-supplied, validated screen and echo the exact normalized spec."""
     try:
@@ -1200,7 +1203,7 @@ def run_atr_volatility_screen(
         )
         if fallback_financial_count:
             source_parts.extend(sorted(fallback_financial_sources))
-    return {
+    result = {
         "success": True,
         "partial": False,
         "errors": [],
@@ -1227,6 +1230,9 @@ def run_atr_volatility_screen(
         "coverage": coverage,
         "source": " + ".join(source_parts),
     }
+    if include_matched_codes:
+        result["matched_codes"] = [str(item["code"]) for item in items]
+    return result
 
 
 __all__ = [

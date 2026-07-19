@@ -5,7 +5,7 @@ from datetime import date
 import pandas as pd
 
 from src.tools._macro_common import expected_indicator_period
-from src.tools.get_bond_yield import _same_date_spread
+from src.tools.get_bond_yield import _fetch_frame, _same_date_spread
 from src.tools.get_index_data import _merge_snapshot
 
 
@@ -58,3 +58,41 @@ def test_bond_curve_spread_uses_one_common_observation_date():
     assert spread == 1.0
     assert spread_date == "2026-07-14"
 
+
+def test_bond_yield_fetches_only_recent_page_with_explicit_timeout(monkeypatch):
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "result": {
+                    "data": [{
+                        "SOLAR_DATE": "2026-07-18",
+                        "EMM00588704": "1.11",
+                        "EMM00166462": "1.22",
+                        "EMM00166466": "1.33",
+                        "EMM00166469": "1.44",
+                        "EMG00001306": "3.55",
+                        "EMG00001308": "3.66",
+                        "EMG00001310": "3.77",
+                        "EMG00001312": "3.88",
+                    }],
+                },
+            }
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr("src.tools.get_bond_yield.requests.get", fake_get)
+
+    frame = _fetch_frame()
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["中国国债收益率10年"] == 1.33
+    assert calls[0][1]["params"]["p"] == "1"
+    assert calls[0][1]["params"]["ps"] == "500"
+    assert calls[0][1]["timeout"] == (4, 10)

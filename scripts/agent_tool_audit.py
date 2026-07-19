@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Execute every registered Agent tool through the same HTTP probe used by UI.
+"""Audit every registered Agent tool through the same HTTP surface used by UI.
 
-The audit validates the public registry inventory, argument normalization,
-execution timeout, compacted result contract and live upstream acquisition.
-It prints one JSON record per tool and exits non-zero when any tool fails.
+Safe read-only tools are executed. Mutating tools and tools that require a
+runtime-selected record/feed are schema-validated without creating user data.
+The audit prints one JSON record per tool and exits non-zero on any inventory,
+schema or safe-execution failure.
 """
 
 from __future__ import annotations
@@ -22,6 +23,16 @@ def tool_cases() -> dict[str, dict[str, Any]]:
     end = date.today()
     start = end - timedelta(days=120)
     return {
+        "search_stocks": {"query": "贵州茅台", "limit": 5},
+        "manage_watchlist": {"action": "list"},
+        "manage_watchlist_groups": {"action": "list"},
+        "get_data_health": {},
+        "get_analysis_status": {"limit": 5},
+        "search_analysis_history": {"page": 1, "limit": 5},
+        "manage_analysis_templates": {"action": "list"},
+        "manage_batch_run": {"action": "list", "limit": 5},
+        "manage_analysis_schedule": {"action": "get"},
+        "get_notification_status": {},
         "get_realtime_quotes": {"symbols": "600519,000858"},
         "get_kline": {"symbol": "600519", "count": 30, "use_cache": True},
         "get_history_data": {
@@ -69,6 +80,9 @@ def tool_cases() -> dict[str, dict[str, Any]]:
             "include_content": True,
             "fallback_to_web": True,
         },
+        "list_financial_sources": {"limit": 100},
+        "inspect_financial_source": {"route_path": "/eeo/kuaixun"},
+        "read_financial_feed": {"route_path": "/eeo/kuaixun", "limit": 5},
         "get_regulatory_updates": {
             "keyword": "贵州茅台",
             "event_type": "all",
@@ -104,6 +118,21 @@ def tool_cases() -> dict[str, dict[str, Any]]:
     }
 
 
+def schema_only_tools() -> set[str]:
+    """Tools that must not be fired blindly by an automated release audit."""
+    return {
+        "run_stock_analysis",
+        "read_analysis_report",
+        "delete_analysis_history",
+        "run_batch_analysis",
+        "send_notification",
+        "screen_atr_volatility_stocks",
+        "read_financial_article",
+        "transform_webpage_to_feed",
+        "export_financial_feed",
+    }
+
+
 def _result_count(result: Any) -> int | None:
     if not isinstance(result, dict):
         return None
@@ -127,12 +156,19 @@ async def run_audit(base_url: str, concurrency: int) -> int:
     ) as client:
         registry_response = await client.get("/api/v1/agent/tool-registry")
         registry_response.raise_for_status()
+        registry_items = registry_response.json().get("tools") or []
         registered = {
             str(item.get("name"))
-            for item in registry_response.json().get("tools") or []
+            for item in registry_items
             if isinstance(item, dict) and item.get("name")
         }
-        configured = set(cases)
+        schema_by_name = {
+            str(item.get("name")): item
+            for item in registry_items
+            if isinstance(item, dict) and item.get("name")
+        }
+        schema_only = schema_only_tools()
+        configured = set(cases) | schema_only
         inventory_errors = {
             "missing_cases": sorted(registered - configured),
             "stale_cases": sorted(configured - registered),
@@ -166,13 +202,30 @@ async def run_audit(base_url: str, concurrency: int) -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                     }
 
+        rows = []
+        for name in sorted(schema_only):
+            schema = schema_by_name.get(name)
+            valid = bool(
+                isinstance(schema, dict)
+                and schema.get("description")
+                and isinstance(schema.get("parameters"), list)
+            )
+            row = {
+                "tool": name,
+                "mode": "schema_only",
+                "success": valid,
+                "error": None if valid else "registry schema is incomplete",
+            }
+            rows.append(row)
+            print(json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
+
         tasks = [
             asyncio.create_task(execute(name, arguments))
             for name, arguments in cases.items()
         ]
-        rows = []
         for task in asyncio.as_completed(tasks):
             row = await task
+            row["mode"] = "execute"
             rows.append(row)
             # Stream progress so a worker crash or a slow source does not turn
             # the audit into several minutes of opaque silence.
@@ -183,6 +236,8 @@ async def run_audit(base_url: str, concurrency: int) -> int:
     summary = {
         "registered": len(registered),
         "configured": len(configured),
+        "executed": len(cases),
+        "schema_only": len(schema_only),
         "passed": len(rows) - len(failed),
         "failed": len(failed),
         "failed_tools": failed,

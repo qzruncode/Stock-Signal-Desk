@@ -5,6 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+import pandas as pd
+import requests
+
 from src.tools._akshare import cached_call
 from src.tools._macro_common import get_db, latest_date, number, ordered
 from src.tools.base import ToolSpec, object_schema
@@ -17,11 +20,61 @@ _COLUMNS = {
     "us": {term: f"美国国债收益率{label}" for term, label in TERMS.items()},
 }
 
+_EASTMONEY_COLUMNS = {
+    "SOLAR_DATE": "日期",
+    "EMM00588704": "中国国债收益率2年",
+    "EMM00166462": "中国国债收益率5年",
+    "EMM00166466": "中国国债收益率10年",
+    "EMM00166469": "中国国债收益率30年",
+    "EMG00001306": "美国国债收益率2年",
+    "EMG00001308": "美国国债收益率5年",
+    "EMG00001310": "美国国债收益率10年",
+    "EMG00001312": "美国国债收益率30年",
+}
+
 
 def _fetch_frame():
-    import akshare as ak
+    """Fetch one recent page instead of AKShare's 19-page historical crawl.
 
-    return ak.bond_zh_us_rate()
+    The tool accepts at most 250 observations. Eastmoney returns newest rows
+    first and one page contains 500 observations, so requesting the remaining
+    archive only increases latency and makes the assistant hit its hard timeout.
+    """
+    response = requests.get(
+        "https://datacenter.eastmoney.com/api/data/get",
+        params={
+            "type": "RPTA_WEB_TREASURYYIELD",
+            "sty": "ALL",
+            "st": "SOLAR_DATE",
+            "sr": "-1",
+            "token": "894050c76af8597a853f5b408b759f5d",
+            "p": "1",
+            "ps": "500",
+            "pageNo": "1",
+            "pageNum": "1",
+        },
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=(4, 10),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    records = (payload.get("result") or {}).get("data") or []
+    frame = pd.DataFrame(records)
+    if frame.empty:
+        return frame
+    frame.rename(columns=_EASTMONEY_COLUMNS, inplace=True)
+    required = ["日期", *[column for columns in _COLUMNS.values() for column in columns.values()]]
+    if any(column not in frame.columns for column in required):
+        missing = [column for column in required if column not in frame.columns]
+        raise ValueError(f"债券收益率响应缺少字段: {', '.join(missing)}")
+    frame = frame[required].copy()
+    frame["日期"] = pd.to_datetime(frame["日期"], errors="coerce").dt.date
+    for column in required[1:]:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame.dropna(subset=["日期"], inplace=True)
+    frame.sort_values("日期", inplace=True)
+    frame.reset_index(drop=True, inplace=True)
+    return frame
 
 
 def _series_from_frame(frame: Any, country: str, term: str, limit: int) -> list[dict[str, Any]]:
@@ -81,7 +134,12 @@ def get_bond_yield(country: str = "cn", term: str = "10y", days: int = 30) -> di
     frame = None
     cached = False
     try:
-        frame, cached = cached_call("bond-zh-us-rate", _fetch_frame, ttl_seconds=6 * 3600)
+        frame, cached = cached_call(
+            "bond-zh-us-rate",
+            _fetch_frame,
+            ttl_seconds=6 * 3600,
+            attempts=1,
+        )
     except Exception as exc:
         errors.append(f"中美国债收益率: {exc}")
 

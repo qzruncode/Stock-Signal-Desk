@@ -37,4 +37,20 @@ describe('WorkflowToolsUI', () => {
     );
     expect(screen.getByText('已发送至 wechat')).toBeInTheDocument();
   });
+
+  it('renders custom watchlist group operations as first-class workflow cards', () => {
+    render(
+      <WorkflowToolsUI
+        {...callbacks}
+        type="tool-call"
+        toolCallId="watchlist-1"
+        toolName="manage_watchlist_groups"
+        args={{ action: 'create', group: '核心观察' }}
+        argsText="{}"
+        result={{ success: true, action: 'create', message: '已创建自选分组「核心观察」' }}
+        status={{ type: 'complete' }}
+      />,
+    );
+    expect(screen.getByText('已创建自选分组「核心观察」')).toBeInTheDocument();
+  });
 });

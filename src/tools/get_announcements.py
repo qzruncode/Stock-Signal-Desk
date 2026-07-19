@@ -218,7 +218,7 @@ def get_announcements(
             f"announcements:{code}:{begin_date}:{end_date}",
             lambda: _fetch_akshare(code, begin_date, end_date),
             ttl_seconds=86400 if use_cache else 0,
-            attempts=2,
+            attempts=1,
         )
         primary_available = True
         rows = frame_records(frame)
@@ -227,6 +227,7 @@ def get_announcements(
 
     fallback_attempted = not primary_available
     fallback_used = False
+    fallback_available = False
     rss_route: str | None = None
     if fallback_attempted:
         rss_rows, rss_route, rss_errors = _fetch_exchange_rss(
@@ -238,6 +239,7 @@ def get_announcements(
         if rss_rows:
             rows = rss_rows
             fallback_used = True
+        fallback_available = bool(rss_rows) or not rss_errors
         if rss_errors:
             warnings.extend(f"RSSHub {error}" for error in rss_errors)
 
@@ -266,11 +268,11 @@ def get_announcements(
         except Exception:
             name = None
 
-    acquisition_succeeded = primary_available or fallback_used
+    acquisition_succeeded = primary_available or fallback_available
     if primary_available:
         source = "AKShare/东方财富公司公告"
         source_chain = [source]
-    elif fallback_used:
+    elif fallback_available:
         source = "RSSHub/交易所官方披露"
         source_chain = [f"{source}:{rss_route}"]
     else:
