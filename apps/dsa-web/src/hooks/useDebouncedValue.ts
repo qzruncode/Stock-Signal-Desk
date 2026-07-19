@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
  * milliseconds have elapsed without further changes.
  *
  * Extracts the `setTimeout` / `clearTimeout` pattern used for input
- * debouncing (e.g. `RssPage.tsx`) into a reusable primitive that works
+ * debouncing into a reusable primitive that works
  * for any string value.
  *
  * @param value  The live string value to debounce.

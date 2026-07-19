@@ -10,10 +10,8 @@ import {
   BatchRunDetailPage,
   NotFoundPage,
   SettingPage,
-  MarketStocksPage,
   WatchlistManagePage,
   WorkflowBuilderPage,
-  RssPage,
   ToolsPage,
 } from './utils/routePreload';
 import './App.css';
@@ -70,9 +68,9 @@ const AppContent: React.FC = () => {
           <Route path="/" element={<ChatHomePage />} />
           <Route path="/dashboard" element={<HomePage />} />
           <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
-          <Route path="/stocks" element={<MarketStocksPage />} />
+          <Route path="/stocks" element={<Navigate to="/" replace />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
-          <Route path="/infos" element={<RssPage />} />
+          <Route path="/infos" element={<Navigate to="/" replace />} />
           <Route path="/tools" element={<ToolsPage />} />
           <Route path="/workflows" element={<WorkflowBuilderPage />} />
           <Route path="/setting" element={<SettingPage />} />

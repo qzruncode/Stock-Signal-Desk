@@ -43,6 +43,10 @@ import {
   FinancialsToolUI,
   NewsToolUI,
   RssFeedToolUI,
+  FinancialArticleToolUI,
+  FinancialExportToolUI,
+  FinancialFeedToolUI,
+  FinancialSourcesToolUI,
 } from '../../hooks/useAssistantTools';
 import {
   ComposerAttachments,
@@ -244,6 +248,12 @@ const AssistantMessage: FC = () => {
                   search_news: NewsToolUI,
                   search_financial_news: RssFeedToolUI,
                   search_research_library: RssFeedToolUI,
+                  list_financial_sources: FinancialSourcesToolUI,
+                  inspect_financial_source: FinancialSourcesToolUI,
+                  read_financial_feed: FinancialFeedToolUI,
+                  transform_webpage_to_feed: FinancialFeedToolUI,
+                  read_financial_article: FinancialArticleToolUI,
+                  export_financial_feed: FinancialExportToolUI,
                 },
                 Fallback: GenericToolUI,
               },

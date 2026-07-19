@@ -24,26 +24,6 @@ export interface StocksListResponse {
   total_pages: number;
 }
 
-export interface SyncStatusResponse {
-  status: 'idle' | 'running' | 'syncing_kline' | 'success' | 'failed';
-  progress: number;
-  total: number;
-  kline_progress: number;
-  kline_total: number;
-  started_at: string | null;
-  finished_at: string | null;
-  message: string;
-  error: string | null;
-}
-
-export interface KlineStatusResponse {
-  total_stocks: number;
-  stocks_with_kline: number;
-  missing: number;
-  missing_codes: string[];
-  latest_trading_day: string | null;
-}
-
 export interface KlineBatchResponse {
   results: Record<string, KlineBatchBar[]>;
 }
@@ -88,56 +68,6 @@ export const stocksApi = {
       params: query,
       signal,
     });
-    return response.data;
-  },
-
-  async syncList(): Promise<{ success: boolean; message: string; status: string }> {
-    const response = await apiClient.post('/api/v1/stocks/sync/list');
-    return response.data;
-  },
-
-  async syncListStatus(): Promise<SyncStatusResponse> {
-    const response = await apiClient.get<SyncStatusResponse>('/api/v1/stocks/sync/list/status');
-    return response.data;
-  },
-
-  async syncKline(): Promise<{ success: boolean; message: string; status: string }> {
-    const response = await apiClient.post('/api/v1/stocks/sync/kline');
-    return response.data;
-  },
-
-  async syncKlineStatus(): Promise<SyncStatusResponse> {
-    const response = await apiClient.get<SyncStatusResponse>('/api/v1/stocks/sync/kline/status');
-    return response.data;
-  },
-
-  async syncFinancial(): Promise<{ success: boolean; message: string; status: string; period: string }> {
-    const response = await apiClient.post('/api/v1/stocks/sync/financial');
-    return response.data;
-  },
-
-  async syncFinancialStatus(): Promise<SyncStatusResponse> {
-    const response = await apiClient.get<SyncStatusResponse>('/api/v1/stocks/sync/financial/status');
-    return response.data;
-  },
-
-  async syncMissingKline(codes: string[]): Promise<SyncStatusResponse> {
-    const response = await apiClient.post<SyncStatusResponse>('/api/v1/stocks/kline/sync-missing', { codes });
-    return response.data;
-  },
-
-  async syncMissingKlineStatus(): Promise<SyncStatusResponse> {
-    const response = await apiClient.get<SyncStatusResponse>('/api/v1/stocks/kline/sync-missing/status');
-    return response.data;
-  },
-
-  async count(): Promise<{ total: number }> {
-    const response = await apiClient.get<{ total: number }>('/api/v1/stocks/count');
-    return response.data;
-  },
-
-  async getKlineStatus(): Promise<KlineStatusResponse> {
-    const response = await apiClient.get<KlineStatusResponse>('/api/v1/stocks/kline-status');
     return response.data;
   },
 

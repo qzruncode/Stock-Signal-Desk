@@ -17,4 +17,10 @@ export { default as RealtimeQuotesToolUI } from '../components/assistant-ui/tool
 export { default as FinancialsToolUI } from '../components/assistant-ui/tool-ui/FinancialsToolUI';
 export { default as NewsToolUI } from '../components/assistant-ui/tool-ui/NewsToolUI';
 export { default as RssFeedToolUI } from '../components/assistant-ui/tool-ui/RssFeedToolUI';
+export {
+  FinancialArticleToolUI,
+  FinancialExportToolUI,
+  FinancialFeedToolUI,
+  FinancialSourcesToolUI,
+} from '../components/assistant-ui/tool-ui/FinancialNewsToolsUI';
 export { default as GenericToolUI } from '../components/assistant-ui/tool-ui/GenericToolDrawer';

@@ -106,6 +106,7 @@ export function formatPct(value: number | null | undefined): string {
 
 /** 后端 search_financial_news 的单条聚合资讯。 */
 export interface RssFeedItem {
+  id?: string;
   title: string;
   summary?: string;
   content_text?: string;
@@ -113,7 +114,11 @@ export interface RssFeedItem {
   published?: string | null;
   source?: string;
   image?: string;
+  author?: string;
+  tags?: string[];
+  attachments?: Array<{ url: string; mime_type: string; title?: string }>;
   rss_route?: string;
+  rss_params?: Record<string, unknown>;
   source_type?: 'rss' | 'websearch';
   content_fallback?: boolean;
 }

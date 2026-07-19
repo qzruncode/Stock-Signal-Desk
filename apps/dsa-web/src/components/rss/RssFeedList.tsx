@@ -397,8 +397,8 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   // Monotonic request sequence + AbortController for the detail fetch. Same
-  // rationale as useRssFeeds: a slow item (e.g. a first-uncached fulltext
-  // re-fetch) must not overwrite the item the user moved on to, and a request
+  // A slow item (e.g. a first-uncached fulltext re-fetch) must not overwrite
+  // the item the user moved on to, and a request
   // that resolves after the drawer closed must not reopen it. Only the latest
   // openItem() may touch selectedItem/loading/error.
   const detailSeqRef = useRef(0);

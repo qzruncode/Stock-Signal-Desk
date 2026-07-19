@@ -1,5 +1,8 @@
 /** 工具名 → 中文标签。供 GenericToolDrawer 等展示用。 */
 export const TOOL_LABELS: Record<string, string> = {
+  search_stocks: '股票搜索',
+  manage_watchlist: '自选股管理',
+  get_data_health: '数据维护状态',
   get_multi_stock_snapshot: '多股决策快照',
   get_multi_stock_decision_evidence: '专业买入决策证据',
   get_theme_stock_candidates: '主题股票候选池',
@@ -22,6 +25,12 @@ export const TOOL_LABELS: Record<string, string> = {
   get_peer_comparison: '同行比较',
   search_news: '新闻搜索',
   search_financial_news: '财经资讯',
+  list_financial_sources: '股市资讯源',
+  inspect_financial_source: '资讯源详情',
+  read_financial_feed: '指定资讯源',
+  read_financial_article: '资讯全文',
+  transform_webpage_to_feed: '网页转资讯流',
+  export_financial_feed: '资讯订阅下载',
   get_risk_events: '风险事件',
   get_announcements: '公告查询',
   get_research_report: '研报查询',
