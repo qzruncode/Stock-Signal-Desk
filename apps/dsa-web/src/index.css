@@ -419,12 +419,6 @@
   -webkit-text-fill-color: var(--input-surface-placeholder, var(--text-muted-text));
 }
 
-[data-testid="home-dashboard"] .stock-autocomplete .input-surface::placeholder {
-  color: hsl(var(--muted-text) / 0.6);
-  -webkit-text-fill-color: hsl(var(--muted-text) / 0.6);
-}
-
-
 [data-testid="chat-workspace"] textarea.input-surface::placeholder {
   color: hsl(var(--muted-text) / 0.62);
   -webkit-text-fill-color: hsl(var(--muted-text) / 0.62);
@@ -882,66 +876,6 @@ textarea {
 }
 
 .glass-card::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 14%;
-  right: 14%;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--border-subtle-hover) 50%,
-    transparent 100%
-  );
-  pointer-events: none;
-}
-
-.home-panel-card {
-  --terminal-card-border: var(--home-panel-border);
-  --terminal-card-border-hover: var(--home-panel-border-hover);
-  --terminal-card-gradient-start: var(--home-panel-gradient-start);
-  --terminal-card-gradient-mid: var(--home-panel-gradient-mid);
-  --terminal-card-gradient-end: var(--home-panel-gradient-end);
-  --terminal-card-shadow: var(--home-panel-shadow);
-  --terminal-card-shadow-hover: var(--home-panel-shadow-hover);
-}
-
-.dashboard-card {
-  position: relative;
-  overflow: hidden;
-  border-radius: 1rem;
-  border: 1px solid var(--border-subtle);
-  background: hsl(var(--card) / 0.72);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  box-shadow: var(--shadow-soft-card);
-}
-
-.dashboard-card::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 1rem;
-  padding: 1px;
-  background: linear-gradient(
-    135deg,
-    var(--border-accent) 0%,
-    var(--border-purple) 50%,
-    var(--border-subtle) 100%
-  );
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-}
-
-.dashboard-card::after {
   content: "";
   position: absolute;
   top: 0;
@@ -2167,4 +2101,3 @@ textarea {
   margin: 0.6rem 0 0.3rem;
   color: hsl(var(--foreground));
 }
-

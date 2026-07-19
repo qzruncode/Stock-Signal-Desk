@@ -23,6 +23,7 @@ ToolCategory = Literal[
     "regulatory",
     "events",
     "risk",
+    "action",
 ]
 
 

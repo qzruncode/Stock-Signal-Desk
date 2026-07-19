@@ -6,8 +6,6 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { scheduleIdlePreload } from './utils/routePreload';
 import {
   ChatHomePage,
-  HomePage,
-  BatchRunDetailPage,
   NotFoundPage,
   SettingPage,
   WatchlistManagePage,
@@ -66,8 +64,8 @@ const AppContent: React.FC = () => {
       <Routes>
         <Route element={<Shell />}>
           <Route path="/" element={<ChatHomePage />} />
-          <Route path="/dashboard" element={<HomePage />} />
-          <Route path="/batch/runs/:runId" element={<BatchRunDetailPage />} />
+          <Route path="/dashboard" element={<Navigate to="/" replace />} />
+          <Route path="/batch/runs/:runId" element={<Navigate to="/" replace />} />
           <Route path="/stocks" element={<Navigate to="/" replace />} />
           <Route path="/portfolio" element={<WatchlistManagePage />} />
           <Route path="/infos" element={<Navigate to="/" replace />} />

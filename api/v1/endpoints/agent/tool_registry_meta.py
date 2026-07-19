@@ -39,6 +39,7 @@ _DESCRIPTION_MAX_LEN = 500
 _VALID_CATEGORIES = {
     "data", "market", "financials", "sentiment", "macro", "search", "analysis",
     "research", "regulatory", "events", "risk",
+    "action",
 }
 _TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
 _PROFESSIONAL_TOOL_TIMEOUT_SECONDS = 90.0
@@ -165,10 +166,15 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
             # cache misses.  Running only a hand-maintained subset in isolation
             # leaves the FastAPI worker vulnerable to a native abort during
             # concurrent probes.
-            result = execute_tool_isolated(
-                tool_name,
-                args,
-                timeout_seconds=timeout - 3,
+            from src.tools.process_runner import STATEFUL_TOOL_NAMES
+            result = (
+                _registry.execute(tool_name, args)
+                if tool_name in STATEFUL_TOOL_NAMES
+                else execute_tool_isolated(
+                    tool_name,
+                    args,
+                    timeout_seconds=timeout - 3,
+                )
             )
             compacted = _compact_tool_result(tool_name, result)
             return _maybe_attach_search_fallback(tool_name, args, compacted)

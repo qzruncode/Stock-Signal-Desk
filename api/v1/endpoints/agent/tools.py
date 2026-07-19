@@ -158,6 +158,38 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
     if not isinstance(result, dict):
         return result
 
+    workflow_tools = {
+        "run_stock_analysis", "get_analysis_status", "search_analysis_history",
+        "delete_analysis_history", "manage_analysis_templates", "run_batch_analysis",
+        "manage_batch_run", "manage_analysis_schedule", "get_notification_status",
+        "send_notification",
+    }
+    if tool_name in workflow_tools:
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
+            source_scope="persisted_analysis_workflow",
+        )
+
+    if tool_name == "read_analysis_report":
+        compact = dict(result)
+        markdown = str(compact.get("markdown") or "")
+        if len(markdown) > 12000:
+            compact["markdown"] = markdown[:12000]
+            compact["markdown_excerpt"] = True
+            compact["markdown_length"] = len(markdown)
+            compact["markdown_note"] = "工具上下文仅保留前 12000 字；结构化 report 为完整正式报告。"
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="compacted" if len(markdown) > 12000 else "complete",
+            compacted=len(markdown) > 12000,
+            compaction_reason="markdown_context_window" if len(markdown) > 12000 else None,
+            source_scope="persisted_analysis_report",
+        )
+
     if tool_name == "screen_atr_volatility_stocks":
         # The service bounds inline rows according to the validated spec and
         # exports the complete set. Preserve the spec, rule echo, every

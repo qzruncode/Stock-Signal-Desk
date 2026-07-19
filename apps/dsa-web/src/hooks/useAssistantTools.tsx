@@ -24,3 +24,4 @@ export {
   FinancialSourcesToolUI,
 } from '../components/assistant-ui/tool-ui/FinancialNewsToolsUI';
 export { default as GenericToolUI } from '../components/assistant-ui/tool-ui/GenericToolDrawer';
+export { default as WorkflowToolsUI } from '../components/assistant-ui/tool-ui/WorkflowToolsUI';

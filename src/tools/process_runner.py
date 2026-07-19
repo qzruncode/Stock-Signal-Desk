@@ -25,6 +25,17 @@ ISOLATED_TOOL_NAMES = frozenset({
     "get_monetary_policy_operations",
 })
 
+# These tools create or control process-owned task queues/threads. Executing
+# them in the one-shot safety worker would destroy the task as soon as the
+# worker exits. They still run off the asyncio event loop in a thread.
+STATEFUL_TOOL_NAMES = frozenset({
+    "run_stock_analysis",
+    "get_analysis_status",
+    "run_batch_analysis",
+    "manage_batch_run",
+    "manage_analysis_schedule",
+})
+
 _PROFESSIONAL_EVIDENCE_TOOL = "get_multi_stock_decision_evidence"
 _PROFESSIONAL_EVIDENCE_CHUNK_SIZE = 2
 
@@ -224,4 +235,4 @@ def execute_tool_isolated(
     return _execute_tool_process(name, arguments, timeout_seconds=timeout_seconds)
 
 
-__all__ = ["ISOLATED_TOOL_NAMES", "execute_tool_isolated"]
+__all__ = ["ISOLATED_TOOL_NAMES", "STATEFUL_TOOL_NAMES", "execute_tool_isolated"]

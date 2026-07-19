@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Box, MessageSquareText } from 'lucide-react';
+import { ArrowLeft, Bell, Box, MessageSquareText } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
 import type { SettingsCategory } from '../components/settings/SettingsSidebar';
 import { ModelSettingsView } from '../components/settings/ModelSettingsView';
 import { AgentPromptView } from '../components/agentPrompts/AgentPromptView';
+import { NotificationSettingsView } from '../components/settings/NotificationSettingsView';
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
+  {
+    id: 'notification',
+    label: '通知设置',
+    icon: Bell,
+    available: true,
+    description: '企业微信渠道与发送测试',
+  },
   {
     id: 'model',
     label: '模型设置',
@@ -62,6 +70,8 @@ const SettingPage: React.FC = () => {
             <ModelSettingsView />
           ) : activeCategory?.id === 'prompt' ? (
             <AgentPromptView />
+          ) : activeCategory?.id === 'notification' ? (
+            <NotificationSettingsView />
           ) : null}
         </main>
       </div>

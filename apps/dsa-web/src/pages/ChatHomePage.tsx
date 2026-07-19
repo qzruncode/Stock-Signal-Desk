@@ -9,9 +9,12 @@ import {
   WebSpeechSynthesisAdapter,
 } from '@assistant-ui/react';
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
-import { AlertTriangleIcon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
+import { ActivityIcon, AlertTriangleIcon, CheckCircle2Icon, Loader2Icon, PanelLeftCloseIcon, PanelLeftIcon, XIcon } from 'lucide-react';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
+import { analysisApi } from '../api/analysis';
 import { toApiErrorMessage } from '../api/error';
+import { useTaskStream } from '../hooks/useTaskStream';
+import type { TaskInfo } from '../types/analysis';
 import { ChatRuntimeBridge } from '../components/assistant-ui/ChatRuntimeBridge';
 import { readStreamErrorMessage, readThrownStreamErrorMessage } from '../utils/chatStreamError';
 
@@ -446,6 +449,7 @@ const ChatLayout: React.FC<{
       ) : null}
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <AnalysisTaskActivity />
         <button
           type="button"
           onClick={() => {
@@ -493,6 +497,66 @@ const ChatLayout: React.FC<{
     </div>
   );
 };
+
+function AnalysisTaskActivity() {
+  const [tasks, setTasks] = useState<Record<string, TaskInfo>>({});
+  const [open, setOpen] = useState(false);
+  const upsert = useCallback((task: TaskInfo) => {
+    setTasks((current) => ({ ...current, [task.taskId]: task }));
+    if (task.status === 'completed' || task.status === 'failed') setOpen(true);
+  }, []);
+
+  useEffect(() => {
+    analysisApi.getTasks({ limit: 20 })
+      .then((response) => setTasks(Object.fromEntries(response.tasks.map((task) => [task.taskId, task]))))
+      .catch(() => undefined);
+  }, []);
+  const { isConnected } = useTaskStream({
+    onTaskCreated: upsert,
+    onTaskStarted: upsert,
+    onTaskProgress: upsert,
+    onTaskCompleted: upsert,
+    onTaskFailed: upsert,
+  });
+  const visible = Object.values(tasks)
+    .filter((task) => task.status === 'pending' || task.status === 'processing' || task.status === 'completed' || task.status === 'failed')
+    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+    .slice(0, 5);
+  const activeCount = visible.filter((task) => task.status === 'pending' || task.status === 'processing').length;
+  if (visible.length === 0) return null;
+
+  return (
+    <div className="absolute bottom-24 right-3 z-20 sm:right-5">
+      {open && (
+        <div className="mb-2 w-[min(22rem,calc(100vw-1.5rem))] rounded-xl border border-border bg-card/95 p-2.5 shadow-xl backdrop-blur">
+          <div className="mb-2 flex items-center justify-between px-1 text-xs font-semibold text-foreground">
+            <span>分析任务</span><span className="text-[10px] text-muted-foreground">{isConnected ? '实时更新' : '正在重连'}</span>
+          </div>
+          <div className="space-y-1.5">
+            {visible.map((task) => {
+              const running = task.status === 'pending' || task.status === 'processing';
+              return (
+                <div key={task.taskId} className="rounded-lg bg-muted/45 px-2.5 py-2 text-[10px]">
+                  <div className="flex items-center gap-2">
+                    {running ? <Loader2Icon className="size-3.5 animate-spin text-primary" /> : <CheckCircle2Icon className={`size-3.5 ${task.status === 'failed' ? 'text-red-500' : 'text-emerald-500'}`} />}
+                    <span className="font-medium text-foreground">{task.stockName || task.stockCode}</span>
+                    <span className="ml-auto text-muted-foreground">{task.progress ?? (running ? 0 : 100)}%</span>
+                  </div>
+                  <p className="mt-1 line-clamp-1 text-muted-foreground">{task.error || task.message || task.status}</p>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-2 px-1 text-[10px] text-muted-foreground">任务完成后可直接问助手“读取刚完成的报告”。</p>
+        </div>
+      )}
+      <button type="button" onClick={() => setOpen((value) => !value)} className="ml-auto flex h-10 items-center gap-2 rounded-full border border-border bg-card px-3 text-xs font-medium text-foreground shadow-lg transition hover:border-primary/30" aria-label="分析任务状态">
+        <ActivityIcon className="size-4 text-primary" />
+        {activeCount > 0 ? `${activeCount} 个分析中` : '分析任务'}
+      </button>
+    </div>
+  );
+}
 
 function ChatLoadingFallback() {
   return (

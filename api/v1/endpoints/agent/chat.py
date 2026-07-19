@@ -111,6 +111,10 @@ SYSTEM_PROMPT = """\
 7. 不得凭记忆猜证券代码。系统给出的“已核验证券实体”是唯一可信的名称/代码映射；缺失时把公司名称原样传给工具解析。
 8. 浏览或搜索股票使用 search_stocks；股票池缺失或过期时工具会自动维护，不要要求用户先手动同步。用户询问数据覆盖和更新时间时使用 get_data_health。
 9. 只有用户明确要求查看、添加或删除自选股时才调用 manage_watchlist；分析、推荐或筛选结果不得自动写入自选股。
+10. 用户明确要求生成会保存的正式分析报告或重新分析时调用 run_stock_analysis；用 get_analysis_status 查询进度，完成后用 read_analysis_report 读取正式结果。询问过去结论时先用 search_analysis_history，禁止凭对话记忆冒充历史报告。
+11. 用户明确要求批量分析时调用 run_batch_analysis；范围超过 10 只必须先列明范围并请求确认。批量进度、暂停、继续、失败续跑和报告通过 manage_batch_run 管理。定时分析通过 manage_analysis_schedule 管理。
+12. 模板管理只使用 manage_analysis_templates。删除历史、删除模板、停止或删除批量任务、修改定时计划属于高影响操作，必须得到用户对具体对象的明确确认后才传 confirmed=true。
+13. 通知渠道状态用 get_notification_status。只有用户明确说“发送、推送、通知我”时才调用 send_notification 或把 run_stock_analysis.notify_on_complete 设为 true；普通分析和生成报告默认不发送。通知凭据只能在设置页配置，禁止索取或展示 Webhook/Token。
 
 ## 专业分析框架
 - 公司质量：主营构成、收入与利润趋势、ROE/毛利率/现金流、资产负债与股东变化。
@@ -3187,10 +3191,15 @@ async def _run_react_loop(
                     # misses can route otherwise simple tools through
                     # AKShare/libmini_racer, whose native abort cannot be caught
                     # inside the API worker.
-                    result = execute_tool_isolated(
-                        tool_name,
-                        args,
-                        timeout_seconds=tool_timeout - 3,
+                    from src.tools.process_runner import STATEFUL_TOOL_NAMES
+                    result = (
+                        _registry.execute(tool_name, args)
+                        if tool_name in STATEFUL_TOOL_NAMES
+                        else execute_tool_isolated(
+                            tool_name,
+                            args,
+                            timeout_seconds=tool_timeout - 3,
+                        )
                     )
                     llm_result = _compact_tool_result(tool_name, result)
                     return _maybe_attach_search_fallback(tool_name, args, llm_result)

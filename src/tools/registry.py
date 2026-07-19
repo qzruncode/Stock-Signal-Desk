@@ -93,6 +93,18 @@ TOOL_MODULES: tuple[str, ...] = (
     "search_stocks",
     "manage_watchlist",
     "get_data_health",
+    # Persisted analysis workflows formerly exposed by Dashboard
+    "run_stock_analysis",
+    "get_analysis_status",
+    "search_analysis_history",
+    "read_analysis_report",
+    "delete_analysis_history",
+    "manage_analysis_templates",
+    "run_batch_analysis",
+    "manage_batch_run",
+    "manage_analysis_schedule",
+    "get_notification_status",
+    "send_notification",
     # Quotes and price history
     "get_realtime_quotes",
     "get_kline",
