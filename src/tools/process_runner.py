@@ -13,7 +13,9 @@ from src.tools.process_worker import RESULT_PREFIX
 
 ISOLATED_TOOL_NAMES = frozenset({
     "get_multi_stock_snapshot",
+    "get_multi_stock_financials",
     "get_multi_stock_decision_evidence",
+    "get_domain_stock_candidates",
     "get_theme_stock_candidates",
     "get_market_status",
     "get_market_breadth",

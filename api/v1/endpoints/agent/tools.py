@@ -311,6 +311,17 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "decision_boundary": result.get("decision_boundary"),
         }, payload_policy="compacted", compacted=True, compaction_reason="multi_stock_decision_fields")
 
+    if tool_name == "get_multi_stock_financials":
+        # Every row is needed to prove collection coverage and to apply the
+        # requested threshold. The tool itself already enforces a 12-row cap.
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
+            source_scope="local_synchronized_financials",
+        )
+
     if tool_name == "get_multi_stock_decision_evidence":
         # This tool already returns its own bounded professional evidence view:
         # all requested companies and all seven dimensions remain present, while
@@ -323,6 +334,64 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             compacted=True,
             compaction_reason="professional_decision_evidence_view",
             source_scope="seven_dimension_multi_stock_evidence",
+        )
+
+    if tool_name == "get_domain_stock_candidates":
+        compact_domains = []
+        for domain_result in result.get("domain_results") or []:
+            if not isinstance(domain_result, dict):
+                continue
+            compact_items = []
+            for item in domain_result.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                compact_items.append({
+                    "symbol": item.get("symbol"),
+                    "name": item.get("name"),
+                    "sector": item.get("sector"),
+                    "boards": item.get("boards", []),
+                    "matched_domains": item.get("matched_domains", []),
+                    "lookup_themes": item.get("lookup_themes", []),
+                    "evidence_level": item.get("evidence_level"),
+                })
+            compact_domains.append({
+                "domain": domain_result.get("domain"),
+                "lookup_themes": domain_result.get("lookup_themes", []),
+                "mapping_basis": domain_result.get("mapping_basis"),
+                "context_theme": domain_result.get("context_theme"),
+                "context_filter_applied": domain_result.get("context_filter_applied"),
+                "pre_context_candidate_count": domain_result.get("pre_context_candidate_count"),
+                "success": domain_result.get("success"),
+                "partial": domain_result.get("partial"),
+                "coverage_complete": domain_result.get("coverage_complete"),
+                "candidate_count": domain_result.get("candidate_count"),
+                "items": compact_items,
+                "matched_boards": domain_result.get("matched_boards", []),
+                "context_boards": domain_result.get("context_boards", []),
+                "warnings": domain_result.get("warnings", []),
+                "errors": domain_result.get("errors", []),
+            })
+        compact_result = {
+            "success": result.get("success"),
+            "partial": result.get("partial"),
+            "requested_domains": result.get("requested_domains", []),
+            "context_theme": result.get("context_theme"),
+            "local_universe_count": result.get("local_universe_count"),
+            "domain_results": compact_domains,
+            "candidate_count": result.get("candidate_count"),
+            "returned_count": result.get("returned_count"),
+            "source_scope": result.get("source_scope"),
+            "decision_boundary": result.get("decision_boundary"),
+            "warnings": result.get("warnings", []),
+            "errors": result.get("errors", []),
+        }
+        return _annotate_tool_payload(
+            tool_name,
+            compact_result,
+            payload_policy="compacted",
+            compacted=True,
+            compaction_reason="complete_multi_domain_candidate_indexes",
+            source_scope="structured_board_constituents_x_local_stock_meta",
         )
 
     if tool_name == "get_theme_stock_candidates":

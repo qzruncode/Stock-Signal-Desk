@@ -93,6 +93,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "search_stocks",
     "manage_watchlist",
     "manage_watchlist_groups",
+    "filter_watchlist_by_theme",
     "get_data_health",
     # Persisted analysis workflows formerly exposed by Dashboard
     "run_stock_analysis",
@@ -112,7 +113,9 @@ TOOL_MODULES: tuple[str, ...] = (
     "get_history_data",
     "get_technical_indicators",
     "get_multi_stock_snapshot",
+    "get_multi_stock_financials",
     "get_multi_stock_decision_evidence",
+    "get_domain_stock_candidates",
     "get_theme_stock_candidates",
     "screen_atr_volatility_stocks",
     # Market and sector state

@@ -6,10 +6,17 @@ import pandas as pd
 import pytest
 
 from src.tools.get_theme_stock_candidates import (
+    _canonical_theme,
     _fetch_eastmoney_constituents,
     _fetch_ths_constituents,
     get_theme_stock_candidates,
 )
+
+
+def test_product_level_robot_board_is_not_widened_to_generic_robot_theme() -> None:
+    assert _canonical_theme("机器人执行器") == "机器人执行器"
+    assert _canonical_theme("机器人减速器") == "机器人减速器"
+    assert _canonical_theme("只梳理精确的人形机器人主题A股候选") == "人形机器人"
 
 
 @pytest.fixture(autouse=True)

@@ -94,8 +94,6 @@ def resolve_anthropic_gateway_config() -> Dict[str, Any]:
         # semantic intent resolution.  Test/local callers that construct a
         # minimal config explicitly opt in, so existing low-level loop tests
         # remain isolated from this extra orchestration stage.
-        "semantic_intent_enabled": True,
-        "semantic_evidence_enabled": True,
     }
 
 

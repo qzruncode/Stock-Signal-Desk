@@ -3,151 +3,164 @@ from __future__ import annotations
 import json
 
 from src.agent.analysis_playbooks import (
+    COLLECTION_FINANCIAL_FILTER,
     INDUSTRY_CHAIN,
     INVESTMENT_DECISION,
     THEME_COMPANY_MAPPING,
-    infer_research_topic,
     mandatory_tool_calls,
-    select_analysis_playbook,
+    select_playbook_for_intent,
 )
+from src.agent.research_intent import ResearchIntent
 
 
 def _names(calls: list[dict]) -> list[str]:
     return [call["name"] for call in calls]
 
 
-def test_three_turn_conversation_selects_deterministic_playbooks() -> None:
-    first = [{"role": "user", "content": "帮我分析下人形机器人产业链，哪些领域最受益？"}]
-    assert infer_research_topic(first) == "人形机器人"
-    assert select_analysis_playbook(first, []) == INDUSTRY_CHAIN
-    assert _names(mandatory_tool_calls(INDUSTRY_CHAIN, first, [])) == [
-        "search_financial_news",
-        "search_research_library",
-        "search_research_library",
-        "search_financial_news",
-    ]
+def test_playbook_selection_uses_only_the_intent_enum() -> None:
+    industry = ResearchIntent(
+        kind="industry_chain",
+        topic="人形机器人",
+        objective="研究价值传导",
+        research_dimensions=["价值量", "竞争格局", "产能"],
+    )
+    mapping = ResearchIntent(
+        kind="theme_company_mapping",
+        topic="人形机器人关节执行器",
+        discovery_theme="人形机器人",
+        selection_mode="complete_inventory",
+        company_mapping_mode="structured_candidates",
+        resolved_domains=["行星滚柱丝杠", "减速器", "无框力矩电机"],
+        objective="按领域映射A股公司",
+    )
+    decision = ResearchIntent(
+        kind="investment_decision",
+        topic="两家公司",
+        entity_scope="previous_answer",
+        objective="判断介入条件",
+    )
 
-    second = [
-        *first,
-        {"role": "assistant", "content": "产业链分析"},
-        {"role": "user", "content": "这些领域在A股有哪些公司？"},
+    assert select_playbook_for_intent(industry) == INDUSTRY_CHAIN
+    assert select_playbook_for_intent(mapping) == THEME_COMPANY_MAPPING
+    assert select_playbook_for_intent(decision) == INVESTMENT_DECISION
+
+
+def test_industry_calls_use_semantic_dimensions_without_topic_dictionary() -> None:
+    intent = ResearchIntent(
+        kind="industry_chain",
+        topic="任意新兴产业",
+        objective="研究产业链",
+        research_dimensions=["独特部件甲", "独特部件乙"],
+    )
+
+    calls = mandatory_tool_calls(INDUSTRY_CHAIN, [], intent)
+
+    assert _names(calls) == [
+        "search_financial_news",
+        "search_research_library",
+        "search_research_library",
+        "search_financial_news",
     ]
-    assert select_analysis_playbook(second, []) == THEME_COMPANY_MAPPING
-    mapping_calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, second, [])
-    assert _names(mapping_calls) == [
+    assert "独特部件甲" in json.loads(calls[2]["arguments"])["query"]
+
+
+def test_structured_company_mapping_uses_exact_resolved_domains_and_one_local_tool() -> None:
+    intent = ResearchIntent(
+        kind="theme_company_mapping",
+        topic="人形机器人关节执行器（电机+减速器+丝杠）",
+        discovery_theme="人形机器人",
+        selection_mode="complete_inventory",
+        company_mapping_mode="structured_candidates",
+        resolved_domains=["行星滚柱丝杠", "减速器", "无框力矩电机"],
+        objective="找出按这些方向发展的A股公司",
+    )
+
+    calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, [], intent)
+
+    assert _names(calls) == ["get_domain_stock_candidates"]
+    assert json.loads(calls[0]["arguments"]) == {
+        "domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
+        "context_theme": "人形机器人",
+        "limit_per_domain": 300,
+    }
+
+
+def test_business_evidence_mapping_is_an_explicit_typed_mode() -> None:
+    intent = ResearchIntent(
+        kind="theme_company_mapping",
+        topic="AI芯片",
+        discovery_theme="AI芯片",
+        selection_mode="ranked_shortlist",
+        company_mapping_mode="business_evidence",
+        resolved_domains=["训练芯片", "推理芯片"],
+        thesis_requirements=["已有公司级订单或收入证据"],
+        objective="只保留已兑现公司",
+        research_dimensions=["订单", "收入"],
+    )
+
+    calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, [], intent)
+
+    assert _names(calls) == [
         "get_theme_stock_candidates",
         "search_financial_news",
         "search_research_library",
         "websearch",
     ]
-    assert json.loads(mapping_calls[0]["arguments"])["theme"] == "人形机器人"
-    assert "人形机器人" in json.loads(mapping_calls[1]["arguments"])["query"]
-    web_arguments = json.loads(mapping_calls[3]["arguments"])
-    assert web_arguments["includeContent"] is True
-    assert web_arguments["livecrawl"] == "preferred"
-    assert "人形机器人" in web_arguments["query"]
 
+
+def test_collection_financial_filter_preserves_all_entities_in_twelve_stock_batches() -> None:
     entities = [
-        {"name": "兆威机电", "symbol": "003021"},
-        {"name": "绿的谐波", "symbol": "688017"},
+        {"name": f"公司{index}", "symbol": f"{index:06d}"}
+        for index in range(1, 48)
     ]
-    third = [
-        *second,
-        {"role": "assistant", "content": "| 公司/代码 | 证据 |\n|---|---|\n| 兆威机电 (003021) | L2 |"},
-        {"role": "user", "content": "上面提到的这些公司现在能买吗？"},
-    ]
-    assert select_analysis_playbook(third, entities) == INVESTMENT_DECISION
-    decision_calls = mandatory_tool_calls(INVESTMENT_DECISION, third, entities)
-    assert _names(decision_calls) == [
-        "get_multi_stock_decision_evidence",
-        "get_market_breadth",
-    ]
-    assert json.loads(decision_calls[0]["arguments"])["symbols"] == "003021,688017"
-
-
-def test_mapping_contract_requires_complete_candidate_inventory() -> None:
-    assert any("全部候选公司" in item for item in THEME_COMPANY_MAPPING.output_contract)
-    assert any("禁止固定截成 8 家或 12 家" in item for item in THEME_COMPANY_MAPPING.output_contract)
-    assert any("第一列" in item for item in THEME_COMPANY_MAPPING.output_contract)
-    assert any("网页正文爬取必须全部执行" in item for item in THEME_COMPANY_MAPPING.evidence_standard)
-
-
-def test_industry_chain_research_wins_over_incidental_stock_name_match() -> None:
-    messages = [{
-        "role": "user",
-        "content": "请检索人形机器人产业链价值量、市场空间和竞争格局的研究资料，并注明来源。",
-    }]
-    # Entity extraction can validly find the A-share named ``机器人``
-    # inside the topic, but that must not convert an industry question into a
-    # single-stock deep-research workflow.
-    verified_entities = [{"name": "机器人", "symbol": "300024"}]
-
-    assert select_analysis_playbook(messages, verified_entities) == INDUSTRY_CHAIN
-    assert _names(mandatory_tool_calls(INDUSTRY_CHAIN, messages, verified_entities)) == [
-        "search_financial_news",
-        "search_research_library",
-        "search_research_library",
-        "search_financial_news",
-    ]
-
-
-def test_research_topic_strips_repeated_mapping_directives() -> None:
-    messages = [{
-        "role": "user",
-        "content": "请重新完整梳理人形机器人产业链A股公司，并给出数据源覆盖。",
-    }]
-
-    assert infer_research_topic(messages) == "人形机器人"
-
-
-def test_referential_a_share_stock_followup_selects_theme_mapping() -> None:
-    messages = [
-        {"role": "user", "content": "帮我分析下人形机器人产业链，哪些领域最受益？"},
-        {"role": "assistant", "content": "上游核心零部件最受益。"},
-        {"role": "user", "content": "找出这些领域最受益的A股股票"},
-    ]
-
-    assert select_analysis_playbook(messages, []) == THEME_COMPANY_MAPPING
-    calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, messages, [])
-    assert _names(calls).count("get_theme_stock_candidates") == 1
-    assert json.loads(calls[0]["arguments"])["theme"] == "人形机器人"
-
-
-def test_latest_explicit_subtopic_overrides_older_industry_topic() -> None:
-    messages = [
-        {"role": "user", "content": "帮我分析下AI产业链"},
-        {
-            "role": "assistant",
-            "content": "上游包括AI芯片、AI服务器和高速光模块。",
+    intent = ResearchIntent(
+        kind="collection_financial_filter",
+        objective="筛选上文集合",
+        entity_scope="previous_answer",
+        collection_financial_filter_spec={
+            "metric": "debt_ratio",
+            "operator": "gt",
+            "threshold": 70,
+            "action": "exclude_matching",
         },
-        {
-            "role": "user",
-            "content": "看下上面说的 AI芯片，有哪些公司核心受益",
+    )
+
+    calls = mandatory_tool_calls(COLLECTION_FINANCIAL_FILTER, entities, intent)
+
+    assert _names(calls) == ["get_multi_stock_financials"] * 4
+    batches = [json.loads(call["arguments"])["symbols"].split(",") for call in calls]
+    assert [len(batch) for batch in batches] == [12, 12, 12, 11]
+    assert [code for batch in batches for code in batch] == [item["symbol"] for item in entities]
+
+
+def test_collection_financial_filter_can_plan_more_than_four_batches() -> None:
+    entities = [
+        {"name": f"公司{index}", "symbol": f"{index:06d}"}
+        for index in range(1, 80)
+    ]
+    intent = ResearchIntent(
+        kind="collection_financial_filter",
+        objective="筛选上文集合",
+        entity_scope="previous_answer",
+        collection_financial_filter_spec={
+            "metric": "debt_ratio",
+            "operator": "gt",
+            "threshold": 70,
+            "action": "exclude_matching",
         },
-    ]
+    )
 
-    assert infer_research_topic(messages) == "AI芯片"
-    assert select_analysis_playbook(messages, []) == THEME_COMPANY_MAPPING
+    calls = mandatory_tool_calls(COLLECTION_FINANCIAL_FILTER, entities, intent)
 
-    calls = mandatory_tool_calls(THEME_COMPANY_MAPPING, messages, [])
-    assert json.loads(calls[0]["arguments"])["theme"] == "AI芯片"
-    for call in calls:
-        arguments = json.loads(call["arguments"])
-        query = str(arguments.get("query") or arguments.get("theme") or "")
-        assert "AI芯片" in query
-        assert "AI产业链" not in query
-        assert "丝杠" not in query
-        assert "减速器" not in query
-    research_query = json.loads(calls[2]["arguments"])["query"]
-    assert "GPU" in research_query
-    assert "NPU" in research_query
+    assert len(calls) == 7
+    assert sum(
+        len(json.loads(call["arguments"])["symbols"].split(","))
+        for call in calls
+    ) == 79
 
 
-def test_stacked_referential_prefix_does_not_leak_into_topic() -> None:
-    messages = [
-        {"role": "user", "content": "帮我分析下AI产业链"},
-        {"role": "assistant", "content": "上游包括AI芯片。"},
-        {"role": "user", "content": "请只看上面说的AI芯片，哪些A股公司是真正核心受益？"},
-    ]
-
-    assert infer_research_topic(messages) == "AI芯片"
+def test_mapping_contract_requires_complete_structured_candidate_inventory() -> None:
+    assert any("全部公司/代码" in item for item in THEME_COMPANY_MAPPING.output_contract)
+    assert any("不得固定截成 8 家或 12 家" in item for item in THEME_COMPANY_MAPPING.output_contract)
+    assert any("覆盖状态" in item for item in THEME_COMPANY_MAPPING.output_contract)
+    assert any("不得用 search_stocks" in item for item in THEME_COMPANY_MAPPING.evidence_standard)

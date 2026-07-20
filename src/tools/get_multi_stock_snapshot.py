@@ -118,7 +118,11 @@ def get_multi_stock_snapshot(symbols: str) -> dict[str, Any]:
         errors.append(f"无法解析: {', '.join(unresolved)}")
     successful_items = [
         item for item in items
-        if item.get("quote") is not None or item["technical"].get("success")
+        if (
+            item.get("quote") is not None
+            or item["technical"].get("success")
+            or item.get("financial") is not None
+        )
     ]
     success = bool(successful_items)
     partial = success and (

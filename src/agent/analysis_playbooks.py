@@ -10,10 +10,9 @@ that the runtime enforces before synthesis.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from src.agent.research_intent import ResearchIntent
 
@@ -60,20 +59,15 @@ THEME_COMPANY_MAPPING = AnalysisPlaybook(
     id="theme_company_mapping",
     title="产业主题到 A 股公司的证据化映射",
     evidence_standard=(
-        "候选发现必须完整遍历主题板块全部分页并与本地 stock_meta 全量证券库交叉召回，再用产业资讯、研报、公告和财报核验；不得只读概念板块第一页、只从几篇新闻里找公司，也不得凭模型记忆扩展名单。",
-        "逐家公司按三层证据分级：L3 已披露相关收入/批量订单；L2 客户定点/送样/验证；L1 技术储备或概念关联。",
-        "主题板块成员只能作为 L1 候选证据；不能因为属于概念板块就写成业务受益、订单兑现或主营收入。",
-        "若某行唯一来源是新浪/同花顺概念板块，该行产业链环节必须写待公司级业务核验，已验证事实只能写板块成员关系和本地代码核验；不得补写龙头、主营、产品用途、订单、收入或客户。",
-        "媒体转述、券商推测、公司公告和财报披露必须分开；低等级证据不能写成高等级兑现。",
-        "RSS、跨机构研报、通用网页搜索与网页正文爬取必须全部执行并记录覆盖；不得因为 RSS 已返回少量结果就跳过网页搜索，也不得把未执行补证写成公开资料不足。",
-        "每家公司至少给一个可核验来源与日期；没有直接证据则明确写缺口。",
-        "公司与证券代码必须来自本地证券库核验，禁止猜代码。",
+        "候选发现必须按用户指定的每个领域分别遍历结构化概念板块成分，并与本地 stock_meta 全量证券库交叉核验；不得用 search_stocks 的名称搜索或通用网页搜索生成候选。",
+        "主题板块成员只能作为 L1 候选证据；不能因为属于概念板块就写成业务受益、订单兑现、主营收入或投资建议。",
+        "产品级领域没有同名板块时，只能使用运行时声明的最窄结构化板块别名，并明确展示映射口径。",
+        "公司与证券代码必须来自本地证券库核验，禁止凭模型记忆补充或改写名单。",
     ),
     output_contract=(
-        "用 Markdown 表格列出公司/代码、产业链环节、证据等级、已验证事实、缺失证据与来源日期；公司/代码必须放在第一列，供后续追问确定范围。每家公司来源单元格必须含本轮证据中的可点击链接和日期。",
-        "完整列出本轮返回的全部候选公司：L2/L3 公司进入证据表，L1 概念候选用紧凑的公司/代码索引完整展示；禁止固定截成 8 家或 12 家代表公司。",
-        "单独列出仅概念关联和证据陈旧的公司，避免与业绩兑现标的混排。",
-        "结尾用一小段说明候选源覆盖率、公司级证据覆盖率和最关键的待核验项；不得逐家公司重复同一句证据缺口。",
+        "按领域分别列出本轮返回的全部公司/代码，不得固定截成 8 家或 12 家代表公司。",
+        "每个领域同时展示实际使用的结构化板块、覆盖状态和候选数量；相同公司可出现在多个领域。",
+        "明确说明名单是 L1 板块候选，不自动代表相关订单、收入兑现或适合买入。",
     ),
 )
 
@@ -129,154 +123,28 @@ QUANTITATIVE_SCREENING = AnalysisPlaybook(
 )
 
 
-_REFERENTIAL_MARKERS = ("这些", "上述", "上面", "前面", "它们", "他们", "those", "them")
-_DECISION_MARKERS = (
-    "能买吗", "能不能买", "是否能买", "值得买", "买入", "抄底", "入场", "介入",
-    "加仓", "减仓", "卖出", "持有", "仓位", "止损", "止盈", "追高", "buy", "sell",
+COLLECTION_FINANCIAL_FILTER = AnalysisPlaybook(
+    id="collection_financial_filter",
+    title="上文股票集合财务阈值筛选",
+    evidence_standard=(
+        "股票范围只取紧邻上一条回答表格中明确列出的全部公司，不扩展到全市场。",
+        "只读取用户指定的财务字段；资产负债率筛选不得附带实时行情、K线或技术指标。",
+        "集合超过12只时按每批最多12只执行，并核对所有批次与原集合的完整覆盖。",
+        "任一批失败或字段缺失时必须列出缺失代码，不得把部分结果冒充完整筛选结论。",
+    ),
+    output_contract=(
+        "明确回显阈值、比较符和筛除/保留语义。",
+        "列出筛除项、筛选后保留项、报告期、同步时间和数据来源。",
+        "给出请求数、成功覆盖数和缺失数；恰好等于阈值时按比较符精确处理。",
+    ),
 )
-
-
-def _message_text(message: dict[str, Any]) -> str:
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        ).strip()
-    return ""
-
-
-def _user_texts(messages: Iterable[dict[str, Any]]) -> list[str]:
-    return [
-        text
-        for message in messages
-        if isinstance(message, dict) and message.get("role") == "user"
-        if (text := _message_text(message))
-    ]
-
-
-_TOPIC_PREFIX_RE = re.compile(
-    r"^(?:帮我|请|麻烦|重新|完整|系统地?|仔细|只|梳理|找出|查下|查一下|"
-    r"分析下|分析一下|看看|看下|看一下|看(?=上面|前面)|关于|"
-    r"上面(?:说的|提到的|分析的)?|前面(?:说的|提到的|分析的)?|上述|这些)\s*",
-    re.IGNORECASE,
-)
-
-
-def _strip_topic_prefixes(value: str) -> str:
-    """Remove stacked conversational prefixes without eating the topic."""
-    topic = value.strip()
-    previous = None
-    while topic and topic != previous:
-        previous = topic
-        topic = _TOPIC_PREFIX_RE.sub("", topic).strip()
-    return topic
-
-
-def _topic_from_text(text: str) -> str:
-    """Extract an explicit topic from one user turn.
-
-    A follow-up may name a narrower topic (for example ``AI芯片``) even when
-    an older turn contains ``AI产业链``.  Extraction therefore happens one
-    turn at a time so that the latest explicit subject can win.
-    """
-    normalized = re.sub(r"[？?。；;：:]", " ", text).strip()
-
-    industry_match = re.search(r"([\u4e00-\u9fffA-Za-z0-9·+\-\s]{2,40})产业链", normalized)
-    if industry_match:
-        topic = _strip_topic_prefixes(industry_match.group(1))
-        return " ".join(topic.split())
-
-    # Keep the subject before a company-mapping or benefit-ranking request.
-    # This turns “看下上面说的 AI芯片，有哪些公司核心受益” into ``AI芯片``
-    # instead of falling back to an older, broader ``AI产业链`` topic.
-    subject = re.split(
-        r"[，,\s]*(?:有)?哪些(?:A股|上市)?(?:公司|标的|股票|个股)|"
-        r"[，,\s]*(?:哪些|什么)(?:领域|环节)(?:最|核心)?受益|"
-        r"[，,\s]*(?:最|核心)受益(?:的)?(?:A股|上市)?(?:公司|标的|股票|个股)",
-        normalized,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    subject = _strip_topic_prefixes(subject)
-    subject = re.sub(r"(?:这些|上述)?(?:领域|环节|板块)(?:在)?A股$", "", subject).strip()
-    subject = re.sub(r"(?:相关)?(?:公司|标的|股票|个股)$", "", subject).strip()
-    subject = " ".join(subject.split())
-    if len(subject) >= 2 and subject.lower() not in {
-        "a股", "公司", "领域", "环节", "板块", "这些领域", "上述领域",
-    }:
-        return subject[:80]
-    return ""
-
-
-def infer_research_topic(messages: list[dict[str, Any]]) -> str:
-    """Return a stable research topic from the current conversation."""
-    texts = _user_texts(messages)
-    # Resolve each turn from newest to oldest.  Scanning every historical
-    # ``产业链`` mention first made an old broad topic override a narrower
-    # subject explicitly named in the current question.
-    for text in reversed(texts):
-        if topic := _topic_from_text(text):
-            return topic
-    for text in reversed(texts):
-        cleaned = re.sub(
-            r"(?:帮我|请|分析下|分析一下|看看|上面提到的|这些|上述|现在能买吗|能不能买|有哪些公司|哪些公司)",
-            " ",
-            text,
-        )
-        cleaned = re.sub(r"[？?，,。；;：:]", " ", cleaned)
-        cleaned = " ".join(cleaned.split())
-        if len(cleaned) >= 2:
-            return cleaned[:80]
-    return texts[-1][:80] if texts else "A股"
-
-
-def select_analysis_playbook(
-    messages: list[dict[str, Any]],
-    verified_entities: list[dict[str, str]],
-) -> Optional[AnalysisPlaybook]:
-    """Select a high-stakes research workflow without delegating to the LLM."""
-    texts = _user_texts(messages)
-    latest = texts[-1].lower() if texts else ""
-    has_entities = bool(verified_entities)
-    referential = any(marker in latest for marker in _REFERENTIAL_MARKERS)
-
-    if any(marker in latest for marker in _DECISION_MARKERS) and (has_entities or referential):
-        return INVESTMENT_DECISION
-    if (
-        ("a股" in latest or "上市公司" in latest or "哪些公司" in latest or "哪些标的" in latest)
-        and any(marker in latest for marker in ("公司", "标的", "映射", "名单", "股票", "个股"))
-    ):
-        return THEME_COMPANY_MAPPING
-    # Industry-chain research may mention a listed-company name incidentally
-    # (for example the stock ``机器人`` inside ``人形机器人``).  Select the
-    # topic workflow before generic entity-based deep research whenever the
-    # question itself asks for industry-chain dimensions.
-    if "产业链" in latest and any(
-        marker in latest
-        for marker in (
-            "受益", "环节", "领域", "分析", "研究", "价值量", "市场空间",
-            "竞争格局", "国产替代", "订单", "产能",
-        )
-    ):
-        return INDUSTRY_CHAIN
-    if has_entities and any(
-        marker in latest
-        for marker in ("分析", "研究", "基本面", "财务", "估值", "风险", "前景", "怎么样", "比较")
-    ):
-        return STOCK_DEEP_RESEARCH
-    return None
 
 
 def select_playbook_for_intent(intent: ResearchIntent) -> Optional[AnalysisPlaybook]:
     """Map a validated semantic intent to an execution contract.
 
-    Unlike :func:`select_analysis_playbook`, this function does not inspect
-    wording.  The model has already resolved the meaning into a closed enum;
-    runtime code only selects the corresponding evidence contract.
+    The semantic resolver has already produced a closed enum; runtime code only
+    selects the corresponding evidence contract.
     """
     return {
         "industry_chain": INDUSTRY_CHAIN,
@@ -285,6 +153,7 @@ def select_playbook_for_intent(intent: ResearchIntent) -> Optional[AnalysisPlayb
         "stock_research": STOCK_DEEP_RESEARCH,
         "comparison": STOCK_DEEP_RESEARCH,
         "risk_check": STOCK_DEEP_RESEARCH,
+        "collection_financial_filter": COLLECTION_FINANCIAL_FILTER,
         "quantitative_screening": QUANTITATIVE_SCREENING,
     }.get(intent.kind)
 
@@ -297,43 +166,36 @@ def _call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _topic_chain_terms(topic: str) -> str:
-    """Return topic-specific discovery dimensions instead of one hard-coded chain."""
-    lowered = topic.lower()
-    if any(marker in lowered for marker in ("人形机器人", "具身智能", "机器人")):
-        return "丝杠 减速器 伺服 电机 传感器 灵巧手 机器视觉"
-    if any(marker in lowered for marker in ("ai芯片", "人工智能芯片", "算力芯片")):
-        return "GPU NPU ASIC 训练芯片 推理芯片 加速卡 HBM 先进封装 国产替代"
-    if lowered in {"ai", "人工智能"} or "ai产业" in lowered or "人工智能产业" in lowered:
-        return "AI芯片 AI服务器 光模块 液冷 数据中心 云服务 大模型 应用"
-    return "核心环节 上游 中游 下游 价值量 国产替代 订单 产能"
-
-
 def mandatory_tool_calls(
     playbook: Optional[AnalysisPlaybook],
-    messages: list[dict[str, Any]],
     verified_entities: list[dict[str, str]],
-    intent: Optional[ResearchIntent] = None,
+    intent: ResearchIntent,
 ) -> list[dict[str, Any]]:
     """Build the evidence calls that must run before model synthesis."""
     if playbook is None:
         return []
     if playbook.id == QUANTITATIVE_SCREENING.id:
-        if intent is None or intent.quantitative_screen_spec is None:
+        if intent.quantitative_screen_spec is None:
             return []
         return [_call("screen_atr_volatility_stocks", {
             "screen_spec": intent.quantitative_screen_spec.model_dump(mode="json"),
             "refresh_if_stale": True,
         })]
-    topic = intent.normalized_topic if intent is not None else infer_research_topic(messages)
-    if not topic:
-        topic = infer_research_topic(messages)
+    if playbook.id == COLLECTION_FINANCIAL_FILTER.id:
+        symbols = [item["symbol"] for item in verified_entities if item.get("symbol")]
+        return [
+            _call("get_multi_stock_financials", {
+                "symbols": ",".join(symbols[index:index + 12]),
+            })
+            for index in range(0, len(symbols), 12)
+        ]
+    topic = intent.normalized_topic
     semantic_dimensions = " ".join(
-        re.sub(r"[^\u4e00-\u9fffA-Za-z0-9·+\-/]", "", str(item))[:32]
-        for item in ((intent.research_dimensions if intent is not None else [])[:12])
+        " ".join(str(item).split())[:32]
+        for item in intent.research_dimensions[:12]
         if str(item).strip()
     ).strip()
-    chain_terms = semantic_dimensions or _topic_chain_terms(topic)
+    chain_terms = semantic_dimensions
     if playbook.id == INDUSTRY_CHAIN.id:
         return [
             _call("search_financial_news", {
@@ -366,32 +228,46 @@ def mandatory_tool_calls(
             }),
         ]
     if playbook.id == THEME_COMPANY_MAPPING.id:
+        domains = intent.resolved_domains
+        if intent.company_mapping_mode == "business_evidence":
+            discovery_theme = intent.normalized_discovery_theme or topic
+            return [
+                _call("get_theme_stock_candidates", {
+                    "theme": discovery_theme,
+                    "limit": 1000,
+                }),
+                _call("search_financial_news", {
+                    "query": f"{topic} A股 公司 订单 送样 定点 客户验证 收入 批量供货",
+                    "topic": "industry",
+                    "days": 365,
+                    "limit": 30,
+                    "include_content": True,
+                }),
+                _call("search_research_library", {
+                    "query": f"{topic} 产业链 A股 标的 {chain_terms}",
+                    "category": "industry",
+                    "days": 1095,
+                    "limit": 30,
+                    "include_content": True,
+                }),
+                _call("websearch", {
+                    "query": f"{topic} A股 上市公司 公司公告 互动平台 送样 定点 客户验证 订单 收入 批量供货 量产交付",
+                    "numResults": 12,
+                    "livecrawl": "preferred",
+                    "type": "deep",
+                    "contextMaxCharacters": 50000,
+                    "includeContent": True,
+                }),
+            ]
         return [
-            _call("get_theme_stock_candidates", {
-                "theme": intent.normalized_discovery_theme if intent is not None else topic,
-                "limit": 1000,
-            }),
-            _call("search_financial_news", {
-                "query": f"{topic} A股 公司 订单 送样 定点 客户验证 收入 批量供货",
-                "topic": "industry",
-                "days": 365,
-                "limit": 30,
-                "include_content": True,
-            }),
-            _call("search_research_library", {
-                "query": f"{topic} 产业链 A股 标的 {chain_terms}",
-                "category": "industry",
-                "days": 1095,
-                "limit": 30,
-                "include_content": True,
-            }),
-            _call("websearch", {
-                "query": f"{topic} A股 上市公司 公司公告 互动平台 送样 定点 客户验证 订单 收入 批量供货 量产交付",
-                "numResults": 12,
-                "livecrawl": "preferred",
-                "type": "deep",
-                "contextMaxCharacters": 50000,
-                "includeContent": True,
+            _call("get_domain_stock_candidates", {
+                "domains": domains,
+                # ``topic`` is the human-readable research subject and may be
+                # a long phrase that is not a real concept board. Candidate
+                # intersection must use the semantic layer's normalized board
+                # name, otherwise the broad unfiltered domain pool survives.
+                "context_theme": intent.normalized_discovery_theme or topic,
+                "limit_per_domain": 300,
             }),
         ]
     if playbook.id in {INVESTMENT_DECISION.id, STOCK_DEEP_RESEARCH.id}:
@@ -417,8 +293,7 @@ __all__ = [
     "STOCK_DEEP_RESEARCH",
     "THEME_COMPANY_MAPPING",
     "QUANTITATIVE_SCREENING",
-    "infer_research_topic",
+    "COLLECTION_FINANCIAL_FILTER",
     "mandatory_tool_calls",
-    "select_analysis_playbook",
     "select_playbook_for_intent",
 ]

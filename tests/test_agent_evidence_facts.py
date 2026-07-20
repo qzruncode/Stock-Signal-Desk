@@ -21,6 +21,10 @@ def _intent() -> ResearchIntent:
     return ResearchIntent(
         kind="theme_company_mapping",
         topic="AI芯片",
+        discovery_theme="AI芯片",
+        selection_mode="ranked_shortlist",
+        company_mapping_mode="business_evidence",
+        resolved_domains=["训练芯片", "推理芯片"],
         objective="找出AI芯片核心受益A股公司",
         research_dimensions=["GPU", "NPU", "量产", "订单", "收入"],
         output_requirements=["直接证据分级"],
@@ -166,7 +170,7 @@ def test_commercial_application_without_delivery_is_not_l3() -> None:
     assert facts[0].thesis_fit == "partial"
 
 
-def test_strong_realization_excerpt_is_prioritized_and_wins_company_dedup() -> None:
+def test_semantic_facts_choose_strongest_company_fact_without_keyword_reordering() -> None:
     captured_request = {}
 
     async def completion(**kwargs):
@@ -205,6 +209,8 @@ def test_strong_realization_excerpt_is_prioritized_and_wins_company_dedup() -> N
         topic="消费级终端端侧AI SoC与推理芯片",
         discovery_theme="AI芯片",
         selection_mode="ranked_shortlist",
+        company_mapping_mode="business_evidence",
+        resolved_domains=["端侧AI SoC", "推理芯片"],
         thesis_requirements=["消费级终端", "端侧AI SoC", "量产、订单或收入兑现"],
         objective="找出最符合命题的A股公司",
     )
@@ -228,14 +234,15 @@ def test_strong_realization_excerpt_is_prioritized_and_wins_company_dedup() -> N
     ))
 
     source_text = captured_request["sources"][0]["text"]
-    assert source_text.index("AI眼镜SoC芯片已量产") < source_text.index("【来源正文节选】")
+    assert "【量产、订单与收入重点片段】" not in source_text
+    assert source_text.index("AK2659机器视觉芯片") < source_text.index("AI眼镜SoC芯片已量产")
     assert len(facts) == 1
     assert facts[0].company_name == "安凯微"
     assert facts[0].stage == "L3"
     assert facts[0].thesis_fit == "exact"
 
 
-def test_ranked_shortlist_recovers_explicit_single_company_batch_delivery() -> None:
+def test_ranked_shortlist_does_not_use_lexical_fact_recovery_when_semantic_result_is_empty() -> None:
     async def completion(**_kwargs):
         return _response([])
 
@@ -244,6 +251,8 @@ def test_ranked_shortlist_recovers_explicit_single_company_batch_delivery() -> N
         topic="消费级终端端侧AI SoC与推理芯片",
         discovery_theme="AI芯片",
         selection_mode="ranked_shortlist",
+        company_mapping_mode="business_evidence",
+        resolved_domains=["端侧AI SoC", "推理芯片"],
         thesis_requirements=["消费级终端", "端侧AI SoC", "量产、订单或收入兑现"],
         objective="找出最符合命题的A股公司",
     )
@@ -262,8 +271,4 @@ def test_ranked_shortlist_recovers_explicit_single_company_batch_delivery() -> N
         completion=completion,
     ))
 
-    assert len(facts) == 1
-    assert facts[0].company_name == "安凯微"
-    assert facts[0].stage == "L3"
-    assert facts[0].thesis_fit == "exact"
-    assert facts[0].commercialization_signal == "batch_delivery"
+    assert facts == []

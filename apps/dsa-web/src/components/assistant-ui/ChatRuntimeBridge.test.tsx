@@ -114,6 +114,26 @@ describe('ChatRuntimeBridge', () => {
     warn.mockRestore();
   });
 
+  it('imports thread state when it contains model reasoning', async () => {
+    const detail = makeDetail(false);
+    detail.threadState!.messages[0]!.message.content = [
+      { type: 'reasoning', text: '先核验事实。' },
+      { type: 'text', text: '完整回答' },
+    ];
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.import).toHaveBeenCalledOnce();
+    });
+  });
+
   it('does not restart a cancelled run whose persisted history ends with a user message', async () => {
     const detail = makeDetail(false);
     detail.messages = detail.messages.slice(0, 1);

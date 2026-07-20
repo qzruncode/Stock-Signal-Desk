@@ -198,28 +198,7 @@ def _collect_sources(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             remaining = max(0, 80_000 - total_characters)
             raw_text = title + "\n" + body
-            # Long articles often mention an early product layout and a later,
-            # much stronger batch-delivery fact.  Put grounded realization
-            # sentences at the front of the same source so the semantic model
-            # compares them before choosing a company fact.  This is retrieval
-            # prioritization only; every returned quote is still checked
-            # verbatim against the source payload below.
-            realization_markers = (
-                "批量交付", "批量落地", "批量供货", "实现量产", "已量产",
-                "客户订单", "获得订单", "收获订单", "订单金额", "实现收入",
-                "收入占比", "营业收入", "营收",
-            )
-            realization_sentences = [
-                sentence.strip()
-                for sentence in re.split(r"(?<=[。！？!?；;])|\n+", raw_text)
-                if sentence.strip() and any(marker in sentence for marker in realization_markers)
-            ][:8]
-            focus = "\n".join(realization_sentences)
-            prioritized_text = (
-                f"{title}\n【量产、订单与收入重点片段】\n{focus}\n【来源正文节选】\n{body[:4000]}"
-                if focus else raw_text
-            )
-            text = prioritized_text[: min(6000, remaining)]
+            text = raw_text[: min(6000, remaining)]
             if not text:
                 continue
             source_date, retrieval_date = _source_date(item, result)
@@ -341,102 +320,6 @@ def _validate_facts(
     return list(best_by_company.values())
 
 
-def _strict_ranked_shortlist_facts(
-    sources: list[dict[str, Any]],
-    intent: ResearchIntent,
-) -> list[BoundEvidenceFact]:
-    """Recover explicit, single-company realization facts without inference.
-
-    This is a narrow safety net for ranked consumer edge-AI shortlists.  It does
-    not infer a company from a concept board or a generic revenue paragraph: a
-    source title must resolve to exactly one A-share company and the same source
-    sentence must contain a consumer-terminal scene, a chip/SoC term and an
-    unnegated realization signal.
-    """
-    if intent.selection_mode != "ranked_shortlist":
-        return []
-    requirements_text = " ".join(intent.thesis_requirements + [intent.normalized_topic]).lower()
-    if not any(marker in requirements_text for marker in ("端侧", "消费级", "可穿戴", "iot", "soc")):
-        return []
-    scenario_markers = (
-        "AI眼镜", "智能眼镜", "可穿戴", "手机", "AI PC", "AIPC", "个人电脑",
-        "智能家居", "消费电子", "IoT终端", "物联网终端", "智能终端",
-    )
-    product_markers = ("SoC", "SOC", "芯片", "NPU", "端侧推理")
-    signal_groups = (
-        ("batch_delivery", ("批量交付", "批量落地", "批量供货", "实现量产", "已量产")),
-        ("order", ("获得订单", "收获订单", "客户订单", "订单金额")),
-        ("revenue", ("实现收入", "收入占比", "业务收入", "产品收入")),
-    )
-    facts: list[BoundEvidenceFact] = []
-    for source in sources:
-        title = str(source.get("title") or "")
-        title_entities = find_securities_in_text(title, limit=5)
-        unique_entities = {
-            str(entity.get("symbol") or ""): entity
-            for entity in title_entities
-            if entity.get("symbol") and entity.get("name")
-        }
-        if len(unique_entities) != 1:
-            continue
-        entity = next(iter(unique_entities.values()))
-        source_text = str(source.get("text") or "")
-        sentences = [
-            sentence.strip()
-            for sentence in re.split(r"(?<=[。！？!?；;])|\n+", source_text)
-            if sentence.strip()
-        ]
-        for sentence in sentences:
-            if not any(marker.lower() in sentence.lower() for marker in scenario_markers):
-                continue
-            if not any(marker.lower() in sentence.lower() for marker in product_markers):
-                continue
-            signal = next(
-                (
-                    signal_name
-                    for signal_name, markers in signal_groups
-                    if any(marker in sentence for marker in markers)
-                ),
-                None,
-            )
-            if signal is None or re.search(r"(?:未|尚未|没有|暂无|不涉及).{0,10}(?:量产|交付|订单|收入)", sentence):
-                continue
-            facts.append(BoundEvidenceFact(
-                company_name=str(entity.get("name") or ""),
-                symbol=str(entity.get("symbol") or ""),
-                stage="L3",
-                thesis_fit="exact",
-                commercialization_signal=signal,
-                relationship="消费级终端端侧 AI SoC/芯片",
-                fact=sentence,
-                support_quote=sentence,
-                source_id=str(source.get("source_id") or ""),
-                source_name=str(source.get("source_name") or "公开资料"),
-                source_url=str(source.get("source_url") or ""),
-                source_date=str(source.get("source_date") or ""),
-                source_date_is_retrieval=bool(source.get("source_date_is_retrieval")),
-                confidence=0.99,
-            ))
-            break
-    return facts
-
-
-def _merge_best_facts(*groups: list[BoundEvidenceFact]) -> list[BoundEvidenceFact]:
-    best: dict[tuple[str, bool], BoundEvidenceFact] = {}
-    stage_rank = {"boundary": 4, "L3": 3, "L2": 2, "L1": 1}
-    fit_rank = {"exact": 3, "partial": 2, "outside": 1}
-    for fact in (item for group in groups for item in group):
-        key = (fact.symbol, fact.stage == "boundary")
-        previous = best.get(key)
-        if previous is None or (
-            fit_rank[fact.thesis_fit], stage_rank[fact.stage], fact.confidence
-        ) > (
-            fit_rank[previous.thesis_fit], stage_rank[previous.stage], previous.confidence
-        ):
-            best[key] = fact
-    return list(best.values())
-
-
 async def bind_company_evidence(
     evidence: list[dict[str, Any]],
     intent: ResearchIntent,
@@ -448,7 +331,6 @@ async def bind_company_evidence(
     sources = _collect_sources(evidence)
     if not sources or not intent.normalized_topic:
         return []
-    strict_facts = _strict_ranked_shortlist_facts(sources, intent)
 
     # A single 80k-character extraction frequently exhausted the gateway's
     # structured-output budget and returned an empty assistant message.  Split
@@ -510,9 +392,9 @@ async def bind_company_evidence(
             failures.append(result)
         else:
             raw_facts.extend(result)
-    if not raw_facts and failures and not strict_facts:
+    if not raw_facts and failures:
         raise ValueError(f"all semantic evidence batches failed: {failures[0]}")
-    return _merge_best_facts(_validate_facts(raw_facts, sources), strict_facts)
+    return _validate_facts(raw_facts, sources)
 
 
 __all__ = ["BoundEvidenceFact", "bind_company_evidence"]

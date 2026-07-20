@@ -44,7 +44,21 @@ def _canonical_theme(theme: str) -> str:
         key=len,
         reverse=True,
     )
-    return next((candidate for candidate in known if candidate in normalized), normalized)
+    if normalized in known:
+        return normalized
+
+    # Only collapse an embedded known topic when the argument is visibly a
+    # conversational wrapper.  Product-level concepts such as ``机器人执行器``
+    # and ``机器人减速器`` legitimately contain the generic word ``机器人``;
+    # the old substring rule silently widened both to the 700+ member generic
+    # robot board.
+    wrapper_markers = (
+        "请", "只", "梳理", "查找", "寻找", "完整", "精确", "相关",
+        "主题", "候选", "股票", "个股", "公司", "标的", "a股",
+    )
+    if any(marker in normalized.lower() for marker in wrapper_markers):
+        return next((candidate for candidate in known if candidate in normalized), normalized)
+    return normalized
 
 
 def _compact(value: Any) -> str:
@@ -372,15 +386,21 @@ def _financial_scale(value: Any) -> float:
     return math.log10(number + 1.0)
 
 
-def get_theme_stock_candidates(theme: str, limit: int = 500) -> dict[str, Any]:
+def get_theme_stock_candidates(
+    theme: str,
+    limit: int = 500,
+    *,
+    local_universe: dict[str, dict[str, Any]] | None = None,
+    maintenance_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     topic = _canonical_theme(theme)
     if not topic:
         raise ValueError("theme 不能为空")
     bounded_limit = max(20, min(int(limit or 500), 1000))
     from src.services.data_maintenance import ensure_stock_universe
 
-    maintenance = ensure_stock_universe(trigger="agent_theme_candidates")
-    local = _load_local_universe()
+    maintenance = maintenance_result or ensure_stock_universe(trigger="agent_theme_candidates")
+    local = local_universe if local_universe is not None else _load_local_universe()
     warnings: list[str] = [maintenance["warning"]] if maintenance.get("warning") else []
     raw_items: list[dict[str, Any]] = []
     boards: list[dict[str, Any]] = []

@@ -51,7 +51,12 @@ _registry = ToolRegistry()
 def _execution_timeout(tool_name: str, arguments: Dict[str, Any]) -> float:
     if tool_name == "screen_atr_volatility_stocks":
         return _QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
-    if tool_name in {"get_multi_stock_decision_evidence", "get_theme_stock_candidates"}:
+    if tool_name in {
+        "get_multi_stock_snapshot",
+        "get_multi_stock_decision_evidence",
+        "get_domain_stock_candidates",
+        "get_theme_stock_candidates",
+    }:
         return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
     if tool_name == "websearch" and bool(arguments.get("includeContent")):
         return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS

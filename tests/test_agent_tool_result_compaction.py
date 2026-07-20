@@ -3,7 +3,7 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from api.v1.endpoints.agent import (
     _assess_tool_data_health,
@@ -13,9 +13,58 @@ from api.v1.endpoints.agent import (
     _run_react_loop,
 )
 from src.tools.registry import ToolRegistry
+from src.agent.research_intent import ResearchIntent
 
 
 class AgentToolResultCompactionTestCase(unittest.TestCase):
+    def test_multi_domain_candidates_keep_every_domain_identity_index(self) -> None:
+        payload = {
+            "success": True,
+            "partial": False,
+            "requested_domains": ["行星滚柱丝杠", "减速器"],
+            "local_universe_count": 5879,
+            "candidate_count": 2,
+            "returned_count": 2,
+            "domain_results": [
+                {
+                    "domain": "行星滚柱丝杠",
+                    "lookup_themes": ["机器人执行器"],
+                    "mapping_basis": "narrowest_structured_board_alias",
+                    "success": True,
+                    "coverage_complete": True,
+                    "candidate_count": 1,
+                    "items": [{
+                        "symbol": "300580", "name": "贝斯特",
+                        "boards": ["机器人执行器"],
+                        "matched_domains": ["行星滚柱丝杠"],
+                    }],
+                },
+                {
+                    "domain": "减速器",
+                    "lookup_themes": ["减速器"],
+                    "mapping_basis": "exact_concept_board",
+                    "success": True,
+                    "coverage_complete": True,
+                    "candidate_count": 1,
+                    "items": [{
+                        "symbol": "688017", "name": "绿的谐波",
+                        "boards": ["减速器"],
+                        "matched_domains": ["减速器"],
+                    }],
+                },
+            ],
+        }
+
+        compact = _compact_tool_result("get_domain_stock_candidates", payload)
+
+        self.assertEqual(len(compact["domain_results"]), 2)
+        self.assertEqual(compact["domain_results"][0]["items"][0]["symbol"], "300580")
+        self.assertEqual(compact["domain_results"][1]["items"][0]["symbol"], "688017")
+        self.assertEqual(
+            compact["_tool_payload_meta"]["compaction_reason"],
+            "complete_multi_domain_candidate_indexes",
+        )
+
     def test_theme_candidate_payload_keeps_bounded_local_verified_pool(self) -> None:
         payload = {
             "success": True,
@@ -522,6 +571,12 @@ class AgentReactLoopFallbackTestCase(unittest.IsolatedAsyncioTestCase):
 
         with patch("api.v1.endpoints.agent.chat.MAX_REACT_ITERATIONS", 1), \
              patch("api.v1.endpoints.agent.chat._registry", _FakeRegistry()), \
+             patch(
+                 "api.v1.endpoints.agent.chat.resolve_research_intent",
+                 new=AsyncMock(return_value=ResearchIntent(
+                     kind="general_question", objective="通用研究",
+                 )),
+             ), \
              patch("api.v1.endpoints.agent.chat.litellm.acompletion", side_effect=[first_response, final_response]):
             await _run_react_loop(
                 controller,

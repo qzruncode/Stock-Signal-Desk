@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -238,6 +238,12 @@ def test_history_persisted_at_generation_start(client):
 
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
+         patch(
+             "api.v1.endpoints.agent.chat.resolve_research_intent",
+             new=AsyncMock(return_value=chat_mod.ResearchIntent(
+                 kind="general_question", objective="回复用户",
+             )),
+         ), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm, \
          patch("api.v1.endpoints.agent.chat._flush_substreams", new=MagicMock()), \
          patch("src.services.agent_prompt_service.AgentPromptService") as PS, \

@@ -106,6 +106,9 @@ def test_tool_probe_timeout_is_reported_as_failure():
 
 def test_tool_probe_uses_professional_timeout_for_crawled_websearch():
     assert tool_registry_meta._execution_timeout(
+        "get_multi_stock_snapshot", {},
+    ) == tool_registry_meta._PROFESSIONAL_TOOL_TIMEOUT_SECONDS
+    assert tool_registry_meta._execution_timeout(
         "websearch", {"includeContent": True},
     ) == tool_registry_meta._PROFESSIONAL_TOOL_TIMEOUT_SECONDS
     assert tool_registry_meta._execution_timeout(
@@ -121,6 +124,7 @@ def test_tool_probe_uses_professional_timeout_for_crawled_websearch():
 
 def test_tool_registry_keeps_specialized_categories():
     tools = {tool.name: tool_registry_meta._build_tool_meta(tool) for tool in tool_registry_meta._registry._tools.values()}
+    assert tools["get_domain_stock_candidates"].category == "research"
     assert tools["get_theme_stock_candidates"].category == "research"
     assert tools["get_regulatory_updates"].category == "regulatory"
     assert tools["get_announcements"].category == "events"

@@ -47,7 +47,7 @@ const getConversationHydrationKey = (detail: ChatConversationDetail): string => 
   ].join('|');
 };
 
-const hasToolParts = (threadState: ChatConversationDetail['threadState']): boolean => {
+const hasRichParts = (threadState: ChatConversationDetail['threadState']): boolean => {
   if (!threadState?.messages?.length) return false;
   return threadState.messages.some((entry) => {
     const content = entry.message?.content;
@@ -55,7 +55,7 @@ const hasToolParts = (threadState: ChatConversationDetail['threadState']): boole
       && content.some((part) => {
         if (!part || typeof part !== 'object') return false;
         const partType = (part as Record<string, unknown>).type;
-        return partType === 'tool-call' || partType === 'tool-result';
+        return partType === 'tool-call' || partType === 'tool-result' || partType === 'reasoning';
       });
   });
 };
@@ -129,7 +129,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
 
     const isGenerating = conversationDetail.isGenerating === true;
     const canReplayStream = conversationDetail.resumeState?.active === true;
-    const threadStateHasToolParts = hasToolParts(conversationDetail.threadState);
+    const threadStateHasRichParts = hasRichParts(conversationDetail.threadState);
     const retainedFinalText = (conversationDetail.resumeState?.assistantText || '').trim();
     const lastAssistantText = getLastAssistantText(conversationDetail.messages);
     const retainedTextMismatch = Boolean(
@@ -138,7 +138,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     const shouldReplayStream = isGenerating
       || (canReplayStream
         && (
-          (conversationDetail.resumeState?.hasToolEvents === true && !threadStateHasToolParts)
+          (conversationDetail.resumeState?.hasToolEvents === true && !threadStateHasRichParts)
           || retainedTextMismatch
         ));
     const pendingId = `${conversationDetail.id}${PENDING_ASSISTANT_SUFFIX}`;
@@ -154,9 +154,10 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     // 纯文本历史以 messages 为权威来源。threadState 是 assistant-ui 的内部
     // 导出格式，旧版本或外部写入的精简快照可能缺少 createdAt/metadata 等字段；
     // 无条件 import 会让消息区只剩空白 assistant 气泡。只有工具消息确实需要
-    // 保留工具卡片时才导入，并在格式不兼容时可靠回退到标准消息列表。
+    // 保留工具卡片、或思考消息需要保留 reasoning part 时才导入，并在格式
+    // 不兼容时可靠回退到标准消息列表。
     const canImportThreadState = !shouldReplayStream
-      && threadStateHasToolParts
+      && threadStateHasRichParts
       && Boolean(conversationDetail.threadState?.messages?.length);
     if (canImportThreadState) {
       try {
