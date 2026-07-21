@@ -19,12 +19,20 @@ def _theme_result(theme: str) -> dict:
             {"symbol": "688017", "name": "绿的谐波", "boards": ["人形机器人"], "evidence_level": "L1"},
         ]
     else:
-        items = [{
-            "symbol": "300580",
-            "name": "贝斯特",
-            "boards": ["机器人执行器"],
-            "evidence_level": "L1",
-        }]
+        items = [
+            {
+                "symbol": "300580",
+                "name": "贝斯特",
+                "boards": ["机器人执行器"],
+                "evidence_level": "L1",
+            },
+            {
+                "symbol": "688017",
+                "name": "绿的谐波",
+                "boards": ["机器人执行器"],
+                "evidence_level": "L1",
+            },
+        ]
     return {
         "success": True,
         "partial": False,
@@ -71,8 +79,12 @@ def test_multi_domain_tool_maps_every_domain_and_reuses_shared_board_fetch() -> 
     assert result["domain_results"][2]["lookup_themes"] == ["机器人执行器"]
     assert result["domain_results"][3]["lookup_themes"] == ["机器人执行器"]
     assert result["candidate_count"] == 2
+    assert result["inferred_context_themes"] == ["人形机器人", "机器人概念"]
     robot_item = next(item for item in result["items"] if item["symbol"] == "300580")
     assert robot_item["matched_domains"] == ["行星滚柱丝杠", "无框力矩电机", "空心杯电机"]
+    reducer_item = next(item for item in result["items"] if item["symbol"] == "688017")
+    assert reducer_item["boards"] == ["机器人执行器", "减速器"]
+    assert reducer_item["lookup_themes"] == ["机器人执行器", "减速器"]
     assert result["source_scope"] == "structured_concept_constituents_intersected_with_local_stock_meta"
 
 

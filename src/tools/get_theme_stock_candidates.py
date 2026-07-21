@@ -55,6 +55,7 @@ def _canonical_theme(theme: str) -> str:
     wrapper_markers = (
         "请", "只", "梳理", "查找", "寻找", "完整", "精确", "相关",
         "主题", "候选", "股票", "个股", "公司", "标的", "a股",
+        "产业链", "上游", "核心零部件", "方向", "赛道",
     )
     if any(marker in normalized.lower() for marker in wrapper_markers):
         return next((candidate for candidate in known if candidate in normalized), normalized)

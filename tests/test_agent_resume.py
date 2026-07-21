@@ -226,6 +226,22 @@ def test_history_persisted_at_generation_start(client):
     snapshot_calls: list = []
 
     real_snapshot = chat_mod.ChatSessionService.save_conversation_snapshot
+    plan = chat_mod.TaskPlan.model_validate({
+        "tasks": [{
+            "task_id": "answer",
+            "kind": "general_response",
+            "objective": "回复用户",
+            "entity_scope": "none",
+            "entities": [],
+            "parameters": {},
+            "depends_on": [],
+            "output_requirements": [],
+            "confirmation": "not_required",
+            "confidence": 1.0,
+        }],
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
 
     def spy_snapshot(self, conversation_id, messages, thread_state=None, skip_title=False):
         snapshot_calls.append({
@@ -239,13 +255,11 @@ def test_history_persisted_at_generation_start(client):
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
          patch(
-             "api.v1.endpoints.agent.chat.resolve_research_intent",
-             new=AsyncMock(return_value=chat_mod.ResearchIntent(
-                 kind="general_question", objective="回复用户",
-             )),
+             "api.v1.endpoints.agent.chat.resolve_task_plan",
+             new=AsyncMock(return_value=plan),
          ), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm, \
-         patch("api.v1.endpoints.agent.chat._flush_substreams", new=MagicMock()), \
+         patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()), \
          patch("src.services.agent_prompt_service.AgentPromptService") as PS, \
          patch.object(chat_mod.ChatSessionService, "save_conversation_snapshot", spy_snapshot):
         PS.return_value.get_active_system_prompt.return_value = ("sys", False)

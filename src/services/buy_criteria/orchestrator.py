@@ -1,5 +1,5 @@
 # src/services/buy_criteria/orchestrator.py
-"""Orchestrates sequential execution of 8 criterion evaluators with SSE output."""
+"""Orchestrate the single authoritative sequential buy-decision chain."""
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +13,24 @@ from src.services.buy_criteria.base import CriterionResult
 from src.services.buy_criteria.evaluators import EVALUATOR_CLASSES
 
 logger = logging.getLogger(__name__)
+
+
+def _cache_matches_current_contract(cached: dict[str, Any] | None) -> bool:
+    """Reject records produced by the retired eight-gate sequence."""
+    if not isinstance(cached, dict):
+        return False
+    results = [item for item in cached.get("results") or [] if isinstance(item, dict)]
+    if not results:
+        return False
+    expected = [evaluator.criterion_id for evaluator in EVALUATOR_CLASSES]
+    actual = [str(item.get("criterion_id") or "") for item in results]
+    if actual != expected[:len(actual)]:
+        return False
+    if not all(item.get("passed") is True for item in results[:-1]):
+        return False
+    if len(actual) == len(expected):
+        return results[-1].get("passed") in {True, False}
+    return results[-1].get("passed") is False
 
 
 def _format_sse(event_type: str, data: dict[str, Any]) -> str:
@@ -31,7 +49,7 @@ def _get_stock_info_safe(symbol: str) -> dict[str, Any]:
 
 
 class CriterionOrchestrator:
-    """Runs 8 evaluators sequentially. Stops on first failure. Emits SSE events."""
+    """Run every gate in order, stop at the first failure, and fail closed."""
 
     def run(
         self,
@@ -39,6 +57,7 @@ class CriterionOrchestrator:
         pre_fetched_data: dict[str, Any] | None = None,
         *,
         save_to_db: bool = True,
+        thesis: str = "",
     ) -> list[CriterionResult]:
         """Run all evaluators. Returns list of results (may be partial if early-terminated).
 
@@ -48,12 +67,28 @@ class CriterionOrchestrator:
         from src.services.buy_criteria.data_service import _clear_cache
 
         _clear_cache()
-        results = self._run_evaluators(symbol, pre_fetched_data)
+        results = self._run_evaluators(symbol, pre_fetched_data, thesis=thesis)
 
         if save_to_db and results:
             self._save_results(symbol, results)
 
         return results
+
+    def analyze_for_agent(self, symbol: str, *, thesis: str = "") -> dict[str, Any]:
+        """Return a fresh, complete decision envelope for the conversational Agent.
+
+        Agent requests are never served from the date-only page cache because
+        both the referenced investment thesis and the current entry position
+        can change between questions on the same day.
+        """
+        results = self.run(symbol, save_to_db=False, thesis=thesis)
+        summary = self._build_batch_summary(
+            [result.to_dict() for result in results],
+            from_cache=False,
+        )
+        summary["symbol"] = symbol
+        summary["thesis"] = thesis or None
+        return summary
 
     def analyze_for_batch(
         self,
@@ -78,7 +113,7 @@ class CriterionOrchestrator:
             except Exception as exc:
                 logger.warning("[buy_criteria] cache lookup failed for %s: %s", symbol, exc)
                 cached = None
-            if cached is not None:
+            if _cache_matches_current_contract(cached):
                 logger.info("[buy_criteria] batch reusing cached result for %s", symbol)
                 return self._build_batch_summary(cached.get("results", []), from_cache=True)
 
@@ -102,6 +137,7 @@ class CriterionOrchestrator:
                 "index": r.get("index"),
                 "passed": bool(r.get("passed")),
                 "verdict": str(r.get("verdict") or ""),
+                "details": r.get("details") if isinstance(r.get("details"), dict) else {},
             }
             for r in result_dicts
         ]
@@ -109,8 +145,16 @@ class CriterionOrchestrator:
         failed_count = sum(1 for c in criteria if not c["passed"])
         not_evaluated = max(0, total - len(criteria))
         stopped = next((c for c in criteria if not c["passed"]), None)
+        coverage_complete = len(criteria) == total
         final_decision = (
-            "可买入" if passed_count == total and failed_count == 0 else "不可买入"
+            "可买入"
+            if coverage_complete and passed_count == total and failed_count == 0
+            else "不可买入"
+        )
+        entry_details = (
+            criteria[-1].get("details")
+            if coverage_complete and criteria and criteria[-1].get("criterion_id") == "entry_risk_reward"
+            else {}
         )
         return {
             "final_decision": final_decision,
@@ -122,6 +166,12 @@ class CriterionOrchestrator:
             "stopped_at_name": stopped["criterion_name"] if stopped else None,
             "stopped_verdict": stopped["verdict"] if stopped else "",
             "criteria": criteria,
+            "coverage_complete": coverage_complete,
+            "position_advice": {
+                "initial_position_pct": entry_details.get("recommended_initial_position_pct", 0),
+                "max_position_pct": entry_details.get("recommended_max_position_pct", 0),
+            },
+            "invalidation_conditions": entry_details.get("invalidation_conditions", []),
             "from_cache": from_cache,
         }
 
@@ -129,9 +179,12 @@ class CriterionOrchestrator:
         self,
         symbol: str,
         pre_fetched_data: dict[str, Any] | None = None,
+        *,
+        thesis: str = "",
     ) -> list[CriterionResult]:
         """Core evaluator loop: collect + evaluate, stop on first failure."""
-        stock_info = _get_stock_info_safe(symbol)
+        stock_info = dict(_get_stock_info_safe(symbol))
+        stock_info["_investment_thesis"] = str(thesis or "").strip()
         results: list[CriterionResult] = []
 
         for evaluator_cls in EVALUATOR_CLASSES:
@@ -154,13 +207,14 @@ class CriterionOrchestrator:
         trade_date = date_type.today()
         passed_count = sum(1 for r in results if r.passed)
         failed_count = sum(1 for r in results if not r.passed)
-        not_evaluated = 8 - len(results)
+        total = len(EVALUATOR_CLASSES)
+        not_evaluated = total - len(results)
         stopped_at = next((r.criterion_id for r in results if not r.passed), None)
-        final_decision = "可买入" if passed_count == 8 and failed_count == 0 else "不可买入"
+        final_decision = "可买入" if passed_count == total and failed_count == 0 else "不可买入"
         summary_parts = [f"{passed_count}项通过"]
         if failed_count:
             summary_parts.append(f"{failed_count}项未通过")
-        summary = "，".join(summary_parts) + ("，可买入" if passed_count == 8 else "，不可买入")
+        summary = "，".join(summary_parts) + ("，可买入" if passed_count == total else "，不可买入")
 
         stock_name = _get_stock_info_safe(symbol).get("name") or symbol
         results_dicts = [r.to_dict() for r in results]
@@ -183,7 +237,7 @@ class CriterionOrchestrator:
             )
             logger.info(
                 "[buy_criteria] saved %s result to DB (%s, %d/%d passed)",
-                symbol, final_decision, passed_count, 8,
+                symbol, final_decision, passed_count, total,
             )
         except Exception as exc:
             logger.error("[buy_criteria] failed to save record for %s: %s", symbol, exc)
@@ -213,7 +267,7 @@ class CriterionOrchestrator:
                 db = get_db()
                 cached = db.get_buy_criteria_record(symbol, trade_date)
 
-                if cached is not None:
+                if _cache_matches_current_contract(cached):
                     # Stream cached results with a "cached" event first
                     logger.info(
                         "[buy_criteria] serving cached result for %s @ %s",
@@ -270,13 +324,14 @@ class CriterionOrchestrator:
 
                 passed_count = sum(1 for r in results if r.passed)
                 failed_count = sum(1 for r in results if not r.passed)
-                not_evaluated = 8 - len(results)
+                total = len(EVALUATOR_CLASSES)
+                not_evaluated = total - len(results)
                 stopped_at = next((r.criterion_id for r in results if not r.passed), None)
-                final_decision = "可买入" if passed_count == 8 and failed_count == 0 else "不可买入"
+                final_decision = "可买入" if passed_count == total and failed_count == 0 else "不可买入"
                 summary_parts = [f"{passed_count}项通过"]
                 if failed_count:
                     summary_parts.append(f"{failed_count}项未通过")
-                summary = "，".join(summary_parts) + ("，可买入" if passed_count == 8 else "，不可买入")
+                summary = "，".join(summary_parts) + ("，可买入" if passed_count == total else "，不可买入")
 
                 # ── Step 3: Save to DB ────────────────────────────────────────
                 CriterionOrchestrator._save_results(symbol, results)

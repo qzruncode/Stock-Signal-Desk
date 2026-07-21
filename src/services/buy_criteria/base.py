@@ -28,6 +28,7 @@ class CriterionResult:
     passed: bool
     verdict: str
     evidence: CriterionEvidence = field(default_factory=CriterionEvidence)
+    details: dict[str, Any] = field(default_factory=dict)
     prompt_text: str = ""
     analyzed_at: str = ""
 
@@ -46,17 +47,20 @@ class CriterionResult:
                 "raw_data": self.evidence.raw_data,
                 "data_summary": self.evidence.data_summary,
             },
+            "details": self.details,
             "prompt_text": self.prompt_text,
             "analyzed_at": self.analyzed_at,
         }
 
 
 class BaseCriterionEvaluator(ABC):
-    """Abstract base class for all 8 criterion evaluators."""
+    """Abstract base class for one gate in the strict buy-decision chain."""
 
     criterion_id: str = ""
     criterion_name: str = ""
     index: int = -1
+    max_output_tokens: int = 2048
+    max_llm_attempts: int = 2
 
     @abstractmethod
     def collect_data(
@@ -77,6 +81,11 @@ class BaseCriterionEvaluator(ABC):
         """Return the judgment rubric text for the LLM prompt."""
         ...
 
+    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+        """Return a fail-closed reason for a critical evidence outage."""
+        del evidence
+        return None
+
     def build_user_prompt(self, stock_info: dict[str, Any], evidence: CriterionEvidence) -> str:
         """Build the user prompt. Rubric is self-contained (role + criteria + JSON format).
 
@@ -93,9 +102,20 @@ class BaseCriterionEvaluator(ABC):
         """Full evaluation: collect_data → LLM → result. Handles retry."""
         evidence = self.collect_data(symbol, stock_info, pre_fetched_data)
         user_prompt = self.build_user_prompt(stock_info, evidence)
+        evidence_failure = self.evidence_failure_reason(evidence)
+        if evidence_failure:
+            return CriterionResult(
+                criterion_id=self.criterion_id,
+                criterion_name=self.criterion_name,
+                index=self.index,
+                passed=False,
+                verdict=evidence_failure,
+                evidence=evidence,
+                prompt_text=user_prompt,
+            )
 
         result, error_msg = self._call_llm(user_prompt, attempt=0)
-        if result is None:
+        if result is None and self.max_llm_attempts > 1:
             # Retry once
             result, retry_error = self._call_llm(user_prompt, attempt=1)
             if retry_error:
@@ -124,6 +144,7 @@ class BaseCriterionEvaluator(ABC):
             passed=bool(passed),
             verdict=verdict,
             evidence=evidence,
+            details=result.get("details") if isinstance(result.get("details"), dict) else {},
             prompt_text=user_prompt,
         )
 
@@ -139,9 +160,8 @@ class BaseCriterionEvaluator(ABC):
         # Custom validator that handles markdown code fences — the default
         # json.loads validator in call_ai_structured rejects fenced JSON.
         def _fence_aware_validator(text: str) -> None:
-            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip())
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-            json.loads(cleaned)
+            if _parse_verdict_json(text) is None:
+                raise ValueError("response does not contain an extractable JSON object")
 
         try:
             analyzer = get_analyzer()
@@ -151,7 +171,7 @@ class BaseCriterionEvaluator(ABC):
                 user_prompt=user_prompt,
                 call_type=f"buy_criteria_{self.criterion_id}",
                 temperature=0.2,
-                max_tokens=2048,
+                max_tokens=self.max_output_tokens,
                 response_validator=_fence_aware_validator,
             )
             persist_llm_usage(usage, model_used, f"buy_criteria_{self.criterion_id}")

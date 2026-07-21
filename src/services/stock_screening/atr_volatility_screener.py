@@ -175,6 +175,18 @@ def _fetch_financial_period(period: str) -> dict[str, dict[str, Any]]:
     return by_code
 
 
+def fetch_financial_period_snapshot(period: str) -> dict[str, dict[str, Any]]:
+    """Return one complete report-period snapshot from the financial provider.
+
+    This is the shared provider boundary for workflows that need an exact
+    fiscal-year value.  Callers own their cache policy; the low-level fetch and
+    revised-filing merge semantics remain identical to the all-market screener.
+    """
+    if not re.fullmatch(r"\d{4}-(?:03-31|06-30|09-30|12-31)", period):
+        raise ValueError("period must be a supported financial report date")
+    return _fetch_financial_period(period)
+
+
 def _build_ttm_financials(reference: date | None = None) -> tuple[dict[str, dict[str, Any]], str]:
     current_period, annual_period, prior_same_period = _report_dates(reference)
     periods = [current_period]

@@ -17,7 +17,7 @@ from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-# 模块级缓存：避免 ReAct 每次请求都查 DB。
+# 模块级缓存：避免标准任务流水线每次请求都查 DB。
 # 缓存值为 (content, is_fallback)；写入操作（create/update/delete/set_active）触发失效。
 # 不缓存异常回退路径，避免把瞬时错误固化。
 _cached_active_prompt: Optional[Tuple[str, bool]] = None

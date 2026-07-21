@@ -3,17 +3,15 @@
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from api.v1.endpoints.agent import (
     _assess_tool_data_health,
     _compact_tool_result,
     _format_result,
     _maybe_attach_search_fallback,
-    _run_react_loop,
 )
 from src.tools.registry import ToolRegistry
-from src.agent.research_intent import ResearchIntent
 
 
 class AgentToolResultCompactionTestCase(unittest.TestCase):
@@ -544,47 +542,3 @@ class _FakeController:
 
     async def add_tool_call(self, _tool_name, tool_call_id=None):
         return _FakeToolStream()
-
-
-class AgentReactLoopFallbackTestCase(unittest.IsolatedAsyncioTestCase):
-    async def test_forces_final_summary_when_iterations_are_exhausted(self) -> None:
-        first_response = _FakeResponse([
-            _FakeChunk(_FakeDelta(tool_calls=[
-                _FakeToolCall("get_risk_events", "{\"symbol\": \"002284\"}"),
-            ])),
-        ])
-        final_response = _FakeResponse([
-            _FakeChunk(_FakeDelta(content="最终结论：亚太股份短线弹性更高，但风险也更大。")),
-        ])
-        controller = _FakeController()
-        llm_cfg = {"model": "test-model"}
-
-        class _FakeRegistry:
-            def get_all_schemas(self):
-                return [{"type": "function", "function": {"name": "get_risk_events"}}]
-
-            def get_tool_names(self):
-                return ["get_risk_events"]
-
-            def execute(self, tool_name, args):
-                return {"tool": tool_name, "args": args, "items": []}
-
-        with patch("api.v1.endpoints.agent.chat.MAX_REACT_ITERATIONS", 1), \
-             patch("api.v1.endpoints.agent.chat._registry", _FakeRegistry()), \
-             patch(
-                 "api.v1.endpoints.agent.chat.resolve_research_intent",
-                 new=AsyncMock(return_value=ResearchIntent(
-                     kind="general_question", objective="通用研究",
-                 )),
-             ), \
-             patch("api.v1.endpoints.agent.chat.litellm.acompletion", side_effect=[first_response, final_response]):
-            await _run_react_loop(
-                controller,
-                [{"role": "user", "content": "做一次需要风险工具的通用研究"}],
-                llm_cfg,
-            )
-
-        combined = "".join(controller.text_parts)
-        self.assertEqual(combined.count("正在拆解问题并规划研究路径"), 1)
-        self.assertNotIn("正在整理证据并形成结论", combined)
-        self.assertIn("最终结论：亚太股份短线弹性更高，但风险也更大。", combined)

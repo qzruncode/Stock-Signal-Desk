@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Agent Chat endpoint — ReAct loop with assistant-stream DataStreamResponse.
+Agent Chat endpoint — policy-validated standard-task pipeline with
+assistant-stream DataStreamResponse.
 
 POST /api/v1/agent/chat
 
@@ -17,7 +18,7 @@ import re
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import litellm
 from assistant_stream.serialization.data_stream import DataStreamResponse
@@ -44,26 +45,35 @@ from src.agent.runtime_safety import (
     validate_chat_request_body,
 )
 from src.agent.progress import strip_agent_progress
-from src.agent.analysis_playbooks import (
+from src.agent.result_contracts import (
     AnalysisPlaybook,
+    CollectionFinancialFilterSpec,
     INDUSTRY_CHAIN,
     INVESTMENT_DECISION,
+    MappingSelectionContext,
     STOCK_DEEP_RESEARCH,
     THEME_COMPANY_MAPPING,
-    QUANTITATIVE_SCREENING,
-    COLLECTION_FINANCIAL_FILTER,
-    mandatory_tool_calls,
-    select_playbook_for_intent,
 )
-from src.agent.research_intent import (
-    CollectionFinancialFilterSpec,
-    ResearchIntent,
-    SemanticIntentUnavailableError,
-    resolve_research_intent,
+from src.agent.evidence_facts import BoundEvidenceFact
+from src.agent.task_executor import PlanExecutionResult, WorkflowExecutor
+from src.agent.task_planner import (
+    TaskPlanValidationError,
+    TaskPlannerUnavailableError,
+    resolve_plan_entities,
+    resolve_task_plan,
 )
-from src.agent.evidence_facts import BoundEvidenceFact, bind_company_evidence
+from src.agent.task_workflows import (
+    StandardTaskKind,
+    TaskPlan,
+    WorkflowCall,
+    workflow_for,
+)
 from src.tools.registry import ToolRegistry
-from src.tools.process_runner import execute_tool_isolated
+from src.tools.process_runner import (
+    ISOLATED_TOOL_NAMES,
+    STATEFUL_TOOL_NAMES,
+    execute_tool_isolated,
+)
 from src.llm.anthropic_gateway import (
     AnthropicGatewayConfigError,
     build_litellm_kwargs,
@@ -80,14 +90,13 @@ from src.tools.symbols import (
 
 logger = logging.getLogger(__name__)
 
-MAX_REACT_ITERATIONS = 6
-MAX_TOOL_CALLS_PER_RUN = 10
-MAX_TOOL_CALLS_PER_ROUND = 4
-MAX_AGENT_RUN_SECONDS = 120.0
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
 PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS = 90.0
+STRICT_BUY_DECISION_TIMEOUT_SECONDS = 300.0
+CATALYST_ANALYSIS_TIMEOUT_SECONDS = 180.0
 QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
 FINAL_SYNTHESIS_TIMEOUT_SECONDS = 60.0
+STANDARD_TASK_PLAN_TIMEOUT_SECONDS = 78.0
 
 # controller 产出层:当前生产路径走自建后台运行时的 RunBroadcaster (方法名与
 # assistant-stream 的 RunController 对齐:append_text/add_tool_call/add_data/
@@ -97,55 +106,19 @@ ControllerLike = RunBroadcaster
 _registry = ToolRegistry()
 
 SYSTEM_PROMPT = """\
-你是一个可靠的通用 AI 助手，同时是一位资深股票分析助手。日常知识、写作、解释、计算、规划等非股票问题按用户原意直接处理；涉及股票时，基于可追溯数据完成研究、比较、风险识别和情景分析，帮助用户形成判断。不要把普通问题强行改写成股票任务，也不要把股票资讯检索自动升级为投资决策。
+你是可靠的通用 AI 助手和 A 股研究写作助手。任务拆分、工具权限、执行顺序、并发、
+确认与交易安全均由程序控制；你只负责根据已经执行完成的标准任务及其证据撰写最终答案，
+不得重新规划、选择工具或声称执行了证据中没有的步骤。
 
-## 不可违反的原则
-1. 价格、财务、估值、预测、资金流、新闻和宏观数字必须来自工具；没有数据就明确写“缺失”，禁止猜测。
-2. 区分事实、计算结果、机构预测、媒体报道和你的推断。机构一致预期不是公司承诺，资金流口径不等同真实机构持仓，社交情绪不代表全市场。
-3. 每个关键结论必须能对应到工具证据，并注明数据日期/报告期和来源。数据陈旧、降级或抓取不完整时必须显式提示。
-4. 同时寻找支持证据和反证；风险、异常现金流、估值透支和预期落空可能性优先呈现。
-5. 使用中文和 Markdown；数字用千分位，百分比保留两位小数。不要输出虚假的精确目标价。
-
-## 工具优先级
-1. 结构化股票数据优先：行情/K线 → 财务报表 → 主营构成 → 估值与一致预期 → 同行比较 → 个股资金流。
-2. 个股消息优先 search_news、get_announcements、get_research_report、get_risk_events；普通市场/行业/宏观主题资讯直接用 search_financial_news，它会自动选择合适的 RSSHub 源，不要先查询源目录。
-3. 用户明确要求查看资讯源时用 list_financial_sources；要查看指定源的路由参数、动态主题或实例状态时用 inspect_financial_source；指定来源、筛选规则或强制刷新时用 read_financial_feed；要求阅读全文时用 read_financial_article，并在 has_more=true 时按 next_offset 继续直至读完；要求网页转 Feed 或下载 RSS/Atom/JSON Feed/RSS3 时，分别用 transform_webpage_to_feed、export_financial_feed。
-4. 只有结构化工具和 RSSHub 不足、为空或需要读取某个公开网页原文时，才使用 websearch；拿到具体 URL 后再按需用 webfetch。网页内容必须交叉验证，不能覆盖更权威的结构化或公告数据。
-5. 股票代码和名称由工具内部解析，不要为了代码确认单独浪费一次调用；只有身份存在歧义时才用 get_stock_info 核实。
-6. 对话里出现多家公司时，按问题只取必要数据：只按财务指标筛选时使用 get_multi_stock_financials；需要行情、估值和技术面综合比较时才使用 get_multi_stock_snapshot。集合超过12只可分批。拿到成功结果后直接回答，不要再为每家公司重复调用单股工具。
-7. 不得凭记忆猜证券代码。系统给出的“已核验证券实体”是唯一可信的名称/代码映射；缺失时把公司名称原样传给工具解析。
-8. 按代码或公司名称浏览股票使用 search_stocks；按产业领域、环节或产品方向找股票必须使用 get_domain_stock_candidates。禁止把“丝杠、减速器、电机”等业务词传给 search_stocks，也禁止用通用网页搜索生成股票候选。股票池缺失或过期时工具会自动维护，不要要求用户先手动同步。用户询问数据覆盖和更新时间时使用 get_data_health。
-9. 默认自选股使用 manage_watchlist；自定义分组使用 manage_watchlist_groups。只有用户明确要求查看或修改时才调用；分析、推荐或筛选结果不得擅自写入自选股。删除分组必须先确认具体分组。
-10. 用户明确要求生成会保存的正式分析报告或重新分析时调用 run_stock_analysis；用 get_analysis_status 查询进度，完成后用 read_analysis_report 读取正式结果。询问过去结论时先用 search_analysis_history，禁止凭对话记忆冒充历史报告。
-11. 用户明确要求批量分析时调用 run_batch_analysis；指定自选分组时使用 scope=group 和 group_name。范围超过 10 只必须先列明范围并请求确认。批量进度、暂停、继续、失败续跑和报告通过 manage_batch_run 管理。定时分析通过 manage_analysis_schedule 管理。
-12. 模板管理只使用 manage_analysis_templates。删除历史、删除模板、删除自选分组、停止或删除批量任务、修改定时计划属于高影响操作，必须得到用户对具体对象的明确确认后才传 confirmed=true。
-13. 通知渠道状态用 get_notification_status。只有用户明确说“发送、推送、通知我”时才调用 send_notification 或把 run_stock_analysis.notify_on_complete 设为 true；普通分析和生成报告默认不发送。通知凭据只能在设置页配置，禁止索取或展示 Webhook/Token。
-
-## 专业分析框架
-- 公司质量：主营构成、收入与利润趋势、ROE/毛利率/现金流、资产负债与股东变化。
-- 预期与估值：PE/PB/历史分位、同行估值、未来 EPS/净利润一致预期、预期兑现条件。
-- 技术与交易状态：趋势、MACD/RSI/ATR、量价、支撑阻力、个股与板块资金持续性。
-- 催化与风险：正式公告优先，其次研报与新闻；标明事件时间、信息级别和可能影响路径。
-- 市场环境：指数、市场宽度、板块轮动、利率与宏观变量；只在确实影响标的时展开。
-
-## 工作方式
-1. 先识别用户本轮要的是普通问答、集合内筛选、资讯检索/正文阅读，还是行情查询、单项研究、完整个股研究、同行比较、行业主题或风险检查。只有最后几类需要股票研究流程。
-2. 只回答用户这一轮真正问的范围，并结合最近对话解析“它、这些公司、上面提到的”等指代。指代仍不唯一时先简短确认，不要擅自选择对象。
-3. 用户说“我的自选/某个自选分组里哪些……”时，只使用 filter_watchlist_by_theme 在集合内部筛选；禁止在对话层调用 get_theme_stock_candidates、行情或投资决策工具来扩大范围。
-4. 用户要求“先搜索资讯，我指定/选择一条后再读取正文”时，本轮只搜索并列出可选资讯（标题、来源、时间、编号和简述），然后停止并等待用户选择；不得提前阅读全文、生成研究报告或调用投资决策证据。
-5. 用户指定某条资讯后，读取该条完整正文；只有用户继续要求分析影响或投资判断时，才进入相应研究流程。
-6. 每轮并行调用 1-4 个互补工具，整轮通常 2-6 个工具已经足够。只取能改变结论的证据；证据已足够时立即停止调用，禁止为了“更全面”重复检索同一维度。
-7. 多公司或组合问题优先 get_multi_stock_snapshot 一次批量取数；产业领域找股只用 get_domain_stock_candidates，并在返回候选后直接回答。只有用户确实问当前盘面、价格、估值、交易状态或买卖条件时才取行情、快照或决策证据。
-8. 公司、主题或产业关联必须区分“已形成相关收入/订单”“已送样或客户验证”“仅有技术储备/概念关联”，不得把候选关系写成已确认事实。
-9. 完整个股研究通常至少覆盖：get_stock_info/get_business_segments、get_financials、get_valuation_ratios/get_consensus_estimates、get_peer_comparison、get_technical_indicators/get_stock_capital_flow、公告与风险事件。按问题裁剪，不机械全调。
-10. 信息不足时继续补取；工具明确失败后不要用相同参数重试，改用其声明的降级路径或说明缺口。
-11. 单一季度的经营现金流可能有季节性，未取得同比或连续报告期数据时，只能描述当期差异，不能直接下结论为利润质量恶化、渠道压货或长期趋势。
-
-## 最终回答最低要求
-- 先给结论摘要，再列关键证据、反证/风险和仍缺失的信息。
-- 对投资判断给出“成立条件、失效条件、需要跟踪的指标”，而不是只给看多/看空标签。
-- 关键事实尽量用 Markdown 链接引用工具返回的原始来源；明确数据截至时间、主要来源、是否用了网页兜底，以及置信度（高/中/低）和原因。
-- 直接回答，不复述内部规划，不输出“第一步/接下来我会”等过程旁白。
+## 回答原则
+1. 普通知识、写作、解释和计算按用户原意回答；股票问题只覆盖用户本轮明确要求的范围。
+2. 价格、行情、财务、估值、预测、资金流、新闻、公告、宏观数字和证券身份，只能使用本轮
+   success=true 的证据。没有证据就明确写“缺失”，不得依靠记忆补数字、代码或公司事实。
+3. 区分事实、计算结果、机构预测、媒体报道和推断；说明日期、报告期、来源、数据陈旧或降级。
+4. 同时呈现支持证据与反证/风险。投资分析给出成立条件、失效条件和跟踪指标，不输出虚假精确目标价。
+5. 多任务结果按依赖关系合并；失败或被阻止的任务明确写出，不得把部分成功包装成全部完成。
+6. 使用中文和紧凑 Markdown，先给直接结论，再给关键证据和必要风险。不要复述内部任务计划、
+   工具名、调用过程或“接下来我会”等过程旁白。
 """
 
 def _strip_progress_markers(text: str) -> str:
@@ -163,42 +136,6 @@ def _last_user_text(messages: List[Dict[str, Any]]) -> str:
         if isinstance(content, list):
             return _join_text_parts(content)
     return ""
-
-
-def _resolve_turn_policy(intent: ResearchIntent) -> Dict[str, Any]:
-    """Derive execution limits from the validated semantic intent enum."""
-    is_casual = intent.kind == "casual"
-    return {
-        "name": "casual" if is_casual else "general_agent",
-        "allowed_tools": set() if is_casual else None,
-        "max_tool_calls": MAX_TOOL_CALLS_PER_RUN,
-        "max_discovery_calls": None,
-        "require_tools": False,
-        "guidance": (
-            "闲聊无需调用工具。"
-            if is_casual
-            else "按当前问题选择最少且互补的工具；涉及实时或外部事实必须取证。多证券任务必须批量查询。"
-        ),
-    }
-
-
-def _semantic_tool_boundary(intent: Optional[ResearchIntent]) -> tuple[Optional[set[str]], Optional[int]]:
-    """Limit retrieval/workflow turns without constraining open-ended research."""
-    if intent is None:
-        return None, None
-    if intent.kind == "watchlist_query":
-        return {"filter_watchlist_by_theme"}, 1
-    if intent.kind == "news_search":
-        return {"search_news", "search_financial_news"}, 2
-    if intent.kind == "article_read":
-        return {"read_financial_article", "webfetch"}, 2
-    if intent.kind == "collection_financial_filter":
-        return {"get_multi_stock_financials"}, MAX_TOOL_CALLS_PER_RUN
-    if intent.kind == "theme_company_mapping":
-        if intent.company_mapping_mode == "business_evidence":
-            return None, None
-        return {"get_domain_stock_candidates"}, 1
-    return None, None
 
 
 def _previous_answer_table_entities(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -231,150 +168,6 @@ def _previous_answer_table_entities(messages: List[Dict[str, Any]]) -> List[Dict
     return []
 
 
-def _entities_for_semantic_intent(
-    intent: ResearchIntent,
-    *,
-    current_entities: List[Dict[str, str]],
-    previous_answer_entities: List[Dict[str, str]],
-) -> List[Dict[str, str]]:
-    """Resolve the model-selected scope against the local security dictionary."""
-    if intent.entity_scope == "previous_answer":
-        return previous_answer_entities
-    semantic_entities = find_securities_in_text("、".join(intent.entities), limit=20)
-    if intent.entity_scope == "current_message":
-        candidates = [*current_entities, *semantic_entities]
-    elif intent.entity_scope == "conversation":
-        candidates = [*semantic_entities, *previous_answer_entities]
-    else:
-        candidates = semantic_entities
-    resolved: List[Dict[str, str]] = []
-    seen_symbols: set[str] = set()
-    for entity in candidates:
-        symbol = str(entity.get("symbol") or "")
-        if not symbol or symbol in seen_symbols:
-            continue
-        seen_symbols.add(symbol)
-        resolved.append(entity)
-    return resolved[:20]
-
-
-def _entity_context_text(
-    entities: List[Dict[str, str]],
-    *,
-    semantic_scope: Optional[str] = None,
-) -> str:
-    if not entities:
-        return "本轮语义范围没有已核验证券实体；禁止猜测证券代码。"
-    mapping = "、".join(f"{item['name']}={item['symbol']}" for item in entities)
-    scope = f"，语义范围={semantic_scope}" if semantic_scope else ""
-    return f"已核验证券实体（来自本地 stock_meta{scope}，禁止扩展范围）：{mapping}"
-
-
-def _coalesce_multi_security_calls(
-    calls: List[Dict[str, Any]],
-    *,
-    verified_entities: Optional[List[Dict[str, str]]] = None,
-    referential_followup: bool = False,
-) -> List[Dict[str, Any]]:
-    """Collapse repeated quote/technical calls into one batch snapshot call."""
-    batchable_names = {"get_realtime_quotes", "get_technical_indicators"}
-    batch_indexes: List[int] = []
-    raw_symbols: List[str] = []
-    for index, call in enumerate(calls):
-        if str(call.get("name") or "").strip() not in batchable_names:
-            continue
-        try:
-            arguments = json.loads(call.get("arguments") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            arguments = {}
-        value = arguments.get("symbols") or arguments.get("symbol")
-        if isinstance(value, str) and value.strip():
-            batch_indexes.append(index)
-            raw_symbols.extend(
-                part.strip()
-                for part in value.replace("，", ",").split(",")
-                if part.strip()
-            )
-    unique_symbols = list(dict.fromkeys(raw_symbols))
-    if len(batch_indexes) < 2 or len(unique_symbols) < 2:
-        return calls
-    if referential_followup and verified_entities:
-        # For “these companies / the ones above”, the model may emit remembered
-        # numeric codes.  Preserve its requested count but replace guessed codes
-        # with the recent deterministic entity map in conversation order.
-        unique_symbols = [
-            item["symbol"]
-            for item in verified_entities[: min(len(unique_symbols), 12)]
-        ]
-
-    first_index = batch_indexes[0]
-    synthetic = {
-        "id": calls[first_index].get("id") or f"call_{uuid.uuid4().hex}",
-        "name": "get_multi_stock_snapshot",
-        "arguments": json.dumps({"symbols": ",".join(unique_symbols)}, ensure_ascii=False),
-    }
-    batch_index_set = set(batch_indexes)
-    result: List[Dict[str, Any]] = []
-    for index, call in enumerate(calls):
-        if index == first_index:
-            result.append(synthetic)
-        elif index not in batch_index_set:
-            result.append(call)
-    return result
-
-
-def _select_balanced_multi_security_calls(
-    calls: List[Dict[str, Any]],
-    *,
-    limit: int = MAX_TOOL_CALLS_PER_ROUND,
-) -> List[Dict[str, Any]]:
-    """Choose complete evidence dimensions instead of truncating stock pairs.
-
-    Models often request the same tool once per compared company.  Taking the
-    first N calls can leave one company with valuation/business/risk evidence
-    and the other without it.  A successful batch snapshot already covers
-    quote valuation, technicals and latest-period fundamentals, so redundant
-    calls are removed and the remaining per-company calls are admitted as a
-    whole group by tool name.
-    """
-    batch = next(
-        (call for call in calls if call.get("name") == "get_multi_stock_snapshot"),
-        None,
-    )
-    if batch is None:
-        return calls[:limit]
-
-    covered = {"get_realtime_quotes", "get_technical_indicators"}
-
-    groups: Dict[str, List[Dict[str, Any]]] = {}
-    first_index: Dict[str, int] = {}
-    for index, call in enumerate(calls):
-        name = str(call.get("name") or "")
-        if call is batch or name in covered:
-            continue
-        groups.setdefault(name, []).append(call)
-        first_index.setdefault(name, index)
-
-    selected = [batch]
-    remaining = max(0, limit - 1)
-    for name in sorted(groups, key=lambda item: first_index[item]):
-        group = groups[name]
-        if len(group) > remaining:
-            continue
-        selected.extend(group)
-        remaining -= len(group)
-        if remaining == 0:
-            break
-    return selected
-
-
-# 兼容别名：历史代码与测试以 ``AgentModelConfigError`` 捕获网关配置缺失错误。
-# Phase 6 测试迁移后将移除此别名，统一改用 ``AnthropicGatewayConfigError``。
-AgentModelConfigError = AnthropicGatewayConfigError
-
-
-# 历史轮 tool 结果中的「明细数组」字段：这些是单次压缩保留给当前轮 LLM 看的细节，
-# 进入下一轮后已无价值（模型只引用最新结论），裁掉可显著降低 token 累积。
 _TOOL_DETAIL_ARRAY_KEYS = (
     "recent", "recent_periods", "history", "items", "top_movers", "bottom_movers",
     "inflow_top", "outflow_top", "top_holders", "holder_changes", "daily_trend",
@@ -412,7 +205,7 @@ def _slim_tool_content(result_str: str) -> str:
 
 # ---------------------------------------------------------------------------
 # 入站消息格式适配：前端（@assistant-ui/react-data-stream）发的是 AI SDK v5
-# 格式（content 为 part 数组），后端 ReAct 循环内部与 litellm/anthropic 用的是
+# 格式（content 为 part 数组），后端标准任务流水线与 litellm/anthropic 用的是
 # OpenAI 格式（tool_calls / tool_call_id + 字符串 content）。两类格式混发会让
 # litellm 的 anthropic 转换层静默丢弃历史 tool 数据（convert_to_anthropic_tool_result
 # 只认 text/image_url part 且要求顶层 tool_call_id）。这里在入口统一归一化。
@@ -473,7 +266,7 @@ def _convert_aisdk_tool(msg: Dict[str, Any]) -> Dict[str, Any]:
 
     转换后立即对 content 跑一次 _slim_tool_content：这是从前端回传的历史 tool 结果，
     属于更早轮次，明细数组对当前/后续轮无价值，裁掉省 token。本轮新加的 tool 消息
-    由 _run_react_loop 末尾的 current_tool_ids 逻辑负责（保完整）。
+    由本轮 Workflow Executor 直接持有（保完整）。
     """
     parts = msg.get("content") or []
     tool_result = next(
@@ -979,11 +772,173 @@ def _build_professional_decision_fallback(
     )
 
 
+_STRICT_BUY_GATE_IDS = (
+    "mainline_position",
+    "industrial_competitiveness",
+    "growth_space",
+    "prosperity_cycle",
+    "competition_landscape",
+    "catalyst_events",
+    "fatal_risks",
+    "valuation_level",
+    "entry_risk_reward",
+)
+
+
+def _build_strict_buy_decision_answer(
+    evidence: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Render strict buy decisions and independently re-check the all-pass rule."""
+    packets = [
+        packet
+        for packet in evidence or []
+        if isinstance(packet, dict)
+        and packet.get("tool") == "evaluate_multi_stock_buy_criteria"
+    ]
+    if not packets:
+        return None
+
+    requested: List[str] = []
+    items_by_code: Dict[str, Dict[str, Any]] = {}
+    batch_errors: List[str] = []
+    data_times: List[str] = []
+    for packet in packets:
+        arguments = packet.get("arguments") if isinstance(packet.get("arguments"), dict) else {}
+        for code in re.split(r"[,，、;；]+", str(arguments.get("symbols") or "")):
+            code = code.strip()
+            if re.fullmatch(r"\d{6}", code) and code not in requested:
+                requested.append(code)
+        result = packet.get("result")
+        if not isinstance(result, dict):
+            continue
+        batch_errors.extend(str(error) for error in result.get("errors") or [] if error)
+        if result.get("data_time"):
+            data_times.append(str(result["data_time"]))
+        for item in result.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("symbol") or "").strip()
+            if re.fullmatch(r"\d{6}", code):
+                items_by_code[code] = item
+
+    missing = [code for code in requested if code not in items_by_code]
+    if not requested:
+        return (
+            "## 严格买入判断未执行\n\n"
+            "本轮没有取得可核验的股票代码，因此没有输出任何买入结论。"
+        )
+
+    def price(value: Any) -> str:
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    rows: List[str] = []
+    details_sections: List[str] = []
+    buyable: List[str] = []
+    for code in requested:
+        item = items_by_code.get(code)
+        if not isinstance(item, dict):
+            rows.append(f"| {code} | 数据未返回 | 未完成 | — | — | — | 0% |")
+            continue
+        name = str(item.get("name") or code)
+        criteria = [gate for gate in item.get("criteria") or [] if isinstance(gate, dict)]
+        gate_ids = tuple(str(gate.get("criterion_id") or "") for gate in criteria)
+        all_pass = (
+            gate_ids == _STRICT_BUY_GATE_IDS
+            and all(gate.get("passed") is True for gate in criteria)
+            and item.get("coverage_complete") is True
+            and item.get("final_decision") == "可买入"
+        )
+        conclusion = "可买入" if all_pass and not missing else "不可买入"
+        entry = criteria[-1].get("details") if all_pass and criteria else {}
+        entry = entry if isinstance(entry, dict) else {}
+        stopped_name = str(item.get("stopped_at_name") or "全部九项通过")
+        stopped_reason = str(item.get("stopped_verdict") or "—").rstrip("。；; ")
+        if all_pass and not missing:
+            buyable.append(f"{name} ({code})")
+            stop_text = "九项全部通过"
+            entry_zone = f"{price(entry.get('entry_zone_low'))}—{price(entry.get('entry_zone_high'))}"
+            stop_loss = price(entry.get("stop_loss"))
+            rr = price(entry.get("risk_reward_ratio"))
+            initial_position = int(entry.get("recommended_initial_position_pct") or 0)
+            max_position = int(entry.get("recommended_max_position_pct") or 0)
+            position_text = f"{initial_position}%试仓 / 最高{max_position}%"
+        else:
+            stop_text = stopped_name if stopped_name != "全部九项通过" else "集合覆盖未完成"
+            entry_zone = stop_loss = rr = "—"
+            position_text = "0%"
+        rows.append(
+            f"| {name} ({code}) | **{conclusion}** | {stop_text} | {entry_zone} | "
+            f"{stop_loss} | {rr} | {position_text} |"
+        )
+
+        gate_lines = []
+        for gate in criteria:
+            status = "通过" if gate.get("passed") is True else "不通过"
+            gate_lines.append(
+                f"- {int(gate.get('index') or 0) + 1}. **{gate.get('criterion_name') or gate.get('criterion_id')}：{status}**。"
+                f"{str(gate.get('verdict') or '未给出理由')}"
+            )
+        if len(criteria) < len(_STRICT_BUY_GATE_IDS):
+            gate_lines.append(
+                f"- 后续 {len(_STRICT_BUY_GATE_IDS) - len(criteria)} 项按固定规则未继续执行；"
+                "首个不通过项不会被后续项目抵消。"
+            )
+        if all_pass and not missing:
+            invalidations = [
+                str(value) for value in item.get("invalidation_conditions") or [] if str(value).strip()
+            ]
+            invalidation_text = "；".join(invalidations) or "任一已通过门槛被新证据推翻"
+            gate_lines.append(f"- **逻辑失效条件**：{invalidation_text}。")
+        else:
+            gate_lines.append(
+                f"- **当前不能买的首要原因**：{stopped_reason}。只有该门槛被新的正式披露或行情证据反转后才重新从头评估。"
+            )
+        details_sections.append(
+            f"### {name} ({code})\n\n" + "\n".join(gate_lines)
+        )
+
+    if missing:
+        conclusion_text = (
+            "本轮集合覆盖不完整，因此停止整个集合的最终买入筛选，**不把已返回的部分结果当成完整答案**。"
+        )
+    elif buyable:
+        conclusion_text = "严格按九项全通过规则，当前可买入的是：**" + "、".join(buyable) + "**。"
+    else:
+        conclusion_text = "严格按九项全通过规则，当前这组股票中 **没有可买入标的**。"
+
+    coverage_lines = [
+        f"- 请求 **{len(requested)} 只**，返回 **{len(items_by_code)} 只**，缺失 **{len(missing)} 只**。",
+        "- 固定顺序：主线真实受益 → 产业竞争力 → 三年空间 → 景气上行 → 非内卷 → 6—12个月催化 → 重大风险 → 估值/利好透支 → 买入位置与风险收益比。",
+        "- 业务未单独披露收入或利润时，允许用订单、销量、客户、产能、量产和连续增速替代核验；概念关联本身不算通过。",
+        "- 只有九项全部通过才允许显示可买入；任一数据或分析失败均按不可买入处理。",
+    ]
+    if missing:
+        coverage_lines.append("- 未返回代码：" + "、".join(missing) + "。")
+    if batch_errors:
+        coverage_lines.append("- 执行异常：" + "；".join(dict.fromkeys(batch_errors)) + "。")
+    if data_times:
+        coverage_lines.append("- 数据时间：" + max(data_times) + "。")
+    return (
+        "## 严格买入判断\n\n"
+        + conclusion_text
+        + "\n\n| 公司/代码 | 结论 | 首个停止项 | 买入区间 | 止损 | 风险收益比 | 仓位建议 |\n"
+        + "|---|---|---|---:|---:|---:|---|\n"
+        + "\n".join(rows)
+        + "\n\n## 逐股门槛记录\n\n"
+        + "\n\n".join(details_sections)
+        + "\n\n## 规则与覆盖\n\n"
+        + "\n".join(coverage_lines)
+    )
+
+
 def _build_theme_mapping_fallback(
     result: Dict[str, Any],
     evidence: Optional[List[Dict[str, Any]]] = None,
     semantic_facts: Optional[List[BoundEvidenceFact]] = None,
-    semantic_intent: Optional[ResearchIntent] = None,
+    semantic_intent: Optional[MappingSelectionContext] = None,
 ) -> str:
     """Render only semantically bound company facts and the structured recall set."""
     if semantic_facts is None:
@@ -1390,6 +1345,226 @@ def _build_staged_news_search_answer(
     return "\n".join(lines)
 
 
+def _build_catalyst_analysis_answer(
+    evidence: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Render source-bound catalyst results without a second model call."""
+    packets = [
+        packet
+        for packet in evidence or []
+        if isinstance(packet, dict) and packet.get("tool") == "analyze_stock_catalysts"
+    ]
+    if not packets:
+        return None
+
+    items: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    warnings: List[str] = []
+    data_times: List[str] = []
+    for packet in packets:
+        result = packet.get("result")
+        if not isinstance(result, dict):
+            continue
+        items.extend(item for item in result.get("items") or [] if isinstance(item, dict))
+        errors.extend(str(item) for item in result.get("errors") or [] if item)
+        warnings.extend(str(item) for item in result.get("warnings") or [] if item)
+        if result.get("data_time"):
+            data_times.append(str(result["data_time"]))
+    if not items:
+        return (
+            "## 未来6—12个月催化核验未完成\n\n"
+            + ("；".join(errors) if errors else "本轮没有取得可用的公司催化证据。")
+        )
+
+    def clean(value: Any, limit: int = 300) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().replace("|", "／")[:limit]
+
+    lines: List[str] = []
+    for item_index, item in enumerate(items):
+        name = clean(item.get("name") or item.get("symbol") or "公司", 80)
+        symbol = clean(item.get("symbol"), 20)
+        heading = f"{name}（{symbol}）" if symbol and symbol != name else name
+        if item_index:
+            lines.extend(["", "---", ""])
+        lines.extend([f"## {heading}：未来6—12个月催化核验", ""])
+        catalysts = [row for row in item.get("catalysts") or [] if isinstance(row, dict)]
+        retrieved = (
+            item.get("retrieved_evidence")
+            if isinstance(item.get("retrieved_evidence"), dict)
+            else {}
+        )
+        formal_windows = [
+            row for row in retrieved.get("formal_documents") or []
+            if isinstance(row, dict) and row.get("time_window") and row.get("excerpt")
+        ]
+        if catalysts and item.get("passed") is True:
+            lines.append(f"**结论：核验到 {len(catalysts)} 项满足时间窗与来源约束的催化。**")
+        elif catalysts:
+            lines.append(
+                f"**结论：提取到 {len(catalysts)} 项有来源的事件线索，但尚未达到严格催化通过条件。**"
+            )
+        elif formal_windows:
+            lines.append(
+                f"**结论：已从正式报告正文核验到 {len(formal_windows)} 项未来经营节点；"
+                "本轮模型语义归类未完成，不会将其误报为“没有催化”。**"
+            )
+        else:
+            lines.append("**结论：本轮未核验到同时具备明确时间窗和可回查来源的催化事件。**")
+        verdict = clean(item.get("verdict"), 600)
+        if formal_windows and not catalysts and (
+            "评估失败" in verdict or "AllModelsFailedError" in verdict
+        ):
+            verdict = (
+                "模型语义归类暂时不可用；以下先按正式报告原文列出未来经营节点，"
+                "不把模型故障解释为公司没有催化。"
+            )
+        if verdict:
+            lines.extend(["", verdict])
+
+        if catalysts:
+            lines.extend(["", "### 事件与证据", ""])
+            event_type_labels = {
+                "company_milestone": "公司里程碑",
+                "financial_validation": "财务核验",
+                "sector_mapping": "板块映射",
+                "conditional_watch": "条件观察",
+            }
+            for index, catalyst in enumerate(catalysts, 1):
+                event = clean(catalyst.get("event"), 220) or "未命名事件"
+                window = clean(catalyst.get("time_window"), 80) or "时间窗缺失"
+                status = clean(catalyst.get("verification_status"), 60) or "证据状态未标明"
+                confidence = clean(catalyst.get("confidence"), 20)
+                event_type = event_type_labels.get(
+                    clean(catalyst.get("event_type"), 40),
+                    "事件待分类",
+                )
+                lines.append(
+                    f"{index}. **{event}**（{event_type}；{window}；{status}"
+                    + (f"；置信度{confidence}" if confidence else "")
+                    + "）"
+                )
+                why = clean(catalyst.get("why_it_matters"), 500)
+                if why:
+                    lines.append(f"   - 影响：{why}")
+                sources = [row for row in catalyst.get("sources") or [] if isinstance(row, dict)]
+                for source in sources:
+                    evidence_id = clean(source.get("evidence_id"), 10)
+                    title = clean(source.get("title"), 220) or "来源标题缺失"
+                    source_name = clean(source.get("source"), 80) or "来源未标明"
+                    source_date = clean(source.get("date"), 40) or "日期未标明"
+                    url = str(source.get("url") or "").strip()
+                    linked_title = f"[{title}]({url})" if re.match(r"^https?://", url) else title
+                    lines.append(
+                        f"   - 证据 {evidence_id}：{linked_title}（{source_name}，{source_date}）"
+                    )
+                    excerpt = clean(source.get("excerpt"), 420)
+                    if excerpt:
+                        lines.append(f"     - 正文：{excerpt}")
+        else:
+            clue_rows: List[Dict[str, Any]] = []
+            for dimension, label in (
+                ("formal_documents", "正式报告正文"),
+                ("report_schedule", "财报预约"),
+                ("research", "研报"),
+                ("news", "公司新闻"),
+                ("announcements", "公司公告"),
+            ):
+                for source in retrieved.get(dimension) or []:
+                    if not isinstance(source, dict) or not source.get("title"):
+                        continue
+                    clue_rows.append({**source, "dimension_label": label})
+                    if len(clue_rows) >= 6:
+                        break
+                if len(clue_rows) >= 6:
+                    break
+            if clue_rows:
+                lines.extend(["", "### 尚缺明确时间窗的原始线索，或尚未升级为严格催化的证据", ""])
+                for source in clue_rows:
+                    evidence_id = clean(source.get("evidence_id"), 10)
+                    title = clean(source.get("title"), 220)
+                    source_name = clean(
+                        source.get("source")
+                        or source.get("org")
+                        or source.get("label")
+                        or source.get("dimension_label"),
+                        80,
+                    )
+                    source_date = clean(source.get("date") or source.get("time"), 40) or "日期未标明"
+                    url = str(source.get("url") or "").strip()
+                    linked_title = f"[{title}]({url})" if re.match(r"^https?://", url) else title
+                    lines.append(
+                        f"- {evidence_id} · {source.get('dimension_label')}：{linked_title}"
+                        f"（{source_name}，{source_date}）"
+                    )
+                lines.append(
+                    "\n以上会保留给用户查看；正式报告中的时间窗必须继续解释其经营含义，财报预约只作为核验节点，"
+                    "板块事件也不会冒充公司订单；证据不足时不升级为已核验催化。"
+                )
+
+        cited_ids = {
+            clean(evidence_id, 12)
+            for catalyst in catalysts
+            for evidence_id in catalyst.get("evidence_ids") or []
+        }
+        uncategorized_formal_windows = [
+            row for row in formal_windows
+            if clean(row.get("evidence_id"), 12) not in cited_ids
+        ]
+        if uncategorized_formal_windows:
+            lines.extend(["", "### 公司正式披露的未来经营节点（原文列示）", ""])
+            for row in uncategorized_formal_windows[:8]:
+                evidence_id = clean(row.get("evidence_id"), 12)
+                window = clean(row.get("time_window"), 80)
+                excerpt = clean(row.get("excerpt"), 700)
+                title = clean(row.get("title"), 180) or "公司定期报告"
+                url = str(row.get("url") or "").strip()
+                linked_title = f"[{title}]({url})" if re.match(r"^https?://", url) else title
+                lines.append(f"- **{window} · {evidence_id}**：{excerpt}")
+                lines.append(f"  - 来源：{linked_title}")
+            lines.append(
+                "- 上述节点来自正式报告正文；模型暂时不可用时先保留原文事实，不额外推断订单金额、收入或利润贡献。"
+            )
+        verification_windows = [
+            row for row in retrieved.get("report_schedule") or []
+            if isinstance(row, dict)
+            and clean(row.get("evidence_id"), 12) not in cited_ids
+        ]
+        if verification_windows:
+            lines.extend(["", "### 已知财务核验窗口（不自动等于利好）", ""])
+            for row in verification_windows[:4]:
+                evidence_id = clean(row.get("evidence_id"), 12)
+                title = clean(row.get("title"), 160) or "定期报告预约披露"
+                window = clean(row.get("time_window"), 40) or "日期未标明"
+                url = str(row.get("url") or "").strip()
+                linked_title = f"[{title}]({url})" if re.match(r"^https?://", url) else title
+                lines.append(f"- {window} · {evidence_id}：{linked_title}")
+            lines.append(
+                "- 该日期只说明何时验证收入、毛利率、现金流和新业务兑现，不因预约披露本身判定为正向催化。"
+            )
+
+        coverage = item.get("source_coverage") if isinstance(item.get("source_coverage"), dict) else {}
+        available = coverage.get("available_count")
+        required = coverage.get("required_count")
+        if available is not None and required is not None:
+            lines.extend(["", f"> 证据源覆盖：{available}/{required}（公告目录、正式报告正文、财报预约、公司新闻、券商研报）。"])
+        missing = [clean(value, 180) for value in item.get("missing_evidence") or [] if clean(value, 180)]
+        if missing:
+            lines.append("> 仍需核验：" + "；".join(missing[:6]))
+
+    lines.extend([
+        "",
+        "### 判断边界",
+        "",
+        "- 这里只回答未来催化，不等于现在可以买入；估值、利好是否已被股价反映、买入位置和风险收益比仍需单独核验。",
+        "- 没有明确日历时间窗或无法绑定本轮真实来源的线索，不会被列为已核验催化。",
+        "- 板块映射、财务核验和公司里程碑会分开标注；行业大会或关键客户事件不会被改写成公司订单。",
+        f"- 分析时间：{max(data_times) if data_times else '未标明'}；来源：内部同步公告目录、正式定期报告正文、财报预约、公司新闻、券商研报。",
+    ])
+    if warnings or errors:
+        lines.append("- 数据边界：" + "；".join([*warnings, *errors][:8]))
+    return "\n".join(lines)
+
+
 def _build_domain_candidate_answer(
     evidence: Optional[List[Dict[str, Any]]],
 ) -> Optional[str]:
@@ -1508,7 +1683,7 @@ def _build_collection_financial_filter_answer(
 ) -> Optional[str]:
     """Aggregate every financial batch and apply the user's exact predicate."""
     operator = spec.operator
-    threshold = spec.threshold
+    threshold = spec.normalized_threshold
     exclude_matching = spec.action == "exclude_matching"
     packets = [
         packet
@@ -1542,7 +1717,7 @@ def _build_collection_financial_filter_answer(
             if not isinstance(item, dict):
                 continue
             code = str(item.get("symbol") or "").strip()
-            value = item.get("debt_ratio_pct")
+            value = item.get("financial_value")
             if not re.fullmatch(r"\d{6}", code) or not isinstance(value, (int, float)):
                 continue
             rows_by_code[code] = item
@@ -1559,17 +1734,35 @@ def _build_collection_financial_filter_answer(
         "gt": "高于", "gte": "不低于", "lt": "低于", "lte": "不高于", "eq": "等于",
     }[operator]
     ordered_rows = [rows_by_code[code] for code in requested if code in rows_by_code]
-    matching = [row for row in ordered_rows if comparator(float(row["debt_ratio_pct"]))]
-    non_matching = [row for row in ordered_rows if not comparator(float(row["debt_ratio_pct"]))]
+    matching = [row for row in ordered_rows if comparator(float(row["financial_value"]))]
+    non_matching = [row for row in ordered_rows if not comparator(float(row["financial_value"]))]
     excluded = matching if exclude_matching else non_matching
     kept = non_matching if exclude_matching else matching
 
-    threshold_text = f"{threshold:g}%"
+    threshold_text = {
+        "percent": f"{spec.threshold:g}%",
+        "cny": f"{spec.threshold:g} 元",
+        "wan_cny": f"{spec.threshold:g} 万元",
+        "yi_cny": f"{spec.threshold:g} 亿元",
+    }[spec.threshold_unit]
+    annual_years = sorted({
+        str(row.get("report_date") or "")[:4]
+        for row in ordered_rows
+        if re.fullmatch(r"\d{4}", str(row.get("report_date") or "")[:4])
+    })
+    period_label = {
+        "latest_report": "最新报告期",
+        "ttm": "TTM",
+        "previous_fiscal_year": (
+            f"{annual_years[0]} 年报" if len(annual_years) == 1 else "去年完整年报"
+        ),
+        "fiscal_year": f"{spec.fiscal_year} 年报",
+    }[spec.period_basis]
     action_text = "筛除命中项" if exclude_matching else "只保留命中项"
     lines = [
-        "## 上文股票资产负债率筛选",
+        f"## 上文股票{period_label}{spec.metric_label}筛选",
         "",
-        f"规则：资产负债率 **{operator_label} {threshold_text}**，{action_text}。",
+        f"规则：{period_label}{spec.metric_label} **{operator_label} {threshold_text}**，{action_text}。",
         f"原集合 **{len(requested)} 只**，成功覆盖 **{len(rows_by_code)} 只**，缺失 **{len(missing)} 只**。",
     ]
     if missing:
@@ -1589,13 +1782,22 @@ def _build_collection_financial_filter_answer(
             lines.append("无。")
             return
         lines.extend([
-            "| 公司/代码 | 资产负债率 | 报告期 |",
+            f"| 公司/代码 | {spec.metric_label} | 报告期 |",
             "|---|---:|---|",
         ])
         for row in rows:
+            value = float(row["financial_value"])
+            if spec.metric == "debt_ratio":
+                value_text = f"{value:.2f}%"
+            elif abs(value) >= 100_000_000:
+                value_text = f"{value / 100_000_000:.2f} 亿元"
+            elif abs(value) >= 10_000:
+                value_text = f"{value / 10_000:.2f} 万元"
+            else:
+                value_text = f"{value:.2f} 元"
             lines.append(
                 f"| {row.get('name') or '未命名'} ({row.get('symbol')}) | "
-                f"{float(row['debt_ratio_pct']):.2f}% | {row.get('report_date') or '未标明'} |"
+                f"{value_text} | {row.get('report_date') or '未标明'} |"
             )
 
     append_table("筛除项", excluded)
@@ -1614,7 +1816,7 @@ def _build_verified_evidence_fallback(
     *,
     professional_decision_requested: Optional[bool] = None,
     semantic_facts: Optional[List[BoundEvidenceFact]] = None,
-    semantic_intent: Optional[ResearchIntent] = None,
+    semantic_intent: Optional[MappingSelectionContext] = None,
 ) -> str:
     """Return a complete deterministic answer when final model text is empty.
 
@@ -1625,6 +1827,10 @@ def _build_verified_evidence_fallback(
     inventing business facts or pretending this mechanical screen is advice.
     """
     batch: Optional[Dict[str, Any]] = None
+
+    strict_answer = _build_strict_buy_decision_answer(evidence)
+    if strict_answer:
+        return strict_answer
 
     # Reading a persisted report is retrieval, not a new model judgement.  If
     # the provider emits no final text after the tool succeeds, return the
@@ -2234,6 +2440,11 @@ def _professional_answer_contract_issues(
     evidence: Optional[List[Dict[str, Any]]],
 ) -> List[str]:
     """Prove that a professional decision answer covered every required axis."""
+    strict_answer = _build_strict_buy_decision_answer(evidence)
+    if strict_answer is not None:
+        return [] if content.strip() == strict_answer.strip() else [
+            "严格买入判断必须使用程序生成的逐项否决结果，不能由模型改写结论"
+        ]
     result = next(
         (
             item.get("result")
@@ -2378,7 +2589,14 @@ def _playbook_answer_contract_issues(
     """
     if playbook is None:
         return []
-    if playbook.id in {INVESTMENT_DECISION.id, STOCK_DEEP_RESEARCH.id}:
+    if playbook.id == INVESTMENT_DECISION.id:
+        strict_answer = _build_strict_buy_decision_answer(evidence)
+        if strict_answer is None:
+            return ["九项严格买入判断结果未成功取得，必须停止买入判断"]
+        return [] if content.strip() == strict_answer.strip() else [
+            "九项严格买入判断结论只能由程序按全通过规则生成，不能由模型改写"
+        ]
+    if playbook.id == STOCK_DEEP_RESEARCH.id:
         return _professional_answer_contract_issues(content, evidence)
 
     issues: List[str] = []
@@ -2405,9 +2623,11 @@ def _playbook_answer_contract_issues(
             issues.append("缺少独立的持续跟踪指标结尾")
         if "置信度" not in content:
             issues.append("缺少明确的整体置信度")
-        source_links = set(re.findall(r"https?://[^\s)\]>]+", content))
-        if len(source_links) < 2:
-            issues.append("关键事实缺少至少两个可点击的独立来源链接")
+        # Source-link formatting is a presentation quality signal, not a fact
+        # safety boundary.  The complete source packet remains visible in the
+        # tool cards and evidence context.  Reject unsupported securities and
+        # numbers below, but never discard an otherwise grounded industry
+        # answer solely because the provider omitted a second Markdown link.
         return issues
 
     if playbook.id == THEME_COMPANY_MAPPING.id:
@@ -2627,12 +2847,21 @@ async def _stream_final_answer_without_tools(
     state: Optional[Dict[str, str]] = None,
     evidence: Optional[List[Dict[str, Any]]] = None,
     playbook: Optional[AnalysisPlaybook] = None,
+    answer_validator: Optional[
+        Callable[[str, Optional[List[Dict[str, Any]]]], List[str]]
+    ] = None,
 ) -> str:
     """Force one final synthesis pass without tool use to avoid silent exits.
 
     state: 可选共享容器,累积最终答案文本,使外层在取消时能取到已生成内容。
     """
     forced_messages = _build_synthesis_messages(messages, evidence, playbook)
+
+    def contract_issues(content: str) -> List[str]:
+        issues = _final_answer_contract_issues(playbook, content, evidence)
+        if answer_validator is not None:
+            issues.extend(answer_validator(content, evidence))
+        return list(dict.fromkeys(issues))
 
     is_professional_decision = playbook is not None and playbook.id == INVESTMENT_DECISION.id
     is_playbook_answer = playbook is not None
@@ -2668,7 +2897,7 @@ async def _stream_final_answer_without_tools(
         # only if the same evidence and Playbook validators prove the required
         # structure is complete; otherwise fail closed with the deterministic
         # evidence fallback.
-        timed_out_issues = _final_answer_contract_issues(playbook, content_text, evidence)
+        timed_out_issues = contract_issues(content_text)
         if not content_text.strip() or timed_out_issues:
             logger.warning(
                 "[Agent] timed-out synthesis incomplete: %s",
@@ -2711,7 +2940,7 @@ async def _stream_final_answer_without_tools(
             retry_text = _prepare_playbook_answer(playbook, retry_text)
             # Row-level evidence failures in mapping answers are removed
             # deterministically before the whole report is judged.
-            retry_issues = _final_answer_contract_issues(playbook, retry_text, evidence)
+            retry_issues = contract_issues(retry_text)
             if (
                 retry_text.strip()
                 and retry_finish_reason.lower() not in {"length", "max_tokens"}
@@ -2738,7 +2967,7 @@ async def _stream_final_answer_without_tools(
 
     content_text = _prepare_playbook_answer(playbook, content_text)
     if content_text.strip() and finish_reason.lower() not in {"length", "max_tokens"}:
-        reasons = _final_answer_contract_issues(playbook, content_text, evidence)
+        reasons = contract_issues(content_text)
         if reasons:
             logger.warning("[Agent] final answer needs repair: %s", "; ".join(reasons))
             repair_messages = [
@@ -2779,7 +3008,7 @@ async def _stream_final_answer_without_tools(
                 logger.exception("[Agent] final answer repair failed")
 
             repaired_text = _prepare_playbook_answer(playbook, repaired_text)
-            repair_issues = _final_answer_contract_issues(playbook, repaired_text, evidence)
+            repair_issues = contract_issues(repaired_text)
             if (
                 repaired_text.strip()
                 and repaired_finish_reason.lower() not in {"length", "max_tokens"}
@@ -2839,7 +3068,7 @@ async def _stream_final_answer_without_tools(
         except Exception:
             logger.exception("[Agent] empty/truncated synthesis retry failed")
         retry_text = _prepare_playbook_answer(playbook, retry_text)
-        retry_issues = _final_answer_contract_issues(playbook, retry_text, evidence)
+        retry_issues = contract_issues(retry_text)
         if (
             retry_text.strip()
             and retry_finish_reason.lower() not in {"length", "max_tokens"}
@@ -2862,7 +3091,159 @@ async def _stream_final_answer_without_tools(
     return content_text
 
 
-async def _run_react_loop(
+def _task_status_evidence(
+    plan: TaskPlan,
+    execution: PlanExecutionResult,
+) -> Dict[str, Any]:
+    return {
+        "tool": "runtime_standard_task_status",
+        "arguments": {},
+        "result": {
+            "success": execution.success,
+            "tasks": [
+                {
+                    "task_id": result.task.task_id,
+                    "kind": result.task.kind.value,
+                    "objective": result.task.candidate.objective,
+                    "status": result.status,
+                    "errors": result.errors,
+                    "executed_calls": sum(1 for call in result.calls if call.executed),
+                    "reused_calls": sum(1 for call in result.calls if call.reused),
+                }
+                for result in execution.tasks
+            ],
+            "dependencies": {
+                task.task_id: task.depends_on
+                for task in plan.tasks
+            },
+        },
+    }
+
+
+def _blocked_task_answer(execution: PlanExecutionResult) -> Optional[str]:
+    blocked = [task for task in execution.tasks if task.status == "blocked"]
+    completed_with_evidence = any(task.calls for task in execution.tasks if task.status == "completed")
+    if not blocked or completed_with_evidence:
+        return None
+    lines = ["## 本轮执行已由流程校验层停止", ""]
+    for result in blocked:
+        spec = workflow_for(result.task.kind)
+        lines.append(f"- **{spec.title}**：{'；'.join(result.errors) or '不满足执行条件'}")
+    lines.extend([
+        "",
+        "没有调用任何越权工具，也没有执行账户、删除、通知或其他高影响操作。",
+    ])
+    return "\n".join(lines)
+
+
+def _deterministic_standard_task_answer(
+    plan: TaskPlan,
+    execution: PlanExecutionResult,
+) -> Optional[str]:
+    if len(plan.tasks) != 1:
+        return None
+    task = plan.tasks[0]
+    evidence = execution.evidence
+    if task.kind == StandardTaskKind.THEME_STOCK_DISCOVERY:
+        return _build_domain_candidate_answer(evidence)
+    if task.kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER:
+        try:
+            spec = CollectionFinancialFilterSpec.model_validate(task.parameters)
+        except Exception:
+            return None
+        return _build_collection_financial_filter_answer(evidence, spec)
+    if task.kind == StandardTaskKind.STOCK_SCREENING:
+        return _build_quantitative_screen_answer(evidence)
+    if task.kind == StandardTaskKind.REALTIME_QUOTE:
+        return _build_realtime_quote_answer(evidence, "realtime_quote")
+    if task.kind == StandardTaskKind.NEWS_ANALYSIS:
+        return _build_staged_news_search_answer(evidence)
+    if task.kind in {
+        StandardTaskKind.STOCK_DEEP_RESEARCH,
+    }:
+        return _build_verified_evidence_fallback(
+            evidence,
+            professional_decision_requested=False,
+        )
+    if task.kind == StandardTaskKind.INVESTMENT_DECISION:
+        return _build_strict_buy_decision_answer(evidence) or (
+            "## 严格买入判断未完成\n\n"
+            "本轮没有成功取得逐项否决结果，因此没有输出任何买入结论。请重试本轮问题。"
+        )
+    if task.kind == StandardTaskKind.CATALYST_ANALYSIS:
+        return _build_catalyst_analysis_answer(evidence)
+    if task.kind in {
+        StandardTaskKind.WATCHLIST_QUERY,
+        StandardTaskKind.WATCHLIST_MUTATION,
+        StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT,
+        StandardTaskKind.FORMAL_ANALYSIS,
+        StandardTaskKind.ANALYSIS_HISTORY,
+        StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT,
+        StandardTaskKind.BATCH_ANALYSIS,
+        StandardTaskKind.BATCH_RUN_MANAGEMENT,
+        StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT,
+        StandardTaskKind.NOTIFICATION,
+    }:
+        return _build_workflow_evidence_fallback(evidence)
+    return None
+
+
+def _standard_task_answer_issues(
+    content: str,
+    evidence: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Reject securities and material numeric claims absent from task evidence."""
+    evidence_text = json.dumps(evidence or [], ensure_ascii=False, default=str)
+    issues: List[str] = []
+
+    evidence_codes = set(re.findall(r"(?<!\d)(\d{6})(?!\d)", evidence_text))
+    answer_codes = set(re.findall(r"(?<!\d)(\d{6})(?!\d)", content))
+    unsupported_codes = sorted(answer_codes - evidence_codes)
+    if unsupported_codes:
+        issues.append(
+            "最终答案出现本轮证据未提供的证券代码：" + "、".join(unsupported_codes[:12])
+        )
+    evidence_symbols = {
+        item["symbol"]
+        for item in find_securities_in_text(evidence_text, limit=300)
+        if item.get("symbol")
+    }
+    answer_entities = find_securities_in_text(content, limit=300)
+    unsupported_entities = [
+        item
+        for item in answer_entities
+        if item.get("symbol") not in evidence_symbols
+    ]
+    if unsupported_entities:
+        issues.append(
+            "最终答案出现本轮证据未提供的证券实体："
+            + "、".join(
+                f"{item.get('name')}({item.get('symbol')})"
+                for item in unsupported_entities[:12]
+            )
+        )
+
+    material_claim_pattern = re.compile(
+        r"(?<![\d.])\d+(?:\.\d+)?(?:\s*[-—~至]\s*\d+(?:\.\d+)?)?\s*"
+        r"(?:%|亿元|万元|万台|台|个|倍|家)"
+    )
+    missing_claims: List[str] = []
+    for match in material_claim_pattern.finditer(content):
+        claim = match.group(0)
+        numbers = re.findall(r"\d+(?:\.\d+)?", claim)
+        if all(re.search(rf"(?<![\d.]){re.escape(number)}(?![\d.])", evidence_text) for number in numbers):
+            continue
+        normalized = re.sub(r"\s+", "", claim)
+        if normalized not in missing_claims:
+            missing_claims.append(normalized)
+    if missing_claims:
+        issues.append(
+            "最终答案出现本轮证据未提供的数量或比例：" + "、".join(missing_claims[:12])
+        )
+    return issues
+
+
+async def _run_standard_task_pipeline(
     controller: ControllerLike,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
@@ -2871,21 +3252,15 @@ async def _run_react_loop(
     *,
     state: Optional[Dict[str, str]] = None,
 ) -> str:
-    """Execute the ReAct loop: LLM thinks → calls tools → observes → repeats.
-
-    on_progress: 可选回调 async (assistant_text_so_far: str) -> None,每轮迭代末尾
-    调用,用于增量持久化已生成的 assistant 文本(刷新后可恢复)。
-    state: 可选共享容器,实时记录已累积 assistant 文本,使外层在取消时能取到。
-    """
+    """Planner → fixed Workflow → policy validator → executor → aggregator."""
     latest_user_text = _last_user_text(messages)
-    latest_user_entities = find_securities_in_text(latest_user_text, limit=20)
+    latest_user_entities = find_securities_in_text(latest_user_text, limit=100)
     previous_answer_entities = _previous_answer_table_entities(messages)
+    controller.append_text("正在拆分标准任务并校验执行流程...\n\n")
+
     try:
-        # The resolver owns a primary call plus one smaller semantic recovery
-        # call.  This outer guard must leave enough time for both; otherwise a
-        # slow first gateway response cancels the validated recovery attempt.
-        async with asyncio.timeout(78.0):
-            semantic_intent = await resolve_research_intent(
+        async with asyncio.timeout(STANDARD_TASK_PLAN_TIMEOUT_SECONDS):
+            plan = await resolve_task_plan(
                 messages,
                 llm_cfg,
                 completion=litellm.acompletion,
@@ -2893,22 +3268,16 @@ async def _run_react_loop(
                 previous_answer_entities=previous_answer_entities,
             )
         logger.info(
-            "[AgentIntent] source=%s kind=%s topic=%s discovery_theme=%s "
-            "mapping_mode=%s domains=%s entity_scope=%s confidence=%.2f",
-            semantic_intent.source,
-            semantic_intent.kind,
-            semantic_intent.normalized_topic,
-            semantic_intent.normalized_discovery_theme,
-            semantic_intent.company_mapping_mode,
-            semantic_intent.resolved_domains,
-            semantic_intent.entity_scope,
-            semantic_intent.confidence,
+            "[TaskPlanner] source=%s tasks=%s dependencies=%s",
+            plan.source,
+            [task.kind.value for task in plan.tasks],
+            {task.task_id: task.depends_on for task in plan.tasks},
         )
-    except SemanticIntentUnavailableError:
-        logger.exception("[AgentIntent] semantic gateway unavailable after recovery")
+    except TaskPlannerUnavailableError:
+        logger.exception("[TaskPlanner] semantic planner unavailable after recovery")
         failure_text = (
-            "语义解析服务连续超时，本轮没有调用任何数据工具。问题已保留，"
-            "可以直接点击“重新生成”；服务恢复后会复用已验证的语义结果。"
+            "标准任务规划服务连续超时，本轮没有开放或调用任何数据工具。"
+            "可以直接重新生成；相同问题会优先复用已经验证的任务计划。"
         )
         controller.append_text(failure_text)
         if state is not None:
@@ -2916,762 +3285,211 @@ async def _run_react_loop(
             controller.assistant_text_snapshot = failure_text
         return failure_text
     except Exception:
-        logger.exception("[AgentIntent] semantic resolution failed closed")
-        failure_text = "我暂时没能可靠理解这次请求的执行范围，因此没有调用任何数据工具。请重试这一问。"
+        logger.exception("[TaskPlanner] failed closed")
+        failure_text = (
+            "标准任务计划未通过程序校验，因此本轮没有调用任何数据工具。"
+            "请补充具体对象或条件后重试。"
+        )
         controller.append_text(failure_text)
         if state is not None:
             state["assistant_text"] = failure_text
             controller.assistant_text_snapshot = failure_text
         return failure_text
 
-    policy = _resolve_turn_policy(semantic_intent)
-    allowed_tools = policy["allowed_tools"]
-    tools = [
-        schema for schema in _registry.get_all_schemas()
-        if allowed_tools is None
-        or schema.get("function", {}).get("name") in allowed_tools
-    ]
-    registered_tool_names = set(_registry.get_tool_names())
-    tool_names = (
-        registered_tool_names
-        if allowed_tools is None
-        else registered_tool_names.intersection(allowed_tools)
-    )
-    max_tool_calls = int(policy["max_tool_calls"])
-    max_discovery_calls = policy.get("max_discovery_calls")
-    discovery_tool_names = {
-        "search_financial_news", "search_research_library", "websearch", "webfetch",
-    }
-
-    verified_entities = _entities_for_semantic_intent(
-        semantic_intent,
-        current_entities=latest_user_entities,
-        previous_answer_entities=previous_answer_entities,
-    )
-    entity_context = _entity_context_text(
-        verified_entities,
-        semantic_scope=semantic_intent.entity_scope,
-    )
-    referential_followup = semantic_intent.entity_scope == "previous_answer"
-    playbook = select_playbook_for_intent(semantic_intent)
-    required_playbook_calls = mandatory_tool_calls(
-        playbook,
-        verified_entities,
-        semantic_intent,
-    )
-
-    semantic_allowed_tools, semantic_tool_limit = _semantic_tool_boundary(semantic_intent)
-    if semantic_allowed_tools is not None:
-        tools = [
-            schema for schema in tools
-            if schema.get("function", {}).get("name") in semantic_allowed_tools
-        ]
-        tool_names = tool_names.intersection(semantic_allowed_tools)
-        max_tool_calls = min(max_tool_calls, semantic_tool_limit or max_tool_calls)
-    if semantic_intent.kind == "watchlist_query":
-        filter_theme = (
-            semantic_intent.normalized_topic
-            or semantic_intent.objective
-            or latest_user_text
-        )
-        required_playbook_calls = [{
-            "id": f"workflow_{uuid.uuid4().hex}",
-            "name": "filter_watchlist_by_theme",
-            "arguments": json.dumps({"theme": filter_theme}, ensure_ascii=False),
-        }]
-
-    if semantic_intent.needs_clarification:
-        clarification = semantic_intent.clarification_question or "请明确本轮要研究的主题或公司范围。"
+    if plan.needs_clarification:
+        clarification = plan.clarification_question or "请补充本轮要执行的对象或条件。"
         controller.append_text(clarification)
         if state is not None:
             state["assistant_text"] = clarification
             controller.assistant_text_snapshot = clarification
         return clarification
 
-    semantic_context = (
-        "## 结构化研究意图（语义模型已解析，禁止重新按关键词猜测）\n"
-        + json.dumps(semantic_intent.model_dump(), ensure_ascii=False)
-    )
-    playbook_context = (
-        playbook.system_instruction()
-        if playbook is not None
-        else "本轮未命中强制研究 Playbook，按通用 Agent 规则执行。"
-    )
-    full_messages: List[Dict[str, Any]] = [
-        {
-            "role": "system",
-            "content": (
-                f"{system_prompt or SYSTEM_PROMPT}\n\n"
-                f"## 本轮执行边界（{policy['name']}）\n{policy['guidance']}\n\n"
-                f"## 确定性实体上下文\n{entity_context}\n\n"
-                f"{semantic_context}\n\n"
-                f"{playbook_context}"
-            ),
-        },
-        *_normalize_incoming_messages(messages),
-    ]
-
-    if state is not None:
-        state["assistant_text"] = ""
-
-    llm_extra: Dict[str, Any] = {"messages": full_messages}
-    if tools:
-        llm_extra.update({
-            "tools": tools,
-            "tool_choice": "required" if policy["require_tools"] else "auto",
-        })
-    kwargs = _build_llm_kwargs(llm_cfg, stream=True, **llm_extra)
-
-    controller.append_text("正在拆解问题并规划研究路径...\n\n")
-    started_at = time.monotonic()
-    total_tool_calls = 0
-    total_discovery_calls = 0
-    executed_calls: Dict[str, Dict[str, Any]] = {}
-    tool_failure_counts: Dict[str, int] = {}
-    evidence: List[Dict[str, Any]] = []
-    force_synthesis_reason = "iteration_limit"
-
-    if playbook is not None or required_playbook_calls:
-        logger.info(
-            "[Agent] selected playbook=%s mandatory_tools=%s",
-            playbook.id if playbook is not None else "workflow_boundary",
-            [call.get("name") for call in required_playbook_calls],
+    try:
+        resolved_tasks = resolve_plan_entities(
+            plan,
+            current_entities=latest_user_entities,
+            previous_answer_entities=previous_answer_entities,
         )
-
-    for iteration in range(MAX_REACT_ITERATIONS):
-        if time.monotonic() - started_at >= MAX_AGENT_RUN_SECONDS:
-            force_synthesis_reason = "time_budget"
-            logger.info("[Agent] forcing synthesis after run time budget")
-            break
-        if total_tool_calls >= max_tool_calls:
-            force_synthesis_reason = "tool_budget"
-            logger.info("[Agent] forcing synthesis after %d tool calls", total_tool_calls)
-            break
-
-        tool_calls_acc: Dict[int, Dict[str, Any]] = {}
-        content_text = ""
-
-        # 每轮调用前检查上下文是否超阈值，超了就把早期对话摘要压缩（含首轮：前端回传的历史可能已超限）
-        full_messages = await _compact_history_if_needed(full_messages, llm_cfg)
-        kwargs["messages"] = full_messages
-
-        if iteration == 0 and required_playbook_calls:
-            # High-stakes research starts from the runtime-owned evidence plan.
-            # The model never gets an opportunity to skip required dimensions.
-            round_calls = list(required_playbook_calls)
-        else:
-            try:
-                response = await litellm.acompletion(**kwargs)
-            except Exception as e:
-                logger.exception("[Agent] LLM call failed")
-                controller.append_text(f"\n\n分析出错：{e}")
-                return ""
-
-            try:
-                async with asyncio.timeout(60.0):
-                    async for chunk in response:
-                        delta = chunk.choices[0].delta if chunk.choices else None
-                        if not delta:
-                            continue
-                        _append_model_reasoning(controller, _extract_model_reasoning_delta(delta))
-                        if delta.content:
-                            # Buffer until tool-call presence tells us whether this is
-                            # planning prose (reasoning) or the final answer (text).
-                            content_text += delta.content
-                        if delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                idx = tc.index
-                                if idx not in tool_calls_acc:
-                                    tool_calls_acc[idx] = {
-                                        "id": tc.id or "",
-                                        "name": "",
-                                        "arguments": "",
-                                    }
-                                if tc.id:
-                                    tool_calls_acc[idx]["id"] = tc.id
-                                if tc.function and tc.function.name:
-                                    tool_calls_acc[idx]["name"] += tc.function.name
-                                if tc.function and tc.function.arguments:
-                                    tool_calls_acc[idx]["arguments"] += tc.function.arguments
-            except TimeoutError:
-                logger.warning("[Agent] model stream timed out at iteration %d", iteration + 1)
-                force_synthesis_reason = "model_timeout"
-                break
-
-            if not tool_calls_acc:
-                # A normal ReAct completion used to return here before the
-                # evidence-contract checks applied by forced synthesis.  That
-                # allowed unsupported market statistics to leak into an
-                # otherwise valid quote answer.  Quote-only turns are safer as
-                # deterministic rendering; every other turn must pass the same
-                # claim and playbook checks before it is emitted.
-                final_text = _build_realtime_quote_answer(
-                    evidence,
-                    semantic_intent.kind,
-                ) or _strip_progress_markers(content_text)
-                if final_text:
-                    final_issues = _final_answer_contract_issues(playbook, final_text, evidence)
-                    if final_issues:
-                        logger.warning(
-                            "[Agent] regular ReAct answer needs repair: %s",
-                            "; ".join(final_issues),
-                        )
-                        force_synthesis_reason = "answer_contract_repair"
-                        break
-                    controller.append_text(final_text)
-                    if state is not None:
-                        state["assistant_text"] = final_text
-                        controller.assistant_text_snapshot = final_text
-                    if on_progress is not None:
-                        try:
-                            await on_progress(final_text)
-                        except Exception:
-                            logger.debug("[Agent] final progress save failed (non-fatal)", exc_info=True)
-                    return final_text
-                force_synthesis_reason = "empty_model_answer"
-                break
-
-            round_calls = _coalesce_multi_security_calls(
-                list(tool_calls_acc.values()),
-                verified_entities=verified_entities,
-                referential_followup=referential_followup,
-            )
-            # Content emitted by a tool-planning turn is not the final answer.
-            # Preserve it as visible reasoning instead of silently discarding it.
-            _append_model_reasoning(controller, content_text)
-            if any(call.get("name") == "get_multi_stock_snapshot" for call in round_calls):
-                round_calls = _select_balanced_multi_security_calls(
-                    round_calls,
-                )
-        logger.info(
-            "[Agent] iteration %d planned tools: %s",
-            iteration + 1,
-            [call.get("name") for call in round_calls],
+    except TaskPlanValidationError as exc:
+        logger.warning("[TaskPlanner] entity resolution blocked plan: %s", exc)
+        failure_text = (
+            "任务已经拆分，但所需证券对象未能通过本地 A 股证券库核验，"
+            "所以没有调用数据工具。请明确公司名称或代码。"
         )
-        round_call_limit = MAX_TOOL_CALLS_PER_ROUND
-        if iteration == 0 and required_playbook_calls:
-            round_call_limit = min(max_tool_calls, max(round_call_limit, len(required_playbook_calls)))
-        if len(round_calls) > round_call_limit:
-            logger.info(
-                "[Agent] limiting round tool calls from %d to %d",
-                len(round_calls), round_call_limit,
-            )
+        controller.append_text(failure_text)
+        if state is not None:
+            state["assistant_text"] = failure_text
+            controller.assistant_text_snapshot = failure_text
+        return failure_text
 
-        # Reserve calls before the first await in each worker.  This keeps
-        # duplicate calls in the same parallel batch from racing each other,
-        # and lets the UI show only requests that are actually executed.
-        reserved_signatures = set(executed_calls)
-        reserved_single_shot_tools = {
-            str(call.get("tool") or "")
-            for call in executed_calls.values()
-            if isinstance(call, dict)
-        }
-        single_shot_tool_names = {
-            "get_domain_stock_candidates",
-            "screen_atr_volatility_stocks",
-        }
-        reserved_new_calls = 0
-        available_call_slots = min(
-            round_call_limit,
-            max(0, max_tool_calls - total_tool_calls),
-        )
-        reserved_discovery_calls = 0
+    controller.append_text("正在执行已校验的标准任务...\n\n")
+    workflow_specs_by_task = {
+        task.task_id: workflow_for(task.kind)
+        for task in resolved_tasks
+    }
 
-        async def _execute_one_tool(tc: Dict[str, Any], call_index: int) -> Dict[str, Any]:
-            """Run a single tool call: concurrent fetch (off the event loop) + UI回填.
-
-            取数（registry.execute + 压缩 + 联网兜底）是同步网络 IO，必须丢进线程池，
-            否则会阻塞整个 FastAPI 事件循环。多个工具调用通过 asyncio.gather 并发执行，
-            UI 气泡（add_tool_call / set_response）在各自协程里独立回填，作用于互不共享的
-            tool 对象，无需加锁；messages 按调用顺序回灌。
-            """
-            tool_name = tc["name"].strip()
-            tool_call_id = tc["id"] or f"call_{uuid.uuid4().hex}"
-            try:
-                args = json.loads(tc["arguments"]) if tc["arguments"].strip() else {}
-            except json.JSONDecodeError:
-                args = {}
-            # Canonicalize transport/model drift before security resolution,
-            # deduplication and UI rendering. This keeps the displayed args,
-            # execution signature and Python keyword arguments identical.
-            normalize_arguments = getattr(_registry, "normalize_arguments", None)
-            if callable(normalize_arguments):
-                normalized_args = normalize_arguments(tool_name, args)
-                if isinstance(normalized_args, dict):
-                    args = normalized_args
-            args, unresolved_entities = normalize_tool_security_arguments(tool_name, args)
-            normalized_arguments = json.dumps(args, ensure_ascii=False)
-
-            if unresolved_entities:
-                result_payload = {
-                    "success": False,
-                    "errors": [
-                        "无法从本地证券库确认: " + ", ".join(unresolved_entities)
-                        + "。不要猜代码；需要时向用户确认具体证券。"
-                    ],
-                    "unresolved_entities": unresolved_entities,
-                }
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": _format_result(result_payload),
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": False,
-                }
-
-            signature = json.dumps(
-                {"tool": tool_name, "arguments": args},
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            )
-
-            nonlocal reserved_new_calls, reserved_discovery_calls
-            if (
-                tool_name in single_shot_tool_names
-                and tool_name in reserved_single_shot_tools
-            ):
-                result_payload = {
-                    "success": True,
-                    "reused": True,
-                    "message": f"{tool_name} 本轮已经安排执行，复用同轮主题候选请求，避免主题漂移和重复请求。",
-                    "previous_tool": tool_name,
-                }
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": _format_result(result_payload),
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": True,
-                }
-            if signature in reserved_signatures:
-                result_payload = {
-                    "success": True,
-                    "reused": True,
-                    "message": "相同参数已查询，本次复用前序证据，避免重复请求。",
-                    "previous_tool": tool_name,
-                }
-                result_str = _format_result(result_payload)
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": result_str,
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": True,
-                }
-
-            if tool_name not in tool_names:
-                result_str = f"工具 '{tool_name}' 不存在，可用工具: {', '.join(sorted(tool_names))}"
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": result_str,
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": False,
-                }
-
-            if tool_failure_counts.get(tool_name, 0) >= 1:
-                result_payload = {
-                    "success": False,
-                    "errors": [f"{tool_name} 本轮已经失败，停止重复调用并改用现有证据或其他工具。"],
-                    "circuit_open": True,
-                }
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": _format_result(result_payload),
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": False,
-                }
-
-            if reserved_new_calls >= available_call_slots:
-                result_payload = {
-                    "success": False,
-                    "errors": ["本轮研究预算已足够，请基于已有证据形成答案。"],
-                    "budget_exhausted": True,
-                }
-                result_str = _format_result(result_payload)
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": result_str,
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": False,
-                }
-
-            if (
-                tool_name in discovery_tool_names
-                and max_discovery_calls is not None
-                and total_discovery_calls + reserved_discovery_calls >= max_discovery_calls
-            ):
-                result_payload = {
-                    "success": False,
-                    "errors": ["发现类检索已足够，请使用公司资料、主营、公告或财务工具核验候选公司。"],
-                    "discovery_budget_exhausted": True,
-                }
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": _format_result(result_payload),
-                    "evidence": None,
-                    "executed": False,
-                    "succeeded": False,
-                }
-
-            reserved_signatures.add(signature)
-            if tool_name in single_shot_tool_names:
-                reserved_single_shot_tools.add(tool_name)
-            reserved_new_calls += 1
-            if tool_name in discovery_tool_names:
-                reserved_discovery_calls += 1
-            tool = await controller.add_tool_call(tool_name, tool_call_id=tool_call_id)
-            tool.append_args_text(normalized_arguments)
-            tool_timeout = (
-                QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
-                if tool_name == "screen_atr_volatility_stocks"
-                else PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS
-                if (
-                    tool_name in {
-                        "get_multi_stock_snapshot",
-                        "get_multi_stock_decision_evidence",
-                        "get_domain_stock_candidates",
-                        "get_theme_stock_candidates",
-                    }
-                    or (tool_name == "websearch" and bool(args.get("includeContent")))
-                    or (
-                        tool_name == "get_monetary_policy_operations"
-                        and bool(args.get("include_content"))
-                    )
-                )
-                else TOOL_EXECUTION_TIMEOUT_SECONDS
-            )
-            tool_started = time.monotonic()
-
-            try:
-                def _sync_fetch() -> Any:
-                    # Isolate every tool, not just a static risk list.  Cache
-                    # misses can route otherwise simple tools through
-                    # AKShare/libmini_racer, whose native abort cannot be caught
-                    # inside the API worker.
-                    from src.tools.process_runner import STATEFUL_TOOL_NAMES
-                    result = (
-                        _registry.execute(tool_name, args)
-                        if tool_name in STATEFUL_TOOL_NAMES
-                        else execute_tool_isolated(
-                            tool_name,
-                            args,
-                            timeout_seconds=tool_timeout - 3,
-                        )
-                    )
-                    llm_result = _compact_tool_result(tool_name, result)
-                    return _maybe_attach_search_fallback(tool_name, args, llm_result)
-
-                llm_result = await asyncio.wait_for(
-                    asyncio.to_thread(_sync_fetch),
-                    timeout=tool_timeout,
-                )
-                result_str = _format_result(llm_result)
-                succeeded = not (
-                    isinstance(llm_result, dict) and llm_result.get("success") is False
-                )
-                response_payload = llm_result if isinstance(llm_result, dict) else {"result": result_str}
-                tool.set_response(response_payload, is_error=not succeeded)
-                executed_calls[signature] = {
-                    "tool": tool_name,
-                    "arguments": args,
-                    "result": llm_result,
-                }
-                duration_ms = int((time.monotonic() - tool_started) * 1000)
-                logger.info(
-                    "[AgentTool] tool=%s success=%s partial=%s fallback=%s item_count=%s duration_ms=%s",
-                    tool_name,
-                    succeeded,
-                    llm_result.get("partial") if isinstance(llm_result, dict) else None,
-                    llm_result.get("fallback_used") if isinstance(llm_result, dict) else None,
-                    (
-                        llm_result.get("item_count", llm_result.get("count"))
-                        if isinstance(llm_result, dict)
-                        else None
-                    ),
-                    duration_ms,
-                )
-                return {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "arguments": normalized_arguments,
-                    "result_str": result_str,
-                    "evidence": executed_calls[signature],
-                    "executed": True,
-                    "succeeded": succeeded,
-                }
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[AgentTool] tool=%s success=false timeout=true duration_ms=%s",
-                    tool_name,
-                    int((time.monotonic() - tool_started) * 1000),
-                )
-                result_str = f"工具执行超时（>{tool_timeout:.0f}s）"
-                tool.set_response({"error": result_str}, is_error=True)
-            except Exception as e:
-                logger.exception(
-                    "[AgentTool] tool=%s success=false duration_ms=%s",
-                    tool_name,
-                    int((time.monotonic() - tool_started) * 1000),
-                )
-                result_str = f"工具执行失败: {e}"
-                tool.set_response({"error": result_str}, is_error=True)
-
-            return {
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "arguments": normalized_arguments,
-                "result_str": result_str,
-                "evidence": None,
-                "executed": True,
-                "succeeded": False,
+    async def run_workflow_call(
+        call: WorkflowCall,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        call_id = f"workflow_{uuid.uuid4().hex}"
+        tool = await controller.add_tool_call(call.tool_name, tool_call_id=call_id)
+        tool.append_args_text(json.dumps(arguments, ensure_ascii=False))
+        timeout_seconds = (
+            QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
+            if call.tool_name == "screen_atr_volatility_stocks"
+            else STRICT_BUY_DECISION_TIMEOUT_SECONDS
+            if call.tool_name == "evaluate_multi_stock_buy_criteria"
+            else CATALYST_ANALYSIS_TIMEOUT_SECONDS
+            if call.tool_name == "analyze_stock_catalysts"
+            else PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS
+            if call.tool_name in {
+                "get_multi_stock_snapshot",
+                "get_multi_stock_decision_evidence",
+                "get_domain_stock_candidates",
+                "get_theme_stock_candidates",
             }
-
-        outcomes = await asyncio.gather(
-            *[_execute_one_tool(tc, index) for index, tc in enumerate(round_calls)]
+            else TOOL_EXECUTION_TIMEOUT_SECONDS
         )
-
-        total_tool_calls += sum(1 for outcome in outcomes if outcome["executed"])
-        for outcome in outcomes:
-            if outcome["executed"] and not outcome["succeeded"]:
-                name = outcome["tool_name"]
-                tool_failure_counts[name] = tool_failure_counts.get(name, 0) + 1
-        total_discovery_calls += sum(
-            1
-            for outcome in outcomes
-            if outcome["executed"] and outcome["tool_name"] in discovery_tool_names
-        )
-        for outcome in outcomes:
-            if outcome["evidence"] is not None:
-                evidence.append(outcome["evidence"])
-                continue
-            if outcome["succeeded"]:
-                continue
-            try:
-                failed_result = json.loads(outcome["result_str"])
-            except (TypeError, json.JSONDecodeError):
-                failed_result = {
-                    "success": False,
-                    "error": str(outcome.get("result_str") or "工具没有返回证据"),
-                }
-            try:
-                failed_arguments = json.loads(outcome.get("arguments") or "{}")
-            except (TypeError, json.JSONDecodeError):
-                failed_arguments = {}
-            evidence.append({
-                "tool": outcome["tool_name"],
-                "arguments": failed_arguments,
-                "result": failed_result,
-            })
-
-        # One assistant message owns the whole batch of tool calls.  Splitting
-        # parallel calls into multiple assistant messages is invalid for some
-        # Anthropic/OpenAI adapters and can orphan tool results.
-        full_messages.append({
-            "role": "assistant",
-            "content": content_text or None,
-            "tool_calls": [
-                {
-                    "id": oc["tool_call_id"],
-                    "type": "function",
-                    "function": {"name": oc["tool_name"], "arguments": oc["arguments"]},
-                }
-                for oc in outcomes
-            ],
-        })
-        for oc in outcomes:
-            full_messages.append({
-                "role": "tool",
-                "tool_call_id": oc["tool_call_id"],
-                "content": oc["result_str"],
-            })
-
-        await _flush_substreams(controller)
-
-        # 历史轮 tool 结果二次瘦身：本轮刚加的 tool_call_id 跳过，更早轮次的明细数组
-        # 已无价值，裁掉可避免 token 随轮次二次方累积。仅影响回灌 LLM 的内容。
-        current_tool_ids = {oc["tool_call_id"] for oc in outcomes}
-        for msg in full_messages:
-            if (
-                msg.get("role") == "tool"
-                and msg.get("tool_call_id") not in current_tool_ids
-            ):
-                msg["content"] = _slim_tool_content(msg.get("content", ""))
-
-        if iteration == 0 and required_playbook_calls:
-            force_synthesis_reason = f"playbook_{playbook.id if playbook else 'required'}_evidence_collected"
-            logger.info("[Agent] mandatory playbook evidence round complete")
-            break
-
-        # Referential multi-company follow-ups are a common place where models
-        # keep fanning out into one financial/technical call per company after
-        # already receiving a complete batch snapshot.  The batch result now
-        # includes quote valuation, technicals and latest-period fundamentals,
-        # so stop the evidence loop and synthesize from that verified payload.
-        multi_security_request = (
-            (referential_followup and bool(verified_entities))
-            or len(latest_user_entities) >= 2
-        )
-        if multi_security_request and any(
-            outcome["tool_name"] == "get_multi_stock_snapshot"
-            and outcome["succeeded"]
-            for outcome in outcomes
-        ):
-            force_synthesis_reason = "multi_stock_evidence_complete"
-            logger.info("[Agent] batch evidence complete for multi-stock request")
-            break
-
-        kwargs["messages"] = full_messages
-        # Only the first model turn is forced to gather evidence.  Once at
-        # least one tool batch exists, the model may decide that the evidence
-        # is sufficient and answer immediately.
-        if tools:
-            kwargs["tool_choice"] = "auto"
-
-    if playbook is not None and playbook.id == COLLECTION_FINANCIAL_FILTER.id:
-        filter_spec = semantic_intent.collection_financial_filter_spec
-        content_text = _build_collection_financial_filter_answer(
-            evidence,
-            filter_spec,
-        ) if filter_spec is not None else None
-        content_text = content_text or "本轮没有取得可用于完成集合财务筛选的数据。"
-        controller.append_text(content_text)
-        if state is not None:
-            state["assistant_text"] = content_text
-            controller.assistant_text_snapshot = content_text
-        logger.info("[Agent] rendered deterministic collection financial filter")
-        return content_text
-
-    if playbook is not None and playbook.id == QUANTITATIVE_SCREENING.id:
-        content_text = _build_quantitative_screen_answer(evidence)
-        controller.append_text(content_text)
-        if state is not None:
-            state["assistant_text"] = content_text
-            controller.assistant_text_snapshot = content_text
-        logger.info("[Agent] rendered deterministic quantitative screening answer")
-        return content_text
-
-    if playbook is not None and playbook.id == THEME_COMPANY_MAPPING.id:
-        # 公司映射的全量候选索引可能包含数百家公司。让模型重写这份索引既慢，
-        # 又容易在 token 上限处截断或擅自只保留“代表公司”。运行时已经拥有完整
-        # 证券主数据和公司级检索证据，因此直接用确定性渲染器交付，保证不漏代码、
-        # 不把否定表述升级成订单，也不会再次卡在最终综合。
-        domain_answer = _build_domain_candidate_answer(evidence)
-        if domain_answer:
-            controller.append_text(domain_answer)
-            if state is not None:
-                state["assistant_text"] = domain_answer
-                controller.assistant_text_snapshot = domain_answer
-            logger.info("[Agent] rendered deterministic multi-domain candidate answer")
-            return domain_answer
-
-        semantic_facts: Optional[List[BoundEvidenceFact]] = None
-        try:
-            async with asyncio.timeout(40.0):
-                semantic_facts = await bind_company_evidence(
-                    evidence,
-                    semantic_intent,
-                    llm_cfg,
-                    completion=litellm.acompletion,
+        started_at = time.monotonic()
+        max_attempts = workflow_specs_by_task[call.task_id].max_attempts
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            def execute_sync() -> Dict[str, Any]:
+                if call.tool_name in STATEFUL_TOOL_NAMES:
+                    raw_result = _registry.execute(call.tool_name, arguments)
+                elif call.tool_name in ISOLATED_TOOL_NAMES:
+                    raw_result = execute_tool_isolated(
+                        call.tool_name,
+                        arguments,
+                        timeout_seconds=timeout_seconds - 3,
+                    )
+                else:
+                    raw_result = _registry.execute(call.tool_name, arguments)
+                compacted = _compact_tool_result(call.tool_name, raw_result)
+                result = _maybe_attach_search_fallback(
+                    call.tool_name,
+                    arguments,
+                    compacted,
                 )
-            logger.info(
-                "[AgentEvidence] source=semantic topic=%s accepted_facts=%d",
-                semantic_intent.normalized_topic,
-                len(semantic_facts),
-            )
-        except Exception:
-            logger.exception("[AgentEvidence] semantic binding failed closed")
-            content_text = (
-                "公司级证据已取回，但语义校验暂时失败。为避免把新闻措辞误判成订单、"
-                "收入或量产事实，本轮不输出公司级结论，请重试。"
-            )
-            controller.append_text(content_text)
-            if state is not None:
-                state["assistant_text"] = content_text
-                controller.assistant_text_snapshot = content_text
-            return content_text
-        content_text = _build_verified_evidence_fallback(
-            evidence,
-            semantic_facts=semantic_facts,
-            semantic_intent=semantic_intent,
+                return result if isinstance(result, dict) else {
+                    "success": True,
+                    "result": result,
+                    "errors": [],
+                    "partial": False,
+                }
+
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(execute_sync),
+                    timeout=timeout_seconds,
+                )
+                succeeded = result.get("success") is not False
+                if attempt > 1:
+                    result = {**result, "runtime_attempts": attempt}
+                tool.set_response(result, is_error=not succeeded)
+                logger.info(
+                    "[WorkflowTool] task=%s step=%s tool=%s success=%s attempts=%d duration_ms=%d",
+                    call.task_id,
+                    call.step_id,
+                    call.tool_name,
+                    succeeded,
+                    attempt,
+                    int((time.monotonic() - started_at) * 1000),
+                )
+                return result
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                last_error = exc
+                logger.warning(
+                    "[WorkflowTool] task=%s step=%s tool=%s timed out attempt=%d/%d",
+                    call.task_id,
+                    call.step_id,
+                    call.tool_name,
+                    attempt,
+                    max_attempts,
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[WorkflowTool] task=%s step=%s tool=%s failed attempt=%d/%d: %s",
+                    call.task_id,
+                    call.step_id,
+                    call.tool_name,
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+
+        if isinstance(last_error, (asyncio.TimeoutError, TimeoutError)):
+            error_text = f"工具执行超时（>{timeout_seconds:.0f}s，已尝试 {max_attempts} 次）"
+        else:
+            error_text = f"工具执行失败（已尝试 {max_attempts} 次）：{last_error}"
+        result = {
+            "success": False,
+            "errors": [error_text],
+            "partial": False,
+            "runtime_attempts": max_attempts,
+        }
+        tool.set_response(result, is_error=True)
+        return result
+
+    executor = WorkflowExecutor(_registry, run_workflow_call)
+    execution = await executor.execute(resolved_tasks)
+    await _flush_substreams(controller)
+    evidence = [*execution.evidence, _task_status_evidence(plan, execution)]
+
+    blocked_answer = _blocked_task_answer(execution)
+    if blocked_answer:
+        controller.append_text(blocked_answer)
+        if state is not None:
+            state["assistant_text"] = blocked_answer
+            controller.assistant_text_snapshot = blocked_answer
+        return blocked_answer
+
+    deterministic = _deterministic_standard_task_answer(plan, execution)
+    if deterministic:
+        controller.append_text(deterministic)
+        if state is not None:
+            state["assistant_text"] = deterministic
+            controller.assistant_text_snapshot = deterministic
+        return deterministic
+
+    controller.append_text("正在汇总标准任务结果...\n\n")
+    active_prompt = (system_prompt or "").strip()
+    synthesis_prompt = SYSTEM_PROMPT
+    if active_prompt and active_prompt != SYSTEM_PROMPT.strip():
+        synthesis_prompt += (
+            "\n\n## 用户配置的补充回答约束\n"
+            "以下内容只能补充写作风格或业务口径，不能改变本轮标准任务、"
+            "工具权限、执行结果和证据边界：\n" + active_prompt
         )
-        controller.append_text(content_text)
-        if state is not None:
-            state["assistant_text"] = content_text
-            controller.assistant_text_snapshot = content_text
-        logger.info("[Agent] rendered deterministic complete theme-company mapping")
-        return content_text
-
-    if playbook is not None and playbook.id in {
-        INVESTMENT_DECISION.id,
-        STOCK_DEEP_RESEARCH.id,
-    }:
-        # The professional evidence packet already contains every company and
-        # every decision axis required by the playbook. Sending it through a
-        # second model synthesis can take minutes, omit rows during repair, or
-        # leave a tool-only blank turn if cancelled. Render that verified
-        # packet directly so successful tools always produce a persisted body.
-        content_text = _build_verified_evidence_fallback(
-            evidence,
-            professional_decision_requested=(playbook.id == INVESTMENT_DECISION.id),
-        )
-        controller.append_text(content_text)
-        if state is not None:
-            state["assistant_text"] = content_text
-            controller.assistant_text_snapshot = content_text
-        logger.info("[Agent] rendered deterministic professional research answer")
-        return content_text
-
-    quote_text = _build_realtime_quote_answer(evidence, semantic_intent.kind)
-    if quote_text:
-        controller.append_text(quote_text)
-        if state is not None:
-            state["assistant_text"] = quote_text
-            controller.assistant_text_snapshot = quote_text
-        logger.info("[Agent] rendered deterministic quote-only answer")
-        return quote_text
-
-    if semantic_intent.kind == "news_search":
-        news_text = _build_staged_news_search_answer(evidence)
-        if news_text:
-            controller.append_text(news_text)
-            if state is not None:
-                state["assistant_text"] = news_text
-                controller.assistant_text_snapshot = news_text
-            logger.info("[Agent] rendered deterministic staged news list")
-            return news_text
-
-    if any(
-        isinstance(item, dict) and item.get("tool") == "filter_watchlist_by_theme"
-        for item in evidence
-    ):
-        workflow_text = _build_workflow_evidence_fallback(evidence)
-        if workflow_text:
-            controller.append_text(workflow_text)
-            if state is not None:
-                state["assistant_text"] = workflow_text
-                controller.assistant_text_snapshot = workflow_text
-            logger.info("[Agent] rendered deterministic watchlist theme filter")
-            return workflow_text
-
-    logger.info("[Agent] entering final synthesis: %s", force_synthesis_reason)
+    plan_context = {
+        "role": "system",
+        "content": (
+            f"{synthesis_prompt}\n\n"
+            "## 本轮标准任务计划（程序已校验并执行，禁止重新规划或调用工具）\n"
+            + json.dumps({
+                "tasks": [
+                    {
+                        "task_id": task.task_id,
+                        "kind": task.kind.value,
+                        "objective": task.objective,
+                        "depends_on": task.depends_on,
+                        "output_requirements": task.output_requirements,
+                    }
+                    for task in plan.tasks
+                ]
+            }, ensure_ascii=False)
+        ),
+    }
+    full_messages = [plan_context, *_normalize_incoming_messages(messages)]
+    full_messages = await _compact_history_if_needed(full_messages, llm_cfg)
+    playbook = (
+        INDUSTRY_CHAIN
+        if len(plan.tasks) == 1
+        and plan.tasks[0].kind == StandardTaskKind.INDUSTRY_RESEARCH
+        else None
+    )
     return await _stream_final_answer_without_tools(
         controller,
         full_messages,
@@ -3679,6 +3497,7 @@ async def _run_react_loop(
         state=state,
         evidence=evidence,
         playbook=playbook,
+        answer_validator=_standard_task_answer_issues,
     )
 
 
@@ -3863,7 +3682,7 @@ async def agent_chat(
 
         final_response_text = ""
         try:
-            final_response_text = await _run_react_loop(
+            final_response_text = await _run_standard_task_pipeline(
                 controller, messages, llm_cfg, system_prompt,
                 on_progress=on_progress, state=state,
             )

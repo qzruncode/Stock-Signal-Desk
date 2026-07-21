@@ -43,6 +43,8 @@ _VALID_CATEGORIES = {
 }
 _TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
 _PROFESSIONAL_TOOL_TIMEOUT_SECONDS = 90.0
+_STRICT_BUY_DECISION_TIMEOUT_SECONDS = 300.0
+_CATALYST_ANALYSIS_TIMEOUT_SECONDS = 180.0
 _QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
 
 _registry = ToolRegistry()
@@ -51,6 +53,10 @@ _registry = ToolRegistry()
 def _execution_timeout(tool_name: str, arguments: Dict[str, Any]) -> float:
     if tool_name == "screen_atr_volatility_stocks":
         return _QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
+    if tool_name == "evaluate_multi_stock_buy_criteria":
+        return _STRICT_BUY_DECISION_TIMEOUT_SECONDS
+    if tool_name == "analyze_stock_catalysts":
+        return _CATALYST_ANALYSIS_TIMEOUT_SECONDS
     if tool_name in {
         "get_multi_stock_snapshot",
         "get_multi_stock_decision_evidence",

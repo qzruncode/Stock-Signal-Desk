@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""Agent package — ReAct loop + tool registry for stock analysis."""
+"""Agent package — standard-task planning, policy validation and execution."""

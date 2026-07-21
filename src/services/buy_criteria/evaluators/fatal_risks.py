@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class FatalRisksEvaluator(BaseCriterionEvaluator):
     criterion_id = "fatal_risks"
     criterion_name = "致命风险"
-    index = 7
+    index = 6
 
     def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
@@ -43,6 +43,7 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
             }
         except Exception as exc:
             logger.warning("[fatal_risks] shareholder failed: %s", exc)
+            raw["shareholder_error"] = str(exc)
 
         # Valuation (for financial anomaly signals)
         try:
@@ -54,6 +55,7 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
             }
         except Exception as exc:
             logger.warning("[fatal_risks] valuation failed: %s", exc)
+            raw["financial_signals_error"] = str(exc)
 
         # Build summary — inject actual risk event items so LLM can judge,
         # not just aggregate counts.
@@ -75,6 +77,8 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
                     f"- [{date}] [{sev}] [{label}] ({source_type})"
                     f"：{summary}"
                 )
+        elif raw.get("risk_events_error"):
+            lines.append("## 风险事件\n- 风险事件数据获取失败，不能解释为近180天无风险")
         else:
             lines.append("## 风险事件\n- 近180天无已识别的风险事件")
 
@@ -98,7 +102,9 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
         holder_changes = sh.get("top_holder_changes")
         if holder_changes:
             sh_parts.append(f"股东变化：{holder_changes}")
-        lines.append(f"- {'；'.join(sh_parts) if sh_parts else '无异常信号'}")
+        lines.append(
+            f"- {'数据获取失败，不能解释为无异常' if raw.get('shareholder_error') else ('；'.join(sh_parts) if sh_parts else '无异常信号')}"
+        )
 
         # --- Financial anomaly signals ---
         fs = raw.get("financial_signals", {})
@@ -110,7 +116,9 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
             fs_parts.append(f"应收占比：{fs['receivables_ratio']}")
         if fs.get("cashflow_to_profit") is not None:
             fs_parts.append(f"现金流/利润比：{fs['cashflow_to_profit']}")
-        lines.append(f"- {'；'.join(fs_parts) if fs_parts else '无异常信号'}")
+        lines.append(
+            f"- {'数据获取失败，不能解释为无异常' if raw.get('financial_signals_error') else ('；'.join(fs_parts) if fs_parts else '无异常信号')}"
+        )
 
         # --- Judgment constraints ---
         lines.extend([
@@ -120,6 +128,7 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
             "- 商誉异常、应收异常增长、现金流与利润严重背离属于财务异常信号。",
             "- 质押比例超过50%且伴随减持信号才构成致命风险。",
             "- 只有当实际数据中未发现上述致命风险，才可判为通过。",
+            "- 风险事件、股东结构或财务异常信号任一关键来源获取失败时，不能证明无重大风险，必须判为不通过。",
         ])
 
         summary = "\n".join(lines)
@@ -127,3 +136,16 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
 
     def get_rubric(self) -> str:
         return FATAL_RISKS
+
+    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+        raw = evidence.raw_data
+        failed = []
+        if raw.get("risk_events_error"):
+            failed.append("风险事件")
+        if raw.get("shareholder_error"):
+            failed.append("股东结构")
+        if raw.get("financial_signals_error"):
+            failed.append("财务异常信号")
+        if failed:
+            return "、".join(failed) + "获取失败，不能据此证明不存在重大风险"
+        return None

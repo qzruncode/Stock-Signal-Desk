@@ -14,10 +14,10 @@ from src.tools.symbols import resolve_securities_csv
 logger = logging.getLogger(__name__)
 
 DESCRIPTION = (
-    "按照专业股票买入决策标准，一次性为多只 A 股收集完整证据：公司与主营、连续财务趋势、"
+    "为最多8只 A 股的深度研究或横向比较收集完整证据：公司与主营、连续财务趋势、"
     "现金流与负债、PE(TTM)/PB/远期估值、一致预期、行业同行、技术与资金持续性、正式公告"
-    "及风险事件。适用于‘这些公司现在能买吗’、个股深度研究和多股横向决策。"
-    "该工具不会因估值高或单项失败提前终止，而会返回每家公司所有维度及证据缺口。"
+    "及风险事件。该工具适用于个股深度研究和多股横向比较，不负责‘现在能否买入’的最终判断；"
+    "买入判断必须使用固定九项逐项否决工具。该工具不会提前终止，会返回全部研究维度及证据缺口。"
 )
 
 
@@ -312,7 +312,19 @@ def _screening_flags(item: dict[str, Any]) -> dict[str, list[str]]:
 
 def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[str, Any]:
     resolved, unresolved = resolve_securities_csv(symbols)
-    resolved = resolved[:8]
+    if len(resolved) > 8:
+        return {
+            "success": False,
+            "partial": False,
+            "items": [],
+            "resolved_entities": [],
+            "unresolved_entities": unresolved,
+            "total": 0,
+            "errors": ["深度研究工具单次最多8只；本次没有静默截断，请拆分研究任务"],
+            "warnings": [],
+            "data_time": None,
+            "is_stale": None,
+        }
     codes = [item["symbol"] for item in resolved]
     if not codes:
         return {

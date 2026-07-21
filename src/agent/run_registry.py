@@ -8,7 +8,7 @@ assistant-stream 0.0.32 的 ``create_run`` 把"生成 task 生命周期"与"消�
 
 设计要点:
 - ``RunBroadcaster`` 方法名与 ``RunController`` 对齐 (append_text / add_tool_call /
-  add_data / add_error / append_reasoning),这样 ``_run_react_loop`` 几乎不用改。
+  add_data / add_error / append_reasoning)，供标准任务流水线持续写入。
 - 保留 chunk 历史游标。刷新时先用 conversations detail 恢复稳定 messages,
   再从 ``after_chunk_index`` 之后续流增量,避免重建一条空白运行气泡。
 - 慢订阅者:queue maxsize=256,满则 drop oldest,避免拖死生成。
@@ -116,7 +116,7 @@ class RunBroadcaster:
     async def add_tool_call(
         self, tool_name: str, tool_call_id: Optional[str] = None
     ) -> _BroadcasterToolCallController:
-        # 保持 async 签名,与 RunController.add_tool_call 一致,_run_react_loop 里
+        # 保持 async 签名，与 RunController.add_tool_call 一致，标准任务流水线里
         # 用 await 调用,无需改调用方。
         if tool_call_id is None:
             tool_call_id = f"call_{asyncio.get_running_loop().time()}"
@@ -126,7 +126,7 @@ class RunBroadcaster:
         return _BroadcasterToolCallController(self, tool_call_id, tool_name)
 
     def add_tool_result(self, tool_call_id: str, result: Any) -> None:
-        # 与 RunController.add_tool_result 同名 (当前 _run_react_loop 未用,保留兼容)。
+        # 与 RunController.add_tool_result 同名（当前标准任务流水线未用，保留兼容）。
         self._emit(ToolResultChunk(tool_call_id=tool_call_id, result=result))
 
     def add_data(self, data: Any) -> None:

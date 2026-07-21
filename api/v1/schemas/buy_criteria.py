@@ -22,7 +22,7 @@ class CriterionResultPayload(BaseModel):
     """Result of a single criterion evaluation."""
     criterion_id: str = Field(..., description="准则ID")
     criterion_name: str = Field(..., description="准则名称")
-    index: int = Field(..., ge=0, le=7, description="准则序号 0-7")
+    index: int = Field(..., ge=0, le=8, description="准则序号 0-8")
     passed: bool = Field(..., description="是否通过")
     verdict: str = Field(..., description="LLM 2-3句话定性判断")
     evidence: CriterionEvidence = Field(default_factory=CriterionEvidence)
@@ -32,9 +32,9 @@ class CriterionResultPayload(BaseModel):
 class AnalysisCompletePayload(BaseModel):
     """Final summary when analysis completes."""
     final_decision: str = Field(..., description="可买入 | 不可买入")
-    passed_count: int = Field(..., ge=0, le=8)
-    failed_count: int = Field(..., ge=0, le=8)
-    not_evaluated_count: int = Field(..., ge=0, le=8)
+    passed_count: int = Field(..., ge=0, le=9)
+    failed_count: int = Field(..., ge=0, le=9)
+    not_evaluated_count: int = Field(..., ge=0, le=9)
     stopped_at: Optional[str] = Field(None, description="导致终止的 criterion_id")
     summary: str = Field(default="", description="一句话总结")
 

@@ -134,6 +134,8 @@ def schema_only_tools() -> set[str]:
         "run_batch_analysis",
         "send_notification",
         "screen_atr_volatility_stocks",
+        "evaluate_multi_stock_buy_criteria",
+        "analyze_stock_catalysts",
         "read_financial_article",
         "transform_webpage_to_feed",
         "export_financial_feed",

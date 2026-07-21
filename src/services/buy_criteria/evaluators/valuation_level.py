@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class ValuationLevelEvaluator(BaseCriterionEvaluator):
     criterion_id = "valuation_level"
     criterion_name = "估值水位"
-    index = 6
+    index = 7
 
     def collect_data(
         self,
@@ -74,3 +74,11 @@ class ValuationLevelEvaluator(BaseCriterionEvaluator):
 
     def get_rubric(self) -> str:
         return VALUATION_LEVEL
+
+    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+        valuation = evidence.raw_data.get("valuation") or {}
+        if evidence.raw_data.get("valuation_error") or not any(
+            valuation.get(key) is not None for key in ("pe_ttm", "pb", "peg", "pe_percentile")
+        ):
+            return "关键估值指标获取失败或全部缺失，无法判断估值合理性和利好是否已经反映"
+        return None

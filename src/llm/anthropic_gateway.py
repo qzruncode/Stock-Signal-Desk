@@ -91,7 +91,7 @@ def resolve_anthropic_gateway_config() -> Dict[str, Any]:
         "extra_headers": {"authorization": f"Bearer {auth_token}"},
         "context_window": context_window,
         # Production Agent turns use a small forced-schema model call for
-        # semantic intent resolution.  Test/local callers that construct a
+        # standard-task planning.  Test/local callers that construct a
         # minimal config explicitly opt in, so existing low-level loop tests
         # remain isolated from this extra orchestration stage.
     }
@@ -140,7 +140,7 @@ async def acompletion_gateway(**extra: Any) -> Any:
     """Async 入口：解析网关配置 → 组装 kwargs → ``await litellm.acompletion``。
 
     调用方通过 ``messages``/``tools``/``max_tokens`` 等 extra 传业务参数，
-    ``stream`` 默认 True（与 AI 助手 ReAct 循环一致，可由 extra 覆盖）。
+    ``stream`` 默认 True（与 AI 助手流式回答一致，可由 extra 覆盖）。
     """
     import litellm  # 延迟导入，避免模块加载期强依赖
 

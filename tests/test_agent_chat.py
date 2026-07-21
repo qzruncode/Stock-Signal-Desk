@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Agent chat endpoint tests — LLM config, ReAct loop, and SSE stream.
+"""Agent chat endpoint tests — standard-task pipeline and SSE stream.
 
 Covers api.v1.endpoints.agent.chat:
 - _get_llm_config: model/api_key/api_base resolution (normal / boundary paths)
-- _run_react_loop: no-tool-call exit, tool-call iteration, unknown tool, LLM failure
+- _run_standard_task_pipeline: fixed workflows and policy-validated execution
 - _stream_final_answer_without_tools: normal output, LLM failure fallback, empty content
 - agent_chat SSE: HTTP-level normal stream and LLM-call failure path
 
@@ -33,16 +33,28 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    default_intent = chat_mod.ResearchIntent(
-        kind="general_question",
-        objective="处理当前测试请求",
-    )
+    default_plan = chat_mod.TaskPlan.model_validate({
+        "tasks": [{
+            "task_id": "answer",
+            "kind": "general_response",
+            "objective": "处理当前测试请求",
+            "entity_scope": "none",
+            "entities": [],
+            "parameters": {},
+            "depends_on": [],
+            "output_requirements": [],
+            "confirmation": "not_required",
+            "confidence": 1.0,
+        }],
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("src.auth.is_auth_enabled", return_value=False), \
          patch.object(
              chat_mod,
-             "resolve_research_intent",
-             new=AsyncMock(return_value=default_intent),
+             "resolve_task_plan",
+             new=AsyncMock(return_value=default_plan),
          ), \
          patch.object(
              chat_mod,
@@ -128,50 +140,8 @@ class _FakeController:
 
 
 # ---------------------------------------------------------------------------
-# _run_react_loop
+# 标准任务流水线及共享结果校验
 # ---------------------------------------------------------------------------
-
-def test_turn_policy_keeps_all_tools_available_for_arbitrary_research():
-    policy = chat_mod._resolve_turn_policy(chat_mod.ResearchIntent(
-        kind="industry_chain", topic="人形机器人", objective="研究产业链",
-    ))
-    assert policy["name"] == "general_agent"
-    assert policy["max_tool_calls"] == chat_mod.MAX_TOOL_CALLS_PER_RUN
-    assert policy["require_tools"] is False
-    assert policy["allowed_tools"] is None
-
-
-def test_turn_policy_disables_tools_only_for_semantic_casual_intent():
-    policy = chat_mod._resolve_turn_policy(chat_mod.ResearchIntent(
-        kind="casual", objective="打招呼",
-    ))
-    assert policy["name"] == "casual"
-    assert policy["allowed_tools"] == set()
-
-
-def test_semantic_tool_boundary_keeps_staged_and_collection_tasks_narrow():
-    watchlist = chat_mod.ResearchIntent(kind="watchlist_query", objective="筛选自选股")
-    news = chat_mod.ResearchIntent(kind="news_search", objective="先列出资讯")
-    article = chat_mod.ResearchIntent(kind="article_read", objective="读取指定正文")
-    research = chat_mod.ResearchIntent(kind="stock_research", objective="完整研究宁德时代")
-    financial_filter = chat_mod.ResearchIntent(
-        kind="collection_financial_filter",
-        objective="筛掉上面负债率高于70%的股票",
-        entity_scope="previous_answer",
-        collection_financial_filter_spec={
-            "metric": "debt_ratio", "operator": "gt", "threshold": 70,
-            "action": "exclude_matching",
-        },
-    )
-
-    assert chat_mod._semantic_tool_boundary(watchlist) == ({"filter_watchlist_by_theme"}, 1)
-    assert chat_mod._semantic_tool_boundary(news) == ({"search_news", "search_financial_news"}, 2)
-    assert chat_mod._semantic_tool_boundary(article) == ({"read_financial_article", "webfetch"}, 2)
-    assert chat_mod._semantic_tool_boundary(financial_filter) == (
-        {"get_multi_stock_financials"}, chat_mod.MAX_TOOL_CALLS_PER_RUN,
-    )
-    assert chat_mod._semantic_tool_boundary(research) == (None, None)
-
 
 def test_collection_financial_filter_renderer_fails_closed_on_missing_batch() -> None:
     answer = chat_mod._build_collection_financial_filter_answer(
@@ -183,6 +153,8 @@ def test_collection_financial_filter_renderer_fails_closed_on_missing_batch() ->
                     "success": True,
                     "items": [{
                         "symbol": "000001", "name": "甲公司",
+                        "metric": "debt_ratio", "period_basis": "latest_report",
+                        "financial_value": 50.0, "value_unit": "percent",
                         "debt_ratio_pct": 50.0, "report_date": "2026-03-31",
                     }],
                     "source": "local", "data_time": "2026-07-18T22:42:40",
@@ -195,7 +167,8 @@ def test_collection_financial_filter_renderer_fails_closed_on_missing_batch() ->
             },
         ],
         chat_mod.CollectionFinancialFilterSpec(
-            metric="debt_ratio", operator="gt", threshold=70,
+            metric="debt_ratio", period_basis="latest_report",
+            operator="gt", threshold=70, threshold_unit="percent",
             action="exclude_matching",
         ),
     )
@@ -205,56 +178,47 @@ def test_collection_financial_filter_renderer_fails_closed_on_missing_batch() ->
     assert "不能把已覆盖的部分结果当作完整名单" in answer
 
 
-def test_react_loop_does_not_call_any_tool_when_semantic_resolution_fails() -> None:
-    controller = _FakeController()
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = [{
-        "type": "function",
-        "function": {"name": "websearch", "parameters": {"type": "object"}},
-    }]
-    registry.get_tool_names.return_value = ["websearch"]
+def test_collection_financial_filter_renderer_uses_annual_revenue_and_yi_threshold() -> None:
+    answer = chat_mod._build_collection_financial_filter_answer(
+        [{
+            "tool": "get_multi_stock_financials",
+            "arguments": {
+                "symbols": "000001,000002",
+                "metric": "revenue",
+                "period_basis": "previous_fiscal_year",
+            },
+            "result": {
+                "success": True,
+                "items": [
+                    {
+                        "symbol": "000001", "name": "甲公司",
+                        "metric": "revenue", "period_basis": "previous_fiscal_year",
+                        "financial_value": 499_000_000.0, "value_unit": "cny",
+                        "report_date": "2025-12-31",
+                    },
+                    {
+                        "symbol": "000002", "name": "乙公司",
+                        "metric": "revenue", "period_basis": "previous_fiscal_year",
+                        "financial_value": 800_000_000.0, "value_unit": "cny",
+                        "report_date": "2025-12-31",
+                    },
+                ],
+                "source": "内部财务数据源 2025-12-31 年度快照",
+                "data_time": "2026-07-21T13:00:00",
+            },
+        }],
+        chat_mod.CollectionFinancialFilterSpec(
+            metric="revenue", period_basis="previous_fiscal_year",
+            operator="lt", threshold=5, threshold_unit="yi_cny",
+            action="exclude_matching",
+        ),
+    )
 
-    async def run():
-        with patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch(
-                 "api.v1.endpoints.agent.chat.resolve_research_intent",
-                 new=AsyncMock(side_effect=ValueError("invalid semantic contract")),
-             ):
-            return await chat_mod._run_react_loop(
-                controller,
-                [{"role": "user", "content": "按上文方向找公司"}],
-                {"model": "test-model"},
-            )
-
-    answer = asyncio.run(run())
-
-    assert "没有调用任何数据工具" in answer
-    registry.execute.assert_not_called()
-    assert controller.tool_calls == []
-
-
-def test_react_loop_reports_semantic_gateway_timeout_as_availability_issue() -> None:
-    controller = _FakeController()
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = []
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat._registry", registry), patch(
-            "api.v1.endpoints.agent.chat.resolve_research_intent",
-            new=AsyncMock(side_effect=chat_mod.SemanticIntentUnavailableError("timeout")),
-        ):
-            return await chat_mod._run_react_loop(
-                controller,
-                [{"role": "user", "content": "按上文方向找公司"}],
-                {"model": "test-model"},
-            )
-
-    answer = asyncio.run(run())
-
-    assert "语义解析服务连续超时" in answer
-    assert "重新生成" in answer
-    registry.execute.assert_not_called()
+    assert "2025 年报营业收入" in answer
+    assert "低于 5 亿元" in answer
+    assert "筛除 **1 只**，筛选后保留 **1 只**" in answer
+    assert "甲公司 (000001)" in answer
+    assert "乙公司 (000002)" in answer
 
 
 def test_watchlist_theme_filter_renders_complete_intersection_without_model_rewrite():
@@ -411,339 +375,6 @@ def test_channel_price_threshold_requires_external_evidence():
 
     assert any("批价" in issue and "网页证据" in issue for issue in issues)
 
-def test_run_react_loop_exits_when_no_tool_calls():
-    """LLM returns content without tool_calls -> loop exits returning content."""
-    controller = _FakeController()
-    captured_kwargs = {}
-
-    async def fake_acompletion(**kwargs):
-        captured_kwargs.update(kwargs)
-        return _AsyncChunkStream([_mock_llm_chunk(content="最终答案")])
-
-    fake_cfg = {
-        "model": "openai/glm-5.2",
-        "custom_llm_provider": "anthropic",
-        "api_key": "token-123",
-        "api_base": "https://anthropic-gateway.example",
-        "extra_headers": None,
-    }
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "解释市盈率是什么"}], fake_cfg
-            )
-
-    result = asyncio.run(run())
-    assert result == "最终答案"
-    assert "最终答案" in controller.texts
-    assert captured_kwargs["model"] == "openai/glm-5.2"
-    assert captured_kwargs["custom_llm_provider"] == "anthropic"
-    assert captured_kwargs["api_key"] == "token-123"
-    assert captured_kwargs["api_base"] == "https://anthropic-gateway.example"
-
-
-def test_run_react_loop_streams_provider_reasoning_without_mixing_it_into_answer():
-    controller = _FakeController()
-
-    async def fake_acompletion(**kwargs):
-        return _AsyncChunkStream([
-            _mock_llm_chunk(reasoning_content="先识别问题边界。"),
-            _mock_llm_chunk(content="最终答案"),
-        ])
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "解释市盈率"}], fake_cfg
-            )
-
-    assert asyncio.run(run()) == "最终答案"
-    assert controller.reasoning == ["先识别问题边界。"]
-    assert "先识别问题边界。" not in "".join(controller.texts)
-
-
-def test_run_react_loop_preserves_tool_planning_prose_as_reasoning():
-    controller = _FakeController()
-    call_count = {"n": 0}
-
-    async def fake_acompletion(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            tool_call = _mock_tool_call_delta(name="get_kline", arguments='{"symbol":"000001"}')
-            return _AsyncChunkStream([
-                _mock_llm_chunk(content="先查询价格走势。", tool_calls=[tool_call]),
-            ])
-        return _AsyncChunkStream([_mock_llm_chunk(content="分析完成")])
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline"]
-    registry.execute.return_value = {"data": []}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "分析走势"}], fake_cfg
-            )
-
-    assert asyncio.run(run()) == "分析完成"
-    assert "先查询价格走势。" in controller.reasoning
-
-
-def test_run_react_loop_handles_unknown_tool_name():
-    """Tool name not in registry -> tool error response, loop continues."""
-    controller = _FakeController()
-    call_count = {"n": 0}
-
-    async def fake_acompletion(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            tc = _mock_tool_call_delta(name="nonexistent_tool", arguments="{}")
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc])])
-        return _AsyncChunkStream([_mock_llm_chunk(content="done")])
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline"]
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "做一个通用分析"}], fake_cfg
-            )
-
-    result = asyncio.run(run())
-    assert result == "done"
-    assert call_count["n"] == 2
-
-
-def test_run_react_loop_executes_known_tool_and_continues():
-    """Known tool -> executed, result fed back, loop continues to final answer."""
-    controller = _FakeController()
-    call_count = {"n": 0}
-
-    async def fake_acompletion(**kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            tc = _mock_tool_call_delta(name="get_kline", arguments='{"symbol":"000001"}')
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc])])
-        return _AsyncChunkStream([_mock_llm_chunk(content="分析完成")])
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline"]
-    registry.execute.return_value = {"data": []}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", return_value={"data": []}), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", return_value={"data": []}), \
-             patch("api.v1.endpoints.agent.chat._format_result", return_value="{}"), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "分析这些股票"}], fake_cfg
-            )
-
-    result = asyncio.run(run())
-    assert result == "分析完成"
-    registry.execute.assert_called_once_with("get_kline", {"symbol": "000001"})
-
-
-def test_run_react_loop_executes_multiple_tools_concurrently():
-    """LLM 一次返回多个 tool_call → 并发执行，结果全部回灌。
-
-    并发证明用耗时：每个工具同步 sleep 0.3s，串行 ≈ 0.6s，并发 ≈ 0.3s。
-    阈值 0.5s 居中，足以区分两种模式且对 CI 抖动有冗余。
-    """
-    import time
-
-    controller = _FakeController()
-    call_count = {"n": 0}
-    model_requests = []
-    sleep_seconds = 0.3
-
-    def _execute(name, args):
-        time.sleep(sleep_seconds)  # 同步阻塞取数
-        return {"data": [name, args]}
-
-    async def fake_acompletion(**kwargs):
-        call_count["n"] += 1
-        model_requests.append(list(kwargs["messages"]))
-        if call_count["n"] == 1:
-            tc_a = _mock_tool_call_delta(idx=0, name="get_kline", arguments='{"symbol":"000001"}', tc_id="call_a")
-            tc_b = _mock_tool_call_delta(idx=1, name="get_realtime_quotes", arguments='{"symbols":"000001"}', tc_id="call_b")
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc_a, tc_b])])
-        return _AsyncChunkStream([_mock_llm_chunk(content="完成")])
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline", "get_realtime_quotes"]
-    registry.execute.side_effect = _execute
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
-             patch("api.v1.endpoints.agent.chat._format_result", return_value="{}"), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            start = time.monotonic()
-            text = await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "比较两个测试对象"}], fake_cfg
-            )
-            elapsed = time.monotonic() - start
-            return text, elapsed
-
-    result, elapsed = asyncio.run(run())
-    assert result == "完成"
-    # 两个工具都被执行
-    executed_names = {call.args[0] for call in registry.execute.call_args_list}
-    assert executed_names == {"get_kline", "get_realtime_quotes"}
-    # Parallel calls must be represented by one assistant message owning both
-    # tool_calls, followed by two tool results.  Splitting them into separate
-    # assistant messages breaks Anthropic adapters.
-    second_request = model_requests[1]
-    tool_assistant_messages = [
-        message for message in second_request
-        if message.get("role") == "assistant" and message.get("tool_calls")
-    ]
-    assert len(tool_assistant_messages) == 1
-    assert {call["id"] for call in tool_assistant_messages[0]["tool_calls"]} == {"call_a", "call_b"}
-    # 并发而非串行：串行需 2*sleep，并发约 sleep；0.5s 阈值居中
-    assert elapsed < sleep_seconds * 1.5, f"工具疑似串行执行，耗时 {elapsed:.2f}s"
-
-
-def test_run_react_loop_hides_duplicate_and_over_budget_tool_requests():
-    """Only genuinely executed research calls should appear in the tool UI."""
-    controller = _FakeController()
-    llm_calls = {"n": 0}
-
-    async def fake_acompletion(**kwargs):
-        llm_calls["n"] += 1
-        if llm_calls["n"] == 1:
-            symbols = ["000001", "000001", "000002", "000003", "000004", "000005"]
-            calls = [
-                _mock_tool_call_delta(
-                    idx=index,
-                    name="get_kline",
-                    arguments=json.dumps({"symbol": symbol}),
-                    tc_id=f"call_{index}",
-                )
-                for index, symbol in enumerate(symbols)
-            ]
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=calls)])
-        return _AsyncChunkStream([_mock_llm_chunk(content="done")])
-
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline"]
-    registry.execute.return_value = {"success": True}
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "分析这些股票"}], fake_cfg
-            )
-
-    assert asyncio.run(run()) == "done"
-    assert len(controller.tool_calls) == chat_mod.MAX_TOOL_CALLS_PER_ROUND
-    assert registry.execute.call_count == chat_mod.MAX_TOOL_CALLS_PER_ROUND
-
-
-def test_run_react_loop_allows_distinct_legacy_theme_candidate_arguments():
-    """Deduplication is signature-based; different theme arguments are not dropped."""
-    controller = _FakeController()
-    llm_calls = {"n": 0}
-
-    async def fake_acompletion(**kwargs):
-        llm_calls["n"] += 1
-        if llm_calls["n"] == 1:
-            calls = [
-                _mock_tool_call_delta(
-                    idx=0,
-                    name="get_theme_stock_candidates",
-                    arguments='{"theme":"人形机器人","limit":500}',
-                    tc_id="call_theme_exact",
-                ),
-                _mock_tool_call_delta(
-                    idx=1,
-                    name="get_theme_stock_candidates",
-                    arguments='{"theme":"具身智能","limit":300}',
-                    tc_id="call_theme_drifted",
-                ),
-            ]
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=calls)])
-        return _AsyncChunkStream([_mock_llm_chunk(content="done")])
-
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_theme_stock_candidates"]
-    registry.execute.return_value = {"success": True, "items": []}
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "研究这个机器人主题"}], fake_cfg
-            )
-
-    assert asyncio.run(run()) == "done"
-    assert registry.execute.call_count == 2
-    assert len(controller.tool_calls) == 2
-    executed_args = [call.args for call in registry.execute.call_args_list]
-    assert ("get_theme_stock_candidates", {"theme": "人形机器人", "limit": 500}) in executed_args
-    assert ("get_theme_stock_candidates", {"theme": "具身智能", "limit": 300}) in executed_args
-
-
-def test_referential_multi_stock_calls_are_coalesced_with_verified_entities():
-    calls = [
-        {"id": "a", "name": "get_realtime_quotes", "arguments": '{"symbols":"003021,603662"}'},
-        {"id": "b", "name": "get_technical_indicators", "arguments": '{"symbol":"300682"}'},
-        {"id": "c", "name": "get_technical_indicators", "arguments": '{"symbol":"002520"}'},
-    ]
-    entities = [
-        {"name": "兆威机电", "symbol": "003021"},
-        {"name": "柯力传感", "symbol": "603662"},
-        {"name": "汉威科技", "symbol": "300007"},
-        {"name": "南方精工", "symbol": "002553"},
-    ]
-    coalesced = chat_mod._coalesce_multi_security_calls(
-        calls,
-        verified_entities=entities,
-        referential_followup=True,
-    )
-    assert len(coalesced) == 1
-    assert coalesced[0]["name"] == "get_multi_stock_snapshot"
-    assert json.loads(coalesced[0]["arguments"])["symbols"] == "003021,603662,300007,002553"
-
-
 def test_previous_answer_entities_scope_to_table_rows():
     messages = [
         {
@@ -796,38 +427,6 @@ def test_previous_answer_entities_use_non_first_company_column_only():
     assert all(item["symbol"] not in {"300024", "000333"} for item in entities)
 
 
-def test_multi_stock_round_preserves_model_group_order_without_text_inference():
-    calls = [
-        {"id": "batch", "name": "get_multi_stock_snapshot", "arguments": '{"symbols":"600519,000858"}'},
-        {"id": "v1", "name": "get_valuation_ratios", "arguments": '{"symbol":"600519"}'},
-        {"id": "v2", "name": "get_valuation_ratios", "arguments": '{"symbol":"000858"}'},
-        {"id": "b1", "name": "get_business_segments", "arguments": '{"symbol":"600519"}'},
-        {"id": "b2", "name": "get_business_segments", "arguments": '{"symbol":"000858"}'},
-        {"id": "r1", "name": "get_risk_events", "arguments": '{"symbol":"600519"}'},
-        {"id": "r2", "name": "get_risk_events", "arguments": '{"symbol":"000858"}'},
-    ]
-    selected = chat_mod._select_balanced_multi_security_calls(calls)
-    assert [call["id"] for call in selected] == ["batch", "v1", "v2"]
-
-
-def test_multi_stock_round_preserves_detailed_valuation_pair_when_history_requested():
-    calls = [
-        {"id": "batch", "name": "get_multi_stock_snapshot", "arguments": '{"symbols":"600519,000858"}'},
-        {"id": "v1", "name": "get_valuation_ratios", "arguments": '{"symbol":"600519"}'},
-        {"id": "v2", "name": "get_valuation_ratios", "arguments": '{"symbol":"000858"}'},
-    ]
-    selected = chat_mod._select_balanced_multi_security_calls(calls)
-    assert [call["id"] for call in selected] == ["batch", "v1", "v2"]
-
-
-def test_multi_stock_round_does_not_synthesize_calls_from_user_wording():
-    calls = [
-        {"id": "batch", "name": "get_multi_stock_snapshot", "arguments": '{"symbols":"600519,000858"}'},
-    ]
-    selected = chat_mod._select_balanced_multi_security_calls(calls)
-    assert [call["name"] for call in selected] == ["get_multi_stock_snapshot"]
-
-
 def test_slim_tool_content_strips_detail_arrays_keeps_summary():
     """_slim_tool_content 丢弃明细数组、保留摘要、打 _slimmed 标记。"""
     payload = {
@@ -860,123 +459,6 @@ def test_slim_tool_content_idempotent_and_safe_on_non_json():
     assert chat_mod._slim_tool_content("[1,2,3]") == "[1,2,3]"
     assert chat_mod._slim_tool_content("工具执行失败: boom") == "工具执行失败: boom"
     assert chat_mod._slim_tool_content("") == ""
-
-
-def test_run_react_loop_slims_history_tool_results_between_rounds():
-    """多轮循环：历史轮的 tool 结果被裁剪（丢 recent/明细），本轮保留完整。
-
-    构造 4 轮：
-      轮1: 调 get_kline，结果含 recent 明细数组
-      轮2: 调 get_realtime_quotes，结果含 items
-      轮3: 调 get_financials，结果含 recent_periods
-      轮4: 直接给最终答案（无 tool_call）
-
-    裁剪语义：每轮结束时把「更早轮」的 tool 结果二次瘦身，本轮刚加的保留完整。
-    验证：
-      轮2 请求 → 轮1 已裁（_slimmed、丢 recent、留 latest）
-      轮3 请求 → 轮1 仍裁 + 轮2 已裁（丢 items）
-      轮4 请求 → 轮1/2/3 全裁（丢 recent_periods）
-    """
-    controller = _FakeController()
-    round_n = {"n": 0}
-    captured: list[dict] = []
-
-    async def fake_acompletion(**kwargs):
-        round_n["n"] += 1
-        captured.append({"round": round_n["n"], "messages": list(kwargs["messages"])})
-        if round_n["n"] == 1:
-            tc = _mock_tool_call_delta(name="get_kline", arguments='{"symbol":"600519"}', tc_id="call_kline")
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc])])
-        if round_n["n"] == 2:
-            tc = _mock_tool_call_delta(name="get_realtime_quotes", arguments='{"symbols":"600519"}', tc_id="call_q")
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc])])
-        if round_n["n"] == 3:
-            tc = _mock_tool_call_delta(name="get_financials", arguments='{"symbol":"600519"}', tc_id="call_fin")
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc])])
-        return _AsyncChunkStream([_mock_llm_chunk(content="最终分析")])
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline", "get_realtime_quotes", "get_financials"]
-
-    results = {
-        "get_kline": {"symbol": "600519", "count": 60, "latest": {"date": "2026-07-07"},
-                      "recent": [{"date": f"2026-07-0{i}"} for i in range(1, 6)]},
-        "get_realtime_quotes": {"total": 1, "items": [{"symbol": "600519", "price": 1500.0}],
-                                "latest": None},
-        "get_financials": {"symbol": "600519", "periods": 6,
-                           "recent_periods": [{"eps": 1.0}], "latest": {"eps": 1.2}},
-    }
-    registry.execute.side_effect = lambda name, args: results[name]
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
-             patch("api.v1.endpoints.agent.chat._format_result",
-                   side_effect=lambda r: json.dumps(r, ensure_ascii=False)), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "分析茅台"}], fake_cfg
-            )
-
-    result = asyncio.run(run())
-    assert result == "最终分析"
-
-    def _tool_payload(round_idx, tool_call_id):
-        msgs = captured[round_idx]["messages"]
-        msg = next(m for m in msgs if m.get("role") == "tool"
-                   and m.get("tool_call_id") == tool_call_id)
-        return json.loads(msg["content"])
-
-    # 轮2 请求：轮1 (get_kline) 已裁 —— 丢 recent、留 latest、含 _slimmed
-    kline_r2 = _tool_payload(1, "call_kline")
-    assert kline_r2.get("_slimmed") is True
-    assert "recent" not in kline_r2
-    assert kline_r2["latest"] == {"date": "2026-07-07"}
-
-    # 轮3 请求：轮1 仍裁，轮2 (get_realtime_quotes) 已裁 —— 丢 items、留 total
-    kline_r3 = _tool_payload(2, "call_kline")
-    assert kline_r3.get("_slimmed") is True
-    assert "recent" not in kline_r3
-    quote_r3 = _tool_payload(2, "call_q")
-    assert quote_r3.get("_slimmed") is True
-    assert "items" not in quote_r3
-    assert quote_r3["total"] == 1
-
-    # 轮4 请求：轮1/2 已裁；轮3 (get_financials) 是上一轮刚加的，对轮4而言模型正要用，
-    # 必须保持完整（反证裁剪逻辑没有误伤上一轮）。裁剪只在「更早轮」+「下一轮请求前」发生。
-    assert _tool_payload(3, "call_kline").get("_slimmed") is True
-    assert _tool_payload(3, "call_q").get("_slimmed") is True
-    fin_r4 = _tool_payload(3, "call_fin")
-    assert fin_r4.get("_slimmed") is None  # 未裁
-    assert "recent_periods" in fin_r4       # 明细保留
-    assert fin_r4["latest"] == {"eps": 1.2}
-
-
-def test_run_react_loop_llm_call_failure_returns_empty():
-    """LLM acompletion raises -> error text appended, returns empty string."""
-    controller = _FakeController()
-
-    async def fake_acompletion(**kwargs):
-        raise RuntimeError("LLM down")
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "hi"}], fake_cfg
-            )
-
-    result = asyncio.run(run())
-    assert result == ""
-    assert any("分析出错" in t for t in controller.texts)
 
 
 # ---------------------------------------------------------------------------
@@ -1072,152 +554,6 @@ def test_generic_final_synthesis_repairs_header_only_table():
     assert calls["value"] == 2
 
 
-def test_industry_playbook_executes_runtime_owned_evidence_plan_before_model():
-    controller = _FakeController()
-    llm_calls = []
-
-    async def fake_acompletion(**kwargs):
-        llm_calls.append(kwargs)
-        valid = (
-            "## 受益优先级\n最受益环节按价值量排序。\n"
-            "## 产业链地图\n上游核心部件、中游整机、下游应用。\n"
-            "受益机制是价值量提升，兑现指标看订单和产能。\n"
-            "反证与风险包括量产不及预期。\n"
-            "持续跟踪量化指标。来源：研究资料；截至2026-07-17；"
-            "置信度中等；证据缺口已列示。"
-            "[来源一](https://example.com/a) [来源二](https://example.org/b)"
-        )
-        return _AsyncChunkStream([_mock_llm_chunk(content=valid, finish_reason="stop")])
-
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["search_financial_news", "search_research_library"]
-    registry.execute.side_effect = lambda name, args: {
-        "success": True,
-        "items": [{"title": name, "published": "2026-07-01", "source": "测试源"}],
-    }
-    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    intent = chat_mod.ResearchIntent(
-        kind="industry_chain",
-        topic="人形机器人",
-        objective="研究产业链受益顺序",
-        research_dimensions=["价值量", "订单", "产能"],
-    )
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat.resolve_research_intent", new=AsyncMock(return_value=intent)), \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller,
-                [{"role": "user", "content": "帮我分析下人形机器人产业链，哪些领域最受益？"}],
-                cfg,
-            )
-
-    result = asyncio.run(run())
-    assert "受益优先级" in result
-    assert registry.execute.call_count == 4
-    assert {call.args[0] for call in registry.execute.call_args_list} == {
-        "search_financial_news",
-        "search_research_library",
-    }
-    # There is no model-planning turn before the mandatory evidence calls;
-    # the only model request is the final synthesis.
-    assert len(llm_calls) == 1
-    assert "强制分析标准" in llm_calls[0]["messages"][0]["content"]
-
-
-def test_investment_playbook_renders_tool_evidence_without_model_synthesis():
-    controller = _FakeController()
-    entities = [
-        {"name": "绿的谐波", "symbol": "688017"},
-        {"name": "兆威机电", "symbol": "003021"},
-    ]
-    decision_result = {
-        "success": True,
-        "thesis": "人形机器人",
-        "data_time": "2026-07-18",
-        "quote_basis": "非交易时段的最近市场快照",
-        "resolved_entities": entities,
-        "items": [
-            {
-                "name": entity["name"],
-                "symbol": entity["symbol"],
-                "snapshot": {"technical": {"indicators": {}}},
-                "financials": {"items": [{}]},
-                "valuation": {},
-                "capital_flow": {"windows": {"10d": {}}},
-                "risk_events": {"items": [], "analysis": {}},
-                "announcements": {},
-                "evidence_coverage": {"complete": False, "missing": ["expectations"]},
-                "screening_flags": {"positive": [], "negative": []},
-            }
-            for entity in entities
-        ],
-    }
-    breadth_result = {
-        "success": True,
-        "up_count": 3210,
-        "down_count": 1840,
-        "advance_decline_ratio": 1.745,
-        "total_amount": 15000,
-        "total_amount_unit": "亿元",
-        "data_time": "2026-07-18T14:00:00+08:00",
-    }
-
-    def fake_execute(name, args, **kwargs):
-        return decision_result if name == "get_multi_stock_decision_evidence" else breadth_result
-
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = [
-        "get_multi_stock_decision_evidence",
-        "get_market_breadth",
-    ]
-    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "| 公司/代码 | 结论 |\n|---|---|\n"
-                "| 绿的谐波 (688017) | 核心公司 |\n"
-                "| 兆威机电 (003021) | 核心公司 |"
-            ),
-        },
-        {"role": "user", "content": "这些核心公司现在能买吗？"},
-    ]
-    intent = chat_mod.ResearchIntent(
-        kind="investment_decision",
-        topic="人形机器人核心公司",
-        entity_scope="previous_answer",
-        objective="判断当前介入条件",
-    )
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat.resolve_research_intent", new=AsyncMock(return_value=intent)), \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat.execute_tool_isolated", side_effect=fake_execute), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = AsyncMock(side_effect=AssertionError("不应进入模型最终综合"))
-            return await chat_mod._run_react_loop(controller, messages, cfg)
-
-    result = asyncio.run(run())
-
-    assert result.startswith("## 专业买入决策结论")
-    assert "绿的谐波 (688017)" in result
-    assert "兆威机电 (003021)" in result
-    assert "### 市场宽度" in result
-    assert "上涨 **3210** 家" in result
-    assert len(controller.tool_calls) == 2
-
-
 def test_industry_playbook_repairs_an_answer_that_drops_required_sections():
     controller = _FakeController()
     call_count = {"value": 0}
@@ -1255,6 +591,20 @@ def test_industry_playbook_repairs_an_answer_that_drops_required_sections():
     assert "机器人行业会受益" not in result
     assert call_count["value"] == 2
     assert "运行时输出验收未通过" in requests[-1]["messages"][-1]["content"]
+
+
+def test_industry_contract_does_not_discard_safe_answer_for_link_format_only():
+    safe_answer = (
+        "优先级和最受益排序。上游、中游、下游构成产业链。"
+        "受益机制看价值量，兑现指标看订单和产能。反证与风险是不及预期。"
+        "后续持续跟踪量化指标，来源截至当前证据时间，整体置信度中等。"
+        "[来源](https://example.com/a)"
+    )
+    assert chat_mod._playbook_answer_contract_issues(
+        chat_mod.INDUSTRY_CHAIN,
+        safe_answer,
+        [],
+    ) == []
 
 
 def test_playbook_timeout_keeps_buffered_text_only_when_contract_is_complete():
@@ -1383,7 +733,7 @@ def test_professional_contract_requires_every_company_and_decision_axis():
     }]
     incomplete = "003021：主营业务不错，财务和估值需要看。"
     issues = chat_mod._playbook_answer_contract_issues(
-        chat_mod.INVESTMENT_DECISION,
+        chat_mod.STOCK_DEEP_RESEARCH,
         incomplete,
         evidence,
     )
@@ -1397,7 +747,7 @@ def test_professional_contract_requires_every_company_and_decision_axis():
         "结论等待验证，并给出成立条件与失效条件。"
     )
     assert chat_mod._playbook_answer_contract_issues(
-        chat_mod.INVESTMENT_DECISION,
+        chat_mod.STOCK_DEEP_RESEARCH,
         complete,
         evidence,
     ) == []
@@ -1405,13 +755,13 @@ def test_professional_contract_requires_every_company_and_decision_axis():
 
 def test_professional_contract_fails_closed_when_evidence_packet_is_unavailable():
     issues = chat_mod._playbook_answer_contract_issues(
-        chat_mod.INVESTMENT_DECISION,
+        chat_mod.STOCK_DEEP_RESEARCH,
         "我认为可以买入。",
         [{"tool": "get_multi_stock_decision_evidence", "result": {"success": False}}],
     )
     assert issues == ["专业决策证据未成功取得，必须停止买入判断并说明证据缺口"]
     assert chat_mod._playbook_answer_contract_issues(
-        chat_mod.INVESTMENT_DECISION,
+        chat_mod.STOCK_DEEP_RESEARCH,
         "本轮专业证据不足，因此暂不做买入判断。",
         [{"tool": "get_multi_stock_decision_evidence", "result": {"success": False}}],
     ) == []
@@ -1563,7 +913,7 @@ def test_theme_mapping_uses_only_semantic_facts():
 
 def test_ranked_shortlist_requires_exact_thesis_fit_and_does_not_dump_concept_pool():
     from src.agent.evidence_facts import BoundEvidenceFact
-    from src.agent.research_intent import ResearchIntent
+    from src.agent.result_contracts import MappingSelectionContext
 
     result = {
         "success": True,
@@ -1576,7 +926,7 @@ def test_ranked_shortlist_requires_exact_thesis_fit_and_does_not_dump_concept_po
             {"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]},
         ],
     }
-    intent = ResearchIntent(
+    intent = MappingSelectionContext(
         kind="theme_company_mapping",
         topic="消费级终端端侧AI SoC与推理芯片",
         discovery_theme="AI芯片",
@@ -1620,305 +970,6 @@ def test_ranked_shortlist_requires_exact_thesis_fit_and_does_not_dump_concept_po
     assert "寒武纪" not in rendered
     assert "完整候选池" not in rendered
     assert "概念成员关系不参与最终排名" in rendered
-
-
-def test_react_loop_uses_semantic_intent_dimensions_and_bound_facts_end_to_end():
-    from src.agent.evidence_facts import BoundEvidenceFact
-    from src.agent.research_intent import ResearchIntent
-
-    controller = _FakeController()
-    intent = ResearchIntent(
-        kind="theme_company_mapping",
-        topic="AI芯片",
-        discovery_theme="AI芯片",
-        selection_mode="ranked_shortlist",
-        company_mapping_mode="business_evidence",
-        resolved_domains=["训练芯片", "推理芯片"],
-        entity_scope="none",
-        objective="找出真正核心受益的A股公司",
-        research_dimensions=["GPU", "训练芯片", "推理芯片", "量产", "收入"],
-        output_requirements=["完整候选池", "公司级证据"],
-        confidence=0.98,
-    )
-    bound_facts = [BoundEvidenceFact(
-        company_name="全志科技",
-        symbol="300458",
-        stage="L3",
-        relationship="算力芯片",
-        fact="全志科技算力芯片产品已在多个领域实现量产",
-        support_quote="全志科技算力芯片产品已在多个领域实现量产",
-        source_id="s1",
-        source_name="财联社",
-        source_url="https://example.com/allwinner",
-        source_date="2026-07-17",
-        confidence=0.96,
-    )]
-    executed = []
-
-    def execute(name, arguments, **_kwargs):
-        executed.append((name, dict(arguments)))
-        if name == "get_theme_stock_candidates":
-            return {
-                "success": True,
-                "theme": "AI芯片",
-                "local_universe_count": 5534,
-                "candidate_count": 2,
-                "returned_count": 2,
-                "items": [
-                    {"name": "全志科技", "symbol": "300458", "boards": ["AI芯片"]},
-                    {"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]},
-                ],
-            }
-        return {"success": True, "retrieved_at": "2026-07-18T10:00:00", "items": []}
-
-    tool_names = [
-        "get_theme_stock_candidates",
-        "search_financial_news",
-        "search_research_library",
-        "websearch",
-    ]
-    registry = MagicMock()
-    registry.get_tool_names.return_value = tool_names
-    registry.get_all_schemas.return_value = [
-        {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
-        for name in tool_names
-    ]
-    registry.normalize_arguments.side_effect = lambda _name, args: args
-    fake_cfg = {
-        "model": "test-model",
-        "api_key": None,
-        "api_base": None,
-        "extra_headers": None,
-        "semantic_intent_enabled": True,
-        "semantic_evidence_enabled": True,
-    }
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat.resolve_research_intent", new=AsyncMock(return_value=intent)), \
-             patch("api.v1.endpoints.agent.chat.bind_company_evidence", new=AsyncMock(return_value=bound_facts)) as binder, \
-             patch("api.v1.endpoints.agent.chat.execute_tool_isolated", side_effect=execute), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda _name, result: result), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda _name, _args, result: result), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            result = await chat_mod._run_react_loop(
-                controller,
-                [
-                    {"role": "user", "content": "帮我分析AI产业链"},
-                    {"role": "assistant", "content": "上游还有服务器和光模块。"},
-                    {"role": "user", "content": "聚焦计算芯片这一段，A股里谁真正吃到量产？"},
-                ],
-                fake_cfg,
-            )
-            return result, binder
-
-    rendered, binder = asyncio.run(run())
-    assert "全志科技 (300458) | 算力芯片 | L3" in rendered
-    assert "寒武纪 (688256)" not in rendered
-    assert "盟固利" not in rendered
-    assert binder.await_count == 1
-    assert {name for name, _arguments in executed} == set(tool_names)
-    theme_args = next(arguments for name, arguments in executed if name == "get_theme_stock_candidates")
-    research_args = next(arguments for name, arguments in executed if name == "search_research_library")
-    assert theme_args["theme"] == "AI芯片"
-    assert "GPU" in research_args["query"]
-    assert "训练芯片" in research_args["query"]
-    assert "丝杠" not in research_args["query"]
-
-
-def test_real_tier_followup_uses_only_multi_domain_stock_pool_end_to_end():
-    controller = _FakeController()
-    executed: list[tuple[str, dict]] = []
-
-    domain_result = {
-        "success": True,
-        "partial": False,
-        "requested_domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
-        "context_theme": "行星滚柱丝杠、减速器、无框力矩电机",
-        "local_universe_count": 5879,
-        "candidate_count": 2,
-        "domain_results": [
-            {
-                "domain": "行星滚柱丝杠",
-                "lookup_themes": ["机器人执行器"],
-                "mapping_basis": "narrowest_structured_board_alias",
-                "success": True,
-                "coverage_complete": True,
-                "candidate_count": 1,
-                "matched_boards": [{"name": "机器人执行器"}],
-                "items": [{
-                    "symbol": "300580", "name": "贝斯特",
-                    "matched_domains": ["行星滚柱丝杠"],
-                    "boards": ["机器人执行器"],
-                }],
-            },
-            {
-                "domain": "减速器",
-                "lookup_themes": ["减速器"],
-                "mapping_basis": "exact_concept_board",
-                "success": True,
-                "coverage_complete": True,
-                "candidate_count": 1,
-                "matched_boards": [{"name": "减速器"}],
-                "items": [{
-                    "symbol": "688017", "name": "绿的谐波",
-                    "matched_domains": ["减速器"], "boards": ["减速器"],
-                }],
-            },
-            {
-                "domain": "无框力矩电机",
-                "lookup_themes": ["机器人执行器"],
-                "mapping_basis": "narrowest_structured_board_alias",
-                "success": True,
-                "coverage_complete": True,
-                "candidate_count": 1,
-                "matched_boards": [{"name": "机器人执行器"}],
-                "items": [{
-                    "symbol": "300580", "name": "贝斯特",
-                    "matched_domains": ["无框力矩电机"],
-                    "boards": ["机器人执行器"],
-                }],
-            },
-        ],
-    }
-
-    def execute(name, arguments, **_kwargs):
-        executed.append((name, dict(arguments)))
-        return domain_result
-
-    registry = MagicMock()
-    registry.get_tool_names.return_value = ["get_domain_stock_candidates"]
-    registry.get_all_schemas.return_value = [{
-        "type": "function",
-        "function": {"name": "get_domain_stock_candidates", "parameters": {"type": "object"}},
-    }]
-    registry.normalize_arguments.side_effect = lambda _name, args: args
-    fake_cfg = {
-        "model": "test-model", "api_key": None, "api_base": None,
-        "extra_headers": None, "semantic_intent_enabled": True,
-    }
-    messages = [
-        {"role": "user", "content": "帮我分析下人形机器人产业链，哪些领域最受益？"},
-        {
-            "role": "assistant",
-            "content": "| 梯队 | 环节 |\n|---|---|\n| 第一梯队 | 行星滚柱丝杠、减速器、无框力矩电机 |",
-        },
-        {"role": "user", "content": "按照上面排第一的最受益的方向，找出A股正在往这些方向大力发展的公司"},
-    ]
-
-    intent = chat_mod.ResearchIntent(
-        kind="theme_company_mapping",
-        topic="人形机器人关节执行器（电机+减速器+丝杠）",
-        discovery_theme="人形机器人",
-        selection_mode="complete_inventory",
-        company_mapping_mode="structured_candidates",
-        resolved_domains=["行星滚柱丝杠", "减速器", "无框力矩电机"],
-        objective="按上文首位方向映射A股公司",
-    )
-
-    async def run():
-        intent_resolver = AsyncMock(return_value=intent)
-        with patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat.resolve_research_intent", new=intent_resolver), \
-             patch("api.v1.endpoints.agent.chat.execute_tool_isolated", side_effect=execute), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda _name, value: value), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            result = await chat_mod._run_react_loop(controller, messages, fake_cfg)
-            return result, intent_resolver
-
-    rendered, intent_resolver = asyncio.run(run())
-
-    assert intent_resolver.await_count == 1
-    assert [name for name, _args in executed] == ["get_domain_stock_candidates"]
-    assert executed[0][1]["domains"] == ["行星滚柱丝杠", "减速器", "无框力矩电机"]
-    assert "贝斯特 (300580)" in rendered
-    assert "绿的谐波 (688017)" in rendered
-    assert "本轮没有使用通用网页搜索生成候选" in rendered
-    assert all(name not in {"search_stocks", "websearch", "get_multi_stock_snapshot"} for name, _ in executed)
-
-
-def test_47_stock_debt_filter_runs_four_financial_only_batches_end_to_end() -> None:
-    controller = _FakeController()
-    entities = [
-        {"name": f"候选公司{index}", "symbol": f"{index:06d}"}
-        for index in range(1, 48)
-    ]
-    names = {item["symbol"]: item["name"] for item in entities}
-    executed: list[tuple[str, dict]] = []
-
-    def execute(name, arguments, **_kwargs):
-        executed.append((name, dict(arguments)))
-        codes = arguments["symbols"].split(",")
-        return {
-            "success": True,
-            "partial": False,
-            "items": [
-                {
-                    "symbol": code,
-                    "name": names[code],
-                    "debt_ratio_pct": 75.5 if code == "000047" else 50.0,
-                    "report_date": "2026-03-31",
-                    "financial_fetched_at": "2026-07-18T22:42:40",
-                }
-                for code in codes
-            ],
-            "source": "stock_meta 本地已同步最新报告期财务快照",
-            "data_time": "2026-07-18T22:42:40",
-            "errors": [],
-        }
-
-    registry = MagicMock()
-    registry.get_tool_names.return_value = ["get_multi_stock_financials"]
-    registry.get_all_schemas.return_value = [{
-        "type": "function",
-        "function": {"name": "get_multi_stock_financials", "parameters": {"type": "object"}},
-    }]
-    registry.normalize_arguments.side_effect = lambda _name, args: args
-    messages = [
-        {"role": "assistant", "content": "上一轮完整候选表"},
-        {"role": "user", "content": "把上面这些股票中负债率高于70%的筛掉"},
-    ]
-    fake_cfg = {
-        "model": "test-model", "api_key": None, "api_base": None,
-        "extra_headers": None, "semantic_intent_enabled": True,
-    }
-
-    intent = chat_mod.ResearchIntent(
-        kind="collection_financial_filter",
-        topic="上文股票集合",
-        selection_mode="complete_inventory",
-        entity_scope="previous_answer",
-        objective="按财务阈值筛选上文集合",
-        collection_financial_filter_spec={
-            "metric": "debt_ratio", "operator": "gt", "threshold": 70,
-            "action": "exclude_matching",
-        },
-    )
-
-    async def run():
-        resolver = AsyncMock(return_value=intent)
-        with patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._previous_answer_table_entities", return_value=entities), \
-             patch("api.v1.endpoints.agent.chat.resolve_research_intent", new=resolver), \
-             patch("api.v1.endpoints.agent.chat.normalize_tool_security_arguments", side_effect=lambda _name, args: (args, [])), \
-             patch("api.v1.endpoints.agent.chat.execute_tool_isolated", side_effect=execute), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda _name, value: value), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            answer = await chat_mod._run_react_loop(controller, messages, fake_cfg)
-            return answer, resolver
-
-    answer, resolver = asyncio.run(run())
-
-    assert resolver.await_count == 1
-    assert [name for name, _arguments in executed] == ["get_multi_stock_financials"] * 4
-    assert [len(arguments["symbols"].split(",")) for _name, arguments in executed] == [12, 12, 12, 11]
-    assert "原集合 **47 只**，成功覆盖 **47 只**，缺失 **0 只**" in answer
-    assert "候选公司47 (000047)" in answer
-    assert "75.50%" in answer
-    assert "本轮未调用实时行情、K线或技术指标" in answer
-    assert all(name != "get_multi_stock_snapshot" for name, _arguments in executed)
 
 
 def test_mapping_synthesis_receives_runtime_verified_candidate_codes():
@@ -2072,44 +1123,6 @@ def test_stream_final_answer_converts_tool_history_to_text_evidence():
     evidence_message = captured["messages"][-1]["content"]
     assert "本轮已核验的工具证据" in evidence_message
     assert "search_financial_news" in evidence_message
-
-
-def test_react_loop_hides_planning_prose_when_tools_are_called():
-    """Model planning prose stays internal; users see progress + final answer only."""
-    controller = _FakeController()
-    round_n = {"value": 0}
-
-    async def fake_acompletion(**kwargs):
-        round_n["value"] += 1
-        if round_n["value"] == 1:
-            tc = _mock_tool_call_delta(name="get_kline", arguments='{"symbol":"600519"}')
-            return _AsyncChunkStream([
-                _mock_llm_chunk(content="第一步：我先查行情"),
-                _mock_llm_chunk(tool_calls=[tc]),
-            ])
-        return _AsyncChunkStream([_mock_llm_chunk(content="这是最终答案")])
-
-    cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_kline"]
-    registry.execute.return_value = {"success": True}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
-             patch("api.v1.endpoints.agent.chat._format_result", return_value='{"success":true}'), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(
-                controller, [{"role": "user", "content": "分析"}], cfg
-            )
-
-    assert asyncio.run(run()) == "这是最终答案"
-    assert all("第一步：我先查行情" not in text for text in controller.texts)
-    assert any("这是最终答案" in text for text in controller.texts)
 
 
 def test_stream_final_answer_llm_failure_appends_error_text():
@@ -2407,11 +1420,28 @@ def test_agent_chat_sse_normal_stream(client):
     DataStreamResponse JSON-encodes text, so CJK appears as \\uXXXX escapes.
     """
     fake_acompletion = _async_completion([_mock_llm_chunk(content="你好")])
+    plan = chat_mod.TaskPlan.model_validate({
+        "tasks": [{
+            "task_id": "answer",
+            "kind": "general_response",
+            "objective": "回应问候",
+            "entity_scope": "none",
+            "entities": [],
+            "parameters": {},
+            "depends_on": [],
+            "output_requirements": [],
+            "confirmation": "not_required",
+            "confidence": 1.0,
+        }],
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
 
     marker = "你好".encode("unicode_escape")
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+         patch("api.v1.endpoints.agent.chat.resolve_task_plan", new=AsyncMock(return_value=plan)), \
          patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
         llm_mod.acompletion = fake_acompletion
         with client.stream("POST", "/api/v1/agent/chat",
@@ -2427,14 +1457,18 @@ def test_agent_chat_sse_normal_stream(client):
 
 
 def test_agent_chat_sse_llm_failure_still_returns_stream(client):
-    """LLM call raises inside the loop -> stream still returns 200 with error text."""
+    """Planner failure still returns a 200 stream and never opens data tools."""
     async def fake_acompletion(**kwargs):
         raise RuntimeError("LLM down")
 
-    marker = "分析出错".encode("unicode_escape")
+    marker = "标准任务计划未通过程序校验".encode("unicode_escape")
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
+         patch(
+             "api.v1.endpoints.agent.chat.resolve_task_plan",
+             new=AsyncMock(side_effect=chat_mod.TaskPlanValidationError("invalid plan")),
+         ), \
          patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
         llm_mod.acompletion = fake_acompletion
         with client.stream("POST", "/api/v1/agent/chat",
@@ -2596,92 +1630,6 @@ def test_normalize_robustness():
 # 端到端：前端 AI SDK 格式历史 → 发给 litellm 的是 OpenAI 格式 + 历史明细被裁
 # ---------------------------------------------------------------------------
 
-def test_run_react_loop_normalizes_aisdk_history_before_llm_call():
-    """前端发 AI SDK v5 格式历史消息，首轮发给 litellm 的必须是 OpenAI 格式，
-    且历史 tool 的明细数组被裁、本轮新加的 tool 结果完整。"""
-    controller = _FakeController()
-    captured: list[dict] = []
-    round_n = {"n": 0}
-
-    async def fake_acompletion(**kwargs):
-        round_n["n"] += 1
-        captured.append({"round": round_n["n"], "messages": list(kwargs["messages"])})
-        if round_n["n"] == 1:
-            # 本轮模型决定再查一次行情
-            tc = _mock_tool_call_delta(name="get_realtime_quotes", arguments='{"symbols":"600519"}', tc_id="call_new")
-            return _AsyncChunkStream([_mock_llm_chunk(tool_calls=[tc])])
-        return _AsyncChunkStream([_mock_llm_chunk(content="最终分析")])
-
-    # 前端发来的 AI SDK 格式历史：user → assistant(带 tool-call) → tool-result(带 recent 明细)
-    aisdk_messages = [
-        {"role": "user", "content": [{"type": "text", "text": "分析茅台行情"}]},
-        {"role": "assistant", "content": [
-            {"type": "text", "text": "我来查一下"},
-            {"type": "tool-call", "toolCallId": "call_hist", "toolName": "get_kline", "input": {"symbol": "600519"}},
-        ]},
-        {"role": "tool", "content": [
-            {"type": "tool-result", "toolCallId": "call_hist", "toolName": "get_kline",
-             "output": {"type": "json", "value": {
-                 "symbol": "600519", "count": 60,
-                 "latest": {"date": "2026-07-07", "close": 1500.0},
-                 "recent": [{"date": f"2026-07-0{i}"} for i in range(1, 6)],
-             }}},
-        ]},
-    ]
-
-    fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = ["get_realtime_quotes"]
-    registry.execute.return_value = {"total": 1, "items": [{"symbol": "600519", "price": 1500.0}]}
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._compact_tool_result", side_effect=lambda n, r: r), \
-             patch("api.v1.endpoints.agent.chat._maybe_attach_search_fallback", side_effect=lambda n, a, r: r), \
-             patch("api.v1.endpoints.agent.chat._format_result",
-                   side_effect=lambda r: json.dumps(r, ensure_ascii=False)), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            return await chat_mod._run_react_loop(controller, aisdk_messages, fake_cfg)
-
-    result = asyncio.run(run())
-    assert result == "最终分析"
-
-    # 首轮发给 litellm 的消息必须是 OpenAI 格式
-    round1_msgs = captured[0]["messages"]
-    # [system, user, assistant, tool]
-    assert round1_msgs[0]["role"] == "system"
-    assert round1_msgs[1] == {"role": "user", "content": "分析茅台行情"}
-
-    asst = round1_msgs[2]
-    assert asst["role"] == "assistant"
-    assert asst["content"] == "我来查一下"
-    assert asst["tool_calls"][0]["id"] == "call_hist"
-    assert asst["tool_calls"][0]["function"]["name"] == "get_kline"
-    assert json.loads(asst["tool_calls"][0]["function"]["arguments"]) == {"symbol": "600519"}
-
-    # 历史 tool 消息：OpenAI 格式 + 明细被裁
-    tool_msg = round1_msgs[3]
-    assert tool_msg["role"] == "tool"
-    assert tool_msg["tool_call_id"] == "call_hist"
-    hist_payload = json.loads(tool_msg["content"])
-    assert hist_payload.get("_slimmed") is True
-    assert "recent" not in hist_payload
-    assert hist_payload["latest"] == {"date": "2026-07-07", "close": 1500.0}
-
-    # 第二轮：本轮新加的 tool 结果(call_new)保持完整（未裁，无 _slimmed）
-    round2_msgs = captured[1]["messages"]
-    new_tool = next(m for m in round2_msgs if m.get("role") == "tool" and m.get("tool_call_id") == "call_new")
-    new_payload = json.loads(new_tool["content"])
-    assert new_payload.get("_slimmed") is None
-    assert new_payload["items"] == [{"symbol": "600519", "price": 1500.0}]
-    # 而历史 call_hist 在第二轮仍是裁剪态
-    hist_tool2 = next(m for m in round2_msgs if m.get("role") == "tool" and m.get("tool_call_id") == "call_hist")
-    assert json.loads(hist_tool2["content"]).get("_slimmed") is True
-
-
 # ---------------------------------------------------------------------------
 # 上下文窗口解析 + token 估算 + 自动压缩
 # ---------------------------------------------------------------------------
@@ -2805,56 +1753,6 @@ def test_compact_history_skips_when_too_few_to_summarize():
         out = asyncio.run(chat_mod._compact_history_if_needed(msgs, cfg))
     assert out is msgs  # 不压缩
     llm_mod.acompletion.assert_not_called()  # 没调摘要 LLM
-
-
-def test_run_react_loop_compacts_overlong_history_before_first_llm_call():
-    """端到端：前端回传超长历史，首轮发给 litellm 前自动压缩。"""
-    controller = _FakeController()
-    main_calls: list[dict] = []
-
-    async def fake_acompletion(**kwargs):
-        # 区分摘要调用（stream=False 无 tools）vs 主调用（stream=True 有 tools）
-        if kwargs.get("stream") is False:
-            resp = MagicMock()
-            resp.choices = [MagicMock(message=MagicMock(content="早期摘要内容"))]
-            return resp
-        # 主调用
-        main_calls.append({"messages": list(kwargs["messages"]), "has_tools": "tools" in kwargs})
-        return _AsyncChunkStream([_mock_llm_chunk(content="最终回答")])
-
-    # 构造超长历史：system + 20 条消息
-    aisdk_messages = [
-        {"role": "user", "content": [{"type": "text", "text": "问题1"}]},
-    ] + [
-        {"role": "assistant" if i % 2 else "user", "content": [{"type": "text", "text": f"历史{i}"}]}
-        for i in range(1, 20)
-    ]
-
-    cfg = {"model": "m", "api_key": None, "api_base": None, "extra_headers": None,
-           "custom_llm_provider": None, "context_window": 200000}
-    registry = MagicMock()
-    registry.get_all_schemas.return_value = []
-    registry.get_tool_names.return_value = []
-
-    async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-             patch("api.v1.endpoints.agent.chat._registry", registry), \
-             patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
-            llm_mod.acompletion = fake_acompletion
-            # token_counter：压缩前超阈值，压缩后低于阈值
-            llm_mod.token_counter.side_effect = [999999, 1000]
-            return await chat_mod._run_react_loop(controller, aisdk_messages, cfg)
-
-    result = asyncio.run(run())
-    assert result == "最终回答"
-
-    # 主调用收到的 messages 含摘要消息（user 角色带"早期对话摘要"）
-    first_main = main_calls[0]
-    summary_msgs = [m for m in first_main["messages"]
-                    if m.get("role") == "user" and "早期对话摘要" in str(m.get("content", ""))]
-    assert len(summary_msgs) == 1
-    # 压缩不向前端推提示，避免污染对话流
-    assert not any("已自动压缩" in t for t in controller.texts)
 
 
 def test_agent_chat_rejects_client_system_prompt_before_model_call(client):

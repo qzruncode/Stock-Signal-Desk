@@ -37,11 +37,19 @@ def _safe_float(val: Any) -> float | None:
 class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
     criterion_id = "competition_landscape"
     criterion_name = "竞争格局"
-    index = 3
+    index = 4
 
     def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
-        raw: dict[str, Any] = {}
+        raw: dict[str, Any] = {
+            "investment_thesis": str(stock_info.get("_investment_thesis") or "").strip() or None,
+            "company_profile": {
+                "name": stock_info.get("name") or stock_info.get("short_name"),
+                "industry": stock_info.get("industry"),
+                "main_business": stock_info.get("main_business"),
+                "business_scope": stock_info.get("business_scope"),
+            },
+        }
 
         # --- Stock industry name ---
         industry_name = _safe_str(stock_info.get("industry", ""))
@@ -80,12 +88,10 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         except Exception as exc:
             logger.warning("[competition] financials failed: %s", exc)
 
-        # --- Industry board data (THS summary) ---
-        raw["industry_board"] = _fetch_industry_board(industry_name)
-
-        # --- News: industry reports + stock news ---
-        raw["industry_reports"] = _fetch_industry_reports()
-        raw["stock_news"] = _fetch_stock_news(ds, symbol)
+        # Only company/segment-targeted research is admissible here.  The old
+        # generic "latest industry reports" feed mixed solar, chemicals and
+        # other unrelated price wars into precision-transmission judgments.
+        raw["industry_research"] = _fetch_targeted_research(ds, symbol)
 
         # Build summary
         summary = _build_summary(raw)
@@ -93,6 +99,14 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
 
     def get_rubric(self) -> str:
         return COMPETITION_LANDSCAPE
+
+    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+        raw = evidence.raw_data
+        margins = ((raw.get("margin_trend") or {}).get("items") or [])
+        reports = ((raw.get("industry_research") or {}).get("items") or [])
+        if not margins and not reports:
+            return "毛利率趋势和行业竞争研究均无可用证据，无法证明行业不过度内卷"
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +195,14 @@ def _fetch_industry_board(industry_name: str) -> dict[str, Any]:
 def _fetch_industry_reports() -> dict[str, Any]:
     """Fetch industry research reports via RSSHub."""
     try:
-        from api.v1.endpoints.rss import get_rss_feeds
-        result = get_rss_feeds(source="eastmoney_report", category="industry", limit=12, force=False)
+        from api.v1.endpoints._rss_reader import read_feed
+
+        result = read_feed(
+            route_path="/eastmoney/report/:category",
+            params={"category": "industry"},
+            limit=12,
+            force=False,
+        )
         items = _list_of_dicts(result.get("items"))
         if items:
             return {
@@ -225,12 +245,45 @@ def _fetch_stock_news(ds: DataService, symbol: str) -> list[dict[str, Any]]:
         return []
 
 
+def _fetch_targeted_research(ds: DataService, symbol: str) -> dict[str, Any]:
+    """Return research already scoped by the concrete security."""
+    try:
+        result = ds.get_research_report(symbol, days=1095)
+        items = _list_of_dicts(result.get("items"))
+        return {
+            "items": [
+                {
+                    "title": item.get("title"),
+                    "summary": (item.get("summary") or "")[:360],
+                    "source": item.get("org") or item.get("source") or "个股研报",
+                    "time": item.get("publish_date") or item.get("publish_time"),
+                }
+                for item in items[:12]
+            ],
+            "data_time": result.get("data_time"),
+            "is_stale": result.get("is_stale"),
+        }
+    except Exception as exc:
+        logger.warning("[competition] targeted research failed: %s", exc)
+        return {"items": [], "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Summary builder
 # ---------------------------------------------------------------------------
 
 def _build_summary(raw: dict[str, Any]) -> str:
-    lines = ["## 毛利率数据"]
+    profile = raw.get("company_profile") or {}
+    lines = [
+        "## 本轮细分产业范围",
+        f"- 公司：{profile.get('name') or '缺失'}",
+        f"- 法定行业：{profile.get('industry') or '缺失'}",
+        f"- 主营业务：{profile.get('main_business') or '缺失'}",
+        f"- 经营范围：{str(profile.get('business_scope') or '缺失')[:420]}",
+        f"- 本轮投资逻辑：{raw.get('investment_thesis') or '未指定'}",
+        "",
+        "## 毛利率数据",
+    ]
     md = raw.get("margin_data", {})
     if md.get("gross_margin") is not None:
         lines.append(f"- 当前毛利率：{md['gross_margin']}%")
@@ -243,60 +296,30 @@ def _build_summary(raw: dict[str, Any]) -> str:
         for item in mt["items"]:
             gm = item.get("gross_margin")
             val = f"{gm}%" if gm is not None else "?"
-            trend_parts.append(val)
+            trend_parts.append(f"{item.get('date') or '?'} {val}")
         lines.append(f"- 最近4季度毛利率趋势：{' → '.join(trend_parts)}")
 
-    # Industry board (THS)
-    lines.extend(["", "## 所属行业板块数据"])
-    ib = raw.get("industry_board", {})
-    if not ib.get("error"):
-        matched = ib.get("matched_name", "")
-        rank = ib.get("rank")
-        total = ib.get("total_boards")
-        if rank is not None and total:
-            lines.append(f"- 行业板块：{matched}，排名 {rank}/{total}")
-        lines.append(f"- 板块涨跌幅：{ib.get('change_pct')}%")
-        net = ib.get("net_flow")
-        if net is not None:
-            unit = "亿"
-            val = abs(net) / 1e8
-            lines.append(f"- 板块主力资金净流入：{'+' if net > 0 else '-'}{val:.2f}{unit}")
-        up, down = ib.get("up_count"), ib.get("down_count")
-        if up is not None and down is not None:
-            lines.append(f"- 板块涨跌家数：{int(up)} 涨 / {int(down)} 跌")
-        ls = ib.get("lead_stock")
-        lsp = ib.get("lead_stock_change_pct")
-        if ls:
-            pct_str = f"{lsp}%" if lsp is not None else ""
-            lines.append(f"- 领涨股：{ls}（{pct_str}）")
-    else:
-        lines.append(f"- 行业板块数据不可用：{ib.get('error', '未知')}")
-
-    # Industry reports
-    lines.extend(["", "## 行业研究报告（请重点参考，判断行业竞争格局/产能/价格趋势）"])
-    reports = raw.get("industry_reports", {})
+    # Security-scoped industry research
+    lines.extend(["", "## 公司及真实细分产业研究（已按证券过滤）"])
+    reports = raw.get("industry_research", {})
     rpt_items = _list_of_dicts(reports.get("items"))
     if rpt_items:
         for item in rpt_items:
-            lines.append(f"- [{item.get('time', '?')}] {item.get('source', '')}：{item.get('title', '')}")
+            lines.append(
+                f"- [{item.get('time', '?')}] {item.get('source', '')}："
+                f"{item.get('title', '')}；{item.get('summary', '')}"
+            )
     else:
-        lines.append("- 无行业研报数据")
-
-    # Stock news
-    lines.extend(["", "## 公司相关新闻（补充参考）"])
-    stock_news = raw.get("stock_news", [])
-    if stock_news:
-        for item in stock_news[:6]:
-            lines.append(f"- [{item.get('time', '?')}] {item.get('source', '?')}：{item.get('title', '')[:160]}；{item.get('summary', '')}")
-    else:
-        lines.append("- 无新闻数据")
+        lines.append("- 无已按证券过滤的研报数据")
 
     lines.extend([
         "",
         "## 判断约束",
-        "- 毛利率连续下滑 + 行业研报/新闻中有价格战/产能过剩/内卷/利润压缩描述 = 内卷风险高。",
-        "- 毛利率稳定/提升 + 行业研报显示供需格局良好 = 竞争格局健康。",
-        "- 请基于行业研报实际内容判断竞争格局，行业研报比个股新闻更能反映行业竞争状态。",
+        "- 只判断公司真实受益的细分产品行业。任何其他行业（例如光伏、硅料、白酒）的降价、产能或内卷材料均为无效证据。",
+        "- 股价、板块涨跌、资金流、换手率和新闻中的个股下跌，全部不能证明产品价格战或产业内卷。",
+        "- 单个季度毛利率回落不等于连续下滑；至少需要两个连续季度下降，或同时有同一细分行业的降价、扩产过剩、份额恶化等证据，才可据此否决。",
+        "- 公司毛利率不等于行业平均毛利率。若行业均值缺失，必须如实标注，不能把公司单季变化改写为行业趋势。",
+        "- 通过也需要正面竞争力证据，例如份额、技术/客户壁垒、规模成本、差异化或盈利能力；仅仅没有找到价格战新闻不够。",
     ])
 
     return "\n".join(lines)

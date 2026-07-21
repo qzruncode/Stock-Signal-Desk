@@ -9,27 +9,39 @@ endpoint is called at most once regardless of how many evaluators need it.
 from __future__ import annotations
 
 import logging
+import re
+import threading
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache shared by all DataService instances.
-# Key: "endpoint_name:symbol:args", Value: result dict.
-_REQUEST_CACHE: dict[str, Any] = {}
+# One cache per analysis worker. All evaluator instances for the same stock run
+# share it, while parallel stock evaluations cannot clear or contaminate each
+# other's evidence.
+_REQUEST_LOCAL = threading.local()
+
+
+def _request_cache() -> dict[str, Any]:
+    cache = getattr(_REQUEST_LOCAL, "cache", None)
+    if cache is None:
+        cache = {}
+        _REQUEST_LOCAL.cache = cache
+    return cache
 
 
 def _clear_cache() -> None:
     """Clear the request cache. Call at the start of each new analysis request."""
-    _REQUEST_CACHE.clear()
+    _REQUEST_LOCAL.cache = {}
 
 
 class DataService:
     """Provides data to evaluators with cross-instance request caching."""
 
     def _cached_call(self, cache_key: str, factory) -> Any:
-        if cache_key not in _REQUEST_CACHE:
-            _REQUEST_CACHE[cache_key] = factory()
-        return _REQUEST_CACHE[cache_key]
+        cache = _request_cache()
+        if cache_key not in cache:
+            cache[cache_key] = factory()
+        return cache[cache_key]
 
     def get_stock_info(self, symbol: str) -> dict[str, Any]:
         from api.v1.endpoints.stock_info import get_stock_info
@@ -40,6 +52,38 @@ class DataService:
         def _fetch():
             from api.v1.endpoints.sectors import get_sector_list
             return get_sector_list(type=sector_type)
+        return self._cached_call(key, _fetch)
+
+    def get_investment_thesis_candidates(self, thesis: str) -> dict[str, Any]:
+        """Resolve a referenced industry thesis through structured board data.
+
+        This is deliberately candidate/membership evidence only.  It lets the
+        evaluators retain the exact industry direction from the conversation
+        without treating a concept-board label as proof of orders or revenue.
+        """
+        normalized = str(thesis or "").strip()
+        if not normalized:
+            return {
+                "success": False,
+                "requested_domains": [],
+                "items": [],
+                "warnings": ["本轮未提供可解析的产业方向"],
+                "errors": [],
+            }
+        domains: list[str] = []
+        for part in re.split(r"[，,、；;／/\n]+", normalized):
+            value = part.strip(" 。：:")
+            if value and value not in domains:
+                domains.append(value[:64])
+            if len(domains) >= 12:
+                break
+        key = "investment_thesis_candidates:" + "|".join(domains)
+
+        def _fetch():
+            from src.tools.get_domain_stock_candidates import get_domain_stock_candidates
+
+            return get_domain_stock_candidates(domains, limit_per_domain=300)
+
         return self._cached_call(key, _fetch)
 
     def get_valuation_ratios(self, symbol: str) -> dict[str, Any]:
@@ -100,8 +144,74 @@ class DataService:
         return self._cached_call(key, _fetch)
 
     def get_market_mainline_report(self) -> dict[str, Any]:
-        from src.services.market_theme_service import MarketThemeService
-        return MarketThemeService().get_model_report(force=False)
+        def _fetch():
+            from src.services.market_theme_service import MarketThemeService
+
+            service = MarketThemeService()
+            # A strict per-stock worker must never launch the global daily
+            # report background job: the worker is intentionally short-lived,
+            # so that task would either be abandoned or delay every stock.
+            report = service.get_model_report(force=False, trigger_generation=False)
+            if (
+                not report.get("report_pending")
+                and report.get("as_of_date")
+                and report.get("current_mainlines")
+            ):
+                return report
+
+            # Reuse a warm multi-source evidence cache when available, but do
+            # not start a second 35-second global aggregation inside every
+            # isolated stock worker.  The evaluator separately fetches the
+            # uncompressed current concept/industry layer.
+            evidence = service.get_cached_evidence() or {}
+            current_themes = [
+                item for item in (evidence.get("current_themes") or [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+            if not current_themes:
+                return report
+
+            future_themes = [
+                item for item in (evidence.get("next_themes") or [])
+                if isinstance(item, dict) and item.get("name")
+            ]
+            generated_at = str(evidence.get("generated_at") or evidence.get("data_time") or "")
+            as_of_date = str(evidence.get("data_time") or generated_at)[:10]
+            names = "、".join(str(item.get("name")) for item in current_themes[:3])
+            return {
+                "report_pending": False,
+                "report_source": "current_evidence_fallback",
+                "as_of_date": as_of_date,
+                "overview": f"当前多源市场证据识别出的主线包括：{names}。",
+                "market_stage": evidence.get("market_stage") or {},
+                "current_mainlines": [
+                    {
+                        "name": item.get("name"),
+                        "rank": item.get("rank_label"),
+                        "stage": item.get("stage"),
+                        "branches": item.get("components") or [],
+                        "reason": item.get("thesis") or item.get("stage_reason"),
+                        "focus": item.get("expectation_view"),
+                        "evidence": item.get("evidence") or [],
+                        "triggers": [],
+                    }
+                    for item in current_themes[:5]
+                ],
+                "future_mainlines": [
+                    {
+                        "name": item.get("name"),
+                        "stage": item.get("stage_hint") or "候选观察期",
+                        "branches": [],
+                        "reason": item.get("why_now"),
+                        "evidence": [],
+                        "triggers": [item.get("trigger")] if item.get("trigger") else [],
+                    }
+                    for item in future_themes[:5]
+                ],
+                "source_summary": evidence.get("source_summary") or {},
+            }
+
+        return self._cached_call("market_mainline_report", _fetch)
 
     def get_market_mainline_evidence(self) -> dict[str, Any]:
         from src.services.market_theme_service import MarketThemeService
@@ -114,9 +224,94 @@ class DataService:
             return search_news(symbol=symbol, days=days, source="all", force=False)
         return self._cached_call(key, _fetch)
 
+    def search_industry_news(
+        self,
+        query: str,
+        *,
+        days: int = 90,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        """Search internal finance feeds for an industry/topic, never as a symbol."""
+        normalized = str(query or "").strip()
+        key = f"industry_news:{normalized}:{days}:{limit}"
+
+        def _fetch():
+            from src.tools.search_financial_news import search_financial_news
+
+            return search_financial_news(
+                normalized,
+                topic="industry",
+                days=days,
+                limit=limit,
+                include_content=False,
+                fallback_to_web=False,
+            )
+
+        return self._cached_call(key, _fetch)
+
     def get_research_report(self, symbol: str, days: int = 365) -> dict[str, Any]:
         key = f"research:{symbol}:{days}"
         def _fetch():
             from api.v1.endpoints.financials import get_research_report
             return get_research_report(symbol=symbol, days=days, force=False)
+        return self._cached_call(key, _fetch)
+
+    def get_business_segments(self, symbol: str, periods: int = 2) -> dict[str, Any]:
+        key = f"business_segments:{symbol}:{periods}"
+        def _fetch():
+            from src.tools.get_business_segments import get_business_segments
+            return get_business_segments(symbol, category="all", periods=periods)
+        return self._cached_call(key, _fetch)
+
+    def get_announcements(self, symbol: str, days: int = 365, limit: int = 50) -> dict[str, Any]:
+        key = f"announcements:{symbol}:{days}:{limit}"
+        def _fetch():
+            from src.tools.get_announcements import get_announcements
+            return get_announcements(symbol, days=days, type="all", limit=limit)
+        return self._cached_call(key, _fetch)
+
+    def get_catalyst_document_passages(
+        self,
+        symbol: str,
+        announcements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Read formal report bodies and return all explicit forward windows."""
+        art_codes = [
+            str(item.get("url") or "")
+            for item in announcements
+            if isinstance(item, dict)
+        ]
+        key = f"catalyst_documents:{symbol}:{hash(tuple(art_codes))}"
+
+        def _fetch():
+            from src.services.catalyst_evidence import get_formal_forward_evidence
+
+            return get_formal_forward_evidence(symbol, announcements)
+
+        return self._cached_call(key, _fetch)
+
+    def get_report_schedule(self, symbol: str) -> dict[str, Any]:
+        key = f"report_schedule:{symbol}"
+
+        def _fetch():
+            from src.services.catalyst_evidence import get_report_schedule
+
+            return get_report_schedule(symbol)
+
+        return self._cached_call(key, _fetch)
+
+    def get_technical_indicators(self, symbol: str, count: int = 120) -> dict[str, Any]:
+        key = f"technical:{symbol}:{count}"
+        def _fetch():
+            from src.tools.get_technical_indicators import get_technical_indicators
+            return get_technical_indicators(symbol, count=count)
+        return self._cached_call(key, _fetch)
+
+    def get_realtime_quote(self, symbol: str) -> dict[str, Any]:
+        key = f"realtime_quote:{symbol}"
+        def _fetch():
+            from src.tools.get_realtime_quotes import get_realtime_quotes
+            result = get_realtime_quotes([symbol])
+            items = result.get("items") or []
+            return items[0] if items and isinstance(items[0], dict) else {}
         return self._cached_call(key, _fetch)

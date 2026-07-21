@@ -735,7 +735,7 @@ def _build_criteria_report_content(
     template_name: str,
     started_at: datetime,
 ) -> str:
-    """Build the buy-criteria-mode aggregated report (8/8 通过 / 卡点).
+    """Build the buy-criteria-mode aggregated report (9/9 通过 / 卡点).
 
     Keeps the ``## 筛选通过股票`` heading with a bare-code first column so the
     frontend can extract passed codes and build a watchlist group.
@@ -751,11 +751,11 @@ def _build_criteria_report_content(
         "# 买入判断筛选汇总",
         "",
         f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- **筛选方式**: 买入判断（8 步硬筛，任一步不通过即淘汰）",
+        f"- **筛选方式**: 买入判断（9 步硬筛，任一步不通过即淘汰）",
         f"- **股票数量**: {state.total}",
         f"- **完成率**: {state.completed}/{state.total}",
         f"- **分析成功率**: {success_rate:.1f}%",
-        f"- **筛选通过(8/8)**: {len(passed_items)}",
+        f"- **筛选通过(9/9)**: {len(passed_items)}",
         f"- **未通过**: {len(rejected_items)}",
         f"- **分析失败**: {len(failed_items)}",
         "",
@@ -769,7 +769,7 @@ def _build_criteria_report_content(
         f"| 已完成 | {state.completed} |",
         f"| 分析成功 | {state.success} |",
         f"| 分析失败 | {state.failed} |",
-        f"| 筛选通过(8/8) | {len(passed_items)} |",
+        f"| 筛选通过(9/9) | {len(passed_items)} |",
         f"| 未通过 | {len(rejected_items)} |",
         f"| 分析成功率 | {success_rate:.1f}% |",
         "",
@@ -784,7 +784,7 @@ def _build_criteria_report_content(
         for item in passed_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
     else:
-        lines.append("本次筛选没有 8 项全部通过的股票。")
+        lines.append("本次筛选没有 9 项全部通过的股票。")
     lines.append("")
 
     if rejected_items:
@@ -1126,11 +1126,11 @@ def _build_criteria_notification_content(
     lines = [
         "## 买入判断筛选汇总",
         "",
-        f"> 筛选方式: **买入判断（8 步硬筛）**",
+        f"> 筛选方式: **买入判断（9 步硬筛）**",
         f"> 时间: {now}",
         f"> 完成: **{state.completed}/{state.total}**",
         f"> 分析成功: **{state.success}** | 分析失败: **{state.failed}** | 分析成功率: **{success_rate:.1f}%**",
-        f"> 筛选通过(8/8): **{len(passed_items)}** | 未通过: **{len(rejected_items)}**",
+        f"> 筛选通过(9/9): **{len(passed_items)}** | 未通过: **{len(rejected_items)}**",
         f"> 报告: `{report_name}`",
         "",
         "### 筛选通过股票",
@@ -1142,7 +1142,7 @@ def _build_criteria_notification_content(
         for item in passed_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
     else:
-        lines.append("本次筛选没有 8 项全部通过的股票。")
+        lines.append("本次筛选没有 9 项全部通过的股票。")
     lines.append("")
 
     if failed_items:

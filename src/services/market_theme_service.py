@@ -41,6 +41,11 @@ _report_generation_lock = threading.Lock()
 _report_generation_triggered = False
 
 
+def _cache_is_usable(payload: Optional[dict[str, Any]]) -> bool:
+    """A degraded fallback must never suppress the next recovery attempt."""
+    return bool(payload) and not bool(payload.get("degraded_reason"))
+
+
 class MarketThemeService:
     """Build a market-mainline analysis using public market and information sources."""
 
@@ -50,7 +55,7 @@ class MarketThemeService:
         del use_llm
         if not force:
             cached = cache_get("all")
-            if cached:
+            if _cache_is_usable(cached):
                 cached["_cached"] = True
                 cached["llm_used"] = False
                 cached["model_used"] = None
@@ -60,7 +65,7 @@ class MarketThemeService:
         result = run_isolated(force=force, layer="all")
         if result is None:
             cached = cache_get("all")
-            if cached:
+            if _cache_is_usable(cached):
                 cached["_cached"] = True
                 cached["llm_used"] = False
                 cached["model_used"] = None
@@ -76,11 +81,16 @@ class MarketThemeService:
         result["llm_used"] = False
         result["model_used"] = None
         result["fallback_used"] = True
-        if not result.get("_cached"):
+        if not result.get("_cached") and not result.get("degraded_reason"):
             cache_put("all", result)
         return result
 
-    def get_model_report(self, *, force: bool = False) -> dict[str, Any]:
+    def get_model_report(
+        self,
+        *,
+        force: bool = False,
+        trigger_generation: bool = False,
+    ) -> dict[str, Any]:
         del force
         latest = get_latest_report(self.REPORT_KEY)
         if latest:
@@ -91,7 +101,7 @@ class MarketThemeService:
             return latest
 
         global _report_generation_triggered
-        if not _report_generation_triggered:
+        if trigger_generation and not _report_generation_triggered:
             with _report_generation_lock:
                 if not _report_generation_triggered:
                     try:
@@ -108,8 +118,16 @@ class MarketThemeService:
         payload["report_pending"] = True
         return payload
 
+    def get_cached_evidence(self) -> dict[str, Any] | None:
+        """Return the current evidence cache without starting a slow fetch."""
+        cached = cache_get("evidence")
+        if not _cache_is_usable(cached):
+            return None
+        cached["_cached"] = True
+        return cached
+
     def get_model_report_for_tool(self, *, include_debug_input: bool = False) -> dict[str, Any]:
-        payload = dict(self.get_model_report(force=False))
+        payload = dict(self.get_model_report(force=False, trigger_generation=False))
         if not include_debug_input:
             payload.pop("debug_input", None)
         return payload
@@ -208,14 +226,14 @@ class MarketThemeService:
     def get_evidence(self, *, force: bool = False) -> dict[str, Any]:
         if not force:
             cached = cache_get("evidence")
-            if cached:
+            if _cache_is_usable(cached):
                 cached["_cached"] = True
                 return cached
 
         result = run_isolated(force=force, layer="evidence")
         if result is None:
             cached = cache_get("evidence")
-            if cached:
+            if _cache_is_usable(cached):
                 cached["_cached"] = True
                 cached.setdefault("degraded_reason", "isolated_runner_failed")
                 return cached
@@ -223,7 +241,7 @@ class MarketThemeService:
 
         result["_fetched_at"] = datetime.now().isoformat()
         result.setdefault("_cached", False)
-        if not result.get("_cached"):
+        if not result.get("_cached") and not result.get("degraded_reason"):
             cache_put("evidence", result)
         return result
 
@@ -231,7 +249,7 @@ class MarketThemeService:
         cache_layer = "insight_llm" if use_llm else "insight"
         if not force:
             cached = cache_get(cache_layer)
-            if cached:
+            if _cache_is_usable(cached):
                 cached["_cached"] = True
                 cached.setdefault("llm_used", use_llm)
                 return cached
@@ -240,7 +258,7 @@ class MarketThemeService:
             result = run_isolated(force=force, layer="insight_llm")
             if result is None:
                 cached = cache_get(cache_layer)
-                if cached:
+                if _cache_is_usable(cached):
                     cached["_cached"] = True
                     cached.setdefault("llm_used", use_llm)
                     cached.setdefault("degraded_reason", "isolated_runner_failed")
@@ -251,7 +269,7 @@ class MarketThemeService:
             result = run_isolated(force=force, layer="insight")
             if result is None:
                 cached = cache_get(cache_layer)
-                if cached:
+                if _cache_is_usable(cached):
                     cached["_cached"] = True
                     cached.setdefault("llm_used", use_llm)
                     cached.setdefault("degraded_reason", "isolated_runner_failed")
@@ -262,7 +280,7 @@ class MarketThemeService:
         result["_fetched_at"] = datetime.now().isoformat()
         result.setdefault("_cached", False)
         result.setdefault("llm_used", False)
-        if not result.get("_cached"):
+        if not result.get("_cached") and not result.get("degraded_reason"):
             cache_put(cache_layer, result)
         return result
 

@@ -25,6 +25,11 @@ from src.agent.runtime_safety import (  # noqa: E402
     is_production_environment,
 )
 from src.storage import DatabaseManager  # noqa: E402
+from src.agent.task_workflows import (  # noqa: E402
+    StandardTaskKind,
+    WORKFLOW_REGISTRY,
+    registered_workflow_tools,
+)
 from src.tools.registry import ToolRegistry  # noqa: E402
 
 
@@ -61,9 +66,41 @@ def main() -> int:
         issues.append(f"database is unavailable: {type(exc).__name__}: {exc}")
 
     try:
-        registered_tools = len(ToolRegistry().get_tool_names())
+        tool_names = set(ToolRegistry().get_tool_names())
+        registered_tools = len(tool_names)
         if registered_tools <= 0:
             issues.append("tool registry is empty")
+        workflow_tools = set(registered_workflow_tools())
+        missing_workflow_tools = sorted(tool_names - workflow_tools)
+        stale_workflow_tools = sorted(workflow_tools - tool_names)
+        if missing_workflow_tools:
+            issues.append(
+                "registered tools missing from fixed workflows: "
+                + ", ".join(missing_workflow_tools)
+            )
+        if stale_workflow_tools:
+            issues.append(
+                "fixed workflows reference unregistered tools: "
+                + ", ".join(stale_workflow_tools)
+            )
+        missing_task_kinds = sorted(
+            kind.value for kind in set(StandardTaskKind) - set(WORKFLOW_REGISTRY)
+        )
+        if missing_task_kinds:
+            issues.append(
+                "standard task kinds missing from workflow registry: "
+                + ", ".join(missing_task_kinds)
+            )
+        oversized_workflows = sorted(
+            kind.value
+            for kind, spec in WORKFLOW_REGISTRY.items()
+            if len(spec.tool_whitelist) > 8 or spec.max_tool_calls > 8
+        )
+        if oversized_workflows:
+            issues.append(
+                "fixed workflows exceed the 8-tool/call policy: "
+                + ", ".join(oversized_workflows)
+            )
     except Exception as exc:  # noqa: BLE001
         registered_tools = 0
         issues.append(f"tool registry initialization failed: {type(exc).__name__}: {exc}")
@@ -72,6 +109,8 @@ def main() -> int:
         "ok": not issues,
         "static_dir": str(static_dir),
         "registered_tools": registered_tools,
+        "standard_tasks": len(StandardTaskKind),
+        "fixed_workflows": len(WORKFLOW_REGISTRY),
         "issues": issues,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

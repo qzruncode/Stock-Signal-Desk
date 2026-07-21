@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,7 @@ from src.services.buy_criteria.evaluators.competition_landscape import Competiti
 from src.services.buy_criteria.evaluators.mainline_position import MainlinePositionEvaluator
 from src.services.buy_criteria.evaluators.prosperity_cycle import ProsperityCycleEvaluator
 from src.services.buy_criteria.evaluators.catalyst_events import CatalystEventsEvaluator
+from src.services.buy_criteria.data_service import DataService
 from src.services.buy_criteria.orchestrator import CriterionOrchestrator, _format_sse
 
 
@@ -75,13 +77,13 @@ class TestCriterionResult:
 
 
 class TestEvaluatorRegistry:
-    def test_eight_evaluators(self):
-        assert len(EVALUATOR_CLASSES) == 8
+    def test_nine_evaluators(self):
+        assert len(EVALUATOR_CLASSES) == 9
 
     def test_indices_sequential(self):
         instances = [cls() for cls in EVALUATOR_CLASSES]
         indices = [e.index for e in instances]
-        assert indices == list(range(8))
+        assert indices == list(range(9))
 
     def test_all_have_rubrics(self):
         for cls in EVALUATOR_CLASSES:
@@ -149,7 +151,8 @@ class TestMainlinePositionEvidence:
         assert "主营业务：光模块的研发、生产和销售。" in evidence.data_summary
         assert "AI科技链（算力底座与半导体设备）" in evidence.data_summary
         assert "候选主线（仅作观察，不等同于当前主线）" in evidence.data_summary
-        assert "不要使用本地关键词命中" in evidence.data_summary
+        assert "严禁用公司名、行业名或产品名做字符串/关键词命中" in evidence.data_summary
+        assert "不是封闭白名单" in evidence.data_summary
         assert evidence.raw_data["market_mainline_report"]["current_mainlines"][0]["rank"] == 1
 
 
@@ -290,6 +293,88 @@ class TestGrowthSpaceEvidence:
         assert "增速预测线索" in evidence.data_summary
         assert "数据获取不完整" not in evidence.data_summary
 
+
+class TestCompetitionLandscapeEvidence:
+    def test_uses_security_scoped_research_and_rejects_market_price_noise(self):
+        evaluator = CompetitionLandscapeEvaluator()
+        stock_info = {
+            "symbol": "688017",
+            "name": "绿的谐波",
+            "industry": "通用设备制造业",
+            "main_business": "精密谐波减速器研发、生产和销售",
+            "business_scope": "精密谐波减速器研发、生产和销售",
+            "_investment_thesis": "谐波减速器",
+        }
+        with patch.object(DataService, "get_valuation_ratios", return_value={}), patch.object(
+            DataService,
+            "get_financials",
+            return_value={"items": [
+                {"report_date": "2025-06-30", "gross_margin": 34.7},
+                {"report_date": "2025-09-30", "gross_margin": 36.5},
+                {"report_date": "2025-12-31", "gross_margin": 36.9},
+                {"report_date": "2026-03-31", "gross_margin": 33.6},
+            ]},
+        ), patch.object(
+            DataService,
+            "get_research_report",
+            return_value={"items": [{
+                "publish_date": "2026-05-01",
+                "org": "产业研究机构",
+                "title": "谐波减速器龙头，技术与份额壁垒稳固",
+                "summary": "头部企业具备技术、客户和规模壁垒。",
+            }]},
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape._fetch_industry_reports",
+            side_effect=AssertionError("generic cross-industry feed must not be called"),
+        ), patch(
+            "src.services.buy_criteria.evaluators.competition_landscape._fetch_stock_news",
+            side_effect=AssertionError("stock-price news must not be called"),
+        ):
+            evidence = evaluator.collect_data("688017", stock_info)
+
+        assert "谐波减速器龙头" in evidence.data_summary
+        assert "2026-03-31 33.6%" in evidence.data_summary
+        assert "单个季度毛利率回落不等于连续下滑" in evidence.data_summary
+        assert "股价、板块涨跌、资金流" in evidence.data_summary
+        assert "硅料价格持续下探" not in evidence.data_summary
+
+
+class TestProsperityCycleEvidence:
+    def test_industry_terms_use_the_internal_topic_search_not_the_symbol_tool(self):
+        evaluator = ProsperityCycleEvaluator()
+        stock_info = {
+            "symbol": "688017",
+            "name": "绿的谐波",
+            "industry": "通用设备制造业",
+            "main_business": "精密谐波减速器生产和销售",
+        }
+        with patch.object(
+            DataService,
+            "get_financials",
+            return_value={"items": [
+                {"report_date": "2025Q3", "revenue_yoy": 30, "gross_margin": 35},
+                {"report_date": "2025Q4", "revenue_yoy": 35, "gross_margin": 36},
+                {"report_date": "2026Q1", "revenue_yoy": 40, "gross_margin": 36},
+            ]},
+        ), patch.object(
+            DataService,
+            "search_industry_news",
+            return_value={"items": [{
+                "title": "人形机器人需求增长",
+                "summary": "谐波减速器订单与出货增长",
+                "publish_time": "2026-07-01",
+            }]},
+        ) as industry_search, patch.object(
+            DataService,
+            "search_news",
+            side_effect=AssertionError("industry terms must not be sent to the symbol-news API"),
+        ), patch.object(DataService, "get_macro_indicator", return_value={}):
+            evidence = evaluator.collect_data("688017", stock_info)
+
+        industry_search.assert_called()
+        assert "人形机器人需求增长" in evidence.data_summary
+
+
 class TestCatalystEventsEvidence:
     def test_collect_data_uses_raw_announcements_news_and_research(self):
         """Verify catalyst_events passes raw data to LLM for judgment."""
@@ -324,8 +409,14 @@ class TestCatalystEventsEvidence:
         ]}
 
         with patch(
-            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_risk_events",
+            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_announcements",
             return_value=announcements,
+        ), patch(
+            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_catalyst_document_passages",
+            return_value={"items": [], "documents": [], "errors": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_report_schedule",
+            return_value={"items": [], "errors": []},
         ), patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.search_news",
             return_value=news,
@@ -360,11 +451,17 @@ class TestCatalystEventsEvidence:
         stock_info = {"symbol": "000001.SZ", "name": "平安银行", "industry": "银行业"}
 
         with patch(
-            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_risk_events",
+            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_announcements",
             return_value={"items": [
                 {"publish_time": "2026-06-01", "title": "日常公告",
                  "event_label": "一般", "severity": "low"},
             ]},
+        ), patch(
+            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_catalyst_document_passages",
+            return_value={"items": [], "documents": [], "errors": []},
+        ), patch(
+            "src.services.buy_criteria.evaluators.catalyst_events.DataService.get_report_schedule",
+            return_value={"items": [], "errors": []},
         ), patch(
             "src.services.buy_criteria.evaluators.catalyst_events.DataService.search_news",
             return_value={"items": [
@@ -394,7 +491,10 @@ class TestCatalystEventsEvidence:
 class TestBaseEvaluatorWithMockedLLM:
     def test_evaluate_pass(self):
         evaluator = EVALUATOR_CLASSES[0]()
-        mock_evidence = CriterionEvidence(raw_data={}, data_summary="test data")
+        mock_evidence = CriterionEvidence(raw_data={"market_mainline_report": {
+            "as_of_date": "2026-07-21", "report_pending": False,
+            "current_mainlines": [{"name": "AI"}],
+        }}, data_summary="test data")
 
         with patch.object(evaluator, "collect_data", return_value=mock_evidence):
             with patch.object(evaluator, "_call_llm", return_value=({"passed": True, "verdict": "核心主线，资金持续流入"}, "")):
@@ -406,7 +506,10 @@ class TestBaseEvaluatorWithMockedLLM:
 
     def test_evaluate_fail(self):
         evaluator = EVALUATOR_CLASSES[0]()
-        mock_evidence = CriterionEvidence(raw_data={}, data_summary="test data")
+        mock_evidence = CriterionEvidence(raw_data={"market_mainline_report": {
+            "as_of_date": "2026-07-21", "report_pending": False,
+            "current_mainlines": [{"name": "AI"}],
+        }}, data_summary="test data")
 
         with patch.object(evaluator, "collect_data", return_value=mock_evidence):
             with patch.object(evaluator, "_call_llm", return_value=({"passed": False, "verdict": "非主线"}, "")):
@@ -416,7 +519,10 @@ class TestBaseEvaluatorWithMockedLLM:
 
     def test_evaluate_llm_failure_returns_not_passed(self):
         evaluator = EVALUATOR_CLASSES[0]()
-        mock_evidence = CriterionEvidence(raw_data={}, data_summary="test data")
+        mock_evidence = CriterionEvidence(raw_data={"market_mainline_report": {
+            "as_of_date": "2026-07-21", "report_pending": False,
+            "current_mainlines": [{"name": "AI"}],
+        }}, data_summary="test data")
 
         with patch.object(evaluator, "collect_data", return_value=mock_evidence):
             with patch.object(evaluator, "_call_llm", return_value=(None, "All LLM models failed")):
@@ -448,7 +554,7 @@ class TestOrchestrator:
         assert results[0].passed is False
 
     def test_all_pass(self):
-        """If all 8 evaluators pass, 8 results should be returned."""
+        """If all 9 evaluators pass, 9 results should be returned."""
         orchestrator = CriterionOrchestrator()
         mock_stock_info = {"symbol": "000001", "name": "测试", "industry": "测试"}
 
@@ -461,12 +567,14 @@ class TestOrchestrator:
             )
 
         with patch("src.services.buy_criteria.orchestrator._get_stock_info_safe", return_value=mock_stock_info):
-            for i, cls in enumerate(EVALUATOR_CLASSES):
-                patch.object(cls, "evaluate", return_value=make_pass_result(i)).start()
+            with ExitStack() as stack:
+                for i, cls in enumerate(EVALUATOR_CLASSES):
+                    stack.enter_context(
+                        patch.object(cls, "evaluate", return_value=make_pass_result(i))
+                    )
+                results = orchestrator.run("000001")
 
-            results = orchestrator.run("000001")
-
-        assert len(results) == 8
+        assert len(results) == 9
         assert all(r.passed for r in results)
 
 

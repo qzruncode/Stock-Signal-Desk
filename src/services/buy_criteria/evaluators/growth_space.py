@@ -252,3 +252,12 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
 
     def get_rubric(self) -> str:
         return GROWTH_SPACE
+
+    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+        raw = evidence.raw_data
+        financial_items = ((raw.get("financials") or {}).get("items") or [])
+        research_items = ((raw.get("research") or {}).get("items") or [])
+        news_items = ((raw.get("news") or {}).get("items") or [])
+        if not financial_items and not research_items and not news_items:
+            return "财务、研报和需求新闻均无可用证据，无法验证未来三年增长空间"
+        return None

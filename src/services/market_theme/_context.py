@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Optional
 
@@ -24,35 +25,60 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
     breadth = get_market_breadth()
     industry_sectors = get_sector_list(type="industry", force=force)
     concept_sectors = get_sector_list(type="concept", force=force)
-    industry_flow = get_sector_flow(type="industry", top_n=8)
-    concept_flow = get_sector_flow(type="concept", top_n=8)
+    # This endpoint is also called directly by in-process services.  Its HTTP
+    # defaults are FastAPI ``Query`` objects, so callers must pass the period
+    # explicitly instead of relying on the route-level default.
+    industry_flow = get_sector_flow(type="industry", top_n=8, period="today")
+    concept_flow = get_sector_flow(type="concept", top_n=8, period="today")
 
     rss_context: dict[str, Any] = {}
     if include_rss:
-        from api.v1.endpoints.rss import get_rss_feeds
+        from api.v1.endpoints._rss_reader import read_feed
 
+        # Use the same audited FeedSpec routes as the Agent's finance reader.
+        # The legacy semantic ``get_rss_feeds(source=...)`` adapter no longer
+        # exists, so keeping that call here made the whole mainline pipeline
+        # fail before any evidence could be returned.
         rss_sources = [
-            ("policy_calendar", {"source": "wallstreetcn_calendar", "limit": 8, "force": force}),
-            ("market_news", {"source": "cls", "category": "telegraph", "limit": 8, "force": force}),
-            ("strategy_reports", {"source": "eastmoney_report", "category": "strategyreport", "limit": 6, "force": force}),
-            ("macro_reports", {"source": "eastmoney_report", "category": "macresearch", "limit": 6, "force": force}),
-            ("industry_reports", {"source": "eastmoney_report", "category": "industry", "limit": 6, "force": force}),
-            ("exchange_inquire", {"source": "sse_inquire", "limit": 6, "force": force}),
-            ("exchange_disclosure", {"source": "sse_disclosure", "limit": 6, "force": force}),
-            ("money_center", {"source": "chinamoney", "limit": 6, "force": force}),
+            ("policy_calendar", "/wallstreetcn/live/:category?/:score?", {}, 8),
+            ("market_news", "/cls/telegraph/:category?", {}, 8),
+            ("strategy_reports", "/eastmoney/report/:category", {"category": "strategyreport"}, 6),
+            ("macro_reports", "/eastmoney/report/:category", {"category": "macresearch"}, 6),
+            ("industry_reports", "/eastmoney/report/:category", {"category": "industry"}, 6),
+            ("exchange_inquire", "/sse/inquire", {}, 6),
+            ("exchange_disclosure", "/sse/disclosure/:query?", {}, 6),
+            ("money_center", "/gov/pbc/tradeAnnouncement", {}, 6),
         ]
-        for key, params in rss_sources:
+
+        def _fetch_feed(spec: tuple[str, str, dict[str, str], int]) -> tuple[str, dict[str, Any]]:
+            key, route_path, params, limit = spec
             try:
-                rss_context[key] = get_rss_feeds(**params)
+                result = read_feed(
+                    route_path=route_path,
+                    params=params,
+                    limit=limit,
+                    force=force,
+                )
+                result["route_path"] = route_path
+                result["params"] = params
+                result["_fetched_at"] = datetime.now().isoformat()
+                return key, result
             except Exception as exc:
                 logger.warning("market theme rss source failed: %s", key, exc_info=True)
-                rss_context[key] = {
-                    "source": params["source"],
+                return key, {
+                    "route_path": route_path,
+                    "params": params,
                     "items": [],
                     "errors": [str(exc)],
                     "_fetched_at": datetime.now().isoformat(),
                     "_cached": False,
                 }
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_fetch_feed, spec) for spec in rss_sources]
+            for future in as_completed(futures):
+                key, result = future.result()
+                rss_context[key] = result
 
     source_catalog = _build_source_catalog(rss_context)
     return {
@@ -103,14 +129,14 @@ def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
         "concept_outflow_top": (snapshot.get("concept_flow") or {}).get("outflow_top") or [],
         "industry_sectors": snapshot.get("industry_sectors") or [],
         "concept_sectors": snapshot.get("concept_sectors") or [],
-        "policy_headlines": _summarize_feed_items(rss.get("policy_calendar")),
-        "market_news": _summarize_feed_items(rss.get("market_news")),
-        "strategy_reports": _summarize_feed_items(rss.get("strategy_reports")),
-        "macro_reports": _summarize_feed_items(rss.get("macro_reports")),
-        "industry_reports": _summarize_feed_items(rss.get("industry_reports")),
-        "exchange_disclosure": _summarize_feed_items(rss.get("exchange_disclosure")),
-        "exchange_inquire": _summarize_feed_items(rss.get("exchange_inquire")),
-        "money_center": _summarize_feed_items(rss.get("money_center")),
+        "policy_headlines": summarize_feed_items(rss.get("policy_calendar")),
+        "market_news": summarize_feed_items(rss.get("market_news")),
+        "strategy_reports": summarize_feed_items(rss.get("strategy_reports")),
+        "macro_reports": summarize_feed_items(rss.get("macro_reports")),
+        "industry_reports": summarize_feed_items(rss.get("industry_reports")),
+        "exchange_disclosure": summarize_feed_items(rss.get("exchange_disclosure")),
+        "exchange_inquire": summarize_feed_items(rss.get("exchange_inquire")),
+        "money_center": summarize_feed_items(rss.get("money_center")),
         "source_summary": _summarize_sources(snapshot),
     }
 

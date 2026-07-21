@@ -39,6 +39,23 @@ _DOMAIN_BOARD_ALIASES: dict[str, tuple[str, ...]] = {
     "空心杯电机": ("机器人执行器",),
 }
 
+# Parent themes are market-context metadata, not extra candidate boards.  They
+# let downstream analysis understand where a component sits without widening
+# precise domain recall to every stock in a broad humanoid-robot concept board.
+_DOMAIN_CONTEXT_THEMES: dict[str, tuple[str, ...]] = {
+    "行星滚柱丝杠": ("人形机器人", "机器人概念"),
+    "行星滚珠丝杠": ("人形机器人", "机器人概念"),
+    "滚柱丝杠": ("人形机器人", "机器人概念"),
+    "滚珠丝杠": ("人形机器人", "机器人概念"),
+    "丝杠": ("人形机器人", "机器人概念"),
+    "谐波减速器": ("人形机器人", "机器人概念"),
+    "行星减速器": ("人形机器人", "机器人概念"),
+    "减速器": ("人形机器人", "机器人概念"),
+    "无框力矩电机": ("人形机器人", "机器人概念"),
+    "力矩电机": ("人形机器人", "机器人概念"),
+    "空心杯电机": ("人形机器人", "机器人概念"),
+}
+
 
 def _compact(value: Any) -> str:
     return re.sub(r"[\s·•（）()\-_/]+", "", str(value or "")).lower()
@@ -70,6 +87,15 @@ def _lookup_themes(domain: str) -> list[str]:
     return [domain]
 
 
+def _context_themes(domain: str) -> list[str]:
+    compact = _compact(domain)
+    for known, themes in _DOMAIN_CONTEXT_THEMES.items():
+        known_compact = _compact(known)
+        if compact == known_compact or known_compact in compact:
+            return list(themes)
+    return []
+
+
 def get_domain_stock_candidates(
     domains: list[str],
     context_theme: str = "",
@@ -89,6 +115,11 @@ def get_domain_stock_candidates(
     maintenance = ensure_stock_universe(trigger="agent_domain_candidates")
     local_universe = _load_local_universe()
     normalized_context = str(context_theme or "").strip()
+    inferred_context_themes = list(dict.fromkeys(
+        theme
+        for domain in requested
+        for theme in _context_themes(domain)
+    ))
 
     lookup_themes: list[str] = []
     for domain in requested:
@@ -238,11 +269,16 @@ def get_domain_stock_candidates(
                 **item,
                 "matched_domains": [],
                 "lookup_themes": [],
+                "boards": [],
+                "sources": [],
             })
-            for key in ("matched_domains", "lookup_themes"):
+            for key in ("matched_domains", "lookup_themes", "boards"):
                 for value in item.get(key) or []:
                     if value not in merged[key]:
                         merged[key].append(value)
+            for source in item.get("sources") or []:
+                if isinstance(source, dict) and source not in merged["sources"]:
+                    merged["sources"].append(source)
 
     union_items = sorted(
         union.values(),
@@ -254,6 +290,7 @@ def get_domain_stock_candidates(
         "partial": success and any(not result["success"] or result["partial"] for result in domain_results),
         "requested_domains": requested,
         "context_theme": normalized_context or None,
+        "inferred_context_themes": inferred_context_themes,
         "local_universe_count": local_universe_count,
         "domain_results": domain_results,
         "items": union_items,

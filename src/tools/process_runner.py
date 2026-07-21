@@ -13,8 +13,9 @@ from src.tools.process_worker import RESULT_PREFIX
 
 ISOLATED_TOOL_NAMES = frozenset({
     "get_multi_stock_snapshot",
-    "get_multi_stock_financials",
     "get_multi_stock_decision_evidence",
+    "evaluate_multi_stock_buy_criteria",
+    "analyze_stock_catalysts",
     "get_domain_stock_candidates",
     "get_theme_stock_candidates",
     "get_market_status",
@@ -40,6 +41,8 @@ STATEFUL_TOOL_NAMES = frozenset({
 
 _PROFESSIONAL_EVIDENCE_TOOL = "get_multi_stock_decision_evidence"
 _PROFESSIONAL_EVIDENCE_CHUNK_SIZE = 2
+_STRICT_BUY_DECISION_TOOL = "evaluate_multi_stock_buy_criteria"
+_STRICT_BUY_DECISION_CONCURRENCY = 2
 
 
 def _execute_tool_process(
@@ -217,6 +220,102 @@ def _execute_professional_evidence_chunked(
     return _merge_professional_chunks([chunk for chunk in ordered if isinstance(chunk, dict)])
 
 
+def _strict_failure_item(entity: str, error: Exception) -> dict[str, Any]:
+    """Turn one failed worker into an explicit fail-closed stock result."""
+    message = f"{entity}严格买入判断进程失败：{type(error).__name__}: {str(error)[:240]}"
+    return {
+        "success": True,
+        "partial": True,
+        "playbook": "strict_sequential_buy_decision",
+        "items": [{
+            "symbol": entity,
+            "name": entity,
+            "final_decision": "不可买入",
+            "coverage_complete": False,
+            "passed_count": 0,
+            "failed_count": 1,
+            "not_evaluated_count": 9,
+            "total": 9,
+            "stopped_at": "analysis_error",
+            "stopped_at_name": "数据或分析失败",
+            "stopped_verdict": message,
+            "criteria": [],
+            "position_advice": {"initial_position_pct": 0, "max_position_pct": 0},
+            "invalidation_conditions": [],
+        }],
+        "resolved_entities": [],
+        "unresolved_entities": [],
+        "requested_count": 1,
+        "covered_count": 1,
+        "coverage_complete": True,
+        "errors": [message],
+        "warnings": [],
+        "data_time": None,
+        "is_stale": None,
+    }
+
+
+def _merge_strict_buy_chunks(chunks: list[dict[str, Any]], requested_count: int) -> dict[str, Any]:
+    first = chunks[0] if chunks else {}
+    items = [item for chunk in chunks for item in (chunk.get("items") or [])]
+    resolved = [item for chunk in chunks for item in (chunk.get("resolved_entities") or [])]
+    unresolved = [item for chunk in chunks for item in (chunk.get("unresolved_entities") or [])]
+    errors = [item for chunk in chunks for item in (chunk.get("errors") or [])]
+    warnings = [item for chunk in chunks for item in (chunk.get("warnings") or [])]
+    coverage_complete = len(items) == requested_count and not unresolved
+    return {
+        **first,
+        "success": bool(items),
+        "partial": bool(errors) or not coverage_complete,
+        "playbook": "strict_sequential_buy_decision",
+        "items": items,
+        "resolved_entities": resolved,
+        "unresolved_entities": unresolved,
+        "requested_count": requested_count,
+        "covered_count": len(items),
+        "coverage_complete": coverage_complete,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+def _execute_strict_buy_decision_chunked(
+    arguments: dict[str, Any],
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Isolate each company and evaluate at most two companies concurrently."""
+    symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
+    if not symbols:
+        return _execute_tool_process(
+            _STRICT_BUY_DECISION_TOOL,
+            arguments,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def run_one(index: int, symbol: str) -> tuple[int, dict[str, Any]]:
+        try:
+            result = _execute_tool_process(
+                _STRICT_BUY_DECISION_TOOL,
+                {**arguments, "symbols": symbol},
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            result = _strict_failure_item(symbol, exc)
+        return index, result
+
+    ordered: list[dict[str, Any] | None] = [None] * len(symbols)
+    with ThreadPoolExecutor(max_workers=min(_STRICT_BUY_DECISION_CONCURRENCY, len(symbols))) as pool:
+        futures = [pool.submit(run_one, index, symbol) for index, symbol in enumerate(symbols)]
+        for future in as_completed(futures):
+            index, result = future.result()
+            ordered[index] = result
+    return _merge_strict_buy_chunks(
+        [chunk for chunk in ordered if isinstance(chunk, dict)],
+        len(symbols),
+    )
+
+
 def execute_tool_isolated(
     name: str,
     arguments: dict[str, Any],
@@ -231,6 +330,11 @@ def execute_tool_isolated(
     """
     if name == _PROFESSIONAL_EVIDENCE_TOOL:
         return _execute_professional_evidence_chunked(
+            arguments,
+            timeout_seconds=timeout_seconds,
+        )
+    if name == _STRICT_BUY_DECISION_TOOL:
+        return _execute_strict_buy_decision_chunked(
             arguments,
             timeout_seconds=timeout_seconds,
         )

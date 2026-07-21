@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from src.agent.research_intent import ResearchIntent
+from src.agent.result_contracts import MappingSelectionContext
 from src.llm.anthropic_gateway import build_litellm_kwargs
 from src.tools.symbols import find_securities_in_text
 
@@ -322,7 +322,7 @@ def _validate_facts(
 
 async def bind_company_evidence(
     evidence: list[dict[str, Any]],
-    intent: ResearchIntent,
+    intent: MappingSelectionContext,
     llm_cfg: dict[str, Any],
     *,
     completion: Callable[..., Awaitable[Any]],

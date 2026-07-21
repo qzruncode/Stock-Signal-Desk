@@ -16,9 +16,8 @@ from api.v1.endpoints.agent import exports  # noqa: E402, F401
 
 # Re-export internal helpers so tests can import/patch them from the package namespace.
 from api.v1.endpoints.agent.chat import (  # noqa: E402, F401
-    MAX_REACT_ITERATIONS,
     _registry,
-    _run_react_loop,
+    _run_standard_task_pipeline,
     litellm,
 )
 from api.v1.endpoints.agent.tools import (  # noqa: E402, F401

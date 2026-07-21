@@ -40,7 +40,7 @@ def _fmt_raw(value: Any) -> str:
 class ProsperityCycleEvaluator(BaseCriterionEvaluator):
     criterion_id = "prosperity_cycle"
     criterion_name = "景气上行周期"
-    index = 1
+    index = 3
 
     def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
         ds = DataService()
@@ -88,7 +88,7 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
         search_keywords = [k for k in search_keywords if not (k in seen or seen.add(k))]
         for keyword in search_keywords:
             try:
-                industry_news = ds.search_news(keyword, days=90)
+                industry_news = ds.search_industry_news(keyword, days=90, limit=10)
                 news_items = _list_of_dicts(industry_news.get("items"))[:10]
                 if news_items:
                     raw["industry_news"] = {
@@ -167,3 +167,9 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
 
     def get_rubric(self) -> str:
         return PROSPERITY_CYCLE
+
+    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+        items = ((evidence.raw_data.get("financials") or {}).get("items") or [])
+        if evidence.raw_data.get("financials_error") or len(items) < 3:
+            return "连续财务期数不足或获取失败，无法验证细分行业景气是否持续上行"
+        return None

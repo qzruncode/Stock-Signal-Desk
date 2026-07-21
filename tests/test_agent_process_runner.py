@@ -148,3 +148,52 @@ def test_two_stock_professional_evidence_also_falls_back_before_deadline():
     assert result["partial"] is True
     assert result["fallback_used"] is True
     assert [item["symbol"] for item in result["items"]] == ["000001", "000002"]
+
+
+def test_strict_buy_decision_isolates_each_stock_preserves_order_and_fails_closed():
+    calls: list[str] = []
+    lock = threading.Lock()
+
+    def run_process(name, arguments, *, timeout_seconds):
+        del timeout_seconds
+        assert name == "evaluate_multi_stock_buy_criteria"
+        symbol = arguments["symbols"]
+        with lock:
+            calls.append(symbol)
+        if symbol == "000002":
+            raise TimeoutError("model stalled")
+        return {
+            "success": True,
+            "partial": False,
+            "playbook": "strict_sequential_buy_decision",
+            "items": [{
+                "symbol": symbol,
+                "name": symbol,
+                "final_decision": "不可买入",
+                "coverage_complete": False,
+                "criteria": [],
+            }],
+            "resolved_entities": [{"symbol": symbol, "name": symbol}],
+            "unresolved_entities": [],
+            "requested_count": 1,
+            "covered_count": 1,
+            "coverage_complete": True,
+            "errors": [],
+            "warnings": [],
+        }
+
+    with patch("src.tools.process_runner._execute_tool_process", side_effect=run_process):
+        result = execute_tool_isolated(
+            "evaluate_multi_stock_buy_criteria",
+            {"symbols": "000001,000002,000003", "thesis": "测试"},
+            timeout_seconds=297,
+        )
+
+    assert sorted(calls) == ["000001", "000002", "000003"]
+    assert [item["symbol"] for item in result["items"]] == ["000001", "000002", "000003"]
+    failed = result["items"][1]
+    assert failed["final_decision"] == "不可买入"
+    assert failed["stopped_at"] == "analysis_error"
+    assert failed["position_advice"] == {"initial_position_pct": 0, "max_position_pct": 0}
+    assert result["partial"] is True
+    assert result["coverage_complete"] is True

@@ -140,7 +140,11 @@ def build_rule_themes(snapshot: dict[str, Any], headlines: list[str]) -> list[di
             total_score += bucket["score"]
             pct_values.extend(bucket["pct_values"])
 
-        dedup_components = list(dict.fromkeys([name for name in all_components if name]))[:6]
+        # Keep the full active branch set used by downstream evaluators.  The
+        # first six branches remain enough for prose, but truncating the data
+        # itself silently erased valid directions such as humanoid robots and
+        # reducers from an otherwise current technology narrative.
+        dedup_components = list(dict.fromkeys([name for name in all_components if name]))[:24]
         headline_hits = normalize_texts(all_headlines)[:5]
         avg_change = sum(pct_values) / max(len(pct_values), 1)
         stage, stage_reason = infer_stage(avg_change, total_flow, len(headline_hits))

@@ -13,6 +13,8 @@ import re
 from collections import OrderedDict
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
 from src.tools.base import ToolSpec, enforce_result_contract
 
 ToolDef = ToolSpec  # compatibility for existing API metadata imports
@@ -115,6 +117,8 @@ TOOL_MODULES: tuple[str, ...] = (
     "get_multi_stock_snapshot",
     "get_multi_stock_financials",
     "get_multi_stock_decision_evidence",
+    "evaluate_multi_stock_buy_criteria",
+    "analyze_stock_catalysts",
     "get_domain_stock_candidates",
     "get_theme_stock_candidates",
     "screen_atr_volatility_stocks",
@@ -185,16 +189,44 @@ class ToolRegistry:
     def get_tool_names(self) -> list[str]:
         return list(self._tools)
 
+    def get_tool(self, name: str) -> ToolSpec | None:
+        """Return one immutable tool definition for runtime policy validation."""
+        return self._tools.get(name)
+
     def normalize_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         tool = self._tools.get(name)
         if tool is None:
             return dict(arguments)
         return normalize_tool_arguments(tool, arguments)
 
+    def validate_arguments(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Normalize and validate arguments before a tool enters the executor."""
+        tool = self._tools.get(name)
+        if tool is None:
+            raise KeyError(f"Tool not found: {name}")
+        if not isinstance(arguments, dict):
+            raise TypeError("tool arguments must be an object")
+        normalized = normalize_tool_arguments(tool, arguments)
+        errors = sorted(
+            Draft202012Validator(tool.parameters).iter_errors(normalized),
+            key=lambda error: list(error.absolute_path),
+        )
+        if errors:
+            details = "; ".join(
+                f"{'.'.join(str(item) for item in error.absolute_path) or '<root>'}: {error.message}"
+                for error in errors[:5]
+            )
+            raise ValueError(f"invalid arguments for {name}: {details}")
+        return normalized
+
     def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Tool not found: {name}")
+        # Direct registry callers keep the module-owned validation/result
+        # contract.  The standard-task executor calls validate_arguments()
+        # explicitly before execution so policy rejection happens before the
+        # UI exposes a tool call.
         if not isinstance(arguments, dict):
             raise TypeError("tool arguments must be an object")
         normalized = self.normalize_arguments(name, arguments)

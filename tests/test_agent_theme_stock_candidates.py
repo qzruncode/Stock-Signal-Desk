@@ -13,6 +13,10 @@ from src.tools.get_theme_stock_candidates import (
 )
 
 
+def test_canonical_theme_recovers_humanoid_robot_from_an_industry_chain_phrase() -> None:
+    assert _canonical_theme("人形机器人上游核心零部件方向") == "人形机器人"
+
+
 def test_product_level_robot_board_is_not_widened_to_generic_robot_theme() -> None:
     assert _canonical_theme("机器人执行器") == "机器人执行器"
     assert _canonical_theme("机器人减速器") == "机器人减速器"

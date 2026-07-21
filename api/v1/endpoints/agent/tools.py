@@ -336,6 +336,31 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             source_scope="seven_dimension_multi_stock_evidence",
         )
 
+    if tool_name == "evaluate_multi_stock_buy_criteria":
+        # The strict decision payload is already bounded to eight companies and
+        # every executed gate, stop reason, price level and position field is
+        # required for deterministic all-pass validation. Never compact it.
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
+            source_scope="strict_sequential_buy_decision",
+        )
+
+    if tool_name == "analyze_stock_catalysts":
+        # Every returned event is already bounded and program-bound to one or
+        # more retrieved evidence ids. Preserve those ids, dates and URLs for
+        # the deterministic renderer; generic list trimming would break the
+        # audit trail between an event and its source.
+        return _annotate_tool_payload(
+            tool_name,
+            result,
+            payload_policy="complete",
+            compacted=False,
+            source_scope="evidence_bound_company_catalysts",
+        )
+
     if tool_name == "get_domain_stock_candidates":
         compact_domains = []
         for domain_result in result.get("domain_results") or []:

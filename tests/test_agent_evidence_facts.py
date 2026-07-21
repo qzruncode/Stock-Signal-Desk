@@ -5,7 +5,7 @@ import json
 from types import SimpleNamespace
 
 from src.agent.evidence_facts import bind_company_evidence
-from src.agent.research_intent import ResearchIntent
+from src.agent.result_contracts import MappingSelectionContext
 
 
 def _response(facts: list[dict]) -> SimpleNamespace:
@@ -17,8 +17,8 @@ def _response(facts: list[dict]) -> SimpleNamespace:
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
-def _intent() -> ResearchIntent:
-    return ResearchIntent(
+def _intent() -> MappingSelectionContext:
+    return MappingSelectionContext(
         kind="theme_company_mapping",
         topic="AI芯片",
         discovery_theme="AI芯片",
@@ -204,7 +204,7 @@ def test_semantic_facts_choose_strongest_company_fact_without_keyword_reordering
             },
         ])
 
-    intent = ResearchIntent(
+    intent = MappingSelectionContext(
         kind="theme_company_mapping",
         topic="消费级终端端侧AI SoC与推理芯片",
         discovery_theme="AI芯片",
@@ -246,7 +246,7 @@ def test_ranked_shortlist_does_not_use_lexical_fact_recovery_when_semantic_resul
     async def completion(**_kwargs):
         return _response([])
 
-    intent = ResearchIntent(
+    intent = MappingSelectionContext(
         kind="theme_company_mapping",
         topic="消费级终端端侧AI SoC与推理芯片",
         discovery_theme="AI芯片",
