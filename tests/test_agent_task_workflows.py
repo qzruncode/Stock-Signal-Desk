@@ -73,6 +73,23 @@ def _task(
     )
 
 
+def _domain(
+    label: str,
+    *boards: str,
+    mapping_type: str | None = None,
+    rationale: str = "测试中的板块目录解析结果",
+    unresolved_parts: list[str] | None = None,
+) -> dict:
+    selected = list(boards) or [label]
+    return {
+        "label": label,
+        "board_queries": selected,
+        "mapping_type": mapping_type or ("exact_board" if selected == [label] else "proxy_board"),
+        "rationale": rationale,
+        "unresolved_parts": unresolved_parts or [],
+    }
+
+
 def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
     assert set(ToolRegistry().get_tool_names()) == set(registered_workflow_tools())
     assert all(
@@ -128,7 +145,7 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         StandardTaskKind.SECTOR_ANALYSIS: {"type": "industry", "period": "today"},
         StandardTaskKind.MACRO_ANALYSIS: {"indicators": ["PMI"]},
         StandardTaskKind.INDUSTRY_RESEARCH: {"query": "人形机器人产业链"},
-        StandardTaskKind.THEME_STOCK_DISCOVERY: {"domains": ["减速器"]},
+        StandardTaskKind.THEME_STOCK_DISCOVERY: {"domains": [_domain("减速器")]},
         StandardTaskKind.THEME_BUSINESS_EVIDENCE: {"theme": "人形机器人"},
         StandardTaskKind.STOCK_SCREENING: {"screen_spec": screen_spec},
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER: {
@@ -207,14 +224,22 @@ def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
     candidate = _task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
-            "domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
+            "domains": [
+                _domain("行星滚柱丝杠", "机器人执行器"),
+                _domain("减速器"),
+                _domain("无框力矩电机", "机器人执行器"),
+            ],
             "context_theme": "人形机器人",
         },
     )
     calls = compile_task(ResolvedTask(candidate=candidate))
     assert [call.tool_name for call in calls] == ["get_domain_stock_candidates"]
     assert calls[0].arguments == {
-        "domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
+        "domains": [
+            _domain("行星滚柱丝杠", "机器人执行器"),
+            _domain("减速器"),
+            _domain("无框力矩电机", "机器人执行器"),
+        ],
         "context_theme": "人形机器人",
     }
 
@@ -223,7 +248,11 @@ def test_long_optional_context_theme_does_not_block_domain_discovery() -> None:
     candidate = _task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
-            "domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
+            "domains": [
+                _domain("行星滚柱丝杠", "机器人执行器"),
+                _domain("减速器"),
+                _domain("无框力矩电机", "机器人执行器"),
+            ],
             "context_theme": "人形机器人最受益的上游核心零部件方向",
         },
     )
@@ -685,6 +714,175 @@ def test_semantic_planner_receives_one_planning_tool_and_no_data_tools() -> None
     assert "旧轮任务" not in json.dumps(planner_context, ensure_ascii=False)
 
 
+def test_semantic_planner_resolves_compound_domains_only_from_current_board_catalog() -> None:
+    domain_specs = [
+        _domain(
+            "灵巧手及力控部件",
+            "机器人执行器",
+            rationale="当前目录没有同名板块，按执行机构语义使用最窄代理板块。",
+        ),
+        _domain(
+            "电机（伺服电机/步进电机）",
+            "机器人执行器",
+            rationale="关节驱动电机按执行器板块召回。",
+        ),
+    ]
+    payload = {
+        "tasks": [{
+            "task_id": "domain_candidates",
+            "kind": "theme_stock_discovery",
+            "objective": "按上面领域找A股公司",
+            "entity_scope": "none",
+            "entities": [],
+            "parameters": {
+                "domains": domain_specs,
+                "context_theme": "人形机器人",
+            },
+            "depends_on": [],
+            "output_requirements": [],
+            "confirmation": "not_required",
+            "confidence": 0.96,
+        }],
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_plan",
+            arguments=json.dumps(payload, ensure_ascii=False),
+        ))],
+        content=None,
+    ))])
+    completion = AsyncMock(return_value=response)
+    with patch(
+        "src.services.domain_board_catalog.get_domain_board_catalog",
+        return_value={
+            "success": True,
+            "board_names": ["人形机器人", "机器人执行器", "减速器", "机器人概念"],
+            "source": "测试板块目录",
+            "data_time": "2026-07-21",
+            "errors": [],
+        },
+    ):
+        plan = asyncio.run(resolve_task_plan(
+            [
+                {
+                    "role": "assistant",
+                    "content": "人形机器人第一梯队包括灵巧手及力控部件、电机（伺服电机/步进电机）。",
+                },
+                {"role": "user", "content": "按上面第一梯队找A股公司"},
+            ],
+            {"model": "test", "api_base": ""},
+            completion=completion,
+        ))
+
+    assert plan.tasks[0].parameters["domains"] == domain_specs
+    context = json.loads(completion.await_args.kwargs["messages"][1]["content"])
+    assert context["current_concept_board_catalog"]["board_names"] == [
+        "人形机器人", "机器人执行器", "机器人概念",
+    ]
+    assert context["current_concept_board_catalog"]["full_catalog_count"] == 4
+    assert "get_domain_stock_candidates" not in json.dumps(context, ensure_ascii=False)
+
+
+def test_domain_plan_rejects_a_board_name_absent_from_current_catalog() -> None:
+    candidate = _task(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        parameters={
+            "domains": [_domain("灵巧手", "模型虚构板块")],
+            "context_theme": "人形机器人",
+        },
+    )
+    with pytest.raises(ValueError, match="absent from current catalog"):
+        validate_candidate_plan(
+            TaskPlan(tasks=[candidate]),
+            concept_board_names={"人形机器人", "机器人执行器"},
+        )
+
+
+def test_domain_plan_rejects_cross_application_proxy_even_when_board_exists() -> None:
+    candidate = _task(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        parameters={
+            "domains": [_domain("伺服电机/步进电机", "轮毂电机")],
+            "context_theme": "人形机器人",
+        },
+    )
+    with pytest.raises(ValueError, match="another application"):
+        validate_candidate_plan(
+            TaskPlan(tasks=[candidate]),
+            concept_board_names={"人形机器人", "机器人执行器", "轮毂电机"},
+        )
+
+
+def test_candidate_only_request_discards_model_added_industry_research() -> None:
+    payload = {
+        "tasks": [
+            {
+                "task_id": "extra_research",
+                "kind": "industry_research",
+                "objective": "额外研究产业",
+                "entity_scope": "none",
+                "entities": [],
+                "parameters": {"query": "人形机器人产业链"},
+                "depends_on": [],
+                "output_requirements": [],
+                "confirmation": "not_required",
+                "confidence": 0.8,
+            },
+            {
+                "task_id": "domain_candidates",
+                "kind": "theme_stock_discovery",
+                "objective": "按领域找A股候选",
+                "entity_scope": "none",
+                "entities": [],
+                "parameters": {
+                    "domains": [_domain(
+                        "灵巧手及力控部件",
+                        "机器人执行器",
+                        "轮毂电机",
+                    )],
+                    "context_theme": "人形机器人",
+                },
+                "depends_on": ["extra_research"],
+                "output_requirements": [],
+                "confirmation": "not_required",
+                "confidence": 0.95,
+            },
+        ],
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_plan",
+            arguments=json.dumps(payload, ensure_ascii=False),
+        ))],
+        content=None,
+    ))])
+    with patch(
+        "src.services.domain_board_catalog.get_domain_board_catalog",
+        return_value={
+            "success": True,
+            "board_names": ["人形机器人", "机器人执行器", "轮毂电机"],
+            "source": "测试板块目录",
+            "data_time": "2026-07-21",
+            "errors": [],
+        },
+    ):
+        plan = asyncio.run(resolve_task_plan(
+            [{"role": "user", "content": "按人形机器人灵巧手领域找A股候选"}],
+            {"model": "test", "api_base": ""},
+            completion=AsyncMock(return_value=response),
+        ))
+
+    assert [task.kind for task in plan.tasks] == [StandardTaskKind.THEME_STOCK_DISCOVERY]
+    assert plan.tasks[0].depends_on == []
+    assert plan.tasks[0].parameters["domains"][0]["board_queries"] == ["机器人执行器"]
+    assert "轮毂电机" in plan.tasks[0].parameters["domains"][0]["rationale"]
+    assert plan.source.endswith("proxy_guard")
+
+
 def test_semantic_planner_retries_a_transient_provider_failure() -> None:
     payload = {
         "tasks": [{
@@ -719,13 +917,156 @@ def test_semantic_planner_retries_a_transient_provider_failure() -> None:
     assert completion.await_count == 2
 
 
+def test_industry_structure_question_never_opens_company_discovery() -> None:
+    completion = AsyncMock(side_effect=AssertionError("semantic planner must not run"))
+    plan = asyncio.run(resolve_task_plan(
+        [{"role": "user", "content": "人形机器人方向哪些领域最核心最受益？"}],
+        {"model": "test", "api_base": "http://unused", "api_key": "x"},
+        completion=completion,
+    ))
+
+    completion.assert_not_awaited()
+    assert plan.source == "deterministic_industry_structure_contract"
+    assert [task.kind for task in plan.tasks] == [StandardTaskKind.INDUSTRY_RESEARCH]
+    assert "不生成公司或股票候选名单" in plan.tasks[0].output_requirements
+
+
+def test_semantic_planner_removes_unrequested_company_discovery_task() -> None:
+    payload = {
+        "tasks": [
+            {
+                "task_id": "research",
+                "kind": "industry_research",
+                "objective": "介绍人形机器人",
+                "entity_scope": "none",
+                "entities": [],
+                "parameters": {"query": "人形机器人"},
+                "depends_on": [],
+                "output_requirements": [],
+                "confirmation": "not_required",
+                "confidence": 0.9,
+            },
+            {
+                "task_id": "unrequested_stocks",
+                "kind": "theme_stock_discovery",
+                "objective": "额外找股票",
+                "entity_scope": "none",
+                "entities": [],
+                "parameters": {"domains": ["电池"]},
+                "depends_on": [],
+                "output_requirements": [],
+                "confirmation": "not_required",
+                "confidence": 0.8,
+            },
+        ],
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_plan",
+            arguments=json.dumps(payload, ensure_ascii=False),
+        ))],
+        content=None,
+    ))])
+    plan = asyncio.run(resolve_task_plan(
+        [{"role": "user", "content": "介绍一下人形机器人"}],
+        {"model": "test", "api_base": "", "api_key": None},
+        completion=AsyncMock(return_value=response),
+    ))
+
+    assert plan.source == "semantic_scope_constrained"
+    assert [task.kind for task in plan.tasks] == [StandardTaskKind.INDUSTRY_RESEARCH]
+
+
+def test_compound_collection_filter_bypasses_semantic_planner() -> None:
+    completion = AsyncMock(side_effect=AssertionError("semantic planner must not run"))
+    messages = [
+        {"role": "assistant", "content": "| 公司/代码 | 方向 |\n|---|---|\n| 甲公司 (000001) | 示例 |"},
+        {
+            "role": "user",
+            "content": "上面说的这些股票去掉负债率大于70%，去年营收小于5亿的股票。",
+        },
+    ]
+    plan = asyncio.run(resolve_task_plan(
+        messages,
+        {"model": "test", "api_base": "http://unused", "api_key": "x"},
+        completion=completion,
+        previous_answer_entities=[{"symbol": "000001", "name": "甲公司"}],
+    ))
+
+    completion.assert_not_awaited()
+    assert plan.source == "deterministic_collection_filter_contract"
+    assert [task.kind for task in plan.tasks] == [
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+    ]
+    assert plan.tasks[0].parameters == {
+        "metric": "debt_ratio",
+        "period_basis": "latest_report",
+        "operator": "gt",
+        "threshold": 70.0,
+        "threshold_unit": "percent",
+        "action": "exclude_matching",
+    }
+    assert plan.tasks[1].parameters == {
+        "metric": "revenue",
+        "period_basis": "previous_fiscal_year",
+        "operator": "lt",
+        "threshold": 5.0,
+        "threshold_unit": "yi_cny",
+        "action": "exclude_matching",
+    }
+
+
+@pytest.mark.parametrize(
+    ("user_text", "expected"),
+    [
+        (
+            "把上述公司中资产负债率超过70%以及上年度营业收入不足50000万元的剔除",
+            [("debt_ratio", "gt", "latest_report", "percent"),
+             ("revenue", "lt", "previous_fiscal_year", "wan_cny")],
+        ),
+        (
+            "上面名单里只保留资产负债率不高于70%且2025年营业收入不低于5亿元",
+            [("debt_ratio", "lte", "latest_report", "percent"),
+             ("revenue", "gte", "fiscal_year", "yi_cny")],
+        ),
+    ],
+)
+def test_compound_collection_filter_supports_equivalent_phrasings(
+    user_text: str,
+    expected: list[tuple[str, str, str, str]],
+) -> None:
+    plan = asyncio.run(resolve_task_plan(
+        [{"role": "user", "content": user_text}],
+        {"model": "test", "api_base": "http://unused", "api_key": "x"},
+        completion=AsyncMock(side_effect=AssertionError("semantic planner must not run")),
+        previous_answer_entities=[{"symbol": "000001", "name": "甲公司"}],
+    ))
+
+    assert [
+        (
+            task.parameters["metric"],
+            task.parameters["operator"],
+            task.parameters["period_basis"],
+            task.parameters["threshold_unit"],
+        )
+        for task in plan.tasks
+    ] == expected
+
+
 def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
     plan = TaskPlan(tasks=[_task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
-            "domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
+            "domains": [
+                _domain("行星滚柱丝杠", "机器人执行器"),
+                _domain("减速器"),
+                _domain("无框力矩电机", "机器人执行器"),
+            ],
             "context_theme": "人形机器人",
         },
     )])
@@ -744,7 +1085,8 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
             {
                 "domain": "行星滚柱丝杠",
                 "lookup_themes": ["机器人执行器"],
-                "mapping_basis": "narrowest_structured_board_alias",
+                "mapping_type": "proxy_board",
+                "mapping_basis": "catalog_proxy_board_intersected_with_context_theme",
                 "success": True,
                 "coverage_complete": True,
                 "candidate_count": 1,
@@ -754,7 +1096,8 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
             {
                 "domain": "减速器",
                 "lookup_themes": ["减速器"],
-                "mapping_basis": "exact_concept_board_intersected_with_context_theme",
+                "mapping_type": "exact_board",
+                "mapping_basis": "catalog_exact_board_intersected_with_context_theme",
                 "success": True,
                 "coverage_complete": True,
                 "candidate_count": 1,
@@ -764,7 +1107,8 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
             {
                 "domain": "无框力矩电机",
                 "lookup_themes": ["机器人执行器"],
-                "mapping_basis": "narrowest_structured_board_alias",
+                "mapping_type": "proxy_board",
+                "mapping_basis": "catalog_proxy_board_intersected_with_context_theme",
                 "success": True,
                 "coverage_complete": True,
                 "candidate_count": 1,
@@ -932,6 +1276,82 @@ def test_production_previous_year_revenue_follow_up_runs_every_batch() -> None:
     assert "2025 年报营业收入" in answer
     assert "低于 5 亿元" in answer
     assert "成功覆盖 **47 只**，缺失 **0 只**" in answer
+
+
+def test_production_compound_collection_filter_returns_exact_intersection() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    symbols = ("000001", "000002", "000003", "000004")
+    debt_task = _task(
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        task_id="financial_filter_1",
+        parameters={
+            "metric": "debt_ratio", "period_basis": "latest_report",
+            "operator": "gt", "threshold": 70,
+            "threshold_unit": "percent", "action": "exclude_matching",
+        },
+    )
+    revenue_task = _task(
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        task_id="financial_filter_2",
+        parameters={
+            "metric": "revenue", "period_basis": "previous_fiscal_year",
+            "operator": "lt", "threshold": 5,
+            "threshold_unit": "yi_cny", "action": "exclude_matching",
+        },
+    )
+    plan = TaskPlan(tasks=[debt_task, revenue_task])
+    resolved = [
+        ResolvedTask(candidate=debt_task, symbols=symbols),
+        ResolvedTask(candidate=revenue_task, symbols=symbols),
+    ]
+    controller = _Controller()
+
+    def execute(name: str, arguments: dict) -> dict:
+        assert name == "get_multi_stock_financials"
+        is_debt = arguments["metric"] == "debt_ratio"
+        values = (
+            [80.0, 50.0, 80.0, 50.0]
+            if is_debt
+            else [400_000_000.0, 400_000_000.0, 800_000_000.0, 800_000_000.0]
+        )
+        return {
+            "success": True,
+            "items": [
+                {
+                    "symbol": symbol,
+                    "name": f"公司{symbol}",
+                    "metric": arguments["metric"],
+                    "period_basis": arguments["period_basis"],
+                    "financial_value": value,
+                    "value_unit": "percent" if is_debt else "cny",
+                    "report_date": "2026-03-31" if is_debt else "2025-12-31",
+                }
+                for symbol, value in zip(symbols, values)
+            ],
+            "source": "本地已同步财务库",
+            "data_time": "2026-07-21T20:00:00",
+        }
+
+    async def run() -> str:
+        with patch.object(chat_mod, "resolve_task_plan", new=AsyncMock(return_value=plan)), \
+             patch.object(chat_mod, "resolve_plan_entities", return_value=resolved), \
+             patch.object(chat_mod._registry, "execute", side_effect=execute), \
+             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
+             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
+             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+            return await chat_mod._run_standard_task_pipeline(
+                controller,
+                [{"role": "user", "content": "上面股票去掉负债率大于70%，去年营收小于5亿的"}],
+                {"model": "test", "api_base": "", "api_key": None, "extra_headers": None},
+            )
+
+    answer = asyncio.run(run())
+    assert controller.tool_calls == ["get_multi_stock_financials"] * 2
+    assert "本轮同时执行 **2 项**财务条件" in answer
+    assert "合并后筛除 **3 只**，最终保留 **1 只**" in answer
+    assert "公司000004 (000004) | 全部条件通过" in answer
+    assert "多条件结果由程序按集合交集计算" in answer
 
 
 def test_standard_task_answer_validator_rejects_unsupported_codes_and_ratios() -> None:

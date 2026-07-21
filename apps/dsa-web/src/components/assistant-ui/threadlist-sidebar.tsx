@@ -1,6 +1,17 @@
 import type { FC } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EllipsisIcon, MessageSquareIcon, PencilIcon, PlusIcon, SearchIcon, SettingsIcon, Trash2Icon } from 'lucide-react';
+import {
+  EllipsisIcon,
+  ListChecksIcon,
+  MessageSquareIcon,
+  MessageSquarePlusIcon,
+  PanelLeftCloseIcon,
+  PencilIcon,
+  SearchIcon,
+  SettingsIcon,
+  SparklesIcon,
+  Trash2Icon,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import type { ChatConversationItem } from '../../api/agent';
 import { cn } from '../../utils/cn';
@@ -17,6 +28,7 @@ export interface ThreadListSidebarProps {
   onRename: (conversation: ChatConversationItem) => void;
   onDelete: (conversation: ChatConversationItem) => void;
   onBatchDelete: (conversationIds: string[]) => void;
+  onCollapse?: () => void;
 }
 
 export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
@@ -30,6 +42,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   onRename,
   onDelete,
   onBatchDelete,
+  onCollapse,
 }) => {
   const [isTouchMode, setIsTouchMode] = useState(false);
   const [actionConversation, setActionConversation] = useState<ChatConversationItem | null>(null);
@@ -155,17 +168,29 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
       ref={sidebarRef}
       data-sidebar-root="thread-list"
       className={cn(
-        'relative flex h-full w-full shrink-0 flex-col bg-card',
-        side === 'left' ? 'border-r border-border' : 'border-l border-border',
+        'relative flex h-full w-full shrink-0 flex-col bg-white text-[12px]',
+        side === 'left' ? 'border-r border-border/80' : 'border-l border-border/80',
         className,
       )}
     >
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">对话列表</h2>
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex size-6 shrink-0 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-600">
+            <SparklesIcon className="size-3.5" />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-[11px] font-semibold leading-4 text-foreground">Stock Assistant</p>
+            <p className="truncate text-[9px] font-medium uppercase leading-3 tracking-[0.12em] text-emerald-600">Research</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-0.5">
           {conversations.length > 0 ? (
-            <button
-              type="button"
+            <TooltipIconButton
+              tooltip={isBatchMode ? '退出批量管理' : '批量管理'}
+              className={cn(
+                'size-7 rounded-md',
+                isBatchMode && 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+              )}
               onClick={() => {
                 if (isBatchMode) {
                   exitBatchMode();
@@ -173,34 +198,35 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                 }
                 setIsBatchMode(true);
               }}
-              className={cn(
-                'rounded-lg px-2.5 py-1.5 text-xs transition',
-                isBatchMode ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
-              )}
             >
-              {isBatchMode ? '取消' : '批量管理'}
-            </button>
+              <ListChecksIcon className="size-3.5" />
+            </TooltipIconButton>
           ) : null}
-          <TooltipIconButton tooltip="新建对话" className="size-8" onClick={onCreate}>
-            <PlusIcon className="size-4" />
+          <TooltipIconButton tooltip="新建对话" className="size-7 rounded-md" onClick={onCreate}>
+            <MessageSquarePlusIcon className="size-3.5" />
           </TooltipIconButton>
+          {onCollapse ? (
+            <TooltipIconButton tooltip="收起对话列表" className="size-7 rounded-md" onClick={onCollapse}>
+              <PanelLeftCloseIcon className="size-3.5" />
+            </TooltipIconButton>
+          ) : null}
         </div>
       </div>
 
-      <div className="border-b border-border px-3 py-2.5">
-        <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-2 text-muted-foreground focus-within:border-primary/40 focus-within:text-foreground">
-          <SearchIcon className="size-3.5 shrink-0" />
+      <div className="border-b border-border/70 px-3 py-2">
+        <label className="flex items-center gap-1.5 rounded-md border border-border bg-background/60 px-2 py-1.5 text-muted-foreground focus-within:border-emerald-400/70 focus-within:bg-white focus-within:text-emerald-700">
+          <SearchIcon className="size-3 shrink-0" />
           <input
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="搜索对话"
-            className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-[11px] leading-4 text-foreground outline-none placeholder:text-muted-foreground"
           />
         </label>
       </div>
 
       {isBatchMode ? (
-        <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-1.5">
           <button
             type="button"
             onClick={() => {
@@ -210,7 +236,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
               }
               setSelectedConversationIds(conversations.map((conversation) => conversation.id));
             }}
-            className="text-xs text-muted-foreground transition hover:text-foreground"
+            className="text-[11px] text-muted-foreground transition hover:text-foreground"
           >
             {allSelected ? '取消全选' : '全选'}
           </button>
@@ -222,7 +248,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
               exitBatchMode();
             }}
             className={cn(
-              'rounded-lg px-2.5 py-1.5 text-xs transition',
+              'rounded-md px-2 py-1 text-[11px] transition',
               selectedConversationIds.length === 0
                 ? 'cursor-not-allowed text-muted-foreground/50'
                 : 'bg-red-50 text-red-600 hover:bg-red-100',
@@ -233,17 +259,17 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
         </div>
       ) : null}
 
-      <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
+      <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1.5">
         {isLoading ? (
-          <div className="px-3 py-6 text-xs text-muted-foreground">加载对话中...</div>
+          <div className="px-2 py-5 text-[11px] text-muted-foreground">加载对话中...</div>
         ) : null}
 
         {!isLoading && conversations.length === 0 ? (
-          <div className="px-3 py-6 text-xs text-muted-foreground">还没有对话，先新建一个。</div>
+          <div className="px-2 py-5 text-[11px] text-muted-foreground">还没有对话，先新建一个。</div>
         ) : null}
 
         {!isLoading && conversations.length > 0 && visibleConversations.length === 0 ? (
-          <div className="px-3 py-6 text-xs text-muted-foreground">没有匹配的对话。</div>
+          <div className="px-2 py-5 text-[11px] text-muted-foreground">没有匹配的对话。</div>
         ) : null}
 
         {visibleConversations.map((conversation) => {
@@ -253,9 +279,9 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
               key={conversation.id}
               data-conversation-row="true"
               className={cn(
-                'group/item flex items-center gap-2 rounded-lg px-3 py-2 transition-colors',
-                isBatchMode && selectedConversationIds.includes(conversation.id) && 'bg-accent/80',
-                isActive ? 'bg-accent' : 'hover:bg-accent/60',
+                'group/item relative flex items-center gap-1.5 rounded-md border-l-2 border-transparent px-2 py-1.5 transition-colors',
+                isBatchMode && selectedConversationIds.includes(conversation.id) && 'bg-emerald-50',
+                isActive ? 'border-emerald-500 bg-emerald-50/90 text-emerald-800' : 'hover:bg-muted/70',
               )}
               onContextMenu={(event) => {
                 if (isBatchMode) {
@@ -270,14 +296,14 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                   type="button"
                   onClick={() => toggleConversationSelection(conversation.id)}
                   className={cn(
-                    'flex size-4 shrink-0 items-center justify-center rounded border transition',
+                    'flex size-3.5 shrink-0 items-center justify-center rounded border transition',
                     selectedConversationIds.includes(conversation.id)
                       ? 'border-primary bg-primary text-primary-foreground'
                       : 'border-border bg-background text-transparent',
                   )}
                   aria-label={selectedConversationIds.includes(conversation.id) ? '取消选择' : '选择对话'}
                 >
-                  <span className="text-[10px] leading-none">✓</span>
+                  <span className="text-[9px] leading-none">✓</span>
                 </button>
               ) : null}
               <button
@@ -292,10 +318,10 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                 onTouchEnd={clearLongPressTimer}
                 onTouchCancel={clearLongPressTimer}
                 onTouchMove={clearLongPressTimer}
-                className="flex min-w-0 flex-1 items-center gap-2 truncate text-left text-sm"
+                className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-[12px] leading-5"
               >
-                <MessageSquareIcon className="size-4 shrink-0 text-muted-foreground" />
-                <span className={cn('truncate text-foreground/80', isActive && 'font-medium text-foreground')}>
+                <MessageSquareIcon className={cn('size-3.5 shrink-0', isActive ? 'text-emerald-600' : 'text-muted-foreground/70')} />
+                <span className={cn('truncate text-foreground/72', isActive && 'font-medium text-emerald-800')}>
                   {conversation.title || '新对话'}
                 </span>
               </button>
@@ -317,13 +343,13 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                 <button
                   type="button"
                   className={cn(
-                    'inline-flex size-7 items-center justify-center rounded-lg text-muted-foreground transition',
-                    'hover:bg-accent hover:text-foreground',
+                    'inline-flex size-6 items-center justify-center rounded-md text-muted-foreground transition',
+                    'hover:bg-muted hover:text-foreground',
                   )}
                   onClick={(event) => openConversationActions(conversation, event.currentTarget.getBoundingClientRect())}
                   aria-label="更多操作"
                 >
-                  <EllipsisIcon className="size-4" />
+                  <EllipsisIcon className="size-3.5" />
                 </button>
               ) : null}
             </div>
@@ -331,14 +357,14 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
         })}
       </div>
 
-      <div className="flex items-center border-t border-border px-3 py-2.5">
+      <div className="flex items-center border-t border-border/70 bg-white px-3 py-2">
         <Link
           to="/setting"
-          className="inline-flex size-9 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
           aria-label="AI 助手设置"
           title="AI 助手设置"
         >
-          <SettingsIcon className="size-4" />
+          <SettingsIcon className="size-3.5" />
         </Link>
       </div>
 
@@ -348,7 +374,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
           onClick={dismissConversationActions}
         >
           <div
-            className="absolute w-43 rounded-xl border border-border bg-card p-1.5 shadow-2xl"
+            className="absolute w-36 rounded-lg border border-border bg-white p-1 shadow-xl"
             style={{ top: actionMenuPosition.top, left: actionMenuPosition.left }}
             onClick={(event) => event.stopPropagation()}
           >
@@ -358,9 +384,9 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                 dismissConversationActions();
                 onRename(actionConversation);
               }}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-foreground transition hover:bg-accent"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-foreground transition hover:bg-muted"
             >
-              <PencilIcon className="size-4 text-muted-foreground" />
+              <PencilIcon className="size-3.5 text-muted-foreground" />
               <span>重命名</span>
             </button>
 
@@ -370,9 +396,9 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                 dismissConversationActions();
                 onDelete(actionConversation);
               }}
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-red-600 transition hover:bg-red-50"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-red-600 transition hover:bg-red-50"
             >
-              <Trash2Icon className="size-4" />
+              <Trash2Icon className="size-3.5" />
               <span>删除对话</span>
             </button>
           </div>

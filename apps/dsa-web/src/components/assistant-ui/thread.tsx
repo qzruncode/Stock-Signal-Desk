@@ -30,6 +30,8 @@ import {
   Volume2Icon,
   SquareIcon as StopIcon,
   MicIcon,
+  Maximize2Icon,
+  Minimize2Icon,
 } from 'lucide-react';
 import {
   GenericToolUI,
@@ -217,7 +219,8 @@ const UserMessage: FC = () => (
         <ComposerPrimitive.Root className="w-full rounded-2xl rounded-br-md border border-primary/30 bg-card shadow-sm focus-within:border-primary/45">
           <ComposerPrimitive.Input
             autoFocus
-            className="min-h-16 w-full resize-none bg-transparent px-4 py-3 text-sm leading-7 text-foreground placeholder-muted-foreground focus:outline-none [overflow-wrap:anywhere]"
+            className="min-h-14 w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-5 text-foreground placeholder-muted-foreground focus:outline-none [overflow-wrap:anywhere]"
+            style={{ fontSize: '12px', lineHeight: '18px' }}
           />
           <div className="flex items-center justify-end gap-2 px-3 pb-3">
             <ComposerPrimitive.Cancel
@@ -438,9 +441,10 @@ const BranchPicker: FC = () => (
 
 const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
   const isRunning = useThread((s) => s.isRunning);
+  const [isExpanded, setIsExpanded] = useState(false);
   return (
     <div className="shrink-0 border-t border-border/70 bg-background/90 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
-      <ComposerPrimitive.Root className="relative mx-auto flex w-full max-w-3xl flex-col rounded-xl border border-border/80 bg-card/90 shadow-[0_8px_28px_hsl(220_22%_34%/0.06)] transition focus-within:border-primary/35 focus-within:shadow-[0_10px_32px_hsl(var(--primary)/0.08)]">
+      <ComposerPrimitive.Root className="group/composer relative mx-auto flex w-full max-w-3xl flex-col rounded-xl border border-border/80 bg-card/90 shadow-[0_8px_28px_hsl(220_22%_34%/0.06)] transition focus-within:border-primary/35 focus-within:shadow-[0_10px_32px_hsl(var(--primary)/0.08)]">
         <ComposerAttachmentDropzone />
 
         <ComposerAttachments />
@@ -455,9 +459,23 @@ const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
 
         <ComposerPrimitive.Input
           placeholder="问问市场、个股、板块或财务数据..."
-          className="min-h-12 w-full resize-none bg-transparent px-3 pt-3 pb-1.5 text-sm leading-6 text-foreground placeholder-muted-foreground focus:outline-none sm:px-4"
-          rows={1}
+          className={cn(
+            'w-full resize-none bg-transparent px-3 pt-2.5 pb-1.5 pr-10 text-xs leading-5 text-foreground placeholder-muted-foreground focus:outline-none sm:px-4 sm:pr-10',
+            isExpanded ? 'min-h-32 max-h-56 overflow-y-auto' : 'min-h-11 overflow-hidden',
+          )}
+          rows={isExpanded ? 6 : 1}
+          style={{ fontSize: '12px', lineHeight: '18px' }}
         />
+        <button
+          type="button"
+          onClick={() => setIsExpanded((value) => !value)}
+          className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 group-hover/composer:opacity-100 group-focus-within/composer:opacity-100"
+          title={isExpanded ? '收起输入框' : '展开输入框'}
+          aria-label={isExpanded ? '收起输入框' : '展开输入框'}
+          aria-pressed={isExpanded}
+        >
+          {isExpanded ? <Minimize2Icon className="size-3" /> : <Maximize2Icon className="size-3" />}
+        </button>
 
         <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
           <div className="flex items-center gap-1.5">

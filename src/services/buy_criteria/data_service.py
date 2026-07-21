@@ -70,19 +70,53 @@ class DataService:
                 "warnings": ["本轮未提供可解析的产业方向"],
                 "errors": [],
             }
-        domains: list[str] = []
-        for part in re.split(r"[，,、；;／/\n]+", normalized):
-            value = part.strip(" 。：:")
-            if value and value not in domains:
-                domains.append(value[:64])
-            if len(domains) >= 12:
-                break
-        key = "investment_thesis_candidates:" + "|".join(domains)
+        domain_specs: list[dict[str, Any]] = []
+        mapping_match = re.search(
+            r"结构化板块映射\s*[：:]\s*(.+)",
+            normalized,
+        )
+        if mapping_match:
+            for part in re.split(r"[；;\n]+", mapping_match.group(1)):
+                pair = re.split(r"[→=>]+", part.strip(" 。"), maxsplit=1)
+                if len(pair) != 2:
+                    continue
+                label = pair[0].strip(" ，,、")
+                boards = list(dict.fromkeys(
+                    value.strip(" ，,、。")
+                    for value in re.split(r"[、,，/／]+", pair[1])
+                    if value.strip(" ，,、。")
+                ))
+                if label and boards:
+                    domain_specs.append({
+                        "label": label[:64],
+                        "board_queries": boards[:4],
+                        "mapping_type": "exact_board" if boards == [label] else "proxy_board",
+                        "rationale": "沿用上一轮已执行并展示的结构化领域板块映射。",
+                        "unresolved_parts": [],
+                    })
+                if len(domain_specs) >= 12:
+                    break
+        if not domain_specs:
+            for part in re.split(r"[，,、；;／/\n]+", normalized):
+                value = part.strip(" 。：:")
+                if value:
+                    domain_specs.append({
+                        "label": value[:64],
+                        "board_queries": [value[:64]],
+                        "mapping_type": "exact_board",
+                        "rationale": "未找到上一轮映射契约，仅按同名结构化板块核验。",
+                        "unresolved_parts": [],
+                    })
+                if len(domain_specs) >= 12:
+                    break
+        key = "investment_thesis_candidates:" + "|".join(
+            f"{item['label']}=>{','.join(item['board_queries'])}" for item in domain_specs
+        )
 
         def _fetch():
             from src.tools.get_domain_stock_candidates import get_domain_stock_candidates
 
-            return get_domain_stock_candidates(domains, limit_per_domain=300)
+            return get_domain_stock_candidates(domain_specs, limit_per_domain=300)
 
         return self._cached_call(key, _fetch)
 

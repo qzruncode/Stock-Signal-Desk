@@ -138,15 +138,15 @@ const GenericToolUI = ({
     ) : null;
 
   return (
-    <div className="my-2 max-w-full overflow-hidden">
+    <div className="my-0.5 max-w-full overflow-hidden">
       <button
         type="button"
         onClick={() => setDrawerState('open')}
-        className={`inline-flex max-w-full items-center gap-2 overflow-hidden rounded-lg border px-3 py-2 text-left text-xs font-medium shadow-sm transition hover:-translate-y-0.5 hover:bg-white hover:shadow-md ${tone}`}
+        className={`inline-flex max-w-full items-center gap-1 overflow-hidden rounded border px-1.5 py-0.5 text-left text-[10px] font-medium leading-3 transition hover:bg-white ${tone}`}
       >
-        <BotIcon className="size-4 shrink-0" />
+        <BotIcon className="size-2.5 shrink-0" />
         <span className="min-w-0 truncate">{status.type === 'running' ? `正在查询 · ${label}` : label}</span>
-        <StatusIcon className={`size-4 shrink-0 ${status.type === 'running' ? 'animate-spin' : ''}`} />
+        <StatusIcon className={`size-2.5 shrink-0 ${status.type === 'running' ? 'animate-spin' : ''}`} />
       </button>
       {drawer}
     </div>

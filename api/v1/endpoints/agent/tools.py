@@ -382,6 +382,9 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             compact_domains.append({
                 "domain": domain_result.get("domain"),
                 "lookup_themes": domain_result.get("lookup_themes", []),
+                "mapping_type": domain_result.get("mapping_type"),
+                "mapping_rationale": domain_result.get("mapping_rationale"),
+                "unresolved_parts": domain_result.get("unresolved_parts", []),
                 "mapping_basis": domain_result.get("mapping_basis"),
                 "context_theme": domain_result.get("context_theme"),
                 "context_filter_applied": domain_result.get("context_filter_applied"),
@@ -400,6 +403,7 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
             "success": result.get("success"),
             "partial": result.get("partial"),
             "requested_domains": result.get("requested_domains", []),
+            "domain_specs": result.get("domain_specs", []),
             "context_theme": result.get("context_theme"),
             "local_universe_count": result.get("local_universe_count"),
             "domain_results": compact_domains,

@@ -1593,6 +1593,7 @@ def _build_domain_candidate_answer(
 
     union: Dict[str, Dict[str, Any]] = {}
     coverage_lines: List[str] = []
+    inherited_mapping_parts: List[str] = []
     failed_domains: List[str] = []
     for domain_result in domain_results:
         domain = str(domain_result.get("domain") or "未命名领域")
@@ -1602,19 +1603,28 @@ def _build_domain_candidate_answer(
             for board in domain_result.get("matched_boards") or []
             if isinstance(board, dict) and board.get("name")
         ))
-        basis = (
-            "同名结构化板块"
-            if str(domain_result.get("mapping_basis") or "").startswith("exact_concept_board")
-            else "最窄结构化板块别名"
-        )
+        mapping_type = str(domain_result.get("mapping_type") or "")
+        basis = {
+            "exact_board": "当前目录同名板块",
+            "proxy_board": "当前目录最窄代理板块",
+            "unresolved": "当前目录未解析",
+        }.get(mapping_type, "结构化板块")
         if domain_result.get("context_filter_applied"):
             basis += f"，再与上位主题“{domain_result.get('context_theme') or result.get('context_theme')}”取交集"
         coverage = "完整" if domain_result.get("coverage_complete") else "部分"
         count = int(domain_result.get("candidate_count") or 0)
+        rationale = str(domain_result.get("mapping_rationale") or "").strip()
+        unresolved_parts = [
+            str(value) for value in domain_result.get("unresolved_parts") or [] if value
+        ]
         coverage_lines.append(
             f"- **{domain}**：{basis} `{ '、'.join(themes) or '未匹配' }`；"
             f"实际板块 { '、'.join(boards) or '未取得' }；{coverage}覆盖，候选 **{count} 只**。"
+            + (f" 映射说明：{rationale}" if rationale else "")
+            + (f" 未覆盖子领域：{'、'.join(unresolved_parts)}。" if unresolved_parts else "")
         )
+        if themes:
+            inherited_mapping_parts.append(f"{domain}→{'、'.join(themes)}")
         if not domain_result.get("success"):
             failed_domains.append(domain)
         for item in domain_result.get("items") or []:
@@ -1663,6 +1673,13 @@ def _build_domain_candidate_answer(
             "\n\n> 未完成领域：" + "、".join(failed_domains)
             + "。这些领域没有改用网页搜索或模型记忆补名单。"
         )
+    inherited_mapping_text = ""
+    if inherited_mapping_parts:
+        inherited_mapping_text = (
+            "\n\n> 结构化板块映射（后续追问继续沿用）："
+            + "；".join(inherited_mapping_parts)
+            + "。"
+        )
     return (
         "## 按领域匹配的 A 股候选\n\n"
         f"已与本地 **{result.get('local_universe_count') or '全量'} 只**有效证券交叉核验，"
@@ -1671,17 +1688,18 @@ def _build_domain_candidate_answer(
         + "\n".join(coverage_lines)
         + "\n\n### 候选股票\n\n"
         + candidate_text
+        + inherited_mapping_text
         + failure_text
         + "\n\n> 口径：以上只证明结构化概念板块成员关系和证券身份有效。"
         "它不是订单、客户验证、收入兑现或买入建议；本轮没有使用通用网页搜索生成候选。"
     )
 
 
-def _build_collection_financial_filter_answer(
+def _evaluate_collection_financial_filter(
     evidence: Optional[List[Dict[str, Any]]],
     spec: CollectionFinancialFilterSpec,
-) -> Optional[str]:
-    """Aggregate every financial batch and apply the user's exact predicate."""
+) -> Optional[Dict[str, Any]]:
+    """Aggregate all batches for one typed predicate without writing prose."""
     operator = spec.operator
     threshold = spec.normalized_threshold
     exclude_matching = spec.action == "exclude_matching"
@@ -1738,7 +1756,6 @@ def _build_collection_financial_filter_answer(
     non_matching = [row for row in ordered_rows if not comparator(float(row["financial_value"]))]
     excluded = matching if exclude_matching else non_matching
     kept = non_matching if exclude_matching else matching
-
     threshold_text = {
         "percent": f"{spec.threshold:g}%",
         "cny": f"{spec.threshold:g} 元",
@@ -1759,6 +1776,66 @@ def _build_collection_financial_filter_answer(
         "fiscal_year": f"{spec.fiscal_year} 年报",
     }[spec.period_basis]
     action_text = "筛除命中项" if exclude_matching else "只保留命中项"
+    return {
+        "requested": requested,
+        "rows_by_code": rows_by_code,
+        "missing": missing,
+        "matching": matching,
+        "excluded": excluded,
+        "kept": kept,
+        "sources": sources,
+        "data_times": data_times,
+        "operator_label": operator_label,
+        "threshold_text": threshold_text,
+        "period_label": period_label,
+        "action_text": action_text,
+    }
+
+
+def _format_collection_financial_value(
+    row: Dict[str, Any],
+    spec: CollectionFinancialFilterSpec,
+) -> str:
+    value = float(row["financial_value"])
+    if spec.metric == "debt_ratio":
+        return f"{value:.2f}%"
+    if abs(value) >= 100_000_000:
+        return f"{value / 100_000_000:.2f} 亿元"
+    if abs(value) >= 10_000:
+        return f"{value / 10_000:.2f} 万元"
+    return f"{value:.2f} 元"
+
+
+def _collection_financial_rule_text(
+    spec: CollectionFinancialFilterSpec,
+    evaluation: Dict[str, Any],
+) -> str:
+    return (
+        f"{evaluation['period_label']}{spec.metric_label} "
+        f"{evaluation['operator_label']} {evaluation['threshold_text']}，"
+        f"{evaluation['action_text']}"
+    )
+
+
+def _build_collection_financial_filter_answer(
+    evidence: Optional[List[Dict[str, Any]]],
+    spec: CollectionFinancialFilterSpec,
+) -> Optional[str]:
+    """Render a validated single-predicate collection filter."""
+    evaluation = _evaluate_collection_financial_filter(evidence, spec)
+    if evaluation is None:
+        return None
+    requested = evaluation["requested"]
+    rows_by_code = evaluation["rows_by_code"]
+    missing = evaluation["missing"]
+    excluded = evaluation["excluded"]
+    kept = evaluation["kept"]
+    sources = evaluation["sources"]
+    data_times = evaluation["data_times"]
+    period_label = evaluation["period_label"]
+    operator_label = evaluation["operator_label"]
+    threshold_text = evaluation["threshold_text"]
+    action_text = evaluation["action_text"]
     lines = [
         f"## 上文股票{period_label}{spec.metric_label}筛选",
         "",
@@ -1786,15 +1863,7 @@ def _build_collection_financial_filter_answer(
             "|---|---:|---|",
         ])
         for row in rows:
-            value = float(row["financial_value"])
-            if spec.metric == "debt_ratio":
-                value_text = f"{value:.2f}%"
-            elif abs(value) >= 100_000_000:
-                value_text = f"{value / 100_000_000:.2f} 亿元"
-            elif abs(value) >= 10_000:
-                value_text = f"{value / 10_000:.2f} 万元"
-            else:
-                value_text = f"{value:.2f} 元"
+            value_text = _format_collection_financial_value(row, spec)
             lines.append(
                 f"| {row.get('name') or '未命名'} ({row.get('symbol')}) | "
                 f"{value_text} | {row.get('report_date') or '未标明'} |"
@@ -1807,6 +1876,129 @@ def _build_collection_financial_filter_answer(
         "> 数据来源：" + ("；".join(sources) or "本地已同步财务库")
         + (f"；同步时间 {max(data_times)}" if data_times else "；同步时间未标明")
         + "。本轮未调用实时行情、K线或技术指标。",
+    ])
+    return "\n".join(lines)
+
+
+def _build_compound_collection_financial_filter_answer(
+    plan: TaskPlan,
+    execution: PlanExecutionResult,
+) -> Optional[str]:
+    """Combine multiple independent predicates into one exact set result."""
+    if len(plan.tasks) < 2 or not all(
+        task.kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER
+        for task in plan.tasks
+    ):
+        return None
+
+    results_by_task = {result.task.task_id: result for result in execution.tasks}
+    evaluated: list[tuple[CollectionFinancialFilterSpec, Dict[str, Any]]] = []
+    for task in plan.tasks:
+        result = results_by_task.get(task.task_id)
+        if result is None:
+            return None
+        try:
+            spec = CollectionFinancialFilterSpec.model_validate(task.parameters)
+        except Exception:
+            return None
+        evidence = [call.evidence() for call in result.calls]
+        evaluation = _evaluate_collection_financial_filter(evidence, spec)
+        if evaluation is None:
+            return None
+        evaluated.append((spec, evaluation))
+
+    requested = list(evaluated[0][1]["requested"])
+    requested_set = set(requested)
+    missing_by_rule: list[tuple[str, list[str]]] = []
+    final_kept = set(requested)
+    rows_by_code: Dict[str, Dict[str, Any]] = {}
+    excluded_reasons: Dict[str, List[str]] = {}
+    sources: list[str] = []
+    data_times: list[str] = []
+
+    for spec, evaluation in evaluated:
+        rule_text = _collection_financial_rule_text(spec, evaluation)
+        rule_requested = set(evaluation["requested"])
+        missing = sorted(
+            set(evaluation["missing"]) | (requested_set - rule_requested)
+        )
+        if missing:
+            missing_by_rule.append((rule_text, missing))
+        kept_codes = {
+            str(row.get("symbol") or "") for row in evaluation["kept"]
+        }
+        final_kept &= kept_codes
+        for code, row in evaluation["rows_by_code"].items():
+            rows_by_code.setdefault(code, row)
+        for row in evaluation["excluded"]:
+            code = str(row.get("symbol") or "")
+            if not code:
+                continue
+            reason = (
+                f"{evaluation['period_label']}{spec.metric_label} "
+                f"{_format_collection_financial_value(row, spec)}"
+            )
+            excluded_reasons.setdefault(code, []).append(reason)
+        for source in evaluation["sources"]:
+            if source not in sources:
+                sources.append(source)
+        data_times.extend(evaluation["data_times"])
+
+    final_excluded = [code for code in requested if code not in final_kept]
+    final_kept_ordered = [code for code in requested if code in final_kept]
+    lines = [
+        "## 上文股票复合财务筛选",
+        "",
+        f"原集合 **{len(requested)} 只**，本轮同时执行 **{len(evaluated)} 项**财务条件。",
+        "",
+        "### 筛选规则",
+        "",
+    ]
+    lines.extend(
+        f"{index}. {_collection_financial_rule_text(spec, evaluation)}。"
+        for index, (spec, evaluation) in enumerate(evaluated, 1)
+    )
+    if missing_by_rule:
+        lines.extend([
+            "",
+            "> 本轮复合筛选未完成，不能把部分覆盖结果当作最终名单。",
+        ])
+        for rule_text, missing in missing_by_rule:
+            lines.append(f"> {rule_text}：缺失 {'、'.join(missing)}。")
+    else:
+        lines.extend([
+            "",
+            f"全部条件均完整覆盖 **{len(requested)} 只**；合并后筛除 "
+            f"**{len(final_excluded)} 只**，最终保留 **{len(final_kept_ordered)} 只**。",
+        ])
+
+    lines.extend(["", "### 筛除项", ""])
+    if not final_excluded:
+        lines.append("无。")
+    else:
+        lines.extend(["| 公司/代码 | 命中或未满足的条件 |", "|---|---|"])
+        for code in final_excluded:
+            row = rows_by_code.get(code, {})
+            reasons = excluded_reasons.get(code) or ["未满足全部保留条件"]
+            lines.append(
+                f"| {row.get('name') or '未命名'} ({code}) | {'；'.join(reasons)} |"
+            )
+
+    kept_title = "最终保留项" if not missing_by_rule else "已覆盖范围内的暂定保留项"
+    lines.extend(["", f"### {kept_title}", ""])
+    if not final_kept_ordered:
+        lines.append("无。")
+    else:
+        lines.extend(["| 公司/代码 | 结果 |", "|---|---|"])
+        for code in final_kept_ordered:
+            row = rows_by_code.get(code, {})
+            lines.append(f"| {row.get('name') or '未命名'} ({code}) | 全部条件通过 |")
+
+    lines.extend([
+        "",
+        "> 数据来源：" + ("；".join(sources) or "本地已同步财务库")
+        + (f"；同步时间 {max(data_times)}" if data_times else "；同步时间未标明")
+        + "。多条件结果由程序按集合交集计算，未交给模型改写名单。",
     ])
     return "\n".join(lines)
 
@@ -3140,6 +3332,12 @@ def _deterministic_standard_task_answer(
     plan: TaskPlan,
     execution: PlanExecutionResult,
 ) -> Optional[str]:
+    compound_filter_answer = _build_compound_collection_financial_filter_answer(
+        plan,
+        execution,
+    )
+    if compound_filter_answer:
+        return compound_filter_answer
     if len(plan.tasks) != 1:
         return None
     task = plan.tasks[0]

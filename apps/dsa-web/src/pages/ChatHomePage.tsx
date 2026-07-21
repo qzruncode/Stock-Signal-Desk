@@ -371,6 +371,7 @@ const ChatLayout: React.FC<{
   onBatchDeleteConversations,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
+  const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
   const [mobileSidebarState, setMobileSidebarState] = useState<'closed' | 'open' | 'closing'>('closed');
 
   useEffect(() => {
@@ -410,18 +411,51 @@ const ChatLayout: React.FC<{
   return (
     <div className="flex h-full min-h-0 overflow-hidden bg-background">
       {isDesktop ? (
-        <ThreadListSidebar
-          side="left"
-          className="w-64"
-          conversations={conversations}
-          selectedConversationId={selectedConversationId}
-          isLoading={isLoadingConversations}
-          onCreate={onCreateConversation}
-          onSelect={onSelectConversation}
-          onRename={onRenameConversation}
-          onDelete={onDeleteConversation}
-          onBatchDelete={onBatchDeleteConversations}
-        />
+        <div
+          className={cn(
+            'relative hidden h-full shrink-0 transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] lg:flex',
+            isDesktopSidebarCollapsed
+              ? 'w-0 overflow-visible border-r border-transparent bg-transparent'
+              : 'w-64 overflow-hidden border-r border-border/80 bg-white',
+          )}
+        >
+          <div
+            className={cn(
+              'h-full w-64 shrink-0 transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+              isDesktopSidebarCollapsed ? 'pointer-events-none -translate-x-2 opacity-0' : 'translate-x-0 opacity-100 delay-75',
+            )}
+          >
+            <ThreadListSidebar
+              side="left"
+              className="border-r-0"
+              conversations={conversations}
+              selectedConversationId={selectedConversationId}
+              isLoading={isLoadingConversations}
+              onCreate={onCreateConversation}
+              onSelect={onSelectConversation}
+              onRename={onRenameConversation}
+              onDelete={onDeleteConversation}
+              onBatchDelete={onBatchDeleteConversations}
+              onCollapse={() => setIsDesktopSidebarCollapsed(true)}
+            />
+          </div>
+          <div
+            className={cn(
+              'absolute left-2 top-2 z-20 flex transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]',
+              isDesktopSidebarCollapsed ? 'translate-x-0 opacity-100 delay-150' : 'pointer-events-none -translate-x-1 opacity-0',
+            )}
+          >
+            <button
+              type="button"
+              onClick={() => setIsDesktopSidebarCollapsed(false)}
+              className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label="展开对话列表"
+              title="展开对话列表"
+            >
+              <PanelLeftIcon className="size-3.5" />
+            </button>
+          </div>
+        </div>
       ) : null}
 
       {!isDesktop && mobileSidebarOpen ? (
@@ -469,7 +503,7 @@ const ChatLayout: React.FC<{
             'bg-card text-muted-foreground',
             'shadow-sm transition hover:text-foreground',
             'sm:h-10 sm:w-10',
-            'lg:absolute lg:right-3 lg:top-3 lg:h-9 lg:w-9 lg:rounded-lg lg:border lg:translate-y-0',
+            'lg:hidden',
           )}
           aria-label={mobileSidebarOpen ? '收起对话列表' : '展开对话列表'}
         >

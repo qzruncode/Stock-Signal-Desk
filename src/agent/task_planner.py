@@ -13,7 +13,7 @@ from typing import Any, Awaitable, Callable, Iterable
 
 from pydantic import ValidationError
 
-from src.agent.result_contracts import CollectionFinancialFilterSpec
+from src.agent.result_contracts import CollectionFinancialFilterSpec, DomainBoardQuerySpec
 from src.agent.task_workflows import (
     ConfirmationState,
     EntityScope,
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 PLANNER_PRIMARY_TIMEOUT_SECONDS = 40.0
 PLANNER_RECOVERY_TIMEOUT_SECONDS = 32.0
 PLANNER_CACHE_TTL = timedelta(days=7)
-PLANNER_CACHE_VERSION = "v9"
+PLANNER_CACHE_VERSION = "v11"
 
 
 class TaskPlannerUnavailableError(RuntimeError):
@@ -111,6 +111,18 @@ _PLANNER_SYSTEM_PROMPT = """\
    的完整公司集合，不能扩展到更早内容。
 4. 产业研究与按领域找股是两个任务：研究环节用 industry_research；从内部股票池按领域列候选用
    theme_stock_discovery，并把上一回答中被引用的全部具体产品领域解析到 parameters.domains。
+   theme_stock_discovery 的 parameters.domains 必须是对象数组，每项严格使用：
+   {"label":"用户/上文的原始领域名","board_queries":["当前板块目录中的精确名称"],
+   "mapping_type":"exact_board|proxy_board|unresolved","rationale":"映射理由",
+   "unresolved_parts":[]}。绝不能只返回字符串数组。
+   - board_queries 只能逐字选自 current_concept_board_catalog，不能自造板块名，也不能填公司名；
+   - 有同名板块用 exact_board；没有同名板块时，按产品在产业链中的功能语义选择最窄的相邻部件板块，
+     用 proxy_board，并在 rationale 说明代理边界。例如细分部件没有独立板块但属于机器人执行机构时，
+     可选择目录中真实存在的“机器人执行器”，不能退化为宽泛的“机器人概念”；
+   - proxy_board 必须与原领域或 context_theme 保持明确的产业语义邻接。仅仅共享“电机、设备、材料”等
+     通用词但属于另一应用场景的板块不得选择；程序会拒绝这种跨场景代理并要求重做计划；
+   - 复合领域要整体解析，可选最多4个真实板块；仅有一部分无法覆盖时写入 unresolved_parts，不能让
+     整个领域静默失败；确实没有可靠的窄板块才用 unresolved，且 board_queries 必须为空。
    只有用户明确要求输出上市公司、股票、证券名单或候选时才能创建 theme_stock_discovery；要求分析
    产业链、受益环节、梯队或明确零部件领域本身不等于找股票，不能额外创建找股任务。
    parameters.context_theme 必须是最短的标准 A 股上位概念板块名，例如“人形机器人”，不能写成
@@ -204,6 +216,16 @@ def _previous_investment_thesis(
         previous = _message_text(message)
         if not previous:
             continue
+        mapping_match = re.search(
+            r"结构化板块映射(?:（[^）]*）)?\s*[：:]\s*([^\n]{3,800})",
+            previous,
+        )
+        if mapping_match and (
+            not target_tokens
+            or any(token in re.sub(r"\s+", "", previous).lower() for token in target_tokens)
+        ):
+            mapping = mapping_match.group(1).strip().rstrip("。")
+            return ("结构化板块映射：" + mapping)[:400]
         lines = previous.splitlines()
         for index, raw_line in enumerate(lines):
             if not raw_line.strip().startswith("|"):
@@ -250,6 +272,347 @@ def _labeled_current_investment_thesis(request: str) -> str:
         return ""
     value = re.sub(r"[*_`]", "", match.group(1)).strip(" ，,；;。")
     return value[:400]
+
+
+def _explicit_stock_candidate_request(request: str) -> bool:
+    """Whether the current request explicitly asks for company identities."""
+    return bool(re.search(
+        r"A股|股票|个股|上市公司|公司(?:名单|候选|标的|有哪些|有哪)|"
+        r"标的|候选股|证券名单|概念股",
+        request,
+        flags=re.IGNORECASE,
+    ))
+
+
+def _explicit_industry_structure_plan(
+    messages: list[dict[str, Any]],
+) -> TaskPlan | None:
+    """Keep industry-structure research separate from company discovery."""
+    request = current_user_request(messages)
+    if not request or _explicit_stock_candidate_request(request):
+        return None
+    has_structure_scope = bool(re.search(r"产业链|上游|中游|下游|领域|环节|方向", request))
+    has_research_goal = bool(re.search(r"核心|受益|价值量|壁垒|格局|优先|梳理|分析", request))
+    if not (has_structure_scope and has_research_goal):
+        return None
+    task = StandardTask(
+        task_id="industry_structure_research",
+        kind=StandardTaskKind.INDUSTRY_RESEARCH,
+        objective=request[:400],
+        entity_scope=EntityScope.NONE,
+        entities=[],
+        parameters={"query": request[:400]},
+        depends_on=[],
+        output_requirements=["只回答产业领域与受益环节", "不生成公司或股票候选名单"],
+        confirmation=ConfirmationState.NOT_REQUIRED,
+        confidence=1.0,
+    )
+    return TaskPlan(tasks=[task], source="deterministic_industry_structure_contract")
+
+
+def _constrain_company_discovery_to_request(
+    plan: TaskPlan,
+    request: str,
+) -> TaskPlan:
+    """Remove model-added company discovery absent an explicit company ask."""
+    if _explicit_stock_candidate_request(request):
+        return plan
+    removed_ids = {
+        task.task_id
+        for task in plan.tasks
+        if task.kind in {
+            StandardTaskKind.THEME_STOCK_DISCOVERY,
+            StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        }
+    }
+    if not removed_ids:
+        return plan
+    kept = [task for task in plan.tasks if task.task_id not in removed_ids]
+    if not kept:
+        raise TaskPlanValidationError(
+            "company discovery requires an explicit current-request company or stock scope"
+        )
+    dependent = [
+        task.task_id for task in kept if set(task.depends_on) & removed_ids
+    ]
+    if dependent:
+        raise TaskPlanValidationError(
+            "non-company task depends on an unrequested company-discovery task: "
+            + ",".join(dependent)
+        )
+    logger.warning(
+        "[TaskPlanner] removed unrequested company-discovery tasks=%s",
+        sorted(removed_ids),
+    )
+    return plan.model_copy(
+        update={"tasks": kept, "source": f"{plan.source}_scope_constrained"}
+    )
+
+
+def _constrain_candidate_only_plan(plan: TaskPlan, request: str) -> TaskPlan:
+    """Remove model-added research when the current goal is only a stock list."""
+    if not _explicit_stock_candidate_request(request):
+        return plan
+    if re.search(r"分析|研究|梳理|验证|调查|报告|逻辑|格局|景气|订单|收入|客户|量产", request):
+        return plan
+    if not any(task.kind == StandardTaskKind.THEME_STOCK_DISCOVERY for task in plan.tasks):
+        return plan
+    removable_kinds = {
+        StandardTaskKind.INDUSTRY_RESEARCH,
+        StandardTaskKind.PUBLIC_WEB_RESEARCH,
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+    }
+    removed_ids = {
+        task.task_id for task in plan.tasks if task.kind in removable_kinds
+    }
+    if not removed_ids:
+        return plan
+    kept = []
+    for task in plan.tasks:
+        if task.task_id in removed_ids:
+            continue
+        dependencies = [
+            dependency for dependency in task.depends_on if dependency not in removed_ids
+        ]
+        kept.append(task.model_copy(update={"depends_on": dependencies}))
+    logger.warning(
+        "[TaskPlanner] removed research tasks from candidate-only request=%s",
+        sorted(removed_ids),
+    )
+    return plan.model_copy(
+        update={"tasks": kept, "source": f"{plan.source}_candidate_only"}
+    )
+
+
+def _longest_common_compact_substring(left: str, right: str) -> int:
+    a = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", str(left or "")).lower()
+    b = re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", str(right or "")).lower()
+    if not a or not b:
+        return 0
+    previous = [0] * (len(b) + 1)
+    best = 0
+    for char_a in a:
+        current = [0]
+        for index, char_b in enumerate(b, 1):
+            value = previous[index - 1] + 1 if char_a == char_b else 0
+            current.append(value)
+            best = max(best, value)
+        previous = current
+    return best
+
+
+def _sanitize_domain_proxy_boards(plan: TaskPlan) -> TaskPlan:
+    """Drop cross-application proxy alternatives when a valid proxy remains."""
+    changed = False
+    tasks: list[StandardTask] = []
+    for task in plan.tasks:
+        if task.kind != StandardTaskKind.THEME_STOCK_DISCOVERY:
+            tasks.append(task)
+            continue
+        context_theme = str(task.parameters.get("context_theme") or "")
+        raw_domains = task.parameters.get("domains")
+        if not context_theme or not isinstance(raw_domains, list):
+            tasks.append(task)
+            continue
+        domains: list[Any] = []
+        for raw in raw_domains:
+            try:
+                domain = DomainBoardQuerySpec.model_validate(raw)
+            except ValidationError:
+                domains.append(raw)
+                continue
+            if domain.mapping_type != "proxy_board":
+                domains.append(domain.model_dump())
+                continue
+            accepted = [
+                board for board in domain.board_queries
+                if max(
+                    _longest_common_compact_substring(board, domain.label),
+                    _longest_common_compact_substring(board, context_theme),
+                ) >= 3
+            ]
+            rejected = [board for board in domain.board_queries if board not in accepted]
+            if accepted and rejected:
+                changed = True
+                domain = domain.model_copy(update={
+                    "board_queries": accepted,
+                    "rationale": (
+                        domain.rationale + " " if domain.rationale else ""
+                    ) + "程序已剔除跨应用场景代理：" + "、".join(rejected),
+                })
+            domains.append(domain.model_dump())
+        tasks.append(task.model_copy(update={
+            "parameters": {**task.parameters, "domains": domains},
+        }))
+    return plan.model_copy(
+        update={"tasks": tasks, "source": f"{plan.source}_proxy_guard"}
+    ) if changed else plan
+
+
+_COLLECTION_FILTER_METRIC_PATTERN = re.compile(
+    r"(?P<debt>(?:资产)?负债率)|"
+    r"(?P<revenue>营业收入|年营业收入|年度营业收入|年营收|年度营收|营收)|"
+    r"(?P<profit>扣除非经常性损益后的净利润|扣非净利润)"
+)
+
+
+def _collection_filter_action(request: str) -> str | None:
+    """Resolve only an explicit set operation; never guess a filter action."""
+    excludes = bool(re.search(r"去掉|筛掉|剔除|排除|删除|不要|过滤掉", request))
+    keeps = bool(re.search(r"只保留|保留下|留下|仅保留|筛选出", request))
+    if excludes == keeps:
+        return None
+    return "exclude_matching" if excludes else "keep_matching"
+
+
+def _collection_filter_operator(text: str) -> tuple[str, re.Match[str]] | None:
+    patterns = (
+        ("gte", r"大于等于|不低于|不少于|至少|>=|≥"),
+        ("lte", r"小于等于|不高于|不超过|至多|最多|<=|≤"),
+        ("gt", r"大于|高于|超过|超出|>"),
+        ("lt", r"小于|低于|不足|少于|不到|未达到|<"),
+        ("eq", r"等于|为|="),
+    )
+    matches: list[tuple[int, str, re.Match[str]]] = []
+    for operator, pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            matches.append((match.start(), operator, match))
+    if not matches:
+        return None
+    _start, operator, match = min(matches, key=lambda item: item[0])
+    return operator, match
+
+
+def _collection_filter_period(
+    metric: str,
+    text: str,
+) -> tuple[str, int | None] | None:
+    explicit_year = re.search(r"(?<!\d)((?:19|20)\d{2})\s*年", text)
+    if explicit_year:
+        return "fiscal_year", int(explicit_year.group(1))
+    if re.search(r"去年|上年|上一年|上年度|上一年度|前一年", text):
+        return "previous_fiscal_year", None
+    if re.search(r"\bTTM\b|滚动(?:十二|12)个月", text, flags=re.IGNORECASE):
+        return ("latest_report", None) if metric == "debt_ratio" else ("ttm", None)
+    if metric == "debt_ratio":
+        return "latest_report", None
+    # Revenue and profit are ambiguous without a TTM or fiscal-year basis.
+    return None
+
+
+def _parse_collection_filter_specs(request: str) -> list[CollectionFinancialFilterSpec]:
+    """Parse explicit financial predicates into typed contracts.
+
+    This is grammar parsing, not a keyword-based financial judgement: every
+    predicate must state a supported metric, comparison and threshold, while
+    currency metrics must also state an unambiguous reporting period.
+    """
+    action = _collection_filter_action(request)
+    metric_matches = list(_COLLECTION_FILTER_METRIC_PATTERN.finditer(request))
+    if action is None or not metric_matches:
+        return []
+
+    specs: list[CollectionFinancialFilterSpec] = []
+    for index, metric_match in enumerate(metric_matches):
+        metric = (
+            "debt_ratio" if metric_match.lastgroup == "debt"
+            else "revenue" if metric_match.lastgroup == "revenue"
+            else "deducted_net_profit"
+        )
+        next_start = (
+            metric_matches[index + 1].start()
+            if index + 1 < len(metric_matches)
+            else len(request)
+        )
+        # Include the short prefix so expressions such as “去年营收” and
+        # “2025年营业收入” keep their period, but read the comparator only
+        # after the metric to avoid borrowing the preceding predicate.
+        context_start = max(
+            0,
+            request.rfind("，", 0, metric_match.start()) + 1,
+            request.rfind(",", 0, metric_match.start()) + 1,
+            request.rfind("；", 0, metric_match.start()) + 1,
+            request.rfind(";", 0, metric_match.start()) + 1,
+        )
+        context = request[context_start:next_start]
+        comparator_text = request[metric_match.end():next_start]
+        operator_match = _collection_filter_operator(comparator_text)
+        if operator_match is None:
+            return []
+        operator, matched_operator = operator_match
+        threshold_match = re.search(
+            r"(-?\d+(?:\.\d+)?)\s*(%|％|亿元|亿|万元|万|元)?",
+            comparator_text[matched_operator.end():],
+        )
+        if threshold_match is None:
+            return []
+        threshold = float(threshold_match.group(1))
+        raw_unit = threshold_match.group(2) or ""
+        if metric == "debt_ratio":
+            if raw_unit not in {"", "%", "％"}:
+                return []
+            threshold_unit = "percent"
+        else:
+            threshold_unit = {
+                "元": "cny",
+                "万": "wan_cny",
+                "万元": "wan_cny",
+                "亿": "yi_cny",
+                "亿元": "yi_cny",
+            }.get(raw_unit)
+            if threshold_unit is None:
+                return []
+        period = _collection_filter_period(metric, context)
+        if period is None:
+            return []
+        period_basis, fiscal_year = period
+        try:
+            spec = CollectionFinancialFilterSpec(
+                metric=metric,
+                period_basis=period_basis,
+                fiscal_year=fiscal_year,
+                operator=operator,
+                threshold=threshold,
+                threshold_unit=threshold_unit,
+                action=action,
+            )
+        except ValidationError:
+            return []
+        if spec not in specs:
+            specs.append(spec)
+    return specs
+
+
+def _explicit_collection_financial_filter_plan(
+    messages: list[dict[str, Any]],
+    previous_entities: list[dict[str, str]],
+) -> TaskPlan | None:
+    """Route one or more explicit predicates without a planning-model call."""
+    request = current_user_request(messages)
+    if not request or not previous_entities:
+        return None
+    if not re.search(r"这些|上面|上述|其中|这几只|这几家|它们|上文|继续|名单中|候选中|股票中", request):
+        return None
+    specs = _parse_collection_filter_specs(request)
+    if not specs:
+        return None
+    tasks = [
+        StandardTask(
+            task_id=f"financial_filter_{index}",
+            kind=StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+            objective=request[:400],
+            entity_scope=EntityScope.PREVIOUS_ANSWER,
+            entities=[],
+            parameters=spec.model_dump(exclude_none=True),
+            depends_on=[],
+            output_requirements=["完整覆盖上文公司集合", "按精确报告期和阈值筛选"],
+            confirmation=ConfirmationState.NOT_REQUIRED,
+            confidence=1.0,
+        )
+        for index, spec in enumerate(specs, 1)
+    ]
+    return TaskPlan(tasks=tasks, source="deterministic_collection_filter_contract")
 
 
 def _explicit_collection_buy_plan(
@@ -391,6 +754,7 @@ def _cache_key(
     llm_cfg: dict[str, Any],
     current_entities: list[dict[str, str]],
     previous_answer_entities: list[dict[str, str]],
+    concept_board_names: list[str] | None = None,
 ) -> str | None:
     if not llm_cfg.get("api_base"):
         return None
@@ -401,6 +765,9 @@ def _cache_key(
         "previous_answer_reference_outline": previous_assistant_outline(messages),
         "current_entities": current_entities,
         "previous_answer_entities": previous_answer_entities,
+        "concept_board_catalog_hash": hashlib.sha256(
+            "\n".join(concept_board_names or []).encode("utf-8")
+        ).hexdigest() if concept_board_names else None,
     }
     digest = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -408,7 +775,10 @@ def _cache_key(
     return f"standard_task_plan:{PLANNER_CACHE_VERSION}:{digest}"
 
 
-def _load_cached_plan(cache_key: str | None) -> TaskPlan | None:
+def _load_cached_plan(
+    cache_key: str | None,
+    concept_board_names: set[str] | None = None,
+) -> TaskPlan | None:
     if not cache_key:
         return None
     try:
@@ -422,7 +792,7 @@ def _load_cached_plan(cache_key: str | None) -> TaskPlan | None:
             return None
         payload = json.loads(bytes(cached["payload"]).decode("utf-8"))
         plan = TaskPlan.model_validate(payload)
-        validate_candidate_plan(plan)
+        validate_candidate_plan(plan, concept_board_names=concept_board_names)
         return plan.model_copy(update={"source": "semantic_cache"})
     except Exception:
         logger.warning("[TaskPlanner] ignored invalid persistent plan cache", exc_info=True)
@@ -479,7 +849,11 @@ def _payload_from_response(response: Any) -> dict[str, Any]:
     raise ValueError("planner returned no structured payload")
 
 
-def validate_candidate_plan(plan: TaskPlan) -> None:
+def validate_candidate_plan(
+    plan: TaskPlan,
+    *,
+    concept_board_names: set[str] | None = None,
+) -> None:
     """Validate semantic parameters before any entity resolution or tool call."""
     issues: list[str] = []
     for task in plan.tasks:
@@ -516,6 +890,44 @@ def validate_candidate_plan(plan: TaskPlan) -> None:
             screen_spec = task.parameters.get("screen_spec")
             if not isinstance(screen_spec, dict):
                 issues.append(f"{task.task_id}: screen_spec must be a complete object")
+        if task.kind == StandardTaskKind.THEME_STOCK_DISCOVERY:
+            domains = task.parameters.get("domains")
+            if not isinstance(domains, list) or not domains:
+                issues.append(f"{task.task_id}: domains must be a non-empty object array")
+                continue
+            for index, value in enumerate(domains):
+                try:
+                    domain = DomainBoardQuerySpec.model_validate(value)
+                except ValidationError as exc:
+                    issues.append(
+                        f"{task.task_id}: invalid domains[{index}]: "
+                        + "; ".join(error["msg"] for error in exc.errors())
+                    )
+                    continue
+                if concept_board_names:
+                    unknown_boards = [
+                        board for board in domain.board_queries
+                        if board not in concept_board_names
+                    ]
+                    if unknown_boards:
+                        issues.append(
+                            f"{task.task_id}: domains[{index}] selects boards absent from "
+                            f"current catalog: {unknown_boards}"
+                        )
+                context_theme = str(task.parameters.get("context_theme") or "")
+                if domain.mapping_type == "proxy_board" and context_theme:
+                    unrelated = [
+                        board for board in domain.board_queries
+                        if max(
+                            _longest_common_compact_substring(board, domain.label),
+                            _longest_common_compact_substring(board, context_theme),
+                        ) < 3
+                    ]
+                    if unrelated:
+                        issues.append(
+                            f"{task.task_id}: domains[{index}] proxy boards lack domain/context "
+                            f"affinity and may belong to another application: {unrelated}"
+                        )
     if issues:
         raise TaskPlanValidationError("; ".join(issues))
 
@@ -534,17 +946,56 @@ async def resolve_task_plan(
     current = current_entities or []
     previous = previous_answer_entities or []
     for deterministic in (
+        _explicit_industry_structure_plan(messages),
+        _explicit_collection_financial_filter_plan(messages, previous),
         _explicit_collection_buy_plan(messages, current, previous),
         _explicit_catalyst_research_plan(messages, current, previous),
     ):
         if deterministic is not None:
             validate_candidate_plan(deterministic)
             return deterministic
-    cache_key = _cache_key(messages, llm_cfg, current, previous)
-    cached = _load_cached_plan(cache_key)
+    concept_catalog: dict[str, Any] | None = None
+    concept_board_names: list[str] = []
+    concept_board_shortlist: list[str] = []
+    if _explicit_stock_candidate_request(request_text):
+        try:
+            from src.services.domain_board_catalog import (
+                get_domain_board_catalog,
+                shortlist_domain_boards,
+            )
+
+            concept_catalog = await asyncio.to_thread(get_domain_board_catalog)
+            concept_board_names = [
+                str(value) for value in concept_catalog.get("board_names") or [] if value
+            ]
+            concept_board_shortlist = shortlist_domain_boards(
+                concept_board_names,
+                request_text,
+                previous_assistant_outline(messages),
+            )
+        except Exception as exc:
+            logger.warning("[TaskPlanner] concept board catalog unavailable: %s", exc)
+            concept_catalog = {
+                "success": False,
+                "board_names": [],
+                "errors": [f"{type(exc).__name__}: {exc}"],
+            }
+    board_name_set = set(concept_board_names)
+    cache_key = _cache_key(
+        messages,
+        llm_cfg,
+        current,
+        previous,
+        concept_board_names,
+    )
+    cached = _load_cached_plan(cache_key, board_name_set or None)
     if cached is not None:
         logger.info("[TaskPlanner] reused validated persistent plan")
-        return cached
+        constrained = _constrain_company_discovery_to_request(cached, request_text)
+        constrained = _constrain_candidate_only_plan(constrained, request_text)
+        constrained = _sanitize_domain_proxy_boards(constrained)
+        validate_candidate_plan(constrained, concept_board_names=board_name_set or None)
+        return constrained
 
     validation_error = ""
     for attempt in range(2):
@@ -556,6 +1007,15 @@ async def resolve_task_plan(
             "standard_task_catalog": planner_task_catalog(),
             "quantitative_screen_spec_schema": quantitative_screen_spec_schema(nullable=False),
         }
+        if concept_catalog is not None:
+            context["current_concept_board_catalog"] = {
+                "board_names": concept_board_shortlist,
+                "shortlist_count": len(concept_board_shortlist),
+                "full_catalog_count": len(concept_board_names),
+                "source": concept_catalog.get("source"),
+                "data_time": concept_catalog.get("data_time"),
+                "errors": concept_catalog.get("errors") or [],
+            }
         if validation_error:
             context["previous_validation_error"] = validation_error
             context["instruction"] = (
@@ -579,7 +1039,10 @@ async def resolve_task_plan(
             async with asyncio.timeout(timeout):
                 response = await completion(**kwargs)
             plan = TaskPlan.model_validate(_payload_from_response(response))
-            validate_candidate_plan(plan)
+            plan = _constrain_company_discovery_to_request(plan, request_text)
+            plan = _constrain_candidate_only_plan(plan, request_text)
+            plan = _sanitize_domain_proxy_boards(plan)
+            validate_candidate_plan(plan, concept_board_names=board_name_set or None)
             _save_cached_plan(cache_key, plan)
             return plan
         except asyncio.CancelledError:

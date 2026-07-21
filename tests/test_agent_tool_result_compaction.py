@@ -27,7 +27,10 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                 {
                     "domain": "行星滚柱丝杠",
                     "lookup_themes": ["机器人执行器"],
-                    "mapping_basis": "narrowest_structured_board_alias",
+                    "mapping_type": "proxy_board",
+                    "mapping_rationale": "按执行机构语义映射",
+                    "unresolved_parts": [],
+                    "mapping_basis": "catalog_proxy_board",
                     "success": True,
                     "coverage_complete": True,
                     "candidate_count": 1,
@@ -40,7 +43,10 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                 {
                     "domain": "减速器",
                     "lookup_themes": ["减速器"],
-                    "mapping_basis": "exact_concept_board",
+                    "mapping_type": "exact_board",
+                    "mapping_rationale": "同名板块",
+                    "unresolved_parts": [],
+                    "mapping_basis": "catalog_exact_board",
                     "success": True,
                     "coverage_complete": True,
                     "candidate_count": 1,
@@ -58,6 +64,8 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(len(compact["domain_results"]), 2)
         self.assertEqual(compact["domain_results"][0]["items"][0]["symbol"], "300580")
         self.assertEqual(compact["domain_results"][1]["items"][0]["symbol"], "688017")
+        self.assertEqual(compact["domain_results"][0]["mapping_type"], "proxy_board")
+        self.assertEqual(compact["domain_results"][0]["mapping_rationale"], "按执行机构语义映射")
         self.assertEqual(
             compact["_tool_payload_meta"]["compaction_reason"],
             "complete_multi_domain_candidate_indexes",

@@ -160,6 +160,42 @@ class CollectionFinancialFilterSpec(BaseModel):
         }[self.metric]
 
 
+class DomainBoardQuerySpec(BaseModel):
+    """One semantic industry domain resolved against the live board catalog.
+
+    The planning model may explain a free-form product domain, but it may only
+    select board names supplied by the application.  The data tool subsequently
+    verifies those names against the structured constituent source.  Keeping
+    this contract typed prevents conversational labels from being mistaken for
+    exchange board identifiers.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    label: str = Field(min_length=1, max_length=64)
+    board_queries: list[str] = Field(default_factory=list, max_length=4)
+    mapping_type: Literal["exact_board", "proxy_board", "unresolved"]
+    rationale: str = Field(default="", max_length=240)
+    unresolved_parts: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def _validate_resolution(self) -> "DomainBoardQuerySpec":
+        self.board_queries = list(dict.fromkeys(
+            value.strip() for value in self.board_queries if value.strip()
+        ))
+        self.unresolved_parts = list(dict.fromkeys(
+            value.strip() for value in self.unresolved_parts if value.strip()
+        ))
+        if self.mapping_type == "unresolved":
+            if self.board_queries:
+                raise ValueError("unresolved domains cannot contain board_queries")
+            if not self.unresolved_parts:
+                self.unresolved_parts = [self.label]
+        elif not self.board_queries:
+            raise ValueError("resolved domains require at least one board_query")
+        return self
+
+
 class MappingSelectionContext(BaseModel):
     """Semantic writing context; it never selects a workflow or a tool."""
 
@@ -179,6 +215,7 @@ class MappingSelectionContext(BaseModel):
 __all__ = [
     "AnalysisPlaybook",
     "CollectionFinancialFilterSpec",
+    "DomainBoardQuerySpec",
     "INDUSTRY_CHAIN",
     "INVESTMENT_DECISION",
     "MappingSelectionContext",

@@ -33,12 +33,12 @@ export const ToolStatusPill: FC<{
       ? 'border-cyan-200 bg-cyan-50 text-cyan-700'
       : 'border-emerald-200 bg-emerald-50 text-emerald-700';
   return (
-    <div className={cn('my-2 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium', tone)}>
-      {icon ?? <Icon className={cn('size-3.5', running && 'animate-spin')} />}
-      <span>{label}</span>
+    <div className={cn('my-0.5 inline-flex items-center gap-0.5 rounded border px-1.5 py-px text-[10px] font-medium leading-3', tone)}>
+      {icon ?? <Icon className={cn('size-2.5', running && 'animate-spin')} />}
+      <span className="min-w-0 truncate">{label}</span>
       {argsStreaming && (
-        <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-cyan-100/70 px-1.5 py-0.5 text-[10px] text-cyan-700">
-          <span className="size-1 animate-pulse rounded-full bg-cyan-500" />
+        <span className="ml-0.5 inline-flex items-center gap-0.5 rounded bg-cyan-100/70 px-0.5 py-0 text-[9px] text-cyan-700">
+          <span className="size-0.5 animate-pulse rounded-full bg-cyan-500" />
           识别中
         </span>
       )}

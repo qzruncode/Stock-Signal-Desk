@@ -242,6 +242,54 @@ def test_buy_follow_up_recovers_domain_thesis_across_an_intervening_comparison()
     assert plan.tasks[0].parameters["thesis"] == "谐波减速器；空心杯电机；无框力矩电机"
 
 
+def test_buy_follow_up_inherits_executed_domain_board_contract() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "content": (
+                "| 公司/代码 | 匹配领域 | 结构化板块依据 |\n"
+                "|---|---|---|\n"
+                "| 绿的谐波 (688017) | 灵巧手及力控部件 | 机器人执行器 |\n\n"
+                "> 结构化板块映射（后续追问继续沿用）："
+                "灵巧手及力控部件→机器人执行器；"
+                "电机（伺服电机/步进电机）→机器人执行器。"
+            ),
+        },
+        {"role": "user", "content": "这些股票中哪些现在能买入"},
+    ]
+    plan = asyncio.run(resolve_task_plan(
+        messages,
+        {"model": "test", "api_base": "http://unused", "api_key": "x"},
+        completion=AsyncMock(side_effect=AssertionError("semantic planner must not run")),
+        previous_answer_entities=[{"symbol": "688017", "name": "绿的谐波"}],
+    ))
+
+    assert plan.tasks[0].parameters["thesis"] == (
+        "结构化板块映射：灵巧手及力控部件→机器人执行器；"
+        "电机（伺服电机/步进电机）→机器人执行器"
+    )
+
+
+def test_buy_data_service_reuses_domain_board_contract_without_reinterpreting_labels() -> None:
+    thesis = (
+        "结构化板块映射：灵巧手及力控部件→机器人执行器；"
+        "电机（伺服电机/步进电机）→机器人执行器"
+    )
+    expected = {"success": True, "items": [], "errors": [], "warnings": []}
+    with patch(
+        "src.tools.get_domain_stock_candidates.get_domain_stock_candidates",
+        return_value=expected,
+    ) as candidate_tool:
+        result = DataService().get_investment_thesis_candidates(thesis)
+
+    assert result == expected
+    domain_specs = candidate_tool.call_args.args[0]
+    assert [item["label"] for item in domain_specs] == [
+        "灵巧手及力控部件", "电机（伺服电机/步进电机）",
+    ]
+    assert all(item["board_queries"] == ["机器人执行器"] for item in domain_specs)
+
+
 def test_explicit_current_buy_request_uses_only_a_labeled_thesis() -> None:
     messages = [{
         "role": "user",

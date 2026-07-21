@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.agent.result_contracts import CollectionFinancialFilterSpec
+from src.agent.result_contracts import CollectionFinancialFilterSpec, DomainBoardQuerySpec
 
 
 class StandardTaskKind(str, Enum):
@@ -659,8 +659,17 @@ def _compile_theme_discovery(task: ResolvedTask) -> list[WorkflowCall]:
     domains = task.parameters.get("domains")
     if not isinstance(domains, list) or not domains:
         raise WorkflowCompileError("theme_stock_discovery requires a non-empty domains array")
+    try:
+        domain_specs = [
+            DomainBoardQuerySpec.model_validate(domain).model_dump()
+            for domain in domains
+        ]
+    except Exception as exc:
+        raise WorkflowCompileError(
+            f"theme_stock_discovery requires resolved domain-board objects: {exc}"
+        ) from exc
     context_theme = task.parameters.get("context_theme")
-    args = {"domains": domains, **_params(task, {"limit_per_domain"})}
+    args = {"domains": domain_specs, **_params(task, {"limit_per_domain"})}
     # ``context_theme`` only narrows an already valid domain lookup.  If the
     # planner returns a sentence instead of a short board name, omit this
     # optional optimization rather than blocking the complete task.
