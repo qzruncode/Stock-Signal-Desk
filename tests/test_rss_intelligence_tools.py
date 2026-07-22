@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import threading
 from unittest.mock import patch
 
+import pytest
+
 from src.tools.get_monetary_policy_operations import (
     _operation_item,
     get_monetary_policy_operations,
@@ -39,7 +41,12 @@ def test_financial_news_successful_empty_feed_is_not_a_tool_failure():
          patch("src.tools.websearch.websearch", return_value={
              "success": True, "provider": "test", "results": [], "errors": [],
          }):
-        result = search_financial_news("不存在的主题", fallback_to_web=True)
+        result = search_financial_news(
+            "不存在的主题",
+            topic="industry",
+            subjects=["不存在的主题"],
+            fallback_to_web=True,
+        )
 
     assert result["success"] is True
     assert result["item_count"] == 0
@@ -189,25 +196,11 @@ def test_regulatory_content_details_are_read_in_parallel():
     assert all(item.get("content_text", "").endswith("正文") for item in result["items"])
 
 
-def test_stock_research_category_delegates_to_structured_report_tool():
-    report = {
-        "success": True, "partial": False, "source": "AKShare/东方财富券商研报",
-        "data_time": "2026-07-15", "retrieved_at": "2026-07-16T10:00:00+08:00",
-        "is_stale": False, "freshness_unknown": False, "errors": [], "warnings": [],
-        "items": [{
-            "title": "贵州茅台深度报告", "publish_date": "2026-07-15",
-            "url": "https://data.eastmoney.com/report/1", "org": "测试证券",
-            "rating": "买入", "industry": "白酒", "profit_forecasts": [{"year": 2026, "eps": 75.0}],
-            "source_type": "broker_research",
-        }],
-    }
-    with patch("src.tools.get_research_report.get_research_report", return_value=report) as delegated:
-        result = search_research_library("600519", category="stock", days=365, limit=5)
-
-    delegated.assert_called_once_with("600519", days=365, limit=5)
-    assert result["research_category"] == "stock"
-    assert result["items"][0]["rating"] == "买入"
-    assert result["items"][0]["profit_forecasts"][0]["eps"] == 75.0
+def test_research_library_rejects_stock_category_in_favor_of_dedicated_workflow():
+    with pytest.raises(ValueError, match="category"):
+        search_research_library(
+            "600519", category="stock", subjects=["600519"], days=365, limit=5,
+        )
 
 
 def test_research_library_generic_dimension_words_do_not_admit_unrelated_industries():
@@ -230,6 +223,7 @@ def test_research_library_generic_dimension_words_do_not_admit_unrelated_industr
         result = search_research_library(
             "人形机器人 产业链 价值量 市场空间 竞争格局",
             category="industry",
+            subjects=["人形机器人"],
             days=365,
             limit=10,
             fallback_to_web=False,
@@ -264,6 +258,7 @@ def test_research_library_keeps_topic_anchor_with_playbook_query_prefixes():
         result = search_research_library(
             "检索人形机器人 产业链 A股 标的 丝杠 减速器 伺服 电机 传感器 灵巧手 机器视觉",
             category="industry",
+            subjects=["人形机器人"],
             days=365,
             limit=10,
             fallback_to_web=False,

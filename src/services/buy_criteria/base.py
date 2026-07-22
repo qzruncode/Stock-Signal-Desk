@@ -27,12 +27,16 @@ class CriterionResult:
     index: int
     passed: bool
     verdict: str
+    status: str = ""
+    confidence: str = ""
     evidence: CriterionEvidence = field(default_factory=CriterionEvidence)
     details: dict[str, Any] = field(default_factory=dict)
     prompt_text: str = ""
     analyzed_at: str = ""
 
     def __post_init__(self):
+        if not self.status:
+            self.status = "pass" if self.passed else "fail"
         if not self.analyzed_at:
             self.analyzed_at = datetime.now(timezone.utc).isoformat()
 
@@ -42,6 +46,8 @@ class CriterionResult:
             "criterion_name": self.criterion_name,
             "index": self.index,
             "passed": self.passed,
+            "status": self.status,
+            "confidence": self.confidence,
             "verdict": self.verdict,
             "evidence": {
                 "raw_data": self.evidence.raw_data,
@@ -109,6 +115,7 @@ class BaseCriterionEvaluator(ABC):
                 criterion_name=self.criterion_name,
                 index=self.index,
                 passed=False,
+                status="insufficient",
                 verdict=evidence_failure,
                 evidence=evidence,
                 prompt_text=user_prompt,
@@ -127,6 +134,7 @@ class BaseCriterionEvaluator(ABC):
                 criterion_name=self.criterion_name,
                 index=self.index,
                 passed=False,
+                status="insufficient",
                 verdict=f"{self.criterion_name}评估失败：{error_msg or 'LLM 未返回有效判断'}",
                 evidence=evidence,
                 prompt_text=user_prompt,
@@ -142,6 +150,8 @@ class BaseCriterionEvaluator(ABC):
             criterion_name=self.criterion_name,
             index=self.index,
             passed=bool(passed),
+            status="pass" if bool(passed) else "fail",
+            confidence=str(result.get("confidence") or ""),
             verdict=verdict,
             evidence=evidence,
             details=result.get("details") if isinstance(result.get("details"), dict) else {},
@@ -160,8 +170,18 @@ class BaseCriterionEvaluator(ABC):
         # Custom validator that handles markdown code fences — the default
         # json.loads validator in call_ai_structured rejects fenced JSON.
         def _fence_aware_validator(text: str) -> None:
-            if _parse_verdict_json(text) is None:
+            payload = _parse_verdict_json(text)
+            if payload is None:
                 raise ValueError("response does not contain an extractable JSON object")
+            passed = payload.get("passed")
+            if not isinstance(passed, bool) and str(passed).strip().lower() not in {
+                "true", "false", "yes", "no", "是", "否",
+            }:
+                raise ValueError("response passed must be an explicit boolean")
+            if not str(payload.get("verdict") or "").strip():
+                raise ValueError("response verdict must explain the Boolean decision")
+            if "details" in payload and not isinstance(payload.get("details"), dict):
+                raise ValueError("response details must be an object")
 
         try:
             analyzer = get_analyzer()

@@ -73,6 +73,7 @@ class TaskExecutionResult:
     status: str
     calls: list[CallOutcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    blocked_reason: str | None = None
 
     @property
     def success(self) -> bool:
@@ -95,11 +96,33 @@ class PlanExecutionResult:
 CallRunner = Callable[[WorkflowCall, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+def action_fingerprint(task: ResolvedTask) -> str:
+    """Stable identity for a reviewed task, excluding model-generated prose."""
+    payload = json.dumps(
+        {
+            "kind": task.kind.value,
+            "parameters": task.parameters,
+            "symbols": list(task.symbols),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class WorkflowPolicyValidator:
     """Program rules that every compiled call must pass before execution."""
 
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        *,
+        approved_actions: Iterable[str] = (),
+    ) -> None:
         self.registry = registry
+        self.approved_actions = frozenset(approved_actions)
 
     def preflight_task(self, task: ResolvedTask) -> list[ValidatedCall]:
         spec = workflow_for(task.kind)
@@ -108,13 +131,20 @@ class WorkflowPolicyValidator:
             raise WorkflowUnavailable(f"{spec.title}当前不可执行；固定状态机：{machine}")
 
         action = str(task.parameters.get("action") or "")
-        if action in spec.confirmation_actions and task.candidate.confirmation != ConfirmationState.EXPLICIT:
+        fingerprint = action_fingerprint(task)
+        if action in spec.confirmation_actions and (
+            task.candidate.confirmation != ConfirmationState.EXPLICIT
+            or fingerprint not in self.approved_actions
+        ):
             raise ConfirmationRequired(task.task_id, action)
         for requirement in spec.parameter_requirements:
             if (
                 requirement.applies(task.parameters)
                 and requirement.confirmation_required
-                and task.candidate.confirmation != ConfirmationState.EXPLICIT
+                and (
+                    task.candidate.confirmation != ConfirmationState.EXPLICIT
+                    or fingerprint not in self.approved_actions
+                )
             ):
                 discriminator = ",".join(
                     f"{key}={task.parameters.get(key)}"
@@ -124,7 +154,10 @@ class WorkflowPolicyValidator:
         if (
             task.kind.value == "batch_analysis"
             and len(task.symbols) > 10
-            and task.candidate.confirmation != ConfirmationState.EXPLICIT
+            and (
+                task.candidate.confirmation != ConfirmationState.EXPLICIT
+                or fingerprint not in self.approved_actions
+            )
         ):
             raise ConfirmationRequired(task.task_id, "run_more_than_10_symbols")
 
@@ -186,10 +219,14 @@ class WorkflowExecutor:
         runner: CallRunner,
         *,
         max_plan_tool_calls: int = 160,
+        approved_actions: Iterable[str] = (),
     ) -> None:
         self.registry = registry
         self.runner = runner
-        self.validator = WorkflowPolicyValidator(registry)
+        self.validator = WorkflowPolicyValidator(
+            registry,
+            approved_actions=approved_actions,
+        )
         self.max_plan_tool_calls = max_plan_tool_calls
         self._cache_lock = asyncio.Lock()
         self._call_futures: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -253,8 +290,20 @@ class WorkflowExecutor:
     async def _execute_task(self, task: ResolvedTask) -> TaskExecutionResult:
         try:
             validated = self.validator.preflight_task(task)
+        except ConfirmationRequired as exc:
+            return TaskExecutionResult(
+                task=task,
+                status="blocked",
+                errors=[str(exc)],
+                blocked_reason="confirmation_required",
+            )
         except (PolicyViolation, WorkflowCompileError, ValueError) as exc:
-            return TaskExecutionResult(task=task, status="blocked", errors=[str(exc)])
+            return TaskExecutionResult(
+                task=task,
+                status="blocked",
+                errors=[str(exc)],
+                blocked_reason="policy_violation",
+            )
         if not validated:
             return TaskExecutionResult(task=task, status="completed")
 
@@ -393,4 +442,5 @@ __all__ = [
     "WorkflowExecutor",
     "WorkflowPolicyValidator",
     "WorkflowUnavailable",
+    "action_fingerprint",
 ]

@@ -109,7 +109,7 @@ def _fetch_financial_page(period: str, page: int) -> tuple[list[dict[str, Any]],
         "reportName": "RPT_F10_FINANCE_MAINFINADATA",
         "columns": (
             "SECURITY_CODE,REPORT_DATE,UPDATE_DATE,TOTALOPERATEREVE,"
-            "KCFJCXSYJLR,ZCFZL"
+            "PARENTNETPROFIT,KCFJCXSYJLR,ZCFZL"
         ),
         "filter": f"(REPORT_DATE='{period}')",
         "pageNumber": page,
@@ -168,7 +168,8 @@ def _fetch_financial_period(period: str) -> dict[str, dict[str, Any]]:
         # create false "missing financial data" exclusions.
         merged = by_code.setdefault(code, {"SECURITY_CODE": code})
         for field in (
-            "REPORT_DATE", "UPDATE_DATE", "TOTALOPERATEREVE", "KCFJCXSYJLR", "ZCFZL",
+            "REPORT_DATE", "UPDATE_DATE", "TOTALOPERATEREVE", "PARENTNETPROFIT",
+            "KCFJCXSYJLR", "ZCFZL",
         ):
             if row.get(field) is not None:
                 merged[field] = row[field]

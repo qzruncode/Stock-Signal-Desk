@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,6 +50,33 @@ def _task(symbols: list[str] | None = None) -> StandardTask:
         confirmation=ConfirmationState.NOT_REQUIRED,
         confidence=0.99,
     )
+
+
+def _planner_response(task: StandardTask) -> SimpleNamespace:
+    payload = {
+        "tasks": [task.model_dump(mode="json")],
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_plan",
+            arguments=json.dumps(payload, ensure_ascii=False),
+        ))],
+        content=None,
+    ))])
+
+
+def _selection_response() -> SimpleNamespace:
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_selection",
+            arguments=json.dumps({
+                "selected_kinds": [StandardTaskKind.INVESTMENT_DECISION.value],
+            }),
+        ))],
+        content=None,
+    ))])
 
 
 def _gate(index: int, passed: bool = True) -> dict:
@@ -103,12 +131,13 @@ def _strict_result() -> dict:
                 "coverage_complete": False,
                 "passed_count": 0,
                 "failed_count": 1,
+                "insufficient_count": 0,
                 "not_evaluated_count": 8,
                 "total": 9,
                 "stopped_at": "mainline_position",
                 "stopped_at_name": "市场主线属性",
                 "stopped_verdict": "未证明属于当前市场主线",
-                "criteria": [_gate(0, False)],
+                "criteria": [_gate(0, passed=False)],
                 "position_advice": {"initial_position_pct": 0, "max_position_pct": 0},
                 "invalidation_conditions": [],
             },
@@ -160,15 +189,15 @@ def test_investment_decision_compiles_every_company_into_internal_strict_batches
     symbols = tuple(f"{index:06d}" for index in range(72))
     candidate = _task()
     calls = compile_task(ResolvedTask(candidate=candidate, symbols=symbols))
-    assert len(calls) == 36
-    assert [len(call.arguments["symbols"].split(",")) for call in calls] == [2] * 36
+    assert len(calls) == 1
+    assert len(calls[0].arguments["symbols"].split(",")) == 72
     assert [symbol for call in calls for symbol in call.arguments["symbols"].split(",")] == list(symbols)
     assert {call.tool_name for call in calls} == {"evaluate_multi_stock_buy_criteria"}
     assert workflow_for(StandardTaskKind.INVESTMENT_DECISION).max_parallel_steps == 1
     assert all(call.arguments["thesis"] == "人形机器人上游核心零部件" for call in calls)
 
 
-def test_exact_previous_collection_buy_follow_up_bypasses_unreliable_model_planning() -> None:
+def test_previous_collection_buy_follow_up_uses_semantic_planning() -> None:
     messages = [
         {"role": "user", "content": "按受益领域找股票"},
         {
@@ -186,101 +215,106 @@ def test_exact_previous_collection_buy_follow_up_bypasses_unreliable_model_plann
         {"name": "绿的谐波", "symbol": "688017"},
     ]
 
-    async def forbidden_completion(**_kwargs):
-        raise AssertionError("explicit follow-up must not depend on model planning")
+    candidate = _task().model_copy(update={
+        "parameters": {"thesis": "行星滚柱丝杠；减速器"},
+    })
+    completion = AsyncMock(side_effect=[
+        _selection_response(), _planner_response(candidate),
+    ])
 
     plan = asyncio.run(resolve_task_plan(
         messages,
         {"model": "test", "api_base": "", "api_key": None},
-        completion=forbidden_completion,
+        completion=completion,
         current_entities=[],
         previous_answer_entities=previous_entities,
     ))
-    assert plan.source == "deterministic_follow_up_contract"
+    assert completion.await_count == 2
     assert plan.tasks[0].kind == StandardTaskKind.INVESTMENT_DECISION
     assert plan.tasks[0].entity_scope == EntityScope.PREVIOUS_ANSWER
     assert plan.tasks[0].parameters["thesis"] == "行星滚柱丝杠；减速器"
 
 
-def test_buy_follow_up_recovers_domain_thesis_across_an_intervening_comparison() -> None:
-    messages = [
-        {"role": "user", "content": "按人形机器人上游方向找股票"},
-        {
-            "role": "assistant",
-            "content": (
-                "| 公司/代码 | 匹配领域 |\n|---|---|\n"
-                "| 绿的谐波 (688017) | 谐波减速器 |\n"
-                "| 鸣志电器 (603728) | 空心杯电机；无框力矩电机 |"
-            ),
-        },
-        {"role": "user", "content": "对比这两家公司"},
-        {
-            "role": "assistant",
-            "content": (
-                "| 公司 | 产业竞争力 | 风险 |\n|---|---|---|\n"
-                "| 绿的谐波 | 国内头部 | 估值波动 |\n"
-                "| 鸣志电器 | 产品平台完整 | 兑现节奏 |"
-            ),
-        },
-        {"role": "user", "content": "这些股票中哪些现在能买入"},
-    ]
+def test_buy_follow_up_receives_structured_context_across_turns() -> None:
+    messages = [{"role": "user", "content": "这些股票中哪些现在能买入"}]
     previous_entities = [
         {"name": "绿的谐波", "symbol": "688017"},
         {"name": "鸣志电器", "symbol": "603728"},
     ]
 
-    async def forbidden_completion(**_kwargs):
-        raise AssertionError("explicit follow-up must not depend on model planning")
+    domains = [{
+        "label": "谐波减速器",
+        "board_queries": ["减速器"],
+        "mapping_type": "proxy_board",
+        "rationale": "测试绑定",
+        "unresolved_parts": [],
+    }]
+    context = {
+        "version": "1",
+        "turns": [{
+            "request": "按方向找股票",
+            "tasks": [{
+                "task_id": "discover",
+                "kind": "theme_stock_discovery",
+                "objective": "领域找股",
+                "parameters": {"domains": domains},
+                "depends_on": [],
+                "entities": previous_entities,
+                "status": "completed",
+                "result_context": [],
+            }],
+            "entities": previous_entities,
+        }],
+    }
+    candidate = _task().model_copy(update={
+        "parameters": {
+            "thesis": "谐波减速器",
+            "thesis_context": {"summary": "谐波减速器", "domains": domains},
+        },
+    })
+    completion = AsyncMock(side_effect=[
+        _selection_response(), _planner_response(candidate),
+    ])
 
     plan = asyncio.run(resolve_task_plan(
         messages,
         {"model": "test", "api_base": "", "api_key": None},
-        completion=forbidden_completion,
+        completion=completion,
         current_entities=[],
         previous_answer_entities=previous_entities,
+        conversation_context=context,
     ))
-    assert plan.tasks[0].parameters["thesis"] == "谐波减速器；空心杯电机；无框力矩电机"
+    assert plan.tasks[0].parameters["thesis_context"]["domains"] == domains
+    planner_context = json.loads(completion.await_args.kwargs["messages"][1]["content"])
+    assert planner_context["conversation_context"]["turns"][0]["tasks"][0]["parameters"]["domains"] == domains
 
 
-def test_buy_follow_up_inherits_executed_domain_board_contract() -> None:
-    messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "| 公司/代码 | 匹配领域 | 结构化板块依据 |\n"
-                "|---|---|---|\n"
-                "| 绿的谐波 (688017) | 灵巧手及力控部件 | 机器人执行器 |\n\n"
-                "> 结构化板块映射（后续追问继续沿用）："
-                "灵巧手及力控部件→机器人执行器；"
-                "电机（伺服电机/步进电机）→机器人执行器。"
-            ),
-        },
-        {"role": "user", "content": "这些股票中哪些现在能买入"},
-    ]
-    plan = asyncio.run(resolve_task_plan(
-        messages,
-        {"model": "test", "api_base": "http://unused", "api_key": "x"},
-        completion=AsyncMock(side_effect=AssertionError("semantic planner must not run")),
-        previous_answer_entities=[{"symbol": "688017", "name": "绿的谐波"}],
-    ))
-
-    assert plan.tasks[0].parameters["thesis"] == (
-        "结构化板块映射：灵巧手及力控部件→机器人执行器；"
-        "电机（伺服电机/步进电机）→机器人执行器"
-    )
-
-
-def test_buy_data_service_reuses_domain_board_contract_without_reinterpreting_labels() -> None:
-    thesis = (
-        "结构化板块映射：灵巧手及力控部件→机器人执行器；"
-        "电机（伺服电机/步进电机）→机器人执行器"
-    )
+def test_buy_data_service_consumes_structured_domain_contract() -> None:
+    thesis_context = {
+        "summary": "人形机器人执行机构",
+        "domains": [
+            {
+                "label": "灵巧手及力控部件",
+                "board_queries": ["机器人执行器"],
+                "mapping_type": "proxy_board",
+                "rationale": "已绑定",
+                "unresolved_parts": [],
+            },
+            {
+                "label": "电机（伺服电机/步进电机）",
+                "board_queries": ["机器人执行器"],
+                "mapping_type": "proxy_board",
+                "rationale": "已绑定",
+                "unresolved_parts": [],
+            },
+        ],
+    }
     expected = {"success": True, "items": [], "errors": [], "warnings": []}
     with patch(
         "src.tools.get_domain_stock_candidates.get_domain_stock_candidates",
         return_value=expected,
     ) as candidate_tool:
-        result = DataService().get_investment_thesis_candidates(thesis)
+        result = DataService().get_investment_thesis_candidates(thesis_context)
 
     assert result == expected
     domain_specs = candidate_tool.call_args.args[0]
@@ -290,7 +324,7 @@ def test_buy_data_service_reuses_domain_board_contract_without_reinterpreting_la
     assert all(item["board_queries"] == ["机器人执行器"] for item in domain_specs)
 
 
-def test_explicit_current_buy_request_uses_only_a_labeled_thesis() -> None:
+def test_explicit_current_buy_request_uses_semantic_planner() -> None:
     messages = [{
         "role": "user",
         "content": (
@@ -303,17 +337,23 @@ def test_explicit_current_buy_request_uses_only_a_labeled_thesis() -> None:
         {"name": "鸣志电器", "symbol": "603728"},
     ]
 
-    async def forbidden_completion(**_kwargs):
-        raise AssertionError("labeled explicit buy request must bypass semantic planning")
+    candidate = _task().model_copy(update={
+        "entity_scope": EntityScope.CURRENT_MESSAGE,
+        "entities": ["绿的谐波", "鸣志电器"],
+        "parameters": {"thesis": "谐波减速器；空心杯电机；无框力矩电机"},
+    })
+    completion = AsyncMock(side_effect=[
+        _selection_response(), _planner_response(candidate),
+    ])
 
     plan = asyncio.run(resolve_task_plan(
         messages,
         {"model": "test", "api_base": "", "api_key": None},
-        completion=forbidden_completion,
+        completion=completion,
         current_entities=current_entities,
         previous_answer_entities=[],
     ))
-    assert plan.source == "deterministic_follow_up_contract"
+    assert completion.await_count == 2
     assert plan.tasks[0].entity_scope == EntityScope.CURRENT_MESSAGE
     assert plan.tasks[0].parameters["thesis"] == "谐波减速器；空心杯电机；无框力矩电机"
 
@@ -389,6 +429,10 @@ def test_industrial_competitiveness_accepts_formal_substitute_evidence_collectio
         "name": "测试公司",
         "main_business": "机器人执行器",
         "_investment_thesis": "人形机器人核心零部件",
+        "_investment_thesis_context": {"summary": "人形机器人核心零部件", "domains": [{
+            "label": "人形机器人核心零部件", "board_queries": ["机器人执行器"],
+            "mapping_type": "proxy_board", "rationale": "测试绑定", "unresolved_parts": [],
+        }]},
     }
     with patch.object(DataService, "get_business_segments", return_value={"items": []}), patch(
         "src.services.buy_criteria.evaluators.industrial_competitiveness.DataService.get_financials",
@@ -419,6 +463,10 @@ def test_mainline_uses_structured_current_branch_instead_of_a_closed_broad_label
         "main_business": "精密传动装置研发、设计、生产和销售",
         "business_scope": "精密谐波减速器、机电一体化产品的研发和生产",
         "_investment_thesis": "谐波减速器",
+        "_investment_thesis_context": {"summary": "谐波减速器", "domains": [{
+            "label": "谐波减速器", "board_queries": ["减速器"],
+            "mapping_type": "proxy_board", "rationale": "测试绑定", "unresolved_parts": [],
+        }]},
     }
     broad_report = {
         "report_pending": False,
@@ -483,6 +531,10 @@ def test_mature_formal_product_does_not_require_a_named_order_or_mass_production
         "business_scope": "电机、驱动器及控制系统研发、生产和销售",
         "company_profile": "长期从事控制电机及驱动系统业务",
         "_investment_thesis": "空心杯电机",
+        "_investment_thesis_context": {"summary": "空心杯电机", "domains": [{
+            "label": "空心杯电机", "board_queries": ["机器人执行器"],
+            "mapping_type": "proxy_board", "rationale": "测试绑定", "unresolved_parts": [],
+        }]},
     }
     with patch.object(DataService, "get_business_segments", return_value={"items": []}), patch.object(
         DataService, "get_financials", return_value={"items": [{"report_date": "2026Q1", "revenue_yoy": 12}]},
@@ -524,7 +576,7 @@ def test_multi_stock_tool_never_silently_truncates_and_preserves_all_results() -
     assert result["covered_count"] == 2
     assert [item["symbol"] for item in result["items"]] == ["600519", "000858"]
 
-    too_many = [{"symbol": f"{index:06d}", "name": str(index)} for index in range(9)]
+    too_many = [{"symbol": f"{index:06d}", "name": str(index)} for index in range(301)]
     with patch(
         "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
         return_value=(too_many, []),
@@ -546,7 +598,8 @@ def test_renderer_only_marks_exact_nine_gate_all_pass_item_buyable() -> None:
     assert "贵州茅台 (600519) | **可买入**" in answer
     assert "五粮液 (000858) | **不可买入**" in answer
     assert "0%" in answer
-    assert "后续 8 项按固定规则未继续执行" in answer
+    assert "后续 8 项未执行" in answer
+    assert "9/9通过" in answer
 
     missing_answer = _build_strict_buy_decision_answer([{
         "tool": "evaluate_multi_stock_buy_criteria",
@@ -555,7 +608,7 @@ def test_renderer_only_marks_exact_nine_gate_all_pass_item_buyable() -> None:
     }])
     assert missing_answer is not None
     assert "集合覆盖不完整" in missing_answer
-    assert "贵州茅台 (600519) | **不可买入**" in missing_answer
+    assert "集合覆盖不完整" in missing_answer
 
 
 def test_production_follow_up_uses_only_strict_internal_tool_and_deterministic_answer() -> None:

@@ -51,7 +51,22 @@ def tool_cases() -> dict[str, dict[str, Any]]:
         },
         "get_theme_stock_candidates": {"theme": "人形机器人", "limit": 1000},
         "get_domain_stock_candidates": {
-            "domains": ["空心杯电机", "谐波减速器", "行星滚柱丝杠"],
+            "domains": [
+                {
+                    "label": "空心杯电机",
+                    "board_queries": ["机器人执行器"],
+                    "mapping_type": "proxy_board",
+                    "rationale": "发布审计使用已绑定的结构化板块参数",
+                    "unresolved_parts": [],
+                },
+                {
+                    "label": "减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "exact_board",
+                    "rationale": "发布审计使用同名结构化板块参数",
+                    "unresolved_parts": [],
+                },
+            ],
             "context_theme": "人形机器人",
             "limit_per_domain": 300,
         },
@@ -74,6 +89,7 @@ def tool_cases() -> dict[str, dict[str, Any]]:
         "search_financial_news": {
             "query": "人形机器人 订单 量产 产业链",
             "topic": "industry",
+            "subjects": ["人形机器人"],
             "days": 365,
             "limit": 12,
             "include_content": True,
@@ -82,6 +98,7 @@ def tool_cases() -> dict[str, dict[str, Any]]:
         "search_research_library": {
             "query": "人形机器人 产业链 价值量",
             "category": "industry",
+            "subjects": ["人形机器人"],
             "days": 1095,
             "limit": 12,
             "include_content": True,

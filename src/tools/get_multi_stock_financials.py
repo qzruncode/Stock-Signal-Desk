@@ -16,7 +16,7 @@ from src.tools.symbols import resolve_securities_csv
 
 DESCRIPTION = (
     "从内部已同步财务库或指定年度财务快照读取多只 A 股的同口径财务指标，最多 12 只。"
-    "支持资产负债率、营业收入和扣非净利润，可按最新报告期、TTM、去年年报或明确年度分批查询；"
+    "支持资产负债率、营业收入、归母净利润和扣非净利润，可按最新报告期、TTM、去年年报或明确年度分批查询；"
     "不拉取实时行情、K线或技术指标。"
 )
 
@@ -33,6 +33,12 @@ _METRIC_FIELDS = {
         "local_field": "revenue_ttm",
         "annual_field": "TOTALOPERATEREVE",
     },
+    "net_profit": {
+        "label": "归母净利润",
+        "unit": "cny",
+        "local_field": None,
+        "annual_field": "PARENTNETPROFIT",
+    },
     "deducted_net_profit": {
         "label": "扣非净利润",
         "unit": "cny",
@@ -41,7 +47,7 @@ _METRIC_FIELDS = {
     },
 }
 _PERIOD_CACHE_TTL = timedelta(hours=24)
-_PERIOD_CACHE_VERSION = "v1"
+_PERIOD_CACHE_VERSION = "v2"
 _PERIOD_CACHE_LOCK = threading.RLock()
 _PERIOD_MEMORY_CACHE: dict[str, tuple[datetime, dict[str, dict[str, Any]]]] = {}
 
@@ -65,6 +71,8 @@ def _validate_request(metric: str, period_basis: str, fiscal_year: int | None) -
         raise ValueError("debt_ratio does not support ttm period basis")
     if metric != "debt_ratio" and period_basis == "latest_report":
         raise ValueError("currency metrics require ttm or a fiscal-year period")
+    if metric == "net_profit" and period_basis == "ttm":
+        raise ValueError("net_profit currently requires a fiscal-year period")
     if period_basis == "fiscal_year":
         if fiscal_year is None or not 1990 <= int(fiscal_year) <= 2100:
             raise ValueError("fiscal_year must be provided for fiscal_year period basis")
@@ -262,7 +270,7 @@ TOOL = ToolSpec(
             },
             "metric": {
                 "type": "string",
-                "enum": ["debt_ratio", "revenue", "deducted_net_profit"],
+                "enum": ["debt_ratio", "revenue", "net_profit", "deducted_net_profit"],
                 "description": "本批次需要覆盖的财务指标",
             },
             "period_basis": {

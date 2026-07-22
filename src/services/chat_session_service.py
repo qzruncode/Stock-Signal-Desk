@@ -14,6 +14,7 @@ class ChatSessionService:
     """对话会话管理服务。"""
 
     DEFAULT_TITLE = "新对话"
+    AGENT_CONTEXT_KEY = "agent_context"
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
@@ -82,6 +83,26 @@ class ChatSessionService:
             "thread_state": thread_state,
         }
 
+    def get_agent_context(self, conversation_id: str) -> Dict[str, Any]:
+        """Read server-owned semantic context without inspecting rendered answers."""
+        conversation = self.db.get_chat_conversation(conversation_id)
+        raw = getattr(conversation, "thread_state_json", None) if conversation else None
+        if not raw:
+            return {}
+        try:
+            thread_state = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(thread_state, dict):
+            return {}
+        value = thread_state.get(self.AGENT_CONTEXT_KEY)
+        if isinstance(value, dict):
+            return value
+        from src.agent.conversation_context import recover_context_from_thread_state
+
+        recovered = recover_context_from_thread_state(thread_state)
+        return recovered.model_dump() if recovered.turns else {}
+
     def rename_conversation(self, conversation_id: str, title: str) -> Optional[Dict[str, Any]]:
         conversation = self.db.update_chat_conversation(
             conversation_id,
@@ -118,22 +139,45 @@ class ChatSessionService:
         messages: List[Dict[str, Any]],
         *,
         thread_state: Optional[Dict[str, Any]] = None,
+        agent_context: Optional[Dict[str, Any]] = None,
         skip_title: bool = False,
     ) -> Optional[Dict[str, Any]]:
         conversation = self.db.get_chat_conversation(conversation_id)
         if not conversation:
             return None
 
+        existing_thread_state: Dict[str, Any] = {}
+        if getattr(conversation, "thread_state_json", None):
+            try:
+                parsed = json.loads(conversation.thread_state_json)
+                if isinstance(parsed, dict):
+                    existing_thread_state = parsed
+            except (TypeError, ValueError):
+                existing_thread_state = {}
+
+        effective_thread_state: Optional[Dict[str, Any]] = None
+        if thread_state is not None:
+            effective_thread_state = dict(thread_state)
+            previous_agent_context = existing_thread_state.get(self.AGENT_CONTEXT_KEY)
+            if self.AGENT_CONTEXT_KEY not in effective_thread_state and isinstance(
+                previous_agent_context, dict
+            ):
+                effective_thread_state[self.AGENT_CONTEXT_KEY] = previous_agent_context
+        elif agent_context is not None:
+            effective_thread_state = dict(existing_thread_state)
+        if effective_thread_state is not None and agent_context is not None:
+            effective_thread_state[self.AGENT_CONTEXT_KEY] = agent_context
+
         normalized_messages: List[Dict[str, Any]] = []
-        if thread_state:
-            normalized_messages = self._normalize_thread_state_messages(thread_state)
+        if thread_state is not None and effective_thread_state:
+            normalized_messages = self._normalize_thread_state_messages(effective_thread_state)
         if not normalized_messages:
             normalized_messages = self._normalize_messages(messages)
 
         thread_state_json = None
-        if thread_state:
+        if effective_thread_state is not None:
             try:
-                thread_state_json = json.dumps(thread_state, ensure_ascii=False)
+                thread_state_json = json.dumps(effective_thread_state, ensure_ascii=False)
             except (TypeError, ValueError):
                 thread_state_json = None
 

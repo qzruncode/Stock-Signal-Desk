@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.agent.task_executor import ConfirmationRequired, WorkflowExecutor, WorkflowPolicyValidator
+from src.agent.task_executor import (
+    ConfirmationRequired,
+    WorkflowExecutor,
+    WorkflowPolicyValidator,
+    action_fingerprint,
+)
 from src.agent.task_planner import (
     previous_assistant_outline,
     resolve_task_plan,
     validate_candidate_plan,
 )
+import src.agent.task_planner as task_planner_module
 from src.agent.task_workflows import (
     ConfirmationState,
     EntityScope,
@@ -90,6 +98,28 @@ def _domain(
     }
 
 
+def _model_response(function_name: str, payload: dict) -> SimpleNamespace:
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name=function_name,
+            arguments=json.dumps(payload, ensure_ascii=False),
+        ))],
+        content=None,
+    ))])
+
+
+def _selection_response(*kinds: StandardTaskKind | str) -> SimpleNamespace:
+    return _model_response(
+        "submit_standard_task_selection",
+        {
+            "selected_kinds": [
+                kind.value if isinstance(kind, StandardTaskKind) else str(kind)
+                for kind in kinds
+            ],
+        },
+    )
+
+
 def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
     assert set(ToolRegistry().get_tool_names()) == set(registered_workflow_tools())
     assert all(
@@ -105,6 +135,16 @@ def test_planner_catalog_does_not_expose_tool_names() -> None:
     assert "tool_whitelist" not in catalog_text
     for tool_name in ToolRegistry().get_tool_names():
         assert tool_name not in catalog_text
+
+
+def test_task_planner_contains_no_request_phrase_router() -> None:
+    source = inspect.getsource(task_planner_module)
+    source_lines = {line.strip() for line in source.splitlines()}
+    assert "import re" not in source_lines
+    assert not any(line.startswith("from re import") for line in source_lines)
+    assert "re.search" not in source
+    assert "_explicit_" not in source
+    assert "deterministic_" not in source
 
 
 def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None:
@@ -139,12 +179,16 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         StandardTaskKind.SECURITY_LOOKUP: {"query": "贵州茅台"},
         StandardTaskKind.PRICE_HISTORY: {"count": 60},
         StandardTaskKind.TECHNICAL_ANALYSIS: {"count": 60},
-        StandardTaskKind.NEWS_ANALYSIS: {"query": "白酒行业", "days": 7},
+        StandardTaskKind.NEWS_ANALYSIS: {
+            "query": "白酒行业", "topic": "industry", "subjects": ["白酒"], "days": 7,
+        },
         StandardTaskKind.REGULATORY_ANALYSIS: {"keyword": "再融资"},
         StandardTaskKind.MARKET_OVERVIEW: {"include_index": True},
         StandardTaskKind.SECTOR_ANALYSIS: {"type": "industry", "period": "today"},
         StandardTaskKind.MACRO_ANALYSIS: {"indicators": ["PMI"]},
-        StandardTaskKind.INDUSTRY_RESEARCH: {"query": "人形机器人产业链"},
+        StandardTaskKind.INDUSTRY_RESEARCH: {
+            "query": "人形机器人产业链", "subjects": ["人形机器人"],
+        },
         StandardTaskKind.THEME_STOCK_DISCOVERY: {"domains": [_domain("减速器")]},
         StandardTaskKind.THEME_BUSINESS_EVIDENCE: {"theme": "人形机器人"},
         StandardTaskKind.STOCK_SCREENING: {"screen_spec": screen_spec},
@@ -197,7 +241,6 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         StandardTaskKind.WATCHLIST_MUTATION,
         StandardTaskKind.BATCH_ANALYSIS,
     }
-    validator = WorkflowPolicyValidator(ToolRegistry())
     exercised: set[StandardTaskKind] = set()
     for kind, spec in WORKFLOW_REGISTRY.items():
         if not spec.enabled:
@@ -211,7 +254,12 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
             parameters=parameters.get(kind, {}),
             confirmation=ConfirmationState.EXPLICIT,
         )
-        calls = validator.preflight_task(ResolvedTask(candidate=candidate, symbols=symbols))
+        resolved = ResolvedTask(candidate=candidate, symbols=symbols)
+        validator = WorkflowPolicyValidator(
+            ToolRegistry(),
+            approved_actions={action_fingerprint(resolved)},
+        )
+        calls = validator.preflight_task(resolved)
         assert len(calls) <= 8
         assert {call.call.tool_name for call in calls} <= spec.tool_whitelist
         exercised.add(kind)
@@ -244,7 +292,7 @@ def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
     }
 
 
-def test_long_optional_context_theme_does_not_block_domain_discovery() -> None:
+def test_free_form_context_theme_is_preserved_for_domain_discovery() -> None:
     candidate = _task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
@@ -260,7 +308,7 @@ def test_long_optional_context_theme_does_not_block_domain_discovery() -> None:
     validate_candidate_plan(plan)
     calls = compile_task(ResolvedTask(candidate=candidate))
     assert calls[0].tool_name == "get_domain_stock_candidates"
-    assert "context_theme" not in calls[0].arguments
+    assert calls[0].arguments["context_theme"] == "人形机器人最受益的上游核心零部件方向"
 
 
 def test_previous_answer_outline_keeps_middle_markdown_scope() -> None:
@@ -361,6 +409,25 @@ def test_collection_financial_filter_accepts_negative_profit_threshold() -> None
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
 
 
+def test_collection_financial_filter_keeps_net_profit_distinct_from_deducted_profit() -> None:
+    candidate = _task(
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        parameters={
+            "metric": "net_profit",
+            "period_basis": "previous_fiscal_year",
+            "operator": "lt",
+            "threshold": 0,
+            "threshold_unit": "cny",
+            "action": "exclude_matching",
+        },
+    ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
+
+    validate_candidate_plan(TaskPlan(tasks=[candidate]))
+    calls = compile_task(ResolvedTask(candidate=candidate, symbols=("000001",)))
+
+    assert calls[0].arguments["metric"] == "net_profit"
+
+
 def test_collection_filter_executor_runs_every_batch_even_when_one_fails() -> None:
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
@@ -422,6 +489,23 @@ def test_policy_requires_explicit_confirmation_before_delete() -> None:
     validator = WorkflowPolicyValidator(ToolRegistry())
     with pytest.raises(ConfirmationRequired, match="requires explicit confirmation"):
         validator.preflight_task(ResolvedTask(candidate=candidate))
+
+
+def test_explicit_confirmation_requires_a_matching_prior_review() -> None:
+    candidate = _task(
+        StandardTaskKind.ANALYSIS_HISTORY,
+        parameters={"action": "delete", "record_ids": "record-1"},
+        confirmation=ConfirmationState.EXPLICIT,
+    )
+    resolved = ResolvedTask(candidate=candidate)
+    with pytest.raises(ConfirmationRequired):
+        WorkflowPolicyValidator(ToolRegistry()).preflight_task(resolved)
+
+    calls = WorkflowPolicyValidator(
+        ToolRegistry(),
+        approved_actions={action_fingerprint(resolved)},
+    ).preflight_task(resolved)
+    assert [item.call.tool_name for item in calls] == ["delete_analysis_history"]
 
 
 @pytest.mark.parametrize(
@@ -490,9 +574,12 @@ def test_batch_symbol_scope_is_bounded_before_runner_is_called() -> None:
         calls += 1
         return {"success": True, "errors": [], "partial": False}
 
-    result = asyncio.run(WorkflowExecutor(ToolRegistry(), runner).execute([
-        ResolvedTask(candidate=candidate, symbols=symbols),
-    ]))
+    resolved = ResolvedTask(candidate=candidate, symbols=symbols)
+    result = asyncio.run(WorkflowExecutor(
+        ToolRegistry(),
+        runner,
+        approved_actions={action_fingerprint(resolved)},
+    ).execute([resolved]))
     assert calls == 0
     assert result.tasks[0].status == "blocked"
     assert "at most 50" in result.tasks[0].errors[0]
@@ -667,7 +754,7 @@ def test_executor_parallelizes_independent_reads_and_serializes_mutations() -> N
     assert asyncio.run(run_pair(mutations)) == 1
 
 
-def test_semantic_planner_receives_one_planning_tool_and_no_data_tools() -> None:
+def test_semantic_planner_uses_two_bounded_planning_stages_and_no_data_tools() -> None:
     payload = {
         "tasks": [{
             "task_id": "valuation",
@@ -684,15 +771,10 @@ def test_semantic_planner_receives_one_planning_tool_and_no_data_tools() -> None
         "needs_clarification": False,
         "clarification_question": None,
     }
-    function = SimpleNamespace(
-        name="submit_standard_task_plan",
-        arguments=json.dumps(payload, ensure_ascii=False),
-    )
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=function)],
-        content=None,
-    ))])
-    completion = AsyncMock(return_value=response)
+    completion = AsyncMock(side_effect=[
+        _selection_response(StandardTaskKind.VALUATION_ANALYSIS),
+        _model_response("submit_standard_task_plan", payload),
+    ])
     plan = asyncio.run(resolve_task_plan(
         [
             {"role": "user", "content": "旧轮任务：分析机器人产业链"},
@@ -703,15 +785,55 @@ def test_semantic_planner_receives_one_planning_tool_and_no_data_tools() -> None
         completion=completion,
     ))
     assert plan.tasks[0].kind == StandardTaskKind.VALUATION_ANALYSIS
-    kwargs = completion.await_args.kwargs
-    assert [tool["function"]["name"] for tool in kwargs["tools"]] == [
+    assert completion.await_count == 2
+    selection_kwargs = completion.await_args_list[0].kwargs
+    plan_kwargs = completion.await_args_list[1].kwargs
+    assert [tool["function"]["name"] for tool in selection_kwargs["tools"]] == [
+        "submit_standard_task_selection"
+    ]
+    assert [tool["function"]["name"] for tool in plan_kwargs["tools"]] == [
         "submit_standard_task_plan"
     ]
-    serialized = json.dumps(kwargs["tools"], ensure_ascii=False)
+    serialized = json.dumps(
+        [selection_kwargs["tools"], plan_kwargs["tools"]], ensure_ascii=False
+    )
     assert all(name not in serialized for name in ToolRegistry().get_tool_names())
-    planner_context = json.loads(kwargs["messages"][1]["content"])
+    selection_context = json.loads(selection_kwargs["messages"][1]["content"])
+    planner_context = json.loads(plan_kwargs["messages"][1]["content"])
     assert planner_context["current_request"] == "分析贵州茅台估值"
     assert "旧轮任务" not in json.dumps(planner_context, ensure_ascii=False)
+    assert "standard_task_index" in selection_context
+    assert [contract["kind"] for contract in planner_context[
+        "selected_standard_task_contracts"
+    ]] == ["valuation_analysis"]
+
+
+def test_plan_cache_uses_structured_context_instead_of_rendered_assistant_text() -> None:
+    context = task_planner_module.ConversationContext.from_value({
+        "version": "1",
+        "turns": [{
+            "request": "找候选公司",
+            "tasks": [],
+            "entities": [{"symbol": "000001", "name": "甲公司"}],
+        }],
+    })
+    base = [{"role": "user", "content": "筛掉不符合条件的公司"}]
+    first = task_planner_module._cache_key(
+        [{"role": "assistant", "content": "渲染版本甲"}, *base],
+        {"model": "test", "api_base": "https://model.example"},
+        [],
+        [{"symbol": "000001", "name": "甲公司"}],
+        context,
+    )
+    second = task_planner_module._cache_key(
+        [{"role": "assistant", "content": "完全不同的渲染版本乙"}, *base],
+        {"model": "test", "api_base": "https://model.example"},
+        [],
+        [{"symbol": "000001", "name": "甲公司"}],
+        context,
+    )
+
+    assert first == second
 
 
 def test_semantic_planner_resolves_compound_domains_only_from_current_board_catalog() -> None:
@@ -727,7 +849,7 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
             rationale="关节驱动电机按执行器板块召回。",
         ),
     ]
-    payload = {
+    plan_payload = {
         "tasks": [{
             "task_id": "domain_candidates",
             "kind": "theme_stock_discovery",
@@ -735,7 +857,10 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
             "entity_scope": "none",
             "entities": [],
             "parameters": {
-                "domains": domain_specs,
+                "domains": [
+                    {"label": "灵巧手及力控部件"},
+                    {"label": "电机（伺服电机/步进电机）"},
+                ],
                 "context_theme": "人形机器人",
             },
             "depends_on": [],
@@ -746,14 +871,14 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
         "needs_clarification": False,
         "clarification_question": None,
     }
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_plan",
-            arguments=json.dumps(payload, ensure_ascii=False),
-        ))],
-        content=None,
-    ))])
-    completion = AsyncMock(return_value=response)
+    binding_payload = {
+        "bindings": [{"task_id": "domain_candidates", "domains": domain_specs}],
+    }
+    completion = AsyncMock(side_effect=[
+        _selection_response(StandardTaskKind.THEME_STOCK_DISCOVERY),
+        _model_response("submit_standard_task_plan", plan_payload),
+        _model_response("submit_semantic_resource_bindings", binding_payload),
+    ])
     with patch(
         "src.services.domain_board_catalog.get_domain_board_catalog",
         return_value={
@@ -777,12 +902,23 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
         ))
 
     assert plan.tasks[0].parameters["domains"] == domain_specs
-    context = json.loads(completion.await_args.kwargs["messages"][1]["content"])
-    assert context["current_concept_board_catalog"]["board_names"] == [
-        "人形机器人", "机器人执行器", "机器人概念",
+    selection_context = json.loads(
+        completion.await_args_list[0].kwargs["messages"][1]["content"]
+    )
+    planner_context = json.loads(
+        completion.await_args_list[1].kwargs["messages"][1]["content"]
+    )
+    binder_context = json.loads(
+        completion.await_args_list[2].kwargs["messages"][1]["content"]
+    )
+    assert "catalog" not in planner_context
+    assert "catalog" not in selection_context
+    assert binder_context["catalog"]["board_names"] == [
+        "人形机器人", "机器人执行器", "减速器", "机器人概念",
     ]
-    assert context["current_concept_board_catalog"]["full_catalog_count"] == 4
-    assert "get_domain_stock_candidates" not in json.dumps(context, ensure_ascii=False)
+    assert "get_domain_stock_candidates" not in json.dumps(
+        [planner_context, binder_context], ensure_ascii=False
+    )
 
 
 def test_domain_plan_rejects_a_board_name_absent_from_current_catalog() -> None:
@@ -793,14 +929,14 @@ def test_domain_plan_rejects_a_board_name_absent_from_current_catalog() -> None:
             "context_theme": "人形机器人",
         },
     )
-    with pytest.raises(ValueError, match="absent from current catalog"):
+    with pytest.raises(ValueError, match="absent from the live concept-board catalog"):
         validate_candidate_plan(
             TaskPlan(tasks=[candidate]),
             concept_board_names={"人形机器人", "机器人执行器"},
         )
 
 
-def test_domain_plan_rejects_cross_application_proxy_even_when_board_exists() -> None:
+def test_catalog_membership_validation_does_not_guess_semantic_affinity() -> None:
     candidate = _task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
@@ -808,79 +944,10 @@ def test_domain_plan_rejects_cross_application_proxy_even_when_board_exists() ->
             "context_theme": "人形机器人",
         },
     )
-    with pytest.raises(ValueError, match="another application"):
-        validate_candidate_plan(
-            TaskPlan(tasks=[candidate]),
-            concept_board_names={"人形机器人", "机器人执行器", "轮毂电机"},
-        )
-
-
-def test_candidate_only_request_discards_model_added_industry_research() -> None:
-    payload = {
-        "tasks": [
-            {
-                "task_id": "extra_research",
-                "kind": "industry_research",
-                "objective": "额外研究产业",
-                "entity_scope": "none",
-                "entities": [],
-                "parameters": {"query": "人形机器人产业链"},
-                "depends_on": [],
-                "output_requirements": [],
-                "confirmation": "not_required",
-                "confidence": 0.8,
-            },
-            {
-                "task_id": "domain_candidates",
-                "kind": "theme_stock_discovery",
-                "objective": "按领域找A股候选",
-                "entity_scope": "none",
-                "entities": [],
-                "parameters": {
-                    "domains": [_domain(
-                        "灵巧手及力控部件",
-                        "机器人执行器",
-                        "轮毂电机",
-                    )],
-                    "context_theme": "人形机器人",
-                },
-                "depends_on": ["extra_research"],
-                "output_requirements": [],
-                "confirmation": "not_required",
-                "confidence": 0.95,
-            },
-        ],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_plan",
-            arguments=json.dumps(payload, ensure_ascii=False),
-        ))],
-        content=None,
-    ))])
-    with patch(
-        "src.services.domain_board_catalog.get_domain_board_catalog",
-        return_value={
-            "success": True,
-            "board_names": ["人形机器人", "机器人执行器", "轮毂电机"],
-            "source": "测试板块目录",
-            "data_time": "2026-07-21",
-            "errors": [],
-        },
-    ):
-        plan = asyncio.run(resolve_task_plan(
-            [{"role": "user", "content": "按人形机器人灵巧手领域找A股候选"}],
-            {"model": "test", "api_base": ""},
-            completion=AsyncMock(return_value=response),
-        ))
-
-    assert [task.kind for task in plan.tasks] == [StandardTaskKind.THEME_STOCK_DISCOVERY]
-    assert plan.tasks[0].depends_on == []
-    assert plan.tasks[0].parameters["domains"][0]["board_queries"] == ["机器人执行器"]
-    assert "轮毂电机" in plan.tasks[0].parameters["domains"][0]["rationale"]
-    assert plan.source.endswith("proxy_guard")
+    validate_candidate_plan(
+        TaskPlan(tasks=[candidate]),
+        concept_board_names={"人形机器人", "机器人执行器", "轮毂电机"},
+    )
 
 
 def test_semantic_planner_retries_a_transient_provider_failure() -> None:
@@ -907,153 +974,106 @@ def test_semantic_planner_retries_a_transient_provider_failure() -> None:
         ))],
         content=None,
     ))])
-    completion = AsyncMock(side_effect=[RuntimeError("temporary gateway error"), response])
+    completion = AsyncMock(side_effect=[
+        RuntimeError("temporary gateway error"),
+        _selection_response(StandardTaskKind.GENERAL_RESPONSE),
+        response,
+    ])
     plan = asyncio.run(resolve_task_plan(
         [{"role": "user", "content": "解释这个概念"}],
         {"model": "test", "api_base": ""},
         completion=completion,
     ))
     assert plan.tasks[0].kind == StandardTaskKind.GENERAL_RESPONSE
-    assert completion.await_count == 2
+    assert completion.await_count == 3
 
 
 def test_industry_structure_question_never_opens_company_discovery() -> None:
-    completion = AsyncMock(side_effect=AssertionError("semantic planner must not run"))
-    plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": "人形机器人方向哪些领域最核心最受益？"}],
-        {"model": "test", "api_base": "http://unused", "api_key": "x"},
-        completion=completion,
-    ))
-
-    completion.assert_not_awaited()
-    assert plan.source == "deterministic_industry_structure_contract"
-    assert [task.kind for task in plan.tasks] == [StandardTaskKind.INDUSTRY_RESEARCH]
-    assert "不生成公司或股票候选名单" in plan.tasks[0].output_requirements
-
-
-def test_semantic_planner_removes_unrequested_company_discovery_task() -> None:
     payload = {
-        "tasks": [
-            {
-                "task_id": "research",
-                "kind": "industry_research",
-                "objective": "介绍人形机器人",
-                "entity_scope": "none",
-                "entities": [],
-                "parameters": {"query": "人形机器人"},
-                "depends_on": [],
-                "output_requirements": [],
-                "confirmation": "not_required",
-                "confidence": 0.9,
+        "tasks": [{
+            "task_id": "industry_structure",
+            "kind": "industry_research",
+            "objective": "分析人形机器人核心受益领域",
+            "entity_scope": "none",
+            "entities": [],
+            "parameters": {
+                "query": "人形机器人核心受益领域",
+                "subjects": ["人形机器人"],
             },
-            {
-                "task_id": "unrequested_stocks",
-                "kind": "theme_stock_discovery",
-                "objective": "额外找股票",
-                "entity_scope": "none",
-                "entities": [],
-                "parameters": {"domains": ["电池"]},
-                "depends_on": [],
-                "output_requirements": [],
-                "confirmation": "not_required",
-                "confidence": 0.8,
-            },
-        ],
+            "depends_on": [],
+            "output_requirements": ["不生成股票名单"],
+            "confirmation": "not_required",
+            "confidence": 0.96,
+        }],
         "needs_clarification": False,
         "clarification_question": None,
     }
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_plan",
-            arguments=json.dumps(payload, ensure_ascii=False),
-        ))],
-        content=None,
-    ))])
+    completion = AsyncMock(side_effect=[
+        _selection_response(StandardTaskKind.INDUSTRY_RESEARCH),
+        _model_response("submit_standard_task_plan", payload),
+    ])
     plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": "介绍一下人形机器人"}],
-        {"model": "test", "api_base": "", "api_key": None},
-        completion=AsyncMock(return_value=response),
+        [{"role": "user", "content": "人形机器人方向哪些领域最核心最受益？"}],
+        {"model": "test", "api_base": ""},
+        completion=completion,
     ))
 
-    assert plan.source == "semantic_scope_constrained"
+    assert completion.await_count == 2
     assert [task.kind for task in plan.tasks] == [StandardTaskKind.INDUSTRY_RESEARCH]
+    assert "不生成股票名单" in plan.tasks[0].output_requirements
 
 
-def test_compound_collection_filter_bypasses_semantic_planner() -> None:
-    completion = AsyncMock(side_effect=AssertionError("semantic planner must not run"))
-    messages = [
-        {"role": "assistant", "content": "| 公司/代码 | 方向 |\n|---|---|\n| 甲公司 (000001) | 示例 |"},
-        {
-            "role": "user",
-            "content": "上面说的这些股票去掉负债率大于70%，去年营收小于5亿的股票。",
-        },
-    ]
+@pytest.mark.parametrize(
+    "user_text",
+    [
+        "把上述公司中资产负债率超过70%的剔除",
+        "从刚才那批标的排除杠杆率高于七成的公司",
+        "对前述集合做财务过滤，只留下负债率不超过70%的公司",
+    ],
+)
+def test_financial_filter_phrasings_all_use_the_semantic_planner(user_text: str) -> None:
+    payload = {
+        "tasks": [{
+            "task_id": "filter",
+            "kind": "collection_financial_filter",
+            "objective": "按资产负债率过滤证券集合",
+            "entity_scope": "previous_answer",
+            "entities": [],
+            "parameters": {
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            },
+            "depends_on": [],
+            "output_requirements": ["覆盖完整集合"],
+            "confirmation": "not_required",
+            "confidence": 0.95,
+        }],
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    completion = AsyncMock(side_effect=[
+        _selection_response(StandardTaskKind.COLLECTION_FINANCIAL_FILTER),
+        _model_response("submit_standard_task_plan", payload),
+    ])
     plan = asyncio.run(resolve_task_plan(
-        messages,
-        {"model": "test", "api_base": "http://unused", "api_key": "x"},
+        [{"role": "user", "content": user_text}],
+        {"model": "test", "api_base": ""},
         completion=completion,
         previous_answer_entities=[{"symbol": "000001", "name": "甲公司"}],
     ))
 
-    completion.assert_not_awaited()
-    assert plan.source == "deterministic_collection_filter_contract"
-    assert [task.kind for task in plan.tasks] == [
-        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-    ]
-    assert plan.tasks[0].parameters == {
-        "metric": "debt_ratio",
-        "period_basis": "latest_report",
-        "operator": "gt",
-        "threshold": 70.0,
-        "threshold_unit": "percent",
-        "action": "exclude_matching",
-    }
-    assert plan.tasks[1].parameters == {
-        "metric": "revenue",
-        "period_basis": "previous_fiscal_year",
-        "operator": "lt",
-        "threshold": 5.0,
-        "threshold_unit": "yi_cny",
-        "action": "exclude_matching",
-    }
-
-
-@pytest.mark.parametrize(
-    ("user_text", "expected"),
-    [
-        (
-            "把上述公司中资产负债率超过70%以及上年度营业收入不足50000万元的剔除",
-            [("debt_ratio", "gt", "latest_report", "percent"),
-             ("revenue", "lt", "previous_fiscal_year", "wan_cny")],
-        ),
-        (
-            "上面名单里只保留资产负债率不高于70%且2025年营业收入不低于5亿元",
-            [("debt_ratio", "lte", "latest_report", "percent"),
-             ("revenue", "gte", "fiscal_year", "yi_cny")],
-        ),
-    ],
-)
-def test_compound_collection_filter_supports_equivalent_phrasings(
-    user_text: str,
-    expected: list[tuple[str, str, str, str]],
-) -> None:
-    plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": user_text}],
-        {"model": "test", "api_base": "http://unused", "api_key": "x"},
-        completion=AsyncMock(side_effect=AssertionError("semantic planner must not run")),
-        previous_answer_entities=[{"symbol": "000001", "name": "甲公司"}],
-    ))
-
-    assert [
-        (
-            task.parameters["metric"],
-            task.parameters["operator"],
-            task.parameters["period_basis"],
-            task.parameters["threshold_unit"],
-        )
-        for task in plan.tasks
-    ] == expected
+    assert completion.await_count == 2
+    assert plan.tasks[0].kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER
+    planner_context = json.loads(
+        completion.await_args_list[1].kwargs["messages"][1]["content"]
+    )
+    assert planner_context["current_request"] == user_text
+    assert "collection_financial_filter" in planner_context["selected_parameter_schemas"]
+    assert planner_context["runtime_context"]["previous_fiscal_year"] == date.today().year - 1
 
 
 def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup() -> None:

@@ -375,22 +375,18 @@ def test_channel_price_threshold_requires_external_evidence():
 
     assert any("批价" in issue and "网页证据" in issue for issue in issues)
 
-def test_previous_answer_entities_scope_to_table_rows():
+def test_legacy_previous_answer_entities_are_format_agnostic():
     messages = [
         {
             "role": "assistant",
             "content": (
-                "| 公司 | 证据 |\n"
-                "|---|---|\n"
-                "| **维宏股份** | 正文还提到绿的谐波和中大力德作为例子 |\n"
-                "| **兆威机电 (003021)** | 灵巧手 |\n\n"
-                "风险提示中再次提到机器人产业。"
+                "核心候选包括维宏股份与兆威机电 (003021)。"
             ),
         },
         {"role": "user", "content": "上面提到的这些公司现在能买吗"},
     ]
 
-    entities = chat_mod._previous_answer_table_entities(messages)
+    entities = chat_mod._legacy_previous_answer_entities(messages)
 
     assert entities == [
         {"name": "维宏股份", "symbol": "300508"},
@@ -398,33 +394,23 @@ def test_previous_answer_entities_scope_to_table_rows():
     ]
 
 
-def test_previous_answer_entities_use_non_first_company_column_only():
-    messages = [
-        {
-            "role": "assistant",
-            "content": "更早一轮提到机器人 (300024)。",
-        },
-        {"role": "user", "content": "只看最核心公司"},
-        {
-            "role": "assistant",
-            "content": (
-                "| 细分环节 | 最核心公司 | 核心逻辑 |\n"
-                "|---|---|---|\n"
-                "| 谐波减速器 | 绿的谐波 (688017) | 人形机器人主业相关 |\n"
-                "| 伺服系统 | 汇川技术 (300124) | 人形机器人增量业务 |\n\n"
-                "跟踪整机厂量产，但不把美的集团加入本轮名单。"
-            ),
-        },
-        {"role": "user", "content": "这些核心公司现在能买吗？"},
-    ]
+def test_structured_context_defines_reference_scope_without_answer_parsing():
+    context = chat_mod.ConversationContext.from_value({
+        "version": "1",
+        "turns": [{
+            "request": "只看最核心公司",
+            "tasks": [],
+            "entities": [
+                {"name": "绿的谐波", "symbol": "688017"},
+                {"name": "汇川技术", "symbol": "300124"},
+            ],
+        }],
+    })
 
-    entities = chat_mod._previous_answer_table_entities(messages)
-
-    assert entities == [
+    assert context.latest_entities() == [
         {"name": "绿的谐波", "symbol": "688017"},
         {"name": "汇川技术", "symbol": "300124"},
     ]
-    assert all(item["symbol"] not in {"300024", "000333"} for item in entities)
 
 
 def test_slim_tool_content_strips_detail_arrays_keeps_summary():

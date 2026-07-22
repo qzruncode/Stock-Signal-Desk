@@ -8,7 +8,7 @@ from src.tools.get_technical_indicators import get_technical_indicators
 
 
 def _daily_rows(count: int = 80) -> list[dict]:
-    start = date(2026, 1, 1)
+    start = date.today() - timedelta(days=count - 1)
     return [
         {
             "date": (start + timedelta(days=index)).isoformat(),
@@ -36,6 +36,33 @@ def test_technical_indicators_use_sufficient_local_history_without_network():
     assert result["success"] is True
     assert result["source"] == "stock_daily"
     assert result["indicators"]["ma20"] is not None
+
+
+def test_technical_indicators_refresh_stale_local_history_before_calculating():
+    stale_rows = _daily_rows()
+    stale_rows[-1]["date"] = (date.today() - timedelta(days=5)).isoformat()
+    refreshed_rows = _daily_rows()
+    with patch(
+        "src.tools.get_technical_indicators._get_kline_from_stock_daily",
+        return_value=stale_rows,
+    ), patch(
+        "src.tools.get_technical_indicators.get_kline",
+        return_value={
+            "success": True,
+            "data": refreshed_rows,
+            "source": "fresh-test-source",
+            "data_time": refreshed_rows[-1]["date"],
+            "is_stale": False,
+            "fallback_used": False,
+            "_cached": False,
+            "bar_complete": True,
+        },
+    ) as refresh:
+        result = get_technical_indicators("300508")
+
+    refresh.assert_called_once()
+    assert result["source"] == "fresh-test-source"
+    assert result["is_stale"] is False
 
 
 def test_multi_stock_snapshot_keeps_verified_mapping_and_financial_period():

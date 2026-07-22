@@ -132,6 +132,47 @@ def test_multi_stock_financials_reads_exact_previous_fiscal_year_revenue() -> No
     assert all(item["report_date"] == "2025-12-31" for item in result["items"])
 
 
+def test_multi_stock_financials_reads_net_profit_without_substituting_deducted_profit() -> None:
+    resolved = [
+        {"input": "甲公司", "name": "甲公司", "symbol": "000001"},
+        {"input": "乙公司", "name": "乙公司", "symbol": "000002"},
+    ]
+    annual_rows = {
+        "000001": {
+            "SECURITY_CODE": "000001",
+            "REPORT_DATE": "2025-12-31",
+            "PARENTNETPROFIT": -10_000_000.0,
+            "KCFJCXSYJLR": 5_000_000.0,
+        },
+        "000002": {
+            "SECURITY_CODE": "000002",
+            "REPORT_DATE": "2025-12-31",
+            "PARENTNETPROFIT": 20_000_000.0,
+            "KCFJCXSYJLR": -5_000_000.0,
+        },
+    }
+
+    with patch(
+        "src.tools.get_multi_stock_financials.resolve_securities_csv",
+        return_value=(resolved, []),
+    ), patch(
+        "src.tools.get_multi_stock_financials._load_period_snapshot",
+        return_value=(annual_rows, datetime(2026, 7, 21, 13, 0, 0)),
+    ):
+        result = get_multi_stock_financials(
+            "甲公司,乙公司",
+            metric="net_profit",
+            period_basis="previous_fiscal_year",
+        )
+
+    assert result["success"] is True
+    assert [item["financial_value"] for item in result["items"]] == [
+        -10_000_000.0,
+        20_000_000.0,
+    ]
+    assert result["field_basis"]["financial_value"].startswith("归母净利润")
+
+
 def test_financial_period_snapshot_is_fetched_once_for_sequential_batches() -> None:
     period = "2025-12-31"
     rows = {"000001": {"SECURITY_CODE": "000001", "TOTALOPERATEREVE": 1.0}}

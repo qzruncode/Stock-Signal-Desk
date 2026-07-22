@@ -61,23 +61,6 @@ _PREFERRED_ROUTES: dict[str, list[tuple[str, dict[str, str]]]] = {
     ],
 }
 
-_TOPIC_HINTS: dict[str, tuple[str, ...]] = {
-    "market": ("快讯", "实时", "要闻", "股市", "A股", "热门", "市场"),
-    "company": ("公司", "个股", "股票", "搜索", "上市公司"),
-    "announcement": ("公告", "披露", "问询", "监管", "交易所", "上市公司"),
-    "research": ("研报", "研究", "报告", "评级", "券商"),
-    "macro": ("宏观", "央行", "货币政策", "利率", "经济", "债券"),
-    "industry": ("行业", "产业", "创投", "科技", "消费", "医药", "汽车"),
-    "social": ("热帖", "热榜", "热门", "话题", "雪球", "社区"),
-}
-
-_INTENT_WORDS = re.compile(
-    r"(?:最新|近期|今日|今天|现在|相关|查询|搜索|看看|分析|市场|公司|个股|股票|"
-    r"消息|新闻|资讯|快讯|公告|披露|问询|监管|研报|研究报告|报告|评级|目标价|"
-    r"宏观|政策|行业|产业链|板块|景气|雪球|热帖|讨论|社区|情绪|A股|a股)+",
-    flags=re.I,
-)
-
 _DEFAULT_ROUTE_LIMITS = {
     "market": 3,
     "company": 1,
@@ -88,121 +71,24 @@ _DEFAULT_ROUTE_LIMITS = {
     "social": 2,
 }
 
-_MACRO_MATCH_TERMS = (
-    "买断式逆回购",
-    "逆回购",
-    "公开市场操作",
-    "中期借贷便利",
-    "mlf",
-    "lpr",
-    "cpi",
-    "pmi",
-    "gdp",
-    "社融",
-    "降准",
-    "降息",
-    "利率",
-    "央行",
-    "货币政策",
-)
-
-_MACRO_SPECIFIC_TERMS = frozenset({
-    "买断式逆回购",
-    "逆回购",
-    "公开市场操作",
-    "中期借贷便利",
-    "mlf",
-    "lpr",
-    "cpi",
-    "pmi",
-    "gdp",
-    "社融",
-    "降准",
-    "降息",
-    "利率",
-})
-
-_SUBJECT_QUALIFIER_TERMS = frozenset({
-    "订单", "订单金额", "送样", "定点", "客户验证", "关键验证", "收入", "营收",
-    "营业收入", "批量供货", "小批量供货", "量产", "量产交付", "交付", "公司",
-    "上市公司", "标的", "a股", "核心零部件", "主营构成", "公告", "实际",
-})
-
-_HIGH_PRECISION_SUBJECTS = (
-    "人形机器人", "具身智能", "低空经济", "商业航天", "固态电池", "光模块",
-)
-
-
-def _infer_topic(query: str) -> str:
-    text = query.lower()
-    rules = (
-        ("macro", ("宏观", "央行", "货币政策", "公开市场操作", "逆回购", "mlf", "lpr", "cpi", "pmi", "社融")),
-        ("announcement", ("公告", "问询", "监管", "分红", "回购", "减持", "增持")),
-        ("research", ("研报", "评级", "目标价", "盈利预测", "机构观点")),
-        ("industry", ("行业", "产业链", "赛道", "板块", "景气")),
-        ("social", ("雪球", "热帖", "讨论", "社区", "情绪")),
-        ("company", ("公司", "个股", "股票", "业绩", "财报")),
-    )
-    for topic, keywords in rules:
-        if any(keyword in text for keyword in keywords):
-            return topic
-    if re.search(r"(?<!\d)(?:sh|sz|bj)?\d{6}(?:\.(?:sh|sz|bj))?(?!\d)", text, flags=re.I):
-        return "company"
-    try:
-        from src.data.stock_index_loader import get_stock_name_index_map
-
-        names = {name for name in get_stock_name_index_map().values() if len(name) >= 3}
-        if any(name in query for name in names):
-            return "company"
-    except Exception:
-        pass
-    return "market"
-
-
-def _research_category(query: str) -> str:
-    """Choose an Eastmoney report channel from the user's research intent."""
-    text = query.lower()
-    if any(word in text for word in ("宏观", "经济", "货币", "利率", "cpi", "pmi", "gdp")):
-        return "macresearch"
-    if any(word in text for word in ("策略", "大势", "配置", "晨报")):
-        return "strategyreport" if "晨报" not in text else "brokerreport"
-    if re.search(r"(?<!\d)(?:sh|sz|bj)?\d{6}(?!\d)", text, flags=re.I):
-        return "stock"
-    if any(word in text for word in ("个股", "公司", "股票", "评级", "目标价", "盈利预测")):
-        return "stock"
-    return "industry"
-
-
-def _query_terms(query: str) -> list[str]:
+def _query_terms(query: str, subjects: list[str]) -> list[str]:
     normalized = query.strip().lower()
     terms = [normalized]
-    terms.extend(part.lower() for part in re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", query))
-    subject = _INTENT_WORDS.sub(" ", query)
-    terms.extend(part.lower() for part in re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", subject))
+    terms.extend(str(subject).strip().lower() for subject in subjects)
     return list(dict.fromkeys(term for term in terms if len(term) >= 2))
 
 
-def _subject_terms(query: str) -> list[str]:
-    subject = _INTENT_WORDS.sub(" ", query)
-    terms = list(dict.fromkeys(
-        part.lower()
-        for part in re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", subject)
-        if len(part) >= 2 and part.lower() not in _SUBJECT_QUALIFIER_TERMS
+def _subject_terms(subjects: list[str]) -> list[str]:
+    """Normalize semantic subjects supplied by the Planner/Workflow.
+
+    This layer deliberately does not infer subjects from user wording.  Its
+    only job is retrieval against an already structured request.
+    """
+    return list(dict.fromkeys(
+        str(subject).strip().lower()
+        for subject in subjects
+        if len(str(subject).strip()) >= 2
     ))
-    precise = [term for term in _HIGH_PRECISION_SUBJECTS if term.lower() in query.lower()]
-    if precise:
-        # The named topic is the admission anchor; progress words such as
-        # “送样/订单” are ranking dimensions, not independent subjects.
-        return [term.lower() for term in precise]
-    return terms
-
-
-def _matching_terms(query: str, topic: str) -> list[str]:
-    terms = _subject_terms(query)
-    if topic == "macro":
-        lowered = query.lower()
-        terms.extend(term for term in _MACRO_MATCH_TERMS if term.lower() in lowered)
-    return list(dict.fromkeys(term.lower() for term in terms if len(term) >= 2))
 
 
 def _score(item: dict[str, Any], terms: list[str]) -> int:
@@ -284,10 +170,6 @@ def _matches_subject(item: dict[str, Any], subject_terms: list[str], topic: str)
         return True
     title = str(item.get("title") or "").lower()
     summary = str(item.get("summary") or "").lower()
-    if topic == "macro":
-        specific = [term for term in subject_terms if term in _MACRO_SPECIFIC_TERMS]
-        if specific:
-            return any(term in f"{title} {summary}" for term in specific)
     if any(term in title for term in subject_terms):
         return True
     if topic in {"company", "announcement"}:
@@ -298,30 +180,15 @@ def _matches_subject(item: dict[str, Any], subject_terms: list[str], topic: str)
 def _trusted_route_bonus(item: dict[str, Any], subject_terms: list[str], topic: str) -> int:
     """Prefer a first-party specialist feed when it directly owns the fact."""
     route = str(item.get("rss_route") or "")
-    if (
-        topic == "macro"
-        and route == "/gov/pbc/tradeAnnouncement"
-        and any(term in _MACRO_SPECIFIC_TERMS for term in subject_terms)
-    ):
+    if topic == "macro" and route == "/gov/pbc/tradeAnnouncement":
         return 100
     return 0
 
 
-def _default_option(route: dict[str, Any], param: dict[str, Any], topic: str) -> str | None:
+def _default_option(route: dict[str, Any], param: dict[str, Any]) -> str | None:
     options = param.get("options") or []
     if not isinstance(options, list) or not options:
         return None
-    preferred_labels = {
-        "market": ("A股", "财经", "要闻", "股票"),
-        "company": ("A股", "公司", "个股", "股票"),
-        "research": ("个股研报", "行业研报", "策略报告", "研究"),
-        "macro": ("宏观", "经济", "债券"),
-        "industry": ("行业", "科技", "消费"),
-    }.get(topic, ())
-    for preferred in preferred_labels:
-        for option in options:
-            if preferred.lower() in str(option.get("label") or "").lower():
-                return str(option.get("value"))
     value = options[0].get("value")
     return str(value) if value is not None else None
 
@@ -330,17 +197,20 @@ def _route_params(
     route: dict[str, Any],
     query: str,
     topic: str,
+    subject_terms: list[str],
     preferred_overrides: dict[str, str],
 ) -> dict[str, str] | None:
     """Build safe parameters from catalog metadata; None means unusable route."""
     path = str(route.get("route_path") or "")
-    code_match = re.search(r"(?<!\d)(?:sh|sz|bj)?(\d{6})(?!\d)", query, flags=re.I)
-    narrowed_query = " ".join(_subject_terms(query)) or query
+    code = next(
+        (term for term in subject_terms if re.fullmatch(r"\d{6}", term)),
+        "",
+    )
+    narrowed_query = " ".join(subject_terms) or query
     params: dict[str, str] = {}
     for param in route.get("params") or []:
         name = str(param.get("name") or "")
         if path == "/szse/inquire/:category?/:select?/:keyword?":
-            code = code_match.group(1) if code_match else ""
             if name == "category":
                 value = "1" if code.startswith("3") else "0"
             elif name == "select":
@@ -354,10 +224,10 @@ def _route_params(
         if value:
             value = value.replace("{query}", narrowed_query)
             if path == "/szse/disclosure/listed/notice/:query?":
-                value = f"stock={code_match.group(1)}" if code_match else None
+                value = f"stock={code}" if code else None
         elif name in {"keyword", "query"}:
-            if path == "/szse/disclosure/listed/notice/:query?" and code_match:
-                value = f"stock={code_match.group(1)}"
+            if path == "/szse/disclosure/listed/notice/:query?" and code:
+                value = f"stock={code}"
             elif path == "/szse/disclosure/listed/notice/:query?":
                 value = None
             else:
@@ -367,7 +237,7 @@ def _route_params(
         elif param.get("default") is not None:
             value = str(param.get("default"))
         elif param.get("required"):
-            value = _default_option(route, param, topic)
+            value = _default_option(route, param)
             if value is None:
                 return None
         else:
@@ -381,13 +251,14 @@ def _select_specs(
     routes: list[dict[str, Any]],
     query: str,
     topic: str,
+    subjects: list[str] | None = None,
     *,
     max_routes: int = 5,
     allowed_paths_override: frozenset[str] | None = None,
 ) -> list[tuple[str, dict[str, str], str]]:
     """Rank the complete Infos catalog, while keeping battle-tested defaults."""
     preferred = {path: (index, overrides) for index, (path, overrides) in enumerate(_PREFERRED_ROUTES[topic])}
-    subject_terms = _subject_terms(query)
+    subject_terms = _subject_terms(subjects or [])
     ranked: list[tuple[int, str, dict[str, str], str]] = []
     allowed_paths = allowed_paths_override or TOPIC_ROUTE_PATHS[topic]
     for route in routes:
@@ -396,28 +267,12 @@ def _select_specs(
             continue
         preferred_info = preferred.get(path)
         overrides = dict(preferred_info[1]) if preferred_info else {}
-        if path == "/eastmoney/report/:category" and topic == "research":
-            overrides["category"] = _research_category(query)
-        params = _route_params(route, query, topic, overrides)
+        params = _route_params(route, query, topic, subject_terms, overrides)
         if params is None:
             continue
-        haystack = " ".join(
-            str(route.get(key) or "")
-            for key in ("route_path", "name", "namespace", "namespace_name", "description")
-        ).lower()
-        source_identity = " ".join(
-            str(route.get(key) or "")
-            for key in ("name", "namespace", "namespace_name")
-        ).lower()
         score = 0
         if preferred_info:
             score += 1000 - preferred_info[0] * 20
-        score += sum(10 for hint in _TOPIC_HINTS[topic] if hint.lower() in haystack)
-        # A user can explicitly name a source (for example "穆迪评级").
-        # Match only source identity fields here; matching arbitrary query words
-        # against a route description made broad feeds outrank exact search
-        # routes for ordinary topics such as "半导体景气".
-        score += sum(2000 for term in subject_terms if term in source_identity)
         # Routes with query parameters can perform server-side narrowing.
         if any(key in params for key in ("keyword", "query")):
             score += 300
@@ -429,7 +284,8 @@ def _select_specs(
 
 def search_financial_news(
     query: str,
-    topic: str = "auto",
+    topic: str = "",
+    subjects: list[str] | None = None,
     days: int = 30,
     limit: int = 12,
     include_content: bool = False,
@@ -450,7 +306,7 @@ def search_financial_news(
         raise ValueError("days 必须在 1 到 365 之间")
     if not 1 <= int(limit) <= 30:
         raise ValueError("limit 必须在 1 到 30 之间")
-    resolved_topic = _infer_topic(query) if topic == "auto" else topic
+    resolved_topic = str(topic or "").strip().lower()
     if resolved_topic not in _PREFERRED_ROUTES:
         raise ValueError(f"不支持的 topic: {resolved_topic}")
     catalog = get_rss_catalog(force=False)
@@ -460,11 +316,12 @@ def search_financial_news(
         catalog_routes,
         query,
         resolved_topic,
+        subjects,
         max_routes=max_routes,
         allowed_paths_override=_route_paths,
     )
     if not specs and resolved_topic != "market" and _route_paths is None:
-        specs = _select_specs(catalog_routes, query, "market")
+        specs = _select_specs(catalog_routes, query, "market", subjects)
 
     route_results: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -520,7 +377,8 @@ def search_financial_news(
             if existing is None or len(str(item.get("summary") or "")) > len(str(existing.get("summary") or "")):
                 deduped[key] = item
 
-    terms = _query_terms(query)
+    semantic_subjects = _subject_terms(subjects or [])
+    terms = _query_terms(query, semantic_subjects)
     cutoff = datetime.now() - timedelta(days=int(days))
     candidate_items = list(deduped.values())
     expired_count = sum(
@@ -528,7 +386,7 @@ def search_financial_news(
         if _has_known_time(item) and not _item_is_recent(item, cutoff)
     )
     unknown_time_count = sum(1 for item in candidate_items if not _has_known_time(item))
-    subject_terms = _matching_terms(query, resolved_topic)
+    subject_terms = semantic_subjects
     items = [item for item in candidate_items if _item_is_recent(item, cutoff)]
     ranking_terms = list(dict.fromkeys([*terms, *subject_terms]))
     items.sort(
@@ -702,16 +560,21 @@ TOOL = ToolSpec(
             "query": {"type": "string", "description": "要查的公司、行业、事件或宏观主题；例如 贵州茅台、半导体景气、央行降准"},
             "topic": {
                 "type": "string",
-                "enum": ["auto", "market", "company", "announcement", "research", "macro", "industry", "social"],
-                "default": "auto",
-                "description": "资讯类型，auto 会根据 query 自动判断",
+                "enum": ["market", "company", "announcement", "research", "macro", "industry", "social"],
+                "description": "Planner 已解析的资讯类型；工具不根据 query 猜测类别",
+            },
+            "subjects": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 12,
+                "description": "Planner 提取的核心公司、行业或事件主体；用于相关性过滤，不从自然语言中二次猜测",
             },
             "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "只返回最近多少天的记录；缺少发布时间的记录会保留并明确告警"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12, "description": "去重后最多返回条数"},
             "include_content": {"type": "boolean", "default": False, "description": "是否在同一次调用中补取前 3 条正文；仅深入阅读时开启"},
             "fallback_to_web": {"type": "boolean", "default": True, "description": "RSS 无结果时是否自动调用联网搜索兜底"},
         },
-        ["query"],
+        ["query", "topic"],
     ),
     executor=search_financial_news,
     category="sentiment",

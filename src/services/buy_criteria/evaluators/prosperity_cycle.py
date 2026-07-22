@@ -6,6 +6,7 @@ from typing import Any
 
 from src.services.buy_criteria.base import BaseCriterionEvaluator, CriterionEvidence
 from src.services.buy_criteria.data_service import DataService
+from src.services.buy_criteria.evidence_queries import structured_thesis_queries
 from src.services.buy_criteria.prompts.rubrics import PROSPERITY_CYCLE
 
 logger = logging.getLogger(__name__)
@@ -66,40 +67,24 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
             logger.warning("[prosperity] financials failed: %s", exc)
             raw["financials_error"] = str(exc)
 
-        # ---- Industry news: search by specific business/product keywords ----
-        # Priority: industry-level supply-demand signals > company-specific news
+        # ---- Industry evidence: preserve the planner's structured domains ----
         industry = stock_info.get("industry", "")
-        main_business = stock_info.get("main_business", "")
-        product_type = stock_info.get("product_type", "")
-        # Clean keywords: strip punctuation, keep core terms
-        def _clean_kw(text: str) -> list[str]:
-            if not text:
-                return []
-            cleaned = text.strip().rstrip("。，、；：")
-            parts = [p.strip().rstrip("。，、；：") for p in cleaned.replace("的研发", "").replace("的生产和销售", "").replace("生产和销售", "").replace("和", ",").split(",") if p.strip()]
-            return [p for p in parts if len(p) >= 2]
-        # Search order: core business/product terms (industry-level) first, then industry, then company name
-        core_terms = _clean_kw(main_business) + _clean_kw(product_type)
-        search_keywords = core_terms[:]
-        if industry:
-            search_keywords.append(industry)
-        # Deduplicate
-        seen = set()
-        search_keywords = [k for k in search_keywords if not (k in seen or seen.add(k))]
-        for keyword in search_keywords:
+        search_queries = structured_thesis_queries(stock_info, limit=4)
+        industry_evidence: list[dict[str, Any]] = []
+        search_errors: list[str] = []
+        for query in search_queries:
             try:
-                industry_news = ds.search_industry_news(keyword, days=90, limit=10)
-                news_items = _list_of_dicts(industry_news.get("items"))[:10]
-                if news_items:
-                    raw["industry_news"] = {
-                        "keyword": keyword,
-                        "items": news_items,
-                    }
-                    break  # Found relevant news with specific keyword
+                result = ds.search_industry_news(query, days=180, limit=8)
+                for item in _list_of_dicts(result.get("items"))[:8]:
+                    industry_evidence.append({**item, "query": query})
             except Exception as exc:
-                logger.warning("[prosperity] news search '%s' failed: %s", keyword, exc)
-        if "industry_news" not in raw:
-            raw["industry_news"] = {"keyword": search_keywords[0] if search_keywords else "", "items": []}
+                logger.warning("[prosperity] news search '%s' failed: %s", query, exc)
+                search_errors.append(f"{query}: {exc}")
+        raw["industry_evidence"] = {
+            "queries": search_queries,
+            "items": industry_evidence[:24],
+            "errors": search_errors,
+        }
 
         # ---- Macro PMI — demoted to economic context ----
         try:
@@ -112,7 +97,8 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
         # ---- Build summary: only fields the rubric needs, no noise ----
         profile = raw["stock_profile"]
         fin_items = _list_of_dicts(_as_dict(raw.get("financials")).get("items"))
-        news_items = _list_of_dicts(_as_dict(raw.get("industry_news")).get("items"))
+        news_payload = _as_dict(raw.get("industry_evidence"))
+        news_items = _list_of_dicts(news_payload.get("items"))
         pmi = _as_dict(raw.get("macro_pmi"))
         pmi_latest = _as_dict(pmi.get("latest"))
 
@@ -139,7 +125,8 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
         lines.append("")
 
         # ---- 新闻数据：只取标题、内容、时间、标签 ----
-        lines.append("## 行业新闻/研报（近90天）")
+        lines.append("## 细分产业供需证据（近180天）")
+        lines.append(f"- 结构化查询方向：{'、'.join(news_payload.get('queries') or []) or '缺失'}")
         if news_items:
             for n in news_items:
                 title = n.get("title", "")
@@ -147,19 +134,26 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
                 tags = n.get("tags", [])
                 pub_time = n.get("publish_time", "")
                 tag_str = f" [{', '.join(tags)}]" if tags else ""
-                lines.append(f"- {_fmt_raw(title)}{tag_str}")
+                lines.append(f"- [{_fmt_raw(n.get('query'))}] {_fmt_raw(title)}{tag_str}")
                 if content:
                     lines.append(f"  内容: {_fmt_raw(content)}")
                 if pub_time:
                     lines.append(f"  时间: {_fmt_raw(pub_time)}")
         else:
-            lines.append(f"- 行业「{industry}」无相关新闻")
+            lines.append(f"- 未取得与本轮结构化方向相符的供需证据；退化行业={industry or '缺失'}")
         lines.append("")
 
         # ---- PMI：只取最新值和趋势 ----
         lines.append("## 宏观PMI（辅助参考）")
         pmi_val = pmi_latest.get("value") or pmi_latest.get("current") or pmi_latest.get("pmi")
         lines.append(f"- 最新值: {_fmt_raw(pmi_val)}, 趋势: {_fmt_raw(pmi.get('trend'))}, 日期: {_fmt_raw(pmi.get('data_time'))}")
+        lines.extend([
+            "",
+            "## 判断约束",
+            "- 只使用本轮结构化产业方向检索结果；不得把法定大行业、无关公司的供需信息套到真实细分业务。",
+            "- 公司总营收可用于验证兑现，但新业务尚未形成单独报表时，不能仅因公司总营收受旧业务拖累就否定细分行业景气。",
+            "- 股价、板块资金和宏观PMI都只是辅助信息，不能代替订单、出货、价格、库存、产能利用率或资本开支等供需证据。",
+        ])
         lines.append("")
 
         summary = "\n".join(lines)
@@ -170,6 +164,7 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
 
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
         items = ((evidence.raw_data.get("financials") or {}).get("items") or [])
-        if evidence.raw_data.get("financials_error") or len(items) < 3:
-            return "连续财务期数不足或获取失败，无法验证细分行业景气是否持续上行"
+        industry_items = ((evidence.raw_data.get("industry_evidence") or {}).get("items") or [])
+        if len(items) < 3 and not industry_items:
+            return "连续财务与细分产业供需证据均不足，无法验证景气趋势"
         return None

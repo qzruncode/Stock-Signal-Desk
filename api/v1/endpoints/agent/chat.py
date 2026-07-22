@@ -45,6 +45,7 @@ from src.agent.runtime_safety import (
     validate_chat_request_body,
 )
 from src.agent.progress import strip_agent_progress
+from src.agent.conversation_context import ConversationContext, build_turn_reference
 from src.agent.result_contracts import (
     AnalysisPlaybook,
     CollectionFinancialFilterSpec,
@@ -83,7 +84,6 @@ from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 from src.auth import get_client_ip
 from src.tools.symbols import (
-    find_securities_in_markdown_table_first_column,
     find_securities_in_text,
     normalize_tool_security_arguments,
 )
@@ -92,11 +92,11 @@ logger = logging.getLogger(__name__)
 
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
 PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS = 90.0
-STRICT_BUY_DECISION_TIMEOUT_SECONDS = 300.0
+STRICT_BUY_DECISION_TIMEOUT_SECONDS = 900.0
 CATALYST_ANALYSIS_TIMEOUT_SECONDS = 180.0
 QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
 FINAL_SYNTHESIS_TIMEOUT_SECONDS = 60.0
-STANDARD_TASK_PLAN_TIMEOUT_SECONDS = 78.0
+STANDARD_TASK_PLAN_TIMEOUT_SECONDS = 145.0
 
 # controller 产出层:当前生产路径走自建后台运行时的 RunBroadcaster (方法名与
 # assistant-stream 的 RunController 对齐:append_text/add_tool_call/add_data/
@@ -138,33 +138,14 @@ def _last_user_text(messages: List[Dict[str, Any]]) -> str:
     return ""
 
 
-def _previous_answer_table_entities(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Return only coded securities from the immediately previous answer table."""
+def _legacy_previous_answer_entities(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Format-agnostic compatibility for conversations without structured state."""
     for message in reversed(messages[:-1]):
         if not isinstance(message, dict) or message.get("role") != "assistant":
             continue
         content = message.get("content")
         text = content if isinstance(content, str) else _join_text_parts(content or [])
-        listed = find_securities_in_markdown_table_first_column(text, limit=300)
-        if listed:
-            return listed
-        table_entities: List[Dict[str, str]] = []
-        seen_symbols: set[str] = set()
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("|") or re.fullmatch(r"\|?[\s|:\-]+\|?", stripped):
-                continue
-            for cell in stripped.strip("|").split("|"):
-                if not re.search(r"(?<!\d)[036]\d{5}(?!\d)", cell):
-                    continue
-                for entity in find_securities_in_text(cell, limit=300):
-                    if entity["symbol"] in seen_symbols:
-                        continue
-                    seen_symbols.add(entity["symbol"])
-                    table_entities.append(entity)
-                    if len(table_entities) >= 300:
-                        return table_entities
-        return table_entities
+        return find_securities_in_text(text, limit=300)
     return []
 
 
@@ -840,51 +821,120 @@ def _build_strict_buy_decision_answer(
     for code in requested:
         item = items_by_code.get(code)
         if not isinstance(item, dict):
-            rows.append(f"| {code} | 数据未返回 | 未完成 | — | — | — | 0% |")
+            rows.append(
+                f"| {code} | **数据未返回** | 未完成 | — | — | — | — |"
+            )
             continue
         name = str(item.get("name") or code)
         criteria = [gate for gate in item.get("criteria") or [] if isinstance(gate, dict)]
         gate_ids = tuple(str(gate.get("criterion_id") or "") for gate in criteria)
+        gate_statuses = [
+            str(
+                gate.get("status")
+                or ("pass" if gate.get("passed") is True else "fail")
+            )
+            for gate in criteria
+        ]
         all_pass = (
             gate_ids == _STRICT_BUY_GATE_IDS
-            and all(gate.get("passed") is True for gate in criteria)
+            and all(status == "pass" for status in gate_statuses)
             and item.get("coverage_complete") is True
             and item.get("final_decision") == "可买入"
         )
         conclusion = "可买入" if all_pass and not missing else "不可买入"
-        entry = criteria[-1].get("details") if all_pass and criteria else {}
-        entry = entry if isinstance(entry, dict) else {}
-        stopped_name = str(item.get("stopped_at_name") or "全部九项通过")
-        stopped_reason = str(item.get("stopped_verdict") or "—").rstrip("。；; ")
-        if all_pass and not missing:
+        if conclusion == "可买入":
             buyable.append(f"{name} ({code})")
-            stop_text = "九项全部通过"
+
+        entry_gate = criteria[-1] if criteria and gate_ids[-1:] == ("entry_risk_reward",) else {}
+        entry = entry_gate.get("details") if isinstance(entry_gate, dict) else {}
+        entry = entry if isinstance(entry, dict) else {}
+        stopped = next(
+            (gate for gate, status in zip(criteria, gate_statuses) if status != "pass"),
+            None,
+        )
+        stopped_name = str(
+            (stopped or {}).get("criterion_name")
+            or item.get("stopped_at_name")
+            or ("九项全部通过" if all_pass else "执行失败")
+        )
+        stopped_status = str((stopped or {}).get("status") or "")
+        stop_text = (
+            stopped_name + ("（证据不足）" if stopped_status == "insufficient" else "")
+            if not all_pass
+            else "九项全部通过"
+        )
+        passed_count = sum(status == "pass" for status in gate_statuses)
+        valid_prefix = gate_ids == _STRICT_BUY_GATE_IDS[:len(gate_ids)]
+        progress_text = (
+            "9/9通过"
+            if all_pass
+            else f"{passed_count}项通过，第{len(criteria)}项停止"
+            if criteria and valid_prefix
+            else "执行结构异常"
+        )
+
+        if entry:
             entry_zone = f"{price(entry.get('entry_zone_low'))}—{price(entry.get('entry_zone_high'))}"
             stop_loss = price(entry.get("stop_loss"))
             rr = price(entry.get("risk_reward_ratio"))
             initial_position = int(entry.get("recommended_initial_position_pct") or 0)
             max_position = int(entry.get("recommended_max_position_pct") or 0)
-            position_text = f"{initial_position}%试仓 / 最高{max_position}%"
+            position_text = (
+                f"{initial_position}%试仓 / 最高{max_position}%"
+                if conclusion == "可买入"
+                else "0%"
+            )
         else:
-            stop_text = stopped_name if stopped_name != "全部九项通过" else "集合覆盖未完成"
             entry_zone = stop_loss = rr = "—"
             position_text = "0%"
         rows.append(
-            f"| {name} ({code}) | **{conclusion}** | {stop_text} | {entry_zone} | "
-            f"{stop_loss} | {rr} | {position_text} |"
+            f"| {name} ({code}) | **{conclusion}** | {stop_text} | {progress_text} | "
+            f"{entry_zone} / {stop_loss} | {rr} | {position_text} |"
         )
 
-        gate_lines = []
-        for gate in criteria:
-            status = "通过" if gate.get("passed") is True else "不通过"
+        gate_lines: List[str] = []
+        status_label = {
+            "pass": "通过",
+            "fail": "不通过",
+            "insufficient": "证据不足",
+        }
+        for gate, status in zip(criteria, gate_statuses):
+            details = gate.get("details") if isinstance(gate.get("details"), dict) else {}
+            confidence = str(gate.get("confidence") or "")
             gate_lines.append(
-                f"- {int(gate.get('index') or 0) + 1}. **{gate.get('criterion_name') or gate.get('criterion_id')}：{status}**。"
+                f"- {int(gate.get('index') or 0) + 1}. "
+                f"**{gate.get('criterion_name') or gate.get('criterion_id')}："
+                f"{status_label.get(status, '证据不足')}**"
+                + (f"（置信度：{confidence}）" if confidence else "")
+                + "。"
                 f"{str(gate.get('verdict') or '未给出理由')}"
             )
-        if len(criteria) < len(_STRICT_BUY_GATE_IDS):
+            counter = [
+                str(value)
+                for value in details.get("counter_evidence") or []
+                if str(value).strip()
+            ]
+            monitoring = [
+                str(value)
+                for value in details.get("monitoring_points") or []
+                if str(value).strip()
+            ]
+            if counter:
+                gate_lines.append(
+                    "  - 主要反证：" + "；".join(counter[:3])
+                )
+            if monitoring:
+                gate_lines.append(
+                    "  - 后续验证：" + "；".join(monitoring[:3])
+                )
+        if not valid_prefix:
             gate_lines.append(
-                f"- 后续 {len(_STRICT_BUY_GATE_IDS) - len(criteria)} 项按固定规则未继续执行；"
-                "首个不通过项不会被后续项目抵消。"
+                "- **执行结构异常**：返回步骤不是固定九项顺序，本轮按不可买入处理。"
+            )
+        elif len(criteria) < len(_STRICT_BUY_GATE_IDS):
+            gate_lines.append(
+                f"- 后续 {len(_STRICT_BUY_GATE_IDS) - len(criteria)} 项未执行："
+                "布尔闸门在首个不通过项立即停止，后续项目不得抵消当前否决。"
             )
         if all_pass and not missing:
             invalidations = [
@@ -893,8 +943,13 @@ def _build_strict_buy_decision_answer(
             invalidation_text = "；".join(invalidations) or "任一已通过门槛被新证据推翻"
             gate_lines.append(f"- **逻辑失效条件**：{invalidation_text}。")
         else:
+            stopped_reason = str(
+                (stopped or {}).get("verdict")
+                or item.get("stopped_verdict")
+                or "本轮未取得有效闸门结论"
+            ).rstrip("。；; ")
             gate_lines.append(
-                f"- **当前不能买的首要原因**：{stopped_reason}。只有该门槛被新的正式披露或行情证据反转后才重新从头评估。"
+                f"- **当前不可买入的首要原因**：{stopped_reason}。"
             )
         details_sections.append(
             f"### {name} ({code})\n\n" + "\n".join(gate_lines)
@@ -905,15 +960,20 @@ def _build_strict_buy_decision_answer(
             "本轮集合覆盖不完整，因此停止整个集合的最终买入筛选，**不把已返回的部分结果当成完整答案**。"
         )
     elif buyable:
-        conclusion_text = "严格按九项全通过规则，当前可买入的是：**" + "、".join(buyable) + "**。"
+        conclusion_text = (
+            "严格按九项串行布尔闸门，当前可买入的是：**"
+            + "、".join(buyable)
+            + "**。"
+        )
     else:
-        conclusion_text = "严格按九项全通过规则，当前这组股票中 **没有可买入标的**。"
+        conclusion_text = "严格按九项串行布尔闸门，当前这组股票中 **没有可买入标的**。"
 
     coverage_lines = [
         f"- 请求 **{len(requested)} 只**，返回 **{len(items_by_code)} 只**，缺失 **{len(missing)} 只**。",
-        "- 固定顺序：主线真实受益 → 产业竞争力 → 三年空间 → 景气上行 → 非内卷 → 6—12个月催化 → 重大风险 → 估值/利好透支 → 买入位置与风险收益比。",
+        "- 九维顺序：市场环境与主线强度 → 真实受益与产业竞争力 → 三年空间 → 景气趋势 → 竞争格局 → 6—12个月催化 → 重大风险 → 估值与预期 → 买入位置与风险收益比。",
         "- 业务未单独披露收入或利润时，允许用订单、销量、客户、产能、量产和连续增速替代核验；概念关联本身不算通过。",
-        "- 只有九项全部通过才允许显示可买入；任一数据或分析失败均按不可买入处理。",
+        "- 每只股票按固定顺序执行；任一项不通过或证据不足，立即停止该股票的后续分析。",
+        "- 单日板块涨跌不是主线的单一否决条件；主线判断同时使用多周期资金、上位主题、个股相对强度与可回查催化。",
     ]
     if missing:
         coverage_lines.append("- 未返回代码：" + "、".join(missing) + "。")
@@ -924,8 +984,8 @@ def _build_strict_buy_decision_answer(
     return (
         "## 严格买入判断\n\n"
         + conclusion_text
-        + "\n\n| 公司/代码 | 结论 | 首个停止项 | 买入区间 | 止损 | 风险收益比 | 仓位建议 |\n"
-        + "|---|---|---|---:|---:|---:|---|\n"
+        + "\n\n| 公司/代码 | 结论 | 首个停止项 | 闸门进度 | 入场区间/止损 | 风险收益比 | 仓位 |\n"
+        + "|---|---|---|---|---:|---:|---|\n"
         + "\n".join(rows)
         + "\n\n## 逐股门槛记录\n\n"
         + "\n\n".join(details_sections)
@@ -3298,6 +3358,7 @@ def _task_status_evidence(
                     "kind": result.task.kind.value,
                     "objective": result.task.candidate.objective,
                     "status": result.status,
+                    "blocked_reason": result.blocked_reason,
                     "errors": result.errors,
                     "executed_calls": sum(1 for call in result.calls if call.executed),
                     "reused_calls": sum(1 for call in result.calls if call.reused),
@@ -3328,10 +3389,11 @@ def _blocked_task_answer(execution: PlanExecutionResult) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _deterministic_standard_task_answer(
+def _exact_result_contract_answer(
     plan: TaskPlan,
     execution: PlanExecutionResult,
 ) -> Optional[str]:
+    """Render only workflows whose exhaustive or safety result is machine-owned."""
     compound_filter_answer = _build_compound_collection_financial_filter_answer(
         plan,
         execution,
@@ -3352,24 +3414,11 @@ def _deterministic_standard_task_answer(
         return _build_collection_financial_filter_answer(evidence, spec)
     if task.kind == StandardTaskKind.STOCK_SCREENING:
         return _build_quantitative_screen_answer(evidence)
-    if task.kind == StandardTaskKind.REALTIME_QUOTE:
-        return _build_realtime_quote_answer(evidence, "realtime_quote")
-    if task.kind == StandardTaskKind.NEWS_ANALYSIS:
-        return _build_staged_news_search_answer(evidence)
-    if task.kind in {
-        StandardTaskKind.STOCK_DEEP_RESEARCH,
-    }:
-        return _build_verified_evidence_fallback(
-            evidence,
-            professional_decision_requested=False,
-        )
     if task.kind == StandardTaskKind.INVESTMENT_DECISION:
         return _build_strict_buy_decision_answer(evidence) or (
             "## 严格买入判断未完成\n\n"
             "本轮没有成功取得逐项否决结果，因此没有输出任何买入结论。请重试本轮问题。"
         )
-    if task.kind == StandardTaskKind.CATALYST_ANALYSIS:
-        return _build_catalyst_analysis_answer(evidence)
     if task.kind in {
         StandardTaskKind.WATCHLIST_QUERY,
         StandardTaskKind.WATCHLIST_MUTATION,
@@ -3448,12 +3497,19 @@ async def _run_standard_task_pipeline(
     system_prompt: str = "",
     on_progress=None,
     *,
-    state: Optional[Dict[str, str]] = None,
+    state: Optional[Dict[str, Any]] = None,
+    conversation_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Planner → fixed Workflow → policy validator → executor → aggregator."""
     latest_user_text = _last_user_text(messages)
     latest_user_entities = find_securities_in_text(latest_user_text, limit=100)
-    previous_answer_entities = _previous_answer_table_entities(messages)
+    semantic_context = ConversationContext.from_value(
+        conversation_context
+    ).before_request(latest_user_text)
+    previous_answer_entities = (
+        semantic_context.latest_entities()
+        or _legacy_previous_answer_entities(messages)
+    )
     controller.append_text("正在拆分标准任务并校验执行流程...\n\n")
 
     try:
@@ -3464,6 +3520,7 @@ async def _run_standard_task_pipeline(
                 completion=litellm.acompletion,
                 current_entities=latest_user_entities,
                 previous_answer_entities=previous_answer_entities,
+                conversation_context=semantic_context,
             )
         logger.info(
             "[TaskPlanner] source=%s tasks=%s dependencies=%s",
@@ -3471,11 +3528,27 @@ async def _run_standard_task_pipeline(
             [task.kind.value for task in plan.tasks],
             {task.task_id: task.depends_on for task in plan.tasks},
         )
-    except TaskPlannerUnavailableError:
+    except TaskPlannerUnavailableError as exc:
         logger.exception("[TaskPlanner] semantic planner unavailable after recovery")
+        reason_text = {
+            "timeout": "模型规划响应超过当前等待时间",
+            "connection": "模型规划服务连接失败",
+            "provider": "模型规划服务暂时不可用",
+        }.get(exc.reason, "模型规划服务暂时不可用")
         failure_text = (
-            "标准任务规划服务连续超时，本轮没有开放或调用任何数据工具。"
-            "可以直接重新生成；相同问题会优先复用已经验证的任务计划。"
+            f"{reason_text}，本轮没有开放或调用任何数据工具。"
+            "重新生成会再次尝试；只有已经通过程序校验的相同任务计划才会复用缓存。"
+        )
+        controller.append_text(failure_text)
+        if state is not None:
+            state["assistant_text"] = failure_text
+            controller.assistant_text_snapshot = failure_text
+        return failure_text
+    except TimeoutError:
+        logger.exception("[TaskPlanner] orchestration deadline exceeded")
+        failure_text = (
+            "模型规划响应超过本轮总等待时间，本轮没有开放或调用任何数据工具。"
+            "重新生成会再次尝试；只有已经通过程序校验的相同任务计划才会复用缓存。"
         )
         controller.append_text(failure_text)
         if state is not None:
@@ -3507,6 +3580,7 @@ async def _run_standard_task_pipeline(
             plan,
             current_entities=latest_user_entities,
             previous_answer_entities=previous_answer_entities,
+            conversation_entities=semantic_context.all_entities(),
         )
     except TaskPlanValidationError as exc:
         logger.warning("[TaskPlanner] entity resolution blocked plan: %s", exc)
@@ -3631,10 +3705,22 @@ async def _run_standard_task_pipeline(
         tool.set_response(result, is_error=True)
         return result
 
-    executor = WorkflowExecutor(_registry, run_workflow_call)
+    executor = WorkflowExecutor(
+        _registry,
+        run_workflow_call,
+        approved_actions=semantic_context.pending_action_fingerprints(),
+    )
     execution = await executor.execute(resolved_tasks)
     await _flush_substreams(controller)
     evidence = [*execution.evidence, _task_status_evidence(plan, execution)]
+    if state is not None:
+        turn_reference = build_turn_reference(
+            latest_user_text,
+            plan,
+            resolved_tasks,
+            execution,
+        )
+        state["agent_context"] = semantic_context.append(turn_reference).model_dump()
 
     blocked_answer = _blocked_task_answer(execution)
     if blocked_answer:
@@ -3644,13 +3730,13 @@ async def _run_standard_task_pipeline(
             controller.assistant_text_snapshot = blocked_answer
         return blocked_answer
 
-    deterministic = _deterministic_standard_task_answer(plan, execution)
-    if deterministic:
-        controller.append_text(deterministic)
+    exact_answer = _exact_result_contract_answer(plan, execution)
+    if exact_answer:
+        controller.append_text(exact_answer)
         if state is not None:
-            state["assistant_text"] = deterministic
-            controller.assistant_text_snapshot = deterministic
-        return deterministic
+            state["assistant_text"] = exact_answer
+            controller.assistant_text_snapshot = exact_answer
+        return exact_answer
 
     controller.append_text("正在汇总标准任务结果...\n\n")
     active_prompt = (system_prompt or "").strip()
@@ -3798,6 +3884,7 @@ async def agent_chat(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     conversation = session_service.ensure_conversation(conversation_id)
     conv_id = conversation["id"]
+    agent_context = session_service.get_agent_context(conv_id)
 
     # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
     # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
@@ -3862,7 +3949,7 @@ async def agent_chat(
 
         # 增量持久化:节流(>=3s 一次)把已生成 assistant 文本写库,刷新后可恢复
         last_save_ts = 0.0
-        state: Dict[str, str] = {"assistant_text": ""}
+        state: Dict[str, Any] = {"assistant_text": ""}
 
         async def on_progress(assistant_text_so_far: str) -> None:
             nonlocal last_save_ts
@@ -3883,6 +3970,7 @@ async def agent_chat(
             final_response_text = await _run_standard_task_pipeline(
                 controller, messages, llm_cfg, system_prompt,
                 on_progress=on_progress, state=state,
+                conversation_context=agent_context,
             )
 
             persisted_messages = list(messages)
@@ -3895,10 +3983,19 @@ async def agent_chat(
                         "created_at": datetime.now().isoformat(),
                     }
                 )
+            snapshot_kwargs: Dict[str, Any] = {}
+            next_agent_context = (
+                state.get("agent_context")
+                if isinstance(state.get("agent_context"), dict)
+                else agent_context
+            )
+            if next_agent_context:
+                snapshot_kwargs["agent_context"] = next_agent_context
             await asyncio.to_thread(
                 session_service.save_conversation_snapshot,
                 conv_id,
                 persisted_messages,
+                **snapshot_kwargs,
             )
             await active_run_registry.mark_done(
                 conv_id, "completed", final_text=final_response_text

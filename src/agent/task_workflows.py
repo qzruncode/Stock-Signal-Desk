@@ -16,7 +16,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.agent.result_contracts import CollectionFinancialFilterSpec, DomainBoardQuerySpec
+from src.agent.result_contracts import (
+    CollectionFinancialFilterSpec,
+    DomainBoardQuerySpec,
+    InvestmentThesisContext,
+)
 
 
 class StandardTaskKind(str, Enum):
@@ -248,6 +252,7 @@ class WorkflowSpec:
     parameter_notes: tuple[str, ...] = ()
     parameter_enums: Mapping[str, frozenset[Any]] = field(default_factory=dict)
     parameter_requirements: tuple[ParameterRequirement, ...] = ()
+    resource_bindings: frozenset[str] = field(default_factory=frozenset)
 
     def planner_contract(self) -> dict[str, Any]:
         return {
@@ -267,6 +272,7 @@ class WorkflowSpec:
                 requirement.planner_contract()
                 for requirement in self.parameter_requirements
             ],
+            "semantic_resources": sorted(self.resource_bindings),
         }
 
 
@@ -455,7 +461,18 @@ def _compile_news(task: ResolvedTask) -> list[WorkflowCall]:
     if not task.symbols or len(task.symbols) > 2:
         query = str(task.parameters.get("query") or " ".join(task.symbols)).strip()
         query = query or task.candidate.objective
-        args = {"query": query, **_params(task, {"topic", "days", "limit", "include_content", "fallback_to_web"})}
+        topic = str(task.parameters.get("topic") or "").strip()
+        if not topic:
+            raise WorkflowCompileError(
+                "news_analysis requires a Planner-supplied topic for thematic or multi-company news"
+            )
+        subjects = task.parameters.get("subjects") or list(task.symbols)
+        args = {
+            "query": query,
+            "topic": topic,
+            **({"subjects": subjects} if subjects else {}),
+            **_params(task, {"days", "limit", "include_content", "fallback_to_web"}),
+        }
         return [_call(task, "multi_company_news", "search_financial_news", args)]
     calls = _per_symbol(task, ["search_news"], {"search_news": {"days", "limit", "use_cache"}}, max_symbols=2)
     calls.extend(_per_symbol(task, ["get_announcements"], {"get_announcements": {"days", "limit"}}, max_symbols=2))
@@ -566,19 +583,26 @@ def _compile_strict_buy_decision(task: ResolvedTask) -> list[WorkflowCall]:
             "investment_decision supports at most 300 entities; narrow the collection first"
         )
     thesis = str(task.parameters.get("thesis") or "").strip()
-    return [
-        _call(
-            task,
-            f"strict_buy_batch_{batch_index}",
-            "evaluate_multi_stock_buy_criteria",
-            # One strict stock evaluation can consume most of the five-minute
-            # tool envelope.  Two-stock shards match the process runner's safe
-            # concurrency and prevent an eight-stock shard from timing out
-            # after only its first waves have finished.
-            {"symbols": ",".join(symbols[start:start + 2]), "thesis": thesis},
-        )
-        for batch_index, start in enumerate(range(0, len(symbols), 2), 1)
-    ]
+    raw_thesis_context = task.parameters.get("thesis_context")
+    thesis_context = (
+        InvestmentThesisContext.model_validate(raw_thesis_context).model_dump()
+        if raw_thesis_context is not None
+        else None
+    )
+    # This is one logical portfolio review.  The isolated runner owns bounded
+    # per-company fan-out and returns one coverage envelope, which keeps the UI
+    # and policy layer from presenting implementation shards as separate
+    # analyses.
+    return [_call(
+        task,
+        "strict_buy_collection_review",
+        "evaluate_multi_stock_buy_criteria",
+        {
+            "symbols": ",".join(symbols),
+            "thesis": thesis,
+            **({"thesis_context": thesis_context} if thesis_context is not None else {}),
+        },
+    )]
 
 
 def _compile_market(task: ResolvedTask) -> list[WorkflowCall]:
@@ -603,7 +627,7 @@ def _compile_sector(task: ResolvedTask) -> list[WorkflowCall]:
         calls.append(_call(task, "sector_news", "search_financial_news", {
             "query": query,
             "topic": "industry",
-            **_params(task, {"days", "limit", "include_content"}),
+            **_params(task, {"subjects", "days", "limit", "include_content"}),
         }))
     return calls
 
@@ -636,9 +660,15 @@ def _compile_macro(task: ResolvedTask) -> list[WorkflowCall]:
         )))
     query = str(task.parameters.get("query") or "").strip()
     if query and len(calls) < 8:
+        subjects = task.parameters.get("subjects")
+        if not isinstance(subjects, list) or not subjects:
+            raise WorkflowCompileError(
+                "macro research requires Planner-supplied semantic subjects"
+            )
         calls.append(_call(task, "macro_research", "search_research_library", {
             "query": query,
             "category": "macro",
+            "subjects": subjects,
             **_params(task, {"days", "limit", "include_content", "fallback_to_web"}),
         }))
     if not calls:
@@ -648,10 +678,19 @@ def _compile_macro(task: ResolvedTask) -> list[WorkflowCall]:
 
 def _compile_industry(task: ResolvedTask) -> list[WorkflowCall]:
     query = str(task.parameters.get("query") or task.candidate.objective).strip()
+    subjects = task.parameters.get("subjects")
+    if not isinstance(subjects, list) or not subjects:
+        raise WorkflowCompileError(
+            "industry_research requires Planner-supplied semantic subjects"
+        )
     common = _params(task, {"days", "limit", "include_content", "fallback_to_web"})
     return [
-        _call(task, "industry_news", "search_financial_news", {"query": query, "topic": "industry", **common}),
-        _call(task, "industry_research", "search_research_library", {"query": query, "category": "industry", **common}),
+        _call(task, "industry_news", "search_financial_news", {
+            "query": query, "topic": "industry", "subjects": subjects, **common,
+        }),
+        _call(task, "industry_research", "search_research_library", {
+            "query": query, "category": "industry", "subjects": subjects, **common,
+        }),
     ]
 
 
@@ -670,10 +709,7 @@ def _compile_theme_discovery(task: ResolvedTask) -> list[WorkflowCall]:
         ) from exc
     context_theme = task.parameters.get("context_theme")
     args = {"domains": domain_specs, **_params(task, {"limit_per_domain"})}
-    # ``context_theme`` only narrows an already valid domain lookup.  If the
-    # planner returns a sentence instead of a short board name, omit this
-    # optional optimization rather than blocking the complete task.
-    if isinstance(context_theme, str) and 0 < len(context_theme.strip()) <= 12:
+    if isinstance(context_theme, str) and context_theme.strip():
         args["context_theme"] = context_theme.strip()
     return [_call(task, "domain_candidates", "get_domain_stock_candidates", args)]
 
@@ -689,8 +725,12 @@ def _compile_theme_evidence(task: ResolvedTask) -> list[WorkflowCall]:
         candidate_args["limit"] = task.parameters["candidate_limit"]
     return [
         _call(task, "theme_candidates", "get_theme_stock_candidates", candidate_args),
-        _call(task, "business_news", "search_financial_news", {"query": query, "topic": "industry", **common}),
-        _call(task, "business_research", "search_research_library", {"query": query, "category": "industry", **common}),
+        _call(task, "business_news", "search_financial_news", {
+            "query": query, "topic": "industry", "subjects": [theme], **common,
+        }),
+        _call(task, "business_research", "search_research_library", {
+            "query": query, "category": "industry", "subjects": [theme], **common,
+        }),
     ]
 
 
@@ -919,6 +959,7 @@ def _spec(
     notes: Sequence[str] = (),
     enums: Mapping[str, Iterable[Any]] | None = None,
     requirements: Sequence[ParameterRequirement] = (),
+    resources: Iterable[str] = (),
 ) -> WorkflowSpec:
     return WorkflowSpec(
         kind=kind,
@@ -942,6 +983,7 @@ def _spec(
             for key, values in (enums or {}).items()
         }),
         parameter_requirements=tuple(requirements),
+        resource_bindings=frozenset(resources),
     )
 
 
@@ -954,7 +996,7 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
     StandardTaskKind.FUNDAMENTAL_ANALYSIS: _spec(StandardTaskKind.FUNDAMENTAL_ANALYSIS, "基本面分析", "分析公司资料、核心财务、主营构成和股东结构。", {"get_stock_info", "get_financials", "get_business_segments", "get_shareholder_structure", "get_multi_stock_snapshot"}, _compile_fundamental, allowed={"periods", "category"}, entities=True),
     StandardTaskKind.VALUATION_ANALYSIS: _spec(StandardTaskKind.VALUATION_ANALYSIS, "估值分析", "分析当前、历史、预期和同行相对估值。", {"get_valuation_ratios", "get_consensus_estimates", "get_peer_comparison", "get_multi_stock_snapshot"}, _compile_valuation, allowed={"with_history", "metric", "dimension"}, entities=True),
     StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS: _spec(StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS, "财报分析", "分析资产负债表、利润表和现金流量表。", {"get_balance_sheet", "get_income_statement", "get_cashflow"}, _compile_statements, allowed={"periods"}, entities=True),
-    StandardTaskKind.NEWS_ANALYSIS: _spec(StandardTaskKind.NEWS_ANALYSIS, "新闻分析", "查询公司或主题新闻并分析影响。", {"search_news", "get_announcements", "search_financial_news"}, _compile_news, allowed={"query", "topic", "days", "limit", "use_cache", "include_content", "fallback_to_web"}, notes=("主题资讯使用 query；具体公司新闻使用 entities。",)),
+    StandardTaskKind.NEWS_ANALYSIS: _spec(StandardTaskKind.NEWS_ANALYSIS, "新闻分析", "查询公司或主题新闻并分析影响。", {"search_news", "get_announcements", "search_financial_news"}, _compile_news, allowed={"query", "topic", "subjects", "days", "limit", "use_cache", "include_content", "fallback_to_web"}, notes=("主题或多公司资讯必须给出 topic 和语义 subjects；具体公司新闻使用 entities。",), enums={"topic": {"market", "company", "announcement", "research", "macro", "industry", "social"}}),
     StandardTaskKind.ANNOUNCEMENT_ANALYSIS: _spec(StandardTaskKind.ANNOUNCEMENT_ANALYSIS, "公告分析", "查询并分析正式公司公告。", {"get_announcements"}, _compile_announcements, allowed={"days", "type", "limit"}, entities=True),
     StandardTaskKind.RISK_ANALYSIS: _spec(StandardTaskKind.RISK_ANALYSIS, "风险分析", "核验公告和规则筛查风险事件。", {"get_announcements", "get_risk_events"}, _compile_risk, allowed={"days", "limit"}, entities=True),
     StandardTaskKind.REGULATORY_ANALYSIS: _spec(StandardTaskKind.REGULATORY_ANALYSIS, "监管信息", "查询交易所披露、问询、项目和上市监管动态。", {"get_regulatory_updates"}, _compile_regulatory, allowed={"keyword", "event_type", "market", "days", "limit", "include_content", "fallback_to_web", "project_type", "project_stage", "project_status"}),
@@ -977,25 +1019,39 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
     StandardTaskKind.INVESTMENT_DECISION: _spec(
         StandardTaskKind.INVESTMENT_DECISION,
         "严格买入判断",
-        "对完整股票集合逐只执行九项固定门槛，首项失败即停止，全部通过才可买入。",
+        "对完整股票集合逐只执行九项串行布尔闸门；首项失败即停止该股，连续九项全部通过才可买入。",
         {"evaluate_multi_stock_buy_criteria"},
         _compile_strict_buy_decision,
-        allowed={"thesis"},
+        allowed={"thesis", "thesis_context"},
         entities=True,
         max_tool_calls=150,
         max_parallel_steps=1,
         max_attempts=1,
         notes=(
             "门槛顺序固定：主线受益、产业竞争力、三年空间、景气上行、非内卷、6—12个月催化、重大风险、估值及利好透支、买入位置与风险收益比。",
-            "Agent 工作流每批2只并覆盖完整集合；底层工具单次上限8只，不得用网络搜索或通用证据工具替代。",
+            "Agent 传递完整集合；底层执行器内部按公司并发、汇总并校验覆盖，不得静默截断。",
+            "引用既有产业领域时，thesis_context 使用 summary 和已绑定 domains 的结构化对象，禁止把展示文本重新解析为板块。",
         ),
     ),
     StandardTaskKind.MARKET_OVERVIEW: _spec(StandardTaskKind.MARKET_OVERVIEW, "市场概览", "分析指数、市场宽度与整体交易状态。", {"get_market_status", "get_market_breadth", "get_index_data"}, _compile_market, allowed={"include_index", "index_code", "days"}),
-    StandardTaskKind.SECTOR_ANALYSIS: _spec(StandardTaskKind.SECTOR_ANALYSIS, "板块分析", "比较行业或概念板块强弱、资金和近期信息。", {"get_sector_list", "get_sector_flow", "search_financial_news"}, _compile_sector, allowed={"type", "period", "top_n", "query", "days", "limit", "include_content"}, notes=("type 只能是 industry 或 concept；period 只能是 today、5d、10d。",), enums={"type": {"industry", "concept"}, "period": {"today", "5d", "10d"}}),
+    StandardTaskKind.SECTOR_ANALYSIS: _spec(StandardTaskKind.SECTOR_ANALYSIS, "板块分析", "比较行业或概念板块强弱、资金和近期信息。", {"get_sector_list", "get_sector_flow", "search_financial_news"}, _compile_sector, allowed={"type", "period", "top_n", "query", "subjects", "days", "limit", "include_content"}, notes=("type 只能是 industry 或 concept；period 只能是 today、5d、10d。",), enums={"type": {"industry", "concept"}, "period": {"today", "5d", "10d"}}),
     StandardTaskKind.CAPITAL_FLOW_ANALYSIS: _spec(StandardTaskKind.CAPITAL_FLOW_ANALYSIS, "资金流分析", "分析个股多周期资金流持续性。", {"get_stock_capital_flow"}, _compile_capital_flow, allowed={"days"}, entities=True),
-    StandardTaskKind.MACRO_ANALYSIS: _spec(StandardTaskKind.MACRO_ANALYSIS, "宏观分析", "分析宏观指标、利率或货币政策操作。", {"get_macro_indicator", "get_bond_yield", "get_monetary_policy_operations", "search_research_library"}, _compile_macro, allowed={"indicators", "periods", "include_bond_yield", "country", "term", "days", "include_monetary_operations", "instrument", "limit", "include_content", "fallback_to_web", "query"}, notes=("indicators 只可选 PMI、CPI、PPI、GDP、M2、社融、LPR。", "国债 country 为 cn/us，term 为 2y/5y/10y/30y。")),
-    StandardTaskKind.INDUSTRY_RESEARCH: _spec(StandardTaskKind.INDUSTRY_RESEARCH, "产业研究", "研究产业链、价值量、竞争格局和受益环节。", {"search_financial_news", "search_research_library"}, _compile_industry, allowed={"query", "days", "limit", "include_content", "fallback_to_web"}),
-    StandardTaskKind.THEME_STOCK_DISCOVERY: _spec(StandardTaskKind.THEME_STOCK_DISCOVERY, "领域找股", "按已解析的产业领域从内部结构化板块和完整股票池找候选。", {"get_domain_stock_candidates"}, _compile_theme_discovery, required={"domains"}, allowed={"domains", "context_theme", "limit_per_domain"}),
+    StandardTaskKind.MACRO_ANALYSIS: _spec(StandardTaskKind.MACRO_ANALYSIS, "宏观分析", "分析宏观指标、利率或货币政策操作。", {"get_macro_indicator", "get_bond_yield", "get_monetary_policy_operations", "search_research_library"}, _compile_macro, allowed={"indicators", "periods", "include_bond_yield", "country", "term", "days", "include_monetary_operations", "instrument", "limit", "include_content", "fallback_to_web", "query", "subjects"}, notes=("indicators 只可选 PMI、CPI、PPI、GDP、M2、社融、LPR。", "国债 country 为 cn/us，term 为 2y/5y/10y/30y。", "需要研究资料时同时提供 query 和语义 subjects。")),
+    StandardTaskKind.INDUSTRY_RESEARCH: _spec(StandardTaskKind.INDUSTRY_RESEARCH, "产业研究", "研究产业链、价值量、竞争格局和受益环节。", {"search_financial_news", "search_research_library"}, _compile_industry, required={"query", "subjects"}, allowed={"query", "subjects", "days", "limit", "include_content", "fallback_to_web"}, notes=("subjects 是 Planner 提取的核心产业主题，不是从 query 关键词二次猜测。",)),
+    StandardTaskKind.THEME_STOCK_DISCOVERY: _spec(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        "领域找股",
+        "按语义产业领域从内部结构化板块和完整股票池找候选。",
+        {"get_domain_stock_candidates"},
+        _compile_theme_discovery,
+        required={"domains"},
+        allowed={"domains", "context_theme", "limit_per_domain"},
+        notes=(
+            "Planner 只提取用户要求的语义领域，domains 使用包含 label 的对象数组；"
+            "程序会在规划后根据实时板块目录绑定精确或代理板块。",
+        ),
+        resources={"concept_board_catalog"},
+    ),
     StandardTaskKind.THEME_BUSINESS_EVIDENCE: _spec(StandardTaskKind.THEME_BUSINESS_EVIDENCE, "主题公司举证", "用户明确要求订单、收入、量产或客户等业务事实时核验公司。", {"get_theme_stock_candidates", "search_financial_news", "search_research_library"}, _compile_theme_evidence, required={"theme"}, allowed={"theme", "query", "candidate_limit", "days", "limit", "include_content", "fallback_to_web"}),
     StandardTaskKind.STOCK_SCREENING: _spec(StandardTaskKind.STOCK_SCREENING, "股票筛选", "按完整强类型筛选规格执行全市场量化筛选。", {"screen_atr_volatility_stocks"}, _compile_screening, required={"screen_spec"}, allowed={"screen_spec", "refresh_if_stale", "save_group_name"}),
     StandardTaskKind.COLLECTION_FINANCIAL_FILTER: _spec(
@@ -1010,13 +1066,14 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
         max_parallel_steps=1,
         max_attempts=2,
         notes=(
-            "metric 支持 debt_ratio、revenue、deducted_net_profit。",
+            "metric 支持 debt_ratio、revenue、net_profit、deducted_net_profit；"
+            "净利润与扣非净利润是不同口径，不得互相替代。",
             "period_basis 支持 latest_report、ttm、previous_fiscal_year、fiscal_year；明确年度时 fiscal_year 必填。",
             "threshold_unit：比率用 percent，金额用 cny、wan_cny 或 yi_cny。",
             "operator 为 gt/gte/lt/lte/eq；action 为 exclude_matching/keep_matching。",
         ),
         enums={
-            "metric": {"debt_ratio", "revenue", "deducted_net_profit"},
+            "metric": {"debt_ratio", "revenue", "net_profit", "deducted_net_profit"},
             "period_basis": {"latest_report", "ttm", "previous_fiscal_year", "fiscal_year"},
             "threshold_unit": {"percent", "cny", "wan_cny", "yi_cny"},
             "operator": {"gt", "gte", "lt", "lte", "eq"},
@@ -1090,6 +1147,18 @@ def planner_task_catalog() -> list[dict[str, Any]]:
     return [WORKFLOW_REGISTRY[kind].planner_contract() for kind in StandardTaskKind]
 
 
+def planner_task_index() -> list[dict[str, Any]]:
+    """Return the compact semantic index used before loading full contracts."""
+    return [
+        {
+            "kind": kind.value,
+            "title": WORKFLOW_REGISTRY[kind].title,
+            "description": WORKFLOW_REGISTRY[kind].description,
+        }
+        for kind in StandardTaskKind
+    ]
+
+
 def compile_task(task: ResolvedTask) -> list[WorkflowCall]:
     spec = workflow_for(task.kind)
     if not spec.enabled:
@@ -1160,6 +1229,7 @@ __all__ = [
     "WORKFLOW_REGISTRY",
     "compile_task",
     "planner_task_catalog",
+    "planner_task_index",
     "parameter_requirement_issues",
     "registered_workflow_tools",
     "workflow_for",

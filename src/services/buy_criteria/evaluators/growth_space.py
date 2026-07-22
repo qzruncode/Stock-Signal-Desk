@@ -150,7 +150,6 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
             raw["research"] = {
                 "items": items,
                 "count": len(research.get("items") or []),
-                "positive_count": sum(1 for item in items if str(item.get("rating") or "").strip() in {"买入", "增持", "推荐", "优于大市", "强烈推荐"}),
                 "data_time": research.get("data_time"),
                 "is_stale": research.get("is_stale"),
             }
@@ -170,6 +169,23 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
             logger.warning("[growth_space] news failed: %s", exc)
             raw["news_error"] = str(exc)
 
+        try:
+            announcements = ds.get_announcements(symbol, days=730, limit=100)
+            announcement_items = _list_of_dicts(announcements.get("items"))[:100]
+            raw["formal_growth_evidence"] = ds.get_formal_business_evidence(
+                symbol,
+                announcement_items,
+                thesis=str(stock_info.get("_investment_thesis") or "").strip(),
+                thesis_context=(
+                    stock_info.get("_investment_thesis_context")
+                    if isinstance(stock_info.get("_investment_thesis_context"), dict)
+                    else None
+                ),
+            )
+        except Exception as exc:
+            logger.warning("[growth_space] formal report evidence failed: %s", exc)
+            raw["formal_growth_evidence_error"] = str(exc)
+
         # Build summary
         profile = raw["stock_profile"]
         financial_items = _list_of_dicts(_as_dict(raw.get("financials")).get("items"))
@@ -177,11 +193,9 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
         research_items = _list_of_dicts(research.get("items"))
         news = _as_dict(raw.get("news"))
         news_items = _list_of_dicts(news.get("items"))
-        # Build dynamic missing list: only include genuinely unavailable fields.
-        # These three are industry-level metrics not available through free data sources.
-        # The rubric already provides alternative evaluation paths for when they're absent.
-        missing: list[str] = []
-
+        formal_items = _list_of_dicts(
+            _as_dict(raw.get("formal_growth_evidence")).get("items")
+        )
         lines = [
             "## 公司与行业",
             f"- 股票：{profile.get('name') or symbol} ({profile.get('symbol') or symbol})",
@@ -203,10 +217,21 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
                 )
         else:
             lines.append("- 缺失")
+        lines.extend(["", "## 定期报告正文中的中期承接能力"])
+        if formal_items:
+            for item in formal_items[:8]:
+                lines.append(
+                    f"- {item.get('date') or '未知日期'} {item.get('source') or '公司定期报告正文'}："
+                    f"{str(item.get('excerpt') or '')[:800]} {item.get('url') or ''}"
+                )
+        elif raw.get("formal_growth_evidence_error"):
+            lines.append(f"- 正文证据读取失败：{raw['formal_growth_evidence_error']}")
+        else:
+            lines.append("- 未取得与结构化投资逻辑相关的定期报告正文段落")
         lines.extend([
             "",
             "## 券商研报与盈利预测",
-            f"- 研报数量：{research.get('count', 0)}；正向评级：{research.get('positive_count', 0)}；数据日期：{research.get('data_time') or '缺失'}；是否过期：{research.get('is_stale')}",
+            f"- 研报数量：{research.get('count', 0)}；数据日期：{research.get('data_time') or '缺失'}；是否过期：{research.get('is_stale')}",
             f"- 盈利预测汇总：{_format_forecasts_summary(research_items)}",
             f"- 增速预测线索：{_extract_forecast_signals(research_items)}",
         ])
@@ -258,6 +283,7 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
         financial_items = ((raw.get("financials") or {}).get("items") or [])
         research_items = ((raw.get("research") or {}).get("items") or [])
         news_items = ((raw.get("news") or {}).get("items") or [])
-        if not financial_items and not research_items and not news_items:
-            return "财务、研报和需求新闻均无可用证据，无法验证未来三年增长空间"
+        formal_items = ((raw.get("formal_growth_evidence") or {}).get("items") or [])
+        if not financial_items and not research_items and not news_items and not formal_items:
+            return "财务、正式报告、研报和需求证据均不可用，无法验证未来三年增长空间"
         return None

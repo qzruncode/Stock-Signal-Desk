@@ -7,6 +7,7 @@ from typing import Any
 
 from src.services.buy_criteria.base import BaseCriterionEvaluator, CriterionEvidence
 from src.services.buy_criteria.data_service import DataService
+from src.services.buy_criteria.evidence_queries import structured_thesis_queries
 from src.services.buy_criteria.prompts.rubrics import COMPETITION_LANDSCAPE
 
 logger = logging.getLogger(__name__)
@@ -17,21 +18,6 @@ def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [v for v in value if isinstance(v, dict)]
     return []
-
-
-def _safe_str(val: Any) -> str:
-    if val is None:
-        return ""
-    return str(val).strip()
-
-
-def _safe_float(val: Any) -> float | None:
-    if val is None or val == "":
-        return None
-    try:
-        return float(val)
-    except (ValueError, TypeError):
-        return None
 
 
 class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
@@ -50,10 +36,6 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
                 "business_scope": stock_info.get("business_scope"),
             },
         }
-
-        # --- Stock industry name ---
-        industry_name = _safe_str(stock_info.get("industry", ""))
-        raw["industry_name"] = industry_name
 
         # --- Margin data — use pre-fetched valuation when available (from page) ---
         valuation = None
@@ -92,6 +74,23 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         # generic "latest industry reports" feed mixed solar, chemicals and
         # other unrelated price wars into precision-transmission judgments.
         raw["industry_research"] = _fetch_targeted_research(ds, symbol)
+        competition_items: list[dict[str, Any]] = []
+        competition_errors: list[str] = []
+        competition_queries = structured_thesis_queries(stock_info, limit=4)
+        for query in competition_queries:
+            try:
+                result = ds.search_industry_news(query, days=365, limit=8)
+                competition_items.extend(
+                    {**item, "query": query}
+                    for item in _list_of_dicts(result.get("items"))[:8]
+                )
+            except Exception as exc:
+                competition_errors.append(f"{query}: {exc}")
+        raw["competition_evidence"] = {
+            "queries": competition_queries,
+            "items": competition_items[:24],
+            "errors": competition_errors,
+        }
 
         # Build summary
         summary = _build_summary(raw)
@@ -104,145 +103,10 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         raw = evidence.raw_data
         margins = ((raw.get("margin_trend") or {}).get("items") or [])
         reports = ((raw.get("industry_research") or {}).get("items") or [])
-        if not margins and not reports:
-            return "毛利率趋势和行业竞争研究均无可用证据，无法证明行业不过度内卷"
+        industry_items = ((raw.get("competition_evidence") or {}).get("items") or [])
+        if not margins and not reports and not industry_items:
+            return "毛利率趋势、公司研究和细分产业竞争证据均不可用，无法证明竞争格局健康"
         return None
-
-
-# ---------------------------------------------------------------------------
-# Industry board — THS stock_board_industry_summary_ths
-# ---------------------------------------------------------------------------
-
-def _fetch_industry_board(industry_name: str) -> dict[str, Any]:
-    """Fetch THS industry board summary for the stock's industry.
-
-    Exact match only. If no match, the model uses industry reports + news
-    to judge competition landscape instead.
-    """
-    import re
-
-    if not industry_name:
-        return {"error": "no industry name"}
-
-    try:
-        import akshare as ak
-
-        name_df = ak.stock_board_industry_name_ths()
-        summary_df = ak.stock_board_industry_summary_ths()
-        if name_df is None or name_df.empty or summary_df is None or summary_df.empty:
-            return {"error": "ths tables empty"}
-
-        def _norm(s: str) -> str:
-            return re.sub(r'\s+', '', str(s).lower())
-
-        aliases = {
-            _norm(industry_name),
-            _norm(industry_name.replace("Ⅰ", "").replace("Ⅱ", "").replace("Ⅲ", "")),
-        }
-
-        ths_names = [str(n) for n in name_df["name"].astype(str)]
-        matched = None
-        for alias in aliases:
-            for tn in ths_names:
-                if alias == _norm(tn):
-                    matched = tn
-                    break
-            if matched:
-                break
-
-        if not matched:
-            return {"error": f"ths board not matched for '{industry_name}'"}
-
-        code_row = name_df[name_df["name"].astype(str) == matched]
-        matched_code = str(code_row.iloc[0]["code"]) if not code_row.empty else ""
-
-        s = summary_df.copy()
-        s["_name"] = s["板块"].astype(str)
-        row = s[s["_name"] == matched]
-        if row.empty:
-            return {"error": f"summary not found for '{matched}'", "matched_name": matched}
-
-        r = row.iloc[0]
-        up_down = _safe_str(r.get("涨跌家数"))
-        up_count = down_count = None
-        if "/" in up_down:
-            parts = up_down.split("/", 1)
-            up_count = _safe_float(parts[0])
-            down_count = _safe_float(parts[1])
-
-        return {
-            "matched_name": matched,
-            "matched_code": matched_code,
-            "rank": _safe_float(r.get("序号")),
-            "total_boards": int(len(summary_df)),
-            "change_pct": _safe_float(r.get("涨跌幅")),
-            "lead_stock": _safe_str(r.get("领涨股")),
-            "lead_stock_change_pct": _safe_float(r.get("领涨股-涨跌幅")),
-            "up_count": up_count,
-            "down_count": down_count,
-            "total_amount": _safe_float(r.get("总成交额")) * 1e8 if _safe_float(r.get("总成交额")) else None,
-            "net_flow": _safe_float(r.get("净流入")) * 1e8 if _safe_float(r.get("净流入")) else None,
-        }
-    except Exception as exc:
-        logger.warning("[competition] THS industry board failed: %s", exc)
-        return {"error": str(exc)}
-
-
-# ---------------------------------------------------------------------------
-# Industry reports — RSSHub eastmoney_report/industry
-# ---------------------------------------------------------------------------
-
-def _fetch_industry_reports() -> dict[str, Any]:
-    """Fetch industry research reports via RSSHub."""
-    try:
-        from api.v1.endpoints._rss_reader import read_feed
-
-        result = read_feed(
-            route_path="/eastmoney/report/:category",
-            params={"category": "industry"},
-            limit=12,
-            force=False,
-        )
-        items = _list_of_dicts(result.get("items"))
-        if items:
-            return {
-                "items": [
-                    {
-                        "title": item.get("title"),
-                        "source": item.get("author") or item.get("source") or "东方财富行业研报",
-                        "time": item.get("published") or item.get("publish_time"),
-                        "link": item.get("link"),
-                    }
-                    for item in items[:12]
-                ],
-            }
-    except Exception as exc:
-        logger.warning("[competition] industry reports failed: %s", exc)
-
-    return {"items": []}
-
-
-# ---------------------------------------------------------------------------
-# Stock news
-# ---------------------------------------------------------------------------
-
-def _fetch_stock_news(ds: DataService, symbol: str) -> list[dict[str, Any]]:
-    """Fetch stock-level news (supplementary context only)."""
-    try:
-        news = ds.search_news(symbol, days=90)
-        items = _list_of_dicts(news.get("items"))
-        return [
-            {
-                "title": n.get("title"),
-                "summary": (n.get("summary") or "")[:200],
-                "source": n.get("source"),
-                "time": n.get("publish_time"),
-            }
-            for n in items[:8]
-        ]
-    except Exception as exc:
-        logger.warning("[competition] stock news failed: %s", exc)
-        return []
 
 
 def _fetch_targeted_research(ds: DataService, symbol: str) -> dict[str, Any]:
@@ -312,10 +176,26 @@ def _build_summary(raw: dict[str, Any]) -> str:
     else:
         lines.append("- 无已按证券过滤的研报数据")
 
+    competition = raw.get("competition_evidence") or {}
+    lines.extend([
+        "",
+        "## 细分产业竞争与供给证据",
+        f"- 结构化查询方向：{'、'.join(competition.get('queries') or []) or '缺失'}",
+    ])
+    for item in _list_of_dicts(competition.get("items")):
+        lines.append(
+            f"- [{item.get('query') or '未标注方向'}] "
+            f"{item.get('publish_time') or item.get('date') or '未知日期'} "
+            f"{item.get('source') or '公开资料'}：{item.get('title') or '无标题'}；"
+            f"{str(item.get('summary') or item.get('content') or '')[:260]}"
+        )
+    if not _list_of_dicts(competition.get("items")):
+        lines.append("- 未取得可用的细分产业竞争材料")
+
     lines.extend([
         "",
         "## 判断约束",
-        "- 只判断公司真实受益的细分产品行业。任何其他行业（例如光伏、硅料、白酒）的降价、产能或内卷材料均为无效证据。",
+        "- 只判断公司真实受益的细分产品行业。其他行业的降价、产能或内卷材料均为无效证据。",
         "- 股价、板块涨跌、资金流、换手率和新闻中的个股下跌，全部不能证明产品价格战或产业内卷。",
         "- 单个季度毛利率回落不等于连续下滑；至少需要两个连续季度下降，或同时有同一细分行业的降价、扩产过剩、份额恶化等证据，才可据此否决。",
         "- 公司毛利率不等于行业平均毛利率。若行业均值缺失，必须如实标注，不能把公司单季变化改写为行业趋势。",

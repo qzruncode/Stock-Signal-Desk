@@ -9,7 +9,7 @@ for deterministic aggregation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Iterable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -76,15 +76,16 @@ INVESTMENT_DECISION = AnalysisPlaybook(
     id="strict_sequential_buy_decision",
     title="九项严格买入判断",
     evidence_standard=(
-        "固定顺序核验当前市场主线真实受益和可验证产业竞争力。",
+        "第一关只核验产业方向当前是否具备主线、活跃分支或独立事件驱动交易条件。",
+        "第二关用定期报告正文、主营构成、订单、量产、客户和壁垒核验公司真实受益与竞争力。",
         "核验未来三年空间、景气上行、不过度内卷和未来6—12个月催化。",
         "核验重大风险、合理估值与利好是否已被股价反映。",
         "最后用当前行情确定买入区间、止损、目标参考和风险收益比。",
         "分业务收入或利润未披露时，允许用订单、销量、客户、产能、量产和连续增速替代核验。",
     ),
     output_contract=(
-        "每只股票在首个未通过项停止，后续项目不得抵消失败。",
-        "只有九项全部通过才允许输出可买入，数据或分析失败一律不可买入。",
+        "每只股票按固定顺序执行九项布尔闸门；首个不通过或证据不足项立即停止后续分析。",
+        "只有连续九项全部通过才允许输出可买入；后续未执行项不得补偿前置否决。",
         "可买入项必须给仓位建议、买入区间、止损、风险收益比和逻辑失效条件。",
         "多股任务必须证明完整集合覆盖，不能把分批缺失当作完整答案。",
     ),
@@ -111,7 +112,7 @@ STOCK_DEEP_RESEARCH = AnalysisPlaybook(
 class CollectionFinancialFilterSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    metric: Literal["debt_ratio", "revenue", "deducted_net_profit"]
+    metric: Literal["debt_ratio", "revenue", "net_profit", "deducted_net_profit"]
     period_basis: Literal[
         "latest_report", "ttm", "previous_fiscal_year", "fiscal_year"
     ]
@@ -133,7 +134,9 @@ class CollectionFinancialFilterSpec(BaseModel):
                 raise ValueError("currency metrics require a CNY threshold unit")
             if self.period_basis == "latest_report":
                 raise ValueError("currency metrics require ttm or a fiscal-year period")
-        if self.metric != "deducted_net_profit" and self.threshold < 0:
+            if self.metric == "net_profit" and self.period_basis == "ttm":
+                raise ValueError("net_profit currently requires a fiscal-year period")
+        if self.metric not in {"net_profit", "deducted_net_profit"} and self.threshold < 0:
             raise ValueError("only profit thresholds may be negative")
         if self.period_basis == "fiscal_year" and self.fiscal_year is None:
             raise ValueError("fiscal_year is required when period_basis is fiscal_year")
@@ -156,8 +159,118 @@ class CollectionFinancialFilterSpec(BaseModel):
         return {
             "debt_ratio": "资产负债率",
             "revenue": "营业收入",
+            "net_profit": "归母净利润",
             "deducted_net_profit": "扣非净利润",
         }[self.metric]
+
+
+def project_collection_financial_filter_entities(
+    input_entities: Iterable[Mapping[str, Any]],
+    result_context: Iterable[Mapping[str, Any]],
+    parameters: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Project the exact retained collection from typed financial results.
+
+    The rendered Markdown is deliberately irrelevant here.  A follow-up such
+    as "这些里面哪些能买" must inherit the program-computed output set, not
+    the input set and not a sample copied by the planning model.
+    """
+    spec = CollectionFinancialFilterSpec.model_validate(parameters)
+    ordered = [
+        {
+            "symbol": str(item.get("symbol") or "").strip(),
+            "name": str(item.get("name") or item.get("symbol") or "").strip(),
+        }
+        for item in input_entities
+        if str(item.get("symbol") or "").strip()
+    ]
+    rows: dict[str, Mapping[str, Any]] = {}
+    for result in result_context:
+        if not isinstance(result, Mapping) or result.get("success") is False:
+            continue
+        for item in result.get("items") or []:
+            if not isinstance(item, Mapping):
+                continue
+            symbol = str(item.get("symbol") or "").strip()
+            if symbol and isinstance(item.get("financial_value"), (int, float)):
+                rows[symbol] = item
+
+    # An incomplete transform has no authoritative output collection.  Failing
+    # closed here prevents a partial batch from silently becoming the next
+    # conversational universe.
+    if any(item["symbol"] not in rows for item in ordered):
+        return []
+
+    threshold = spec.normalized_threshold
+    comparator = {
+        "gt": lambda value: value > threshold,
+        "gte": lambda value: value >= threshold,
+        "lt": lambda value: value < threshold,
+        "lte": lambda value: value <= threshold,
+        "eq": lambda value: value == threshold,
+    }[spec.operator]
+    retained: list[dict[str, str]] = []
+    for entity in ordered:
+        matched = comparator(float(rows[entity["symbol"]]["financial_value"]))
+        keep = not matched if spec.action == "exclude_matching" else matched
+        if keep:
+            retained.append(entity)
+    return retained
+
+
+def project_task_output_entities(
+    kind: str,
+    input_entities: Iterable[Mapping[str, Any]],
+    result_context: Iterable[Mapping[str, Any]],
+    parameters: Mapping[str, Any],
+) -> list[dict[str, str]]:
+    """Return the task's typed output collection according to its contract."""
+    if kind == "collection_financial_filter":
+        return project_collection_financial_filter_entities(
+            input_entities,
+            result_context,
+            parameters,
+        )
+
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            symbol = str(
+                value.get("symbol")
+                or value.get("code")
+                or value.get("stock_code")
+                or ""
+            ).strip()
+            if len(symbol) == 6 and symbol.isdigit() and symbol not in seen:
+                seen.add(symbol)
+                found.append({
+                    "symbol": symbol,
+                    "name": str(
+                        value.get("name")
+                        or value.get("stock_name")
+                        or symbol
+                    ).strip(),
+                })
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for result in result_context:
+        visit(result)
+    if found:
+        return found
+    return [
+        {
+            "symbol": str(item.get("symbol") or "").strip(),
+            "name": str(item.get("name") or item.get("symbol") or "").strip(),
+        }
+        for item in input_entities
+        if str(item.get("symbol") or "").strip()
+    ]
 
 
 class DomainBoardQuerySpec(BaseModel):
@@ -196,6 +309,15 @@ class DomainBoardQuerySpec(BaseModel):
         return self
 
 
+class InvestmentThesisContext(BaseModel):
+    """Structured thesis evidence reused by strict investment workflows."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    summary: str = Field(default="", max_length=400)
+    domains: list[DomainBoardQuerySpec] = Field(default_factory=list, max_length=12)
+
+
 class MappingSelectionContext(BaseModel):
     """Semantic writing context; it never selects a workflow or a tool."""
 
@@ -216,6 +338,7 @@ __all__ = [
     "AnalysisPlaybook",
     "CollectionFinancialFilterSpec",
     "DomainBoardQuerySpec",
+    "InvestmentThesisContext",
     "INDUSTRY_CHAIN",
     "INVESTMENT_DECISION",
     "MappingSelectionContext",

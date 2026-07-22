@@ -33,7 +33,12 @@ def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
     code = bare_symbol(symbol)
     safe_count = max(80, min(int(count), 250))
     local_rows = _get_kline_from_stock_daily(code, safe_count) or []
-    if len(local_rows) >= 30:
+    # A long local history is not sufficient if its latest bar is stale.  The
+    # old shortcut silently skipped the multi-source refresh and made the
+    # final entry gate compare today's quote with indicators several sessions
+    # old.  Fresh local rows remain the fast path; stale rows go through the
+    # normal K-line refresh and realtime-bar completion chain.
+    if len(local_rows) >= 30 and not _kline_is_stale(local_rows):
         data_time = _kline_data_time(local_rows)
         today = datetime.now().date().isoformat()
         raw = {

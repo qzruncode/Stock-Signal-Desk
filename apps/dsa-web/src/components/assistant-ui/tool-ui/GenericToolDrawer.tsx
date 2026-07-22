@@ -42,7 +42,13 @@ const GenericToolUI = ({
   status,
 }: ToolCallMessagePartProps<Record<string, unknown>, unknown>) => {
   const [drawerState, setDrawerState] = useState<'closed' | 'open' | 'closing'>('closed');
-  const label = TOOL_LABELS[toolName] || toolName;
+  const baseLabel = TOOL_LABELS[toolName] || toolName;
+  const strictCollectionCount = toolName === 'evaluate_multi_stock_buy_criteria'
+    ? String(args?.symbols || '').split(',').filter(Boolean).length
+    : 0;
+  const label = strictCollectionCount > 0
+    ? `${strictCollectionCount}只股票九项买入闸门`
+    : baseLabel;
   const argsDisplay = stringifyCompact(args) || argsText;
   const failed = isError || (status.type === 'incomplete' && status.reason === 'error');
   const statusText = status.type === 'running' ? '运行中' : failed ? '失败' : '已完成';

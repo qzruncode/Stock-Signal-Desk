@@ -243,14 +243,27 @@ def test_history_persisted_at_generation_start(client):
         "clarification_question": None,
     })
 
-    def spy_snapshot(self, conversation_id, messages, thread_state=None, skip_title=False):
+    def spy_snapshot(
+        self,
+        conversation_id,
+        messages,
+        thread_state=None,
+        agent_context=None,
+        skip_title=False,
+    ):
         snapshot_calls.append({
             "conversation_id": conversation_id,
             "messages": list(messages) if messages else [],
             "skip_title": skip_title,
         })
-        return real_snapshot(self, conversation_id, messages, thread_state) \
-            if thread_state else real_snapshot(self, conversation_id, messages)
+        return real_snapshot(
+            self,
+            conversation_id,
+            messages,
+            thread_state=thread_state,
+            agent_context=agent_context,
+            skip_title=skip_title,
+        )
 
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \

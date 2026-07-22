@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import os
+import inspect
 from datetime import datetime
 from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
+
+import src.tools.search_financial_news as financial_news_module
+import src.tools.search_research_library as research_library_module
 
 from src.tools.get_consensus_estimates import get_consensus_estimates
 from src.tools.get_peer_comparison import get_peer_comparison
@@ -17,7 +21,6 @@ from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 from src.tools.search_financial_news import (
-    _infer_topic,
     _matches_subject,
     _select_specs,
     _subject_terms,
@@ -41,6 +44,23 @@ from src.tools.websearch import (
 )
 
 
+def test_research_search_tools_contain_no_query_intent_router() -> None:
+    financial_source = inspect.getsource(financial_news_module)
+    research_source = inspect.getsource(research_library_module)
+
+    for source in (financial_source, research_source):
+        assert "_infer_topic" not in source
+        assert "_infer_category" not in source
+        assert "_INTENT_WORDS" not in source
+        assert "_HIGH_PRECISION_SUBJECTS" not in source
+    assert {"query", "topic"} <= set(
+        financial_news_module.TOOL.parameters["required"]
+    )
+    assert {"query", "category", "subjects"} <= set(
+        research_library_module.TOOL.parameters["required"]
+    )
+
+
 def _catalog_route(
     route_path: str,
     name: str,
@@ -58,7 +78,7 @@ def _catalog_route(
     }
 
 
-def test_semantic_rss_selector_can_choose_non_default_catalog_route() -> None:
+def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording() -> None:
     routes = [
         _catalog_route("/eastmoney/report/:category", "研究报告", params=[{
             "name": "category", "required": True, "options": [{"value": "stock", "label": "个股研报"}],
@@ -68,15 +88,15 @@ def test_semantic_rss_selector_can_choose_non_default_catalog_route() -> None:
         }]),
     ]
 
-    selected = _select_specs(routes, "穆迪评级报告", "research")
+    first = _select_specs(routes, "穆迪评级报告", "research")
+    second = _select_specs(routes, "请帮我找一找信用方面的机构材料", "research")
 
-    assert selected[0][0] == "/moodysmismicrosite/report/:industry?"
-    assert selected[0][1] == {"industry": "全部"}
+    assert first == second
+    assert first[0][0] == "/eastmoney/report/:category"
 
 
 def test_industry_news_uses_named_topic_not_generic_progress_words_as_subject():
-    query = "人形机器人 A股 公司 订单 送样 定点 客户验证 收入 批量供货"
-    terms = _subject_terms(query)
+    terms = _subject_terms(["人形机器人"])
 
     assert "人形机器人" in terms
     assert "送样" not in terms
@@ -125,7 +145,9 @@ def test_szse_inquiry_fills_all_path_segments_before_keyword() -> None:
         ],
     )
 
-    selected = _select_specs([route], "000001 问询函", "announcement")
+    selected = _select_specs(
+        [route], "请查询该公司的交易所函件", "announcement", ["000001"],
+    )
 
     assert selected[0][1] == {
         "category": "0",
@@ -190,17 +212,9 @@ def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     assert result["items"][0]["link"] == "https://example.com/a"
 
 
-def test_semantic_rss_plain_stock_name_infers_company_topic() -> None:
-    with patch(
-        "src.data.stock_index_loader.get_stock_name_index_map",
-        return_value={"600519": "贵州茅台", "000001": "平安银行"},
-    ):
-        assert _infer_topic("贵州茅台") == "company"
-
-
-def test_semantic_rss_central_bank_reverse_repo_is_macro_not_company_buyback() -> None:
-    assert _infer_topic("央行逆回购") == "macro"
-    assert _infer_topic("贵州茅台回购公告") == "announcement"
+def test_semantic_rss_rejects_missing_structured_topic() -> None:
+    with pytest.raises(ValueError, match="topic"):
+        search_financial_news("贵州茅台换一种说法也不能触发工具内猜测")
 
 
 def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text() -> None:
@@ -228,7 +242,9 @@ def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text()
     with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
          patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
         result = search_financial_news(
-            "央行逆回购",
+            "请查看这次公开市场流动性操作",
+            topic="macro",
+            subjects=["逆回购"],
             fallback_to_web=False,
         )
 
@@ -299,6 +315,7 @@ def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
         result = search_financial_news(
             "贵州茅台最新消息",
             topic="company",
+            subjects=["贵州茅台"],
             days=30,
             fallback_to_web=False,
         )
@@ -322,7 +339,7 @@ def test_semantic_rss_empty_success_is_distinct_from_failed_web_fallback() -> No
     with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
          patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}), \
          patch("src.tools.websearch.websearch", return_value=fallback):
-        result = search_financial_news("市场发生了什么")
+        result = search_financial_news("市场发生了什么", topic="market")
 
     # The RSS route itself was reached successfully and legitimately returned
     # zero rows.  The separate web fallback failed; neither fact may overwrite

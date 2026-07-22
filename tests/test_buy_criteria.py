@@ -145,13 +145,18 @@ class TestMainlinePositionEvidence:
         ), patch(
             "src.services.buy_criteria.evaluators.mainline_position.DataService.get_social_sentiment",
             return_value={},
+        ), patch.object(
+            DataService,
+            "get_sector_flow",
+            return_value={"records": [], "sector_count": 0, "data_time": "2026-06-18", "is_stale": False},
         ):
             evidence = evaluator.collect_data("300502.SZ", stock_info)
 
-        assert "主营业务：光模块的研发、生产和销售。" in evidence.data_summary
+        assert "主营业务：光模块的研发、生产和销售。" not in evidence.data_summary
+        assert "本关只判断该方向当前是否具有主线" in evidence.data_summary
         assert "AI科技链（算力底座与半导体设备）" in evidence.data_summary
         assert "候选主线（仅作观察，不等同于当前主线）" in evidence.data_summary
-        assert "严禁用公司名、行业名或产品名做字符串/关键词命中" in evidence.data_summary
+        assert "严禁用公司旧主营简介来否定或证明市场主线" in evidence.data_summary
         assert "不是封闭白名单" in evidence.data_summary
         assert evidence.raw_data["market_mainline_report"]["current_mainlines"][0]["rank"] == 1
 
@@ -323,12 +328,10 @@ class TestCompetitionLandscapeEvidence:
                 "title": "谐波减速器龙头，技术与份额壁垒稳固",
                 "summary": "头部企业具备技术、客户和规模壁垒。",
             }]},
-        ), patch(
-            "src.services.buy_criteria.evaluators.competition_landscape._fetch_industry_reports",
-            side_effect=AssertionError("generic cross-industry feed must not be called"),
-        ), patch(
-            "src.services.buy_criteria.evaluators.competition_landscape._fetch_stock_news",
-            side_effect=AssertionError("stock-price news must not be called"),
+        ), patch.object(
+            DataService,
+            "search_industry_news",
+            return_value={"items": []},
         ):
             evidence = evaluator.collect_data("688017", stock_info)
 
@@ -536,8 +539,8 @@ class TestBaseEvaluatorWithMockedLLM:
 
 
 class TestOrchestrator:
-    def test_early_termination(self):
-        """If evaluator 0 fails, only 1 result should be returned."""
+    def test_first_failure_stops_the_boolean_gate_chain(self):
+        """A failed market view must stop the remaining eight reviews."""
         orchestrator = CriterionOrchestrator()
         mock_result_fail = CriterionResult(
             criterion_id="mainline_position", criterion_name="市场主线属性",
@@ -546,8 +549,33 @@ class TestOrchestrator:
 
         mock_stock_info = {"symbol": "000001", "name": "测试", "industry": "测试"}
 
+        def pass_result(index):
+            evaluator = EVALUATOR_CLASSES[index]()
+            return CriterionResult(
+                criterion_id=evaluator.criterion_id,
+                criterion_name=evaluator.criterion_name,
+                index=index,
+                passed=True,
+                verdict="通过",
+            )
+
         with patch("src.services.buy_criteria.orchestrator._get_stock_info_safe", return_value=mock_stock_info):
-            with patch.object(EVALUATOR_CLASSES[0], "evaluate", return_value=mock_result_fail):
+            with ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(
+                        EVALUATOR_CLASSES[0],
+                        "evaluate",
+                        return_value=mock_result_fail,
+                    )
+                )
+                for index, evaluator_cls in enumerate(EVALUATOR_CLASSES[1:], 1):
+                    stack.enter_context(
+                        patch.object(
+                            evaluator_cls,
+                            "evaluate",
+                            return_value=pass_result(index),
+                        )
+                    )
                 results = orchestrator.run("000001")
 
         assert len(results) == 1

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from api.v1.endpoints.agent import chat as chat_mod
@@ -24,7 +26,9 @@ from src.services.buy_criteria.evaluators.catalyst_events import (
     normalize_catalyst_details,
 )
 from src.services.catalyst_evidence import (
+    extract_business_passages,
     extract_forward_window_passages,
+    fetch_formal_document,
     select_formal_documents,
 )
 from src.tools.analyze_stock_catalysts import analyze_stock_catalysts
@@ -101,19 +105,39 @@ def _payload() -> dict:
     }
 
 
-def test_explicit_company_catalyst_request_bypasses_semantic_planner() -> None:
-    async def forbidden_completion(**_kwargs):
-        raise AssertionError("explicit catalyst research must not call the semantic planner")
+def test_explicit_company_catalyst_request_uses_semantic_planner() -> None:
+    payload = {
+        "tasks": [_task().model_dump(mode="json")],
+        "needs_clarification": False,
+        "clarification_question": None,
+    }
+    plan_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_plan",
+            arguments=json.dumps(payload, ensure_ascii=False),
+        ))],
+        content=None,
+    ))])
+    selection_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+        tool_calls=[SimpleNamespace(function=SimpleNamespace(
+            name="submit_standard_task_selection",
+            arguments=json.dumps({
+                "selected_kinds": [StandardTaskKind.CATALYST_ANALYSIS.value],
+            }),
+        ))],
+        content=None,
+    ))])
+    completion = AsyncMock(side_effect=[selection_response, plan_response])
 
     plan = asyncio.run(resolve_task_plan(
         [{"role": "user", "content": "看下鸣志电器未来 6—12 个月的催化事件"}],
         {"model": "test", "api_base": ""},
-        completion=forbidden_completion,
+        completion=completion,
         current_entities=[{"name": "鸣志电器", "symbol": "603728"}],
         previous_answer_entities=[],
     ))
 
-    assert plan.source == "deterministic_explicit_research_contract"
+    assert completion.await_count == 2
     assert plan.tasks[0].kind == StandardTaskKind.CATALYST_ANALYSIS
     assert plan.tasks[0].entity_scope == EntityScope.CURRENT_MESSAGE
 
@@ -198,6 +222,51 @@ def test_forward_report_passages_are_recalled_by_calendar_structure_not_catalyst
 
     assert [item["time_window"] for item in passages] == ["2026年下半年", "2026年四季度"]
     assert "启动交付" in passages[0]["excerpt"]
+
+
+def test_business_report_passages_follow_structured_thesis_without_stock_rules() -> None:
+    content = (
+        "公司消费电子业务保持稳定。"
+        "机器人头部模组已稳定量产，六维力传感器、关节模组与灵巧手模组进入客户供应链。"
+        "公司已建立机器人整机研发和批量生产体系。"
+    )
+    passages = extract_business_passages(
+        content,
+        thesis="人形机器人上游核心零部件",
+        thesis_context={"domains": [{
+            "label": "灵巧手及力控部件",
+            "board_queries": ["人形机器人", "机器人执行器"],
+        }]},
+    )
+
+    assert passages
+    assert "六维力传感器" in passages[0]["excerpt"]
+    assert passages[0]["matched_query_fragments"]
+
+
+def test_formal_document_uses_primary_pdf_when_metadata_body_is_empty() -> None:
+    primary_pdf = "https://static.cninfo.com.cn/finalpage/2026-03-31/report.pdf"
+    with patch(
+        "src.services.catalyst_evidence._fetch_content_page",
+        return_value={
+            "notice_title": "测试公司2025年年度报告",
+            "notice_date": "2026-03-31",
+            "notice_content": "",
+            "page_size": 1,
+            "attach_url_web": "https://secondary.example/report.pdf",
+        },
+    ), patch(
+        "src.services.catalyst_evidence._extract_pdf_text",
+        return_value=("机器人核心部件已经规模化交付。", 88),
+    ) as extract_pdf:
+        document = fetch_formal_document({
+            "url": "https://data.example/AN20260331000001.html",
+            "preferred_document_url": primary_pdf,
+        })
+
+    extract_pdf.assert_called_once_with(primary_pdf, max_pages=120)
+    assert document["content"] == "机器人核心部件已经规模化交付。"
+    assert document["page_count"] == 88
 
 
 def test_catalyst_gate_fails_closed_when_model_does_not_return_bound_events() -> None:
@@ -354,17 +423,24 @@ class _Controller:
         return stream
 
 
-def test_production_catalyst_request_calls_data_tool_without_planner_or_synthesis() -> None:
+def test_production_catalyst_request_calls_fixed_tool_then_semantic_synthesis() -> None:
     controller = _Controller()
-    completion = AsyncMock(side_effect=AssertionError("no planner or final model call expected"))
+    candidate = _task()
+    resolved = [ResolvedTask(candidate=candidate, symbols=("603728",))]
     with patch.object(
-        chat_mod,
-        "find_securities_in_text",
-        return_value=[{"name": "鸣志电器", "symbol": "603728"}],
-    ), patch.object(chat_mod.litellm, "acompletion", new=completion), patch.object(
+        chat_mod, "resolve_task_plan", new=AsyncMock(return_value=chat_mod.TaskPlan(tasks=[candidate]))
+    ), patch.object(
+        chat_mod, "resolve_plan_entities", return_value=resolved
+    ), patch.object(
         chat_mod,
         "execute_tool_isolated",
         return_value=_payload(),
+    ), patch.object(
+        chat_mod,
+        "_stream_final_answer_without_tools",
+        new=AsyncMock(return_value="鸣志电器的已核验催化窗口为 2027-Q1。"),
+    ), patch.object(
+        chat_mod, "_flush_substreams", new=AsyncMock()
     ):
         answer = asyncio.run(_run_standard_task_pipeline(
             controller,
@@ -374,4 +450,3 @@ def test_production_catalyst_request_calls_data_tool_without_planner_or_synthesi
 
     assert controller.tool_calls == ["analyze_stock_catalysts"]
     assert "2027-Q1" in answer
-    completion.assert_not_awaited()

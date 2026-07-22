@@ -67,7 +67,8 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
     def get_rubric(self) -> str:
         return (
             "本项由程序根据当前行情和前复权日线指标确定性计算，不调用模型。"
-            "现价必须处于支撑位上方半个ATR以内，目标阻力位到止损位的风险收益比不得低于2，"
+            "允许支撑位回踩和趋势突破两类入场；当前价格必须进入相应触发区间，"
+            "目标阻力位到止损位的风险收益比不得低于2，"
             "同时RSI不得超过75且ATR占现价不得超过6%；任一数据缺失或条件不满足均判为不通过。"
         )
 
@@ -112,6 +113,8 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
                 criterion_name=self.criterion_name,
                 index=self.index,
                 passed=False,
+                status="insufficient",
+                confidence="low",
                 verdict=(
                     "现价、ATR、ATR占比、RSI或数据时间不完整，无法验证买入位置和风险收益比"
                     if freshness is False
@@ -158,16 +161,109 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
                 details=details,
             )
 
-        support_label, support = max(support_points.items(), key=lambda item: item[1])
-        resistance_label, target = min(resistance_points.items(), key=lambda item: item[1])
-        entry_low = support
-        entry_high = support + atr * 0.5
-        stop_loss = support - atr
-        entry_reference = max(current, entry_high)
-        risk = entry_reference - stop_loss
-        reward = target - entry_reference
-        ratio = reward / risk if risk > 0 else None
-        near_entry = current <= entry_high
+        support_label, support = max(
+            support_points.items(),
+            key=lambda item: item[1],
+        )
+        resistance_label, conservative_target = min(
+            resistance_points.items(),
+            key=lambda item: item[1],
+        )
+        ma20 = _number(indicators.get("ma20"))
+        ma60 = _number(indicators.get("ma60"))
+        high_20d = _number(indicators.get("high_20d"))
+        trend_up = bool(
+            ma20 is not None
+            and ma60 is not None
+            and current >= ma20 >= ma60
+        )
+
+        setups: list[dict[str, Any]] = []
+        pullback_entry_low = support
+        pullback_entry_high = support + atr * 0.75
+        pullback_stop = support - atr
+        pullback_reference = max(current, pullback_entry_low)
+        pullback_risk = pullback_reference - pullback_stop
+        pullback_reward = conservative_target - pullback_reference
+        setups.append({
+            "setup": "支撑位回踩",
+            "actionable": current <= pullback_entry_high,
+            "entry_low": pullback_entry_low,
+            "entry_high": pullback_entry_high,
+            "stop_loss": pullback_stop,
+            "target": conservative_target,
+            "risk_reward_ratio": (
+                pullback_reward / pullback_risk
+                if pullback_risk > 0
+                else None
+            ),
+            "support_basis": support_label,
+            "resistance_basis": resistance_label,
+            "trigger": f"回踩{support_label}附近并保持支撑有效",
+        })
+
+        if high_20d is not None and trend_up:
+            breakout_entry_low = high_20d
+            breakout_entry_high = high_20d + atr * 0.35
+            breakout_stop_anchor = max(
+                value
+                for value in (ma20, high_20d - atr)
+                if value is not None
+            )
+            breakout_stop = breakout_stop_anchor - atr * 0.35
+            breakout_reference = max(current, breakout_entry_low)
+            breakout_targets = [
+                (label, value)
+                for label, value in resistance_points.items()
+                if value > breakout_reference
+            ]
+            if breakout_targets:
+                breakout_resistance, breakout_target = min(
+                    breakout_targets,
+                    key=lambda item: item[1],
+                )
+                breakout_risk = breakout_reference - breakout_stop
+                breakout_reward = breakout_target - breakout_reference
+                setups.append({
+                    "setup": "趋势突破",
+                    "actionable": (
+                        current >= high_20d - atr * 0.20
+                        and current <= breakout_entry_high
+                    ),
+                    "entry_low": breakout_entry_low,
+                    "entry_high": breakout_entry_high,
+                    "stop_loss": breakout_stop,
+                    "target": breakout_target,
+                    "risk_reward_ratio": (
+                        breakout_reward / breakout_risk
+                        if breakout_risk > 0
+                        else None
+                    ),
+                    "support_basis": "20日高点突破位/MA20",
+                    "resistance_basis": breakout_resistance,
+                    "trigger": "放量站稳20日高点且次日不跌回突破位",
+                })
+
+        viable = [
+            setup
+            for setup in setups
+            if setup["actionable"]
+            and setup.get("risk_reward_ratio") is not None
+            and setup["risk_reward_ratio"] >= 2.0
+        ]
+        selected = max(
+            viable or setups,
+            key=lambda item: (
+                bool(item["actionable"]),
+                item.get("risk_reward_ratio") or float("-inf"),
+            ),
+        )
+        entry_low = selected["entry_low"]
+        entry_high = selected["entry_high"]
+        stop_loss = selected["stop_loss"]
+        target = selected["target"]
+        ratio = selected.get("risk_reward_ratio")
+        near_entry = bool(selected["actionable"])
         rr_ok = ratio is not None and ratio >= 2.0
         rsi_ok = rsi <= 75.0
         volatility_ok = atr_pct <= 6.0
@@ -184,7 +280,7 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
 
         failure_reasons = []
         if not near_entry:
-            failure_reasons.append("现价高于买入区间上沿")
+            failure_reasons.append("回踩与趋势突破两类入场触发均未满足")
         if not rr_ok:
             failure_reasons.append("潜在收益/止损风险低于2")
         if not rsi_ok:
@@ -199,8 +295,25 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
             "stop_loss": _rounded(stop_loss),
             "target_reference": _rounded(target),
             "risk_reward_ratio": _rounded(ratio),
-            "support_basis": support_label,
-            "resistance_basis": resistance_label,
+            "support_basis": selected["support_basis"],
+            "resistance_basis": selected["resistance_basis"],
+            "setup_type": selected["setup"],
+            "entry_trigger": selected["trigger"],
+            "alternative_setups": [
+                {
+                    "setup": setup["setup"],
+                    "entry_zone_low": _rounded(setup["entry_low"]),
+                    "entry_zone_high": _rounded(setup["entry_high"]),
+                    "stop_loss": _rounded(setup["stop_loss"]),
+                    "target_reference": _rounded(setup["target"]),
+                    "risk_reward_ratio": _rounded(
+                        setup.get("risk_reward_ratio")
+                    ),
+                    "actionable": setup["actionable"],
+                    "trigger": setup["trigger"],
+                }
+                for setup in setups
+            ],
             "atr14": _rounded(atr),
             "atr14_pct": _rounded(atr_pct),
             "rsi14": _rounded(rsi),
@@ -213,7 +326,7 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
             ],
         })
         verdict = (
-            f"进入{entry_low:.2f}—{entry_high:.2f}买入区间，止损{stop_loss:.2f}，"
+            f"{selected['setup']}触发：进入{entry_low:.2f}—{entry_high:.2f}买入区间，止损{stop_loss:.2f}，"
             f"目标参考{target:.2f}，风险收益比{ratio:.2f}，可用{initial_position}%试仓、"
             f"最高{max_position}%"
             if passed and ratio is not None
@@ -224,6 +337,8 @@ class EntryRiskRewardEvaluator(BaseCriterionEvaluator):
             criterion_name=self.criterion_name,
             index=self.index,
             passed=passed,
+            status="pass" if passed else "fail",
+            confidence="high",
             verdict=verdict,
             evidence=evidence,
             details=details,

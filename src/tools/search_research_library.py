@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.tools._akshare import bare_symbol
 from src.tools.base import ToolSpec, object_schema
 
 
@@ -22,91 +21,9 @@ _NIFD_CATEGORIES = {
     "working_paper": "3d23ba0e-4f46-44c2-9d21-6b38df4cdd70",
 }
 
-_FUTURES_ALIASES = {
-    "black": ("黑色", "螺纹", "铁矿", "焦煤", "焦炭", "钢材"),
-    "enchem": ("能化", "原油", "化工", "塑料", "沥青", "燃料油", "甲醇"),
-    "nonfe": ("有色", "铜", "铝", "锌", "铅", "镍", "锡"),
-    "agri": ("农产品", "豆粕", "玉米", "棉花", "白糖", "生猪", "油脂"),
-    "bond": ("国债", "债券"),
-    "exrate": ("外汇", "人民币", "美元", "汇率"),
-    "option": ("期权",),
-    "ship": ("航运", "集运"),
-    "stockindex_IM/IF/IH/IC": ("股指", "沪深300", "中证500", "中证1000", "上证50"),
-    "macro": ("宏观",),
-}
-
-
-def _infer_category(query: str, requested: str) -> str:
-    if requested != "all":
-        return requested
-    text = query.lower()
-    if any(word in text for word in ("穆迪", "评级", "信用", "违约", "城投")):
-        return "rating"
-    if any(word in text for words in _FUTURES_ALIASES.values() for word in words) or any(word in text for word in ("期货", "商品")):
-        return "futures"
-    if any(word in text for word in ("宏观", "经济", "货币", "利率", "通胀", "cpi", "pmi", "gdp", "社融")):
-        return "macro"
-    try:
-        code = bare_symbol(query)
-    except Exception:
-        code = ""
-    if re.fullmatch(r"\d{6}", code):
-        return "stock"
-    try:
-        from src.data.stock_index_loader import get_stock_name_index_map
-
-        if any(name and name in query for name in get_stock_name_index_map().values()):
-            return "stock"
-    except Exception:
-        pass
-    return "industry"
-
-
-def _catalog_options(path: str) -> list[dict[str, str]]:
-    try:
-        from api.v1.endpoints._rss_catalog import get_rss_catalog
-
-        route = next((row for row in get_rss_catalog().get("routes") or [] if row.get("route_path") == path), None)
-        return [option for param in (route or {}).get("params") or [] for option in param.get("options") or []]
-    except Exception:
-        return []
-
-
-def _matching_option(path: str, query: str, default: str | None = None) -> str | None:
-    options = _catalog_options(path)
-    if path.startswith("/moodysmismicrosite/"):
-        aliases = {
-            "地方政府及城投公司": ("城投", "地方政府"),
-            "金融机构": ("银行", "保险", "金融机构"),
-            "主权": ("主权", "国家评级"),
-            "宏观经济": ("宏观", "经济", "通胀", "利率"),
-            "基础设施及项目融资": ("基础设施", "项目融资"),
-            "结构融资": ("结构融资",),
-            "企业": ("企业", "公司信用"),
-            "ESG": ("esg", "绿色", "气候"),
-        }
-        matched_label = next(
-            (label for label, words in aliases.items() if any(word.lower() in query.lower() for word in words)),
-            None,
-        )
-        if matched_label:
-            return matched_label
-    for option in options:
-        label = str(option.get("label") or "")
-        if label and (label in query or any(token in label for token in re.findall(r"[\u4e00-\u9fff]{2,}", query))):
-            # The Moody's RSSHub route documents numeric option values but its
-            # handler actually resolves Chinese labels. Other routes consume
-            # the declared option value.
-            return label if path.startswith("/moodysmismicrosite/") else str(option.get("value"))
-    if default is not None and path.startswith("/moodysmismicrosite/"):
-        matched = next((option for option in options if str(option.get("value")) == default), None)
-        return str(matched.get("label")) if matched else default
-    return default
-
-
-def _nanhua_spec(query: str) -> dict[str, Any] | None:
-    suffix = next((key for key, aliases in _FUTURES_ALIASES.items() if any(alias.lower() in query.lower() for alias in aliases)), None)
-    if suffix is None:
+def _nanhua_spec(futures_type: str | None) -> dict[str, Any] | None:
+    suffix = str(futures_type or "").strip()
+    if not suffix:
         return None
     try:
         from api.v1.endpoints._nanhua_tree import get_nanhua_tree
@@ -121,100 +38,38 @@ def _nanhua_spec(query: str) -> dict[str, Any] | None:
     return None
 
 
-def _cih_spec(query: str) -> dict[str, Any] | None:
-    if not any(word in query for word in ("地产", "房地产", "住宅", "土地", "物业", "房企", "商业市场", "政策解读")):
-        return None
-    try:
-        from api.v1.endpoints._cih_index_categories import get_cih_index_categories
-
-        categories = get_cih_index_categories(force=False).get("categories") or []
-        selected = next((row for row in categories if str(row.get("className") or "") in query), None)
-        if selected is None:
-            selected = next((row for row in categories if row.get("className") == "住宅市场"), None)
-        report = f"f{selected['classId']}-p1-oaddtime-ddesc" if selected else "p1-oaddtime-ddesc"
-        return {"path": "/cih-index/report/list/:report?", "params": {"report": report}, "source": "中指研究院"}
-    except Exception:
-        return {"path": "/cih-index/report/list/:report?", "params": {}, "source": "中指研究院"}
-
-
-def _route_specs(query: str, category: str) -> list[dict[str, Any]]:
-    if category == "stock":
-        return [{"path": "/eastmoney/report/:category", "params": {"category": "stock"}, "source": "东方财富个股研报"}]
+def _route_specs(category: str, futures_type: str | None = None) -> list[dict[str, Any]]:
+    """Compile fixed source workflows from structured research parameters."""
     if category == "rating":
-        industry = _matching_option("/moodysmismicrosite/report/:industry?", query)
-        params = {"industry": industry} if industry else {}
-        return [{"path": "/moodysmismicrosite/report/:industry?", "params": params, "source": "穆迪评级"}]
+        return [{"path": "/moodysmismicrosite/report/:industry?", "params": {}, "source": "穆迪评级"}]
     if category == "futures":
         specs = [{"path": "/wkjyqh/research", "params": {}, "source": "五矿期货"}]
-        nanhua = _nanhua_spec(query)
+        nanhua = _nanhua_spec(futures_type)
         if nanhua:
             specs.append(nanhua)
         return specs
     if category == "macro":
-        mck = _matching_option("/mckinsey/cn/:category?", query, "macroeconomy")
-        moodys = _matching_option("/moodysmismicrosite/report/:industry?", query, "4")
         return [
             {"path": "/eastmoney/report/:category", "params": {"category": "macresearch"}, "source": "东方财富宏观研报"},
-            {"path": "/mckinsey/cn/:category?", "params": {"category": mck}, "source": "麦肯锡"},
-            {"path": "/moodysmismicrosite/report/:industry?", "params": {"industry": moodys}, "source": "穆迪评级"},
+            {"path": "/mckinsey/cn/:category?", "params": {"category": "macroeconomy"}, "source": "麦肯锡"},
+            {"path": "/moodysmismicrosite/report/:industry?", "params": {"industry": "宏观经济"}, "source": "穆迪评级"},
             {"path": "/nifd/research/:categoryGuid?", "params": {"categoryGuid": _NIFD_CATEGORIES["weekly"]}, "source": "国家金融与发展实验室"},
         ]
-    specs = [
+    return [
         {"path": "/eastmoney/report/:category", "params": {"category": "industry"}, "source": "东方财富行业研报"},
         {"path": "/qianzhan/analyst/column/:type?", "params": {"type": "all"}, "source": "前瞻研究"},
+        {"path": "/cih-index/report/list/:report?", "params": {}, "source": "中指研究院"},
+        {"path": "/mckinsey/cn/:category?", "params": {}, "source": "麦肯锡"},
     ]
-    cih = _cih_spec(query)
-    if cih:
-        specs.append(cih)
-    mck = _matching_option("/mckinsey/cn/:category?", query)
-    if mck:
-        specs.append({"path": "/mckinsey/cn/:category?", "params": {"category": mck}, "source": "麦肯锡"})
-    return specs
 
 
-def _terms(query: str) -> list[str]:
-    text = re.sub(
-        r"(?:最新|近期|研报|研究报告|研究|报告|分析|行业|公司|股票|个股|景气|供需|风险|走势|现状|前景|展望)",
-        " ", query, flags=re.I,
-    )
-    values = re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}", text.lower())
-    values.extend(
-        term for term in (
-            "半导体", "人工智能", "新能源", "房地产", "消费", "医药", "银行", "保险",
-            "城投", "信用", "违约", "主权", "通胀", "利率", "货币政策", "铁矿石", "原油",
-            "铜", "铝", "黄金", "国债", "外汇", "股指", "期权",
-        )
-        if term.lower() in query.lower()
-    )
-    return list(dict.fromkeys([query.lower(), *values]))
-
-
-_GENERIC_RESEARCH_TERMS = frozenset({
-    "产业链", "价值链", "价值量", "市场空间", "竞争格局", "核心零部件",
-    "受益环节", "国产替代", "订单", "量产", "产能", "交付", "降本",
-    "业务", "主营", "收入", "客户", "验证", "公告", "实际", "检索", "查询",
-    "搜索", "a股", "标的", "上市公司",
-})
-
-_HIGH_PRECISION_RESEARCH_SUBJECTS = (
-    "人形机器人", "具身智能", "低空经济", "商业航天", "固态电池", "光模块",
-)
-
-
-def _subject_terms(query: str) -> list[str]:
-    """Return topic-identifying terms, excluding generic research dimensions."""
-    query_lower = query.lower().strip()
-    precise = [term for term in _HIGH_PRECISION_RESEARCH_SUBJECTS if term in query_lower]
-    terms = [
-        term for term in _terms(query)
-        if term != query_lower and term not in _GENERIC_RESEARCH_TERMS
-    ]
-    # Common compound topics are sometimes shortened in report titles.  Keep
-    # the original high-precision term first, with a conservative alias after
-    # it, instead of allowing generic words such as ``产业链`` to pass alone.
-    if precise:
-        return list(dict.fromkeys(precise))
-    return list(dict.fromkeys(terms))
+def _semantic_terms(subjects: list[str]) -> list[str]:
+    """Normalize Planner-supplied subjects without interpreting user prose."""
+    return list(dict.fromkeys(
+        str(subject).strip().lower()
+        for subject in subjects
+        if len(str(subject).strip()) >= 2
+    ))
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -227,7 +82,9 @@ def _parse_time(value: Any) -> datetime | None:
 
 def search_research_library(
     query: str,
-    category: str = "all",
+    category: str = "",
+    subjects: list[str] | None = None,
+    futures_type: str | None = None,
     days: int = 365,
     limit: int = 12,
     include_content: bool = False,
@@ -236,65 +93,21 @@ def search_research_library(
     from api.v1.endpoints._rss_reader import read_feed, read_item
 
     query = str(query or "").strip()
-    category = str(category or "all").strip().lower()
+    category = str(category or "").strip().lower()
     days, limit = int(days), int(limit)
     if not query:
         raise ValueError("query 不能为空")
-    if category not in {"all", "stock", "industry", "macro", "futures", "rating"}:
+    if category not in {"industry", "macro", "futures", "rating"}:
         raise ValueError(f"不支持的 category: {category}")
+    subject_terms = _semantic_terms(subjects or [])
+    if not subject_terms:
+        raise ValueError("subjects 必须由 Planner 提供至少一个语义主题")
     if not 1 <= days <= 3650 or not 1 <= limit <= 30:
         raise ValueError("days 必须为 1..3650，limit 必须为 1..30")
-    resolved = _infer_category(query, category)
-    if resolved == "stock":
-        try:
-            code = bare_symbol(query)
-        except Exception:
-            code = ""
-        if not re.fullmatch(r"\d{6}", code):
-            try:
-                from src.data.stock_index_loader import get_stock_name_index_map
-
-                code = next((stock_code for stock_code, stock_name in get_stock_name_index_map().items() if stock_name and stock_name in query), "")
-            except Exception:
-                code = ""
-        if re.fullmatch(r"\d{6}", code):
-            from src.tools.get_research_report import get_research_report
-
-            stock_result = get_research_report(code, days=days, limit=limit)
-            items = [
-                {
-                    "title": item.get("title"), "published": item.get("publish_date"),
-                    "summary": "；".join(filter(None, [item.get("org"), item.get("rating")])),
-                    "link": item.get("url"), "author": item.get("org"),
-                    "source": item.get("source") or "东方财富券商研报",
-                    "source_type": item.get("source_type"), "research_category": "stock",
-                    "rating": item.get("rating"), "industry": item.get("industry"),
-                    "profit_forecasts": item.get("profit_forecasts"),
-                }
-                for item in stock_result.get("items") or []
-            ]
-            return {
-                "query": query, "requested_category": category, "research_category": "stock",
-                "days": days, "items": items, "item_count": len(items),
-                "source_coverage": [{
-                    "source": stock_result.get("source"), "route_path": None,
-                    "item_count": len(items), "success": bool(stock_result.get("success")),
-                    "cached": bool(stock_result.get("_cached")), "errors": stock_result.get("errors") or [],
-                }],
-                "source": stock_result.get("source"), "success": bool(stock_result.get("success")),
-                "partial": bool(stock_result.get("partial")), "data_time": stock_result.get("data_time"),
-                "retrieved_at": stock_result.get("retrieved_at"), "is_stale": stock_result.get("is_stale"),
-                "freshness_unknown": stock_result.get("freshness_unknown"),
-                "fallback_attempted": bool(stock_result.get("fallback_attempted")),
-                "fallback_used": bool(stock_result.get("fallback_used")),
-                "fallback_recommended": bool(stock_result.get("fallback_recommended")),
-                "web_fallback": None, "errors": stock_result.get("errors") or [],
-                "warnings": stock_result.get("warnings") or [],
-            }
-    specs = _route_specs(query, resolved)
+    resolved = category
+    specs = _route_specs(resolved, futures_type)
     cutoff = datetime.now() - timedelta(days=days)
-    terms = _terms(query)
-    subject_terms = _subject_terms(query)
+    terms = list(dict.fromkeys([query.lower(), *subject_terms]))
     errors: list[str] = []
     warnings: list[str] = []
     coverage: list[dict[str, Any]] = []
@@ -432,13 +245,15 @@ TOOL = ToolSpec(
         "麦肯锡、穆迪、南华期货、国家金融与发展实验室、前瞻和五矿期货等 Infos/RSSHub 路由。"
     ),
     parameters=object_schema({
-        "query": {"type": "string", "description": "研究主题或股票代码/简称"},
-        "category": {"type": "string", "enum": ["all", "stock", "industry", "macro", "futures", "rating"], "default": "all"},
+        "query": {"type": "string", "description": "Planner 组织的检索表达式"},
+        "category": {"type": "string", "enum": ["industry", "macro", "futures", "rating"], "description": "Planner 已解析的研究类别"},
+        "subjects": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 12, "description": "Planner 提取的核心研究主题"},
+        "futures_type": {"type": "string", "enum": ["black", "enchem", "nonfe", "agri", "bond", "exrate", "option", "ship", "stockindex_IM/IF/IH/IC", "macro"], "description": "仅期货研究可选的结构化品类"},
         "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 365},
         "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
         "include_content": {"type": "boolean", "default": False},
         "fallback_to_web": {"type": "boolean", "default": True},
-    }, ["query"]),
+    }, ["query", "category", "subjects"]),
     executor=search_research_library,
     category="research",
 )

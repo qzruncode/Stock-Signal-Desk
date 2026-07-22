@@ -60,6 +60,8 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
         registry.execute("search_research_library", {
             "query": "精密减速器",
+            "category": "industry",
+            "subjects": ["精密减速器"],
             "includeContent": "true",
             "days": "1095",
         })
@@ -72,6 +74,8 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         registry = ToolRegistry()
         normalized = registry.normalize_arguments("search_financial_news", {
             "query": "人形机器人",
+            "topic": "industry",
+            "subjects": ["人形机器人"],
             "days": 730,
             "limit": "100",
         })

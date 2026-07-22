@@ -38,6 +38,7 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
         del pre_fetched_data
         ds = DataService()
         thesis = str(stock_info.get("_investment_thesis") or "").strip()
+        thesis_context = stock_info.get("_investment_thesis_context")
         raw: dict[str, Any] = {
             "investment_thesis": thesis or None,
             "profile": {
@@ -53,7 +54,7 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
         collectors = (
             ("business_segments", lambda: ds.get_business_segments(symbol, periods=2)),
             ("financials", lambda: ds.get_financials(symbol, periods=6, force=True)),
-            ("announcements", lambda: ds.get_announcements(symbol, days=365)),
+            ("announcements", lambda: ds.get_announcements(symbol, days=730, limit=100)),
             ("news", lambda: ds.search_news(symbol, days=365)),
             ("research", lambda: ds.get_research_report(symbol, days=1095)),
         )
@@ -64,9 +65,9 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                 logger.warning("[industrial_competitiveness] %s failed: %s", key, exc)
                 raw[f"{key}_error"] = str(exc)
 
-        if thesis:
+        if thesis_context:
             try:
-                candidates = ds.get_investment_thesis_candidates(thesis)
+                candidates = ds.get_investment_thesis_candidates(thesis_context)
                 target = _bare_symbol(stock_info.get("symbol") or symbol)
                 matched = next(
                     (
@@ -89,6 +90,24 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                 logger.warning("[industrial_competitiveness] thesis membership failed: %s", exc)
                 raw["thesis_membership_error"] = str(exc)
 
+        announcement_items = _dict_items(
+            (raw.get("announcements") or {}).get("items"),
+            limit=100,
+        )
+        try:
+            raw["formal_business_evidence"] = ds.get_formal_business_evidence(
+                symbol,
+                announcement_items,
+                thesis=thesis,
+                thesis_context=thesis_context if isinstance(thesis_context, dict) else None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[industrial_competitiveness] formal report bodies failed: %s",
+                exc,
+            )
+            raw["formal_business_evidence_error"] = str(exc)
+
         lines = [
             "## 本轮投资逻辑",
             f"- {thesis or '未指定主题；按公司主营与最新市场主线的直接关系核验'}",
@@ -101,8 +120,36 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
             f"- 经营范围：{str(raw['profile'].get('business_scope') or '缺失')[:500]}",
             f"- 公司简介：{str(raw['profile'].get('company_profile') or raw['profile'].get('profile') or '缺失')[:360]}",
             "",
-            "## 正式披露的主营构成",
+            "## 定期报告正文中的产业与经营证据",
         ]
+        formal_business = raw.get("formal_business_evidence") or {}
+        formal_passages = _dict_items(formal_business.get("items"), limit=12)
+        formal_documents = _dict_items(formal_business.get("documents"), limit=3)
+        if formal_documents:
+            for document in formal_documents:
+                lines.append(
+                    f"- 已读取：{document.get('publish_date') or '未知日期'} "
+                    f"{document.get('title') or '定期报告'}，共{document.get('page_count') or '?'}页，"
+                    f"命中{document.get('passage_count') or 0}段；{document.get('url') or ''}"
+                )
+        if formal_passages:
+            for index, item in enumerate(formal_passages, 1):
+                lines.append(
+                    f"- F{index} [{item.get('source') or '公司定期报告正文'}] "
+                    f"{item.get('date') or '未知日期'}：{str(item.get('excerpt') or '')[:1200]} "
+                    f"{item.get('url') or ''}"
+                )
+        elif raw.get("formal_business_evidence_error"):
+            lines.append(
+                f"- 正文读取失败：{raw['formal_business_evidence_error']}"
+            )
+        else:
+            lines.append("- 未从已读取定期报告中检索到与本轮结构化产业方向相近的段落")
+
+        lines.extend([
+            "",
+            "## 正式披露的主营构成",
+        ])
         segments = _dict_items((raw.get("business_segments") or {}).get("items"), limit=10)
         if segments:
             for item in segments:
@@ -144,7 +191,7 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
             lines.append("- 本轮未指定产业方向")
 
         lines.extend(["", "## 公司正式公告中的兑现证据"])
-        announcements = _dict_items((raw.get("announcements") or {}).get("items"), limit=12)
+        announcements = announcement_items[:20]
         if announcements:
             for item in announcements:
                 lines.append(
@@ -176,6 +223,7 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
             "- 对成熟的通用核心零部件，不要求公司必须披露带有特定下游主题名称的专项订单；应核验产品是否真实商业化、是否与本轮产业位置相符，以及竞争优势是否可回查。",
             "- 请求方向、候选召回覆盖方向和板块别名只能说明候选来源，不能证明公司具体产品。公司产品和真实受益必须以正式主营、经营范围、分业务披露或公告为准。",
             "- 至少一项业务真实性证据必须来自主营构成、公司正式资料、正式公告或其他公司正式披露；新闻和研报只能补充，不能单独证明真实受益。",
+            "- 定期报告正文段落由结构化投资逻辑做通用相关性检索，只是候选证据；模型必须阅读原文语义，不能把检索命中本身当成通过。",
             "- 未披露客户名称或未单独公告订单，不等于没有客户或订单；只能标注证据边界，不能把未披露反推成负面事实。",
             "- 必须同时证明真实受益和可验证竞争优势；任何一项不足都判为不通过。",
             "- 证据来源异常与真实零披露必须区分；无法核验时不允许乐观推断。",
@@ -187,7 +235,10 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
 
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
         raw = evidence.raw_data
-        formal_sources = ("business_segments", "financials", "announcements")
+        formal_sources = (
+            "business_segments", "financials", "announcements",
+            "formal_business_evidence",
+        )
         profile = raw.get("profile") or {}
         has_formal_profile = bool(
             profile.get("main_business")

@@ -5,16 +5,15 @@ import {
   ThreadPrimitive,
   ComposerPrimitive,
   MessagePrimitive,
-  BranchPickerPrimitive,
   ActionBarPrimitive,
   useMessage,
   useThread,
+  useAui,
+  useAuiState,
   type ReasoningMessagePartProps,
 } from '@assistant-ui/react';
 import {
   ArrowUpIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   ChevronDownIcon,
   BrainCircuitIcon,
   CheckCircle2Icon,
@@ -229,12 +228,7 @@ const UserMessage: FC = () => (
             >
               取消
             </ComposerPrimitive.Cancel>
-            <ComposerPrimitive.Send
-              className="flex h-8 items-center rounded-lg bg-primary px-3 text-xs text-primary-foreground transition hover:bg-primary/90 disabled:opacity-30"
-              title="重新发送"
-            >
-              发送
-            </ComposerPrimitive.Send>
+            <EditComposerSendButton />
           </div>
         </ComposerPrimitive.Root>
       </AuiIf>
@@ -250,12 +244,28 @@ const UserMessage: FC = () => (
           >
             <PencilIcon className="size-3" />
           </ActionBarPrimitive.Edit>
-          <BranchPicker />
         </div>
       </AuiIf>
     </div>
   </MessagePrimitive.Root>
 );
+
+const EditComposerSendButton: FC = () => {
+  const aui = useAui();
+  const isEmpty = useAuiState((s) => s.composer.isEmpty);
+
+  return (
+    <button
+      type="button"
+      className="flex h-8 items-center rounded-lg bg-primary px-3 text-xs text-primary-foreground transition hover:bg-primary/90 disabled:opacity-30"
+      title="重新发送"
+      disabled={isEmpty}
+      onClick={() => aui.composer().send({ startRun: true })}
+    >
+      发送
+    </button>
+  );
+};
 
 /* ── Assistant Message ───────────────────────────────────────────────── */
 
@@ -316,7 +326,6 @@ const AssistantMessage: FC = () => {
         </div>
         <div className="absolute bottom-0 left-0 flex h-5 items-center gap-1">
           <AssistantActionBar />
-          <BranchPicker />
         </div>
       </div>
     </MessagePrimitive.Root>
@@ -420,22 +429,6 @@ const AssistantReasoning: FC<ReasoningMessagePartProps> = ({ text, status }) => 
     </div>
   );
 };
-
-/* ── Branch Picker ───────────────────────────────────────────────────── */
-
-const BranchPicker: FC = () => (
-  <AuiIf condition={(s) => (s.message.branchCount ?? 1) > 1}>
-    <BranchPickerPrimitive.Root className="flex h-6 items-center gap-0.5 opacity-0 transition-opacity group-hover/message:opacity-100">
-      <BranchPickerPrimitive.Previous className="flex size-5 items-center justify-center rounded text-muted-foreground hover:text-foreground">
-        <ChevronLeftIcon className="size-3" />
-      </BranchPickerPrimitive.Previous>
-      <BranchPickerPrimitive.Number />
-      <BranchPickerPrimitive.Next className="flex size-5 items-center justify-center rounded text-muted-foreground hover:text-foreground">
-        <ChevronRightIcon className="size-3" />
-      </BranchPickerPrimitive.Next>
-    </BranchPickerPrimitive.Root>
-  </AuiIf>
-);
 
 /* ── Composer ────────────────────────────────────────────────────────── */
 

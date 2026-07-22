@@ -13,9 +13,9 @@ from src.tools.symbols import resolve_securities_csv
 
 
 DESCRIPTION = (
-    "对最多8只A股执行唯一的严格买入判断链：当前市场主线真实受益、产业竞争力、未来3年空间、"
+    "对完整A股集合执行九项串行布尔买入闸门：市场环境与主线强度、真实受益与产业竞争力、未来3年空间、"
     "景气上行、不过度内卷、未来6—12个月催化、无重大风险、估值与利好是否透支、当前买入位置"
-    "与风险收益比。每只股票在首个未通过项立即停止，九项全部通过才返回可买入；分业务收入或利润"
+    "与风险收益比。任一项不通过或证据不足立即停止该股后续分析；连续九项全部通过才返回可买入。分业务收入或利润"
     "未单独披露时，会使用订单、销量、客户、产能、量产和连续增速核验。结果含仓位和逻辑失效条件。"
 )
 
@@ -31,10 +31,14 @@ def _gate_contract() -> list[dict[str, Any]]:
     ]
 
 
-def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[str, Any]:
+def evaluate_multi_stock_buy_criteria(
+    symbols: str,
+    thesis: str = "",
+    thesis_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     resolved, unresolved = resolve_securities_csv(symbols)
     requested_count = len(resolved) + len(unresolved)
-    if len(resolved) > 8:
+    if len(resolved) > 300:
         return {
             "success": False,
             "partial": False,
@@ -45,8 +49,8 @@ def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[st
             "covered_count": 0,
             "coverage_complete": False,
             "gate_order": _gate_contract(),
-            "decision_rule": "每只股票首项失败即停止；九项全部通过才可买入",
-            "errors": ["单次最多分析8只股票，请由工作流分批调用；本次没有静默截断"],
+            "decision_rule": "每只股票按顺序执行；首项失败立即停止，连续九项全部通过才可买入",
+            "errors": ["单轮最多分析300只股票；本次没有静默截断"],
             "warnings": [],
             "data_time": None,
             "is_stale": None,
@@ -62,7 +66,7 @@ def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[st
             "covered_count": 0,
             "coverage_complete": False,
             "gate_order": _gate_contract(),
-            "decision_rule": "每只股票首项失败即停止；九项全部通过才可买入",
+            "decision_rule": "每只股票按顺序执行；首项失败立即停止，连续九项全部通过才可买入",
             "errors": ["没有可验证的A股公司名称或代码"],
             "warnings": [],
             "data_time": None,
@@ -74,7 +78,11 @@ def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[st
     for entity in resolved:
         symbol = str(entity["symbol"])
         try:
-            item = CriterionOrchestrator().analyze_for_agent(symbol, thesis=thesis.strip())
+            item = CriterionOrchestrator().analyze_for_agent(
+                symbol,
+                thesis=thesis.strip(),
+                thesis_context=thesis_context,
+            )
             item["name"] = entity.get("name") or symbol
             items.append(item)
         except Exception as exc:
@@ -87,7 +95,8 @@ def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[st
                 "final_decision": "不可买入",
                 "coverage_complete": False,
                 "passed_count": 0,
-                "failed_count": 1,
+                "failed_count": 0,
+                "insufficient_count": 1,
                 "not_evaluated_count": len(EVALUATOR_CLASSES),
                 "total": len(EVALUATOR_CLASSES),
                 "stopped_at": "analysis_error",
@@ -108,6 +117,7 @@ def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[st
         "partial": bool(errors) or not coverage_complete,
         "playbook": "strict_sequential_buy_decision",
         "thesis": thesis.strip() or None,
+        "thesis_context": thesis_context,
         "items": items,
         "resolved_entities": resolved,
         "unresolved_entities": unresolved,
@@ -115,7 +125,7 @@ def evaluate_multi_stock_buy_criteria(symbols: str, thesis: str = "") -> dict[st
         "covered_count": covered_count,
         "coverage_complete": coverage_complete,
         "gate_order": _gate_contract(),
-        "decision_rule": "每只股票按顺序执行；首项失败即停止；九项全部通过且集合覆盖完整才可买入",
+        "decision_rule": "每只股票首项失败立即停止；连续九项全部通过且集合覆盖完整才可买入",
         "substitute_business_evidence": ["订单", "销量", "客户", "产能", "产量或量产", "连续增速"],
         "errors": errors,
         "warnings": [],
@@ -132,12 +142,40 @@ TOOL = ToolSpec(
         {
             "symbols": {
                 "type": "string",
-                "description": "逗号分隔的A股代码或公司名称，单次最多8只；工作流会自动分批",
+                "description": "逗号分隔的A股代码或公司名称，单轮最多300只；执行器内部按公司并发并校验完整覆盖",
             },
             "thesis": {
                 "type": "string",
                 "description": "从上一轮继承的产业方向或投资逻辑，用于核验真实受益关系",
                 "default": "",
+            },
+            "thesis_context": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "summary": {"type": "string", "maxLength": 400},
+                    "domains": {
+                        "type": "array",
+                        "maxItems": 12,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "label": {"type": "string"},
+                                "board_queries": {"type": "array", "items": {"type": "string"}},
+                                "mapping_type": {
+                                    "type": "string",
+                                    "enum": ["exact_board", "proxy_board", "unresolved"],
+                                },
+                                "rationale": {"type": "string"},
+                                "unresolved_parts": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": [
+                                "label", "board_queries", "mapping_type", "rationale", "unresolved_parts",
+                            ],
+                        },
+                    },
+                },
             },
         },
         ["symbols"],

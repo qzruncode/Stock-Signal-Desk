@@ -42,7 +42,7 @@ STATEFUL_TOOL_NAMES = frozenset({
 _PROFESSIONAL_EVIDENCE_TOOL = "get_multi_stock_decision_evidence"
 _PROFESSIONAL_EVIDENCE_CHUNK_SIZE = 2
 _STRICT_BUY_DECISION_TOOL = "evaluate_multi_stock_buy_criteria"
-_STRICT_BUY_DECISION_CONCURRENCY = 2
+_STRICT_BUY_DECISION_CONCURRENCY = 6
 
 
 def _execute_tool_process(
@@ -284,7 +284,7 @@ def _execute_strict_buy_decision_chunked(
     *,
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """Isolate each company and evaluate at most two companies concurrently."""
+    """Isolate each company and evaluate the collection with bounded concurrency."""
     symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
     if not symbols:
         return _execute_tool_process(
@@ -298,7 +298,7 @@ def _execute_strict_buy_decision_chunked(
             result = _execute_tool_process(
                 _STRICT_BUY_DECISION_TOOL,
                 {**arguments, "symbols": symbol},
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=min(180.0, timeout_seconds),
             )
         except Exception as exc:
             result = _strict_failure_item(symbol, exc)

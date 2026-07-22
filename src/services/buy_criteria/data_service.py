@@ -9,7 +9,6 @@ endpoint is called at most once regardless of how many evaluators need it.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 from typing import Any
 
@@ -54,61 +53,37 @@ class DataService:
             return get_sector_list(type=sector_type)
         return self._cached_call(key, _fetch)
 
-    def get_investment_thesis_candidates(self, thesis: str) -> dict[str, Any]:
+    def get_investment_thesis_candidates(
+        self,
+        thesis_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         """Resolve a referenced industry thesis through structured board data.
 
         This is deliberately candidate/membership evidence only.  It lets the
         evaluators retain the exact industry direction from the conversation
         without treating a concept-board label as proof of orders or revenue.
         """
-        normalized = str(thesis or "").strip()
-        if not normalized:
+        from src.agent.result_contracts import InvestmentThesisContext
+
+        try:
+            context = InvestmentThesisContext.model_validate(thesis_context or {})
+        except Exception as exc:
             return {
                 "success": False,
                 "requested_domains": [],
                 "items": [],
-                "warnings": ["本轮未提供可解析的产业方向"],
+                "warnings": [],
+                "errors": [f"产业方向结构无效：{exc}"],
+            }
+        domain_specs = [domain.model_dump() for domain in context.domains]
+        if not domain_specs:
+            return {
+                "success": False,
+                "requested_domains": [],
+                "items": [],
+                "warnings": ["本轮没有已绑定的产业领域"],
                 "errors": [],
             }
-        domain_specs: list[dict[str, Any]] = []
-        mapping_match = re.search(
-            r"结构化板块映射\s*[：:]\s*(.+)",
-            normalized,
-        )
-        if mapping_match:
-            for part in re.split(r"[；;\n]+", mapping_match.group(1)):
-                pair = re.split(r"[→=>]+", part.strip(" 。"), maxsplit=1)
-                if len(pair) != 2:
-                    continue
-                label = pair[0].strip(" ，,、")
-                boards = list(dict.fromkeys(
-                    value.strip(" ，,、。")
-                    for value in re.split(r"[、,，/／]+", pair[1])
-                    if value.strip(" ，,、。")
-                ))
-                if label and boards:
-                    domain_specs.append({
-                        "label": label[:64],
-                        "board_queries": boards[:4],
-                        "mapping_type": "exact_board" if boards == [label] else "proxy_board",
-                        "rationale": "沿用上一轮已执行并展示的结构化领域板块映射。",
-                        "unresolved_parts": [],
-                    })
-                if len(domain_specs) >= 12:
-                    break
-        if not domain_specs:
-            for part in re.split(r"[，,、；;／/\n]+", normalized):
-                value = part.strip(" 。：:")
-                if value:
-                    domain_specs.append({
-                        "label": value[:64],
-                        "board_queries": [value[:64]],
-                        "mapping_type": "exact_board",
-                        "rationale": "未找到上一轮映射契约，仅按同名结构化板块核验。",
-                        "unresolved_parts": [],
-                    })
-                if len(domain_specs) >= 12:
-                    break
         key = "investment_thesis_candidates:" + "|".join(
             f"{item['label']}=>{','.join(item['board_queries'])}" for item in domain_specs
         )
@@ -168,6 +143,24 @@ class DataService:
         def _fetch():
             from api.v1.endpoints.macro import _fetch_sector_flow_industry
             return _fetch_sector_flow_industry()
+        return self._cached_call(key, _fetch)
+
+    def get_sector_flow(
+        self,
+        sector_type: str,
+        period: str,
+    ) -> dict[str, Any]:
+        key = f"sector_flow:{sector_type}:{period}"
+
+        def _fetch():
+            from src.tools.get_sector_flow import get_sector_flow
+
+            return get_sector_flow(
+                type=sector_type,
+                period=period,
+                top_n=30,
+            )
+
         return self._cached_call(key, _fetch)
 
     def get_macro_indicator(self, indicator: str, months: int = 6) -> dict[str, Any]:
@@ -275,6 +268,7 @@ class DataService:
             return search_financial_news(
                 normalized,
                 topic="industry",
+                subjects=[normalized],
                 days=days,
                 limit=limit,
                 include_content=False,
@@ -321,6 +315,35 @@ class DataService:
             from src.services.catalyst_evidence import get_formal_forward_evidence
 
             return get_formal_forward_evidence(symbol, announcements)
+
+        return self._cached_call(key, _fetch)
+
+    def get_formal_business_evidence(
+        self,
+        symbol: str,
+        announcements: list[dict[str, Any]],
+        *,
+        thesis: str,
+        thesis_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Read formal report bodies and retrieve thesis-relevant passages."""
+        art_codes = tuple(
+            str(item.get("url") or "")
+            for item in announcements
+            if isinstance(item, dict)
+        )
+        context_key = repr(thesis_context)
+        key = f"formal_business:{symbol}:{hash((art_codes, thesis, context_key))}"
+
+        def _fetch():
+            from src.services.catalyst_evidence import get_formal_business_evidence
+
+            return get_formal_business_evidence(
+                symbol,
+                announcements,
+                thesis=thesis,
+                thesis_context=thesis_context,
+            )
 
         return self._cached_call(key, _fetch)
 
