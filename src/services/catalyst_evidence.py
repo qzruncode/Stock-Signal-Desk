@@ -284,6 +284,7 @@ def _context_around(text: str, start: int, end: int, *, radius: int = 620) -> st
 def _business_query_fragments(
     thesis: str,
     thesis_context: dict[str, Any] | None,
+    research_scope: dict[str, Any] | None = None,
 ) -> list[str]:
     """Build retrieval phrases from the structured thesis, never from a stock list."""
     values: list[str] = [str(thesis or "")]
@@ -295,6 +296,11 @@ def _business_query_fragments(
         values.append(str(domain.get("label") or ""))
         values.extend(str(item or "") for item in domain.get("board_queries") or [])
     values.extend(str(item or "") for item in context.get("inferred_context_themes") or [])
+    scope = research_scope if isinstance(research_scope, dict) else {}
+    values.extend(
+        str(item or "")
+        for item in scope.get("primary_labels") or []
+    )
 
     phrases: list[str] = []
     seen: set[str] = set()
@@ -315,6 +321,7 @@ def extract_business_passages(
     *,
     thesis: str,
     thesis_context: dict[str, Any] | None,
+    research_scope: dict[str, Any] | None = None,
     limit: int = 12,
 ) -> list[dict[str, Any]]:
     """Retrieve report passages semantically close to the requested thesis.
@@ -323,7 +330,11 @@ def extract_business_passages(
     exact structured phrases and character n-gram overlap; it never decides
     whether the company benefits or whether a gate should pass.
     """
-    phrases = _business_query_fragments(thesis, thesis_context)
+    phrases = _business_query_fragments(
+        thesis,
+        thesis_context,
+        research_scope,
+    )
     if not phrases:
         return []
     grams: dict[str, int] = {}
@@ -590,6 +601,7 @@ def get_formal_business_evidence(
     *,
     thesis: str,
     thesis_context: dict[str, Any] | None = None,
+    research_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read current formal reports and retrieve thesis-relevant business facts."""
     selected = select_formal_documents(announcements, limit=2)
@@ -623,6 +635,7 @@ def get_formal_business_evidence(
                 document.get("content") or "",
                 thesis=thesis,
                 thesis_context=thesis_context,
+                research_scope=research_scope,
             )
             documents.append({
                 "art_code": document.get("art_code"),

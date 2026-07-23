@@ -60,7 +60,7 @@ class CriterionResult:
 
 
 class BaseCriterionEvaluator(ABC):
-    """Abstract base class for one gate in the strict buy-decision chain."""
+    """Reusable evidence collector and optional single-dimension evaluator."""
 
     criterion_id: str = ""
     criterion_name: str = ""

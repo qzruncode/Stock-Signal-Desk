@@ -73,20 +73,21 @@ THEME_COMPANY_MAPPING = AnalysisPlaybook(
 
 
 INVESTMENT_DECISION = AnalysisPlaybook(
-    id="strict_sequential_buy_decision",
-    title="九项严格买入判断",
+    id="professional_eight_dimension_buy_analysis",
+    title="资深分析师八维买入分析",
     evidence_standard=(
-        "第一关只核验产业方向当前是否具备主线、活跃分支或独立事件驱动交易条件。",
-        "第二关用定期报告正文、主营构成、订单、量产、客户和壁垒核验公司真实受益与竞争力。",
-        "核验未来三年空间、景气上行、不过度内卷和未来6—12个月催化。",
-        "核验重大风险、合理估值与利好是否已被股价反映。",
-        "最后用当前行情确定买入区间、止损、目标参考和风险收益比。",
-        "分业务收入或利润未披露时，允许用订单、销量、客户、产能、量产和连续增速替代核验。",
+        "区分产业长期趋势与A股当前资金主线，并核验公司业务与当前方向的真实关系。",
+        "用定期报告正文、主营构成、订单、量产、客户、份额、技术和盈利能力核验产业竞争力。",
+        "核验细分行业周期、供需增量、价格战/内卷以及政策、技术、需求、供给驱动。",
+        "核验未来6—12个月公司与行业催化，同时列出定增、解禁、减持等反向事件。",
+        "估值同时使用历史、同行、增长与上下行情景，不用单一PE代替赔率判断。",
+        "重大风险同时检查现金流、应收、存货、客户集中、负债、商誉、质押、融资、监管和诉讼。",
     ),
     output_contract=(
-        "每只股票按固定顺序执行九项布尔闸门；首个不通过或证据不足项立即停止后续分析。",
-        "只有连续九项全部通过才允许输出可买入；后续未执行项不得补偿前置否决。",
-        "可买入项必须给仓位建议、买入区间、止损、风险收益比和逻辑失效条件。",
+        "结论先行，给出✅、◐、❌和取证未完成项数量，并按通过1分、半通过0.5分计算八分制总分。",
+        "八个维度必须全部展开，不得因任一项较弱而提前停止；每项写明状态、理由、关键证据和反证。",
+        "结尾必须给当前定位、核心看多链条、核心风险链条以及至少三个持续验证指标。",
+        "只有八项没有明确失败或关键取证未完成，且估值赔率与重大风险至少半通过，才允许输出条件买入。",
         "多股任务必须证明完整集合覆盖，不能把分批缺失当作完整答案。",
     ),
 )
@@ -310,7 +311,7 @@ class DomainBoardQuerySpec(BaseModel):
 
 
 class InvestmentThesisContext(BaseModel):
-    """Structured thesis evidence reused by strict investment workflows."""
+    """Structured thesis evidence reused by professional investment workflows."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 

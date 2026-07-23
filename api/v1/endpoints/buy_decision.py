@@ -18,8 +18,8 @@ router = APIRouter()
 
 @router.get(
     "/criteria/analyze",
-    summary="买入准则分析（SSE流）",
-    description="顺序评估9项买入准则，通过SSE实时推送结果。任意一项不通过即终止。",
+    summary="八维专业买入分析（SSE流）",
+    description="完整评估8项买入维度并通过SSE推送结果；任何单项都不会终止后续分析。",
 )
 async def analyze_buy_criteria(
     symbol: str = Query(..., description="股票代码"),

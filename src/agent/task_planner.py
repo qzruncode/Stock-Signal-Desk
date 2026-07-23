@@ -33,7 +33,6 @@ from src.agent.task_workflows import (
     StandardTaskKind,
     TaskPlan,
     parameter_requirement_issues,
-    planner_task_index,
     workflow_for,
 )
 from src.llm.anthropic_gateway import build_litellm_kwargs
@@ -46,13 +45,11 @@ from src.tools.symbols import resolve_securities_csv
 
 logger = logging.getLogger(__name__)
 
-TASK_SELECTION_PRIMARY_TIMEOUT_SECONDS = 45.0
-TASK_SELECTION_RECOVERY_TIMEOUT_SECONDS = 30.0
-PLANNER_PRIMARY_TIMEOUT_SECONDS = 50.0
-PLANNER_RECOVERY_TIMEOUT_SECONDS = 35.0
+PLANNER_PRIMARY_TIMEOUT_SECONDS = 180.0
+PLANNER_RECOVERY_TIMEOUT_SECONDS = 120.0
 RESOURCE_BINDING_TIMEOUT_SECONDS = 45.0
 PLANNER_CACHE_TTL = timedelta(days=7)
-PLANNER_CACHE_VERSION = "v14"
+PLANNER_CACHE_VERSION = "v15"
 
 
 class TaskPlannerUnavailableError(RuntimeError):
@@ -135,30 +132,6 @@ _PLAN_TOOL = {
     },
 }
 
-_TASK_SELECTION_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "submit_standard_task_selection",
-        "description": "Select the minimal set of semantic standard-task kinds needed for the current request.",
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "selected_kinds": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": [kind.value for kind in StandardTaskKind],
-                    },
-                    "minItems": 1,
-                    "maxItems": 12,
-                },
-            },
-            "required": ["selected_kinds"],
-        },
-    },
-}
-
 _DOMAIN_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -229,7 +202,7 @@ _PLANNER_SYSTEM_PROMPT = """\
 规则：
 1. current_request 是唯一的新执行目标。conversation_context 和 previous_assistant_response 只用于解析
    指代、沿用范围或修改上一轮条件；不得自动重做已经完成的旧目标。
-2. 严格从 selected_standard_task_contracts 选择 kind。组合问题拆成最小且完整的任务；只在后续任务确实需要
+2. 严格从 standard_task_contracts 选择 kind。组合问题拆成最小且完整的任务；只在后续任务确实需要
    前一任务输出时声明 depends_on，不创建重复或用户未要求的任务。
 3. entities 只放用户在 current_request 中亲自点名的证券。当 entity_scope 为
    previous_answer 或 conversation 时，entities 必须留空；完整已验证集合由程序绑定，
@@ -238,20 +211,15 @@ _PLANNER_SYSTEM_PROMPT = """\
    带 semantic_resources 的任务只提取用户表达的语义参数；实时资源的精确绑定由程序在规划后完成。
 5. 需要实时、市场、财务、资讯或外部事实时选择对应数据任务；只有不需要这些数据的请求才使用
    general_response。股票研究与交易执行是不同任务，不得互相替代。
+   只要用户的核心问题是在问某只或某组股票现在能否买、是否适合介入、是否值得买入或应否等待，
+   必须选择 investment_decision；不得用 stock_deep_research、valuation_analysis 或
+   technical_analysis 替代完整买入分析。用户只要求研究事实且没有要求买入判断时，才选择深度研究。
 6. confirmation 只描述用户是否已明确确认具体高影响动作。无法确定时使用 missing；普通查询使用
    not_required。trade_execution 始终进入独立安全状态机。
 7. 信息不足以生成完整且合法的任务参数时，设置 needs_clarification 并提出一个最小必要问题；不得
    猜测条件、补默认业务目标或丢弃用户约束。
-8. 只通过 submit_standard_task_plan 返回完整结构化结果，任何字段都不得包含 Tool 名。
-"""
-
-_TASK_SELECTION_SYSTEM_PROMPT = """\
-你是股票 AI 助手的语义任务选择器。你只根据 current_request 选择完成本轮目标所需的最小标准任务
-kind 集合，不能填写参数、不能选择数据 Tool、不能回答用户。
-
-conversation_context、上一回答和已核验证券只用于理解指代与范围，不能把旧目标当成新任务。组合问题
-可以选择多个 kind；不要选择用户没有要求的分析。若用户只是修改上一轮集合的条件，选择对应的集合
-处理任务，不要重做产生该集合的旧任务。只调用 submit_standard_task_selection。
+8. 你同时完成任务类型选择、参数提取和依赖声明，只通过 submit_standard_task_plan 返回一次完整
+   结构化结果；任何字段都不得包含 Tool 名。
 """
 
 _RESOURCE_BINDING_SYSTEM_PROMPT = """\
@@ -487,93 +455,12 @@ def _selected_planner_contracts(
 
 def _planner_generation_overrides() -> dict[str, Any]:
     """Keep orchestration calls short; they do not need extended reasoning."""
-    return {"extra_body": {"thinking": {"type": "disabled"}}}
-
-
-async def _select_semantic_task_kinds(
-    messages: list[dict[str, Any]],
-    llm_cfg: Mapping[str, Any],
-    completion: Callable[..., Awaitable[Any]],
-    *,
-    current_entities: list[dict[str, str]],
-    previous_answer_entities: list[dict[str, str]],
-    conversation_context: ConversationContext,
-) -> list[StandardTaskKind]:
-    validation_error = ""
-    for attempt in range(2):
-        selector_context: dict[str, Any] = {
-            "current_request": current_user_request(messages, recovery=attempt == 1),
-            "previous_assistant_response": (
-                "" if conversation_context.turns else previous_assistant_outline(
-                    messages, max_chars=2_000,
-                )
-            ),
-            "conversation_context": conversation_context.task_selection_payload(),
-            "verified_entities_in_current_message": _planner_entity_context(
-                current_entities
-            ),
-            "verified_entities_in_previous_turn": _planner_entity_context(
-                previous_answer_entities
-            ),
-            "runtime_context": _planner_runtime_context(),
-            "standard_task_index": planner_task_index(),
+    return {
+        "extra_body": {
+            "thinking": {"type": "disabled"},
+            "reasoning_effort": "none",
         }
-        if validation_error:
-            selector_context["previous_validation_error"] = validation_error
-        kwargs = build_litellm_kwargs(
-            dict(llm_cfg),
-            stream=False,
-            messages=[
-                {"role": "system", "content": _TASK_SELECTION_SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(selector_context, ensure_ascii=False)},
-            ],
-            tools=[_TASK_SELECTION_TOOL],
-            tool_choice={
-                "type": "function",
-                "function": {"name": "submit_standard_task_selection"},
-            },
-            temperature=0,
-            max_tokens=500,
-            **_planner_generation_overrides(),
-        )
-        try:
-            timeout = (
-                TASK_SELECTION_PRIMARY_TIMEOUT_SECONDS
-                if attempt == 0
-                else TASK_SELECTION_RECOVERY_TIMEOUT_SECONDS
-            )
-            async with asyncio.timeout(timeout):
-                response = await completion(**kwargs)
-            payload = _payload_from_response(
-                response, "submit_standard_task_selection"
-            )
-            raw_kinds = payload.get("selected_kinds")
-            if not isinstance(raw_kinds, list) or not raw_kinds:
-                raise ValueError("selected_kinds must be a non-empty array")
-            kinds = list(dict.fromkeys(StandardTaskKind(str(value)) for value in raw_kinds))
-            if len(kinds) > 12:
-                raise ValueError("selected_kinds exceeds 12 tasks")
-            return kinds
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            validation_error = str(exc)
-            logger.warning(
-                "[TaskPlanner] selection attempt=%d failed=%s detail=%s",
-                attempt + 1,
-                type(exc).__name__,
-                validation_error[:300],
-            )
-            if attempt == 1:
-                if isinstance(exc, (ValidationError, ValueError, json.JSONDecodeError)):
-                    raise TaskPlanValidationError(
-                        f"invalid standard task selection after retry: {exc}"
-                    ) from exc
-                raise TaskPlannerUnavailableError(
-                    "semantic task selector unavailable after recovery",
-                    reason=_planner_unavailable_reason(exc),
-                ) from exc
-    raise TaskPlanValidationError("standard task selection was not resolved")
+    }
 
 
 def _semantic_domain_labels(task: StandardTask) -> list[str]:
@@ -856,19 +743,12 @@ async def _plan_semantically(
     previous_answer_entities: list[dict[str, str]],
     conversation_context: ConversationContext,
 ) -> TaskPlan:
-    selected_kinds = await _select_semantic_task_kinds(
-        messages,
-        llm_cfg,
-        completion,
-        current_entities=current_entities,
-        previous_answer_entities=previous_answer_entities,
-        conversation_context=conversation_context,
+    available_kinds = list(StandardTaskKind)
+    parameter_schemas = _selected_parameter_schemas(available_kinds)
+    task_contracts = _selected_planner_contracts(
+        available_kinds, parameter_schemas,
     )
-    selected_schemas = _selected_parameter_schemas(selected_kinds)
-    selected_contracts = _selected_planner_contracts(
-        selected_kinds, selected_schemas,
-    )
-    plan_tool = _plan_tool_for_kinds(selected_kinds)
+    plan_tool = _plan_tool_for_kinds(available_kinds)
     validation_error = ""
     for attempt in range(2):
         context = {
@@ -886,8 +766,8 @@ async def _plan_semantically(
                 previous_answer_entities
             ),
             "runtime_context": _planner_runtime_context(),
-            "selected_standard_task_contracts": selected_contracts,
-            "selected_parameter_schemas": selected_schemas,
+            "standard_task_contracts": task_contracts,
+            "parameter_schemas": parameter_schemas,
         }
         if validation_error:
             context["previous_validation_error"] = validation_error
@@ -908,7 +788,7 @@ async def _plan_semantically(
                 "function": {"name": "submit_standard_task_plan"},
             },
             temperature=0,
-            max_tokens=2_800,
+            max_tokens=8_000,
             **_planner_generation_overrides(),
         )
         try:

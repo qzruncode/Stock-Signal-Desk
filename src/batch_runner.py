@@ -552,23 +552,28 @@ _CRITERIA_NUM_LABELS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", 
 
 
 def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
-    """Map a buy-criteria batch summary onto the shared decision_meta shape."""
-    final = summary.get("final_decision") or "不可买入"
-    decision = "buy" if final == "可买入" else "reject"
+    """Map the professional checklist result onto the shared decision shape."""
+    final = summary.get("final_decision") or "关键取证未完成，暂停判断"
+    recommendation_code = str(
+        summary.get("recommendation_code") or "evidence_insufficient"
+    )
+    decision = {
+        "conditional_buy": "buy",
+        "watchlist": "watch",
+        "wait": "watch",
+        "avoid": "reject",
+        "evidence_insufficient": "unknown",
+    }.get(recommendation_code, "unknown")
     total = summary.get("total", 8)
     passed = summary.get("passed_count", 0)
-
-    if decision == "buy":
-        reason = f"{passed}/{total} 项全部通过"
-    else:
-        stopped_name = summary.get("stopped_at_name") or "?"
-        verdict = _one_line(summary.get("stopped_verdict") or "", limit=70)
-        idx = next(
-            (c.get("index") for c in summary.get("criteria", []) if not c.get("passed")),
-            None,
-        )
-        pos = f"第{idx + 1}项·" if isinstance(idx, int) else ""
-        reason = f"卡在{pos}{stopped_name}：{verdict}" if verdict else f"卡在{pos}{stopped_name}"
+    partial = summary.get("partial_count", 0)
+    failed = summary.get("failed_count", 0)
+    insufficient = summary.get("insufficient_count", 0)
+    reason = (
+        f"{summary.get('score', 0):g}/{total}分；"
+        f"✅{passed}、◐{partial}、❌{failed}、?{insufficient}。"
+        + _one_line(summary.get("recommendation_reason") or "", limit=90)
+    )
 
     if summary.get("from_cache"):
         reason = f"{reason}（缓存）"
@@ -582,23 +587,29 @@ def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
 
 
 def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> str:
-    """Build the readable per-stock criteria detail shown in the batch detail view."""
+    """Build the readable professional checklist detail for the batch view."""
     label = (
         f"{stock_name}({stock_code})"
         if stock_name and stock_name != stock_code
         else stock_code
     )
-    final = summary.get("final_decision") or "不可买入"
+    final = summary.get("final_decision") or "关键取证未完成，暂停判断"
     passed = summary.get("passed_count", 0)
+    partial = summary.get("partial_count", 0)
     failed = summary.get("failed_count", 0)
-    not_eval = summary.get("not_evaluated_count", 0)
+    insufficient = summary.get("insufficient_count", 0)
     cache_mark = "（缓存复用）" if summary.get("from_cache") else ""
 
     lines = [
-        f"# {label} 买入判断",
+        f"# {label} 八维专业买入分析",
         "",
         f"**最终结论**: {final}{cache_mark}",
-        f"通过 {passed} / 未通过 {failed} / 未评估 {not_eval}",
+        (
+            f"✅ {passed} / ◐ {partial} / ❌ {failed} / ? {insufficient}，"
+            f"折算 {summary.get('score', 0):g}/8"
+        ),
+        f"**当前定位**: {summary.get('investment_profile') or '待验证'}",
+        f"**最大问题**: {summary.get('biggest_issue') or '尚未识别'}",
         "",
         "## 逐项结果",
         "",
@@ -610,16 +621,28 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
             if isinstance(idx, int) and 0 <= idx < len(_CRITERIA_NUM_LABELS)
             else "-"
         )
-        mark = "✅ 通过" if c.get("passed") else "❌ 未通过"
+        mark = {
+            "pass": "✅ 通过",
+            "partial": "◐ 半通过",
+            "fail": "❌ 不通过",
+            "insufficient": "? 取证未完成",
+        }.get(str(c.get("status") or ""), "? 取证未完成")
         name = c.get("criterion_name") or c.get("criterion_id") or ""
         verdict = (c.get("verdict") or "").strip()
         line = f"{num} {name}  {mark}"
         if verdict:
             line += f" — {verdict}"
         lines.append(line)
-    if not_eval > 0:
-        lines.append("")
-        lines.append(f"（前置准则未通过，剩余 {not_eval} 项未评估）")
+    lines.extend([
+        "",
+        "## 最终逻辑",
+        "",
+        f"- 看多链条：{summary.get('bull_case_chain') or '待验证'}",
+        f"- 风险链条：{summary.get('risk_chain') or '待验证'}",
+        "- 监控指标：" + "；".join(
+            str(value) for value in summary.get("monitoring_points") or []
+        ),
+    ])
 
     return "\n".join(lines)
 

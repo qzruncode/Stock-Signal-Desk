@@ -43,11 +43,11 @@ const GenericToolUI = ({
 }: ToolCallMessagePartProps<Record<string, unknown>, unknown>) => {
   const [drawerState, setDrawerState] = useState<'closed' | 'open' | 'closing'>('closed');
   const baseLabel = TOOL_LABELS[toolName] || toolName;
-  const strictCollectionCount = toolName === 'evaluate_multi_stock_buy_criteria'
+  const professionalCollectionCount = toolName === 'evaluate_multi_stock_buy_criteria'
     ? String(args?.symbols || '').split(',').filter(Boolean).length
     : 0;
-  const label = strictCollectionCount > 0
-    ? `${strictCollectionCount}只股票九项买入闸门`
+  const label = professionalCollectionCount > 0
+    ? `${professionalCollectionCount}只股票八维专业买入分析`
     : baseLabel;
   const argsDisplay = stringifyCompact(args) || argsText;
   const failed = isError || (status.type === 'incomplete' && status.reason === 'error');

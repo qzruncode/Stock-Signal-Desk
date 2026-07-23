@@ -90,6 +90,11 @@ def test_valuation_tool_separates_dynamic_forward_and_trailing_peg() -> None:
 
     assert result["success"] is True
     assert result["pe_dynamic"] == 15.0
+    assert result["forward_pe"] == [
+        {"year": 2026, "value": 16.0},
+        {"year": 2027, "value": 14.0},
+    ]
+    assert result["excluded_expired_forward_years"] == [2025]
     assert result["forward_pe_current_year"] == 16.0
     assert result["peg_trailing"] == -2.2
     assert result["peg_forward"] == 1.2
@@ -98,4 +103,3 @@ def test_valuation_tool_separates_dynamic_forward_and_trailing_peg() -> None:
     assert result["dividend_yield_ttm_pct"] == round(1.0 / 110.0 * 100, 4)
     assert result["industry_benchmark"]["preferred_for_comparison"] == "median"
     assert result["industry_average"]["pe"] == 18.0
-

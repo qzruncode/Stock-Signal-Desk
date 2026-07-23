@@ -108,18 +108,6 @@ def _model_response(function_name: str, payload: dict) -> SimpleNamespace:
     ))])
 
 
-def _selection_response(*kinds: StandardTaskKind | str) -> SimpleNamespace:
-    return _model_response(
-        "submit_standard_task_selection",
-        {
-            "selected_kinds": [
-                kind.value if isinstance(kind, StandardTaskKind) else str(kind)
-                for kind in kinds
-            ],
-        },
-    )
-
-
 def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
     assert set(ToolRegistry().get_tool_names()) == set(registered_workflow_tools())
     assert all(
@@ -754,7 +742,7 @@ def test_executor_parallelizes_independent_reads_and_serializes_mutations() -> N
     assert asyncio.run(run_pair(mutations)) == 1
 
 
-def test_semantic_planner_uses_two_bounded_planning_stages_and_no_data_tools() -> None:
+def test_semantic_planner_uses_one_bounded_planning_stage_and_no_data_tools() -> None:
     payload = {
         "tasks": [{
             "task_id": "valuation",
@@ -771,10 +759,9 @@ def test_semantic_planner_uses_two_bounded_planning_stages_and_no_data_tools() -
         "needs_clarification": False,
         "clarification_question": None,
     }
-    completion = AsyncMock(side_effect=[
-        _selection_response(StandardTaskKind.VALUATION_ANALYSIS),
-        _model_response("submit_standard_task_plan", payload),
-    ])
+    completion = AsyncMock(
+        return_value=_model_response("submit_standard_task_plan", payload)
+    )
     plan = asyncio.run(resolve_task_plan(
         [
             {"role": "user", "content": "旧轮任务：分析机器人产业链"},
@@ -785,27 +772,20 @@ def test_semantic_planner_uses_two_bounded_planning_stages_and_no_data_tools() -
         completion=completion,
     ))
     assert plan.tasks[0].kind == StandardTaskKind.VALUATION_ANALYSIS
-    assert completion.await_count == 2
-    selection_kwargs = completion.await_args_list[0].kwargs
-    plan_kwargs = completion.await_args_list[1].kwargs
-    assert [tool["function"]["name"] for tool in selection_kwargs["tools"]] == [
-        "submit_standard_task_selection"
-    ]
+    assert completion.await_count == 1
+    plan_kwargs = completion.await_args.kwargs
     assert [tool["function"]["name"] for tool in plan_kwargs["tools"]] == [
         "submit_standard_task_plan"
     ]
-    serialized = json.dumps(
-        [selection_kwargs["tools"], plan_kwargs["tools"]], ensure_ascii=False
-    )
+    serialized = json.dumps(plan_kwargs["tools"], ensure_ascii=False)
     assert all(name not in serialized for name in ToolRegistry().get_tool_names())
-    selection_context = json.loads(selection_kwargs["messages"][1]["content"])
     planner_context = json.loads(plan_kwargs["messages"][1]["content"])
     assert planner_context["current_request"] == "分析贵州茅台估值"
     assert "旧轮任务" not in json.dumps(planner_context, ensure_ascii=False)
-    assert "standard_task_index" in selection_context
-    assert [contract["kind"] for contract in planner_context[
-        "selected_standard_task_contracts"
-    ]] == ["valuation_analysis"]
+    assert "standard_task_contracts" in planner_context
+    assert "valuation_analysis" in {
+        contract["kind"] for contract in planner_context["standard_task_contracts"]
+    }
 
 
 def test_plan_cache_uses_structured_context_instead_of_rendered_assistant_text() -> None:
@@ -875,7 +855,6 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
         "bindings": [{"task_id": "domain_candidates", "domains": domain_specs}],
     }
     completion = AsyncMock(side_effect=[
-        _selection_response(StandardTaskKind.THEME_STOCK_DISCOVERY),
         _model_response("submit_standard_task_plan", plan_payload),
         _model_response("submit_semantic_resource_bindings", binding_payload),
     ])
@@ -902,17 +881,13 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
         ))
 
     assert plan.tasks[0].parameters["domains"] == domain_specs
-    selection_context = json.loads(
+    planner_context = json.loads(
         completion.await_args_list[0].kwargs["messages"][1]["content"]
     )
-    planner_context = json.loads(
+    binder_context = json.loads(
         completion.await_args_list[1].kwargs["messages"][1]["content"]
     )
-    binder_context = json.loads(
-        completion.await_args_list[2].kwargs["messages"][1]["content"]
-    )
     assert "catalog" not in planner_context
-    assert "catalog" not in selection_context
     assert binder_context["catalog"]["board_names"] == [
         "人形机器人", "机器人执行器", "减速器", "机器人概念",
     ]
@@ -976,7 +951,6 @@ def test_semantic_planner_retries_a_transient_provider_failure() -> None:
     ))])
     completion = AsyncMock(side_effect=[
         RuntimeError("temporary gateway error"),
-        _selection_response(StandardTaskKind.GENERAL_RESPONSE),
         response,
     ])
     plan = asyncio.run(resolve_task_plan(
@@ -985,7 +959,7 @@ def test_semantic_planner_retries_a_transient_provider_failure() -> None:
         completion=completion,
     ))
     assert plan.tasks[0].kind == StandardTaskKind.GENERAL_RESPONSE
-    assert completion.await_count == 3
+    assert completion.await_count == 2
 
 
 def test_industry_structure_question_never_opens_company_discovery() -> None:
@@ -1008,17 +982,16 @@ def test_industry_structure_question_never_opens_company_discovery() -> None:
         "needs_clarification": False,
         "clarification_question": None,
     }
-    completion = AsyncMock(side_effect=[
-        _selection_response(StandardTaskKind.INDUSTRY_RESEARCH),
-        _model_response("submit_standard_task_plan", payload),
-    ])
+    completion = AsyncMock(
+        return_value=_model_response("submit_standard_task_plan", payload)
+    )
     plan = asyncio.run(resolve_task_plan(
         [{"role": "user", "content": "人形机器人方向哪些领域最核心最受益？"}],
         {"model": "test", "api_base": ""},
         completion=completion,
     ))
 
-    assert completion.await_count == 2
+    assert completion.await_count == 1
     assert [task.kind for task in plan.tasks] == [StandardTaskKind.INDUSTRY_RESEARCH]
     assert "不生成股票名单" in plan.tasks[0].output_requirements
 
@@ -1055,10 +1028,9 @@ def test_financial_filter_phrasings_all_use_the_semantic_planner(user_text: str)
         "needs_clarification": False,
         "clarification_question": None,
     }
-    completion = AsyncMock(side_effect=[
-        _selection_response(StandardTaskKind.COLLECTION_FINANCIAL_FILTER),
-        _model_response("submit_standard_task_plan", payload),
-    ])
+    completion = AsyncMock(
+        return_value=_model_response("submit_standard_task_plan", payload)
+    )
     plan = asyncio.run(resolve_task_plan(
         [{"role": "user", "content": user_text}],
         {"model": "test", "api_base": ""},
@@ -1066,13 +1038,13 @@ def test_financial_filter_phrasings_all_use_the_semantic_planner(user_text: str)
         previous_answer_entities=[{"symbol": "000001", "name": "甲公司"}],
     ))
 
-    assert completion.await_count == 2
+    assert completion.await_count == 1
     assert plan.tasks[0].kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER
     planner_context = json.loads(
-        completion.await_args_list[1].kwargs["messages"][1]["content"]
+        completion.await_args.kwargs["messages"][1]["content"]
     )
     assert planner_context["current_request"] == user_text
-    assert "collection_financial_filter" in planner_context["selected_parameter_schemas"]
+    assert "collection_financial_filter" in planner_context["parameter_schemas"]
     assert planner_context["runtime_context"]["previous_fiscal_year"] == date.today().year - 1
 
 

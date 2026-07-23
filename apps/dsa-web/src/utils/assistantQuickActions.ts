@@ -100,7 +100,7 @@ export const ASSISTANT_CAPABILITY_GROUPS: readonly AssistantCapabilityGroup[] = 
       { label: '帮我快速比较几只股票的综合表现', prompt: '比较宁德时代、比亚迪和贵州茅台的行情、估值、技术面与最新财务快照', toolName: 'get_multi_stock_snapshot' },
       { label: '按财务指标筛选上面这些股票', prompt: '把上面这些股票中资产负债率高于70%的筛掉，并说明完整覆盖情况', toolName: 'get_multi_stock_financials' },
       { label: '这几只股票里，哪只更值得继续研究？', prompt: '比较宁德时代与比亚迪的投资决策证据、反证、成立条件和失效条件', toolName: 'get_multi_stock_decision_evidence' },
-      { label: '这几只股票现在有哪些能买入？', prompt: '严格按九项逐项否决流程判断宁德时代与比亚迪现在是否可买入，只有全部通过才给仓位、止损和失效条件', toolName: 'evaluate_multi_stock_buy_criteria' },
+      { label: '这几只股票现在有哪些能买入？', prompt: '按当前主线、产业竞争力、行业周期、竞争格局、增长驱动、未来催化、估值赔率和重大风险，完整分析宁德时代与比亚迪现在能否买入', toolName: 'evaluate_multi_stock_buy_criteria' },
       { label: '这家公司未来有哪些明确催化？', prompt: '看下鸣志电器未来 6—12 个月的催化事件，逐项给出明确时间窗、来源和证据状态', toolName: 'analyze_stock_catalysts' },
       { label: '几个产业环节分别有哪些股票？', prompt: '按行星滚柱丝杠、减速器、无框力矩电机三个领域分别查找 A 股候选，只使用结构化板块和本地股票库', toolName: 'get_domain_stock_candidates' },
       { label: '这个热门主题里有哪些相关公司？', prompt: '寻找人形机器人主题的候选公司，区分已兑现收入、验证阶段和概念关联', toolName: 'get_theme_stock_candidates' },

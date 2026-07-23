@@ -81,6 +81,7 @@ from src.llm.anthropic_gateway import (
     resolve_anthropic_gateway_config,
 )
 from src.services.chat_session_service import ChatSessionService
+from src.services.buy_criteria.professional_analysis import DIMENSION_DEFINITIONS
 from src.storage import DatabaseManager
 from src.auth import get_client_ip
 from src.tools.symbols import (
@@ -92,11 +93,11 @@ logger = logging.getLogger(__name__)
 
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
 PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS = 90.0
-STRICT_BUY_DECISION_TIMEOUT_SECONDS = 900.0
+PROFESSIONAL_BUY_ANALYSIS_TIMEOUT_SECONDS = 2400.0
 CATALYST_ANALYSIS_TIMEOUT_SECONDS = 180.0
 QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
 FINAL_SYNTHESIS_TIMEOUT_SECONDS = 60.0
-STANDARD_TASK_PLAN_TIMEOUT_SECONDS = 145.0
+STANDARD_TASK_PLAN_TIMEOUT_SECONDS = 310.0
 
 # controller 产出层:当前生产路径走自建后台运行时的 RunBroadcaster (方法名与
 # assistant-stream 的 RunController 对齐:append_text/add_tool_call/add_data/
@@ -753,23 +754,10 @@ def _build_professional_decision_fallback(
     )
 
 
-_STRICT_BUY_GATE_IDS = (
-    "mainline_position",
-    "industrial_competitiveness",
-    "growth_space",
-    "prosperity_cycle",
-    "competition_landscape",
-    "catalyst_events",
-    "fatal_risks",
-    "valuation_level",
-    "entry_risk_reward",
-)
-
-
-def _build_strict_buy_decision_answer(
+def _build_professional_buy_decision_answer(
     evidence: Optional[List[Dict[str, Any]]],
 ) -> Optional[str]:
-    """Render strict buy decisions and independently re-check the all-pass rule."""
+    """Render the validated eight-dimension analyst result without rewriting it."""
     packets = [
         packet
         for packet in evidence or []
@@ -802,194 +790,228 @@ def _build_strict_buy_decision_answer(
             if re.fullmatch(r"\d{6}", code):
                 items_by_code[code] = item
 
-    missing = [code for code in requested if code not in items_by_code]
+    if not requested:
+        requested = list(items_by_code)
     if not requested:
         return (
-            "## 严格买入判断未执行\n\n"
-            "本轮没有取得可核验的股票代码，因此没有输出任何买入结论。"
+            "## 专业买入分析未完成\n\n"
+            "本轮没有取得通过本地证券库核验的股票代码，因此没有输出买入结论。"
         )
 
-    def price(value: Any) -> str:
-        try:
-            return f"{float(value):.2f}"
-        except (TypeError, ValueError):
-            return "—"
+    status_meta = {
+        "pass": ("✅", "可以打勾"),
+        "partial": ("◐", "只能半打勾"),
+        "fail": ("❌", "不能打勾"),
+        "insufficient": ("?", "关键取证未完成，暂不打勾"),
+    }
+    dimension_titles = dict(DIMENSION_DEFINITIONS)
 
-    rows: List[str] = []
-    details_sections: List[str] = []
-    buyable: List[str] = []
+    def clean_inline(value: Any, limit: int = 240) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").strip())
+        return text[:limit]
+
+    def markdown_link(source: Dict[str, Any]) -> str:
+        url = str(source.get("url") or "").strip()
+        if not re.match(r"^https?://", url, re.I):
+            return ""
+        title = clean_inline(
+            source.get("title") or source.get("source") or "原始资料",
+            80,
+        ).replace("[", "［").replace("]", "］")
+        date = clean_inline(source.get("date"), 24)
+        suffix = f"（{date}）" if date else ""
+        return f"[{title}]({url}){suffix}"
+
+    def normalized_dimensions(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        by_id = {
+            str(value.get("dimension_id") or ""): value
+            for value in item.get("dimensions") or []
+            if isinstance(value, dict)
+        }
+        normalized: List[Dict[str, Any]] = []
+        for dimension_id, title in DIMENSION_DEFINITIONS:
+            value = by_id.get(dimension_id)
+            if isinstance(value, dict):
+                normalized.append(value)
+            else:
+                normalized.append({
+                    "dimension_id": dimension_id,
+                    "status": "insufficient",
+                    "headline": "该维度没有返回有效分析",
+                    "analysis": "程序未取得这一维度的结构化判断，不能用其他维度代替。",
+                    "key_evidence": [],
+                    "counter_evidence": [],
+                    "monitoring_points": [f"重新核验“{title}”"],
+                })
+        return normalized
+
+    def item_statistics(item: Dict[str, Any]) -> tuple[Dict[str, int], float]:
+        dimensions = normalized_dimensions(item)
+        counts = {
+            status: sum(
+                1 for dimension in dimensions
+                if str(dimension.get("status") or "") == status
+            )
+            for status in status_meta
+        }
+        return counts, round(counts["pass"] + counts["partial"] * 0.5, 1)
+
+    missing = [code for code in requested if code not in items_by_code]
+    overview_rows: List[str] = []
+    reports: List[str] = []
     for code in requested:
         item = items_by_code.get(code)
         if not isinstance(item, dict):
-            rows.append(
-                f"| {code} | **数据未返回** | 未完成 | — | — | — | — |"
+            overview_rows.append(
+                f"| {code} | ? 8项 | 0/8 | **关键取证未完成，暂停判断** | 结果未返回 |"
             )
             continue
         name = str(item.get("name") or code)
-        criteria = [gate for gate in item.get("criteria") or [] if isinstance(gate, dict)]
-        gate_ids = tuple(str(gate.get("criterion_id") or "") for gate in criteria)
-        gate_statuses = [
-            str(
-                gate.get("status")
-                or ("pass" if gate.get("passed") is True else "fail")
-            )
-            for gate in criteria
+        counts, score = item_statistics(item)
+        status_text = (
+            f"✅{counts['pass']} / ◐{counts['partial']} / "
+            f"❌{counts['fail']} / ?{counts['insufficient']}"
+        )
+        overview_rows.append(
+            f"| {name} ({code}) | {status_text} | {score:g}/8 | "
+            f"**{clean_inline(item.get('recommendation') or '关键取证未完成，暂停判断', 40)}** | "
+            f"{clean_inline(item.get('biggest_issue') or '未给出', 90)} |"
+        )
+
+        as_of = str(item.get("data_time") or "").strip()
+        quote_basis = clean_inline(item.get("quote_basis"), 80)
+        basis_text = "；".join(value for value in (as_of, quote_basis) if value) or "数据时间未完整返回"
+        count_line = (
+            f"**✅ {counts['pass']}项｜◐ {counts['partial']}项｜"
+            f"❌ {counts['fail']}项"
+            + (f"｜? {counts['insufficient']}项" if counts["insufficient"] else "")
+            + f"，折算约 {score:g}/8。**"
+        )
+        sections = [
+            f"## {name} ({code})",
+            "",
+            "### 结论先行",
+            "",
+            f"截至 **{basis_text}**，{name}的检查结果是：",
+            "",
+            count_line,
+            "",
+            str(item.get("overall_summary") or "本轮没有形成完整结论。").strip(),
+            "",
+            f"- **当前定位**：{item.get('investment_profile') or '待验证'}",
+            f"- **当前判断**：{item.get('recommendation') or '关键取证未完成，暂停判断'}。"
+            f"{item.get('recommendation_reason') or ''}",
+            f"- **最大问题**：{item.get('biggest_issue') or '尚未识别'}",
         ]
-        all_pass = (
-            gate_ids == _STRICT_BUY_GATE_IDS
-            and all(status == "pass" for status in gate_statuses)
-            and item.get("coverage_complete") is True
-            and item.get("final_decision") == "可买入"
-        )
-        conclusion = "可买入" if all_pass and not missing else "不可买入"
-        if conclusion == "可买入":
-            buyable.append(f"{name} ({code})")
 
-        entry_gate = criteria[-1] if criteria and gate_ids[-1:] == ("entry_risk_reward",) else {}
-        entry = entry_gate.get("details") if isinstance(entry_gate, dict) else {}
-        entry = entry if isinstance(entry, dict) else {}
-        stopped = next(
-            (gate for gate, status in zip(criteria, gate_statuses) if status != "pass"),
-            None,
-        )
-        stopped_name = str(
-            (stopped or {}).get("criterion_name")
-            or item.get("stopped_at_name")
-            or ("九项全部通过" if all_pass else "执行失败")
-        )
-        stopped_status = str((stopped or {}).get("status") or "")
-        stop_text = (
-            stopped_name + ("（证据不足）" if stopped_status == "insufficient" else "")
-            if not all_pass
-            else "九项全部通过"
-        )
-        passed_count = sum(status == "pass" for status in gate_statuses)
-        valid_prefix = gate_ids == _STRICT_BUY_GATE_IDS[:len(gate_ids)]
-        progress_text = (
-            "9/9通过"
-            if all_pass
-            else f"{passed_count}项通过，第{len(criteria)}项停止"
-            if criteria and valid_prefix
-            else "执行结构异常"
-        )
-
-        if entry:
-            entry_zone = f"{price(entry.get('entry_zone_low'))}—{price(entry.get('entry_zone_high'))}"
-            stop_loss = price(entry.get("stop_loss"))
-            rr = price(entry.get("risk_reward_ratio"))
-            initial_position = int(entry.get("recommended_initial_position_pct") or 0)
-            max_position = int(entry.get("recommended_max_position_pct") or 0)
-            position_text = (
-                f"{initial_position}%试仓 / 最高{max_position}%"
-                if conclusion == "可买入"
-                else "0%"
-            )
-        else:
-            entry_zone = stop_loss = rr = "—"
-            position_text = "0%"
-        rows.append(
-            f"| {name} ({code}) | **{conclusion}** | {stop_text} | {progress_text} | "
-            f"{entry_zone} / {stop_loss} | {rr} | {position_text} |"
-        )
-
-        gate_lines: List[str] = []
-        status_label = {
-            "pass": "通过",
-            "fail": "不通过",
-            "insufficient": "证据不足",
-        }
-        for gate, status in zip(criteria, gate_statuses):
-            details = gate.get("details") if isinstance(gate.get("details"), dict) else {}
-            confidence = str(gate.get("confidence") or "")
-            gate_lines.append(
-                f"- {int(gate.get('index') or 0) + 1}. "
-                f"**{gate.get('criterion_name') or gate.get('criterion_id')}："
-                f"{status_label.get(status, '证据不足')}**"
-                + (f"（置信度：{confidence}）" if confidence else "")
-                + "。"
-                f"{str(gate.get('verdict') or '未给出理由')}"
-            )
-            counter = [
-                str(value)
-                for value in details.get("counter_evidence") or []
-                if str(value).strip()
+        for index, dimension in enumerate(normalized_dimensions(item), 1):
+            dimension_id = str(dimension.get("dimension_id") or "")
+            status = str(dimension.get("status") or "insufficient")
+            icon, label = status_meta.get(status, status_meta["insufficient"])
+            sections.extend([
+                "",
+                f"### {index}. {icon} {dimension_titles.get(dimension_id, dimension_id)}",
+                "",
+                f"**{label}。{clean_inline(dimension.get('headline') or '', 120)}**",
+                "",
+                str(dimension.get("analysis") or "该维度没有返回有效分析。").strip(),
+            ])
+            key_evidence = [
+                clean_inline(value, 320)
+                for value in dimension.get("key_evidence") or []
+                if clean_inline(value, 320)
+            ]
+            counter_evidence = [
+                clean_inline(value, 320)
+                for value in dimension.get("counter_evidence") or []
+                if clean_inline(value, 320)
             ]
             monitoring = [
-                str(value)
-                for value in details.get("monitoring_points") or []
-                if str(value).strip()
+                clean_inline(value, 260)
+                for value in dimension.get("monitoring_points") or []
+                if clean_inline(value, 260)
             ]
-            if counter:
-                gate_lines.append(
-                    "  - 主要反证：" + "；".join(counter[:3])
-                )
+            if key_evidence:
+                sections.extend(["", "**关键证据：**", ""])
+                sections.extend(f"- {value}" for value in key_evidence)
+            if counter_evidence:
+                sections.extend(["", "**主要反证：**", ""])
+                sections.extend(f"- {value}" for value in counter_evidence)
             if monitoring:
-                gate_lines.append(
-                    "  - 后续验证：" + "；".join(monitoring[:3])
-                )
-        if not valid_prefix:
-            gate_lines.append(
-                "- **执行结构异常**：返回步骤不是固定九项顺序，本轮按不可买入处理。"
-            )
-        elif len(criteria) < len(_STRICT_BUY_GATE_IDS):
-            gate_lines.append(
-                f"- 后续 {len(_STRICT_BUY_GATE_IDS) - len(criteria)} 项未执行："
-                "布尔闸门在首个不通过项立即停止，后续项目不得抵消当前否决。"
-            )
-        if all_pass and not missing:
-            invalidations = [
-                str(value) for value in item.get("invalidation_conditions") or [] if str(value).strip()
-            ]
-            invalidation_text = "；".join(invalidations) or "任一已通过门槛被新证据推翻"
-            gate_lines.append(f"- **逻辑失效条件**：{invalidation_text}。")
-        else:
-            stopped_reason = str(
-                (stopped or {}).get("verdict")
-                or item.get("stopped_verdict")
-                or "本轮未取得有效闸门结论"
-            ).rstrip("。；; ")
-            gate_lines.append(
-                f"- **当前不可买入的首要原因**：{stopped_reason}。"
-            )
-        details_sections.append(
-            f"### {name} ({code})\n\n" + "\n".join(gate_lines)
+                sections.extend(["", "**这一项后续看什么：**", ""])
+                sections.extend(f"- {value}" for value in monitoring)
+
+        sections.extend([
+            "",
+            "### 最终判断",
+            "",
+            f"**{item.get('recommendation') or '关键取证未完成，暂停判断'}。**"
+            f"{item.get('recommendation_reason') or ''}",
+            "",
+            f"- **核心逻辑**：{item.get('core_thesis') or '待验证'}",
+            f"- **看多链条**：{item.get('bull_case_chain') or '待验证'}",
+            f"- **风险链条**：{item.get('risk_chain') or '待验证'}",
+            "",
+            "后续最关键的验证指标是：",
+            "",
+        ])
+        monitoring_points = [
+            clean_inline(value, 320)
+            for value in item.get("monitoring_points") or []
+            if clean_inline(value, 320)
+        ]
+        sections.extend(
+            f"{index}. **{value}**"
+            for index, value in enumerate(monitoring_points[:6], 1)
         )
 
-    if missing:
-        conclusion_text = (
-            "本轮集合覆盖不完整，因此停止整个集合的最终买入筛选，**不把已返回的部分结果当成完整答案**。"
-        )
-    elif buyable:
-        conclusion_text = (
-            "严格按九项串行布尔闸门，当前可买入的是：**"
-            + "、".join(buyable)
-            + "**。"
-        )
-    else:
-        conclusion_text = "严格按九项串行布尔闸门，当前这组股票中 **没有可买入标的**。"
+        source_links = [
+            markdown_link(source)
+            for source in item.get("source_links") or []
+            if isinstance(source, dict)
+        ]
+        source_links = [value for value in source_links if value]
+        if source_links:
+            sections.extend(["", "### 主要原始来源", ""])
+            sections.extend(f"- {value}" for value in source_links[:12])
+        evidence_gaps = [
+            clean_inline(value, 320)
+            for value in item.get("evidence_gaps") or []
+            if clean_inline(value, 320)
+        ]
+        if evidence_gaps:
+            sections.extend([
+                "",
+                "### 证据边界",
+                "",
+                "以下信息仍需补证，不能被理解为已经确认：",
+                "",
+            ])
+            sections.extend(f"- {value}" for value in evidence_gaps[:8])
+        reports.append("\n".join(sections))
 
     coverage_lines = [
         f"- 请求 **{len(requested)} 只**，返回 **{len(items_by_code)} 只**，缺失 **{len(missing)} 只**。",
-        "- 九维顺序：市场环境与主线强度 → 真实受益与产业竞争力 → 三年空间 → 景气趋势 → 竞争格局 → 6—12个月催化 → 重大风险 → 估值与预期 → 买入位置与风险收益比。",
-        "- 业务未单独披露收入或利润时，允许用订单、销量、客户、产能、量产和连续增速替代核验；概念关联本身不算通过。",
-        "- 每只股票按固定顺序执行；任一项不通过或证据不足，立即停止该股票的后续分析。",
-        "- 单日板块涨跌不是主线的单一否决条件；主线判断同时使用多周期资金、上位主题、个股相对强度与可回查催化。",
+        "- 八项均完整分析，不因某一项不通过而停止后续维度。",
+        "- 计分口径：通过1分、半通过0.5分、不通过或取证未完成0分；分数用于表达证据强弱，不是收益预测。",
     ]
     if missing:
         coverage_lines.append("- 未返回代码：" + "、".join(missing) + "。")
     if batch_errors:
         coverage_lines.append("- 执行异常：" + "；".join(dict.fromkeys(batch_errors)) + "。")
     if data_times:
-        coverage_lines.append("- 数据时间：" + max(data_times) + "。")
+        coverage_lines.append("- 集合汇总时间：" + max(data_times) + "。")
+
+    if len(requested) == 1 and reports:
+        return reports[0] + "\n\n### 覆盖与口径\n\n" + "\n".join(coverage_lines)
     return (
-        "## 严格买入判断\n\n"
-        + conclusion_text
-        + "\n\n| 公司/代码 | 结论 | 首个停止项 | 闸门进度 | 入场区间/止损 | 风险收益比 | 仓位 |\n"
-        + "|---|---|---|---|---:|---:|---|\n"
-        + "\n".join(rows)
-        + "\n\n## 逐股门槛记录\n\n"
-        + "\n\n".join(details_sections)
-        + "\n\n## 规则与覆盖\n\n"
+        "## 专业买入分析总览\n\n"
+        "| 公司/代码 | 八项结果 | 得分 | 当前判断 | 最大问题 |\n"
+        "|---|---|---:|---|---|\n"
+        + "\n".join(overview_rows)
+        + "\n\n"
+        + "\n\n---\n\n".join(reports)
+        + "\n\n## 覆盖与口径\n\n"
         + "\n".join(coverage_lines)
     )
 
@@ -2080,9 +2102,9 @@ def _build_verified_evidence_fallback(
     """
     batch: Optional[Dict[str, Any]] = None
 
-    strict_answer = _build_strict_buy_decision_answer(evidence)
-    if strict_answer:
-        return strict_answer
+    professional_buy_answer = _build_professional_buy_decision_answer(evidence)
+    if professional_buy_answer:
+        return professional_buy_answer
 
     # Reading a persisted report is retrieval, not a new model judgement.  If
     # the provider emits no final text after the tool succeeds, return the
@@ -2692,10 +2714,10 @@ def _professional_answer_contract_issues(
     evidence: Optional[List[Dict[str, Any]]],
 ) -> List[str]:
     """Prove that a professional decision answer covered every required axis."""
-    strict_answer = _build_strict_buy_decision_answer(evidence)
-    if strict_answer is not None:
-        return [] if content.strip() == strict_answer.strip() else [
-            "严格买入判断必须使用程序生成的逐项否决结果，不能由模型改写结论"
+    professional_buy_answer = _build_professional_buy_decision_answer(evidence)
+    if professional_buy_answer is not None:
+        return [] if content.strip() == professional_buy_answer.strip() else [
+            "专业买入分析必须使用程序校验后的八维结果，不能由最终写作模型改写"
         ]
     result = next(
         (
@@ -2842,11 +2864,11 @@ def _playbook_answer_contract_issues(
     if playbook is None:
         return []
     if playbook.id == INVESTMENT_DECISION.id:
-        strict_answer = _build_strict_buy_decision_answer(evidence)
-        if strict_answer is None:
-            return ["九项严格买入判断结果未成功取得，必须停止买入判断"]
-        return [] if content.strip() == strict_answer.strip() else [
-            "九项严格买入判断结论只能由程序按全通过规则生成，不能由模型改写"
+        professional_buy_answer = _build_professional_buy_decision_answer(evidence)
+        if professional_buy_answer is None:
+            return ["八维专业买入分析结果未成功取得，必须停止买入判断"]
+        return [] if content.strip() == professional_buy_answer.strip() else [
+            "八维专业买入分析只能由程序按已校验结构生成，不能由最终写作模型改写"
         ]
     if playbook.id == STOCK_DEEP_RESEARCH.id:
         return _professional_answer_contract_issues(content, evidence)
@@ -3415,9 +3437,9 @@ def _exact_result_contract_answer(
     if task.kind == StandardTaskKind.STOCK_SCREENING:
         return _build_quantitative_screen_answer(evidence)
     if task.kind == StandardTaskKind.INVESTMENT_DECISION:
-        return _build_strict_buy_decision_answer(evidence) or (
-            "## 严格买入判断未完成\n\n"
-            "本轮没有成功取得逐项否决结果，因此没有输出任何买入结论。请重试本轮问题。"
+        return _build_professional_buy_decision_answer(evidence) or (
+            "## 专业买入分析未完成\n\n"
+            "本轮没有成功取得八维专业分析结果，因此没有输出任何买入结论。请重试本轮问题。"
         )
     if task.kind in {
         StandardTaskKind.WATCHLIST_QUERY,
@@ -3610,7 +3632,7 @@ async def _run_standard_task_pipeline(
         timeout_seconds = (
             QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
             if call.tool_name == "screen_atr_volatility_stocks"
-            else STRICT_BUY_DECISION_TIMEOUT_SECONDS
+            else PROFESSIONAL_BUY_ANALYSIS_TIMEOUT_SECONDS
             if call.tool_name == "evaluate_multi_stock_buy_criteria"
             else CATALYST_ANALYSIS_TIMEOUT_SECONDS
             if call.tool_name == "analyze_stock_catalysts"

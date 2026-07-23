@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +22,7 @@ from src.services.buy_criteria.evaluators.prosperity_cycle import ProsperityCycl
 from src.services.buy_criteria.evaluators.catalyst_events import CatalystEventsEvaluator
 from src.services.buy_criteria.data_service import DataService
 from src.services.buy_criteria.orchestrator import CriterionOrchestrator, _format_sse
+from src.services.buy_criteria.professional_analysis import DIMENSION_DEFINITIONS
 
 
 # ── Unit Tests: _parse_verdict_json ─────────────────────────────────────
@@ -539,70 +539,72 @@ class TestBaseEvaluatorWithMockedLLM:
 
 
 class TestOrchestrator:
-    def test_first_failure_stops_the_boolean_gate_chain(self):
-        """A failed market view must stop the remaining eight reviews."""
+    @staticmethod
+    def _analysis(statuses: list[str]) -> dict:
+        dimensions = []
+        for (dimension_id, title), status in zip(DIMENSION_DEFINITIONS, statuses):
+            dimensions.append({
+                "dimension_id": dimension_id,
+                "status": status,
+                "headline": f"{title}结论",
+                "analysis": f"{title}已经完成支持证据与反证核验。",
+                "key_evidence": ["支持证据"],
+                "counter_evidence": ["反证"],
+                "monitoring_points": ["跟踪指标"],
+            })
+        return {
+            "contract_version": "professional_buy_analysis_v2",
+            "analysis_mode": "professional_eight_dimension_buy_analysis",
+            "symbol": "000001",
+            "name": "测试",
+            "investment_profile": "测试画像",
+            "overall_summary": "测试综合结论",
+            "core_thesis": "测试核心逻辑",
+            "biggest_issue": "测试主要问题",
+            "recommendation_code": "watchlist",
+            "recommendation": "进入中期跟踪池",
+            "recommendation_reason": "仍有关键项目需要继续验证。",
+            "score": 0,
+            "score_total": 8,
+            "counts": {},
+            "dimensions": dimensions,
+            "bull_case_chain": "需求 → 收入 → 利润",
+            "risk_chain": "竞争 → 降价 → 利润承压",
+            "monitoring_points": ["指标一", "指标二", "指标三"],
+            "evidence_gaps": [],
+            "source_links": [],
+            "data_time": "2026-07-23T12:00:00+08:00",
+            "coverage_complete": True,
+        }
+
+    def test_failed_dimension_does_not_stop_remaining_analysis(self):
+        """A failed market view must not hide the other seven dimensions."""
         orchestrator = CriterionOrchestrator()
-        mock_result_fail = CriterionResult(
-            criterion_id="mainline_position", criterion_name="市场主线属性",
-            index=0, passed=False, verdict="非主线",
-        )
+        analysis = self._analysis([
+            "fail", "pass", "partial", "pass",
+            "pass", "partial", "pass", "fail",
+        ])
+        with patch(
+            "src.services.buy_criteria.orchestrator.analyze_professional_buy",
+            return_value=analysis,
+        ):
+            results = orchestrator.run("000001", save_to_db=False)
 
-        mock_stock_info = {"symbol": "000001", "name": "测试", "industry": "测试"}
-
-        def pass_result(index):
-            evaluator = EVALUATOR_CLASSES[index]()
-            return CriterionResult(
-                criterion_id=evaluator.criterion_id,
-                criterion_name=evaluator.criterion_name,
-                index=index,
-                passed=True,
-                verdict="通过",
-            )
-
-        with patch("src.services.buy_criteria.orchestrator._get_stock_info_safe", return_value=mock_stock_info):
-            with ExitStack() as stack:
-                stack.enter_context(
-                    patch.object(
-                        EVALUATOR_CLASSES[0],
-                        "evaluate",
-                        return_value=mock_result_fail,
-                    )
-                )
-                for index, evaluator_cls in enumerate(EVALUATOR_CLASSES[1:], 1):
-                    stack.enter_context(
-                        patch.object(
-                            evaluator_cls,
-                            "evaluate",
-                            return_value=pass_result(index),
-                        )
-                    )
-                results = orchestrator.run("000001")
-
-        assert len(results) == 1
+        assert len(results) == 8
         assert results[0].passed is False
+        assert results[1].passed is True
+        assert results[-1].criterion_id == "major_risks"
 
     def test_all_pass(self):
-        """If all 9 evaluators pass, 9 results should be returned."""
+        """If all eight dimensions pass, all eight results are returned."""
         orchestrator = CriterionOrchestrator()
-        mock_stock_info = {"symbol": "000001", "name": "测试", "industry": "测试"}
+        with patch(
+            "src.services.buy_criteria.orchestrator.analyze_professional_buy",
+            return_value=self._analysis(["pass"] * 8),
+        ):
+            results = orchestrator.run("000001", save_to_db=False)
 
-        def make_pass_result(idx):
-            cls = EVALUATOR_CLASSES[idx]
-            e = cls()
-            return CriterionResult(
-                criterion_id=e.criterion_id, criterion_name=e.criterion_name,
-                index=idx, passed=True, verdict="通过",
-            )
-
-        with patch("src.services.buy_criteria.orchestrator._get_stock_info_safe", return_value=mock_stock_info):
-            with ExitStack() as stack:
-                for i, cls in enumerate(EVALUATOR_CLASSES):
-                    stack.enter_context(
-                        patch.object(cls, "evaluate", return_value=make_pass_result(i))
-                    )
-                results = orchestrator.run("000001")
-
-        assert len(results) == 9
+        assert len(results) == 8
         assert all(r.passed for r in results)
 
 

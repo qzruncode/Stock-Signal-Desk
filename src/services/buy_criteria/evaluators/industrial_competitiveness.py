@@ -100,6 +100,14 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                 announcement_items,
                 thesis=thesis,
                 thesis_context=thesis_context if isinstance(thesis_context, dict) else None,
+                research_scope=(
+                    stock_info.get("_derived_research_scope")
+                    if isinstance(
+                        stock_info.get("_derived_research_scope"),
+                        dict,
+                    )
+                    else None
+                ),
             )
         except Exception as exc:
             logger.warning(

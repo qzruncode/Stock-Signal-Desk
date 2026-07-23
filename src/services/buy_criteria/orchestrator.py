@@ -1,5 +1,4 @@
-# src/services/buy_criteria/orchestrator.py
-"""Orchestrate the single authoritative sequential buy-decision chain."""
+"""Orchestrate the authoritative professional buy-analysis workflow."""
 from __future__ import annotations
 
 import asyncio
@@ -9,51 +8,141 @@ import threading
 from datetime import date as date_type
 from typing import Any
 
-from src.services.buy_criteria.base import CriterionResult
-from src.services.buy_criteria.evaluators import EVALUATOR_CLASSES
+from src.services.buy_criteria.base import CriterionEvidence, CriterionResult
+from src.services.buy_criteria.professional_analysis import (
+    DIMENSION_DEFINITIONS,
+    PROFESSIONAL_BUY_CONTRACT_VERSION,
+    analyze_professional_buy,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _cache_matches_current_contract(cached: dict[str, Any] | None) -> bool:
-    """Accept only a valid prefix produced by the current Boolean gate chain."""
-    if not isinstance(cached, dict):
-        return False
-    results = [item for item in cached.get("results") or [] if isinstance(item, dict)]
-    if not results:
-        return False
-    expected = [evaluator.criterion_id for evaluator in EVALUATOR_CLASSES]
-    actual = [str(item.get("criterion_id") or "") for item in results]
-    if actual != expected[:len(actual)] or not all("status" in item for item in results):
-        return False
-    statuses = [str(item.get("status") or "") for item in results]
-    if any(status not in {"pass", "fail", "insufficient"} for status in statuses):
-        return False
-    # A partial record is valid only when its last evaluated gate blocked the
-    # chain.  A full record is valid only when all nine gates passed or the
-    # ninth gate itself blocked the decision.
-    return all(status == "pass" for status in statuses[:-1]) and (
-        statuses[-1] != "pass" or len(statuses) == len(expected)
-    )
-
-
 def _format_sse(event_type: str, data: dict[str, Any]) -> str:
-    """Format a single SSE event."""
     return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def _get_stock_info_safe(symbol: str) -> dict[str, Any]:
-    """Get stock info with error handling."""
     try:
         from api.v1.endpoints.stock_info import get_stock_info
-        return get_stock_info(symbol)
+
+        result = get_stock_info(symbol)
+        return dict(result) if isinstance(result, dict) else {"symbol": symbol}
     except Exception as exc:
         logger.error("[buy_criteria] failed to get stock_info for %s: %s", symbol, exc)
         return {"symbol": symbol, "name": symbol, "industry": ""}
 
 
+def _professional_meta(analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: analysis.get(key)
+        for key in (
+            "contract_version",
+            "analysis_mode",
+            "symbol",
+            "name",
+            "thesis",
+            "investment_profile",
+            "overall_summary",
+            "core_thesis",
+            "biggest_issue",
+            "recommendation_code",
+            "recommendation",
+            "recommendation_reason",
+            "score",
+            "score_total",
+            "counts",
+            "bull_case_chain",
+            "risk_chain",
+            "monitoring_points",
+            "evidence_gaps",
+            "source_links",
+            "data_time",
+            "quote_basis",
+            "quote_is_intraday",
+            "coverage_complete",
+            "model_error",
+        )
+    }
+
+
+def _analysis_to_results(analysis: dict[str, Any]) -> list[CriterionResult]:
+    """Map the eight-axis response onto the persisted criterion record shape."""
+    results: list[CriterionResult] = []
+    meta = _professional_meta(analysis)
+    dimensions = [
+        item for item in analysis.get("dimensions") or [] if isinstance(item, dict)
+    ]
+    by_id = {
+        str(item.get("dimension_id") or ""): item
+        for item in dimensions
+    }
+    for index, (dimension_id, title) in enumerate(DIMENSION_DEFINITIONS):
+        item = by_id.get(dimension_id) or {
+            "dimension_id": dimension_id,
+            "status": "insufficient",
+            "headline": "该维度没有返回有效分析",
+            "analysis": "程序没有取得这一维度的结构化结果。",
+            "key_evidence": [],
+            "counter_evidence": [],
+            "monitoring_points": [f"重新核验“{title}”"],
+        }
+        status = str(item.get("status") or "insufficient")
+        headline = str(item.get("headline") or "").strip()
+        analysis_text = str(item.get("analysis") or "").strip()
+        verdict = "。".join(
+            value.rstrip("。")
+            for value in (headline, analysis_text)
+            if value
+        )
+        details = {
+            "key_evidence": list(item.get("key_evidence") or []),
+            "counter_evidence": list(item.get("counter_evidence") or []),
+            "monitoring_points": list(item.get("monitoring_points") or []),
+        }
+        if index == 0:
+            details["professional_summary"] = meta
+        results.append(CriterionResult(
+            criterion_id=dimension_id,
+            criterion_name=title,
+            index=index,
+            passed=status == "pass",
+            status=status,
+            confidence="",
+            verdict=verdict or "该维度没有返回有效分析",
+            evidence=CriterionEvidence(),
+            details=details,
+        ))
+    return results
+
+
+def _cache_matches_current_contract(cached: dict[str, Any] | None) -> bool:
+    if not isinstance(cached, dict):
+        return False
+    results = [item for item in cached.get("results") or [] if isinstance(item, dict)]
+    if len(results) != len(DIMENSION_DEFINITIONS):
+        return False
+    expected = [item[0] for item in DIMENSION_DEFINITIONS]
+    actual = [str(item.get("criterion_id") or "") for item in results]
+    if actual != expected:
+        return False
+    statuses = [str(item.get("status") or "") for item in results]
+    if any(
+        status not in {"pass", "partial", "fail", "insufficient"}
+        for status in statuses
+    ):
+        return False
+    first_details = results[0].get("details")
+    first_details = first_details if isinstance(first_details, dict) else {}
+    meta = first_details.get("professional_summary")
+    return (
+        isinstance(meta, dict)
+        and meta.get("contract_version") == PROFESSIONAL_BUY_CONTRACT_VERSION
+    )
+
+
 class CriterionOrchestrator:
-    """Run the authoritative nine-step Boolean buy-decision chain."""
+    """Run one coherent eight-dimension analyst review per company."""
 
     def run(
         self,
@@ -64,24 +153,18 @@ class CriterionOrchestrator:
         thesis: str = "",
         thesis_context: dict[str, Any] | None = None,
     ) -> list[CriterionResult]:
-        """Run all evaluators. Returns list of results (may be partial if early-terminated).
-
-        If ``save_to_db`` is True (default), results are persisted for today's date
-        so the frontend page can reuse them via cache.
-        """
         from src.services.buy_criteria.data_service import _clear_cache
 
         _clear_cache()
-        results = self._run_evaluators(
+        analysis = analyze_professional_buy(
             symbol,
-            pre_fetched_data,
             thesis=thesis,
             thesis_context=thesis_context,
+            pre_fetched_data=pre_fetched_data,
         )
-
-        if save_to_db and results:
+        results = _analysis_to_results(analysis)
+        if save_to_db:
             self._save_results(symbol, results)
-
         return results
 
     def analyze_for_agent(
@@ -91,29 +174,14 @@ class CriterionOrchestrator:
         thesis: str = "",
         thesis_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Return a fresh fail-fast decision envelope for the conversational Agent.
-
-        Agent requests are never served from the date-only page cache because
-        both the referenced investment thesis and the current entry position
-        can change between questions on the same day.
-        """
         from src.services.buy_criteria.data_service import _clear_cache
 
         _clear_cache()
-        results = self._run_evaluators(
+        return analyze_professional_buy(
             symbol,
-            None,
             thesis=thesis,
             thesis_context=thesis_context,
         )
-        summary = self._build_batch_summary(
-            [result.to_dict() for result in results],
-            from_cache=False,
-        )
-        summary["symbol"] = symbol
-        summary["thesis"] = thesis or None
-        summary["thesis_context"] = thesis_context
-        return summary
 
     def analyze_for_batch(
         self,
@@ -121,15 +189,7 @@ class CriterionOrchestrator:
         *,
         reuse_cache: bool = True,
     ) -> dict[str, Any]:
-        """Run (or reuse cached) buy-criteria analysis for one stock in a batch.
-
-        Unlike :meth:`make_sse_endpoint`, this is a blocking call that returns a
-        normalized summary dict so the batch runner can map it onto a per-stock
-        result. When ``reuse_cache`` is True and today's record exists, it is
-        reused without any LLM call.
-        """
         trade_date = date_type.today()
-
         if reuse_cache:
             from src.storage import get_db
 
@@ -139,12 +199,14 @@ class CriterionOrchestrator:
                 logger.warning("[buy_criteria] cache lookup failed for %s: %s", symbol, exc)
                 cached = None
             if _cache_matches_current_contract(cached):
-                logger.info("[buy_criteria] batch reusing cached result for %s", symbol)
-                return self._build_batch_summary(cached.get("results", []), from_cache=True)
-
+                return self._build_batch_summary(
+                    cached.get("results") or [],
+                    from_cache=True,
+                )
         results = self.run(symbol, save_to_db=True)
         return self._build_batch_summary(
-            [r.to_dict() for r in results], from_cache=False
+            [result.to_dict() for result in results],
+            from_cache=False,
         )
 
     @staticmethod
@@ -153,126 +215,108 @@ class CriterionOrchestrator:
         *,
         from_cache: bool,
     ) -> dict[str, Any]:
-        """Normalize a list of criterion result dicts into a batch summary."""
-        total = len(EVALUATOR_CLASSES)
         criteria = [
             {
-                "criterion_id": r.get("criterion_id"),
-                "criterion_name": r.get("criterion_name"),
-                "index": r.get("index"),
-                "passed": bool(r.get("passed")),
-                "status": str(
-                    r.get("status") or ("pass" if r.get("passed") else "fail")
+                "criterion_id": item.get("criterion_id"),
+                "criterion_name": item.get("criterion_name"),
+                "index": item.get("index"),
+                "passed": str(item.get("status") or "") == "pass",
+                "status": str(item.get("status") or "insufficient"),
+                "confidence": str(item.get("confidence") or ""),
+                "verdict": str(item.get("verdict") or ""),
+                "details": (
+                    item.get("details")
+                    if isinstance(item.get("details"), dict)
+                    else {}
                 ),
-                "confidence": str(r.get("confidence") or ""),
-                "verdict": str(r.get("verdict") or ""),
-                "details": r.get("details") if isinstance(r.get("details"), dict) else {},
             }
-            for r in result_dicts
+            for item in result_dicts
+            if isinstance(item, dict)
         ]
-        passed_count = sum(1 for c in criteria if c["status"] == "pass")
-        failed_count = sum(1 for c in criteria if c["status"] == "fail")
-        insufficient_count = sum(
-            1 for c in criteria if c["status"] == "insufficient"
-        )
-        not_evaluated = max(0, total - len(criteria))
-        stopped = next((c for c in criteria if c["status"] != "pass"), None)
-        coverage_complete = len(criteria) == total
-        if coverage_complete and passed_count == total:
-            final_decision = "可买入"
-        else:
-            final_decision = "不可买入"
-        entry_details = (
-            criteria[-1].get("details")
-            if criteria and criteria[-1].get("criterion_id") == "entry_risk_reward"
-            else {}
-        )
+        counts = {
+            status: sum(1 for item in criteria if item["status"] == status)
+            for status in ("pass", "partial", "fail", "insufficient")
+        }
+        score = round(counts["pass"] + counts["partial"] * 0.5, 1)
+        meta: dict[str, Any] = {}
+        if criteria:
+            candidate = criteria[0]["details"].get("professional_summary")
+            if isinstance(candidate, dict):
+                meta = candidate
         return {
-            "final_decision": final_decision,
-            "passed_count": passed_count,
-            "failed_count": failed_count,
-            "insufficient_count": insufficient_count,
-            "not_evaluated_count": not_evaluated,
-            "total": total,
-            "stopped_at": stopped["criterion_id"] if stopped else None,
-            "stopped_at_name": stopped["criterion_name"] if stopped else None,
-            "stopped_verdict": stopped["verdict"] if stopped else "",
-            "blocking_reasons": ([{
-                "criterion_id": stopped["criterion_id"],
-                "criterion_name": stopped["criterion_name"],
-                "status": stopped["status"],
-                "verdict": stopped["verdict"],
-            }] if stopped else []),
+            **meta,
+            "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+            "analysis_mode": "professional_eight_dimension_buy_analysis",
+            "final_decision": (
+                meta.get("recommendation")
+                or "证据不足，暂停判断"
+            ),
+            "recommendation_code": (
+                meta.get("recommendation_code")
+                or "evidence_insufficient"
+            ),
+            "passed_count": counts["pass"],
+            "partial_count": counts["partial"],
+            "failed_count": counts["fail"],
+            "insufficient_count": counts["insufficient"],
+            "not_evaluated_count": 0,
+            "total": len(DIMENSION_DEFINITIONS),
+            "score": score,
+            "score_total": len(DIMENSION_DEFINITIONS),
+            "counts": counts,
+            "stopped_at": None,
+            "stopped_at_name": None,
+            "stopped_verdict": "",
+            "blocking_reasons": [
+                {
+                    "criterion_id": item["criterion_id"],
+                    "criterion_name": item["criterion_name"],
+                    "status": item["status"],
+                    "verdict": item["verdict"],
+                }
+                for item in criteria
+                if item["status"] in {"fail", "insufficient"}
+            ],
             "criteria": criteria,
-            "coverage_complete": coverage_complete,
-            "position_advice": {
-                "initial_position_pct": entry_details.get("recommended_initial_position_pct", 0),
-                "max_position_pct": entry_details.get("recommended_max_position_pct", 0),
-            },
-            "invalidation_conditions": entry_details.get("invalidation_conditions", []),
+            "dimensions": criteria,
+            "coverage_complete": (
+                len(criteria) == len(DIMENSION_DEFINITIONS)
+                and counts["insufficient"] == 0
+            ),
             "from_cache": from_cache,
         }
 
-    def _run_evaluators(
-        self,
-        symbol: str,
-        pre_fetched_data: dict[str, Any] | None = None,
-        *,
-        thesis: str = "",
-        thesis_context: dict[str, Any] | None = None,
-    ) -> list[CriterionResult]:
-        """Evaluate in fixed order and stop immediately at the first false gate."""
-        stock_info = dict(_get_stock_info_safe(symbol))
-        stock_info["_investment_thesis"] = str(thesis or "").strip()
-        stock_info["_investment_thesis_context"] = thesis_context
-        results: list[CriterionResult] = []
-
-        for evaluator_cls in EVALUATOR_CLASSES:
-            evaluator = evaluator_cls()
-            result = evaluator.evaluate(symbol, stock_info, pre_fetched_data)
-            results.append(result)
-            if not result.passed:
-                break
-
-        return results
-
     @staticmethod
     def _save_results(symbol: str, results: list[CriterionResult]) -> None:
-        """Persist evaluation results to DB for today's date."""
-        trade_date = date_type.today()
-        passed_count = sum(1 for r in results if r.passed)
-        failed_count = sum(1 for r in results if not r.passed)
-        total = len(EVALUATOR_CLASSES)
-        not_evaluated = total - len(results)
-        stopped_at = next((r.criterion_id for r in results if not r.passed), None)
-        final_decision = "可买入" if passed_count == total and failed_count == 0 else "不可买入"
-        summary_parts = [f"{passed_count}项通过"]
-        if failed_count:
-            summary_parts.append(f"{failed_count}项未通过")
-        summary = "，".join(summary_parts) + ("，可买入" if passed_count == total else "，不可买入")
-
-        stock_name = _get_stock_info_safe(symbol).get("name") or symbol
-        results_dicts = [r.to_dict() for r in results]
-
         from src.storage import get_db
 
-        db = get_db()
+        summary = CriterionOrchestrator._build_batch_summary(
+            [result.to_dict() for result in results],
+            from_cache=False,
+        )
+        stock_name = (
+            summary.get("name")
+            or _get_stock_info_safe(symbol).get("name")
+            or symbol
+        )
         try:
-            db.save_buy_criteria_record(
+            get_db().save_buy_criteria_record(
                 symbol=symbol,
-                trade_date=trade_date,
+                trade_date=date_type.today(),
                 stock_name=stock_name,
-                final_decision=final_decision,
-                passed_count=passed_count,
-                failed_count=failed_count,
-                not_evaluated_count=not_evaluated,
-                stopped_at=stopped_at,
-                summary=summary,
-                results=results_dicts,
-            )
-            logger.info(
-                "[buy_criteria] saved %s result to DB (%s, %d/%d passed)",
-                symbol, final_decision, passed_count, total,
+                final_decision=summary["final_decision"],
+                passed_count=summary["passed_count"],
+                failed_count=(
+                    summary["failed_count"] + summary["insufficient_count"]
+                ),
+                not_evaluated_count=0,
+                stopped_at=None,
+                summary=(
+                    f"✅{summary['passed_count']}｜◐{summary['partial_count']}｜"
+                    f"❌{summary['failed_count']}｜?{summary['insufficient_count']}，"
+                    f"{summary['score']:g}/8，{summary['final_decision']}"
+                ),
+                results=[result.to_dict() for result in results],
             )
         except Exception as exc:
             logger.error("[buy_criteria] failed to save record for %s: %s", symbol, exc)
@@ -282,110 +326,51 @@ class CriterionOrchestrator:
         symbol: str,
         pre_fetched_data: dict[str, Any] | None = None,
     ):
-        """Create an SSE StreamingResponse for the given symbol.
-
-        Usage in a FastAPI endpoint:
-            return CriterionOrchestrator.make_sse_endpoint(symbol, pre_fetched_data)
-        """
+        """Stream all eight completed dimensions; no dimension stops another."""
         from fastapi.responses import StreamingResponse
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
-        SENTINEL_DONE = object()
+        sentinel_done = object()
 
-        def _worker():
+        def worker() -> None:
             try:
-                # ── Step 1: Check DB cache for today ──────────────────────────
                 trade_date = date_type.today()
-
                 from src.storage import get_db
-                db = get_db()
-                cached = db.get_buy_criteria_record(symbol, trade_date)
 
+                cached = get_db().get_buy_criteria_record(symbol, trade_date)
                 if _cache_matches_current_contract(cached):
-                    # Stream cached results with a "cached" event first
-                    logger.info(
-                        "[buy_criteria] serving cached result for %s @ %s",
-                        symbol, trade_date,
+                    result_dicts = cached.get("results") or []
+                    from_cache = True
+                else:
+                    results = CriterionOrchestrator().run(
+                        symbol,
+                        pre_fetched_data,
+                        save_to_db=True,
                     )
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait,
-                        ("connected", {"cached": True, "trade_date": cached["trade_date"]}),
-                    )
-                    results = cached.get("results", [])
-                    for r in results:
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            ("criterion_complete", r),
-                        )
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait,
-                        ("analysis_complete", {
-                            "final_decision": cached["final_decision"],
-                            "passed_count": cached["passed_count"],
-                            "failed_count": cached["failed_count"],
-                            "not_evaluated_count": cached["not_evaluated_count"],
-                            "stopped_at": cached["stopped_at"],
-                            "summary": cached["summary"],
-                        }),
-                    )
-                    loop.call_soon_threadsafe(queue.put_nowait, (SENTINEL_DONE, None))
-                    return
+                    result_dicts = [result.to_dict() for result in results]
+                    from_cache = False
 
-                # ── Step 2: No cache — run fresh analysis ────────────────────
-                from src.services.buy_criteria.data_service import _clear_cache
-                _clear_cache()
-                stock_info_data = _get_stock_info_safe(symbol)
-                results: list[CriterionResult] = []
-
-                for evaluator_cls in EVALUATOR_CLASSES:
-                    evaluator = evaluator_cls()
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait,
-                        ("criterion_start", {
-                            "criterion_id": evaluator.criterion_id,
-                            "criterion_name": evaluator.criterion_name,
-                            "index": evaluator.index,
-                        }),
-                    )
-                    result = evaluator.evaluate(symbol, stock_info_data, pre_fetched_data)
-                    results.append(result)
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait,
-                        ("criterion_complete", result.to_dict()),
-                    )
-                    if not result.passed:
-                        break
-
-                passed_count = sum(1 for r in results if r.passed)
-                failed_count = sum(1 for r in results if not r.passed)
-                total = len(EVALUATOR_CLASSES)
-                not_evaluated = total - len(results)
-                stopped_at = next((r.criterion_id for r in results if not r.passed), None)
-                final_decision = "可买入" if passed_count == total and failed_count == 0 else "不可买入"
-                summary_parts = [f"{passed_count}项通过"]
-                if failed_count:
-                    summary_parts.append(f"{failed_count}项未通过")
-                summary = "，".join(summary_parts) + ("，可买入" if passed_count == total else "，不可买入")
-
-                # ── Step 3: Save to DB ────────────────────────────────────────
-                CriterionOrchestrator._save_results(symbol, results)
-
-                # ── Step 4: Emit completion event ───────────────────────────
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
-                    ("connected", {"cached": False, "trade_date": trade_date.isoformat()}),
+                    ("connected", {
+                        "cached": from_cache,
+                        "trade_date": trade_date.isoformat(),
+                        "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+                    }),
+                )
+                for result in result_dicts:
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait,
+                        ("criterion_complete", result),
+                    )
+                summary = CriterionOrchestrator._build_batch_summary(
+                    result_dicts,
+                    from_cache=from_cache,
                 )
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
-                    ("analysis_complete", {
-                        "final_decision": final_decision,
-                        "passed_count": passed_count,
-                        "failed_count": failed_count,
-                        "not_evaluated_count": not_evaluated,
-                        "stopped_at": stopped_at,
-                        "summary": summary,
-                    }),
+                    ("analysis_complete", summary),
                 )
             except Exception as exc:
                 logger.error("[buy_criteria] orchestrator error: %s", exc, exc_info=True)
@@ -394,19 +379,24 @@ class CriterionOrchestrator:
                     ("error", {"criterion_id": "", "message": str(exc)}),
                 )
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, (SENTINEL_DONE, None))
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    (sentinel_done, None),
+                )
 
-        threading.Thread(target=_worker, daemon=True).start()
+        threading.Thread(target=worker, daemon=True).start()
 
         async def event_generator():
             while True:
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                    event_type, data = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=15,
+                    )
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
-                event_type, data = item
-                if event_type is SENTINEL_DONE:
+                if event_type is sentinel_done:
                     break
                 yield _format_sse(event_type, data)
 
@@ -419,3 +409,12 @@ class CriterionOrchestrator:
                 "X-Accel-Buffering": "no",
             },
         )
+
+
+__all__ = [
+    "CriterionOrchestrator",
+    "_analysis_to_results",
+    "_cache_matches_current_contract",
+    "_format_sse",
+    "_get_stock_info_safe",
+]

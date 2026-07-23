@@ -337,15 +337,14 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         )
 
     if tool_name == "evaluate_multi_stock_buy_criteria":
-        # The strict decision payload is already bounded to eight companies and
-        # every executed gate, stop reason, price level and position field is
-        # required for deterministic all-pass validation. Never compact it.
+        # The professional decision payload already contains the complete
+        # eight-axis structure, score, counter-evidence and source links.
         return _annotate_tool_payload(
             tool_name,
             result,
             payload_policy="complete",
             compacted=False,
-            source_scope="strict_sequential_buy_decision",
+            source_scope="professional_eight_dimension_buy_analysis",
         )
 
     if tool_name == "analyze_stock_catalysts":

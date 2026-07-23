@@ -118,16 +118,7 @@ def test_explicit_company_catalyst_request_uses_semantic_planner() -> None:
         ))],
         content=None,
     ))])
-    selection_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_selection",
-            arguments=json.dumps({
-                "selected_kinds": [StandardTaskKind.CATALYST_ANALYSIS.value],
-            }),
-        ))],
-        content=None,
-    ))])
-    completion = AsyncMock(side_effect=[selection_response, plan_response])
+    completion = AsyncMock(return_value=plan_response)
 
     plan = asyncio.run(resolve_task_plan(
         [{"role": "user", "content": "看下鸣志电器未来 6—12 个月的催化事件"}],
@@ -137,7 +128,7 @@ def test_explicit_company_catalyst_request_uses_semantic_planner() -> None:
         previous_answer_entities=[],
     ))
 
-    assert completion.await_count == 2
+    assert completion.await_count == 1
     assert plan.tasks[0].kind == StandardTaskKind.CATALYST_ANALYSIS
     assert plan.tasks[0].entity_scope == EntityScope.CURRENT_MESSAGE
 

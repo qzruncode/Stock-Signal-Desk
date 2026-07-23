@@ -150,7 +150,7 @@ def test_two_stock_professional_evidence_also_falls_back_before_deadline():
     assert [item["symbol"] for item in result["items"]] == ["000001", "000002"]
 
 
-def test_strict_buy_decision_isolates_each_stock_preserves_order_and_fails_closed():
+def test_professional_buy_analysis_isolates_each_stock_preserves_order_and_failure():
     calls: list[str] = []
     lock = threading.Lock()
 
@@ -165,13 +165,15 @@ def test_strict_buy_decision_isolates_each_stock_preserves_order_and_fails_close
         return {
             "success": True,
             "partial": False,
-            "playbook": "strict_sequential_buy_decision",
+            "playbook": "professional_eight_dimension_buy_analysis",
             "items": [{
                 "symbol": symbol,
                 "name": symbol,
-                "final_decision": "不可买入",
-                "coverage_complete": False,
-                "criteria": [],
+                "analysis_mode": "professional_eight_dimension_buy_analysis",
+                "recommendation_code": "watchlist",
+                "recommendation": "进入中期跟踪池",
+                "coverage_complete": True,
+                "dimensions": [],
             }],
             "resolved_entities": [{"symbol": symbol, "name": symbol}],
             "unresolved_entities": [],
@@ -192,8 +194,8 @@ def test_strict_buy_decision_isolates_each_stock_preserves_order_and_fails_close
     assert sorted(calls) == ["000001", "000002", "000003"]
     assert [item["symbol"] for item in result["items"]] == ["000001", "000002", "000003"]
     failed = result["items"][1]
-    assert failed["final_decision"] == "不可买入"
-    assert failed["stopped_at"] == "analysis_error"
-    assert failed["position_advice"] == {"initial_position_pct": 0, "max_position_pct": 0}
+    assert failed["recommendation_code"] == "evidence_insufficient"
+    assert failed["recommendation"] == "证据不足，暂停判断"
+    assert failed["counts"]["insufficient"] == 8
     assert result["partial"] is True
     assert result["coverage_complete"] is True

@@ -103,6 +103,23 @@ def _classify_risk_event(text: str, *, source_kind: str = "unknown") -> dict[str
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
     if not normalized:
         return None
+    # Routine impairment-testing disclosure does not itself establish an
+    # adverse event.  An actual provision, recognised impairment or quantified
+    # loss must be present before it enters the risk-event stream.
+    if (
+        "商誉减值测试报告" in normalized
+        and not any(
+            phrase in normalized
+            for phrase in (
+                "计提商誉减值",
+                "拟计提",
+                "确认减值",
+                "发生减值",
+                "减值损失",
+            )
+        )
+    ):
+        return None
 
     mitigations = [phrase for phrase in _MITIGATION_PHRASES if phrase in normalized]
     # “说明相关问题”也可能只是问询函要求公司后续说明，并不代表公司已经
@@ -142,7 +159,12 @@ def _classify_risk_event(text: str, *, source_kind: str = "unknown") -> dict[str
     if mitigations:
         selected = {**selected, "severity": "low", "status": "mitigated", "tags": tags}
     else:
-        selected = {**selected, "status": "active", "tags": tags}
+        # A phrase hit proves that an event or procedural document exists.  It
+        # cannot prove the event is still active today: later replies, review
+        # decisions, registrations, issuance results, court rulings or
+        # cancellation notices may supersede it.  Current lifecycle state must
+        # be resolved from the chronological formal-announcement timeline.
+        selected = {**selected, "status": "detected", "tags": tags}
     return selected
 
 
@@ -180,6 +202,11 @@ def _risk_item(item: dict[str, Any], *, source_type: str) -> dict[str, Any] | No
         "evidence_basis": "title_and_available_summary",
         "requires_fulltext_verification": risk["severity"] == "high" or confidence != "high",
         "classification_method": "deterministic_risk_phrase_rules",
+        "lifecycle_basis": (
+            "same_document_mitigation_phrase"
+            if risk["status"] == "mitigated"
+            else "occurrence_only_requires_chronological_resolution"
+        ),
     }
 
 
@@ -266,7 +293,19 @@ def get_risk_events(symbol: str, days: int = 90, limit: int = 30) -> dict[str, A
             "severity_distribution": severity_distribution,
             "status_distribution": status_distribution,
             "risk_category_distribution": dict(sorted(category_distribution.items(), key=lambda pair: (-pair[1], pair[0]))),
-            "active_high_severity_count": sum(1 for item in items if item["severity"] == "high" and item["status"] == "active"),
+            "detected_high_severity_count": sum(
+                1
+                for item in items
+                if item["severity"] == "high"
+                and item["status"] == "detected"
+            ),
+            # Kept as a compatibility field. Phrase screening deliberately
+            # never asserts that a historical event remains active.
+            "active_high_severity_count": 0,
+            "lifecycle_resolution": (
+                "status=detected仅证明事件文本存在；当前状态必须按同一事项的正式公告时间线复核，"
+                "后续权威公告覆盖早期程序阶段"
+            ),
             "coverage": {
                 "requested_days": days,
                 "news_coverage_days": min(days, 365),
@@ -298,8 +337,9 @@ TOOL = ToolSpec(
     name="get_risk_events",
     description=(
         "从已获取的公司新闻与正式公告中筛选风险事件证据，区分监管、退市、诉讼、债务、"
-        "业绩、质押减持、治理和经营风险，并标注 active 或 mitigated。结果是可追溯的规则筛查，"
-        "不是对公司整体风险的最终结论；高风险项应按 URL 继续核验原文。"
+        "业绩、质押减持、治理和经营风险，并标注 detected 或 mitigated。detected 只说明文本中"
+        "出现过该事件，不代表当前仍在进行；当前状态必须按同一事项的正式公告时间线解析，后续"
+        "权威公告覆盖早期程序阶段。结果不是对公司整体风险的最终结论；高风险项应按 URL 核验原文。"
     ),
     parameters=object_schema({
         "symbol": {"type": "string", "description": "A 股代码或名称"},

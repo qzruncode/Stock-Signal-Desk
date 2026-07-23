@@ -1,4 +1,4 @@
-"""Deterministic final gate: entry location and risk/reward."""
+"""Deterministic entry-location and risk/reward context."""
 
 from __future__ import annotations
 

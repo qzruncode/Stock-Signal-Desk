@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.tools.get_multi_stock_decision_evidence import _coverage, get_multi_stock_decision_evidence
+from src.tools.get_multi_stock_decision_evidence import (
+    _compact_announcements,
+    _compact_risks,
+    _coverage,
+    get_multi_stock_decision_evidence,
+)
 
 
 def test_decision_evidence_collects_all_seven_dimensions_without_early_stop() -> None:
@@ -143,3 +148,36 @@ def test_decision_evidence_treats_verified_zero_consensus_as_complete() -> None:
     assert coverage["dimensions"]["expectations"] is True
     assert coverage["complete"] is True
     assert coverage["missing"] == []
+
+
+def test_event_compactors_keep_long_timeline_and_lifecycle_evidence() -> None:
+    announcements = _compact_announcements({
+        "success": True,
+        "items": [
+            {
+                "title": f"事项进展公告{index}",
+                "notice_type": "再融资",
+                "publish_date": f"2026-{(index % 12) + 1:02d}-01",
+                "importance": "medium",
+                "url": f"https://example.com/a{index}",
+            }
+            for index in range(25)
+        ],
+    })
+    risks = _compact_risks({
+        "success": True,
+        "items": [{
+            "title": "审核问询函",
+            "date": "2026-04-01",
+            "risk_summary": "交易所提出审核问题",
+            "status": "detected",
+            "severity": "medium",
+            "lifecycle_basis": "occurrence_only_requires_chronological_resolution",
+            "requires_fulltext_verification": True,
+        }],
+    })
+
+    assert len(announcements["items"]) == 20
+    assert risks["items"][0]["risk_summary"] == "交易所提出审核问题"
+    assert risks["items"][0]["status"] == "detected"
+    assert "chronological" in risks["items"][0]["lifecycle_basis"]

@@ -1,33 +1,36 @@
 # -*- coding: utf-8 -*-
-"""Strict, sequential buy-gate evaluation for a bounded stock collection."""
+"""Professional eight-dimension buy analysis for a bounded stock collection."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
 
-from src.services.buy_criteria.evaluators import EVALUATOR_CLASSES
-from src.services.buy_criteria.orchestrator import CriterionOrchestrator
+from src.services.buy_criteria.professional_analysis import (
+    DIMENSION_DEFINITIONS,
+    PROFESSIONAL_BUY_CONTRACT_VERSION,
+    analyze_professional_buy,
+)
 from src.tools.base import ToolSpec, object_schema
 from src.tools.symbols import resolve_securities_csv
 
 
 DESCRIPTION = (
-    "对完整A股集合执行九项串行布尔买入闸门：市场环境与主线强度、真实受益与产业竞争力、未来3年空间、"
-    "景气上行、不过度内卷、未来6—12个月催化、无重大风险、估值与利好是否透支、当前买入位置"
-    "与风险收益比。任一项不通过或证据不足立即停止该股后续分析；连续九项全部通过才返回可买入。分业务收入或利润"
-    "未单独披露时，会使用订单、销量、客户、产能、量产和连续增速核验。结果含仓位和逻辑失效条件。"
+    "对完整A股集合逐只执行资深分析师八维买入分析：当前市场主线、产业竞争力、行业周期、"
+    "价格战/内卷、政策技术需求供给驱动、未来6—12个月催化、估值赔率、重大风险。"
+    "八项全部分析，不因单项较弱提前停止；每项返回通过/半通过/不通过/取证未完成，"
+    "并给出正反证据、最终判断、看多链条、风险链条和后续监控指标。"
 )
 
 
-def _gate_contract() -> list[dict[str, Any]]:
+def _dimension_contract() -> list[dict[str, Any]]:
     return [
         {
-            "index": evaluator.index,
-            "criterion_id": evaluator.criterion_id,
-            "criterion_name": evaluator.criterion_name,
+            "index": index,
+            "dimension_id": dimension_id,
+            "title": title,
         }
-        for evaluator in EVALUATOR_CLASSES
+        for index, (dimension_id, title) in enumerate(DIMENSION_DEFINITIONS, 1)
     ]
 
 
@@ -48,8 +51,8 @@ def evaluate_multi_stock_buy_criteria(
             "requested_count": requested_count,
             "covered_count": 0,
             "coverage_complete": False,
-            "gate_order": _gate_contract(),
-            "decision_rule": "每只股票按顺序执行；首项失败立即停止，连续九项全部通过才可买入",
+            "dimension_order": _dimension_contract(),
+            "decision_rule": "每只股票完整分析八维，不提前停止；程序按通过=1、半通过=0.5统一计分",
             "errors": ["单轮最多分析300只股票；本次没有静默截断"],
             "warnings": [],
             "data_time": None,
@@ -65,8 +68,8 @@ def evaluate_multi_stock_buy_criteria(
             "requested_count": requested_count,
             "covered_count": 0,
             "coverage_complete": False,
-            "gate_order": _gate_contract(),
-            "decision_rule": "每只股票按顺序执行；首项失败立即停止，连续九项全部通过才可买入",
+            "dimension_order": _dimension_contract(),
+            "decision_rule": "每只股票完整分析八维，不提前停止；程序按通过=1、半通过=0.5统一计分",
             "errors": ["没有可验证的A股公司名称或代码"],
             "warnings": [],
             "data_time": None,
@@ -78,7 +81,7 @@ def evaluate_multi_stock_buy_criteria(
     for entity in resolved:
         symbol = str(entity["symbol"])
         try:
-            item = CriterionOrchestrator().analyze_for_agent(
+            item = analyze_professional_buy(
                 symbol,
                 thesis=thesis.strip(),
                 thesis_context=thesis_context,
@@ -86,25 +89,37 @@ def evaluate_multi_stock_buy_criteria(
             item["name"] = entity.get("name") or symbol
             items.append(item)
         except Exception as exc:
-            message = f"{entity.get('name') or symbol}({symbol})严格买入判断失败：{type(exc).__name__}: {str(exc)[:240]}"
+            message = f"{entity.get('name') or symbol}({symbol})八维专业买入分析失败：{type(exc).__name__}: {str(exc)[:240]}"
             errors.append(message)
             items.append({
+                "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+                "analysis_mode": "professional_eight_dimension_buy_analysis",
                 "symbol": symbol,
                 "name": entity.get("name") or symbol,
                 "thesis": thesis.strip() or None,
-                "final_decision": "不可买入",
+                "investment_profile": "分析进程失败",
+                "overall_summary": "本轮没有形成可验证的八维完整分析。",
+                "core_thesis": "待重新分析",
+                "biggest_issue": message,
+                "recommendation_code": "evidence_insufficient",
+                "recommendation": "关键取证未完成，暂停判断",
+                "recommendation_reason": message,
+                "score": 0,
+                "score_total": 8,
+                "counts": {
+                    "pass": 0,
+                    "partial": 0,
+                    "fail": 0,
+                    "insufficient": 8,
+                },
+                "dimensions": [],
                 "coverage_complete": False,
-                "passed_count": 0,
-                "failed_count": 0,
-                "insufficient_count": 1,
-                "not_evaluated_count": len(EVALUATOR_CLASSES),
-                "total": len(EVALUATOR_CLASSES),
-                "stopped_at": "analysis_error",
-                "stopped_at_name": "数据或分析失败",
-                "stopped_verdict": message,
-                "criteria": [],
-                "position_advice": {"initial_position_pct": 0, "max_position_pct": 0},
-                "invalidation_conditions": [],
+                "bull_case_chain": "分析失败，暂不构造看多链条",
+                "risk_chain": "分析进程失败 → 证据无法复核 → 暂停买入判断",
+                "monitoring_points": ["重新运行完整八维分析"],
+                "evidence_gaps": [message],
+                "source_links": [],
+                "model_error": message,
             })
 
     if unresolved:
@@ -115,7 +130,8 @@ def evaluate_multi_stock_buy_criteria(
     return {
         "success": bool(items),
         "partial": bool(errors) or not coverage_complete,
-        "playbook": "strict_sequential_buy_decision",
+        "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+        "playbook": "professional_eight_dimension_buy_analysis",
         "thesis": thesis.strip() or None,
         "thesis_context": thesis_context,
         "items": items,
@@ -124,9 +140,11 @@ def evaluate_multi_stock_buy_criteria(
         "requested_count": requested_count,
         "covered_count": covered_count,
         "coverage_complete": coverage_complete,
-        "gate_order": _gate_contract(),
-        "decision_rule": "每只股票首项失败立即停止；连续九项全部通过且集合覆盖完整才可买入",
-        "substitute_business_evidence": ["订单", "销量", "客户", "产能", "产量或量产", "连续增速"],
+        "dimension_order": _dimension_contract(),
+        "decision_rule": (
+            "每只股票完整分析八维，不提前停止；程序按通过=1、半通过=0.5统一计分，"
+            "重大风险或估值赔率不满足时不得输出条件买入"
+        ),
         "errors": errors,
         "warnings": [],
         "data_time": now,
@@ -142,11 +160,11 @@ TOOL = ToolSpec(
         {
             "symbols": {
                 "type": "string",
-                "description": "逗号分隔的A股代码或公司名称，单轮最多300只；执行器内部按公司并发并校验完整覆盖",
+                "description": "逗号分隔的A股代码或公司名称，单轮最多300只；执行器内部逐家公司完成八维分析并校验完整覆盖",
             },
             "thesis": {
                 "type": "string",
-                "description": "从上一轮继承的产业方向或投资逻辑，用于核验真实受益关系",
+                "description": "从上一轮继承的产业方向或投资逻辑，用于核验主线、真实受益、周期和驱动关系",
                 "default": "",
             },
             "thesis_context": {

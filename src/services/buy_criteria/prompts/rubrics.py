@@ -1,4 +1,4 @@
-"""Judgment rubrics for the eight model-evaluated gates in the nine-gate chain.
+"""Evidence-dimension rubrics retained for focused evaluator diagnostics.
 
 Each rubric is self-contained: role + criteria + JSON output format.
 build_user_prompt simply concatenates rubric + data_summary.
@@ -6,7 +6,7 @@ build_user_prompt simply concatenates rubric + data_summary.
 
 # --- Shared template fragments ---
 _ROLE_PREFIX = (
-    "你是负责A股组合的资深买方研究员。当前是严格串行布尔闸门【{name}】。"
+    "你是负责A股组合的资深买方研究员。当前独立核验分析维度【{name}】。"
     "只能基于下方可回查证据判断；必须同时检查支持证据、反证、时间与统计口径。\n\n"
 )
 _JSON_SUFFIX = """\
@@ -54,7 +54,7 @@ MAINLINE_POSITION = _rubric("市场环境与主线强度", """\
 - 概念池混合了大量行业、风格和重复口径。不能因为某个分支的绝对涨幅序号不在最前，就直接推导其不是当前主线；应同时比较资金流排名、涨幅强度、上位产业主题共振和标的相对强度。另一条主线更强，也不自动排除并行主线。
 - 结构化概念板块成员关系只证明候选映射，不单独证明公司有订单、收入或竞争优势；这些在下一项“产业竞争力与真实受益”继续严格核验。
 - 请求方向、候选召回覆盖方向及板块别名都不能反推公司具体产品。verdict 描述公司产品时只能引用公司正式主营、经营范围或正式披露，严禁把候选召回方向改写成公司主营。
-- 报告不可用时不得凭模型记忆补结论；用未压缩板块、多周期资金、上位主题、个股相对强度与近期可回查事件交叉验证。证据不足在布尔闸门中必须 passed=false，并写清是取证不足而非事实性否定。
+- 报告不可用时不得凭模型记忆补结论；用未压缩板块、多周期资金、上位主题、个股相对强度与近期可回查事件交叉验证。证据不足时必须写清是取证不足而非事实性否定。
 """)
 
 INDUSTRIAL_COMPETITIVENESS = _rubric("产业竞争力与真实受益", """\
@@ -85,7 +85,7 @@ INDUSTRIAL_COMPETITIVENESS = _rubric("产业竞争力与真实受益", """\
 """)
 
 PROSPERITY_CYCLE = _rubric("景气上行周期", """\
-前置“真实受益”闸门已经通过。本关只判断该真实细分业务的供需和盈利周期是否向上，不能用公司法定
+已有证据已经确认公司与目标产业具备真实业务关联。本维度只判断该真实细分业务的供需和盈利周期是否向上，不能用公司法定
 大行业、宏观PMI或股价代替细分产业证据。
 
 注意：如果"行业"字段过宽，需要结合主营业务和产品识别真实细分行业。
@@ -130,7 +130,7 @@ PROSPERITY_CYCLE = _rubric("景气上行周期", """\
 - 板块排名和资金流仅反映市场情绪，不得单独作为景气上行的判定依据。
 - 宏观 PMI 反映整体经济环境，制造业 PMI >50 不等于具体行业景气上行。
 - 如果财务趋势与供需信号结论矛盾，需要在 verdict 里说明矛盾点。
-- 布尔闸门不使用“谨慎通过”逃避结论。证据不足时 passed=false，并明确是取证不足；只有证据链达到上方标准才 passed=true。
+- 聚焦本维度的证据强弱。证据不足时明确写出取证缺口；只有证据链达到上方标准才可给正面判断。
 """)
 
 GROWTH_SPACE = _rubric("未来3年空间", """\
@@ -152,7 +152,7 @@ GROWTH_SPACE = _rubric("未来3年空间", """\
 """)
 
 COMPETITION_LANDSCAPE = _rubric("竞争格局", """\
-前置闸门已经确认公司真实受益和行业景气。本关判断细分环节的竞争是否允许公司把增长转化为利润，
+已有证据已经确认公司真实受益和行业景气。本维度判断细分环节的竞争是否允许公司把增长转化为利润，
 而不是被价格战、无序扩产或客户压价吞噬。
 
 ## 通过条件（行业竞争格局健康）

@@ -13,13 +13,27 @@ def test_classify_inquiry_as_medium_regulatory() -> None:
     assert risk is not None
     assert risk["risk_label"] == "监管执法"
     assert risk["severity"] == "medium"
-    assert risk["status"] == "active"
+    assert risk["status"] == "detected"
 
 
 def test_normal_internal_control_report_is_not_itself_a_risk() -> None:
     risk = _classify_risk_event("关于2025年度内部控制审计报告的公告", source_kind="announcement")
 
     assert risk is None
+
+
+def test_routine_goodwill_impairment_test_report_is_not_an_adverse_event() -> None:
+    assert _classify_risk_event(
+        "关于2025年度商誉减值测试报告的公告",
+        source_kind="announcement",
+    ) is None
+    actual = _classify_risk_event(
+        "关于计提商誉减值准备并确认减值损失的公告",
+        source_kind="announcement",
+    )
+    assert actual is not None
+    assert actual["severity"] == "high"
+    assert actual["status"] == "detected"
 
 
 def test_release_of_pledge_is_mitigated_not_medium_active_risk() -> None:
@@ -77,6 +91,9 @@ def test_risk_tool_prefers_formal_announcement_and_preserves_evidence_url() -> N
     assert result["items"][0]["source_type"] == "announcement"
     assert result["items"][0]["url"] == "https://example.com/announcement"
     assert result["items"][0]["requires_fulltext_verification"] is False
+    assert result["items"][0]["status"] == "detected"
+    assert result["analysis"]["active_high_severity_count"] == 0
+    assert "当前状态必须按同一事项" in result["analysis"]["lifecycle_resolution"]
 
 
 def test_no_detected_event_is_valid_negative_evidence_not_acquisition_failure() -> None:

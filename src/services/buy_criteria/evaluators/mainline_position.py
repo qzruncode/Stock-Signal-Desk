@@ -470,5 +470,5 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             for period in ("today", "5d", "10d")
         )
         if not has_report and not has_direct_branch_evidence and not has_market_context and not has_multi_period_flow:
-            return "主线报告、板块、资金和交易确认数据均获取失败或不可用，第一道布尔闸门无法成立"
+            return "主线报告、板块、资金和交易确认数据均获取失败或不可用，当前市场主线维度无法判断"
         return None

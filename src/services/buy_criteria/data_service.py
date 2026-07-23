@@ -272,7 +272,7 @@ class DataService:
                 days=days,
                 limit=limit,
                 include_content=False,
-                fallback_to_web=False,
+                fallback_to_web=True,
             )
 
         return self._cached_call(key, _fetch)
@@ -325,6 +325,7 @@ class DataService:
         *,
         thesis: str,
         thesis_context: dict[str, Any] | None,
+        research_scope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Read formal report bodies and retrieve thesis-relevant passages."""
         art_codes = tuple(
@@ -333,7 +334,11 @@ class DataService:
             if isinstance(item, dict)
         )
         context_key = repr(thesis_context)
-        key = f"formal_business:{symbol}:{hash((art_codes, thesis, context_key))}"
+        scope_key = repr(research_scope)
+        key = (
+            f"formal_business:{symbol}:"
+            f"{hash((art_codes, thesis, context_key, scope_key))}"
+        )
 
         def _fetch():
             from src.services.catalyst_evidence import get_formal_business_evidence
@@ -343,6 +348,7 @@ class DataService:
                 announcements,
                 thesis=thesis,
                 thesis_context=thesis_context,
+                research_scope=research_scope,
             )
 
         return self._cached_call(key, _fetch)

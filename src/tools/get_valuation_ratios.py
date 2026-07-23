@@ -278,11 +278,27 @@ def _expected_completed_trade_day(now: datetime) -> date:
 
 
 def _select_forward(items: list[dict[str, Any]], year: int) -> tuple[float | None, float | None]:
-    usable = [item for item in items if item.get("year") is not None and item["year"] >= year]
+    usable = _active_forward_series(items, year)
     usable.sort(key=lambda item: item["year"])
     current = usable[0]["value"] if usable else None
     following = usable[1]["value"] if len(usable) > 1 else None
     return current, following
+
+
+def _active_forward_series(
+    items: list[dict[str, Any]],
+    as_of_year: int,
+) -> list[dict[str, Any]]:
+    """Exclude estimates whose forecast year is already in the past."""
+    usable = [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and isinstance(item.get("year"), int)
+        and item["year"] >= as_of_year
+        and item.get("value") is not None
+    ]
+    return sorted(usable, key=lambda item: item["year"])
 
 
 def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
@@ -350,7 +366,11 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
     ps_ttm = _scale(history.get("ps_ttm"), current_price, history_price)
     pcf_ttm = _scale(history.get("pcf_ttm"), current_price, history_price)
     peg_trailing = _scale(history.get("peg_trailing"), current_price, history_price)
-    forward_pe_current, forward_pe_next = _select_forward(comparison.get("forward_pe") or [], now.year)
+    raw_forward_pe = comparison.get("forward_pe") or []
+    raw_forward_ps = comparison.get("forward_ps") or []
+    forward_pe = _active_forward_series(raw_forward_pe, now.year)
+    forward_ps = _active_forward_series(raw_forward_ps, now.year)
+    forward_pe_current, forward_pe_next = _select_forward(forward_pe, now.year)
     peg_forward = comparison.get("peg_forward")
     dividend = _ttm_dividend(dividend_frame, current_price, now.date()) if dividend_frame is not None else {
         "cash_dividend_per_share_ttm": None,
@@ -426,8 +446,15 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         "peg_forward": peg_forward,
         "peg": peg_forward if peg_forward is not None else peg_trailing,
         "peg_basis": "forward_growth" if peg_forward is not None else "trailing_growth",
-        "forward_pe": comparison.get("forward_pe") or [],
-        "forward_ps": comparison.get("forward_ps") or [],
+        "forward_pe": forward_pe,
+        "forward_ps": forward_ps,
+        "excluded_expired_forward_years": sorted({
+            item["year"]
+            for item in [*raw_forward_pe, *raw_forward_ps]
+            if isinstance(item, dict)
+            and isinstance(item.get("year"), int)
+            and item["year"] < now.year
+        }),
         "forward_pe_current_year": forward_pe_current,
         "forward_pe_next_year": forward_pe_next,
         "dividend_yield_ttm_pct": dividend.get("dividend_yield_ttm_pct"),

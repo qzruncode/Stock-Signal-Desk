@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 DESCRIPTION = (
     "为最多8只 A 股的深度研究或横向比较收集完整证据：公司与主营、连续财务趋势、"
     "现金流与负债、PE(TTM)/PB/远期估值、一致预期、行业同行、技术与资金持续性、正式公告"
-    "及风险事件。该工具适用于个股深度研究和多股横向比较，不负责‘现在能否买入’的最终判断；"
-    "买入判断必须使用固定九项逐项否决工具。该工具不会提前终止，会返回全部研究维度及证据缺口。"
+    "及风险事件。该工具适用于个股深度研究和多股横向比较，也作为八维专业买入分析的基础证据包；"
+    "它本身不输出最终买卖结论，也不会提前终止任何研究维度。"
 )
 
 
@@ -52,7 +52,11 @@ def _compact_financials(data: dict[str, Any]) -> dict[str, Any]:
             "success", "partial", "symbol", "periods", "amount_unit", "ratio_unit",
             "source", "data_time", "is_stale", "errors", "warnings",
         )),
-        "items": [_pick(item, fields) for item in (data.get("items") or [])[-6:] if isinstance(item, dict)],
+        "items": [
+            _pick(item, fields)
+            for item in (data.get("items") or [])[-10:]
+            if isinstance(item, dict)
+        ],
     }
 
 
@@ -147,9 +151,12 @@ def _compact_risks(data: dict[str, Any]) -> dict[str, Any]:
         "items": [
             _pick(item, (
                 "title", "date", "publish_time", "risk_category", "risk_label",
-                "severity", "status", "source", "url", "summary",
+                "severity", "status", "source", "source_type", "url",
+                "risk_summary", "summary", "tags", "confidence",
+                "evidence_basis", "requires_fulltext_verification",
+                "lifecycle_basis",
             ))
-            for item in (data.get("items") or [])[:8]
+            for item in (data.get("items") or [])[:20]
             if isinstance(item, dict)
         ],
     }
@@ -161,7 +168,7 @@ def _compact_announcements(data: dict[str, Any]) -> dict[str, Any]:
         item for item in items
         if item.get("notice_type") != "其他" or item.get("importance") in {"high", "medium"}
     ]
-    selected = (important or items)[:8]
+    selected = (important or items)[:20]
     return {
         **_pick(data, (
             "success", "partial", "symbol", "name", "has_announcements", "analysis",
@@ -202,13 +209,13 @@ def _callers() -> dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any],
 
     return {
         "profile": (get_stock_info, {}, _compact_profile),
-        "financials": (get_financials, {"periods": 6}, _compact_financials),
+        "financials": (get_financials, {"periods": 10}, _compact_financials),
         "business_segments": (get_business_segments, {"category": "all", "periods": 2}, _compact_segments),
         "valuation": (get_valuation_ratios, {"with_history": True}, _compact_valuation),
         "consensus": (get_consensus_estimates, {"metric": "all"}, _compact_consensus),
         "peer_comparison": (get_peer_comparison, {"dimension": "all"}, _compact_peers),
-        "risk_events": (get_risk_events, {"days": 180, "limit": 20}, _compact_risks),
-        "announcements": (get_announcements, {"days": 180, "type": "all", "limit": 30}, _compact_announcements),
+        "risk_events": (get_risk_events, {"days": 730, "limit": 60}, _compact_risks),
+        "announcements": (get_announcements, {"days": 730, "type": "all", "limit": 100}, _compact_announcements),
         "capital_flow": (get_stock_capital_flow, {"days": 20}, _compact_flow),
     }
 
@@ -304,9 +311,14 @@ def _screening_flags(item: dict[str, Any]) -> dict[str, list[str]]:
         (positives if flow_10d["main_net_inflow"] > 0 else negatives).append(
             "10日主力口径资金净流入" if flow_10d["main_net_inflow"] > 0 else "10日主力口径资金净流出"
         )
-    active_high = ((risks.get("analysis") or {}).get("active_high_severity_count") or 0)
-    if active_high:
-        negatives.append(f"存在{active_high}项未缓释高风险事件")
+    detected_high = (
+        (risks.get("analysis") or {}).get("detected_high_severity_count")
+        or 0
+    )
+    if detected_high:
+        negatives.append(
+            f"存在{detected_high}项高风险文本命中，须按正式公告时间线复核当前状态"
+        )
     return {"positive": positives, "negative": negatives}
 
 

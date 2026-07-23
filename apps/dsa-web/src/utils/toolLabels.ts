@@ -6,7 +6,7 @@ export const TOOL_LABELS: Record<string, string> = {
   get_multi_stock_snapshot: '多股数据快照',
   get_multi_stock_financials: '多股财务快照',
   get_multi_stock_decision_evidence: '多股深度研究证据',
-  evaluate_multi_stock_buy_criteria: '九项严格买入判断',
+  evaluate_multi_stock_buy_criteria: '资深分析师八维买入分析',
   analyze_stock_catalysts: '公司催化事件核验',
   get_domain_stock_candidates: '领域股票候选池',
   get_theme_stock_candidates: '主题股票候选池',

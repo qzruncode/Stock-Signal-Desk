@@ -574,7 +574,7 @@ def _compile_catalyst_analysis(task: ResolvedTask) -> list[WorkflowCall]:
     ]
 
 
-def _compile_strict_buy_decision(task: ResolvedTask) -> list[WorkflowCall]:
+def _compile_professional_buy_analysis(task: ResolvedTask) -> list[WorkflowCall]:
     symbols = list(task.symbols)
     if not symbols:
         raise WorkflowCompileError("investment_decision requires at least one resolved entity")
@@ -589,13 +589,12 @@ def _compile_strict_buy_decision(task: ResolvedTask) -> list[WorkflowCall]:
         if raw_thesis_context is not None
         else None
     )
-    # This is one logical portfolio review.  The isolated runner owns bounded
-    # per-company fan-out and returns one coverage envelope, which keeps the UI
-    # and policy layer from presenting implementation shards as separate
-    # analyses.
+    # This is one logical portfolio review. The isolated runner owns bounded
+    # per-company fan-out, but every company receives the complete eight-axis
+    # analyst prompt and the UI still sees one coverage envelope.
     return [_call(
         task,
-        "strict_buy_collection_review",
+        "professional_buy_collection_review",
         "evaluate_multi_stock_buy_criteria",
         {
             "symbols": ",".join(symbols),
@@ -1011,24 +1010,25 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
         max_tool_calls=8,
         max_parallel_steps=2,
         max_attempts=1,
-        notes=("只研究催化事件；不替代完整九项买入判断，也不使用网络搜索。",),
+        notes=("只研究催化事件；不替代完整八维专业买入分析，也不使用网络搜索。",),
     ),
     StandardTaskKind.SOCIAL_SENTIMENT_ANALYSIS: _spec(StandardTaskKind.SOCIAL_SENTIMENT_ANALYSIS, "舆情分析", "采样并分析个股公开讨论情绪。", {"get_social_sentiment"}, _compile_sentiment, allowed={"days", "limit", "max_pages"}, entities=True),
     StandardTaskKind.STOCK_COMPARISON: _spec(StandardTaskKind.STOCK_COMPARISON, "股票对比", "横向比较多只证券的行情、估值、技术与财务。", {"get_multi_stock_snapshot", "get_peer_comparison"}, _compile_comparison, allowed={"include_peers", "dimension"}, entities=True),
     StandardTaskKind.STOCK_DEEP_RESEARCH: _spec(StandardTaskKind.STOCK_DEEP_RESEARCH, "个股深度研究", "收集完整业务、财务、估值、交易状态和风险证据。", {"get_multi_stock_decision_evidence"}, _compile_decision_packet, allowed={"thesis"}, entities=True),
     StandardTaskKind.INVESTMENT_DECISION: _spec(
         StandardTaskKind.INVESTMENT_DECISION,
-        "严格买入判断",
-        "对完整股票集合逐只执行九项串行布尔闸门；首项失败即停止该股，连续九项全部通过才可买入。",
+        "专业买入分析",
+        "对完整股票集合逐只执行资深分析师八维买入分析；八项全部展开，并给出正反证据、八分制评分、最终定位和监控指标。",
         {"evaluate_multi_stock_buy_criteria"},
-        _compile_strict_buy_decision,
+        _compile_professional_buy_analysis,
         allowed={"thesis", "thesis_context"},
         entities=True,
         max_tool_calls=150,
         max_parallel_steps=1,
         max_attempts=1,
         notes=(
-            "门槛顺序固定：主线受益、产业竞争力、三年空间、景气上行、非内卷、6—12个月催化、重大风险、估值及利好透支、买入位置与风险收益比。",
+            "分析顺序固定：当前市场主线、产业竞争力、行业周期、非内卷、四类增长驱动、6—12个月催化、估值赔率、重大风险。",
+            "每项状态为通过、半通过、不通过或证据不足；不得因前项不通过而省略后续维度。",
             "Agent 传递完整集合；底层执行器内部按公司并发、汇总并校验覆盖，不得静默截断。",
             "引用既有产业领域时，thesis_context 使用 summary 和已绑定 domains 的结构化对象，禁止把展示文本重新解析为板块。",
         ),

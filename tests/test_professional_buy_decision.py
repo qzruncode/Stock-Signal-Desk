@@ -6,8 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from api.v1.endpoints.agent.chat import (
-    _STRICT_BUY_GATE_IDS,
-    _build_strict_buy_decision_answer,
+    _build_professional_buy_decision_answer,
 )
 from src.agent.task_workflows import (
     ConfirmationState,
@@ -20,7 +19,6 @@ from src.agent.task_workflows import (
     workflow_for,
 )
 from src.agent.task_planner import resolve_task_plan
-from src.services.buy_criteria.evaluators import EVALUATOR_CLASSES
 from src.services.buy_criteria.evaluators.entry_risk_reward import EntryRiskRewardEvaluator
 from src.services.buy_criteria.evaluators.industrial_competitiveness import (
     IndustrialCompetitivenessEvaluator,
@@ -32,6 +30,7 @@ from src.services.buy_criteria.prompts.rubrics import (
     INDUSTRIAL_COMPETITIVENESS,
     MAINLINE_POSITION,
 )
+from src.services.buy_criteria.professional_analysis import DIMENSION_DEFINITIONS
 from src.tools.evaluate_multi_stock_buy_criteria import (
     evaluate_multi_stock_buy_criteria,
 )
@@ -67,79 +66,91 @@ def _planner_response(task: StandardTask) -> SimpleNamespace:
     ))])
 
 
-def _selection_response() -> SimpleNamespace:
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_selection",
-            arguments=json.dumps({
-                "selected_kinds": [StandardTaskKind.INVESTMENT_DECISION.value],
-            }),
-        ))],
-        content=None,
-    ))])
-
-
-def _gate(index: int, passed: bool = True) -> dict:
-    evaluator = EVALUATOR_CLASSES[index]
-    details = {}
-    if evaluator.criterion_id == "entry_risk_reward":
-        details = {
-            "entry_zone_low": 9.8,
-            "entry_zone_high": 10.0,
-            "stop_loss": 9.4,
-            "target_reference": 12.0,
-            "risk_reward_ratio": 3.33,
-            "recommended_initial_position_pct": 5,
-            "recommended_max_position_pct": 10,
-        }
+def _dimension(index: int, status: str = "pass") -> dict:
+    dimension_id, title = DIMENSION_DEFINITIONS[index]
     return {
-        "criterion_id": evaluator.criterion_id,
-        "criterion_name": evaluator.criterion_name,
-        "index": index,
-        "passed": passed,
-        "verdict": "通过" if passed else "未证明真实受益",
-        "details": details,
+        "dimension_id": dimension_id,
+        "status": status,
+        "headline": f"{title}判断",
+        "analysis": f"{title}的支持证据和反证已经完成交叉核验。",
+        "key_evidence": [f"{title}关键事实"],
+        "counter_evidence": [f"{title}主要保留"],
+        "monitoring_points": [f"跟踪{title}"],
     }
 
 
-def _strict_result() -> dict:
+def _professional_result() -> dict:
+    first_dimensions = [
+        _dimension(index, "partial" if index == 6 else "pass")
+        for index in range(8)
+    ]
+    second_dimensions = [
+        _dimension(
+            index,
+            "fail" if index == 7 else "partial" if index in {0, 3, 6} else "pass",
+        )
+        for index in range(8)
+    ]
     return {
         "success": True,
         "partial": False,
-        "playbook": "strict_sequential_buy_decision",
+        "contract_version": "professional_buy_analysis_v2",
+        "playbook": "professional_eight_dimension_buy_analysis",
         "items": [
             {
+                "contract_version": "professional_buy_analysis_v2",
+                "analysis_mode": "professional_eight_dimension_buy_analysis",
                 "symbol": "600519",
                 "name": "贵州茅台",
-                "final_decision": "可买入",
+                "investment_profile": "高质量消费龙头",
+                "overall_summary": "竞争力和现金流较强，估值赔率仍需等待更好价格。",
+                "core_thesis": "品牌壁垒与现金流支撑长期价值",
+                "biggest_issue": "估值赔率只有半通过",
+                "recommendation_code": "conditional_buy",
+                "recommendation": "满足条件时可进入买入计划",
+                "recommendation_reason": "八项没有硬性失败，但需要遵守估值与价格条件。",
+                "score": 7.5,
+                "score_total": 8,
+                "counts": {"pass": 7, "partial": 1, "fail": 0, "insufficient": 0},
+                "dimensions": first_dimensions,
+                "bull_case_chain": "品牌壁垒 → 稳定需求 → 现金流兑现 → 估值修复",
+                "risk_chain": "需求走弱 → 批价承压 → 盈利预期下修",
+                "monitoring_points": ["批价", "经营现金流", "估值分位"],
+                "source_links": [{
+                    "title": "2025年年度报告",
+                    "source": "巨潮资讯",
+                    "date": "2026-03-30",
+                    "url": "https://example.com/report.pdf",
+                }],
+                "evidence_gaps": [],
                 "coverage_complete": True,
-                "passed_count": 9,
-                "failed_count": 0,
-                "not_evaluated_count": 0,
-                "total": 9,
-                "stopped_at": None,
-                "stopped_at_name": None,
-                "stopped_verdict": "",
-                "criteria": [_gate(index) for index in range(9)],
-                "position_advice": {"initial_position_pct": 5, "max_position_pct": 10},
-                "invalidation_conditions": ["跌破止损位9.40", "产业逻辑被证伪"],
+                "data_time": "2026-07-23T12:00:00+08:00",
+                "quote_basis": "盘中最新价",
             },
             {
+                "contract_version": "professional_buy_analysis_v2",
+                "analysis_mode": "professional_eight_dimension_buy_analysis",
                 "symbol": "000858",
                 "name": "五粮液",
-                "final_decision": "不可买入",
-                "coverage_complete": False,
-                "passed_count": 0,
-                "failed_count": 1,
-                "insufficient_count": 0,
-                "not_evaluated_count": 8,
-                "total": 9,
-                "stopped_at": "mainline_position",
-                "stopped_at_name": "市场主线属性",
-                "stopped_verdict": "未证明属于当前市场主线",
-                "criteria": [_gate(0, passed=False)],
-                "position_advice": {"initial_position_pct": 0, "max_position_pct": 0},
-                "invalidation_conditions": [],
+                "investment_profile": "产业逻辑存在但质量仍需验证",
+                "overall_summary": "四项通过、三项半通过、一项不通过，适合跟踪而非直接买入。",
+                "core_thesis": "消费复苏与品牌修复",
+                "biggest_issue": "重大风险项未通过",
+                "recommendation_code": "watchlist",
+                "recommendation": "进入中期跟踪池",
+                "recommendation_reason": "产业逻辑存在，但风险和赔率没有形成高确定性。",
+                "score": 5.5,
+                "score_total": 8,
+                "counts": {"pass": 4, "partial": 3, "fail": 1, "insufficient": 0},
+                "dimensions": second_dimensions,
+                "bull_case_chain": "需求恢复 → 渠道改善 → 盈利修复",
+                "risk_chain": "库存压力 → 回款放缓 → 现金流承压",
+                "monitoring_points": ["经营现金流", "库存", "渠道回款"],
+                "source_links": [],
+                "evidence_gaps": [],
+                "coverage_complete": True,
+                "data_time": "2026-07-23T12:00:00+08:00",
+                "quote_basis": "盘中最新价",
             },
         ],
         "resolved_entities": [
@@ -179,13 +190,20 @@ class _Controller:
         )
 
 
-def test_gate_order_is_exact_and_growth_drivers_is_not_a_separate_gate() -> None:
-    assert tuple(evaluator.criterion_id for evaluator in EVALUATOR_CLASSES) == _STRICT_BUY_GATE_IDS
-    assert len(EVALUATOR_CLASSES) == 9
-    assert "growth_drivers" not in _STRICT_BUY_GATE_IDS
+def test_professional_dimension_order_is_exact_and_includes_all_eight_axes() -> None:
+    assert tuple(item[0] for item in DIMENSION_DEFINITIONS) == (
+        "market_mainline",
+        "industrial_competitiveness",
+        "industry_cycle",
+        "competition_quality",
+        "growth_drivers",
+        "forward_catalysts",
+        "valuation_odds",
+        "major_risks",
+    )
 
 
-def test_investment_decision_compiles_every_company_into_internal_strict_batches() -> None:
+def test_investment_decision_compiles_every_company_into_one_professional_review() -> None:
     symbols = tuple(f"{index:06d}" for index in range(72))
     candidate = _task()
     calls = compile_task(ResolvedTask(candidate=candidate, symbols=symbols))
@@ -218,9 +236,7 @@ def test_previous_collection_buy_follow_up_uses_semantic_planning() -> None:
     candidate = _task().model_copy(update={
         "parameters": {"thesis": "行星滚柱丝杠；减速器"},
     })
-    completion = AsyncMock(side_effect=[
-        _selection_response(), _planner_response(candidate),
-    ])
+    completion = AsyncMock(return_value=_planner_response(candidate))
 
     plan = asyncio.run(resolve_task_plan(
         messages,
@@ -229,7 +245,7 @@ def test_previous_collection_buy_follow_up_uses_semantic_planning() -> None:
         current_entities=[],
         previous_answer_entities=previous_entities,
     ))
-    assert completion.await_count == 2
+    assert completion.await_count == 1
     assert plan.tasks[0].kind == StandardTaskKind.INVESTMENT_DECISION
     assert plan.tasks[0].entity_scope == EntityScope.PREVIOUS_ANSWER
     assert plan.tasks[0].parameters["thesis"] == "行星滚柱丝杠；减速器"
@@ -272,9 +288,7 @@ def test_buy_follow_up_receives_structured_context_across_turns() -> None:
             "thesis_context": {"summary": "谐波减速器", "domains": domains},
         },
     })
-    completion = AsyncMock(side_effect=[
-        _selection_response(), _planner_response(candidate),
-    ])
+    completion = AsyncMock(return_value=_planner_response(candidate))
 
     plan = asyncio.run(resolve_task_plan(
         messages,
@@ -342,9 +356,7 @@ def test_explicit_current_buy_request_uses_semantic_planner() -> None:
         "entities": ["绿的谐波", "鸣志电器"],
         "parameters": {"thesis": "谐波减速器；空心杯电机；无框力矩电机"},
     })
-    completion = AsyncMock(side_effect=[
-        _selection_response(), _planner_response(candidate),
-    ])
+    completion = AsyncMock(return_value=_planner_response(candidate))
 
     plan = asyncio.run(resolve_task_plan(
         messages,
@@ -353,12 +365,12 @@ def test_explicit_current_buy_request_uses_semantic_planner() -> None:
         current_entities=current_entities,
         previous_answer_entities=[],
     ))
-    assert completion.await_count == 2
+    assert completion.await_count == 1
     assert plan.tasks[0].entity_scope == EntityScope.CURRENT_MESSAGE
     assert plan.tasks[0].parameters["thesis"] == "谐波减速器；空心杯电机；无框力矩电机"
 
 
-def test_entry_gate_is_deterministic_and_returns_position_and_invalidation() -> None:
+def test_entry_context_is_deterministic_and_returns_position_and_invalidation() -> None:
     evaluator = EntryRiskRewardEvaluator()
     technical = {
         "success": True,
@@ -568,8 +580,8 @@ def test_multi_stock_tool_never_silently_truncates_and_preserves_all_results() -
         "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
         return_value=(resolved, []),
     ), patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
-        side_effect=[_strict_result()["items"][0], _strict_result()["items"][1]],
+        "src.tools.evaluate_multi_stock_buy_criteria.analyze_professional_buy",
+        side_effect=[_professional_result()["items"][0], _professional_result()["items"][1]],
     ):
         result = evaluate_multi_stock_buy_criteria("600519,000858", "消费复苏")
     assert result["requested_count"] == 2
@@ -587,31 +599,30 @@ def test_multi_stock_tool_never_silently_truncates_and_preserves_all_results() -
     assert "没有静默截断" in rejected["errors"][0]
 
 
-def test_renderer_only_marks_exact_nine_gate_all_pass_item_buyable() -> None:
+def test_renderer_outputs_all_eight_axes_score_chains_and_monitoring() -> None:
     evidence = [{
         "tool": "evaluate_multi_stock_buy_criteria",
         "arguments": {"symbols": "600519,000858"},
-        "result": _strict_result(),
+        "result": _professional_result(),
     }]
-    answer = _build_strict_buy_decision_answer(evidence)
+    answer = _build_professional_buy_decision_answer(evidence)
     assert answer is not None
-    assert "贵州茅台 (600519) | **可买入**" in answer
-    assert "五粮液 (000858) | **不可买入**" in answer
-    assert "0%" in answer
-    assert "后续 8 项未执行" in answer
-    assert "9/9通过" in answer
-
-    missing_answer = _build_strict_buy_decision_answer([{
+    assert "贵州茅台 (600519) | ✅7 / ◐1 / ❌0 / ?0 | 7.5/8" in answer
+    assert "五粮液 (000858) | ✅4 / ◐3 / ❌1 / ?0 | 5.5/8" in answer
+    assert answer.count("### 8. ❌ 无重大风险隐患") == 1
+    assert "看多链条" in answer
+    assert "风险链条" in answer
+    assert "后续最关键的验证指标" in answer
+    missing_answer = _build_professional_buy_decision_answer([{
         "tool": "evaluate_multi_stock_buy_criteria",
         "arguments": {"symbols": "600519,000858,300750"},
-        "result": _strict_result(),
+        "result": _professional_result(),
     }])
     assert missing_answer is not None
-    assert "集合覆盖不完整" in missing_answer
-    assert "集合覆盖不完整" in missing_answer
+    assert "缺失 **1 只**" in missing_answer
 
 
-def test_production_follow_up_uses_only_strict_internal_tool_and_deterministic_answer() -> None:
+def test_production_follow_up_uses_only_professional_internal_tool_and_validated_answer() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
     candidate = _task(["贵州茅台", "五粮液"])
@@ -622,7 +633,7 @@ def test_production_follow_up_uses_only_strict_internal_tool_and_deterministic_a
     def execute(name: str, arguments: dict, **_kwargs) -> dict:
         assert name == "evaluate_multi_stock_buy_criteria"
         assert arguments["symbols"] == "600519,000858"
-        return _strict_result()
+        return _professional_result()
 
     async def run() -> str:
         with patch.object(chat_mod, "resolve_task_plan", new=AsyncMock(return_value=plan)), patch.object(
@@ -642,6 +653,7 @@ def test_production_follow_up_uses_only_strict_internal_tool_and_deterministic_a
 
     answer = asyncio.run(run())
     assert controller.tool_calls == ["evaluate_multi_stock_buy_criteria"]
-    assert "贵州茅台 (600519) | **可买入**" in answer
-    assert "五粮液 (000858) | **不可买入**" in answer
+    assert "贵州茅台 (600519) | ✅7 / ◐1 / ❌0 / ?0 | 7.5/8" in answer
+    assert "五粮液 (000858) | ✅4 / ◐3 / ❌1 / ?0 | 5.5/8" in answer
+    assert "### 8. ❌ 无重大风险隐患" in answer
     assert "网络搜索" not in " ".join(controller.tool_calls)
