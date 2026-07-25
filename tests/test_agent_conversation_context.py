@@ -286,11 +286,9 @@ def _legacy_rich_thread_state() -> dict:
                             "toolName": "get_domain_stock_candidates",
                             "args": {
                                 "domains": [{"label": "机器人执行器"}],
-                                "context_theme": "机器人",
                             },
                             "result": {
                                 "success": True,
-                                "contextTheme": "机器人",
                                 "domainResults": [
                                     {
                                         "domain": "机器人执行器",
@@ -328,7 +326,7 @@ def test_legacy_context_recovery_uses_only_completed_structured_calls() -> None:
 
     assert len(context.turns) == 1
     assert context.turns[0].request == "按这些领域找A股公司"
-    assert context.turns[0].tasks[0].kind == "theme_stock_discovery"
+    assert context.turns[0].tasks[0].kind == "legacy_structured_execution"
     assert context.latest_entities() == [
         {"symbol": "000001", "name": "甲公司"},
         {"symbol": "000002", "name": "乙公司"},
@@ -347,7 +345,7 @@ def test_chat_session_lazily_recovers_legacy_agent_context() -> None:
 
     recovered = service.get_agent_context("legacy-conversation")
 
-    assert recovered["turns"][0]["tasks"][0]["kind"] == "theme_stock_discovery"
+    assert recovered["turns"][0]["tasks"][0]["kind"] == "legacy_structured_execution"
     assert recovered["turns"][0]["entities"] == [
         {"symbol": "000001", "name": "甲公司"},
         {"symbol": "000002", "name": "乙公司"},
@@ -375,7 +373,6 @@ def test_turn_reference_never_extracts_securities_from_prose_fields() -> None:
         arguments={"question": "机器人"},
         result={
             "success": True,
-            "context_theme": "机器人",
             "summary": "文字里即使出现贵州茅台 600519，也不是结构化证券结果。",
         },
         executed=True,

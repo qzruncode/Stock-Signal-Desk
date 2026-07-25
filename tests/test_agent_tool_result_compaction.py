@@ -27,10 +27,10 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                 {
                     "domain": "行星滚柱丝杠",
                     "lookup_themes": ["机器人执行器"],
-                    "mapping_type": "proxy_board",
-                    "mapping_rationale": "按执行机构语义映射",
+                    "mapping_type": "catalog_binding",
+                    "mapping_rationale": "实时目录绑定",
                     "unresolved_parts": [],
-                    "mapping_basis": "catalog_proxy_board",
+                    "mapping_basis": "live_catalog",
                     "success": True,
                     "coverage_complete": True,
                     "candidate_count": 1,
@@ -43,10 +43,10 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                 {
                     "domain": "减速器",
                     "lookup_themes": ["减速器"],
-                    "mapping_type": "exact_board",
+                    "mapping_type": "catalog_binding",
                     "mapping_rationale": "同名板块",
                     "unresolved_parts": [],
-                    "mapping_basis": "catalog_exact_board",
+                    "mapping_basis": "live_catalog",
                     "success": True,
                     "coverage_complete": True,
                     "candidate_count": 1,
@@ -64,34 +64,17 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(len(compact["domain_results"]), 2)
         self.assertEqual(compact["domain_results"][0]["items"][0]["symbol"], "300580")
         self.assertEqual(compact["domain_results"][1]["items"][0]["symbol"], "688017")
-        self.assertEqual(compact["domain_results"][0]["mapping_type"], "proxy_board")
-        self.assertEqual(compact["domain_results"][0]["mapping_rationale"], "按执行机构语义映射")
+        self.assertEqual(compact["domain_results"][0]["mapping_type"], "catalog_binding")
+        self.assertEqual(compact["domain_results"][0]["mapping_rationale"], "实时目录绑定")
         self.assertEqual(
             compact["_tool_payload_meta"]["compaction_reason"],
             "complete_multi_domain_candidate_indexes",
         )
 
-    def test_theme_candidate_payload_keeps_bounded_local_verified_pool(self) -> None:
-        payload = {
-            "success": True,
-            "theme": "人形机器人",
-            "local_universe_count": 5534,
-            "candidate_count": 45,
-            "items": [
-                {"symbol": f"0000{i:02d}", "name": f"公司{i}", "evidence_level": "L1"}
-                for i in range(40)
-            ],
-            "errors": [],
-        }
-
-        compact = _compact_tool_result("get_theme_stock_candidates", payload)
-
-        self.assertEqual(len(compact["items"]), 40)
-        self.assertEqual(compact["local_universe_count"], 5534)
-        self.assertTrue(compact["_tool_payload_meta"]["compacted"])
-        self.assertEqual(
-            compact["_tool_payload_meta"]["compaction_reason"],
-            "all_candidate_identity_index_without_repeated_financial_fields",
+    def test_internal_single_board_fetcher_is_not_publicly_registered(self) -> None:
+        self.assertNotIn(
+            "get_theme_stock_candidates",
+            ToolRegistry().get_tool_names(),
         )
 
     def test_search_news_keeps_analysis_and_limits_items(self) -> None:
@@ -166,7 +149,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertNotIn("pe_ratio", quote)
         self.assertIn("不是 PE(TTM)", compact["valuation_basis"]["pe_dynamic"])
 
-    def test_professional_decision_payload_declares_compacted_seven_dimension_view(self) -> None:
+    def test_professional_decision_payload_declares_compacted_evidence_view(self) -> None:
         payload = {
             "success": True,
             "items": [{"symbol": "003021", "evidence_coverage": {"covered_count": 7}}],
@@ -183,7 +166,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         )
         self.assertEqual(
             compact["_tool_payload_meta"]["source_scope"],
-            "seven_dimension_multi_stock_evidence",
+            "professional_multi_stock_evidence",
         )
 
     def test_semantic_search_compacts_each_long_body_with_explicit_length(self) -> None:

@@ -249,22 +249,13 @@ def get_risk_events(
 # /sentiment
 # ---------------------------------------------------------------------------
 
-@router.get("/sentiment", summary="获取舆情情绪")
+@router.get("/sentiment", summary="获取舆情分析证据")
 def get_sentiment(
     symbol: str = Query(..., description="股票代码"),
     days: int = Query(90, ge=1, le=90, description="分析最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
-    """分析市场对某股票的情绪倾向。
-
-    返回舆情分数（-100到+100）、正/负/中性新闻条数、
-    讨论热度趋势、关键词、逐条情绪标注。
-
-    数据源: RSSHub 聚合财经资讯 + 个股研报
-    方法: 中文分词 + 金融情绪词典匹配
-
-    按天缓存。
-    """
+    """获取供模型研判舆情的资讯和研报证据，不在程序中做词典投票。"""
     symbol = _normalize_symbol(symbol)
     cache_part = f"d{days}"
     if not force:
@@ -311,25 +302,13 @@ def get_research_report(
 # /social-sentiment
 # ---------------------------------------------------------------------------
 
-@router.get("/social-sentiment", summary="获取社交媒体情绪")
+@router.get("/social-sentiment", summary="获取社交媒体分析证据")
 def get_social_sentiment(
     symbol: str = Query(..., description="股票代码"),
     days: int = Query(90, ge=1, le=90, description="查询最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
-    """获取社交媒体讨论热度和情绪。
-
-    返回:
-      - 舆情分数 (-100~+100)
-      - 讨论帖子数量/日趋势
-      - 千股千评评分趋势
-      - 正/负/中性比例
-      - 逐条帖子
-
-    数据源: RSSHub 东方财富关键词搜索。
-
-    按天缓存。
-    """
+    """获取公开讨论样本、热度和来源，语义情绪由模型结合上下文研判。"""
     from src.tools.get_social_sentiment import get_social_sentiment as tool_get_social_sentiment
 
     force_value = force if isinstance(force, bool) else False
@@ -349,7 +328,6 @@ def get_social_sentiment(
 
 from ._helpers import (
     _fetch_rsshub_entries,
-    _build_structured_analysis,
     _resolve_post_publish_time,
 )
 from ._fetch_statements import _fetch_from_ths_triple

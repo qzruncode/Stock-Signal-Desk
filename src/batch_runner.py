@@ -548,31 +548,28 @@ def _with_batch_decision_schema(system_prompt: str) -> str:
     return f"{base}\n\n{BATCH_DECISION_SCHEMA_INSTRUCTION}".strip()
 
 
-_CRITERIA_NUM_LABELS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"]
+_CRITERIA_NUM_LABELS = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"]
 
 
 def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
     """Map the professional checklist result onto the shared decision shape."""
     final = summary.get("final_decision") or "关键取证未完成，暂停判断"
-    recommendation_code = str(
-        summary.get("recommendation_code") or "evidence_insufficient"
+    decision = (
+        "buy"
+        if summary.get("gate_pass_complete") is True
+        else "unknown"
+        if int(summary.get("insufficient_count") or 0) > 0
+        else "reject"
     )
-    decision = {
-        "conditional_buy": "buy",
-        "watchlist": "watch",
-        "wait": "watch",
-        "avoid": "reject",
-        "evidence_insufficient": "unknown",
-    }.get(recommendation_code, "unknown")
     total = summary.get("total", 8)
     passed = summary.get("passed_count", 0)
-    partial = summary.get("partial_count", 0)
     failed = summary.get("failed_count", 0)
     insufficient = summary.get("insufficient_count", 0)
+    not_evaluated = summary.get("not_evaluated_count", 0)
     reason = (
-        f"{summary.get('score', 0):g}/{total}分；"
-        f"✅{passed}、◐{partial}、❌{failed}、?{insufficient}。"
-        + _one_line(summary.get("recommendation_reason") or "", limit=90)
+        f"通过{passed}/{total}；不通过{failed}、取证未完成{insufficient}、"
+        f"后续未执行{not_evaluated}。"
+        + _one_line(summary.get("stopped_verdict") or "", limit=90)
     )
 
     if summary.get("from_cache"):
@@ -595,9 +592,9 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
     )
     final = summary.get("final_decision") or "关键取证未完成，暂停判断"
     passed = summary.get("passed_count", 0)
-    partial = summary.get("partial_count", 0)
     failed = summary.get("failed_count", 0)
     insufficient = summary.get("insufficient_count", 0)
+    not_evaluated = summary.get("not_evaluated_count", 0)
     cache_mark = "（缓存复用）" if summary.get("from_cache") else ""
 
     lines = [
@@ -605,11 +602,10 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
         "",
         f"**最终结论**: {final}{cache_mark}",
         (
-            f"✅ {passed} / ◐ {partial} / ❌ {failed} / ? {insufficient}，"
-            f"折算 {summary.get('score', 0):g}/8"
+            f"✅ 通过 {passed}/8 / ❌ 不通过 {failed} / "
+            f"? 取证未完成 {insufficient} / 未执行 {not_evaluated}"
         ),
-        f"**当前定位**: {summary.get('investment_profile') or '待验证'}",
-        f"**最大问题**: {summary.get('biggest_issue') or '尚未识别'}",
+        f"**首个停止项**: {summary.get('stopped_at_name') or '八维全部通过'}",
         "",
         "## 逐项结果",
         "",
@@ -623,7 +619,6 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
         )
         mark = {
             "pass": "✅ 通过",
-            "partial": "◐ 半通过",
             "fail": "❌ 不通过",
             "insufficient": "? 取证未完成",
         }.get(str(c.get("status") or ""), "? 取证未完成")
@@ -633,16 +628,11 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
         if verdict:
             line += f" — {verdict}"
         lines.append(line)
-    lines.extend([
-        "",
-        "## 最终逻辑",
-        "",
-        f"- 看多链条：{summary.get('bull_case_chain') or '待验证'}",
-        f"- 风险链条：{summary.get('risk_chain') or '待验证'}",
-        "- 监控指标：" + "；".join(
-            str(value) for value in summary.get("monitoring_points") or []
-        ),
-    ])
+    if not_evaluated:
+        lines.extend([
+            "",
+            f"> 首个阻断后，后续 {not_evaluated} 维按布尔状态机未执行。",
+        ])
 
     return "\n".join(lines)
 
@@ -758,7 +748,7 @@ def _build_criteria_report_content(
     template_name: str,
     started_at: datetime,
 ) -> str:
-    """Build the buy-criteria-mode aggregated report (9/9 通过 / 卡点).
+    """Build the buy-criteria-mode aggregated report (8/8 通过 / 卡点).
 
     Keeps the ``## 筛选通过股票`` heading with a bare-code first column so the
     frontend can extract passed codes and build a watchlist group.
@@ -774,11 +764,11 @@ def _build_criteria_report_content(
         "# 买入判断筛选汇总",
         "",
         f"- **触发时间**: {started_at.strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- **筛选方式**: 买入判断（9 步硬筛，任一步不通过即淘汰）",
+        f"- **筛选方式**: 八维布尔买入判断（首个非通过即停止）",
         f"- **股票数量**: {state.total}",
         f"- **完成率**: {state.completed}/{state.total}",
         f"- **分析成功率**: {success_rate:.1f}%",
-        f"- **筛选通过(9/9)**: {len(passed_items)}",
+        f"- **筛选通过(8/8)**: {len(passed_items)}",
         f"- **未通过**: {len(rejected_items)}",
         f"- **分析失败**: {len(failed_items)}",
         "",
@@ -792,7 +782,7 @@ def _build_criteria_report_content(
         f"| 已完成 | {state.completed} |",
         f"| 分析成功 | {state.success} |",
         f"| 分析失败 | {state.failed} |",
-        f"| 筛选通过(9/9) | {len(passed_items)} |",
+        f"| 筛选通过(8/8) | {len(passed_items)} |",
         f"| 未通过 | {len(rejected_items)} |",
         f"| 分析成功率 | {success_rate:.1f}% |",
         "",
@@ -807,7 +797,7 @@ def _build_criteria_report_content(
         for item in passed_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
     else:
-        lines.append("本次筛选没有 9 项全部通过的股票。")
+        lines.append("本次筛选没有八维全部通过的股票。")
     lines.append("")
 
     if rejected_items:
@@ -853,20 +843,7 @@ def _normalize_decision(value: str) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"buy", "watch", "reject", "unknown"}:
         return normalized
-    aliases = {
-        "pass": "buy",
-        "passed": "buy",
-        "positive": "buy",
-        "yes": "buy",
-        "hold": "watch",
-        "observe": "watch",
-        "neutral": "watch",
-        "no": "reject",
-        "avoid": "reject",
-        "sell": "reject",
-        "negative": "reject",
-    }
-    return aliases.get(normalized, "unknown")
+    return "unknown"
 
 
 def _json_objects_from_text(text: str) -> List[dict]:
@@ -907,158 +884,6 @@ def _extract_structured_decision(text: str) -> Optional[Dict[str, str]]:
     return None
 
 
-def _clean_decision_line(text: str) -> str:
-    return re.sub(r"[*_`>#\-]+", "", str(text)).strip()
-
-
-def _extract_decision_context(text: str) -> str:
-    """Return the most relevant final-decision area from a model answer."""
-    lines = [_clean_decision_line(line) for line in str(text).splitlines()]
-    lines = [line for line in lines if line]
-    if not lines:
-        return ""
-
-    explicit_decision_pattern = re.compile(
-        r"^(?:最终结论[:：]?)?\s*(不买|不买入|不建议买入|可买|买入|建议买入|强烈买入|继续观察|暂不行动)\s*[。.!！]?$"
-    )
-    for index in list(range(min(4, len(lines)))) + list(range(len(lines) - 1, max(-1, len(lines) - 8), -1)):
-        if explicit_decision_pattern.search(lines[index]):
-            return "\n".join(lines[index:index + 4])
-
-    high_priority_markers = (
-        "最终结论", "综合结论", "最终建议", "操作建议", "投资建议",
-        "筛选结果", "买入建议", "是否买入", "总评",
-    )
-    fallback_markers = ("核心结论", "结论")
-
-    for markers in (high_priority_markers, fallback_markers):
-        for index in range(len(lines) - 1, -1, -1):
-            if any(marker in lines[index] for marker in markers):
-                return "\n".join(lines[index:index + 4])
-
-    return "\n".join(lines[-6:])
-
-
-_NEGATIVE_DECISION_PATTERNS = [
-    "不买", "不买入", "不建议买", "不建议买入", "不建议参与", "不宜买入",
-    "暂不买", "暂不买入", "暂不建议", "暂不参与", "不纳入",
-    "筛选不通过", "未通过", "不通过", "不满足", "不具备买点",
-    "没有买点", "无买点", "否决", "回避", "规避", "淘汰", "排除",
-    "观望为主", "谨慎观望", "不推荐",
-    "暂不关注", "暂不纳入", "低估值陷阱", "无操作价值", "放弃",
-    "风险否决", "触发否决",
-]
-
-
-_WATCH_DECISION_PATTERNS = [
-    "继续观察", "暂时观察", "观察为主", "保持观察",
-    "等待买点", "等待确认", "暂不行动",
-]
-
-
-_POSITIVE_DECISION_PATTERNS = [
-    "筛选通过", "通过筛选", "推荐买入", "建议买入", "强烈买入",
-    "逢低买入", "分批买入", "可以买入", "可以买", "可买入",
-    "可买", "买入评级", "买入", "建议参与", "可参与", "纳入重点观察",
-    "纳入观察", "重点关注", "积极关注", "优先关注", "推荐关注",
-    "值得关注", "可关注", "继续关注", "机会较好", "具备买点",
-    "符合买点", "赔率较好",
-]
-
-
-def _find_decision_token(text: str, tokens: List[str]) -> Optional[str]:
-    lowered = str(text).lower()
-    for token in tokens:
-        if token.lower() in lowered:
-            return token
-    return None
-
-
-def _find_positive_decision_token(text: str) -> Optional[str]:
-    lowered = str(text).lower()
-    future_or_conditional_patterns = [
-        "可能转为", "后续可能", "若后续", "如果后续", "未来若",
-        "转为可买", "转为买入", "可转为",
-    ]
-    if any(token in lowered for token in future_or_conditional_patterns):
-        return None
-    return _find_decision_token(text, _POSITIVE_DECISION_PATTERNS)
-
-
-def _extract_decision(text: str) -> str:
-    context = _extract_decision_context(text)
-    negative = _find_decision_token(context, _NEGATIVE_DECISION_PATTERNS)
-    if negative:
-        return negative
-    positive = _find_positive_decision_token(context)
-    if positive:
-        return positive
-
-    match = re.search(
-        r"(?:操作建议|投资建议|最终建议|最终结论|综合结论|核心结论|筛选结果|评级)[:：]?\s*([^\n。；;|]{2,40})",
-        context,
-        flags=re.IGNORECASE,
-    )
-    if match:
-        return _one_line(match.group(1), limit=28)
-    return "未识别"
-
-
-def _extract_reason(text: str) -> str:
-    candidates = []
-    context = _extract_decision_context(text)
-    for raw_line in context.splitlines():
-        line = raw_line.strip().strip("-*#> ")
-        if not line:
-            continue
-        if any(token in line for token in ("理由", "原因", "看点", "核心", "摘要", "优势", "催化", "否定")):
-            candidates.append(line)
-    if not candidates:
-        for raw_line in str(text).splitlines():
-            line = raw_line.strip().strip("-*#> ")
-            if not line:
-                continue
-            if any(token in line for token in ("理由", "原因", "看点", "核心", "摘要", "结论", "优势", "催化", "否定")):
-                candidates.append(line)
-    if not candidates:
-        candidates = [line.strip().strip("-*#> ") for line in str(text).splitlines() if line.strip()]
-    return _one_line(candidates[0] if candidates else "模型未给出摘要理由", limit=90)
-
-
-def _classify_legacy_decision(text: str) -> Dict[str, str]:
-    context = _extract_decision_context(text)
-    if _find_decision_token(context, _NEGATIVE_DECISION_PATTERNS):
-        return {
-            "decision": "reject",
-            "decision_label": _extract_decision(text),
-            "decision_reason": _extract_reason(text),
-            "decision_source": "legacy",
-        }
-    watch = _find_decision_token(context, _WATCH_DECISION_PATTERNS)
-    if watch:
-        return {
-            "decision": "watch",
-            "decision_label": watch,
-            "decision_reason": _extract_reason(text),
-            "decision_source": "legacy",
-        }
-    positive = _find_positive_decision_token(context)
-    if positive:
-        return {
-            "decision": "buy",
-            "decision_label": positive,
-            "decision_reason": _extract_reason(text),
-            "decision_source": "legacy",
-        }
-
-    return {
-        "decision": "unknown",
-        "decision_label": _extract_decision(text),
-        "decision_reason": _extract_reason(text),
-        "decision_source": "legacy",
-    }
-
-
 def _get_result_decision(result: dict) -> Dict[str, str]:
     if result.get("decision"):
         return {
@@ -1070,11 +895,17 @@ def _get_result_decision(result: dict) -> Dict[str, str]:
     structured = _extract_structured_decision(result.get("text") or "")
     if structured:
         return structured
-    return _classify_legacy_decision(result.get("text") or "")
+    return {
+        "decision": "unknown",
+        "decision_label": "未提供结构化结论",
+        "decision_reason": "模型输出缺少批量决策结构，程序未从自然语言中猜测结论",
+        "decision_source": "missing_structured_decision",
+    }
 
 
 def _is_passed_stock(text: str) -> bool:
-    return _classify_legacy_decision(text)["decision"] == "buy"
+    structured = _extract_structured_decision(text)
+    return bool(structured and structured["decision"] == "buy")
 
 
 def _get_stock_decision_summaries(result_items: List[tuple[str, dict]]) -> List[dict]:
@@ -1149,11 +980,11 @@ def _build_criteria_notification_content(
     lines = [
         "## 买入判断筛选汇总",
         "",
-        f"> 筛选方式: **买入判断（9 步硬筛）**",
+        f"> 筛选方式: **八维布尔买入判断**",
         f"> 时间: {now}",
         f"> 完成: **{state.completed}/{state.total}**",
         f"> 分析成功: **{state.success}** | 分析失败: **{state.failed}** | 分析成功率: **{success_rate:.1f}%**",
-        f"> 筛选通过(9/9): **{len(passed_items)}** | 未通过: **{len(rejected_items)}**",
+        f"> 筛选通过(8/8): **{len(passed_items)}** | 未通过: **{len(rejected_items)}**",
         f"> 报告: `{report_name}`",
         "",
         "### 筛选通过股票",
@@ -1165,7 +996,7 @@ def _build_criteria_notification_content(
         for item in passed_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
     else:
-        lines.append("本次筛选没有 9 项全部通过的股票。")
+        lines.append("本次筛选没有八维全部通过的股票。")
     lines.append("")
 
     if failed_items:

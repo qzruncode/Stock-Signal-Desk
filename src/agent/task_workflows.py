@@ -483,7 +483,7 @@ def _compile_announcements(task: ResolvedTask) -> list[WorkflowCall]:
     return _per_symbol(
         task,
         ["get_announcements"],
-        {"get_announcements": {"days", "type", "limit"}},
+        {"get_announcements": {"days", "limit"}},
         max_symbols=8,
     )
 
@@ -589,9 +589,9 @@ def _compile_professional_buy_analysis(task: ResolvedTask) -> list[WorkflowCall]
         if raw_thesis_context is not None
         else None
     )
-    # This is one logical portfolio review. The isolated runner owns bounded
-    # per-company fan-out, but every company receives the complete eight-axis
-    # analyst prompt and the UI still sees one coverage envelope.
+    # This is one logical portfolio review. The tool owns bounded per-company
+    # fan-out; each company independently runs the ordered eight-dimension
+    # Boolean state machine and stops at its first non-pass result.
     return [_call(
         task,
         "professional_buy_collection_review",
@@ -706,29 +706,36 @@ def _compile_theme_discovery(task: ResolvedTask) -> list[WorkflowCall]:
         raise WorkflowCompileError(
             f"theme_stock_discovery requires resolved domain-board objects: {exc}"
         ) from exc
-    context_theme = task.parameters.get("context_theme")
-    args = {"domains": domain_specs, **_params(task, {"limit_per_domain"})}
-    if isinstance(context_theme, str) and context_theme.strip():
-        args["context_theme"] = context_theme.strip()
+    args = {"domains": domain_specs}
     return [_call(task, "domain_candidates", "get_domain_stock_candidates", args)]
 
 
 def _compile_theme_evidence(task: ResolvedTask) -> list[WorkflowCall]:
-    theme = str(task.parameters.get("theme") or "").strip()
+    domains = task.parameters.get("domains")
     query = str(task.parameters.get("query") or task.candidate.objective).strip()
-    if not theme:
-        raise WorkflowCompileError("theme_business_evidence requires theme")
+    if not isinstance(domains, list) or not domains:
+        raise WorkflowCompileError("theme_business_evidence requires resolved domains")
+    try:
+        domain_specs = [
+            DomainBoardQuerySpec.model_validate(domain)
+            for domain in domains
+        ]
+    except Exception as exc:
+        raise WorkflowCompileError(
+            f"theme_business_evidence requires resolved domain-board objects: {exc}"
+        ) from exc
+    subjects = [domain.label for domain in domain_specs]
     common = _params(task, {"days", "limit", "include_content", "fallback_to_web"})
-    candidate_args: dict[str, Any] = {"theme": theme}
-    if task.parameters.get("candidate_limit") is not None:
-        candidate_args["limit"] = task.parameters["candidate_limit"]
+    candidate_args: dict[str, Any] = {
+        "domains": [domain.model_dump() for domain in domain_specs],
+    }
     return [
-        _call(task, "theme_candidates", "get_theme_stock_candidates", candidate_args),
+        _call(task, "domain_candidates", "get_domain_stock_candidates", candidate_args),
         _call(task, "business_news", "search_financial_news", {
-            "query": query, "topic": "industry", "subjects": [theme], **common,
+            "query": query, "topic": "industry", "subjects": subjects, **common,
         }),
         _call(task, "business_research", "search_research_library", {
-            "query": query, "category": "industry", "subjects": [theme], **common,
+            "query": query, "category": "industry", "subjects": subjects, **common,
         }),
     ]
 
@@ -775,10 +782,10 @@ def _compile_collection_filter(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def _compile_watchlist_query(task: ResolvedTask) -> list[WorkflowCall]:
-    theme = str(task.parameters.get("theme") or "").strip()
-    if theme:
+    domains = task.parameters.get("domains")
+    if domains:
         return [_call(task, "filter_watchlist", "filter_watchlist_by_theme", {
-            "theme": theme,
+            "domains": domains,
             **_params(task, {"group"}),
         })]
     return [_call(task, "list_watchlist", "manage_watchlist", {"action": "list"})]
@@ -996,8 +1003,8 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
     StandardTaskKind.VALUATION_ANALYSIS: _spec(StandardTaskKind.VALUATION_ANALYSIS, "估值分析", "分析当前、历史、预期和同行相对估值。", {"get_valuation_ratios", "get_consensus_estimates", "get_peer_comparison", "get_multi_stock_snapshot"}, _compile_valuation, allowed={"with_history", "metric", "dimension"}, entities=True),
     StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS: _spec(StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS, "财报分析", "分析资产负债表、利润表和现金流量表。", {"get_balance_sheet", "get_income_statement", "get_cashflow"}, _compile_statements, allowed={"periods"}, entities=True),
     StandardTaskKind.NEWS_ANALYSIS: _spec(StandardTaskKind.NEWS_ANALYSIS, "新闻分析", "查询公司或主题新闻并分析影响。", {"search_news", "get_announcements", "search_financial_news"}, _compile_news, allowed={"query", "topic", "subjects", "days", "limit", "use_cache", "include_content", "fallback_to_web"}, notes=("主题或多公司资讯必须给出 topic 和语义 subjects；具体公司新闻使用 entities。",), enums={"topic": {"market", "company", "announcement", "research", "macro", "industry", "social"}}),
-    StandardTaskKind.ANNOUNCEMENT_ANALYSIS: _spec(StandardTaskKind.ANNOUNCEMENT_ANALYSIS, "公告分析", "查询并分析正式公司公告。", {"get_announcements"}, _compile_announcements, allowed={"days", "type", "limit"}, entities=True),
-    StandardTaskKind.RISK_ANALYSIS: _spec(StandardTaskKind.RISK_ANALYSIS, "风险分析", "核验公告和规则筛查风险事件。", {"get_announcements", "get_risk_events"}, _compile_risk, allowed={"days", "limit"}, entities=True),
+    StandardTaskKind.ANNOUNCEMENT_ANALYSIS: _spec(StandardTaskKind.ANNOUNCEMENT_ANALYSIS, "公告分析", "查询并分析正式公司公告。", {"get_announcements"}, _compile_announcements, allowed={"days", "limit"}, entities=True),
+    StandardTaskKind.RISK_ANALYSIS: _spec(StandardTaskKind.RISK_ANALYSIS, "风险分析", "获取公告与新闻证据并由模型研判风险。", {"get_announcements", "get_risk_events"}, _compile_risk, allowed={"days", "limit"}, entities=True),
     StandardTaskKind.REGULATORY_ANALYSIS: _spec(StandardTaskKind.REGULATORY_ANALYSIS, "监管信息", "查询交易所披露、问询、项目和上市监管动态。", {"get_regulatory_updates"}, _compile_regulatory, allowed={"keyword", "event_type", "market", "days", "limit", "include_content", "fallback_to_web", "project_type", "project_stage", "project_status"}),
     StandardTaskKind.RESEARCH_REPORT_ANALYSIS: _spec(StandardTaskKind.RESEARCH_REPORT_ANALYSIS, "个股研报", "查询单只证券的券商研报和一致预期证据。", {"get_research_report"}, _compile_reports, allowed={"days", "limit"}, entities=True),
     StandardTaskKind.CATALYST_ANALYSIS: _spec(
@@ -1018,17 +1025,17 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
     StandardTaskKind.INVESTMENT_DECISION: _spec(
         StandardTaskKind.INVESTMENT_DECISION,
         "专业买入分析",
-        "对完整股票集合逐只执行资深分析师八维买入分析；八项全部展开，并给出正反证据、八分制评分、最终定位和监控指标。",
+        "对完整股票集合逐只执行资深分析师八维布尔闸门；首个不通过或证据不足立即停止，八维全部通过才可买入。",
         {"evaluate_multi_stock_buy_criteria"},
         _compile_professional_buy_analysis,
         allowed={"thesis", "thesis_context"},
         entities=True,
-        max_tool_calls=150,
+        max_tool_calls=1,
         max_parallel_steps=1,
         max_attempts=1,
         notes=(
-            "分析顺序固定：当前市场主线、产业竞争力、行业周期、非内卷、四类增长驱动、6—12个月催化、估值赔率、重大风险。",
-            "每项状态为通过、半通过、不通过或证据不足；不得因前项不通过而省略后续维度。",
+            "八维契约顺序：当前市场主线、产业竞争力、行业周期、非内卷、四类增长驱动、6—12个月催化、估值赔率、重大风险。",
+            "已执行维度只允许通过、不通过或证据不足；首个非通过结果关闭该股后续维度。",
             "Agent 传递完整集合；底层执行器内部按公司并发、汇总并校验覆盖，不得静默截断。",
             "引用既有产业领域时，thesis_context 使用 summary 和已绑定 domains 的结构化对象，禁止把展示文本重新解析为板块。",
         ),
@@ -1045,14 +1052,24 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
         {"get_domain_stock_candidates"},
         _compile_theme_discovery,
         required={"domains"},
-        allowed={"domains", "context_theme", "limit_per_domain"},
+        allowed={"domains"},
         notes=(
             "Planner 只提取用户要求的语义领域，domains 使用包含 label 的对象数组；"
-            "程序会在规划后根据实时板块目录绑定精确或代理板块。",
+            "程序会在规划后根据实时板块目录绑定可验证的结构化板块。",
         ),
         resources={"concept_board_catalog"},
     ),
-    StandardTaskKind.THEME_BUSINESS_EVIDENCE: _spec(StandardTaskKind.THEME_BUSINESS_EVIDENCE, "主题公司举证", "用户明确要求订单、收入、量产或客户等业务事实时核验公司。", {"get_theme_stock_candidates", "search_financial_news", "search_research_library"}, _compile_theme_evidence, required={"theme"}, allowed={"theme", "query", "candidate_limit", "days", "limit", "include_content", "fallback_to_web"}),
+    StandardTaskKind.THEME_BUSINESS_EVIDENCE: _spec(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        "主题公司举证",
+        "用户明确要求订单、收入、量产或客户等业务事实时核验公司。",
+        {"get_domain_stock_candidates", "search_financial_news", "search_research_library"},
+        _compile_theme_evidence,
+        required={"domains"},
+        allowed={"domains", "query", "days", "limit", "include_content", "fallback_to_web"},
+        notes=("domains 只保留用户表达的语义领域；程序在执行前绑定实时板块目录。",),
+        resources={"concept_board_catalog"},
+    ),
     StandardTaskKind.STOCK_SCREENING: _spec(StandardTaskKind.STOCK_SCREENING, "股票筛选", "按完整强类型筛选规格执行全市场量化筛选。", {"screen_atr_volatility_stocks"}, _compile_screening, required={"screen_spec"}, allowed={"screen_spec", "refresh_if_stale", "save_group_name"}),
     StandardTaskKind.COLLECTION_FINANCIAL_FILTER: _spec(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
@@ -1083,7 +1100,16 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
             _require(when={"period_basis": {"fiscal_year"}}, all_of={"fiscal_year"}),
         ),
     ),
-    StandardTaskKind.WATCHLIST_QUERY: _spec(StandardTaskKind.WATCHLIST_QUERY, "自选查询", "查看自选或在指定自选集合内按主题筛选。", {"manage_watchlist", "filter_watchlist_by_theme"}, _compile_watchlist_query, allowed={"theme", "group"}),
+    StandardTaskKind.WATCHLIST_QUERY: _spec(
+        StandardTaskKind.WATCHLIST_QUERY,
+        "自选查询",
+        "查看自选或在指定自选集合内按语义领域筛选。",
+        {"manage_watchlist", "filter_watchlist_by_theme"},
+        _compile_watchlist_query,
+        allowed={"domains", "group"},
+        resources={"concept_board_catalog"},
+        notes=("仅在需要按产业或概念筛选时提供 domains；普通自选列表不提供。",),
+    ),
     StandardTaskKind.WATCHLIST_MUTATION: _spec(StandardTaskKind.WATCHLIST_MUTATION, "自选修改", "按用户明确要求添加或移除自选股。", {"manage_watchlist"}, _compile_watchlist_mutation, required={"action"}, allowed={"action"}, entities=True, effect=EffectClass.MUTATION, notes=("action 只能是 add 或 remove。",), enums={"action": {"add", "remove"}}),
     StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: _spec(StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT, "自选分组管理", "查看、创建、重命名、删除或修改自选分组成员。", {"manage_watchlist_groups"}, _compile_group, required={"action"}, allowed={"action", "group", "new_name"}, effect=EffectClass.MUTATION, confirmation_actions={"delete"}, notes=("action 为 list/create/rename/delete/add/remove；delete 需要 explicit confirmation。",), enums={"action": {"list", "create", "rename", "delete", "add", "remove"}}, requirements=(
         _require(when={"action": {"create", "delete", "add", "remove"}}, all_of={"group"}),

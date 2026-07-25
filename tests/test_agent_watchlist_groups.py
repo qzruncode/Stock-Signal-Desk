@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.tools.manage_watchlist_groups import manage_watchlist_groups
-from src.tools.filter_watchlist_by_theme import _themes, filter_watchlist_by_theme
+from src.tools.filter_watchlist_by_theme import filter_watchlist_by_theme
 from src.tools.registry import ToolRegistry
 from src.tools.run_batch_analysis import run_batch_analysis
 from src.tools.screen_atr_volatility_stocks import screen_atr_volatility_stocks
@@ -31,42 +31,62 @@ def test_filter_watchlist_by_theme_returns_only_collection_intersection() -> Non
         "warnings": [],
     }
 
-    def candidates(theme: str, limit: int):
-        assert limit == 1000
-        by_theme = {
-            "人工智能": [
-                {"symbol": "002230", "name": "科大讯飞", "boards": ["人工智能"], "source": {"name": "概念源"}},
-                {"symbol": "000977", "name": "浪潮信息", "boards": ["人工智能"], "source": {"name": "概念源"}},
-            ],
-            "机器人": [
-                {"symbol": "603662", "name": "柯力传感", "boards": ["机器人概念"], "source": {"name": "概念源"}},
-            ],
+    domain_result = {
+        "success": True,
+        "partial": False,
+        "warnings": [],
+        "errors": [],
+        "domain_results": [
+            {
+                "domain": "人工智能",
+                "mapping_type": "catalog_binding",
+                "mapping_rationale": "测试绑定",
+                "candidate_count": 2,
+                "coverage_complete": True,
+                "matched_boards": [],
+                "items": [
+                    {"symbol": "002230", "name": "科大讯飞", "boards": ["人工智能"], "source": {"name": "概念源"}},
+                    {"symbol": "000977", "name": "浪潮信息", "boards": ["人工智能"], "source": {"name": "概念源"}},
+                ],
+            },
+            {
+                "domain": "机器人",
+                "mapping_type": "catalog_binding",
+                "mapping_rationale": "测试绑定",
+                "candidate_count": 1,
+                "coverage_complete": True,
+                "matched_boards": [],
+                "items": [
+                    {"symbol": "603662", "name": "柯力传感", "boards": ["机器人概念"], "source": {"name": "概念源"}},
+                ],
+            },
+        ],
+    }
+    domains = [
+        {
+            "label": label,
+            "board_queries": [label],
+            "mapping_type": "catalog_binding",
+            "rationale": "测试绑定",
+            "unresolved_parts": [],
         }
-        return {
-            "success": True, "partial": False, "candidate_count": len(by_theme[theme]),
-            "coverage_complete": True, "data_time": "2026-07-20", "matched_boards": [],
-            "items": by_theme[theme], "warnings": [], "errors": [],
-        }
+        for label in ("人工智能", "机器人")
+    ]
 
     with patch(
         "src.tools.filter_watchlist_by_theme.manage_watchlist_groups",
         return_value=group_payload,
     ), patch(
-        "src.tools.filter_watchlist_by_theme.get_theme_stock_candidates",
-        side_effect=candidates,
+        "src.tools.filter_watchlist_by_theme.get_domain_stock_candidates",
+        return_value=domain_result,
     ):
-        result = filter_watchlist_by_theme("AI和机器人")
+        result = filter_watchlist_by_theme(domains)
 
     assert result["requested_themes"] == ["人工智能", "机器人"]
     assert [item["symbol"] for item in result["items"]] == ["002230", "603662"]
     assert result["matched_count"] == 2
     assert "000977" not in {item["symbol"] for item in result["items"]}
     assert result["invalid_entries"] == ["未上市/无代码"]
-
-
-def test_watchlist_theme_parser_does_not_widen_humanoid_robot_to_generic_robot() -> None:
-    assert _themes("AI和人形机器人") == ["人工智能", "人形机器人"]
-
 
 def test_list_watchlist_groups_includes_default_and_custom_groups() -> None:
     db = MagicMock()

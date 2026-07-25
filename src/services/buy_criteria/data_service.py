@@ -91,7 +91,7 @@ class DataService:
         def _fetch():
             from src.tools.get_domain_stock_candidates import get_domain_stock_candidates
 
-            return get_domain_stock_candidates(domain_specs, limit_per_domain=300)
+            return get_domain_stock_candidates(domain_specs)
 
         return self._cached_call(key, _fetch)
 

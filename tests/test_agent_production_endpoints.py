@@ -125,7 +125,7 @@ def test_tool_probe_uses_professional_timeout_for_crawled_websearch():
 def test_tool_registry_keeps_specialized_categories():
     tools = {tool.name: tool_registry_meta._build_tool_meta(tool) for tool in tool_registry_meta._registry._tools.values()}
     assert tools["get_domain_stock_candidates"].category == "research"
-    assert tools["get_theme_stock_candidates"].category == "research"
+    assert "get_theme_stock_candidates" not in tools
     assert tools["get_regulatory_updates"].category == "regulatory"
     assert tools["get_announcements"].category == "events"
     assert tools["get_risk_events"].category == "risk"

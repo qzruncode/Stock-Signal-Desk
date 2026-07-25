@@ -93,10 +93,6 @@ def _requested_subjects(stock_info: dict[str, Any]) -> list[dict[str, Any]]:
             (_clean_label(item), "resolved_board")
             for item in domain.get("board_queries") or []
         )
-    values.extend(
-        (_clean_label(item), "context_theme")
-        for item in context.get("inferred_context_themes") or []
-    )
     values.append((_clean_label(context.get("summary")), "thesis_summary"))
     values.append(
         (_clean_label(stock_info.get("_investment_thesis")), "user_thesis")

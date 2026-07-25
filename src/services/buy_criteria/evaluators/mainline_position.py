@@ -123,7 +123,6 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                 )
                 raw["thesis_membership"] = {
                     "requested_domains": candidates.get("requested_domains") or [],
-                    "context_themes": candidates.get("inferred_context_themes") or [],
                     "company_matched": bool(matched),
                     "matched_domains": (matched or {}).get("matched_domains") or [],
                     "lookup_themes": (matched or {}).get("lookup_themes") or [],
@@ -157,9 +156,8 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             logger.warning("[mainline] market_mainline_report failed: %s", exc)
             raw["market_mainline_report_error"] = str(exc)
 
-        # Market leadership is a multi-horizon judgement.  Keep current/five/ten-day
-        # capital evidence and stock-relative-strength confirmation separate
-        # from any one headline or one board rank.
+        # Market leadership is a multi-horizon judgement. Keep current/five/
+        # ten-day board evidence separate from any one headline or one rank.
         for period in ("today", "5d", "10d"):
             try:
                 payload = ds.get_sector_flow("concept", period)
@@ -170,7 +168,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                 membership = raw.get("thesis_membership") or {}
                 exact_names = {
                     str(value).strip().lower()
-                    for key in ("requested_domains", "context_themes", "lookup_themes", "boards")
+                    for key in ("requested_domains", "lookup_themes", "boards")
                     for value in membership.get(key) or []
                     if str(value).strip()
                 }
@@ -201,14 +199,6 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                 }
             except Exception as exc:
                 raw[f"concept_flow_{period}_error"] = str(exc)
-        for key, collect in (
-            ("relative_quote", lambda: ds.get_realtime_quote(symbol)),
-            ("relative_technical", lambda: ds.get_technical_indicators(symbol, count=120)),
-        ):
-            try:
-                raw[key] = collect()
-            except Exception as exc:
-                raw[f"{key}_error"] = str(exc)
         try:
             news = ds.search_news(symbol, days=30)
             raw["recent_company_news"] = {
@@ -269,7 +259,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                     membership = raw.get("thesis_membership") or {}
                     exact_names = {
                         str(value).strip().lower()
-                        for key in ("requested_domains", "context_themes", "lookup_themes", "boards")
+                        for key in ("requested_domains", "lookup_themes", "boards")
                         for value in membership.get(key) or []
                         if str(value).strip()
                     }
@@ -346,7 +336,6 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
         lines.extend(["", "## 结构化产业方向成员关系（仅证明映射，不证明业绩）"])
         if membership:
             lines.append(f"- 请求方向：{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}")
-            lines.append(f"- 上位产业主题：{'、'.join(str(item) for item in membership.get('context_themes') or []) or '无'}")
             lines.append(f"- 公司是否命中对应板块成分：{'是' if membership.get('company_matched') else '否'}")
             lines.append(f"- 候选召回覆盖方向：{'、'.join(str(item) for item in membership.get('matched_domains') or []) or '无'}（不可据此声称公司拥有对应产品）")
             lines.append(f"- 查询板块：{'、'.join(str(item) for item in membership.get('lookup_themes') or []) or '无'}")
@@ -363,7 +352,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
 
         exact_names = {
             str(value).strip().lower()
-            for key in ("requested_domains", "context_themes", "lookup_themes", "boards")
+            for key in ("requested_domains", "lookup_themes", "boards")
             for value in membership.get(key) or []
             if str(value).strip()
         }
@@ -388,19 +377,10 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                     f"{_text(payload.get('sector_count'), '?')}"
                 )
 
-        quote = raw.get("relative_quote") or {}
-        indicators = (raw.get("relative_technical") or {}).get("indicators") or {}
         lines.extend([
             "",
-            "## 个股相对强度与近期催化确认",
-            f"- 现价：{_text(quote.get('price'))}；当日涨跌："
-            f"{_text(quote.get('change_pct') if quote.get('change_pct') is not None else quote.get('pct_chg'))}%；"
-            f"成交额：{_text(quote.get('amount'))}；数据时间：{_text(quote.get('data_time'))}",
-            f"- MA20/MA60：{_text(indicators.get('ma20'))}/{_text(indicators.get('ma60'))}；"
-            f"RSI14：{_text(indicators.get('rsi14'))}；20日高点：{_text(indicators.get('high_20d'))}；"
-            f"5/20/60日收益：{_text(indicators.get('return_5d_pct'))}%/"
-            f"{_text(indicators.get('return_20d_pct'))}%/{_text(indicators.get('return_60d_pct'))}%；"
-            f"量能/前5日：{_text(indicators.get('volume_vs_prev5d'))}",
+            "## 公司与当前主线的正式业务连接",
+            "- 以下公司级资料只用于确认公司确有相关产品、项目或合作，不在本关判断收入兑现、竞争力或买点。",
         ])
         recent_news = _list_of_dicts((raw.get("recent_company_news") or {}).get("items"))
         if recent_news:
@@ -426,15 +406,16 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             "## 判断约束",
             "- 严禁用公司旧主营简介来否定或证明市场主线；公司是否真实受益由第二关用正式披露独立判断。",
             "- 最新市场主线报告是高层摘要，不是封闭白名单；没有逐字列出的细分分支，仍可由未压缩板块证据和结构化产业方向证据证明属于当前主线。",
-            "- 单日板块涨跌、资金流排名或概念板块成员关系都不能单独判为通过或不通过；至少核对多周期板块、资金、成交、个股相对强度和事件催化。",
+            "- 单日板块涨跌、资金流排名或概念板块成员关系都不能单独判为通过或不通过；至少核对多周期板块、资金、上位主题和正式公司级业务连接。",
             "- 概念板块池包含数百个行业、风格和重复口径，不能用某一分支的绝对涨幅序号直接否定其主线属性；还必须检查净流入排名、上位主题共振及公司产业位置。",
-            "- 本项只判断市场环境、方向强度与个股交易确认，不在这里判定公司的订单、收入或产业竞争力；这些由下一维度核验。",
-            "- 单日板块回撤不等于中期主线结束，必须结合5日/10日资金、上位主题、个股相对强度和近期可回查催化。",
-            "- 若板块中期数据偏弱，但标的存在近期可回查事件、显著放量和独立相对强度，可判为事件驱动的活跃分支；必须明确它不是板块普涨主线。",
-            "- 公司级新闻只用于确认市场正在交易什么逻辑，不能单独证明业务收入或竞争优势。",
+            "- 本项只判断公司业务是否属于当前主线、活跃分支或正式事件驱动分支；订单、收入兑现和竞争优势由第二维独立核验。",
+            "- 单日板块或个股回撤、均线、累计涨跌和个股资金流都不能否定业务的主线归属；它们属于交易时点问题，不是本维度的布尔条件。",
+            "- 若上位主题仍是中期主线，且正式公司资料证明存在对应产品、项目或合作，可按活跃分支判断；无需在第一维提前要求收入或订单已经兑现。",
+            "- 产品分类不能靠标签猜测。例如现有终端或零部件是否受益于AI升级，必须结合公司正式资料和本轮市场证据研判，不能仅凭分部名称写成“传统”或“非AI”。",
+            "- 公司级新闻只用于确认正式业务连接和市场交易逻辑，不能单独证明收入或竞争优势。",
             "- 请求方向、候选召回覆盖方向和板块别名只是市场方向映射；verdict 不得把它们改写成公司主营或收入。",
             "- 候选主线只能作为观察方向，不能判为通过。",
-            "- 高层报告暂不可用时，使用未压缩板块、5日/10日资金、上位主题和个股相对强度交叉核验；关键数据整体缺失时必须标为证据不足，不能写成方向明确不成立。",
+            "- 高层报告暂不可用时，使用未压缩板块、5日/10日资金、上位主题和正式公司级资料交叉核验；关键数据整体缺失时必须标为证据不足，不能写成方向明确不成立。",
         ])
 
         summary = "\n".join(lines)
@@ -470,5 +451,5 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             for period in ("today", "5d", "10d")
         )
         if not has_report and not has_direct_branch_evidence and not has_market_context and not has_multi_period_flow:
-            return "主线报告、板块、资金和交易确认数据均获取失败或不可用，当前市场主线维度无法判断"
+            return "主线报告、板块、资金和正式业务连接数据均获取失败或不可用，当前市场主线维度无法判断"
         return None

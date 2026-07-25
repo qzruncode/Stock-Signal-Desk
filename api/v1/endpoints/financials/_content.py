@@ -51,15 +51,6 @@ def _rss_stock_industry_keywords(code: str) -> list[str]:
     except Exception as exc:
         logger.debug("[RSSHub] stock industry lookup failed for %s: %s", code, exc)
 
-    stock_name = next((kw for kw in _rss_stock_keywords(code) if kw != code), "")
-    fallback_map = {
-        "中金岭南": ["有色金属", "铅锌", "锌", "铅"],
-        "贵州茅台": ["白酒", "食品饮料"],
-        "平安银行": ["银行"],
-        "宁德时代": ["电池", "新能源"],
-    }
-    keywords.extend(fallback_map.get(stock_name, []))
-
     deduped: list[str] = []
     seen: set[str] = set()
     for keyword in keywords:

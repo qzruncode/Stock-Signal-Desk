@@ -92,7 +92,7 @@ def _domain(
     return {
         "label": label,
         "board_queries": selected,
-        "mapping_type": mapping_type or ("exact_board" if selected == [label] else "proxy_board"),
+        "mapping_type": mapping_type or "catalog_binding",
         "rationale": rationale,
         "unresolved_parts": unresolved_parts or [],
     }
@@ -115,7 +115,9 @@ def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
         for kind, spec in WORKFLOW_REGISTRY.items()
         if kind != StandardTaskKind.INVESTMENT_DECISION
     )
-    assert WORKFLOW_REGISTRY[StandardTaskKind.INVESTMENT_DECISION].max_tool_calls == 150
+    assert WORKFLOW_REGISTRY[
+        StandardTaskKind.INVESTMENT_DECISION
+    ].max_tool_calls == 1
 
 
 def test_planner_catalog_does_not_expose_tool_names() -> None:
@@ -178,7 +180,9 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
             "query": "人形机器人产业链", "subjects": ["人形机器人"],
         },
         StandardTaskKind.THEME_STOCK_DISCOVERY: {"domains": [_domain("减速器")]},
-        StandardTaskKind.THEME_BUSINESS_EVIDENCE: {"theme": "人形机器人"},
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE: {
+            "domains": [_domain("人形机器人")],
+        },
         StandardTaskKind.STOCK_SCREENING: {"screen_spec": screen_spec},
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER: {
             "metric": "debt_ratio",
@@ -265,7 +269,6 @@ def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
                 _domain("减速器"),
                 _domain("无框力矩电机", "机器人执行器"),
             ],
-            "context_theme": "人形机器人",
         },
     )
     calls = compile_task(ResolvedTask(candidate=candidate))
@@ -276,11 +279,10 @@ def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
             _domain("减速器"),
             _domain("无框力矩电机", "机器人执行器"),
         ],
-        "context_theme": "人形机器人",
     }
 
 
-def test_free_form_context_theme_is_preserved_for_domain_discovery() -> None:
+def test_free_form_context_is_not_forwarded_as_a_board_identifier() -> None:
     candidate = _task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
@@ -289,14 +291,13 @@ def test_free_form_context_theme_is_preserved_for_domain_discovery() -> None:
                 _domain("减速器"),
                 _domain("无框力矩电机", "机器人执行器"),
             ],
-            "context_theme": "人形机器人最受益的上游核心零部件方向",
         },
     )
     plan = TaskPlan(tasks=[candidate])
     validate_candidate_plan(plan)
     calls = compile_task(ResolvedTask(candidate=candidate))
     assert calls[0].tool_name == "get_domain_stock_candidates"
-    assert calls[0].arguments["context_theme"] == "人形机器人最受益的上游核心零部件方向"
+    assert set(calls[0].arguments) == {"domains"}
 
 
 def test_previous_answer_outline_keeps_middle_markdown_scope() -> None:
@@ -841,7 +842,6 @@ def test_semantic_planner_resolves_compound_domains_only_from_current_board_cata
                     {"label": "灵巧手及力控部件"},
                     {"label": "电机（伺服电机/步进电机）"},
                 ],
-                "context_theme": "人形机器人",
             },
             "depends_on": [],
             "output_requirements": [],
@@ -901,7 +901,6 @@ def test_domain_plan_rejects_a_board_name_absent_from_current_catalog() -> None:
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
             "domains": [_domain("灵巧手", "模型虚构板块")],
-            "context_theme": "人形机器人",
         },
     )
     with pytest.raises(ValueError, match="absent from the live concept-board catalog"):
@@ -916,7 +915,6 @@ def test_catalog_membership_validation_does_not_guess_semantic_affinity() -> Non
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         parameters={
             "domains": [_domain("伺服电机/步进电机", "轮毂电机")],
-            "context_theme": "人形机器人",
         },
     )
     validate_candidate_plan(
@@ -1059,7 +1057,6 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
                 _domain("减速器"),
                 _domain("无框力矩电机", "机器人执行器"),
             ],
-            "context_theme": "人形机器人",
         },
     )])
     resolved = [ResolvedTask(candidate=plan.tasks[0])]
@@ -1069,7 +1066,6 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
         "errors": [],
         "warnings": [],
         "requested_domains": ["行星滚柱丝杠", "减速器", "无框力矩电机"],
-        "context_theme": "人形机器人",
         "local_universe_count": 5879,
         "candidate_count": 2,
         "source_scope": "structured_concept_constituents_intersected_with_local_stock_meta",
@@ -1077,8 +1073,8 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
             {
                 "domain": "行星滚柱丝杠",
                 "lookup_themes": ["机器人执行器"],
-                "mapping_type": "proxy_board",
-                "mapping_basis": "catalog_proxy_board_intersected_with_context_theme",
+                "mapping_type": "catalog_binding",
+                "mapping_basis": "live_catalog_binding",
                 "success": True,
                 "coverage_complete": True,
                 "candidate_count": 1,
@@ -1088,8 +1084,8 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
             {
                 "domain": "减速器",
                 "lookup_themes": ["减速器"],
-                "mapping_type": "exact_board",
-                "mapping_basis": "catalog_exact_board_intersected_with_context_theme",
+                "mapping_type": "catalog_binding",
+                "mapping_basis": "live_catalog_binding",
                 "success": True,
                 "coverage_complete": True,
                 "candidate_count": 1,
@@ -1099,8 +1095,8 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
             {
                 "domain": "无框力矩电机",
                 "lookup_themes": ["机器人执行器"],
-                "mapping_type": "proxy_board",
-                "mapping_basis": "catalog_proxy_board_intersected_with_context_theme",
+                "mapping_type": "catalog_binding",
+                "mapping_basis": "live_catalog_binding",
                 "success": True,
                 "coverage_complete": True,
                 "candidate_count": 1,

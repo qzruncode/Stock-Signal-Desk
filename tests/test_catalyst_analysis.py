@@ -215,7 +215,7 @@ def test_forward_report_passages_are_recalled_by_calendar_structure_not_catalyst
     assert "启动交付" in passages[0]["excerpt"]
 
 
-def test_business_report_passages_follow_structured_thesis_without_stock_rules() -> None:
+def test_business_report_passages_use_uniform_document_coverage() -> None:
     content = (
         "公司消费电子业务保持稳定。"
         "机器人头部模组已稳定量产，六维力传感器、关节模组与灵巧手模组进入客户供应链。"
@@ -232,7 +232,7 @@ def test_business_report_passages_follow_structured_thesis_without_stock_rules()
 
     assert passages
     assert "六维力传感器" in passages[0]["excerpt"]
-    assert passages[0]["matched_query_fragments"]
+    assert passages[0]["selection_method"] == "uniform_document_coverage"
 
 
 def test_formal_document_uses_primary_pdf_when_metadata_body_is_empty() -> None:

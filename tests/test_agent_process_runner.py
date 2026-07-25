@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import signal
 import subprocess
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +32,45 @@ def test_isolated_runner_turns_native_abort_into_regular_error():
     with patch("src.tools.process_runner.subprocess.run", return_value=completed):
         with pytest.raises(RuntimeError, match="隔离工具进程异常退出"):
             execute_tool_isolated("get_market_status", {})
+
+
+def test_isolated_runner_terminates_process_group_when_cancelled():
+    cancel_event = threading.Event()
+
+    class BlockingProcess:
+        pid = 4242
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, *, input=None, timeout=None):
+            del input, timeout
+            time.sleep(0.01)
+            raise subprocess.TimeoutExpired(cmd=[], timeout=0.01)
+
+        def wait(self, timeout=None):
+            del timeout
+            self.returncode = -signal.SIGTERM
+            return self.returncode
+
+    timer = threading.Timer(0.03, cancel_event.set)
+    timer.start()
+    try:
+        with patch(
+            "src.tools.process_runner.subprocess.Popen",
+            return_value=BlockingProcess(),
+        ), patch("src.tools.process_runner.os.killpg") as kill_group:
+            with pytest.raises(RuntimeError, match="已取消"):
+                execute_tool_isolated(
+                    "get_market_status",
+                    {},
+                    cancel_event=cancel_event,
+                )
+    finally:
+        timer.cancel()
+
+    kill_group.assert_called_once_with(4242, signal.SIGTERM)
 
 
 def test_professional_evidence_is_split_into_parallel_two_stock_shards():
@@ -165,15 +206,26 @@ def test_professional_buy_analysis_isolates_each_stock_preserves_order_and_failu
         return {
             "success": True,
             "partial": False,
-            "playbook": "professional_eight_dimension_buy_analysis",
+            "playbook": "professional_eight_dimension_boolean_gate",
             "items": [{
                 "symbol": symbol,
                 "name": symbol,
-                "analysis_mode": "professional_eight_dimension_buy_analysis",
-                "recommendation_code": "watchlist",
-                "recommendation": "进入中期跟踪池",
-                "coverage_complete": True,
-                "dimensions": [],
+                "analysis_mode": "professional_eight_dimension_boolean_gate",
+                "decision_code": "buy",
+                "decision": "可买入",
+                "dimensions": [
+                    {"id": dimension, "status": "pass"}
+                    for dimension in (
+                        "market_mainline",
+                        "industrial_competitiveness",
+                        "industry_cycle",
+                        "competition_quality",
+                        "growth_drivers",
+                        "forward_catalysts",
+                        "valuation_odds",
+                        "major_risks",
+                    )
+                ],
             }],
             "resolved_entities": [{"symbol": symbol, "name": symbol}],
             "unresolved_entities": [],
@@ -194,8 +246,9 @@ def test_professional_buy_analysis_isolates_each_stock_preserves_order_and_failu
     assert sorted(calls) == ["000001", "000002", "000003"]
     assert [item["symbol"] for item in result["items"]] == ["000001", "000002", "000003"]
     failed = result["items"][1]
-    assert failed["recommendation_code"] == "evidence_insufficient"
-    assert failed["recommendation"] == "证据不足，暂停判断"
-    assert failed["counts"]["insufficient"] == 8
+    assert failed["final_decision"] == "不可买入"
+    assert failed["insufficient_count"] == 1
+    assert failed["not_evaluated_count"] == 7
+    assert failed["criteria"][0]["status"] == "insufficient"
     assert result["partial"] is True
     assert result["coverage_complete"] is True

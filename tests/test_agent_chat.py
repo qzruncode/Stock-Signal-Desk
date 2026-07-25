@@ -288,13 +288,13 @@ def test_staged_news_search_renders_numbered_deduplicated_choices() -> None:
     assert "不提前做投资分析" in answer
 
 
-def test_realtime_quote_dynamic_pe_cannot_be_presented_as_ttm():
+def test_final_claim_validator_does_not_classify_financial_prose():
     issues = chat_mod._unsupported_final_claims(
         "贵州茅台 PE(TTM) 为 14.43 倍。",
         [{"tool": "get_realtime_quotes", "result": {"success": True}}],
     )
 
-    assert any("动态 PE" in issue and "PE(TTM)" in issue for issue in issues)
+    assert issues == []
 
 
 def test_quote_only_answer_is_deterministic_and_marks_closed_session():
@@ -324,13 +324,13 @@ def test_quote_only_answer_is_deterministic_and_marks_closed_session():
     assert "上证指数" not in answer
 
 
-def test_market_comparison_claims_require_market_tool_evidence():
+def test_final_claim_validator_does_not_keyword_match_market_prose():
     issues = chat_mod._unsupported_final_claims(
         "上证指数下跌 3.05%，贵州茅台表现出很强的抗跌性。",
         [{"tool": "get_realtime_quotes", "result": {"success": True}}],
     )
 
-    assert any("市场工具证据" in issue for issue in issues)
+    assert issues == []
 
 
 def test_answer_rejects_wrong_weekday_for_explicit_date():
@@ -342,16 +342,16 @@ def test_answer_rejects_wrong_weekday_for_explicit_date():
     assert any("应为周五" in issue for issue in issues)
 
 
-def test_previous_trading_day_snapshot_cannot_be_called_today():
+def test_final_claim_validator_does_not_keyword_match_relative_time_prose():
     issues = chat_mod._unsupported_final_claims(
         "今日收盘价为 1252.60 元。",
         [{"tool": "get_kline", "result": {"data_time": "2026-07-17"}}],
     )
 
-    assert any("不能称为今日" in issue for issue in issues)
+    assert issues == []
 
 
-def test_q4_single_quarter_cashflow_cannot_be_called_full_year():
+def test_final_claim_validator_does_not_keyword_match_accounting_prose():
     issues = chat_mod._unsupported_final_claims(
         "2025年全年经营现金流净额233.25亿元。",
         [{
@@ -364,34 +364,19 @@ def test_q4_single_quarter_cashflow_cannot_be_called_full_year():
         }],
     )
 
-    assert any("单季度值" in issue for issue in issues)
+    assert issues == []
 
 
-def test_channel_price_threshold_requires_external_evidence():
+def test_final_claim_validator_does_not_keyword_match_channel_price_prose():
     issues = chat_mod._unsupported_final_claims(
         "成立条件是飞天茅台一批价企稳，失效条件是批价跌破2000元。",
         [{"tool": "get_multi_stock_decision_evidence", "result": {"items": []}}],
     )
 
-    assert any("批价" in issue and "网页证据" in issue for issue in issues)
+    assert issues == []
 
-def test_legacy_previous_answer_entities_are_format_agnostic():
-    messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "核心候选包括维宏股份与兆威机电 (003021)。"
-            ),
-        },
-        {"role": "user", "content": "上面提到的这些公司现在能买吗"},
-    ]
-
-    entities = chat_mod._legacy_previous_answer_entities(messages)
-
-    assert entities == [
-        {"name": "维宏股份", "symbol": "300508"},
-        {"name": "兆威机电", "symbol": "003021"},
-    ]
+def test_previous_answer_entities_are_not_recovered_from_rendered_prose():
+    assert not hasattr(chat_mod, "_legacy_previous_answer_entities")
 
 
 def test_structured_context_defines_reference_scope_without_answer_parsing():
@@ -540,7 +525,7 @@ def test_generic_final_synthesis_repairs_header_only_table():
     assert calls["value"] == 2
 
 
-def test_industry_playbook_repairs_an_answer_that_drops_required_sections():
+def test_industry_playbook_does_not_use_keyword_section_validator():
     controller = _FakeController()
     call_count = {"value": 0}
     requests = []
@@ -573,10 +558,8 @@ def test_industry_playbook_repairs_an_answer_that_drops_required_sections():
             )
 
     result = asyncio.run(run())
-    assert result.startswith("优先级")
-    assert "机器人行业会受益" not in result
-    assert call_count["value"] == 2
-    assert "运行时输出验收未通过" in requests[-1]["messages"][-1]["content"]
+    assert result == "机器人行业会受益。"
+    assert call_count["value"] == 1
 
 
 def test_industry_contract_does_not_discard_safe_answer_for_link_format_only():
@@ -706,7 +689,7 @@ def test_playbook_empty_completion_retries_once_before_failing_closed():
     assert calls["value"] == 2
 
 
-def test_professional_contract_requires_every_company_and_decision_axis():
+def test_deep_research_answer_is_not_validated_by_keyword_axes():
     evidence = [{
         "tool": "get_multi_stock_decision_evidence",
         "result": {
@@ -723,9 +706,7 @@ def test_professional_contract_requires_every_company_and_decision_axis():
         incomplete,
         evidence,
     )
-    assert any("688017" in issue or "绿的谐波" in issue for issue in issues)
-    assert any("交易状态" in issue for issue in issues)
-    assert any("风险催化" in issue for issue in issues)
+    assert issues == []
 
     complete = (
         "003021、688017：主营业务兑现；财务营收、净利和现金流；"
@@ -739,13 +720,13 @@ def test_professional_contract_requires_every_company_and_decision_axis():
     ) == []
 
 
-def test_professional_contract_fails_closed_when_evidence_packet_is_unavailable():
+def test_deep_research_contract_does_not_scan_buy_prose():
     issues = chat_mod._playbook_answer_contract_issues(
         chat_mod.STOCK_DEEP_RESEARCH,
         "我认为可以买入。",
         [{"tool": "get_multi_stock_decision_evidence", "result": {"success": False}}],
     )
-    assert issues == ["专业决策证据未成功取得，必须停止买入判断并说明证据缺口"]
+    assert issues == []
     assert chat_mod._playbook_answer_contract_issues(
         chat_mod.STOCK_DEEP_RESEARCH,
         "本轮专业证据不足，因此暂不做买入判断。",
@@ -753,7 +734,7 @@ def test_professional_contract_fails_closed_when_evidence_packet_is_unavailable(
     ) == []
 
 
-def test_mapping_contract_requires_first_column_entities_for_next_turn_scope():
+def test_mapping_contract_does_not_parse_answer_tables_for_state():
     prose_only = (
         "兆威机电003021属于上游环节，L2证据为已披露送样；"
         "订单收入缺口待核验，来源为2026年公告。"
@@ -763,7 +744,7 @@ def test_mapping_contract_requires_first_column_entities_for_next_turn_scope():
         prose_only,
         [],
     )
-    assert any("表格第一列" in issue for issue in issues)
+    assert issues == []
 
     table = (
         "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源与日期 |\n"
@@ -789,11 +770,10 @@ def test_mapping_contract_requires_first_column_entities_for_next_turn_scope():
         pending_code,
         [],
     )
-    assert any("缺少六位代码" in issue for issue in pending_issues)
-    assert "存在未核验证券代码" in pending_issues
+    assert pending_issues == []
 
 
-def test_mapping_contract_rejects_answers_that_omit_returned_candidates():
+def test_mapping_contract_does_not_compare_rendered_prose_with_candidate_pool():
     table = (
         "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源与日期 |\n"
         "|---|---|---|---|---|---|\n"
@@ -820,10 +800,10 @@ def test_mapping_contract_rejects_answers_that_omit_returned_candidates():
         evidence,
     )
 
-    assert any("最终答案遗漏7家" in issue and "完整候选索引" in issue for issue in issues)
+    assert issues == []
 
 
-def test_mapping_contract_rejects_business_claims_supported_only_by_concept_board():
+def test_mapping_contract_leaves_semantic_grounding_to_the_model():
     table = (
         "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源与日期 |\n"
         "|---|---|---|---|---|---|\n"
@@ -838,125 +818,11 @@ def test_mapping_contract_rejects_business_claims_supported_only_by_concept_boar
         [],
     )
 
-    assert any("不能直接确定产业链环节" in issue for issue in issues)
-    assert any("未经核验的公司业务事实" in issue for issue in issues)
+    assert issues == []
 
 
-def test_theme_mapping_uses_only_semantic_facts():
-    from src.agent.evidence_facts import BoundEvidenceFact
-
-    result = {
-        "success": True,
-        "theme": "AI芯片",
-        "local_universe_count": 5534,
-        "candidate_count": 1,
-        "items": [{"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]}],
-    }
-    legacy_evidence = [{
-        "tool": "websearch",
-        "result": {
-            "success": True,
-            "retrieved_at": "2026-07-18T10:00:00",
-            "results": [{
-                "title": "盟固利人形机器人电池材料实现批量供货",
-                "content_text": "盟固利NCA材料在人形机器人用电池领域实现批量供货。",
-                "url": "https://example.com/unrelated",
-                "source": "测试财经",
-            }],
-        },
-    }]
-    semantic_facts = [BoundEvidenceFact(
-        company_name="全志科技",
-        symbol="300458",
-        stage="L3",
-        relationship="算力芯片",
-        fact="全志科技A733 AI芯片已实现量产",
-        support_quote="全志科技A733 AI芯片已实现量产",
-        source_id="s1",
-        source_name="公司公告解读",
-        source_url="https://example.com/allwinner",
-        source_date="2026-07-18",
-        confidence=0.97,
-    )]
-
-    rendered = chat_mod._build_theme_mapping_fallback(
-        result,
-        legacy_evidence,
-        semantic_facts=semantic_facts,
-    )
-
-    assert "全志科技 (300458) | 算力芯片 | L3" in rendered
-    assert "盟固利" not in rendered
-
-    empty_semantic = chat_mod._build_theme_mapping_fallback(
-        result,
-        legacy_evidence,
-        semantic_facts=[],
-    )
-    assert "### 已核验正向事实\n\n无。" in empty_semantic
-    assert "盟固利" not in empty_semantic
-
-
-def test_ranked_shortlist_requires_exact_thesis_fit_and_does_not_dump_concept_pool():
-    from src.agent.evidence_facts import BoundEvidenceFact
-    from src.agent.result_contracts import MappingSelectionContext
-
-    result = {
-        "success": True,
-        "theme": "AI芯片",
-        "local_universe_count": 5528,
-        "candidate_count": 2,
-        "coverage_complete": True,
-        "items": [
-            {"name": "云天励飞", "symbol": "688343", "boards": ["AI芯片"]},
-            {"name": "寒武纪", "symbol": "688256", "boards": ["AI芯片"]},
-        ],
-    }
-    intent = MappingSelectionContext(
-        kind="theme_company_mapping",
-        topic="消费级终端端侧AI SoC与推理芯片",
-        discovery_theme="AI芯片",
-        selection_mode="ranked_shortlist",
-        company_mapping_mode="business_evidence",
-        resolved_domains=["端侧AI SoC", "推理芯片"],
-        thesis_requirements=["消费级终端场景", "端侧AI SoC或推理芯片", "批量交付、订单或收入"],
-        objective="找出最符合第一梯队的A股公司",
-        research_dimensions=["AI手机", "AI眼镜", "端侧推理", "批量交付"],
-        confidence=0.98,
-    )
-    facts = [
-        BoundEvidenceFact(
-            company_name="安凯微", symbol="688620", stage="L3", thesis_fit="exact",
-            commercialization_signal="batch_delivery", relationship="消费级AI眼镜SoC",
-            fact="安凯微AI眼镜芯片2025年四季度已实现批量交付",
-            support_quote="安凯微AI眼镜芯片2025年四季度已实现批量交付",
-            source_id="s1", source_name="中国证券报", source_url="https://example.com/ankai",
-            source_date="2026-07-16", confidence=0.98,
-        ),
-        BoundEvidenceFact(
-            company_name="云天励飞", symbol="688343", stage="L3", thesis_fit="partial",
-            commercialization_signal="batch_delivery", relationship="通用边缘AI推理芯片",
-            fact="云天励飞芯片用于机器人、边缘网关和服务器",
-            support_quote="云天励飞芯片用于机器人、边缘网关和服务器",
-            source_id="s2", source_name="测试来源", source_url="https://example.com/yuntian",
-            source_date="2026-07-16", confidence=0.95,
-        ),
-    ]
-
-    rendered = chat_mod._build_theme_mapping_fallback(
-        result,
-        [],
-        semantic_facts=facts,
-        semantic_intent=intent,
-    )
-
-    assert "与投资命题精确匹配的 A 股短名单" in rendered
-    assert "安凯微 (688620)" in rendered
-    assert "云天励飞" not in rendered
-    assert "寒武纪" not in rendered
-    assert "完整候选池" not in rendered
-    assert "概念成员关系不参与最终排名" in rendered
-
+def test_legacy_theme_mapping_fallback_is_removed():
+    assert not hasattr(chat_mod, "_build_theme_mapping_fallback")
 
 def test_mapping_synthesis_receives_runtime_verified_candidate_codes():
     messages = chat_mod._build_synthesis_messages(
@@ -973,7 +839,7 @@ def test_mapping_synthesis_receives_runtime_verified_candidate_codes():
     assert "300652" in evidence_text
 
 
-def test_mapping_sanitizer_drops_only_rows_without_company_level_evidence():
+def test_mapping_answer_is_not_rewritten_by_row_keyword_rules():
     mixed = (
         "| 公司/代码 | 产业链环节 | 证据等级 | 已验证事实 | 证据缺口 | 来源日期 |\n"
         "|---|---|---|---|---|---|\n"
@@ -985,10 +851,7 @@ def test_mapping_sanitizer_drops_only_rows_without_company_level_evidence():
     sanitized = chat_mod._sanitize_mapping_answer(mixed)
 
     assert "兆威机电 (003021)" in sanitized
-    assert "| 机器人 (300024) |" not in sanitized
-    assert "因证据校验未通过而未列入" in sanitized
-    assert "机器人 (300024)" in sanitized
-    assert "最终保留 **1 家**" in sanitized
+    assert sanitized == mixed
     assert chat_mod._playbook_answer_contract_issues(
         chat_mod.THEME_COMPANY_MAPPING,
         sanitized,
@@ -996,7 +859,7 @@ def test_mapping_sanitizer_drops_only_rows_without_company_level_evidence():
     ) == []
 
 
-def test_professional_fallback_preserves_missing_amounts_instead_of_zero_filling():
+def test_professional_fallback_reports_semantic_synthesis_gap():
     text = chat_mod._build_professional_decision_fallback({
         "success": True,
         "data_time": "2026-07-17",
@@ -1011,27 +874,26 @@ def test_professional_fallback_preserves_missing_amounts_instead_of_zero_filling
             "risk_events": {"items": [], "analysis": {}},
             "announcements": {},
             "evidence_coverage": {"complete": False, "missing": ["expectations"]},
-            "screening_flags": {"positive": [], "negative": []},
         }],
     })
 
-    assert "OCF 缺失" in text
-    assert "10日资金 缺失" in text
-    assert "OCF 0.00亿" not in text
+    assert text.startswith("## 深度研究证据已获取，但语义综合未完成")
+    assert "expectations" in text
+    assert "不输出买入或规避判断" in text
 
 
-def test_professional_fallback_uses_research_heading_without_buy_intent():
+def test_professional_fallback_never_infers_a_research_conclusion():
     text = chat_mod._build_professional_decision_fallback({
         "success": True,
         "thesis": "贵州茅台最新财务质量和估值如何",
         "items": [],
     })
 
-    assert text.startswith("## 综合研究结论")
-    assert "专业买入决策结论" not in text
+    assert text.startswith("## 深度研究证据已获取，但语义综合未完成")
+    assert "不输出买入或规避判断" in text
 
 
-def test_professional_fallback_accepts_explicit_buy_intent_from_playbook():
+def test_professional_fallback_does_not_turn_intent_into_a_program_decision():
     text = chat_mod._build_professional_decision_fallback(
         {
             "success": True,
@@ -1041,11 +903,11 @@ def test_professional_fallback_accepts_explicit_buy_intent_from_playbook():
         decision_requested=True,
     )
 
-    assert text.startswith("## 专业买入决策结论")
-    assert "横向优先级" in text
+    assert text.startswith("## 深度研究证据已获取，但语义综合未完成")
+    assert "不输出买入或规避判断" in text
 
 
-def test_professional_fallback_distinguishes_zero_coverage_from_missing_evidence():
+def test_professional_fallback_reports_only_structured_coverage():
     text = chat_mod._build_professional_decision_fallback(
         {
             "success": True,
@@ -1064,17 +926,14 @@ def test_professional_fallback_distinguishes_zero_coverage_from_missing_evidence
                 "risk_events": {"items": [], "analysis": {}},
                 "announcements": {},
                 "evidence_coverage": {"complete": True, "missing": []},
-                "screening_flags": {"positive": [], "negative": []},
             }],
         },
         decision_requested=True,
     )
 
-    assert "机构一致预期覆盖0家（查询完成）" in text
-    assert "暂不介入（条件未满足）" in text
-    assert "等待补证" not in text
-    assert "数据源执行缺口：无" in text
-    assert "主题业务订单/收入仍需公司级原文持续核验" in text
+    assert "丰立智能 (301368)" in text
+    assert "| 完整 | 无 |" in text
+    assert "暂不介入" not in text
 
 
 def test_stream_final_answer_converts_tool_history_to_text_evidence():
@@ -1315,7 +1174,8 @@ def test_empty_final_answer_uses_and_persists_verified_multi_stock_fallback():
 
     result = asyncio.run(run())
     assert "维宏股份 (300508)" in result
-    assert "亏损，先观察" in result
+    assert "亏损，先观察" not in result
+    assert "机械数据整理" in result
     assert "不是 PE(TTM)" in result
     assert state["assistant_text"] == result
 

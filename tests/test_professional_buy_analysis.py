@@ -83,13 +83,14 @@ def _evidence() -> dict:
 def test_prompt_requires_all_eight_professional_axes_and_counter_evidence() -> None:
     for _, title in DIMENSION_DEFINITIONS:
         assert title in ANALYST_SYSTEM_PROMPT
-    assert "任何一项不通过都不能提前停止后续分析" in ANALYST_SYSTEM_PROMPT
+    assert "当前维度不通过时，程序不会再调用后续维度" in ANALYST_SYSTEM_PROMPT
     assert "同时列出支持证据与反证" in ANALYST_SYSTEM_PROMPT
     assert "估值不能只报一个PE" in ANALYST_SYSTEM_PROMPT
     assert "现金流、应收、存货、客户集中" in ANALYST_SYSTEM_PROMPT
     assert "1—3年结构性产业趋势" in ANALYST_SYSTEM_PROMPT
     assert "1—6个月A股主导叙事" in ANALYST_SYSTEM_PROMPT
-    assert "1—10日交易确认" in ANALYST_SYSTEM_PROMPT
+    assert "1—10日板块交易确认" in ANALYST_SYSTEM_PROMPT
+    assert "个股涨跌、均线和资金流不能否定业务的主线归属" in ANALYST_SYSTEM_PROMPT
     assert "detected 只证明曾出现过" in ANALYST_SYSTEM_PROMPT
     assert "不能笼统写“证据不足”" in ANALYST_SYSTEM_PROMPT
 
@@ -162,7 +163,7 @@ def test_formal_report_retrieval_uses_derived_scope_without_user_thesis() -> Non
 
     assert passages
     assert "风电类产品" in passages[0]["excerpt"]
-    assert passages[0]["matched_query_fragments"]
+    assert passages[0]["selection_method"] == "uniform_document_coverage"
 
 
 def test_public_research_distinguishes_failure_from_valid_empty_result() -> None:
@@ -220,7 +221,7 @@ def test_tool_schema_is_fully_inlined_for_gateway_json_grammar() -> None:
 
 
 def test_numeric_claim_guard_rejects_untraceable_numbers_and_allows_rounding() -> None:
-    item = _dimension(1, "partial")
+    item = _dimension(1, "pass")
     item.analysis = "公司毛利率约28%，但不能据此声称行业通常为35%。"
     unsupported = _unsupported_numeric_claims(
         item,
@@ -296,7 +297,7 @@ def test_numeric_guard_covers_bare_overall_monitoring_thresholds() -> None:
 
 
 def test_incomplete_dimension_headline_is_repaired_from_analysis() -> None:
-    item = _dimension(0, "partial")
+    item = _dimension(0, "pass")
     item.headline = "中期主导叙事为"
     item.analysis = (
         "中期主导叙事为科技与出海，公司所在方向属于结构趋势下的轮动支线。"
@@ -325,17 +326,23 @@ def test_professional_model_executes_each_dimension_and_overall_contract() -> No
         },
     }
 
+    called_dimensions: list[str] = []
+
     def completion(**kwargs):
         tool_name = kwargs["tools"][0]["function"]["name"]
         request = __import__("json").loads(kwargs["messages"][1]["content"])
         if tool_name == "submit_dimension_assessment":
             dimension_id = request["requested_dimension"]["dimension_id"]
+            called_dimensions.append(dimension_id)
             index = [key for key, _ in DIMENSION_DEFINITIONS].index(dimension_id)
-            payload = _dimension(index, "partial").model_dump()
+            payload = _dimension(index, "pass").model_dump()
         else:
             payload = {
                 key: value
-                for key, value in _assessment(["partial"] * 8).model_dump().items()
+                for key, value in _assessment(
+                    ["pass"] * 8,
+                    recommendation_code="conditional_buy",
+                ).model_dump().items()
                 if key != "dimensions"
             }
         return {
@@ -364,8 +371,80 @@ def test_professional_model_executes_each_dimension_and_overall_contract() -> No
 
     assert error == ""
     assert assessment is not None
+    assert called_dimensions == [key for key, _ in DIMENSION_DEFINITIONS]
     assert [item.dimension_id for item in assessment.dimensions] == [
         key for key, _ in DIMENSION_DEFINITIONS
+    ]
+    assert all(item.status == "pass" for item in assessment.dimensions)
+
+
+def test_professional_model_stops_after_first_non_pass_dimension() -> None:
+    evidence = {
+        **_evidence(),
+        "base_company_packet": {},
+        "investment_thesis": "测试投资逻辑",
+        "dimension_evidence": {
+            dimension_id: {
+                "success": True,
+                "evidence_gap": None,
+                "summary": f"{title}的本轮测试证据",
+            }
+            for dimension_id, title in DIMENSION_DEFINITIONS
+        },
+    }
+    called_dimensions: list[str] = []
+
+    def completion(**kwargs):
+        tool_name = kwargs["tools"][0]["function"]["name"]
+        assert tool_name == "submit_dimension_assessment"
+        request = __import__("json").loads(kwargs["messages"][1]["content"])
+        dimension_id = request["requested_dimension"]["dimension_id"]
+        called_dimensions.append(dimension_id)
+        index = [key for key, _ in DIMENSION_DEFINITIONS].index(dimension_id)
+        payload = _dimension(
+            index,
+            "fail" if index == 2 else "pass",
+        ).model_dump()
+        return {
+            "model": "test-model",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": tool_name,
+                            "arguments": __import__("json").dumps(
+                                payload,
+                                ensure_ascii=False,
+                            ),
+                        }
+                    }]
+                }
+            }],
+            "usage": {},
+        }
+
+    with patch(
+        "src.llm.anthropic_gateway.completion_gateway",
+        side_effect=completion,
+    ), patch("src.storage.persist_llm_usage"):
+        assessment, error = _call_professional_model(evidence)
+
+    assert error == ""
+    assert assessment is not None
+    assert called_dimensions == [
+        "market_mainline",
+        "industrial_competitiveness",
+        "industry_cycle",
+    ]
+    assert [item.status for item in assessment.dimensions] == [
+        "pass",
+        "pass",
+        "fail",
+        "not_evaluated",
+        "not_evaluated",
+        "not_evaluated",
+        "not_evaluated",
+        "not_evaluated",
     ]
 
 
@@ -407,6 +486,26 @@ def test_dimension_context_uses_structured_financials_without_text_truncation() 
     assert valuation["peer_valuation"]["target_rank"] == 3
 
 
+def test_market_mainline_context_excludes_stock_timing_signals() -> None:
+    context = _dimension_company_context(
+        {
+            "profile": {
+                "short_name": "测试公司",
+                "main_business": "正式披露的产业业务",
+            },
+            "quote": {"price": 10, "change_pct": -9},
+            "technical": {"indicators": {"return_20d_pct": -30}},
+            "capital_flow": {"windows": {"20d": {"main_net_inflow": -1}}},
+        },
+        "market_mainline",
+    )
+
+    assert context["profile"]["main_business"] == "正式披露的产业业务"
+    assert "quote" not in context
+    assert "technical" not in context
+    assert "capital_flow" not in context
+
+
 def test_dimension_context_derives_latest_full_year_and_annual_yoy() -> None:
     items = []
     for year, revenue in ((2024, 100_000_000), (2025, 150_000_000)):
@@ -445,16 +544,16 @@ def test_dimension_context_derives_latest_full_year_and_annual_yoy() -> None:
     assert "annual_2025" not in context["financials"]
 
 
-def test_program_computes_half_scores_and_blocks_unsupported_buy_label() -> None:
+def test_program_rejects_at_first_failed_gate_without_score() -> None:
     statuses = [
-        "partial",
         "pass",
         "pass",
-        "partial",
-        "pass",
-        "pass",
-        "partial",
         "fail",
+        "not_evaluated",
+        "not_evaluated",
+        "not_evaluated",
+        "not_evaluated",
+        "not_evaluated",
     ]
     assessment = _assessment(statuses, recommendation_code="conditional_buy")
     with patch(
@@ -466,22 +565,25 @@ def test_program_computes_half_scores_and_blocks_unsupported_buy_label() -> None
     ):
         result = analyze_professional_buy("300850")
 
-    assert result["score"] == 5.5
+    assert "score" not in result
+    assert "score_total" not in result
     assert result["counts"] == {
-        "pass": 4,
-        "partial": 3,
+        "pass": 2,
         "fail": 1,
         "insufficient": 0,
+        "not_evaluated": 5,
     }
     assert result["recommendation_code"] == "wait"
     assert len(result["dimensions"]) == 8
     assert result["dimensions"][-1]["dimension_id"] == "major_risks"
+    assert result["stopped_at"] == "industry_cycle"
+    assert result["gate_pass_complete"] is False
 
 
-def test_program_rejects_evidence_insufficient_when_all_axes_completed() -> None:
+def test_program_allows_conditional_buy_only_after_eight_passes() -> None:
     assessment = _assessment(
-        ["pass", "pass", "partial", "partial", "partial", "partial", "pass", "partial"],
-        recommendation_code="evidence_insufficient",
+        ["pass"] * 8,
+        recommendation_code="conditional_buy",
     )
     with patch(
         "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
@@ -492,13 +594,14 @@ def test_program_rejects_evidence_insufficient_when_all_axes_completed() -> None
     ):
         result = analyze_professional_buy("300850")
 
-    assert result["counts"]["insufficient"] == 0
-    assert result["recommendation_code"] == "watchlist"
-    assert result["recommendation"] == "进入中期跟踪池"
-    assert "八个维度均已完成" in result["overall_summary"]
+    assert result["counts"]["pass"] == 8
+    assert result["recommendation_code"] == "conditional_buy"
+    assert result["gate_pass_complete"] is True
+    assert result["coverage_complete"] is True
+    assert result["stopped_at"] is None
 
 
-def test_model_failure_returns_eight_explicit_insufficient_axes() -> None:
+def test_model_failure_marks_first_gate_insufficient_and_skips_seven() -> None:
     with patch(
         "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
         return_value=_evidence(),
@@ -509,6 +612,11 @@ def test_model_failure_returns_eight_explicit_insufficient_axes() -> None:
         result = analyze_professional_buy("300850")
 
     assert result["recommendation_code"] == "evidence_insufficient"
-    assert result["counts"]["insufficient"] == 8
+    assert result["counts"]["insufficient"] == 1
+    assert result["counts"]["not_evaluated"] == 7
     assert len(result["dimensions"]) == 8
-    assert all(item["status"] == "insufficient" for item in result["dimensions"])
+    assert result["dimensions"][0]["status"] == "insufficient"
+    assert all(
+        item["status"] == "not_evaluated"
+        for item in result["dimensions"][1:]
+    )

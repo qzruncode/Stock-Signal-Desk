@@ -94,7 +94,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertEqual(normalized["start_date"], "20260101")
         self.assertEqual(normalized["end_date"], "20260717")
 
-    def test_registry_repairs_human_readable_sector_flow_enums(self) -> None:
+    def test_registry_does_not_guess_human_readable_sector_flow_enums(self) -> None:
         registry = ToolRegistry()
         normalized = registry.normalize_arguments("get_sector_flow", {
             "type": "行业板块",
@@ -102,8 +102,8 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             "top_n": "10",
         })
 
-        self.assertEqual(normalized["type"], "industry")
-        self.assertEqual(normalized["period"], "5d")
+        self.assertEqual(normalized["type"], "行业板块")
+        self.assertEqual(normalized["period"], "近5日")
         self.assertEqual(normalized["top_n"], 10)
 
     def test_all_tool_schemas_are_closed_and_described(self) -> None:
@@ -134,8 +134,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
         registry = ToolRegistry()
 
-        def resolver(value: str, *, allow_fuzzy: bool = True) -> str:
-            self.assertFalse(allow_fuzzy)
+        def resolver(value: str) -> str:
             return {"贵州茅台": "600519", "宁德时代": "300750"}.get(value, value)
 
         with patch("src.tools.get_realtime_quotes.get_realtime_quotes", side_effect=fake_get_realtime_quotes), \

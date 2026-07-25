@@ -21,7 +21,6 @@ import time
 from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
-from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Any
 
@@ -42,8 +41,6 @@ _EXPLICIT_WINDOW_RE = re.compile(
     r"(?P<half>上半年|下半年))",
     re.I,
 )
-_QUERY_SEPARATOR_RE = re.compile(r"[\s,，、;；:/／|（）()\[\]【】以及和与]+")
-_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？；\n])")
 
 
 def _clean_text(value: Any) -> str:
@@ -281,41 +278,6 @@ def _context_around(text: str, start: int, end: int, *, radius: int = 620) -> st
     return _clean_text(text[left:right])[:1600]
 
 
-def _business_query_fragments(
-    thesis: str,
-    thesis_context: dict[str, Any] | None,
-    research_scope: dict[str, Any] | None = None,
-) -> list[str]:
-    """Build retrieval phrases from the structured thesis, never from a stock list."""
-    values: list[str] = [str(thesis or "")]
-    context = thesis_context if isinstance(thesis_context, dict) else {}
-    values.append(str(context.get("summary") or ""))
-    for domain in context.get("domains") or []:
-        if not isinstance(domain, dict):
-            continue
-        values.append(str(domain.get("label") or ""))
-        values.extend(str(item or "") for item in domain.get("board_queries") or [])
-    values.extend(str(item or "") for item in context.get("inferred_context_themes") or [])
-    scope = research_scope if isinstance(research_scope, dict) else {}
-    values.extend(
-        str(item or "")
-        for item in scope.get("primary_labels") or []
-    )
-
-    phrases: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        compact = _clean_text(value)
-        candidates = [compact, *_QUERY_SEPARATOR_RE.split(compact)]
-        for candidate in candidates:
-            normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", candidate).lower()
-            if len(normalized) < 2 or normalized in seen:
-                continue
-            seen.add(normalized)
-            phrases.append(normalized)
-    return phrases
-
-
 def extract_business_passages(
     content: str,
     *,
@@ -324,68 +286,35 @@ def extract_business_passages(
     research_scope: dict[str, Any] | None = None,
     limit: int = 12,
 ) -> list[dict[str, Any]]:
-    """Retrieve report passages semantically close to the requested thesis.
+    """Return broad document spans without lexical relevance matching.
 
-    This is an evidence-retrieval step only.  It ranks document passages by
-    exact structured phrases and character n-gram overlap; it never decides
-    whether the company benefits or whether a gate should pass.
+    The thesis parameters remain for API compatibility, but the program never
+    scores text against them.  A bounded set of evenly distributed source spans
+    is sent to the analysis model, which performs the semantic judgment.
     """
-    phrases = _business_query_fragments(
-        thesis,
-        thesis_context,
-        research_scope,
-    )
-    if not phrases:
+    del thesis, thesis_context, research_scope
+    text = _clean_text(content)
+    if not text:
         return []
-    grams: dict[str, int] = {}
-    for phrase in phrases:
-        max_size = min(6, len(phrase))
-        for size in range(2, max_size + 1):
-            for offset in range(0, len(phrase) - size + 1):
-                gram = phrase[offset:offset + size]
-                grams[gram] = max(grams.get(gram, 0), size)
-
-    raw_sentences = [
-        _clean_text(sentence)
-        for sentence in _SENTENCE_BOUNDARY_RE.split(str(content or ""))
-        if _clean_text(sentence)
-    ]
-    scored: list[tuple[float, int, str, list[str]]] = []
-    for index, sentence in enumerate(raw_sentences):
-        normalized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", sentence).lower()
-        if not normalized:
-            continue
-        exact = [phrase for phrase in phrases if phrase in normalized]
-        matched_grams = [gram for gram in grams if gram in normalized]
-        if not exact and not matched_grams:
-            continue
-        # Longer overlaps carry more information than isolated two-character
-        # overlaps.  Exact phrases receive an additional, query-length-aware
-        # bonus.  All terms originate from this turn's structured thesis.
-        gram_score = sum(grams[gram] ** 2 for gram in matched_grams)
-        exact_score = sum(len(phrase) ** 2 * 4 for phrase in exact)
-        score = float(gram_score + exact_score)
-        left = max(0, index - 1)
-        right = min(len(raw_sentences), index + 2)
-        excerpt = _clean_text(" ".join(raw_sentences[left:right]))[:1800]
-        scored.append((score, index, excerpt, exact or matched_grams))
-
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    passages: list[dict[str, Any]] = []
-    seen_excerpt: set[str] = set()
-    for score, _, excerpt, matches in scored:
-        dedupe_key = re.sub(r"\W+", "", excerpt).lower()[:360]
-        if not dedupe_key or dedupe_key in seen_excerpt:
-            continue
-        seen_excerpt.add(dedupe_key)
-        passages.append({
-            "excerpt": excerpt,
-            "retrieval_score": round(score, 2),
-            "matched_query_fragments": sorted(set(matches), key=len, reverse=True)[:8],
+    span_size = 1_800
+    span_count = max(1, min(int(limit), 12))
+    if len(text) <= span_size:
+        starts = [0]
+    else:
+        last_start = max(0, len(text) - span_size)
+        starts = sorted({
+            round(last_start * index / max(1, span_count - 1))
+            for index in range(span_count)
         })
-        if len(passages) >= max(1, limit):
-            break
-    return passages
+    return [
+        {
+            "excerpt": text[start:start + span_size],
+            "document_offset_start": start,
+            "document_offset_end": min(len(text), start + span_size),
+            "selection_method": "uniform_document_coverage",
+        }
+        for start in starts
+    ]
 
 
 def extract_forward_window_passages(
@@ -480,8 +409,6 @@ def _cninfo_formal_pdf_url(
     response.raise_for_status()
     rows = response.json().get("announcements") or []
     target = _normalized_title(title)
-    best_url: str | None = None
-    best_score = 0.0
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -492,13 +419,9 @@ def _cninfo_formal_pdf_url(
         if not adjunct:
             continue
         candidate = _normalized_title(candidate_title)
-        score = SequenceMatcher(None, target, candidate).ratio()
-        if target.endswith(candidate) or candidate.endswith(target):
-            score = max(score, 0.95)
-        if score > best_score:
-            best_score = score
-            best_url = "https://static.cninfo.com.cn/" + adjunct.lstrip("/")
-    return best_url if best_score >= 0.62 else None
+        if candidate == target:
+            return "https://static.cninfo.com.cn/" + adjunct.lstrip("/")
+    return None
 
 
 def _official_document_url(symbol: str, publish_date: str | None, title: str) -> str | None:
@@ -514,17 +437,11 @@ def _official_document_url(symbol: str, publish_date: str | None, title: str) ->
             limit=50,
         )
         target = _normalized_title(title)
-        best_url: str | None = None
-        best_score = 0.0
         for row in rows:
             candidate = _normalized_title(str(row.get("公告标题") or ""))
-            score = SequenceMatcher(None, target, candidate).ratio()
-            if target.endswith(candidate) or candidate.endswith(target):
-                score = max(score, 0.95)
-            if score > best_score:
-                best_score = score
-                best_url = str(row.get("网址") or "") or None
-        return best_url if best_score >= 0.62 else None
+            if candidate == target:
+                return str(row.get("网址") or "") or None
+        return None
     except Exception as exc:
         logger.info("official announcement URL resolution failed: %s", exc)
         return None
@@ -660,10 +577,6 @@ def get_formal_business_evidence(
                 f"{item.get('title') or '定期报告'}: "
                 f"{type(exc).__name__}: {str(exc)[:180]}"
             )
-    passages.sort(
-        key=lambda item: float(item.get("retrieval_score") or 0),
-        reverse=True,
-    )
     return {
         "items": passages[:12],
         "documents": documents,

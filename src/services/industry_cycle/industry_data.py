@@ -32,35 +32,17 @@ def _find_industry_board(industry_name: str, sector_items: list[dict[str, Any]])
         name = _compact_text(item.get("name"))
         if not name:
             continue
-        if name == target or target in name or name in target:
+        if name == target:
             return item, idx, len(sector_items)
     return None, None, len(sector_items)
 
 
-def _industry_name_aliases(industry_name: str) -> list[str]:
-    base = _normalize_text(industry_name)
-    if not base:
-        return []
-    aliases = {
-        base,
-        base.replace("制造业", ""),
-        base.replace("服务业", ""),
-        base.replace("业", ""),
-        base.replace("股份", ""),
-    }
-    return [item for item in aliases if item]
-
-
-def _find_best_name_match(target_names: list[str], candidate_names: list[str]) -> Optional[str]:
+def _find_exact_name(target_name: str, candidate_names: list[str]) -> Optional[str]:
     normalized_candidates = [(name, _compact_text(name)) for name in candidate_names if _normalize_text(name)]
-    for target in target_names:
-        compact_target = _compact_text(target)
-        for original, compact_candidate in normalized_candidates:
-            if compact_candidate == compact_target:
-                return original
-        for original, compact_candidate in normalized_candidates:
-            if compact_target in compact_candidate or compact_candidate in compact_target:
-                return original
+    compact_target = _compact_text(target_name)
+    for original, compact_candidate in normalized_candidates:
+        if compact_candidate == compact_target:
+            return original
     return None
 
 
@@ -76,7 +58,7 @@ def _fetch_ths_industry_summary(industry_name: str) -> dict[str, Any]:
             return {"source_ok": False, "error": "ths industry tables empty"}
 
         ths_names = [str(item) for item in name_df["name"].astype(str).tolist()]
-        matched_name = _find_best_name_match(_industry_name_aliases(industry_name), ths_names)
+        matched_name = _find_exact_name(industry_name, ths_names)
         if not matched_name:
             return {"source_ok": False, "error": f"ths board not matched for {industry_name}"}
 
@@ -137,7 +119,7 @@ def _find_sector_flow(industry_name: str, flow_records: list[dict[str, Any]]) ->
         name = _compact_text(item.get("name"))
         if not name:
             continue
-        if name == target or target in name or name in target:
+        if name == target:
             return item, idx, len(flow_records)
     return None, None, len(flow_records)
 
@@ -364,70 +346,33 @@ def _build_trading_signals(trading_snapshot: dict[str, Any], lhb_snapshot: dict[
     latest_price = _safe_float(latest_quote.get("price")) or _safe_float(latest_bar.get("close"))
     lhb_appearances = _safe_int(lhb_snapshot.get("appearance_count")) or 0
 
-    trend_stage = "震荡观察"
-    trend_reason = "价格和量能未显示出强趋势特征。"
-    if pct_60d is not None and pct_20d is not None:
-        if pct_60d <= -25 and pct_20d <= -12:
-            trend_stage = "退潮下行"
-            trend_reason = "60日和20日区间均显著回撤，个股交易层面仍处于退潮压力。"
-        elif pct_60d >= 20 and pct_20d >= 8:
-            trend_stage = "趋势强化"
-            trend_reason = "20日和60日区间保持明显正收益，趋势仍处于强化阶段。"
-        elif pct_20d >= 5 and pct_60d > -10:
-            trend_stage = "修复观察"
-            trend_reason = "20日出现修复，但60日趋势尚未完全扭转，仍需观察持续性。"
-
-    volume_state = "量能平稳"
-    if volume_ratio is not None:
-        if volume_ratio >= 1.8:
-            volume_state = "显著放量"
-        elif volume_ratio >= 1.2:
-            volume_state = "温和放量"
-        elif volume_ratio <= 0.8:
-            volume_state = "缩量"
-
-    position_state = None
+    price_position_20d = None
     if latest_price is not None and high_20d not in (None, 0) and low_20d is not None and high_20d > low_20d:
         span = high_20d - low_20d
         if span > 0:
-            pos = (latest_price - low_20d) / span
-            if pos >= 0.75:
-                position_state = "接近20日高位"
-            elif pos <= 0.25:
-                position_state = "接近20日低位"
-            else:
-                position_state = "处于20日区间中部"
-
-    risk_flags: list[str] = []
-    positive_flags: list[str] = []
-    if trend_stage == "退潮下行":
-        risk_flags.append("20日/60日趋势均偏弱")
-    if volume_state == "显著放量" and change_pct is not None and change_pct < 0:
-        risk_flags.append("放量下跌，短线抛压偏大")
-    if position_state == "接近20日高位" and change_pct is not None and change_pct < 0:
-        risk_flags.append("高位回落，追涨性价比偏低")
-    if lhb_appearances >= 3:
-        positive_flags.append("近一月多次上榜龙虎榜，市场关注度较高")
-    if volume_state in {"显著放量", "温和放量"} and change_pct is not None and change_pct > 0:
-        positive_flags.append("放量上涨，短线承接尚可")
-    if trend_stage == "趋势强化":
-        positive_flags.append("中期趋势保持强化")
-    if trend_stage == "修复观察":
-        positive_flags.append("近20日出现修复迹象")
+            price_position_20d = round(
+                (latest_price - low_20d) / span,
+                4,
+            )
 
     return _prune_none({
-        "trend_stage": trend_stage,
-        "trend_reason": trend_reason,
-        "volume_state": volume_state,
-        "position_state": position_state,
-        "risk_flags": risk_flags,
-        "positive_flags": positive_flags,
+        "semantic_status": "model_required",
+        "trend_stage": None,
+        "trend_reason": None,
+        "volume_state": None,
+        "position_state": None,
+        "risk_flags": [],
+        "positive_flags": [],
         "metrics": {
             "change_pct": change_pct,
             "volume_ratio": volume_ratio,
             "turnover_rate": turnover_rate,
             "pct_chg_20d": pct_20d,
             "pct_chg_60d": pct_60d,
+            "price_position_20d": price_position_20d,
+            "latest_price": latest_price,
+            "high_20d": high_20d,
+            "low_20d": low_20d,
             "lhb_appearances_1m": lhb_appearances,
         },
     })
@@ -457,20 +402,6 @@ def _build_stock_focus_snapshot(
     institution_holding_pct = _safe_float(shareholder_snapshot.get("institution_holding_pct"))
     stage_change_pct = _safe_float(stock_flow_snapshot.get("stage_change_pct"))
     net_inflow = _safe_float(stock_flow_snapshot.get("net_inflow"))
-    trend_stage = _normalize_text(trading_signal_snapshot.get("trend_stage"))
-    risk_flags = [str(item) for item in _as_list(trading_signal_snapshot.get("risk_flags")) if str(item).strip()]
-    positive_flags = [str(item) for item in _as_list(trading_signal_snapshot.get("positive_flags")) if str(item).strip()]
-
-    business_binding = "待验证"
-    if _normalize_text(main_business) and (
-        _normalize_text(company_specific_evidence.get("product_type"))
-        or _normalize_text(company_specific_evidence.get("product_name"))
-    ):
-        business_binding = "强"
-    elif _normalize_text(main_business):
-        business_binding = "中"
-
-    finance_state = "中性"
     finance_points: list[str] = []
     if revenue_yoy is not None:
         finance_points.append(f"营收同比{revenue_yoy:.2f}%")
@@ -480,20 +411,6 @@ def _build_stock_focus_snapshot(
         finance_points.append(f"扣非同比{deducted_profit_yoy:.2f}%")
     if free_cashflow is not None:
         finance_points.append(f"自由现金流{free_cashflow / 1e8:.2f}亿")
-    if (
-        (profit_yoy is not None and profit_yoy <= -30)
-        or (deducted_profit_yoy is not None and deducted_profit_yoy <= -30)
-        or (free_cashflow is not None and free_cashflow < 0)
-    ):
-        finance_state = "承压"
-    elif (
-        (revenue_yoy is not None and revenue_yoy >= 20)
-        or (profit_yoy is not None and profit_yoy >= 20)
-        or (free_cashflow is not None and free_cashflow > 0)
-    ):
-        finance_state = "改善"
-
-    holder_state = "中性"
     holder_points: list[str] = []
     actual_controller = _normalize_text(shareholder_snapshot.get("actual_controller"))
     if actual_controller:
@@ -502,43 +419,35 @@ def _build_stock_focus_snapshot(
         holder_points.append(f"股东人数变化{holder_change_pct:.2f}%")
     if institution_holding_pct is not None:
         holder_points.append(f"机构持股{institution_holding_pct:.2f}%")
-    major_changes = _list_of_dicts(shareholder_snapshot.get("major_holder_changes"))
-    if any(_normalize_text(item.get("direction")) == "减持" for item in major_changes[:4]):
-        holder_state = "减持扰动"
-    elif institution_holding_pct is not None and institution_holding_pct >= 10:
-        holder_state = "机构参与"
-
-    trading_state = trend_stage or "震荡观察"
     trading_points: list[str] = []
     if stage_change_pct is not None:
         trading_points.append(f"{stock_flow_snapshot.get('window') or '阶段'}涨跌幅{stage_change_pct:.2f}%")
     if net_inflow is not None:
         trading_points.append(f"资金净流入{net_inflow / 1e8:.2f}亿")
-    trading_points.extend(risk_flags[:2] or positive_flags[:2])
-
-    evidence_strength = "中"
     direct_evidence_count = len(announcements) + len(news) + len(research)
-    if direct_evidence_count >= 12 and business_binding == "强":
-        evidence_strength = "高"
-    elif direct_evidence_count < 5:
-        evidence_strength = "低"
 
     focus_view = (
-        f"{stock_name} 当前应优先看个股自身证据。"
-        f"主营绑定强度为{business_binding}，财务状态{finance_state}，筹码/股东状态{holder_state}，"
-        f"交易状态{trading_state}，直接证据强度{evidence_strength}。"
+        f"{stock_name}的主营、财务、股东、交易和公开事项原始证据已汇总；"
+        "各项强弱与投资含义由模型结合完整证据判断。"
     )
 
     return _prune_none({
         "focus_view": focus_view,
-        "business_binding_strength": business_binding,
-        "finance_state": finance_state,
-        "holder_state": holder_state,
-        "trading_state": trading_state,
-        "direct_evidence_strength": evidence_strength,
+        "semantic_status": "model_required",
+        "business_binding_strength": None,
+        "finance_state": None,
+        "holder_state": None,
+        "trading_state": None,
+        "direct_evidence_strength": None,
+        "main_business": main_business,
+        "product_type": company_specific_evidence.get("product_type"),
+        "product_name": company_specific_evidence.get("product_name"),
         "finance_points": finance_points[:5],
         "holder_points": holder_points[:5],
         "trading_points": trading_points[:5],
+        "trading_metrics": trading_signal_snapshot.get("metrics") or {},
+        "major_holder_changes": shareholder_snapshot.get("major_holder_changes") or [],
+        "direct_evidence_count": direct_evidence_count,
     })
 
 

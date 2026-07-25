@@ -71,13 +71,6 @@ _DEFAULT_ROUTE_LIMITS = {
     "social": 2,
 }
 
-def _query_terms(query: str, subjects: list[str]) -> list[str]:
-    normalized = query.strip().lower()
-    terms = [normalized]
-    terms.extend(str(subject).strip().lower() for subject in subjects)
-    return list(dict.fromkeys(term for term in terms if len(term) >= 2))
-
-
 def _subject_terms(subjects: list[str]) -> list[str]:
     """Normalize semantic subjects supplied by the Planner/Workflow.
 
@@ -89,12 +82,6 @@ def _subject_terms(subjects: list[str]) -> list[str]:
         for subject in subjects
         if len(str(subject).strip()) >= 2
     ))
-
-
-def _score(item: dict[str, Any], terms: list[str]) -> int:
-    title = str(item.get("title") or "").lower()
-    summary = str(item.get("summary") or "").lower()
-    return sum(5 for term in terms if term in title) + sum(2 for term in terms if term in summary)
 
 
 def _published_key(item: dict[str, Any]) -> str:
@@ -156,33 +143,6 @@ def _is_usable_item(item: dict[str, Any]) -> bool:
         return False
     meaningful = re.findall(r"[A-Za-z0-9\u4e00-\u9fff]", title)
     return len(meaningful) >= 4
-
-
-def _matches_subject(item: dict[str, Any], subject_terms: list[str], topic: str) -> bool:
-    """Keep broad feeds from leaking unrelated rows into a focused query.
-
-    Company and exchange queries must name the subject in the title.  A broad
-    market table often contains hundreds of company names in its body; treating
-    that as company-specific news is a false positive.  For industry, research,
-    macro and social topics, a body match is still useful and is retained.
-    """
-    if not subject_terms:
-        return True
-    title = str(item.get("title") or "").lower()
-    summary = str(item.get("summary") or "").lower()
-    if any(term in title for term in subject_terms):
-        return True
-    if topic in {"company", "announcement"}:
-        return False
-    return any(term in summary for term in subject_terms)
-
-
-def _trusted_route_bonus(item: dict[str, Any], subject_terms: list[str], topic: str) -> int:
-    """Prefer a first-party specialist feed when it directly owns the fact."""
-    route = str(item.get("rss_route") or "")
-    if topic == "macro" and route == "/gov/pbc/tradeAnnouncement":
-        return 100
-    return 0
 
 
 def _default_option(route: dict[str, Any], param: dict[str, Any]) -> str | None:
@@ -292,7 +252,6 @@ def search_financial_news(
     fallback_to_web: bool = True,
     _route_paths: frozenset[str] | None = None,
     _max_routes: int | None = None,
-    _filter_by_subject: bool = True,
 ) -> dict[str, Any]:
     # Lazy imports avoid importing the complete FastAPI router while the tool
     # registry itself is still being constructed.
@@ -377,8 +336,6 @@ def search_financial_news(
             if existing is None or len(str(item.get("summary") or "")) > len(str(existing.get("summary") or "")):
                 deduped[key] = item
 
-    semantic_subjects = _subject_terms(subjects or [])
-    terms = _query_terms(query, semantic_subjects)
     cutoff = datetime.now() - timedelta(days=int(days))
     candidate_items = list(deduped.values())
     expired_count = sum(
@@ -386,22 +343,22 @@ def search_financial_news(
         if _has_known_time(item) and not _item_is_recent(item, cutoff)
     )
     unknown_time_count = sum(1 for item in candidate_items if not _has_known_time(item))
-    subject_terms = semantic_subjects
     items = [item for item in candidate_items if _item_is_recent(item, cutoff)]
-    ranking_terms = list(dict.fromkeys([*terms, *subject_terms]))
+    subject_terms = _subject_terms(subjects or [])
+    for item in items:
+        searchable = (
+            f"{item.get('title', '')} {item.get('summary', '')}"
+        ).lower()
+        item["exact_subject_mentions"] = [
+            subject for subject in subject_terms
+            if subject in searchable
+        ]
+        item["semantic_status"] = "model_required"
     items.sort(
-        key=lambda item: (
-            _trusted_route_bonus(item, subject_terms, resolved_topic) + _score(item, ranking_terms),
-            _published_key(item),
-        ),
+        key=_published_key,
         reverse=True,
     )
-    if _filter_by_subject and subject_terms and resolved_topic != "market":
-        relevant = [item for item in items if _matches_subject(item, subject_terms, resolved_topic)]
-        selected = relevant[: max(1, min(int(limit), 30))]
-    else:
-        relevant = items
-        selected = items[: max(1, min(int(limit), 30))]
+    selected = items[: max(1, min(int(limit), 30))]
 
     if expired_count:
         warnings.append(f"已按最近 {days} 天过滤 {expired_count} 条过期 RSS 记录")
@@ -458,11 +415,12 @@ def search_financial_news(
                 "published": raw.get("published_date"),
                 "source": raw.get("source") or web_fallback.get("provider"),
                 "source_type": "websearch",
+                "semantic_status": "model_required",
             })
         selected = selected[: max(1, min(int(limit), 30))]
         fallback_used = bool(selected)
         if fallback_used:
-            warnings.append("RSSHub 未返回匹配记录，已使用通用联网搜索兜底")
+            warnings.append("RSSHub 未返回时间窗内记录，已使用通用联网搜索兜底")
         else:
             errors.extend(f"websearch: {error}" for error in web_fallback.get("errors") or [])
             warnings.append("RSSHub 和通用联网搜索均未返回可用结果")
@@ -477,17 +435,8 @@ def search_financial_news(
                 1 for item in result["result"].get("items") or []
                 if _item_is_recent(item, cutoff)
             ),
-            "relevant_item_count": sum(
-                1 for item in result["result"].get("items") or []
-                if _item_is_recent(item, cutoff)
-                and (
-                    not _filter_by_subject
-                    or resolved_topic == "market"
-                    or _matches_subject(item, subject_terms, resolved_topic)
-                )
-            ),
             # A feed that was read successfully can legitimately contain no
-            # items (or no items matching the requested subject/time window).
+            # items inside the requested time window.
             # Treat transport/parser errors as failures, not an empty result.
             "success": not bool(result["result"].get("errors")),
             "cached": bool(result["result"].get("_cached")),
@@ -567,7 +516,7 @@ TOOL = ToolSpec(
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": 12,
-                "description": "Planner 提取的核心公司、行业或事件主体；用于相关性过滤，不从自然语言中二次猜测",
+                "description": "Planner 提取的核心公司、行业或事件主体；工具只记录逐字提及，语义相关性由分析模型判断",
             },
             "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "只返回最近多少天的记录；缺少发布时间的记录会保留并明确告警"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12, "description": "去重后最多返回条数"},

@@ -61,7 +61,6 @@ def _execution_timeout(tool_name: str, arguments: Dict[str, Any]) -> float:
         "get_multi_stock_snapshot",
         "get_multi_stock_decision_evidence",
         "get_domain_stock_candidates",
-        "get_theme_stock_candidates",
     }:
         return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
     if tool_name == "websearch" and bool(arguments.get("includeContent")):

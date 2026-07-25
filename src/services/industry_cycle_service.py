@@ -40,10 +40,9 @@ from src.services.industry_cycle.industry_data import (
     _fetch_peer_snapshot,
     _fetch_stock_flow_snapshot,
     _fetch_ths_industry_summary,
-    _find_best_name_match,
+    _find_exact_name,
     _find_industry_board,
     _find_sector_flow,
-    _industry_name_aliases,
 )
 from src.services.industry_cycle.llm_parse import (
     _extract_json_object_from_text,
@@ -54,17 +53,9 @@ from src.services.industry_cycle.llm_parse import (
     _strip_markdown_code_fences,
 )
 from src.services.industry_cycle.normalization import (
-    _CATALYST_KEYWORDS,
-    _DRIVER_KEYWORDS,
-    _FADING_STAGE_KEYWORDS,
-    _PRICE_WAR_KEYWORDS,
-    _THREE_YEAR_SPACE_KEYWORDS,
     _as_dict,
     _as_list,
     _compact_text,
-    _contains_any,
-    _extract_competition_clues,
-    _extract_driver_clues,
     _first_dict,
     _list_of_dicts,
     _normalize_symbol,
@@ -75,18 +66,8 @@ from src.services.industry_cycle.normalization import (
     _summarize_text_items,
 )
 from src.services.industry_cycle.report import (
-    _build_driver_signals,
     _build_streaming_industry_cycle_draft,
-    _describe_driver_signals,
-    _find_detector_item,
-    _format_pct_text,
-    _has_strong_driver_signals,
-    _infer_beneficiary_level,
-    _infer_cycle_phase,
     _is_usable_report_payload,
-    _merge_detector_with_fallback,
-    _pick_failed_reason,
-    _report_has_conflicting_conclusion,
     _report_has_incomplete_detectors,
 )
 from src.services.industry_cycle.service import IndustryCycleService

@@ -103,7 +103,6 @@ export const ASSISTANT_CAPABILITY_GROUPS: readonly AssistantCapabilityGroup[] = 
       { label: '这几只股票现在有哪些能买入？', prompt: '按当前主线、产业竞争力、行业周期、竞争格局、增长驱动、未来催化、估值赔率和重大风险，完整分析宁德时代与比亚迪现在能否买入', toolName: 'evaluate_multi_stock_buy_criteria' },
       { label: '这家公司未来有哪些明确催化？', prompt: '看下鸣志电器未来 6—12 个月的催化事件，逐项给出明确时间窗、来源和证据状态', toolName: 'analyze_stock_catalysts' },
       { label: '几个产业环节分别有哪些股票？', prompt: '按行星滚柱丝杠、减速器、无框力矩电机三个领域分别查找 A 股候选，只使用结构化板块和本地股票库', toolName: 'get_domain_stock_candidates' },
-      { label: '这个热门主题里有哪些相关公司？', prompt: '寻找人形机器人主题的候选公司，区分已兑现收入、验证阶段和概念关联', toolName: 'get_theme_stock_candidates' },
       { label: '帮我按 ATR 波动率和财务条件筛选股票', prompt: ATR_SCREEN_PROMPT, toolName: 'screen_atr_volatility_stocks' },
     ],
   },

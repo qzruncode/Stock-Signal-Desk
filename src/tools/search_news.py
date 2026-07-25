@@ -15,15 +15,6 @@ from src.tools._akshare import bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 _RSS_ROUTE = "/eastmoney/search/:keyword"
-_EVENT_RULES = (
-    ("earnings", "业绩财报", ("业绩", "净利润", "营收", "年报", "半年报", "季报", "预告", "快报", "亏损")),
-    ("capital_action", "资本动作", ("定增", "增发", "并购", "收购", "重组", "募资", "分红", "回购")),
-    ("shareholder", "股东变化", ("股东", "增持", "减持", "质押", "解押")),
-    ("governance", "治理变动", ("董事", "监事", "高管", "总经理", "辞职", "聘任", "变更")),
-    ("risk", "风险监管", ("问询", "监管", "处罚", "诉讼", "仲裁", "违规", "退市", "立案")),
-    ("business", "经营动态", ("中标", "订单", "签约", "投产", "扩产", "合作", "产品", "客户")),
-    ("market", "市场交易", ("涨停", "跌停", "大宗交易", "龙虎榜", "资金流", "融资客")),
-)
 
 DESCRIPTION = (
     "搜索一只A股/北交所公司的相关新闻。使用 AKShare 单股新闻与项目 RSSHub 的东方财富"
@@ -89,7 +80,12 @@ def _canonical_url(value: Any) -> str:
         return text
 
 
-def _entity_relevance(title: str, summary: str, code: str, name: str | None) -> tuple[str, int]:
+def _entity_mentions(
+    title: str,
+    summary: str,
+    code: str,
+    name: str | None,
+) -> dict[str, bool]:
     normalized_title = re.sub(r"\s+", "", title).upper()
     normalized_summary = re.sub(r"\s+", "", summary).upper()
     normalized_name = re.sub(r"\s+", "", name or "").upper()
@@ -98,39 +94,11 @@ def _entity_relevance(title: str, summary: str, code: str, name: str | None) -> 
     name_in_summary = bool(normalized_name and normalized_name in normalized_summary)
     code_in_title = any(pattern in normalized_title for pattern in code_patterns)
     code_in_summary = any(pattern in normalized_summary for pattern in code_patterns)
-    if name_in_title:
-        return "company_subject", 100
-    if code_in_title:
-        return "company_subject", 90
-    if name_in_summary:
-        # Search feeds often return market-wide tables whose final row merely
-        # contains ``code + name``.  A body-only mention is evidence of a
-        # mention, not evidence that the article is about the company.
-        return "body_only_mention", 60
-    if code_in_summary:
-        return "market_table_mention", 20
-    return "unmatched", 0
-
-
-def _event_metadata(text: str) -> dict[str, Any]:
-    matches: list[tuple[str, str, list[str]]] = []
-    for key, label, words in _EVENT_RULES:
-        found = [word for word in words if word in text]
-        if found:
-            matches.append((key, label, found))
-    event_type, event_label = (matches[0][0], matches[0][1]) if matches else ("general", "一般资讯")
-    tags = list(dict.fromkeys(word for _, _, words in matches for word in words))[:8]
-    high_words = ("重大", "终止", "退市", "处罚", "立案", "亏损", "预增", "预减", "收购", "重组", "分红", "回购")
-    medium_words = ("公告", "业绩", "增持", "减持", "问询", "诉讼", "投资", "中标", "订单")
-    importance = "high" if any(word in text for word in high_words) else (
-        "medium" if any(word in text for word in medium_words) else "low"
-    )
     return {
-        "event_type": event_type,
-        "event_label": event_label,
-        "importance": importance,
-        "tags": tags,
-        "classification_method": "deterministic_keyword_rules_not_source_fact",
+        "name_in_title": name_in_title,
+        "name_in_summary": name_in_summary,
+        "code_in_title": code_in_title,
+        "code_in_summary": code_in_summary,
     }
 
 
@@ -140,10 +108,9 @@ def _normalize_direct(frame: Any, code: str, name: str | None) -> tuple[list[dic
     for row in frame_records(frame):
         title = _clean_text(row.get("新闻标题"), 300)
         summary = _clean_text(row.get("新闻内容"))
-        relevance, score = _entity_relevance(title, summary, code, name)
-        if score < 70:
+        mentions = _entity_mentions(title, summary, code, name)
+        if not any(mentions.values()):
             weak_mentions += 1
-            continue
         published = _date_time(row.get("发布时间"))
         items.append({
             "title": title,
@@ -152,9 +119,10 @@ def _normalize_direct(frame: Any, code: str, name: str | None) -> tuple[list[dic
             "source": _clean_text(row.get("文章来源"), 100) or "东方财富新闻",
             "url": str(row.get("新闻链接") or "").strip(),
             "source_type": "akshare_stock_news_em",
-            "relevance": relevance,
-            "relevance_score": score,
-            **_event_metadata(f"{title} {summary}"),
+            "entity_mentions": mentions,
+            "relevance": None,
+            "relevance_score": None,
+            "semantic_status": "model_required",
         })
     return items, weak_mentions
 
@@ -165,10 +133,9 @@ def _normalize_rss(payload: dict[str, Any], code: str, name: str | None) -> tupl
     for row in payload.get("items") or []:
         title = _clean_text(row.get("title"), 300)
         summary = _clean_text(row.get("summary"))
-        relevance, score = _entity_relevance(title, summary, code, name)
-        if score < 70:
+        mentions = _entity_mentions(title, summary, code, name)
+        if not any(mentions.values()):
             weak_mentions += 1
-            continue
         published = _date_time(row.get("published"))
         items.append({
             "title": title,
@@ -178,9 +145,10 @@ def _normalize_rss(payload: dict[str, Any], code: str, name: str | None) -> tupl
             "url": str(row.get("link") or "").strip(),
             "source_type": "rsshub_eastmoney_search",
             "rss_route": _RSS_ROUTE,
-            "relevance": relevance,
-            "relevance_score": score,
-            **_event_metadata(f"{title} {summary}"),
+            "entity_mentions": mentions,
+            "relevance": None,
+            "relevance_score": None,
+            "semantic_status": "model_required",
         })
     return items, weak_mentions
 
@@ -196,7 +164,7 @@ def _dedupe(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
             unique[key] = item
     result = list(unique.values())
     result.sort(
-        key=lambda item: (item.get("relevance_score") or 0, item.get("published") or ""),
+        key=lambda item: item.get("published") or "",
         reverse=True,
     )
     return result[:limit]
@@ -257,7 +225,10 @@ def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = 
     items = _dedupe(all_items, int(limit))
 
     if direct_weak + rss_weak:
-        warnings.append(f"已排除 {direct_weak + rss_weak} 条仅在市场榜单中弱提及代码或主体不匹配的结果")
+        warnings.append(
+            f"{direct_weak + rss_weak} 条结果未在标题或摘要中逐字出现证券代码/简称；"
+            "已保留供模型结合来源语义复核"
+        )
     if undated_count:
         warnings.append(f"包含 {undated_count} 条无可验证发布时间的结果")
     if not name:
@@ -273,7 +244,7 @@ def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = 
         "limit": int(limit),
         "items": items,
         "item_count": len(items),
-        "excluded_weak_mention_count": direct_weak + rss_weak,
+        "unverified_entity_mention_count": direct_weak + rss_weak,
         "source": "AKShare stock_news_em + RSSHub 东方财富搜索",
         "sources": sources,
         "rss_routes": [{"route_path": _RSS_ROUTE, "params": {"keyword": name or code}}],

@@ -15,6 +15,84 @@ from ._context import build_report_evidence_pack
 logger = logging.getLogger(__name__)
 
 
+def _validated_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        str(item).strip() for item in value if str(item).strip()
+    ))
+
+
+def _validate_model_report(
+    payload: dict[str, Any],
+    evidence_pack: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind every accepted narrative to exact runtime evidence identifiers."""
+    evidence_index = evidence_pack.get("evidence_refs") or {}
+    if not isinstance(evidence_index, dict):
+        evidence_index = {}
+    allowed_refs = set(evidence_index)
+    allowed_boards = {
+        str(item.get("name") or "").strip()
+        for section in (
+            "industry_flow", "concept_flow",
+            "industry_sectors", "concept_sectors",
+        )
+        for item in evidence_pack.get(section) or []
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+
+    def validate_rows(value: Any, *, current: bool) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for raw in value or []:
+            if not isinstance(raw, dict):
+                continue
+            name = str(raw.get("name") or "").strip()
+            refs = [
+                ref for ref in _validated_text_list(raw.get("evidence_refs"))
+                if ref in allowed_refs
+            ]
+            branches = [
+                branch for branch in _validated_text_list(raw.get("branches"))
+                if branch in allowed_boards
+            ]
+            if not name or not refs or (current and not branches):
+                continue
+            row = {
+                **raw,
+                "name": name,
+                "evidence_refs": refs,
+                "evidence": [
+                    f"{ref} {str((evidence_index.get(ref) or {}).get('name') or '').strip()}".strip()
+                    for ref in refs
+                ],
+            }
+            if current:
+                row["branches"] = branches
+                row["rank"] = len(rows) + 1
+                row["rank_label"] = f"主线{len(rows) + 1}"
+                row["components"] = branches
+                row["thesis"] = str(row.get("reason") or "").strip()
+                row["stage_reason"] = str(row.get("reason") or "").strip()
+            rows.append(row)
+        return rows
+
+    current = validate_rows(payload.get("current_mainlines"), current=True)
+    future = validate_rows(payload.get("future_mainlines"), current=False)
+    if not current:
+        raise ValueError("model report contains no evidence-bound current mainline")
+    payload["current_mainlines"] = current
+    payload["future_mainlines"] = future
+    payload["validation"] = {
+        "method": "runtime_evidence_reference_binding",
+        "accepted_current_count": len(current),
+        "accepted_future_count": len(future),
+        "allowed_board_count": len(allowed_boards),
+        "available_evidence_count": len(allowed_refs),
+    }
+    return payload
+
+
 def build_llm_insight_response(evidence: dict[str, Any]) -> Optional[dict[str, Any]]:
     try:
         from src.analyzer import get_analyzer
@@ -43,7 +121,7 @@ def build_llm_insight_response(evidence: dict[str, Any]) -> Optional[dict[str, A
                 "valuation_view": item.get("valuation_view"),
                 "expectation_view": item.get("expectation_view"),
                 "risks": item.get("risks"),
-                "evidence": item.get("evidence"),
+                "evidence_refs": item.get("evidence_refs"),
             }
             for item in (evidence.get("current_themes") or [])[:3]
         ],
@@ -70,13 +148,10 @@ def build_llm_insight_response(evidence: dict[str, Any]) -> Optional[dict[str, A
         '  "deep_summary": "最后一句收束，告诉用户当前最值得深挖和未来更有预期差的方向"\n'
         "}\n\n"
         "要求：\n"
-        "1. lifecycle_notes 只保留最重要的 3 条主线。\n"
-        "2. 阶段描述尽量用更像交易语言的表达，例如 主升初期 / 主升中期 / 主升后段 / 高位分歧 / 候选观察期。\n"
-        "3. 主线命名优先使用更像策略会结论的叙事名称，例如：科技成长、资源重估、电力设备与能源基础设施、军工与低空安全、创新药。\n"
-        "4. 如果一个主线下包含 半导体 / AI / 新材料 等多个科技分支，优先上提为“科技成长”，不要拘泥于单个细行业名称。\n"
-        "5. 如果证据不足，不要瞎拔高，明确写观察期或分歧期。\n"
-        "6. future_outlook 最多 4 条。\n"
-        "7. 只基于以下证据包作答：\n"
+        "1. 只保留证据足够的主线，不规定数量，不为凑数添加方向。\n"
+        "2. 阶段、叙事名称和交易含义必须根据证据动态归纳，不套用预设行业目录。\n"
+        "3. 如果证据不足，明确写未研判，不得补造。\n"
+        "4. 只基于以下证据包作答：\n"
         f"{json.dumps(payload, ensure_ascii=False)}"
     )
 
@@ -132,6 +207,7 @@ def build_llm_model_report(context: dict[str, Any]) -> Optional[dict[str, Any]]:
         parsed = json.loads(response_text)
         if not isinstance(parsed, dict):
             return None
+        parsed = _validate_model_report(parsed, evidence_pack)
         parsed.setdefault("generated_at", context["generated_at"])
         parsed.setdefault("as_of_date", evidence_pack["as_of_date"])
         parsed["llm_used"] = True
@@ -176,22 +252,22 @@ def build_model_report_prompts(evidence_pack: dict[str, Any]) -> tuple[str, str]
         '  "full_report": "3到6段完整中文研判，像策略会观点，不要列表式流水账",\n'
         '  "market_stage": {"label": "整个市场所处阶段", "description": "1到3句解释"},\n'
         '  "current_mainlines": [\n'
-        '    {"name":"主线名称","rank":1,"stage":"生命周期阶段","reason":"为什么它是主线","branches":["核心分支1","核心分支2"],"focus":"当前该看什么","risks":["风险1","风险2"],"evidence":["证据1","证据2","证据3"]}\n'
+        '    {"name":"动态归纳的主线名称","stage":"生命周期阶段","reason":"为什么它是主线","branches":["必须逐字来自证据包的板块name"],"focus":"当前该看什么","risks":["风险"],"evidence_refs":["必须来自evidence_refs的ID"]}\n'
         "  ],\n"
         '  "future_mainlines": [\n'
-        '    {"name":"未来候选主线","stage_hint":"候选观察期/早中期/左侧观察期","reason":"为什么值得跟踪","triggers":["触发条件1","触发条件2"]}\n'
+        '    {"name":"动态归纳的候选名称","stage_hint":"模型判断的阶段","reason":"为什么值得跟踪","triggers":["触发条件"],"evidence_refs":["必须来自evidence_refs的ID"]}\n'
         "  ],\n"
         '  "action_summary": ["交易结论1","交易结论2","交易结论3"],\n'
         '  "evidence_digest": {"policy":["..."],"industry":["..."],"market":["..."]}\n'
         "}\n\n"
         "要求：\n"
-        "1. current_mainlines 保留 2 到 4 条，不要只写一条。\n"
-        "2. 主线名称由你自己归纳，不要机械照抄细行业名；允许使用 AI科技链、资源重估、出海制造、电力设备与能源基础设施、创新药、军工与低空安全 这类研究表述。\n"
-        "3. 生命周期要用更像交易语言的表达，例如 主升初期 / 主升中期 / 主升后段 / 高位分歧 / 候选观察期。\n"
-        "4. 如果证据不足，就明确写观察期，不要硬拔高。\n"
-        "5. future_mainlines 只保留真正有跟踪价值的方向，不要凑数。\n"
-        "6. full_report 要直接回答：当前主线是什么、已经走到什么阶段、未来主线可能是什么。\n"
-        f"7. 证据包如下：{json.dumps(evidence_pack, ensure_ascii=False)}"
+        "1. 主线数量由证据决定；没有充分证据就返回空数组，不得凑数。\n"
+        "2. 名称、分组和生命周期必须动态归纳，禁止套用预设行业或主题目录。\n"
+        "3. current_mainlines 的每条 branches 必须逐字来自证据包板块 name，"
+        "evidence_refs 必须逐字来自 evidence_refs 字典；程序会拒绝无引用结论。\n"
+        "4. future_mainlines 也必须提供有效 evidence_refs。\n"
+        "5. full_report 直接回答当前主线、证据、阶段、反证与未来触发条件。\n"
+        f"6. 证据包如下：{json.dumps(evidence_pack, ensure_ascii=False)}"
     )
     return system_prompt, user_prompt
 

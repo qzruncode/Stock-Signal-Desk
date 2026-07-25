@@ -1,59 +1,33 @@
-"""Tests for the evidence-first risk-event tool."""
+"""Risk-event retrieval must not classify raw disclosures with phrase lists."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.tools.get_risk_events import _classify_risk_event, get_risk_events
+from src.tools.get_risk_events import _evidence_item, get_risk_events
 
 
-def test_classify_inquiry_as_medium_regulatory() -> None:
-    risk = _classify_risk_event("收到交易所问询函并说明相关问题", source_kind="announcement")
-
-    assert risk is not None
-    assert risk["risk_label"] == "监管执法"
-    assert risk["severity"] == "medium"
-    assert risk["status"] == "detected"
-
-
-def test_normal_internal_control_report_is_not_itself_a_risk() -> None:
-    risk = _classify_risk_event("关于2025年度内部控制审计报告的公告", source_kind="announcement")
-
-    assert risk is None
-
-
-def test_routine_goodwill_impairment_test_report_is_not_an_adverse_event() -> None:
-    assert _classify_risk_event(
-        "关于2025年度商誉减值测试报告的公告",
-        source_kind="announcement",
-    ) is None
-    actual = _classify_risk_event(
-        "关于计提商誉减值准备并确认减值损失的公告",
-        source_kind="announcement",
+def test_evidence_item_preserves_source_fields_without_risk_label() -> None:
+    item = _evidence_item(
+        {
+            "title": "控股股东办理部分股份解除质押",
+            "source_notice_type": "股权质押公告",
+            "publish_date": "2026-07-15",
+            "url": "https://example.com/announcement",
+        },
+        source_type="announcement",
     )
-    assert actual is not None
-    assert actual["severity"] == "high"
-    assert actual["status"] == "detected"
+
+    assert item is not None
+    assert item["title"] == "控股股东办理部分股份解除质押"
+    assert item["summary"] == "股权质押公告"
+    assert item["semantic_status"] == "model_required"
+    assert "risk_label" not in item
+    assert "severity" not in item
+    assert "status" not in item
 
 
-def test_release_of_pledge_is_mitigated_not_medium_active_risk() -> None:
-    risk = _classify_risk_event("控股股东办理部分股份解除质押", source_kind="announcement")
-
-    assert risk is not None
-    assert risk["risk_label"] == "股东质押与减持"
-    assert risk["severity"] == "low"
-    assert risk["status"] == "mitigated"
-
-
-def test_inquiry_response_is_mitigated_not_a_new_active_inquiry() -> None:
-    risk = _classify_risk_event("发行人及保荐机构关于审核问询函的回复", source_kind="announcement")
-
-    assert risk is not None
-    assert risk["severity"] == "low"
-    assert risk["status"] == "mitigated"
-
-
-def test_risk_tool_prefers_formal_announcement_and_preserves_evidence_url() -> None:
+def test_risk_tool_prefers_formal_announcement_when_title_and_date_match() -> None:
     news = {
         "success": True,
         "name": "测试公司",
@@ -82,28 +56,42 @@ def test_risk_tool_prefers_formal_announcement_and_preserves_evidence_url() -> N
         "errors": [],
         "warnings": [],
     }
-    with patch("src.tools.search_news.search_news", return_value=news), \
-         patch("src.tools.get_announcements.get_announcements", return_value=announcements):
+    with patch(
+        "src.tools.search_news.search_news",
+        return_value=news,
+    ), patch(
+        "src.tools.get_announcements.get_announcements",
+        return_value=announcements,
+    ):
         result = get_risk_events("600519")
 
     assert result["success"] is True
     assert result["item_count"] == 1
     assert result["items"][0]["source_type"] == "announcement"
     assert result["items"][0]["url"] == "https://example.com/announcement"
-    assert result["items"][0]["requires_fulltext_verification"] is False
-    assert result["items"][0]["status"] == "detected"
-    assert result["analysis"]["active_high_severity_count"] == 0
-    assert "当前状态必须按同一事项" in result["analysis"]["lifecycle_resolution"]
+    assert result["items"][0]["requires_fulltext_verification"] is True
+    assert result["has_risk_events"] is None
+    assert result["analysis"]["semantic_status"] == "model_required"
 
 
-def test_no_detected_event_is_valid_negative_evidence_not_acquisition_failure() -> None:
+def test_empty_successful_sources_are_not_converted_to_no_risk_conclusion() -> None:
     news = {"success": True, "items": [], "errors": [], "warnings": []}
-    announcements = {"success": True, "items": [], "errors": [], "warnings": []}
-    with patch("src.tools.search_news.search_news", return_value=news), \
-         patch("src.tools.get_announcements.get_announcements", return_value=announcements):
+    announcements = {
+        "success": True,
+        "items": [],
+        "errors": [],
+        "warnings": [],
+    }
+    with patch(
+        "src.tools.search_news.search_news",
+        return_value=news,
+    ), patch(
+        "src.tools.get_announcements.get_announcements",
+        return_value=announcements,
+    ):
         result = get_risk_events("000001")
 
     assert result["success"] is True
-    assert result["has_risk_events"] is False
+    assert result["has_risk_events"] is None
     assert result["item_count"] == 0
     assert result["warnings"]

@@ -84,10 +84,9 @@ def test_decision_evidence_collects_all_seven_dimensions_without_early_stop() ->
     assert result["total"] == 2
     assert all(item["evidence_coverage"]["complete_count"] == 7 for item in result["items"])
     assert all(item["evidence_coverage"]["complete"] for item in result["items"])
-    # Negative profit and weak trend are flags, not early-stop conditions: all
-    # later evidence dimensions must still be present.
+    # Raw evidence collection never applies business thresholds or early stops.
     assert all("peer_comparison" in item and "announcements" in item for item in result["items"])
-    assert all(item["screening_flags"]["negative"] for item in result["items"])
+    assert all("screening_flags" not in item for item in result["items"])
 
 
 def test_decision_evidence_marks_a_failed_dimension_instead_of_dropping_it() -> None:
@@ -150,7 +149,7 @@ def test_decision_evidence_treats_verified_zero_consensus_as_complete() -> None:
     assert coverage["missing"] == []
 
 
-def test_event_compactors_keep_long_timeline_and_lifecycle_evidence() -> None:
+def test_event_compactors_keep_raw_timeline_without_semantic_labels() -> None:
     announcements = _compact_announcements({
         "success": True,
         "items": [
@@ -169,15 +168,14 @@ def test_event_compactors_keep_long_timeline_and_lifecycle_evidence() -> None:
         "items": [{
             "title": "审核问询函",
             "date": "2026-04-01",
-            "risk_summary": "交易所提出审核问题",
-            "status": "detected",
-            "severity": "medium",
-            "lifecycle_basis": "occurrence_only_requires_chronological_resolution",
+            "summary": "交易所提出审核问题",
+            "semantic_status": "model_required",
             "requires_fulltext_verification": True,
         }],
     })
 
     assert len(announcements["items"]) == 20
-    assert risks["items"][0]["risk_summary"] == "交易所提出审核问题"
-    assert risks["items"][0]["status"] == "detected"
-    assert "chronological" in risks["items"][0]["lifecycle_basis"]
+    assert risks["items"][0]["summary"] == "交易所提出审核问题"
+    assert risks["items"][0]["semantic_status"] == "model_required"
+    assert "status" not in risks["items"][0]
+    assert "severity" not in risks["items"][0]

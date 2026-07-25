@@ -163,6 +163,6 @@ class TestAnalyzerSchemaFallback(unittest.TestCase):
         result = analyzer._parse_text_response("bullish buy setup", "AAPL", "Apple")
 
         self.assertEqual(result.report_language, "en")
-        self.assertEqual(result.trend_prediction, "Bullish")
-        self.assertEqual(result.operation_advice, "Buy")
+        self.assertEqual(result.trend_prediction, "Sideways")
+        self.assertEqual(result.operation_advice, "Hold")
         self.assertEqual(result.confidence_level, "Low")

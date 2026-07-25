@@ -107,7 +107,6 @@ def search_research_library(
     resolved = category
     specs = _route_specs(resolved, futures_type)
     cutoff = datetime.now() - timedelta(days=days)
-    terms = list(dict.fromkeys([query.lower(), *subject_terms]))
     errors: list[str] = []
     warnings: list[str] = []
     coverage: list[dict[str, Any]] = []
@@ -143,25 +142,25 @@ def search_research_library(
                     continue
                 summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
                 text = f"{title} {summary}".lower()
-                score = sum(5 if term in title.lower() else 2 if term in text else 0 for term in terms)
-                subject_match = not subject_terms or any(term in text for term in subject_terms)
                 candidates.append({
                     "title": title, "published": raw.get("published"), "summary": summary,
                     "link": link, "author": raw.get("author") or raw.get("source"),
                     "source": spec["source"], "source_type": "institutional_research_rss",
-                    "research_category": resolved, "relevance_score": score,
-                    "subject_match": subject_match,
+                    "research_category": resolved,
+                    "exact_subject_mentions": [
+                        term for term in subject_terms if term in text
+                    ],
+                    "semantic_status": "model_required",
                     "rss_route": spec["path"], "rss_params": spec["params"],
                 })
 
-    relevant = [
-        item for item in candidates
-        if item["relevance_score"] > 0 and item["subject_match"]
-    ]
-    relevant.sort(key=lambda row: (row["relevance_score"], str(row.get("published") or "")), reverse=True)
+    candidates.sort(
+        key=lambda row: str(row.get("published") or ""),
+        reverse=True,
+    )
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in relevant:
+    for item in candidates:
         key = re.sub(r"\s+", "", item["title"]).lower()
         if key in seen:
             continue
@@ -200,12 +199,12 @@ def search_research_library(
         items = items[:limit]
         fallback_used = bool(items)
         if fallback_used:
-            warnings.append("专门研究源无匹配结果，已使用原始查询进行通用联网搜索")
+            warnings.append("专门研究源没有返回时间窗内报告，已使用原始查询进行通用联网搜索")
 
     successful_sources = sum(bool(row["success"]) for row in coverage)
     acquisition_success = successful_sources > 0
     if acquisition_success and not items and not fallback_used:
-        warnings.append("研究源读取成功，但时间窗内没有与查询主题匹配的报告")
+        warnings.append("研究源读取成功，但时间窗内没有可用报告")
     known_times = [value for value in (_parse_time(item.get("published")) for item in items) if value]
     latest = max(known_times, default=None)
     retrieved_at = datetime.now().astimezone().isoformat()

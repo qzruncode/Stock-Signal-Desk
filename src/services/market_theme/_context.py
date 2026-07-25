@@ -28,8 +28,11 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
     # This endpoint is also called directly by in-process services.  Its HTTP
     # defaults are FastAPI ``Query`` objects, so callers must pass the period
     # explicitly instead of relying on the route-level default.
-    industry_flow = get_sector_flow(type="industry", top_n=8, period="today")
-    concept_flow = get_sector_flow(type="concept", top_n=8, period="today")
+    # ``records`` contains the complete provider result.  ``top_n`` only
+    # controls convenience projections in the endpoint response and must not
+    # become a hidden semantic candidate quota.
+    industry_flow = get_sector_flow(type="industry", top_n=30, period="today")
+    concept_flow = get_sector_flow(type="concept", top_n=30, period="today")
 
     rss_context: dict[str, Any] = {}
     if include_rss:
@@ -86,15 +89,17 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
         "source_snapshot": {
             "market_status": market_status,
             "market_breadth": breadth,
-            "industry_sectors": (industry_sectors.get("items") or [])[:12],
-            "concept_sectors": (concept_sectors.get("items") or [])[:12],
+            "industry_sectors": industry_sectors.get("items") or [],
+            "concept_sectors": concept_sectors.get("items") or [],
             "industry_flow": {
-                "inflow_top": (industry_flow.get("inflow_top") or [])[:8],
-                "outflow_top": (industry_flow.get("outflow_top") or [])[:8],
+                "records": industry_flow.get("records") or [],
+                "inflow_top": industry_flow.get("inflow_top") or [],
+                "outflow_top": industry_flow.get("outflow_top") or [],
             },
             "concept_flow": {
-                "inflow_top": (concept_flow.get("inflow_top") or [])[:8],
-                "outflow_top": (concept_flow.get("outflow_top") or [])[:8],
+                "records": concept_flow.get("records") or [],
+                "inflow_top": concept_flow.get("inflow_top") or [],
+                "outflow_top": concept_flow.get("outflow_top") or [],
             },
             "rss": rss_context,
             "source_catalog": source_catalog,
@@ -118,37 +123,92 @@ def get_latest_report(report_key: str) -> Optional[dict[str, Any]]:
 def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
     snapshot = context["source_snapshot"]
     rss = snapshot.get("rss") or {}
+    sections: dict[str, list[dict[str, Any]]] = {
+        "industry_flow": _identified_items(
+            (snapshot.get("industry_flow") or {}).get("records") or [],
+            "industry_flow",
+        ),
+        "concept_flow": _identified_items(
+            (snapshot.get("concept_flow") or {}).get("records") or [],
+            "concept_flow",
+        ),
+        "industry_sectors": _identified_items(
+            snapshot.get("industry_sectors") or [], "industry_sector",
+        ),
+        "concept_sectors": _identified_items(
+            snapshot.get("concept_sectors") or [], "concept_sector",
+        ),
+        "policy_headlines": summarize_feed_items(
+            rss.get("policy_calendar"), section="policy",
+        ),
+        "market_news": summarize_feed_items(
+            rss.get("market_news"), section="market_news",
+        ),
+        "strategy_reports": summarize_feed_items(
+            rss.get("strategy_reports"), section="strategy_report",
+        ),
+        "macro_reports": summarize_feed_items(
+            rss.get("macro_reports"), section="macro_report",
+        ),
+        "industry_reports": summarize_feed_items(
+            rss.get("industry_reports"), section="industry_report",
+        ),
+        "exchange_disclosure": summarize_feed_items(
+            rss.get("exchange_disclosure"), section="exchange_disclosure",
+        ),
+        "exchange_inquire": summarize_feed_items(
+            rss.get("exchange_inquire"), section="exchange_inquire",
+        ),
+        "money_center": summarize_feed_items(
+            rss.get("money_center"), section="money_center",
+        ),
+    }
+    evidence_refs = {
+        str(item["evidence_id"]): {
+            "section": section,
+            "name": item.get("name") or item.get("title") or "",
+        }
+        for section, items in sections.items()
+        for item in items
+    }
     return {
         "generated_at": context["generated_at"],
         "as_of_date": snapshot.get("market_status", {}).get("data_time") or datetime.now().date().isoformat(),
         "market_status": snapshot.get("market_status") or {},
         "market_breadth": snapshot.get("market_breadth") or {},
-        "industry_inflow_top": (snapshot.get("industry_flow") or {}).get("inflow_top") or [],
-        "industry_outflow_top": (snapshot.get("industry_flow") or {}).get("outflow_top") or [],
-        "concept_inflow_top": (snapshot.get("concept_flow") or {}).get("inflow_top") or [],
-        "concept_outflow_top": (snapshot.get("concept_flow") or {}).get("outflow_top") or [],
-        "industry_sectors": snapshot.get("industry_sectors") or [],
-        "concept_sectors": snapshot.get("concept_sectors") or [],
-        "policy_headlines": summarize_feed_items(rss.get("policy_calendar")),
-        "market_news": summarize_feed_items(rss.get("market_news")),
-        "strategy_reports": summarize_feed_items(rss.get("strategy_reports")),
-        "macro_reports": summarize_feed_items(rss.get("macro_reports")),
-        "industry_reports": summarize_feed_items(rss.get("industry_reports")),
-        "exchange_disclosure": summarize_feed_items(rss.get("exchange_disclosure")),
-        "exchange_inquire": summarize_feed_items(rss.get("exchange_inquire")),
-        "money_center": summarize_feed_items(rss.get("money_center")),
+        **sections,
+        "evidence_refs": evidence_refs,
         "source_summary": _summarize_sources(snapshot),
     }
 
 
-def summarize_feed_items(feed: Optional[dict[str, Any]], limit: int = 6) -> list[dict[str, str]]:
+def _identified_items(
+    items: list[dict[str, Any]],
+    section: str,
+) -> list[dict[str, Any]]:
+    return [
+        {**item, "evidence_id": f"{section}:{index}"}
+        for index, item in enumerate(items)
+        if isinstance(item, dict)
+    ]
+
+
+def summarize_feed_items(
+    feed: Optional[dict[str, Any]],
+    limit: int | None = None,
+    *,
+    section: str = "feed",
+) -> list[dict[str, str]]:
     items = (feed or {}).get("items") or []
     results: list[dict[str, str]] = []
-    for item in items[:limit]:
+    selected = items if limit is None else items[: max(0, int(limit))]
+    for index, item in enumerate(selected):
         results.append({
+            "evidence_id": f"{section}:{index}",
             "title": str(item.get("title") or "").strip(),
             "summary": shorten(strip_html(str(item.get("summary") or "")), 180),
             "published": str(item.get("published") or ""),
+            "link": str(item.get("link") or item.get("url") or ""),
         })
     return results
 

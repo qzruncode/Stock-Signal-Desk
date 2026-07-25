@@ -59,24 +59,15 @@ class TestIsValuePlaceholder(unittest.TestCase):
 
 
 class TestDeriveChipHealth(unittest.TestCase):
-    """Tests for _derive_chip_health."""
+    """Numeric chip fields must not be converted into business judgments."""
 
-    def test_high_profit_ratio_returns_jingti(self) -> None:
-        self.assertEqual(_derive_chip_health(0.95, 0.10), "警惕")
-        self.assertEqual(_derive_chip_health(0.9, 0.05), "警惕")
-
-    def test_high_concentration_returns_jingti(self) -> None:
-        self.assertEqual(_derive_chip_health(0.5, 0.30), "警惕")
-        self.assertEqual(_derive_chip_health(0.3, 0.25), "警惕")
-
-    def test_concentrated_moderate_profit_returns_jiankang(self) -> None:
-        self.assertEqual(_derive_chip_health(0.5, 0.10), "健康")
-        self.assertEqual(_derive_chip_health(0.6, 0.12), "健康")
-        self.assertEqual(_derive_chip_health(0.3, 0.14), "健康")
-
-    def test_otherwise_returns_yiban(self) -> None:
-        self.assertEqual(_derive_chip_health(0.2, 0.20), "一般")
-        self.assertEqual(_derive_chip_health(0.5, 0.18), "一般")
+    def test_numeric_values_remain_unclassified(self) -> None:
+        self.assertEqual(_derive_chip_health(0.95, 0.10), "未由模型评估")
+        self.assertEqual(_derive_chip_health(0.3, 0.25), "未由模型评估")
+        self.assertEqual(
+            _derive_chip_health(0.5, 0.10, language="en"),
+            "Not evaluated",
+        )
 
 
 class TestBuildChipStructureFromData(unittest.TestCase):
@@ -93,7 +84,7 @@ class TestBuildChipStructureFromData(unittest.TestCase):
         self.assertEqual(out["profit_ratio"], "56.7%")
         self.assertEqual(out["avg_cost"], 1850.5)
         self.assertEqual(out["concentration"], "12.00%")
-        self.assertEqual(out["chip_health"], "健康")
+        self.assertEqual(out["chip_health"], "未由模型评估")
 
     def test_from_dict(self) -> None:
         d = {"profit_ratio": 0.9, "avg_cost": 100.0, "concentration_90": 0.08}
@@ -101,7 +92,16 @@ class TestBuildChipStructureFromData(unittest.TestCase):
         self.assertEqual(out["profit_ratio"], "90.0%")
         self.assertEqual(out["avg_cost"], 100.0)
         self.assertEqual(out["concentration"], "8.00%")
-        self.assertEqual(out["chip_health"], "警惕")
+        self.assertEqual(out["chip_health"], "未由模型评估")
+
+    def test_explicit_model_health_is_preserved(self) -> None:
+        out = _build_chip_structure_from_data({
+            "profit_ratio": 0.5,
+            "avg_cost": 100.0,
+            "concentration_90": 0.1,
+            "chip_health": "健康",
+        })
+        self.assertEqual(out["chip_health"], "健康")
 
     def test_dict_with_string_values(self) -> None:
         d = {"profit_ratio": "0.5", "avg_cost": "25.6", "concentration_90": "0.15"}
@@ -164,7 +164,7 @@ class TestFillChipStructureIfNeeded(unittest.TestCase):
         self.assertEqual(cs["profit_ratio"], "67.0%")
         self.assertEqual(cs["avg_cost"], 1850.0)
         self.assertEqual(cs["concentration"], "11.00%")
-        self.assertEqual(cs["chip_health"], "健康")
+        self.assertEqual(cs["chip_health"], "未由模型评估")
 
     def test_merge_fill_partial_placeholder(self) -> None:
         result = self._make_result(
@@ -180,7 +180,7 @@ class TestFillChipStructureIfNeeded(unittest.TestCase):
         self.assertEqual(cs["profit_ratio"], "65.0%")  # LLM value kept
         self.assertEqual(cs["avg_cost"], 1850.0)  # filled from chip
         self.assertEqual(cs["concentration"], "11.00%")  # filled from chip
-        self.assertEqual(cs["chip_health"], "健康")  # filled from chip
+        self.assertEqual(cs["chip_health"], "未由模型评估")
 
     def test_dashboard_none_initialized(self) -> None:
         result = self._make_result(dashboard=None)
@@ -189,7 +189,7 @@ class TestFillChipStructureIfNeeded(unittest.TestCase):
         self.assertIsNotNone(result.dashboard)
         cs = result.dashboard["data_perspective"]["chip_structure"]
         self.assertEqual(cs["profit_ratio"], "67.0%")
-        self.assertEqual(cs["chip_health"], "健康")
+        self.assertEqual(cs["chip_health"], "未由模型评估")
 
     def test_no_overwrite_valid_llm_values(self) -> None:
         result = self._make_result(

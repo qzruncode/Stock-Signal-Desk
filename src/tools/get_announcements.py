@@ -1,4 +1,4 @@
-"""Company announcement tool with explicit source and event semantics."""
+"""Company announcement evidence with explicit source provenance."""
 
 from __future__ import annotations
 
@@ -10,83 +10,6 @@ import pandas as pd
 
 from src.tools._akshare import bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
-
-
-_TYPE_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("诉讼监管", ("立案", "处罚", "监管函", "问询函", "警示函", "诉讼", "仲裁", "冻结", "查封")),
-    ("业绩", ("业绩预告", "业绩快报", "年度报告", "半年度报告", "季度报告", "年报", "半年报", "季报", "财务报告", "盈利预测")),
-    ("分红", ("权益分派", "利润分配", "现金分红", "派息", "送转", "分红")),
-    ("回购", ("回购股份", "股份回购", "回购方案", "回购进展", "回购报告书")),
-    ("增持", ("增持股份", "增持计划", "增持进展")),
-    ("减持", ("减持股份", "减持计划", "减持进展", "减持结果")),
-    ("股权激励", ("股权激励", "限制性股票", "股票期权", "员工持股计划")),
-    ("高管变动", ("高管人员任职变动", "董事辞职", "监事辞职", "高管辞职", "聘任董事", "聘任高管", "任职资格")),
-    ("重大合同", ("重大合同", "中标通知", "项目中标", "签订合同", "战略合作")),
-)
-
-_HIGH_IMPORTANCE = (
-    "立案",
-    "处罚",
-    "退市",
-    "重大资产重组",
-    "控制权变更",
-    "年度报告",
-    "业绩预告",
-    "业绩快报",
-    "股份回购",
-)
-_MEDIUM_IMPORTANCE = (
-    "分红",
-    "权益分派",
-    "增持",
-    "减持",
-    "股权激励",
-    "中标",
-    "重大合同",
-    "高管",
-    "董事",
-    "问询",
-)
-
-_ALLOWED_TYPES = frozenset({
-    "all",
-    "业绩",
-    "分红",
-    "回购",
-    "增持",
-    "减持",
-    "股权激励",
-    "高管变动",
-    "重大合同",
-    "诉讼监管",
-})
-
-
-def _announcement_category(title: str, source_type: str = "") -> str:
-    text = f"{source_type} {title}"
-    for category, keywords in _TYPE_RULES:
-        if any(keyword in text for keyword in keywords):
-            return category
-    return "其他"
-
-
-def _importance(title: str, source_type: str = "") -> str:
-    text = f"{source_type} {title}"
-    if any(keyword in text for keyword in _HIGH_IMPORTANCE):
-        return "high"
-    if any(keyword in text for keyword in _MEDIUM_IMPORTANCE):
-        return "medium"
-    return "normal"
-
-
-def _tags(title: str, source_type: str = "") -> list[str]:
-    text = f"{source_type} {title}"
-    return list(dict.fromkeys(
-        keyword
-        for _, keywords in _TYPE_RULES
-        for keyword in keywords
-        if keyword in text
-    ))[:8]
 
 
 def _empty_notice_frame() -> pd.DataFrame:
@@ -168,20 +91,17 @@ def _normalize_item(row: dict[str, Any], code: str) -> dict[str, Any] | None:
         publish_date = raw_date.isoformat()
     else:
         publish_date = str(raw_date or "").strip()[:10] or None
-    category = _announcement_category(title, source_type)
     return {
         "symbol": str(row.get("代码") or code),
         "name": str(row.get("名称") or "").strip() or None,
         "title": title,
-        "notice_type": category,
+        "notice_type": source_type or None,
         "source_notice_type": source_type or None,
         "publish_date": publish_date,
         "url": str(row.get("网址") or "").strip(),
         "source": "RSSHub/交易所官方披露" if row.get("_rss_route") else "AKShare/东方财富公司公告",
         "source_type": "announcement",
-        "importance": _importance(title, source_type),
-        "tags": _tags(title, source_type),
-        "classification_method": "deterministic_title_and_source_type_rules",
+        "semantic_status": "model_required",
     }
 
 
@@ -199,8 +119,8 @@ def get_announcements(
     limit = int(limit)
     if not 1 <= days <= 730:
         raise ValueError("days 必须在 1 到 730 之间")
-    if type not in _ALLOWED_TYPES:
-        raise ValueError(f"不支持的 type: {type}")
+    if type != "all":
+        raise ValueError("公告语义类型不再由程序词典筛选，请使用 type='all' 并由模型分析")
     if not 1 <= limit <= 100:
         raise ValueError("limit 必须在 1 到 100 之间")
 
@@ -249,8 +169,6 @@ def get_announcements(
         item = _normalize_item(row, code)
         if item is None:
             continue
-        if type != "all" and item["notice_type"] != type:
-            continue
         key = re.sub(r"\s+", "", f"{item['title']}|{item.get('publish_date') or ''}").lower()
         if key in seen:
             continue
@@ -283,12 +201,9 @@ def get_announcements(
         warnings.append(f"在 {begin_date} 至 {end_date} 范围内未找到符合类型条件的公告")
     latest = next((item.get("publish_date") for item in items if item.get("publish_date")), None)
     type_distribution: dict[str, int] = {}
-    importance_distribution: dict[str, int] = {}
     for item in items:
-        category = str(item.get("notice_type") or "其他")
-        importance = str(item.get("importance") or "normal")
+        category = str(item.get("source_notice_type") or "未提供")
         type_distribution[category] = type_distribution.get(category, 0) + 1
-        importance_distribution[importance] = importance_distribution.get(importance, 0) + 1
     return {
         "symbol": code,
         "name": name,
@@ -299,8 +214,9 @@ def get_announcements(
         "item_count": len(items),
         "has_announcements": bool(items),
         "analysis": {
-            "notice_type_distribution": dict(sorted(type_distribution.items(), key=lambda pair: (-pair[1], pair[0]))),
-            "importance_distribution": importance_distribution,
+            "semantic_status": "model_required",
+            "classification_method": None,
+            "source_notice_type_distribution": dict(sorted(type_distribution.items(), key=lambda pair: (-pair[1], pair[0]))),
             "latest_announcement_date": latest,
         },
         "coverage_start": begin_date,
@@ -326,17 +242,17 @@ def get_announcements(
 TOOL = ToolSpec(
     name="get_announcements",
     description=(
-        "获取单只 A 股在指定时间窗内的正式公司公告，返回公告日期、原始公告类型、标准事件分类、"
-        "重要性、标签和可引用链接。回购、增持、减持分别处理；没有公告也是有效查询结果。"
+        "获取单只 A 股在指定时间窗内的正式公司公告，返回公告日期、数据源原始类型和可引用链接。"
+        "工具不按标题词典判断事件分类或重要性；没有公告也是有效查询结果。"
     ),
     parameters=object_schema({
         "symbol": {"type": "string", "description": "A 股代码或名称"},
         "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 30, "description": "向前查询自然日数"},
         "type": {
             "type": "string",
-            "enum": ["all", "业绩", "分红", "回购", "增持", "减持", "股权激励", "高管变动", "重大合同", "诉讼监管"],
+            "enum": ["all"],
             "default": "all",
-            "description": "标准公告事件分类",
+            "description": "固定为 all；公告语义由模型根据证据判断",
         },
         "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
     }, ["symbol"]),

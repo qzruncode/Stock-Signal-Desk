@@ -52,14 +52,10 @@ class MarketThemeService:
     REPORT_KEY = "market_mainline"
 
     def analyze(self, *, force: bool = False, use_llm: bool = True) -> dict[str, Any]:
-        del use_llm
         if not force:
             cached = cache_get("all")
             if _cache_is_usable(cached):
                 cached["_cached"] = True
-                cached["llm_used"] = False
-                cached["model_used"] = None
-                cached["fallback_used"] = True
                 return cached
 
         result = run_isolated(force=force, layer="all")
@@ -67,9 +63,6 @@ class MarketThemeService:
             cached = cache_get("all")
             if _cache_is_usable(cached):
                 cached["_cached"] = True
-                cached["llm_used"] = False
-                cached["model_used"] = None
-                cached["fallback_used"] = True
                 cached.setdefault("degraded_reason", "isolated_runner_failed")
                 return cached
 
@@ -78,9 +71,11 @@ class MarketThemeService:
         result["_fetched_at"] = datetime.now().isoformat()
         result.setdefault("_cached", False)
         result.setdefault("data_time", datetime.now().date().isoformat())
-        result["llm_used"] = False
-        result["model_used"] = None
-        result["fallback_used"] = True
+        result.setdefault("llm_used", False)
+        result.setdefault("model_used", None)
+        result["fallback_used"] = not bool(result.get("llm_used"))
+        if use_llm and result.get("semantic_status") != "completed":
+            result["report_pending"] = True
         if not result.get("_cached") and not result.get("degraded_reason"):
             cache_put("all", result)
         return result
@@ -216,7 +211,10 @@ class MarketThemeService:
                 return cached
 
         context = collect_context(force=force, include_rss=False)
-        result = build_summary_response(context)
+        result = build_summary_response(
+            context,
+            model_report=get_latest_report(self.REPORT_KEY),
+        )
         result["_fetched_at"] = datetime.now().isoformat()
         result.setdefault("_cached", False)
         if not result.get("_cached"):
@@ -287,12 +285,15 @@ class MarketThemeService:
 
 def run_public_analysis(force: bool = False) -> dict[str, Any]:
     context = collect_context(force=force, include_rss=True)
-    result = build_response(context)
+    result = build_response(
+        context,
+        model_report=get_latest_report(MarketThemeService.REPORT_KEY),
+    )
     result["_cached"] = False
     result["data_time"] = context["source_snapshot"]["market_status"].get("data_time")
-    result["llm_used"] = False
-    result["model_used"] = None
-    result["fallback_used"] = True
+    result.setdefault("llm_used", False)
+    result.setdefault("model_used", None)
+    result["fallback_used"] = not bool(result.get("llm_used"))
     return result
 
 
@@ -306,15 +307,18 @@ def run_public_evidence(force: bool = False) -> dict[str, Any]:
 
 def run_public_insight(force: bool = False) -> dict[str, Any]:
     evidence = run_public_evidence(force=force)
-    result = build_insight_response(evidence)
+    report = get_latest_report(MarketThemeService.REPORT_KEY) or {}
+    result = build_insight_response({**evidence, **report})
     result["_cached"] = False
     result["data_time"] = evidence.get("data_time")
     return result
 
 
 def run_public_insight_llm(force: bool = False) -> dict[str, Any]:
-    evidence = run_public_evidence(force=force)
-    result = build_llm_insight_response(evidence) or build_insight_response(evidence)
+    context = collect_context(force=force, include_rss=True)
+    report = build_llm_model_report(context)
+    evidence = build_evidence_response(context)
+    result = build_insight_response({**evidence, **(report or {})})
     result["_cached"] = False
     result["data_time"] = evidence.get("data_time")
     return result

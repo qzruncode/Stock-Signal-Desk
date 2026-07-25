@@ -3,7 +3,7 @@
 
 Data sources:
   - 行业板块: ak.stock_board_industry_name_em() — 东方财富行业板块
-  - 概念板块: ak.stock_board_change_em() — 东方财富板块异动 (此接口可用), 过滤后约 200+ 条, 全量含涨跌幅
+  - 概念板块: ak.stock_board_concept_name_em() — 东方财富概念目录，板块异动仅按精确名称补行情
   - 降级源: ak.stock_sector_spot() — 新浪行业/概念板块
   - 地区板块: 暂不支持
 """
@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 from datetime import datetime
 from typing import Optional
@@ -116,61 +115,9 @@ def _sector_data_time() -> str:
     return datetime.now().date().isoformat()
 
 
-# ---------------------------------------------------------------------------
-# Concept filter: remove non-concept entries from EM board_change
-# ---------------------------------------------------------------------------
-
-# Entries to exclude — financial reports, market types, indices, etc.
-_CONCEPT_EXCLUDE = {
-    # 财报分类
-    '2025三季报预增', '2025三季报预减', '2025三季报扭亏',
-    '2025年报预增', '2025年报预减', '2025年报扭亏',
-    '2026—季报预增', '2026—季报预减', '2026—季报扭亏',
-    '预盈预增', '预亏预减',
-    # 市场板块类型
-    'AB股', 'B股', 'AH股', 'GDR', 'ST股',
-    '融资融券', '沪股通', '深股通',
-    # 指数
-    'HS300_', '上证50_', '上证180_', '上证380_',
-    '沪深300', '中证500', '中证100', '中证1000', '中证2000',
-    '创业板综', '创业板指', '深证100R', '深证300', '深成500',
-    '中小板综', '中小板指', '科创50', '科创100', '科创综指',
-    '上证收益', '深证收益', '中证红利', '上证红利',
-    # 机构/风格
-    '机构重仓', '基金重仓', '社保重仓', '券商重仓',
-    '保险重仓', '信托重仓', 'QFII重仓',
-    # 昨日系列
-    '昨日涨停', '昨日跌停', '昨日连板', '昨日触板',
-    '昨日高振幅', '昨日大阴线', '昨日大阳线',
-    '昨日涨停股', '昨日跌停股',
-    # 其他非概念
-    '次新股', '新股', '破净股', '低价股', '百元股',
-    '中字头', '茅指数', '宁组合', 'ST概念',
-    '微小盘', '小盘股', '中盘股', '大盘股', '微盘股',
-    '中盘成长', '中盘价值', '小盘成长', '小盘价值',
-    '大盘成长', '大盘价值',
-    '历史新高', '历史新低', '连续上涨', '连续下跌',
-    '转债标的', '债转股', '转债股',
-    '央企改革', '国企改革', '地方国企改革',
-}
-
-
-def _is_likely_concept(name: str) -> bool:
-    """Check if a board name from EM is likely a concept/theme board."""
-    name = str(name).strip()
-    if not name:
-        return False
-    if name in _CONCEPT_EXCLUDE:
-        return False
-    # Exclude names starting with year pattern like "2025..."
-    if re.match(r'^\d{4}', name):
-        return False
-    return True
-
-
 def _normalize_name(name: str) -> str:
-    """Normalize board name for matching."""
-    return re.sub(r'\s+', '', str(name)).lower()
+    """Normalize provider formatting for exact identifier joins."""
+    return "".join(str(name).split()).casefold()
 
 
 # ---------------------------------------------------------------------------
@@ -253,12 +200,7 @@ def _fetch_industry() -> list[dict]:
 
 
 def _fetch_concept() -> list[dict]:
-    """Fetch concept board list from EM board_change (东方财富板块异动).
-
-    This endpoint works and returns boards with 涨跌幅. We filter out non-concept
-    entries (financial reports, market types, indices) and enrich with THS concept
-    codes where available.
-    """
+    """Fetch the provider's authoritative concept catalog and exact-join quotes."""
     import time as _time
     import akshare as ak
 
@@ -266,59 +208,59 @@ def _fetch_concept() -> list[dict]:
     result: list[dict] = []
 
     try:
-        # 1. Get concept name→code mapping from Eastmoney
-        code_map: dict[str, str] = {}
-        try:
-            names_df = ak.stock_board_concept_name_em()
-            if names_df is not None and not names_df.empty:
-                for _, row in names_df.iterrows():
-                    code_map[_normalize_name(str(row.get('板块名称', '')))] = str(row.get('板块代码', ''))
-        except Exception as e:
-            logger.warning(f"[Sectors] concept EM names failed: {e}")
-
-        # 2. Get board change data from EM (this endpoint works)
-        change_df = ak.stock_board_change_em()
-        if change_df is None or change_df.empty:
-            logger.warning("[Sectors] concept: EM board_change returned empty")
+        names_df = ak.stock_board_concept_name_em()
+        if names_df is None or names_df.empty:
+            logger.warning("[Sectors] concept catalog returned empty")
             return _fetch_sector_sina("概念")
 
-        for _, row in change_df.iterrows():
-            name = str(row.get('板块名称', '')).strip()
-            if not name or not _is_likely_concept(name):
-                continue
+        change_by_name: dict[str, dict] = {}
+        try:
+            change_df = ak.stock_board_change_em()
+            if change_df is not None and not change_df.empty:
+                for _, change_row in change_df.iterrows():
+                    change_name = str(
+                        change_row.get("板块名称") or ""
+                    ).strip()
+                    if change_name:
+                        change_by_name[_normalize_name(change_name)] = (
+                            change_row.to_dict()
+                        )
+        except Exception as exc:
+            logger.warning(
+                "[Sectors] concept quote enrichment failed: %s",
+                exc,
+            )
 
-            change_pct = row.get('涨跌幅')
+        for _, catalog_row in names_df.iterrows():
+            name = str(catalog_row.get("板块名称") or "").strip()
+            code = str(catalog_row.get("板块代码") or "").strip()
+            if not name:
+                continue
+            quote_row = change_by_name.get(_normalize_name(name), {})
+            change_pct = quote_row.get(
+                "涨跌幅",
+                catalog_row.get("涨跌幅"),
+            )
             if change_pct == '-' or change_pct is None:
                 change_pct = None
             else:
                 change_pct = _safe_float(change_pct)
-
-            # Try to find THS code via fuzzy match
-            code = ''
-            norm = _normalize_name(name)
-            # Exact match
-            if norm in code_map:
-                code = code_map[norm]
-            else:
-                # Try removing '概念' suffix for matching
-                base = norm.replace('概念', '')
-                if base in code_map:
-                    code = code_map[base]
-
-            item = {
+            result.append({
                 'name': name,
                 'code': code,
                 'change_pct': change_pct,
-                'net_flow': _safe_float(row.get('主力净流入')),
-                # concept boards don't have these, kept for API compatibility
+                'net_flow': _safe_float(
+                    quote_row.get(
+                        "主力净流入",
+                        catalog_row.get("主力净流入"),
+                    )
+                ),
                 'lead_stock': '',
                 'up_count': None,
                 'down_count': None,
                 'data_source': '东方财富',
-            }
-            result.append(item)
+            })
 
-        # Sort by change_pct desc (nulls last)
         result.sort(key=lambda x: (x['change_pct'] is not None, x['change_pct'] or 0), reverse=True)
 
         logger.info(f"[Sectors] concept: {len(result)} 条, {_time.time() - t0:.1f}s")

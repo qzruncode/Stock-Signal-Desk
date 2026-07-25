@@ -4,12 +4,11 @@
 Name-to-Code Resolution Engine
 ===================================
 
-Resolve stock name to code: local mapping + pinyin + AkShare fallback + fuzzy matching.
+Resolve stock name to code from exact maintained security identities.
 """
 
 from __future__ import annotations
 
-import difflib
 import logging
 import time
 from typing import Dict, Optional, Set, Tuple
@@ -95,8 +94,8 @@ def get_database_stock_indexes() -> tuple[Dict[str, str], Dict[str, str]]:
 
     ``STOCK_NAME_MAP`` is intentionally small and cannot resolve most current
     A-share names.  The Stocks page already maintains a full local universe,
-    so Agent tools must use that same source before attempting network or
-    fuzzy fallbacks.  A short cache keeps per-tool resolution inexpensive.
+    so Agent tools must use that same source before the exact-name network
+    refresh. A short cache keeps per-tool resolution inexpensive.
     """
     global _database_cache
     now = time.time()
@@ -158,30 +157,15 @@ def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
         return None
 
 
-def _is_single_char_typo(input_name: str, candidate_name: str) -> bool:
-    """Return True when two names only differ by one character position."""
-    if not input_name or not candidate_name:
-        return False
-    if len(input_name) != len(candidate_name):
-        return False
-    # Keep typo fallback conservative: only for names with enough signal.
-    if len(input_name) < 3:
-        return False
-    diff = sum(1 for a, b in zip(input_name, candidate_name) if a != b)
-    return diff == 1
-
-
-def resolve_name_to_code(name: str, *, allow_fuzzy: bool = True) -> Optional[str]:
+def resolve_name_to_code(name: str) -> Optional[str]:
     """
     Resolve stock name to code.
 
     Strategy (in order):
     1. If input looks like a code (5-6 digits or 1-5 letters), return it normalized.
     2. Local STOCK_NAME_MAP reverse (exclude ambiguous names).
-    3. Pinyin match against local names.
-    4. AkShare online fallback (A-shares).
-    5. Fuzzy match (difflib).
-    6. Return None.
+    3. AkShare exact-name fallback (A-shares).
+    4. Return None.
 
     Args:
         name: Stock name or code string.
@@ -212,58 +196,19 @@ def resolve_name_to_code(name: str, *, allow_fuzzy: bool = True) -> Optional[str
     if s in database_reverse:
         return database_reverse[s]
 
-    # 3. Pinyin match (exact)
-    try:
-        from pypinyin import lazy_pinyin
-
-        input_pinyin = "".join(lazy_pinyin(s)).lower()
-        for local_name, code in local_reverse.items():
-            local_pinyin = "".join(lazy_pinyin(local_name)).lower()
-            if input_pinyin == local_pinyin:
-                return code
-    except ImportError:
-        pass
-    except Exception as e:
-        logger.debug(f"[NameResolver] Pinyin match failed: {e}")
-
-    # Skip AkShare/fuzzy fallback for non-CJK free text such as random Latin noise.
-    # These paths are expensive and only meaningfully help Chinese stock names.
+    # Skip the A-share network identity refresh for non-CJK free text.
     if not _contains_cjk(s):
-        logger.debug(f"[NameResolver] Skip CJK-only fallbacks for non-CJK input: {s}")
+        logger.debug(
+            "[NameResolver] skip CJK-only identity refresh for non-CJK input: %s",
+            s,
+        )
         return None
 
-    # 4. AkShare fallback
+    # 3. AkShare exact-name fallback
     akshare_map = _get_akshare_name_to_code()
     if akshare_map and s in akshare_map:
         logger.debug(f"[NameResolver] 命中 AkShare 映射: {s} -> {akshare_map[s]}")
         return akshare_map[s]
 
-    if not allow_fuzzy:
-        logger.debug(f"[NameResolver] strict exact resolution failed: {s}")
-        return None
-
-    # 5. Fuzzy match (local + akshare, local takes precedence)
-    all_name_to_code = dict(database_reverse)
-    all_name_to_code.update(local_reverse)
-    if akshare_map:
-        all_name_to_code.update(akshare_map)
-    # Skip fuzzy matching for very short inputs (<=2 chars) to avoid false positives,
-    # e.g. '中国' matching arbitrary company names in a pool of 5000+ stocks.
-    # Use a higher cutoff (0.8) to reduce mis-hits on longer inputs as well.
-    if len(s) > 2:
-        names = list(all_name_to_code.keys())
-        matches = difflib.get_close_matches(s, names, n=1, cutoff=0.8)
-        if matches:
-            logger.debug(f"[NameResolver] 命中模糊匹配: input={s}, matched={matches[0]}")
-            return all_name_to_code[matches[0]]
-
-        # Conservative fallback for one-character typo in medium/long names.
-        # This keeps the strict default threshold while fixing obvious misspellings
-        # such as "贵州茅苔" -> "贵州茅台".
-        typo_matches = difflib.get_close_matches(s, names, n=1, cutoff=0.7)
-        if typo_matches and _is_single_char_typo(s, typo_matches[0]):
-            logger.debug(f"[NameResolver] 命中单字误写兜底: input={s}, matched={typo_matches[0]}")
-            return all_name_to_code[typo_matches[0]]
-
-    logger.debug(f"[NameResolver] 解析失败: {s}")
+    logger.debug("[NameResolver] exact identity resolution failed: %s", s)
     return None

@@ -24,7 +24,6 @@ def structured_thesis_queries(
             continue
         values.append(domain.get("label"))
         values.extend(domain.get("board_queries") or [])
-    values.extend(context.get("inferred_context_themes") or [])
     values.append(context.get("summary"))
     values.append(stock_info.get("_investment_thesis"))
     research_scope = stock_info.get("_derived_research_scope")

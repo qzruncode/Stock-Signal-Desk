@@ -36,15 +36,8 @@ from .llm_parse import (
     _pick_theme_detail,
 )
 from .normalization import (
-    _CATALYST_KEYWORDS,
-    _FADING_STAGE_KEYWORDS,
-    _PRICE_WAR_KEYWORDS,
-    _THREE_YEAR_SPACE_KEYWORDS,
     _as_dict,
     _as_list,
-    _contains_any,
-    _extract_competition_clues,
-    _extract_driver_clues,
     _first_dict,
     _list_of_dicts,
     _normalize_symbol,
@@ -55,17 +48,62 @@ from .normalization import (
     _summarize_text_items,
 )
 from .report import (
-    _build_driver_signals,
     _build_streaming_industry_cycle_draft,
-    _infer_beneficiary_level,
-    _infer_cycle_phase,
     _is_usable_report_payload,
-    _merge_detector_with_fallback,
-    _pick_failed_reason,
-    _report_has_conflicting_conclusion,
 )
 
 logger = logging.getLogger(__name__)
+
+_MAINLINE_CRITERION_IDS = (
+    "market_mainline_membership",
+    "market_attention",
+    "substantive_business_link",
+    "actual_business_benefit",
+    "structural_drivers",
+    "medium_term_catalysts",
+)
+_INDUSTRY_BETA_CRITERION_IDS = (
+    "industry_upcycle",
+    "three_year_space",
+    "competition_quality",
+    "structural_drivers",
+)
+
+
+def _validated_detector(
+    value: Any,
+    expected_ids: tuple[str, ...],
+    *,
+    label: str,
+) -> dict[str, Any]:
+    detector = _as_dict(value)
+    items = _list_of_dicts(detector.get("checklist"))
+    by_id = {
+        _normalize_text(item.get("criterion_id")): item
+        for item in items
+        if _normalize_text(item.get("criterion_id"))
+    }
+    missing = [criterion_id for criterion_id in expected_ids if criterion_id not in by_id]
+    extra = [criterion_id for criterion_id in by_id if criterion_id not in expected_ids]
+    ordered = [by_id[criterion_id] for criterion_id in expected_ids if criterion_id in by_id]
+    if missing or extra or len(ordered) != len(expected_ids):
+        return {
+            "passed": False,
+            "conclusion": "",
+            "failed_reason": (
+                f"{label}结构不完整；missing={missing} extra={extra}。"
+                "未使用关键词或固定分数补判。"
+            ),
+            "checklist": ordered,
+        }
+    return {
+        "passed": bool(detector.get("passed")) and all(
+            bool(item.get("passed")) for item in ordered
+        ),
+        "conclusion": _normalize_text(detector.get("conclusion")),
+        "failed_reason": detector.get("failed_reason"),
+        "checklist": ordered,
+    }
 
 
 def _persist_cache(symbol: str, payload: dict[str, Any]) -> None:
@@ -88,13 +126,38 @@ class IndustryCycleService:
         code = _normalize_symbol(symbol)
         if not force:
             cached = _cache_get(code)
-            if cached:
+            if _is_usable_report_payload(cached):
                 cached["_cached"] = True
                 return cached
 
-        payload = self._build_payload(code, force=force)
+        payload = self._analyze_semantically(code, force=force)
         _persist_cache(code, payload)
         return payload
+
+    def _analyze_semantically(self, symbol: str, *, force: bool) -> dict[str, Any]:
+        """Collect raw evidence and delegate every business judgment to the model."""
+        evidence_bundle = self._collect_evidence_bundle(
+            symbol=symbol,
+            force=force,
+        )
+        evidence_pack = evidence_bundle["evidence_pack"]
+        system_prompt, user_prompt = self._build_model_report_prompts(evidence_pack)
+        gate = _assess_evidence_gate(evidence_pack)
+        if not gate.get("passed"):
+            return _build_evidence_insufficient_report(
+                symbol=symbol,
+                evidence_pack=evidence_pack,
+                gate=gate,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        return self._build_llm_industry_cycle_report(
+            symbol=symbol,
+            evidence_bundle=evidence_bundle,
+            evidence_pack=evidence_pack,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
 
     def get_report(self, symbol: str, *, force: bool = False) -> dict[str, Any]:
         code = _normalize_symbol(symbol)
@@ -112,9 +175,6 @@ class IndustryCycleService:
             if cached:
                 logger.info("industry cycle report cache is stale or incomplete for %s", code)
 
-            # Reuse the same-day finalized snapshot as a degraded fallback before
-            # telling the page to start a new model task. This keeps page/model
-            # consumers aligned on one report object and avoids duplicate token burn.
             day_snapshot = _cache_get(code)
             if _is_usable_report_payload(day_snapshot):
                 day_snapshot["_cached"] = True
@@ -123,14 +183,6 @@ class IndustryCycleService:
                 return day_snapshot
             if day_snapshot:
                 logger.info("industry cycle day snapshot is stale or incomplete for %s", code)
-
-            rebuilt_payload = self._build_payload(code, force=False)
-            if _is_usable_report_payload(rebuilt_payload):
-                rebuilt_payload["_cached"] = False
-                rebuilt_payload["report_pending"] = False
-                _persist_cache(code, rebuilt_payload)
-                _persist_report_cache(code, rebuilt_payload)
-                return rebuilt_payload
         return self._build_minimal_report(code)
 
     def submit_report_task(self, symbol: str, *, force: bool = True):
@@ -546,61 +598,10 @@ class IndustryCycleService:
         evidence_pack["stock_focus_snapshot"] = stock_focus_snapshot
         _emit(30, "已汇总实时行情与K线交易快照", dict(evidence_pack))
 
-        company_texts = [
-            main_business,
-            *[
-                f"{_normalize_text(item.get('title'))} {_normalize_text(item.get('summary'))}"
-                for item in _list_of_dicts(news_data.get("items"))[:8]
-            ],
-            *[
-                f"{_normalize_text(item.get('title'))} {_normalize_text(item.get('summary') or item.get('content'))}"
-                for item in _list_of_dicts(announcements_data.get("items"))[:8]
-            ],
-            *[
-                f"{_normalize_text(item.get('title'))} {_normalize_text(item.get('industry'))} {_normalize_text(item.get('rating'))}"
-                for item in _list_of_dicts(research_data.get("items"))[:6]
-            ],
-            *[
-                f"{_normalize_text(item.get('title'))} {_normalize_text(item.get('risk_summary'))}"
-                for item in _list_of_dicts(risk_data.get("items"))[:6]
-            ],
-            _normalize_text(_as_dict(evidence_pack.get("shareholder_snapshot")).get("actual_controller")),
-            *[
-                f"{_normalize_text(item.get('holder'))} {_normalize_text(item.get('direction'))} {item.get('pct') or ''}"
-                for item in _list_of_dicts(_as_dict(evidence_pack.get("shareholder_snapshot")).get("major_holder_changes"))[:6]
-            ],
-            _normalize_text(stock_focus_snapshot.get("focus_view")),
-            " ".join(_as_list(stock_focus_snapshot.get("finance_points"))[:4]),
-            " ".join(_as_list(stock_focus_snapshot.get("holder_points"))[:4]),
-            " ".join(_as_list(stock_focus_snapshot.get("trading_points"))[:4]),
-            " ".join(
-                str(part) for part in [
-                    _as_dict(trading_snapshot.get("latest_quote")).get("change_pct"),
-                    _as_dict(trading_snapshot.get("latest_quote")).get("volume_ratio"),
-                    _as_dict(trading_snapshot.get("latest_quote")).get("turnover_rate"),
-                    _as_dict(trading_snapshot.get("momentum")).get("pct_chg_20d"),
-                    _as_dict(trading_snapshot.get("momentum")).get("pct_chg_60d"),
-                    _as_dict(stock_flow_snapshot).get("stage_change_pct"),
-                    _as_dict(stock_flow_snapshot).get("continuous_turnover_rate"),
-                    _as_dict(stock_flow_snapshot).get("net_inflow"),
-                ] if part not in (None, "")
-            ),
-            " ".join(
-                str(part) for part in [
-                    latest_income.get("revenue_yoy"),
-                    latest_income.get("parent_net_profit_yoy"),
-                    latest_income.get("research_expense"),
-                    latest_cashflow.get("capex"),
-                    latest_balance.get("contract_liabilities"),
-                ] if part not in (None, "")
-            ),
-            _normalize_text(trading_signal_snapshot.get("trend_stage")),
-            _normalize_text(trading_signal_snapshot.get("trend_reason")),
-            " ".join(_as_list(trading_signal_snapshot.get("risk_flags"))[:4]),
-            " ".join(_as_list(trading_signal_snapshot.get("positive_flags"))[:4]),
-        ]
-        driver_clues = _extract_driver_clues(*company_texts)
-        competition_clues = _extract_competition_clues(*company_texts)
+        # Raw company evidence is passed to the model unchanged.  The service
+        # no longer promotes phrases into driver or competition conclusions.
+        driver_clues: dict[str, list[str]] = {}
+        competition_clues: list[str] = []
 
         sentiment_data = _as_dict(get_sentiment(symbol=symbol, days=90, force=force))
         social_data = _as_dict(get_social_sentiment(symbol=symbol, days=90, force=force))
@@ -657,18 +658,12 @@ class IndustryCycleService:
         sentiment_snapshot = _prune_none({
             "news_count": len(news_data.get("items") or []),
             "research_count": len(research_data.get("items") or []),
-            "positive_research_count": sum(
-                1 for item in (research_data.get("items") or [])
-                if _contains_any(item.get("rating"), ("买入", "增持", "推荐", "优于大市", "强烈推荐"))
-            ),
-            "sentiment_score": _safe_float(sentiment_data.get("sentiment_score")) or 0.0,
-            "social_score": _safe_float(social_data.get("overall_score")) or 0.0,
             "discussion_count": _safe_int(social_data.get("total_discussion")) or 0,
+            "semantic_status": "model_required",
         })
         risk_snapshot = _prune_none({
-            "high_risk_count": _safe_int((risk_data.get("analysis") or {}).get("severity_distribution", {}).get("high")) or 0,
-            "medium_risk_count": _safe_int((risk_data.get("analysis") or {}).get("severity_distribution", {}).get("medium")) or 0,
-            "top_risk_labels": ((risk_data.get("analysis") or {}).get("top_risk_labels") or [])[:5],
+            "item_count": len(_list_of_dicts(risk_data.get("items"))),
+            "semantic_status": "model_required",
         })
         evidence_pack["sentiment_snapshot"] = sentiment_snapshot
         evidence_pack["risk_snapshot"] = risk_snapshot
@@ -724,11 +719,22 @@ class IndustryCycleService:
             "industry_pe": _safe_float(industry_average.get("pe")),
             "industry_pb": _safe_float(industry_average.get("pb")),
             "industry_sample_size": _safe_int(industry_average.get("sample_size")),
-            "pe_premium_vs_industry": _safe_float(((valuation_signal.get("metrics") or {}).get("pe_premium_vs_industry"))),
-            "pb_premium_vs_industry": _safe_float(((valuation_signal.get("metrics") or {}).get("pb_premium_vs_industry"))),
-            "price_overdraft_status": _normalize_text(valuation_signal.get("status")) or None,
-            "price_overdraft_score": _safe_float(valuation_signal.get("score")),
-            "reasoning": (valuation_signal.get("reasoning") or [])[:5],
+            "pe_premium_vs_industry_pct": _safe_float(
+                (valuation_signal.get("metrics") or {}).get(
+                    "pe_premium_vs_industry_pct"
+                )
+            ),
+            "pb_premium_vs_industry_pct": _safe_float(
+                (valuation_signal.get("metrics") or {}).get(
+                    "pb_premium_vs_industry_pct"
+                )
+            ),
+            "forward_pe_change_vs_ttm_pct": _safe_float(
+                (valuation_signal.get("metrics") or {}).get(
+                    "forward_pe_change_vs_ttm_pct"
+                )
+            ),
+            "semantic_status": "model_required",
         })
         if _safe_int(peer_snapshot.get("sample_size")) in (0, None) and _safe_int(industry_average.get("sample_size")) not in (0, None):
             peer_snapshot = {
@@ -818,18 +824,18 @@ class IndustryCycleService:
             "analysis_framework": {
                 "analysis_status_options": ["主线", "分支主线", "观察", "退潮", "非主线"],
                 "mainline_detector_items": [
-                    "当前属于市场主线 / 分支主线",
-                    "不是冷门低估股",
-                    "不是单纯蹭概念",
-                    "主营业务能实际受益",
-                    "有政策 / 技术 / 需求 / 供给变化驱动",
-                    "未来 6-12 个月仍有催化",
+                    {"criterion_id": "market_mainline_membership", "question": "当前是否属于市场主线或分支主线"},
+                    {"criterion_id": "market_attention", "question": "是否具有足够市场与机构跟踪证据"},
+                    {"criterion_id": "substantive_business_link", "question": "是否不是单纯概念映射"},
+                    {"criterion_id": "actual_business_benefit", "question": "主营业务是否能够实际受益"},
+                    {"criterion_id": "structural_drivers", "question": "是否存在政策、技术、需求或供给变化驱动"},
+                    {"criterion_id": "medium_term_catalysts", "question": "未来6至12个月是否仍有可验证催化"},
                 ],
                 "industry_beta_detector_items": [
-                    "行业处于上升周期",
-                    "未来 3 年空间明确",
-                    "不是严重价格战 / 内卷行业",
-                    "有政策 / 技术 / 需求 / 供给变化驱动",
+                    {"criterion_id": "industry_upcycle", "question": "行业是否处于上升周期"},
+                    {"criterion_id": "three_year_space", "question": "未来三年空间是否明确"},
+                    {"criterion_id": "competition_quality", "question": "是否不存在严重价格战或内卷"},
+                    {"criterion_id": "structural_drivers", "question": "是否存在政策、技术、需求或供给变化驱动"},
                 ],
             },
             "stock_profile": {
@@ -866,11 +872,12 @@ class IndustryCycleService:
                 "risk_events": [
                     {
                         "title": _normalize_text(item.get("title")),
-                        "risk_summary": _normalize_text(item.get("risk_summary")),
-                        "severity": _normalize_text(item.get("severity")),
+                        "summary": _normalize_text(item.get("summary")),
+                        "date": _normalize_text(item.get("date")),
+                        "source_type": _normalize_text(item.get("source_type")),
                     }
                     for item in _list_of_dicts(risk_data.get("items"))[:6]
-                    if _normalize_text(item.get("title")) or _normalize_text(item.get("risk_summary"))
+                    if _normalize_text(item.get("title")) or _normalize_text(item.get("summary"))
                 ],
                 "financial_snapshot": evidence_pack.get("financial_snapshot"),
                 "financial_statements_snapshot": evidence_pack.get("financial_statements_snapshot"),
@@ -976,13 +983,10 @@ class IndustryCycleService:
             "如果你的 reasoning 主要建立在行业板块而不是公司证据上，说明你的分析方向错了。\n"
             "如果行业映射证据缺失或覆盖不足，必须在 killer_reason 或 checklist reason 中明确指出“证据不足”，"
             "不能把缺失数据伪装成负面结论。\n"
-            "主线属性判定器 checklist 必须覆盖以下6项："
-            "当前属于市场主线 / 分支主线；不是冷门低估股；不是单纯蹭概念；主营业务能实际受益；"
-            "有政策 / 技术 / 需求 / 供给变化驱动；未来 6-12 个月仍有催化。\n"
-            "行业β判定器 checklist 必须覆盖以下4项："
-            "行业处于上升周期；未来 3 年空间明确；不是严重价格战 / 内卷行业；"
-            "有政策 / 技术 / 需求 / 供给变化驱动。\n"
-            "每个 checklist 项都必须包含 item、passed、reason、source。\n"
+            "两个判定器的 checklist 必须逐项覆盖 analysis_framework 中给出的 criterion_id，"
+            "不得增删、改名或按措辞重新匹配。\n"
+            "每个 checklist 项都必须包含 criterion_id、item、passed、reason、source_refs；"
+            "source_refs 必须指向证据包中的具体结构化字段或条目。\n"
             "JSON 结构必须包含："
             "analysis_status, beneficiary_level, beneficiary_reason, cycle_phase, cycle_phase_reason, prosperity_score, "
             "prosperity_judgement, core_logic, killer_reason, observation_window, catalysts, risks, observation_points, "
@@ -1130,40 +1134,21 @@ class IndustryCycleService:
             _persist_cache(symbol, fallback_payload)
             _persist_report_cache(symbol, fallback_payload)
             return fallback_payload
-        mainline_detector = _as_dict(parsed.get("mainline_detector"))
-        industry_beta_detector = _as_dict(parsed.get("industry_beta_detector"))
-        fallback_payload: dict[str, Any] = {}
-        fallback_cycle: dict[str, Any] = {}
-        if not _list_of_dicts(mainline_detector.get("checklist")) or not _list_of_dicts(industry_beta_detector.get("checklist")):
-            try:
-                fallback_payload = self._build_payload(symbol, force=False)
-                _persist_cache(symbol, fallback_payload)
-            except Exception:
-                logger.exception("industry cycle detector fallback build failed for %s", symbol)
-                fallback_payload = {}
-            fallback_cycle = _as_dict(fallback_payload.get("industry_cycle"))
-            mainline_detector = _merge_detector_with_fallback(
-                mainline_detector,
-                _as_dict(fallback_cycle.get("mainline_detector")),
-            )
-            industry_beta_detector = _merge_detector_with_fallback(
-                industry_beta_detector,
-                _as_dict(fallback_cycle.get("industry_beta_detector")),
-            )
+        mainline_detector = _validated_detector(
+            parsed.get("mainline_detector"),
+            _MAINLINE_CRITERION_IDS,
+            label="主线判定器",
+        )
+        industry_beta_detector = _validated_detector(
+            parsed.get("industry_beta_detector"),
+            _INDUSTRY_BETA_CRITERION_IDS,
+            label="行业β判定器",
+        )
         market_report = _as_dict(evidence_bundle.get("market_report"))
         market_evidence = _as_dict(evidence_bundle.get("market_evidence"))
         parsed_market_mainline = _as_dict(_as_dict(parsed.get("evidence")).get("market_mainline"))
         current_theme_detail = _first_dict(market_evidence.get("current_themes"))
         future_theme_detail = _first_dict(market_evidence.get("next_themes"))
-        stock_info = _as_dict(evidence_bundle.get("stock_info"))
-        stock_focus_summary = self._build_stock_focus_summary(
-            stock_name=_normalize_text(evidence_pack.get("stock_name") or symbol),
-            main_business=_normalize_text(stock_info.get("main_business")),
-            beneficiary_level=_normalize_text(parsed.get("beneficiary_level")),
-            beneficiary_reason=_normalize_text(parsed.get("beneficiary_reason")),
-            news_items=_list_of_dicts(evidence_bundle.get("news_data", {}).get("items") if isinstance(evidence_bundle.get("news_data"), dict) else []),
-            research_items=_list_of_dicts(evidence_bundle.get("research_data", {}).get("items") if isinstance(evidence_bundle.get("research_data"), dict) else []),
-        )
         parsed_incomplete = not (
             _normalize_text(parsed.get("analysis_status"))
             and _normalize_text(parsed.get("beneficiary_level"))
@@ -1184,7 +1169,7 @@ class IndustryCycleService:
                 "cycle_phase_reason": _normalize_text(parsed.get("cycle_phase_reason")) or "模型输出格式异常，周期阶段需结合原始输出复核。",
                 "prosperity_score": parsed.get("prosperity_score") or 0,
                 "prosperity_judgement": _normalize_text(parsed.get("prosperity_judgement")) or "模型已返回文本，但结构化解析不完整，请结合原始输出查看。",
-                "core_logic": stock_focus_summary or _normalize_text(parsed.get("core_logic")) or "模型输出格式异常，当前降级为仅展示证据包和原始输出。",
+                "core_logic": _normalize_text(parsed.get("core_logic")) or "模型输出格式异常，当前降级为仅展示证据包和原始输出。",
                 "killer_reason": parsed.get("killer_reason") or (format_error_reason if parsed_incomplete else None),
                 "observation_window": parsed.get("observation_window") or "未来 6-12 个月",
                 "catalysts": [str(item) for item in _as_list(parsed.get("catalysts")) if str(item).strip()],
@@ -1238,35 +1223,6 @@ class IndustryCycleService:
             "_cached": False,
             "fallback_used": bool((evidence_bundle.get("market_report") or {}).get("report_pending")) or parsed_incomplete,
         }
-        if _report_has_conflicting_conclusion(final_payload):
-            if not fallback_payload:
-                try:
-                    fallback_payload = self._build_payload(symbol, force=False)
-                    _persist_cache(symbol, fallback_payload)
-                except Exception:
-                    logger.exception("industry cycle consistency fallback build failed for %s", symbol)
-                    fallback_payload = {}
-            fallback_cycle = _as_dict(fallback_payload.get("industry_cycle"))
-            if fallback_cycle:
-                logger.info("industry cycle final report conflicted with detector/evidence for %s, fallback applied", symbol)
-                final_payload = {
-                    **fallback_payload,
-                    "symbol": symbol,
-                    "as_of_date": _current_report_as_of_date(),
-                    "report_pending": False,
-                    "llm_used": True,
-                    "model_used": model_used,
-                    "raw_stream_output": raw_text,
-                    "raw_response": raw_text,
-                    "debug_input": {
-                        "system_prompt": system_prompt,
-                        "user_prompt": user_prompt,
-                        "evidence_pack": evidence_pack,
-                    },
-                    "_fetched_at": datetime.now().isoformat(),
-                    "_cached": False,
-                    "fallback_used": True,
-                }
         if on_text and raw_text and len(raw_text) != last_emitted_length:
             on_text(
                 raw_text,
@@ -1290,543 +1246,3 @@ class IndustryCycleService:
         _persist_cache(symbol, final_payload)
         _persist_report_cache(symbol, final_payload)
         return final_payload
-
-    def _build_payload(self, symbol: str, *, force: bool) -> dict[str, Any]:
-        from api.v1.endpoints.financials import (
-            get_valuation_ratios,
-            get_research_report,
-            get_risk_events,
-            get_sentiment,
-            get_social_sentiment,
-            search_news,
-        )
-        from api.v1.endpoints.macro import _fetch_sector_flow_industry
-        from api.v1.endpoints.sectors import get_sector_list
-        from api.v1.endpoints.stock_info import get_stock_info
-        from src.services.market_theme_service import MarketThemeService
-
-        stock_info = _as_dict(get_stock_info(symbol=symbol, force=force))
-        if not stock_info.get("_ths_business_ok") and not _normalize_text(stock_info.get("product_type")):
-            refreshed_stock_info = _as_dict(get_stock_info(symbol=symbol, force=True))
-            if refreshed_stock_info:
-                stock_info = refreshed_stock_info
-        industry_name = _normalize_text(stock_info.get("industry"))
-        stock_name = _normalize_text(stock_info.get("short_name") or stock_info.get("name") or symbol)
-        main_business = _normalize_text(stock_info.get("main_business"))
-
-        news_data = _as_dict(search_news(symbol=symbol, days=90, source="all", force=force))
-        risk_data = _as_dict(get_risk_events(symbol=symbol, days=180, force=force))
-        research_data = _as_dict(get_research_report(symbol=symbol, days=1095, force=force))
-        sentiment_data = _as_dict(get_sentiment(symbol=symbol, days=90, force=force))
-        social_data = _as_dict(get_social_sentiment(symbol=symbol, days=90, force=force))
-
-        market_theme_service = MarketThemeService()
-        market_report = _as_dict(market_theme_service.get_model_report(force=False))
-        market_evidence = _as_dict(market_theme_service.get_evidence(force=False))
-        sector_data = _as_dict(get_sector_list(type="industry", force=force))
-        flow_records = _list_of_dicts(_fetch_sector_flow_industry())
-        valuation_data = _as_dict(get_valuation_ratios(symbol=symbol, with_history=True, force=force))
-        board_item, board_rank, board_total = _find_industry_board(industry_name, sector_data.get("items") or [])
-        flow_item, flow_rank, flow_total = _find_sector_flow(industry_name, flow_records)
-        peer_snapshot = _fetch_peer_snapshot(industry_name)
-        if board_item is None and flow_item is not None:
-            board_item = _fallback_sector_item_from_flow(flow_item)
-            board_rank = flow_rank
-            board_total = flow_total
-
-        news_items = news_data.get("items") or []
-        risk_items = risk_data.get("items") or []
-        research_items = research_data.get("items") or []
-        current_matches: list[dict[str, Any]] = []
-        future_matches: list[dict[str, Any]] = []
-
-        driver_texts = [
-            main_business,
-            *[f"{item.get('title', '')} {item.get('summary', '')}" for item in news_items[:20]],
-            *[f"{item.get('title', '')} {item.get('industry', '')} {item.get('rating', '')}" for item in research_items[:20]],
-            *[f"{item.get('title', '')} {item.get('risk_summary', '')}" for item in risk_items[:20]],
-        ]
-        driver_signals = _build_driver_signals(driver_texts)
-        driver_pass = bool(driver_signals)
-        price_war_detected = _contains_any(" ".join(driver_texts), _PRICE_WAR_KEYWORDS)
-
-        sentiment_score = _safe_float(sentiment_data.get("sentiment_score")) or 0.0
-        social_score = _safe_float(social_data.get("overall_score")) or 0.0
-        total_discussion = _safe_int(social_data.get("total_discussion")) or 0
-        positive_research = sum(
-            1 for item in research_items
-            if _contains_any(item.get("rating"), ("买入", "增持", "推荐", "优于大市", "强烈推荐"))
-        )
-        catalyst_hits = [
-            word for word in _CATALYST_KEYWORDS
-            if _contains_any(" ".join(driver_texts), [word])
-        ]
-        high_risk_count = _safe_int((risk_data.get("analysis") or {}).get("severity_distribution", {}).get("high")) or 0
-        medium_risk_count = _safe_int((risk_data.get("analysis") or {}).get("severity_distribution", {}).get("medium")) or 0
-        sector_change = _safe_float((board_item or {}).get("change_pct"))
-        flow_amount = _safe_float((flow_item or {}).get("main_net_inflow"))
-        matched_current = current_matches[0] if current_matches else None
-        matched_future = future_matches[0] if future_matches else None
-        current_theme_detail = _pick_theme_detail(market_evidence.get("current_themes") or [], matched_current)
-        future_theme_detail = _pick_theme_detail(market_evidence.get("next_themes") or [], matched_future)
-        current_stage = _normalize_text((matched_current or {}).get("stage"))
-        beneficiary_level, beneficiary_reason = _infer_beneficiary_level(
-            matched_current=matched_current,
-            matched_future=matched_future,
-        )
-        valuation_signal = (valuation_data or {}).get("price_overdraft_signal") or {}
-        valuation_status = _normalize_text(valuation_signal.get("status"))
-        valuation_score = _safe_float(valuation_signal.get("score"))
-        industry_average = (valuation_data or {}).get("industry_average") or {}
-        pe_ttm = _safe_float((valuation_data or {}).get("pe_ttm"))
-        pb = _safe_float((valuation_data or {}).get("pb"))
-        pe_premium_vs_industry = _safe_float(((valuation_signal.get("metrics") or {}).get("pe_premium_vs_industry")))
-        pb_premium_vs_industry = _safe_float(((valuation_signal.get("metrics") or {}).get("pb_premium_vs_industry")))
-        if _safe_int(peer_snapshot.get("sample_size")) in (0, None) and _safe_int(industry_average.get("sample_size")) not in (0, None):
-            peer_snapshot = {
-                **peer_snapshot,
-                "sample_size": _safe_int(industry_average.get("sample_size")),
-                "source": peer_snapshot.get("source") or "valuation_industry_average_fallback",
-            }
-
-        mainline_checklist = [
-            {
-                "item": "当前属于市场主线 / 分支主线",
-                "passed": bool(matched_current),
-                "reason": (
-                    f"命中当前主线“{matched_current['name']}”，阶段 {matched_current.get('stage')}"
-                    if matched_current else "本地不再用关键词匹配市场主线，需由模型基于市场主线报告与公司主营资料判断"
-                ),
-                "source": "市场主线报告 / 证据层",
-            },
-            {
-                "item": "不是冷门低估股",
-                "passed": positive_research >= 2 or len(news_items) >= 6 or total_discussion >= 80,
-                "reason": f"研报 {len(research_items)} 篇，新闻 {len(news_items)} 条，讨论 {total_discussion} 条，说明个股本身并非完全缺乏跟踪。",
-                "source": "研报 / 新闻 / 社交讨论",
-            },
-            {
-                "item": "不是单纯蹭概念",
-                "passed": False,
-                "reason": (
-                    f"受益级别为“{beneficiary_level}”，{beneficiary_reason}"
-                    if beneficiary_level not in {"概念映射", "待验证"}
-                    else "本地不再用关键词判断是否蹭概念，需要由模型结合主营、公告、研报和市场主线报告确认"
-                ),
-                "source": "主营业务 / 主线分支 / 新闻 / 研报",
-            },
-            {
-                "item": "主营业务能实际受益",
-                "passed": beneficiary_level in {"核心受益", "直接受益"},
-                "reason": (
-                    f"{beneficiary_reason} 主营业务：{main_business[:72]}"
-                    if main_business else "主营业务信息缺失，无法确认真实受益路径"
-                ),
-                "source": "公司资料 / 主线分支映射",
-            },
-            {
-                "item": "有政策 / 技术 / 需求 / 供给变化驱动",
-                "passed": driver_pass,
-                "reason": (
-                    "驱动信号：" + " / ".join(f"{k}:{','.join(v)}" for k, v in driver_signals.items())
-                    if driver_signals else "近端资讯中未聚合出足够强的产业驱动"
-                ),
-                "source": "新闻 / 研报 / 风险事件",
-            },
-            {
-                "item": "未来 6-12 个月仍有催化",
-                "passed": len(catalyst_hits) >= 2 or positive_research >= 2 or bool(matched_future),
-                "reason": (
-                    f"催化词命中 {', '.join(catalyst_hits[:4])}"
-                    if catalyst_hits else (
-                        f"候选主线为“{matched_future['name']}”"
-                        if matched_future else "中期催化线索不足"
-                    )
-                ),
-                "source": "新闻 / 研报 / 主线候选",
-            },
-        ]
-        mainline_passed = all(item["passed"] for item in mainline_checklist)
-
-        beta_checklist = [
-            {
-                "item": "行业处于上升周期",
-                "passed": (
-                    (sector_change is not None and sector_change > 0)
-                    or (board_rank is not None and board_rank <= 15)
-                ) and not _contains_any(current_stage, _FADING_STAGE_KEYWORDS),
-                "reason": (
-                    f"板块涨跌幅 {sector_change if sector_change is not None else 'N/A'}%，排名 {board_rank or 'N/A'}/{board_total or 'N/A'}"
-                ),
-                "source": "行业板块表现 / 主线阶段",
-            },
-            {
-                "item": "未来 3 年空间明确",
-                "passed": positive_research >= 2 or _contains_any(" ".join(driver_texts), _THREE_YEAR_SPACE_KEYWORDS),
-                "reason": (
-                    f"研报覆盖 {len(research_items)} 篇，正向评级 {positive_research} 篇"
-                    if research_items else "长期空间论证不足"
-                ),
-                "source": "研报 / 行业叙事 / 候选主线",
-            },
-            {
-                "item": "不是严重价格战 / 内卷行业",
-                "passed": not price_war_detected,
-                "reason": "未检测到明显价格战信号" if not price_war_detected else "资讯中出现价格战 / 内卷信号",
-                "source": "新闻 / 风险事件",
-            },
-            {
-                "item": "有政策 / 技术 / 需求 / 供给变化驱动",
-                "passed": driver_pass,
-                "reason": (
-                    "驱动信号：" + " / ".join(f"{k}:{','.join(v)}" for k, v in driver_signals.items())
-                    if driver_signals else "驱动因素不足"
-                ),
-                "source": "新闻 / 研报 / 风险事件",
-            },
-        ]
-        beta_passed = all(item["passed"] for item in beta_checklist)
-
-        prosperity_score = 50
-        prosperity_score += 12 if mainline_passed else 0
-        prosperity_score += 12 if beta_passed else 0
-        prosperity_score += 8 if matched_current else 0
-        prosperity_score += 6 if flow_amount and flow_amount > 0 else 0
-        prosperity_score += 6 if sector_change and sector_change > 0 else 0
-        prosperity_score += 4 if positive_research >= 2 else 0
-        prosperity_score += 4 if len(catalyst_hits) >= 2 else 0
-        prosperity_score += 4 if beneficiary_level == "核心受益" else 0
-        prosperity_score += 2 if beneficiary_level == "直接受益" else 0
-        prosperity_score -= 10 if price_war_detected else 0
-        prosperity_score -= 10 if high_risk_count > 0 else 0
-        prosperity_score -= 6 if medium_risk_count >= 3 else 0
-        prosperity_score -= 6 if valuation_status in {"high", "medium"} else 0
-        prosperity_score = max(0, min(100, prosperity_score))
-
-        if mainline_passed and beta_passed:
-            if matched_current and int(matched_current.get("rank") or 99) == 1 and not _contains_any(current_stage, _FADING_STAGE_KEYWORDS):
-                analysis_status = "主线"
-            else:
-                analysis_status = "分支主线"
-        elif matched_current and (_contains_any(current_stage, _FADING_STAGE_KEYWORDS) or price_war_detected or high_risk_count > 0):
-            analysis_status = "退潮"
-        elif matched_future or driver_pass or positive_research > 0:
-            analysis_status = "观察"
-        else:
-            analysis_status = "非主线"
-
-        killer_reason = (
-            _pick_failed_reason(mainline_checklist)
-            if not mainline_passed
-            else _pick_failed_reason(beta_checklist)
-        )
-        cycle_phase, cycle_phase_reason = _infer_cycle_phase(
-            analysis_status=analysis_status,
-            current_theme_detail=current_theme_detail,
-            matched_current=matched_current,
-            sector_change=sector_change,
-            flow_amount=flow_amount,
-            news_count=len(news_items),
-        )
-
-        prosperity_judgement = self._build_prosperity_judgement(
-            analysis_status=analysis_status,
-            industry_name=industry_name,
-            matched_current=matched_current,
-            matched_future=matched_future,
-            cycle_phase=cycle_phase,
-            sector_change=sector_change,
-            board_rank=board_rank,
-            board_total=board_total,
-            flow_amount=flow_amount,
-            high_risk_count=high_risk_count,
-            price_war_detected=price_war_detected,
-        )
-        core_logic = self._build_core_logic(
-            driver_signals=driver_signals,
-            matched_current=matched_current,
-            matched_future=matched_future,
-            price_war_detected=price_war_detected,
-            main_business=main_business,
-            beneficiary_level=beneficiary_level,
-        )
-        stock_focus_summary = self._build_stock_focus_summary(
-            stock_name=stock_name,
-            main_business=main_business,
-            beneficiary_level=beneficiary_level,
-            beneficiary_reason=beneficiary_reason,
-            news_items=news_items,
-            research_items=research_items,
-        )
-        data_quality = _build_data_quality(
-            board_rank=board_rank,
-            flow_rank=flow_rank,
-            research_count=len(research_items),
-            discussion_count=total_discussion,
-            peer_sample_size=_safe_int((peer_snapshot or {}).get("sample_size")),
-            board_source_ok=bool(sector_data.get("items")) or flow_item is not None,
-            peer_source_ok=bool(peer_snapshot.get("source_ok", True)),
-        )
-
-        catalysts = self._build_catalysts(catalyst_hits, matched_future)
-        risks = self._build_risks(
-            price_war_detected,
-            high_risk_count,
-            medium_risk_count,
-            current_stage,
-            killer_reason,
-            valuation_status=valuation_status,
-            valuation_score=valuation_score,
-        )
-        observation_points = self._build_observation_points(
-            matched_current=matched_current,
-            sector_change=sector_change,
-            flow_amount=flow_amount,
-            catalyst_hits=catalyst_hits,
-            price_war_detected=price_war_detected,
-            valuation_status=valuation_status,
-        )
-
-        return {
-            "symbol": symbol,
-            "industry_cycle": {
-                "stock_name": stock_name,
-                "industry_name": industry_name,
-                "analysis_status": analysis_status,
-                "beneficiary_level": beneficiary_level,
-                "beneficiary_reason": beneficiary_reason,
-                "cycle_phase": cycle_phase,
-                "cycle_phase_reason": cycle_phase_reason,
-                "prosperity_score": prosperity_score,
-                "prosperity_judgement": prosperity_judgement,
-                "core_logic": stock_focus_summary if stock_focus_summary else core_logic,
-                "killer_reason": killer_reason if killer_reason else None,
-                "observation_window": "未来 6-12 个月",
-                "catalysts": catalysts,
-                "risks": risks,
-                "observation_points": observation_points,
-                "mainline_detector": {
-                    "passed": mainline_passed,
-                    "conclusion": (
-                        "主线属性成立，个股具备真实受益与持续催化。"
-                        if mainline_passed else "主线属性暂未完全成立，当前仍有关键约束未过。"
-                    ),
-                    "failed_reason": None if mainline_passed else _pick_failed_reason(mainline_checklist),
-                    "checklist": mainline_checklist,
-                },
-                "industry_beta_detector": {
-                    "passed": beta_passed,
-                    "conclusion": (
-                        "行业 β 明确，具备中期景气上行基础。"
-                        if beta_passed else "行业 β 还不够硬，暂时不能把它当成强 β 方向。"
-                    ),
-                    "failed_reason": None if beta_passed else _pick_failed_reason(beta_checklist),
-                    "checklist": beta_checklist,
-                },
-                "evidence": {
-                    "market_mainline": {
-                        "report_pending": bool(market_report.get("report_pending")),
-                        "market_stage": market_evidence.get("market_stage") or {},
-                        "report_current_mainlines": _list_of_dicts(market_report.get("current_mainlines")),
-                        "report_future_mainlines": _list_of_dicts(market_report.get("future_mainlines")),
-                        "matched_current_mainlines": current_matches[:3],
-                        "matched_future_mainlines": future_matches[:3],
-                        "current_theme_detail": current_theme_detail or {},
-                        "future_theme_detail": future_theme_detail or {},
-                    },
-                    "sector_snapshot": {
-                        "rank": board_rank,
-                        "total": board_total,
-                        "change_pct": sector_change,
-                        "leading_stock": (board_item or {}).get("lead_stock"),
-                        "leading_stock_change_pct": _safe_float((board_item or {}).get("lead_stock_change_pct")),
-                        "up_count": _safe_int((board_item or {}).get("up_count")),
-                        "down_count": _safe_int((board_item or {}).get("down_count")),
-                        "fallback_from_flow": bool((board_item or {}).get("_fallback_from_flow")),
-                    },
-                    "fund_flow": {
-                        "rank": flow_rank,
-                        "total": flow_total,
-                        "main_net_inflow": flow_amount,
-                        "super_large_net_inflow": _safe_float((flow_item or {}).get("super_large_net_inflow")),
-                        "large_net_inflow": _safe_float((flow_item or {}).get("large_net_inflow")),
-                        "pct_chg": _safe_float((flow_item or {}).get("pct_chg")),
-                        "leading_stock": (flow_item or {}).get("leading_stock"),
-                    },
-                    "peer_group": peer_snapshot,
-                    "valuation_snapshot": {
-                        "pe_ttm": pe_ttm,
-                        "pb": pb,
-                        "industry_name": industry_average.get("industry"),
-                        "industry_pe": _safe_float(industry_average.get("pe")),
-                        "industry_pb": _safe_float(industry_average.get("pb")),
-                        "industry_sample_size": _safe_int(industry_average.get("sample_size")),
-                        "pe_premium_vs_industry": pe_premium_vs_industry,
-                        "pb_premium_vs_industry": pb_premium_vs_industry,
-                        "price_overdraft_status": valuation_status or None,
-                        "price_overdraft_score": valuation_score,
-                    },
-                    "sentiment_snapshot": {
-                        "news_count": len(news_items),
-                        "research_count": len(research_items),
-                        "positive_research_count": positive_research,
-                        "sentiment_score": sentiment_score,
-                        "social_score": social_score,
-                        "discussion_count": total_discussion,
-                    },
-                    "risk_snapshot": {
-                        "high_risk_count": high_risk_count,
-                        "medium_risk_count": medium_risk_count,
-                        "top_risk_labels": ((risk_data.get("analysis") or {}).get("top_risk_labels") or [])[:5],
-                    },
-                    "data_quality": data_quality,
-                    "driver_signals": driver_signals,
-                },
-            },
-            "_fetched_at": datetime.now().isoformat(),
-            "_cached": False,
-            "fallback_used": bool(market_report.get("report_pending")),
-        }
-
-    def _build_prosperity_judgement(
-        self,
-        *,
-        analysis_status: str,
-        industry_name: str,
-        matched_current: Optional[dict[str, Any]],
-        matched_future: Optional[dict[str, Any]],
-        cycle_phase: str,
-        sector_change: Optional[float],
-        board_rank: Optional[int],
-        board_total: int,
-        flow_amount: Optional[float],
-        high_risk_count: int,
-        price_war_detected: bool,
-    ) -> str:
-        if analysis_status in {"主线", "分支主线"}:
-            return (
-                f"{industry_name} 当前处在{cycle_phase}，已能映射到市场主线“{matched_current.get('name') if matched_current else '当前主线'}”，"
-                f"板块强度 {sector_change if sector_change is not None else 'N/A'}%，排名 {board_rank or 'N/A'}/{board_total or 'N/A'}。"
-            )
-        if analysis_status == "观察":
-            future_name = matched_future.get("name") if matched_future else "候选方向"
-            return f"{industry_name} 当前更接近{cycle_phase}，已经出现景气线索，但更偏“{future_name}”式的候选观察期。"
-        if analysis_status == "退潮":
-            return f"{industry_name} 的景气逻辑边际走弱，当前更像{cycle_phase}下的高位分歧或退潮，需防止高位兑现。"
-        risk_suffix = "，且存在明显价格战压制" if price_war_detected else ""
-        if high_risk_count > 0:
-            risk_suffix += "，高等级风险事件也在压制预期"
-        return f"{industry_name} 暂时没有形成足够强的景气共振，当前仍停留在{cycle_phase}{risk_suffix}。"
-
-    def _build_core_logic(
-        self,
-        *,
-        driver_signals: dict[str, list[str]],
-        matched_current: Optional[dict[str, Any]],
-        matched_future: Optional[dict[str, Any]],
-        price_war_detected: bool,
-        main_business: str,
-        beneficiary_level: str,
-    ) -> str:
-        signal_parts = []
-        for key in ("policy", "technology", "demand", "supply"):
-            hits = driver_signals.get(key) or []
-            if hits:
-                signal_parts.append(f"{key}:{'/'.join(hits[:3])}")
-        driver_text = "；".join(signal_parts) if signal_parts else "当前驱动证据偏弱"
-        theme_text = (
-            f"当前映射主线“{matched_current.get('name')}”"
-            if matched_current else (
-                f"更接近候选主线“{matched_future.get('name')}”"
-                if matched_future else "暂未映射到明确主线"
-            )
-        )
-        suffix = "；但价格战/内卷会削弱行业 β" if price_war_detected else ""
-        business_text = f"主营受益路径：{main_business[:56]}" if main_business else "主营受益路径暂不清晰"
-        return f"{theme_text}，驱动来自 {driver_text}；受益级别为{beneficiary_level}；{business_text}{suffix}。"
-
-    def _build_stock_focus_summary(
-        self,
-        *,
-        stock_name: str,
-        main_business: str,
-        beneficiary_level: str,
-        beneficiary_reason: str,
-        news_items: list[dict[str, Any]],
-        research_items: list[dict[str, Any]],
-    ) -> str:
-        direct_company_signals: list[str] = []
-        for item in news_items[:8]:
-            title = _normalize_text(item.get("title"))
-            if title:
-                direct_company_signals.append(title)
-        for item in research_items[:4]:
-            title = _normalize_text(item.get("title"))
-            if title:
-                direct_company_signals.append(title)
-
-        summary_parts = [f"{stock_name} 需要优先从个股受益路径来理解，当前受益级别为“{beneficiary_level}”。"]
-        if beneficiary_reason:
-            summary_parts.append(beneficiary_reason)
-        if main_business:
-            summary_parts.append(f"主营业务是：{main_business[:96]}。")
-        if direct_company_signals:
-            summary_parts.append(f"与公司直接相关的近端证据包括：{'；'.join(direct_company_signals[:3])}。")
-        return " ".join(summary_parts)
-
-    def _build_catalysts(self, catalyst_hits: list[str], matched_future: Optional[dict[str, Any]]) -> list[str]:
-        items = [f"{hit}持续验证" for hit in catalyst_hits[:4]]
-        if matched_future and matched_future.get("name"):
-            items.append(f"候选主线“{matched_future['name']}”若继续发酵，有望抬升行业预期")
-        return items[:5] or ["暂无足够强的中期催化，需继续跟踪订单、政策和资本开支。"]
-
-    def _build_risks(
-        self,
-        price_war_detected: bool,
-        high_risk_count: int,
-        medium_risk_count: int,
-        current_stage: str,
-        killer_reason: str,
-        valuation_status: str,
-        valuation_score: Optional[float],
-    ) -> list[str]:
-        items: list[str] = []
-        if price_war_detected:
-            items.append("价格战 / 内卷可能压制盈利与行业 β。")
-        if high_risk_count > 0:
-            items.append("高等级风险事件仍在压制情绪与估值。")
-        if medium_risk_count >= 3:
-            items.append("中等级风险事件偏多，说明景气验证还不够顺畅。")
-        if valuation_status in {"high", "medium"}:
-            items.append(f"股价透支信号为 {valuation_status}，透支分 {valuation_score if valuation_score is not None else 'N/A'}，需警惕预期先行后的回撤。")
-        if _contains_any(current_stage, _FADING_STAGE_KEYWORDS):
-            items.append(f"当前主线阶段为“{current_stage}”，要警惕一致预期后的兑现。")
-        if killer_reason:
-            items.append(f"当前最核心约束：{killer_reason}")
-        return items[:5] or ["暂无明显结构性风险，但仍需跟踪景气兑现节奏。"]
-
-    def _build_observation_points(
-        self,
-        *,
-        matched_current: Optional[dict[str, Any]],
-        sector_change: Optional[float],
-        flow_amount: Optional[float],
-        catalyst_hits: list[str],
-        price_war_detected: bool,
-        valuation_status: str,
-    ) -> list[str]:
-        points = []
-        points.append("观察行业板块能否继续维持在涨幅前列，而不是单日脉冲。")
-        if flow_amount is not None:
-            points.append("观察主力资金净流入能否持续，而不是一次性冲高回落。")
-        if matched_current:
-            points.append(f"观察主线“{matched_current.get('name')}”是否仍在扩散，而不是只剩个股抱团。")
-        if catalyst_hits:
-            points.append(f"观察 {' / '.join(catalyst_hits[:3])} 是否从预期走向兑现。")
-        if price_war_detected:
-            points.append("重点跟踪降价、毛利率和订单质量，避免景气被价格战证伪。")
-        if valuation_status in {"high", "medium"}:
-            points.append("观察估值透支能否被订单、利润或政策继续消化，避免只剩估值顶着。")
-        if sector_change is not None and sector_change < 0:
-            points.append("当前板块涨跌幅偏弱，先看是否只是短期回撤还是趋势转弱。")
-        return points[:5]

@@ -21,7 +21,6 @@ from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 from src.tools.search_financial_news import (
-    _matches_subject,
     _select_specs,
     _subject_terms,
     search_financial_news,
@@ -95,21 +94,10 @@ def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording()
     assert first[0][0] == "/eastmoney/report/:category"
 
 
-def test_industry_news_uses_named_topic_not_generic_progress_words_as_subject():
+def test_industry_news_uses_only_planner_supplied_subjects():
     terms = _subject_terms(["人形机器人"])
 
-    assert "人形机器人" in terms
-    assert "送样" not in terms
-    assert _matches_subject(
-        {"title": "金刚石散热进入送样阶段", "summary": "客户已完成定点"},
-        terms,
-        "industry",
-    ) is False
-    assert _matches_subject(
-        {"title": "人形机器人丝杠进入送样阶段", "summary": "客户验证中"},
-        terms,
-        "industry",
-    ) is True
+    assert terms == ["人形机器人"]
 
 
 def test_all_47_infos_routes_have_an_explicit_business_capability() -> None:
@@ -249,8 +237,11 @@ def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text()
         )
 
     assert result["topic"] == "macro"
-    assert result["item_count"] == 1
-    assert result["items"][0]["link"] == "https://www.pbc.gov.cn/example"
+    assert result["item_count"] == 2
+    by_link = {item["link"]: item for item in result["items"]}
+    assert by_link["https://www.pbc.gov.cn/example"]["exact_subject_mentions"] == ["逆回购"]
+    assert by_link["https://example.com/korea-etf"]["exact_subject_mentions"] == []
+    assert all(item["semantic_status"] == "model_required" for item in result["items"])
 
 
 def test_semantic_rss_exact_query_route_beats_broad_topic_description() -> None:
@@ -320,7 +311,11 @@ def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
             fallback_to_web=False,
         )
 
-    assert [item["link"] for item in result["items"]] == ["https://example.com/current"]
+    assert {item["link"] for item in result["items"]} == {
+        "https://example.com/current",
+        "https://example.com/table",
+    }
+    assert all(item["semantic_status"] == "model_required" for item in result["items"])
     assert result["days"] == 30
     assert any("过滤 1 条过期" in warning for warning in result["warnings"])
 

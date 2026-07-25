@@ -17,14 +17,9 @@ _CHIP_KEYS: tuple = ("profit_ratio", "avg_cost", "concentration", "chip_health")
 
 
 def _derive_chip_health(profit_ratio: float, concentration_90: float, language: str = "zh") -> str:
-    """Derive chip_health from profit_ratio and concentration_90."""
-    if profit_ratio >= 0.9:
-        return localize_chip_health("警惕", language)  # 获利盘极高
-    if concentration_90 >= 0.25:
-        return localize_chip_health("警惕", language)  # 筹码分散
-    if concentration_90 < 0.15 and 0.3 <= profit_ratio < 0.9:
-        return localize_chip_health("健康", language)  # 集中且获利比例适中
-    return localize_chip_health("一般", language)
+    """Do not infer semantic chip health from application thresholds."""
+    del profit_ratio, concentration_90
+    return "Not evaluated" if language == "en" else "未由模型评估"
 
 
 def _build_chip_structure_from_data(chip_data: Any, language: str = "zh") -> Dict[str, Any]:
@@ -33,12 +28,18 @@ def _build_chip_structure_from_data(chip_data: Any, language: str = "zh") -> Dic
         pr = _safe_float(chip_data.profit_ratio)
         ac = chip_data.avg_cost
         c90 = _safe_float(chip_data.concentration_90)
+        raw_health = getattr(chip_data, "chip_health", None)
     else:
         d = chip_data if isinstance(chip_data, dict) else {}
         pr = _safe_float(d.get("profit_ratio"))
         ac = d.get("avg_cost")
         c90 = _safe_float(d.get("concentration_90"))
-    chip_health = _derive_chip_health(pr, c90, language=language)
+        raw_health = d.get("chip_health")
+    chip_health = (
+        localize_chip_health(raw_health, language)
+        if str(raw_health or "").strip()
+        else _derive_chip_health(pr, c90, language=language)
+    )
     return {
         "profit_ratio": f"{pr:.1%}",
         "avg_cost": ac if (ac is not None and _safe_float(ac) != 0.0) else "N/A",

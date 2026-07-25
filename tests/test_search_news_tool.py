@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-"""Precision and contract tests for the single-stock news tool."""
+"""News retrieval preserves raw evidence for model-based relevance judgment."""
 
 from __future__ import annotations
 
@@ -8,30 +7,25 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.tools.search_news import _entity_relevance, search_news
+from src.tools.search_news import _entity_mentions, search_news
 
 
-def test_market_table_body_mention_is_not_company_news() -> None:
-    relevance, score = _entity_relevance(
+def test_entity_mentions_reports_exact_occurrence_without_relevance_score() -> None:
+    mentions = _entity_mentions(
         "北交所成交活跃股排行榜",
         "920149 旭杰科技 957.86 920000 安徽凤凰",
         "920000",
         "安徽凤凰",
     )
-    assert relevance == "body_only_mention"
-    assert score < 70
+    assert mentions == {
+        "name_in_title": False,
+        "name_in_summary": True,
+        "code_in_title": False,
+        "code_in_summary": True,
+    }
 
 
-def test_company_name_in_title_is_precise_subject_match() -> None:
-    assert _entity_relevance(
-        "嘉益股份：控股股东拟增持",
-        "增持金额不低于4000万元",
-        "301004",
-        "嘉益股份",
-    ) == ("company_subject", 100)
-
-
-def test_search_news_dedupes_sources_and_excludes_weak_mentions() -> None:
+def test_search_news_dedupes_sources_but_retains_unverified_results() -> None:
     now = datetime.now().replace(microsecond=0).isoformat()
     direct = pd.DataFrame([
         {
@@ -43,7 +37,7 @@ def test_search_news_dedupes_sources_and_excludes_weak_mentions() -> None:
         },
         {
             "新闻标题": "创业板成交活跃股排行榜",
-            "新闻内容": "301004 嘉益股份",
+            "新闻内容": "市场成交信息",
             "发布时间": now,
             "文章来源": "数据榜",
             "新闻链接": "https://example.com/weak",
@@ -60,13 +54,24 @@ def test_search_news_dedupes_sources_and_excludes_weak_mentions() -> None:
         "errors": [],
         "_cached": False,
     }
-    with patch("src.tools.search_news._stock_name", return_value="嘉益股份"), \
-         patch("src.tools.search_news._fetch_direct", return_value=direct), \
-         patch("src.tools.search_news._fetch_rss", return_value=rss):
+    with patch(
+        "src.tools.search_news._stock_name",
+        return_value="嘉益股份",
+    ), patch(
+        "src.tools.search_news._fetch_direct",
+        return_value=direct,
+    ), patch(
+        "src.tools.search_news._fetch_rss",
+        return_value=rss,
+    ):
         result = search_news("301004", days=30, limit=20)
 
     assert result["success"] is True
-    assert result["item_count"] == 1
-    assert result["excluded_weak_mention_count"] == 1
-    assert result["items"][0]["title"].startswith("嘉益股份")
-    assert result["fallback_used"] is False
+    assert result["item_count"] == 2
+    assert result["unverified_entity_mention_count"] == 1
+    assert all(item["relevance"] is None for item in result["items"])
+    assert all(item["relevance_score"] is None for item in result["items"])
+    assert all(
+        item["semantic_status"] == "model_required"
+        for item in result["items"]
+    )

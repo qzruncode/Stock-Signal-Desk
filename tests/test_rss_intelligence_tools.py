@@ -203,7 +203,7 @@ def test_research_library_rejects_stock_category_in_favor_of_dedicated_workflow(
         )
 
 
-def test_research_library_generic_dimension_words_do_not_admit_unrelated_industries():
+def test_research_library_returns_recent_candidates_without_semantic_filtering():
     now = datetime.now().isoformat()
     feed = _feed(items=[
         {
@@ -229,10 +229,16 @@ def test_research_library_generic_dimension_words_do_not_admit_unrelated_industr
             fallback_to_web=False,
         )
 
-    assert [item["title"] for item in result["items"]] == ["人形机器人核心零部件研究"]
+    assert [item["title"] for item in result["items"]] == [
+        "2026年中国风机价值链分析",
+        "人形机器人核心零部件研究",
+    ]
+    assert result["items"][0]["exact_subject_mentions"] == []
+    assert result["items"][1]["exact_subject_mentions"] == ["人形机器人"]
+    assert all(item["semantic_status"] == "model_required" for item in result["items"])
 
 
-def test_research_library_keeps_topic_anchor_with_playbook_query_prefixes():
+def test_research_library_does_not_infer_topic_from_playbook_wording():
     now = datetime.now().isoformat()
     feed = _feed(items=[
         {
@@ -264,7 +270,16 @@ def test_research_library_keeps_topic_anchor_with_playbook_query_prefixes():
             fallback_to_web=False,
         )
 
-    assert [item["title"] for item in result["items"]] == ["人形机器人核心零部件产业研究"]
+    assert [item["title"] for item in result["items"]] == [
+        "纺织服装ESG专题报告：技术与供应链重构",
+        "人形机器人核心零部件产业研究",
+        "微特电机行业政策汇总",
+    ]
+    assert [item["exact_subject_mentions"] for item in result["items"]] == [
+        [],
+        ["人形机器人"],
+        [],
+    ]
 
 
 def test_pbc_operation_parser_does_not_read_calendar_month_as_term():

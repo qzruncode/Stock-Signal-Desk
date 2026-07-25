@@ -144,7 +144,7 @@ _DOMAIN_SCHEMA = {
         },
         "mapping_type": {
             "type": "string",
-            "enum": ["exact_board", "proxy_board", "unresolved"],
+            "enum": ["catalog_binding", "unresolved"],
         },
         "rationale": {"type": "string", "maxLength": 240},
         "unresolved_parts": {
@@ -226,10 +226,10 @@ _RESOURCE_BINDING_SYSTEM_PROMPT = """\
 你是 Semantic Resource Binder。标准任务已经确定，你只能把其中的语义产业领域绑定到本次提供的实时
 板块目录，不能增加、删除或改写任务，也不能选择数据 Tool。
 
-对每个领域：同名板块用 exact_board；没有同名板块时，只能选择产业功能与应用场景明确相邻的最窄
-板块并标为 proxy_board；没有可靠绑定就用 unresolved 且 board_queries 为空。board_queries 必须逐字
-来自 catalog，最多四个。保留原始 label，并用 rationale 说明边界；复合领域无法覆盖的部分放入
-unresolved_parts。每个输入 task_id 和每个输入领域都必须且只能返回一次。
+对每个领域，只能从 catalog 逐字选择能够表达该领域的板块名称，并标为 catalog_binding；不得自行
+生成别名、关键词扩展或近似板块。如果目录不能可靠表达该领域，就用 unresolved 且 board_queries
+为空。最多选择四个板块。保留原始 label，并用 rationale 说明语义覆盖边界；复合领域无法覆盖的
+部分放入 unresolved_parts。每个输入 task_id 和每个输入领域都必须且只能返回一次。
 """
 
 
@@ -546,7 +546,8 @@ def validate_candidate_plan(
         if "concept_board_catalog" in spec.resource_bindings:
             labels = _semantic_domain_labels(task)
             if not labels:
-                issues.append(f"{task.task_id}: domains must contain semantic labels")
+                if "domains" in spec.required_parameters:
+                    issues.append(f"{task.task_id}: domains must contain semantic labels")
                 continue
             if not resources_bound:
                 continue
@@ -604,6 +605,7 @@ async def _bind_concept_board_catalog(
     target_tasks = [
         task for task in plan.tasks
         if "concept_board_catalog" in workflow_for(task.kind).resource_bindings
+        and _semantic_domain_labels(task)
     ]
     if not target_tasks:
         return plan, set()
@@ -631,7 +633,6 @@ async def _bind_concept_board_catalog(
                 "task_id": task.task_id,
                 "objective": task.objective,
                 "semantic_domains": _semantic_domain_labels(task),
-                "context_theme": task.parameters.get("context_theme"),
             }
             for task in target_tasks
         ],

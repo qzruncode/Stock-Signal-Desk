@@ -157,21 +157,6 @@ def _web_result_date(raw: dict[str, Any]) -> datetime | None:
     return None
 
 
-def _web_result_matches_event(title: str, event_type: str) -> bool:
-    text = re.sub(r"\s+", "", title)
-    if event_type == "listing_notice":
-        return "上市" in text and "公告" in text
-    if event_type == "inquiry":
-        return any(word in text for word in ("问询函", "问询", "监管函", "关注函"))
-    if event_type == "project":
-        subject = any(word in text for word in ("IPO", "首发", "发行上市", "再融资", "重组"))
-        progress = any(word in text for word in ("受理", "问询", "回复", "审核", "上市委", "注册", "终止", "中止"))
-        return subject and progress
-    if event_type == "disclosure":
-        return "公告" in text
-    return any(word in text for word in ("公告", "问询", "监管函", "受理", "审核", "注册", "终止"))
-
-
 def _parse_szse_listing_page(html: str, days: int, limit: int) -> list[dict[str, Any]]:
     from bs4 import BeautifulSoup
 
@@ -425,7 +410,6 @@ def get_regulatory_updates(
             candidate = {"title": title, "summary": raw.get("snippet")}
             if (
                 not _official_web_host(host, resolved_market)
-                or not _web_result_matches_event(title, event_type)
                 or not _matches(candidate, keyword, code, name)
                 or published is None
                 or published < cutoff
@@ -439,13 +423,14 @@ def get_regulatory_updates(
                 "event_type": event_type,
                 "project_status": None, "company_code": code, "official": True,
                 "source_type": "websearch_official_domain",
+                "semantic_status": "model_required",
             })
         items = items[:limit]
         fallback_used = bool(items)
         if fallback_used:
             warnings.append("官方 RSS 路由无匹配记录，已用交易所官网域名搜索兜底")
         elif rejected_web_results:
-            warnings.append("网页兜底未找到同时满足官方域名、事件类型和查询时间窗的监管记录")
+            warnings.append("网页兜底未找到同时满足官方域名、查询主体和时间窗的监管记录")
 
     if failed_routes and rss_acquisition_success:
         warnings.append(f"{failed_routes}/{len(route_meta)} 条官方 RSS 路由不可用，结果来自其余可用官方路由")

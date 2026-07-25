@@ -17,6 +17,5 @@ from api.v1.endpoints.financials._content import (  # noqa: F401
     _rss_entry_text, _rss_entry_summary, _rss_entry_date, _dedupe_rss_entries,
 )
 from api.v1.endpoints.financials._analysis import (  # noqa: F401
-    _lazy_classify_sentiment, _classify_financial_text, _build_structured_analysis,
     _latest_content_time, _content_is_stale, _resolve_post_publish_time,
 )

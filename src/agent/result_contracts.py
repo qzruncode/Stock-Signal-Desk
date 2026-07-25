@@ -73,7 +73,7 @@ THEME_COMPANY_MAPPING = AnalysisPlaybook(
 
 
 INVESTMENT_DECISION = AnalysisPlaybook(
-    id="professional_eight_dimension_buy_analysis",
+    id="professional_eight_dimension_boolean_gate",
     title="资深分析师八维买入分析",
     evidence_standard=(
         "区分产业长期趋势与A股当前资金主线，并核验公司业务与当前方向的真实关系。",
@@ -84,10 +84,10 @@ INVESTMENT_DECISION = AnalysisPlaybook(
         "重大风险同时检查现金流、应收、存货、客户集中、负债、商誉、质押、融资、监管和诉讼。",
     ),
     output_contract=(
-        "结论先行，给出✅、◐、❌和取证未完成项数量，并按通过1分、半通过0.5分计算八分制总分。",
-        "八个维度必须全部展开，不得因任一项较弱而提前停止；每项写明状态、理由、关键证据和反证。",
-        "结尾必须给当前定位、核心看多链条、核心风险链条以及至少三个持续验证指标。",
-        "只有八项没有明确失败或关键取证未完成，且估值赔率与重大风险至少半通过，才允许输出条件买入。",
+        "结论先行，给出已通过数、首个阻断维度和未执行维度数。",
+        "八个维度按契约顺序执行；首个不通过或证据不足立即停止该股后续维度。",
+        "每个已执行维度写明布尔状态、理由、关键证据和反证。",
+        "只有八维全部通过才允许输出可买入，任何维度不得跨项抵消。",
         "多股任务必须证明完整集合覆盖，不能把分批缺失当作完整答案。",
     ),
 )
@@ -288,7 +288,7 @@ class DomainBoardQuerySpec(BaseModel):
 
     label: str = Field(min_length=1, max_length=64)
     board_queries: list[str] = Field(default_factory=list, max_length=4)
-    mapping_type: Literal["exact_board", "proxy_board", "unresolved"]
+    mapping_type: Literal["catalog_binding", "unresolved"]
     rationale: str = Field(default="", max_length=240)
     unresolved_parts: list[str] = Field(default_factory=list, max_length=8)
 

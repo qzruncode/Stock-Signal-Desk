@@ -1,8 +1,12 @@
-"""Transparent public-discussion sentiment sample for one A-share stock."""
+"""Transparent public-discussion sample for one A-share stock.
+
+The tool collects and labels source provenance only.  It deliberately does not
+infer sentiment from word lists; semantic polarity is evaluated later by the
+model together with context and negation.
+"""
 
 from __future__ import annotations
 
-import math
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -10,33 +14,6 @@ from typing import Any
 
 from src.tools._akshare import bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
-
-
-_POSITIVE = (
-    "超预期", "增长", "改善", "突破", "创新高", "利好", "看好", "受益", "回暖",
-    "复苏", "提升", "盈利", "领先", "强劲", "涨停", "增持", "回购", "分红",
-    "签约", "中标", "高景气", "净流入", "上涨", "反弹", "领涨", "兑现",
-)
-_NEGATIVE = (
-    "不及预期", "大幅下滑", "预亏", "亏损", "下滑", "减持", "风险", "违规",
-    "处罚", "退市", "立案", "诉讼", "违约", "跌停", "造假", "质疑", "承压",
-    "净流出", "下跌", "暴跌", "利空", "召回", "停产", "冻结", "质押",
-)
-_AMPLIFIERS = ("大幅", "暴涨", "暴跌", "严重", "远超", "显著", "急剧", "远低于", "远高于")
-_FORMAL_TITLE_HINTS = ("公告", "决议", "意见书", "保荐书", "法律意见", "年度报告", "半年度报告", "季度报告")
-
-
-def _classify_sentiment(text: str) -> tuple[float, list[str], list[str]]:
-    normalized = re.sub(r"\s+", " ", str(text or ""))
-    positive = [word for word in _POSITIVE if word in normalized]
-    negative = [word for word in _NEGATIVE if word in normalized]
-    total = len(positive) + len(negative)
-    if total == 0:
-        return 0.0, [], []
-    score = (len(positive) - len(negative)) / total
-    if any(word in normalized for word in _AMPLIFIERS):
-        score *= 1.25
-    return round(max(-1.0, min(1.0, score)), 3), positive, negative
 
 
 def _parse_count(value: Any) -> int:
@@ -48,15 +25,6 @@ def _parse_count(value: Any) -> int:
     if "万" in text:
         number *= 10_000
     return int(number)
-
-
-def _post_kind(author: str, title: str) -> str:
-    if author.endswith("资讯"):
-        return "syndicated_info"
-    if ":" in title or "：" in title:
-        if any(hint in title for hint in _FORMAL_TITLE_HINTS):
-            return "syndicated_info"
-    return "user_post"
 
 
 def _post_time(value: str, *, now: datetime | None = None) -> datetime | None:
@@ -109,21 +77,16 @@ def _fetch_guba_page(code: str, page_number: int) -> dict[str, Any]:
         ).strip()
         raw_time = str(row.css(".update::text").get() or "").strip()
         published = _post_time(raw_time)
-        score, positive_hits, negative_hits = _classify_sentiment(title)
         items.append({
             "title": title,
             "source": "东方财富股吧",
             "author": author or None,
-            "post_kind": _post_kind(author, title),
+            "post_kind": "public_discussion",
             "url": row.urljoin(href),
             "read_count": _parse_count(row.css(".read::text").get()),
             "reply_count": _parse_count(row.css(".reply::text").get()),
-            "sentiment_score": score,
-            "label": "positive" if score > 0 else "negative" if score < 0 else "neutral",
-            "positive_hits": positive_hits,
-            "negative_hits": negative_hits,
             "publish_time": published.isoformat() if published else None,
-            "classification_method": "deterministic_title_phrase_rules",
+            "semantic_status": "model_required",
             "page_number": page_number,
         })
     return {"items": items, "url": url, "status": int(page.status)}
@@ -223,7 +186,6 @@ def _fetch_stock_news_fallback(
                 published = _post_time(raw_time)
         if published and published < cutoff:
             continue
-        score, positive_hits, negative_hits = _classify_sentiment(f"{title} {summary}")
         items.append({
             "title": title,
             "summary": summary,
@@ -233,12 +195,8 @@ def _fetch_stock_news_fallback(
             "url": str(row.get("新闻链接") or "").strip(),
             "read_count": None,
             "reply_count": None,
-            "sentiment_score": score,
-            "label": "positive" if score > 0 else "negative" if score < 0 else "neutral",
-            "positive_hits": positive_hits,
-            "negative_hits": negative_hits,
             "publish_time": published.isoformat() if published else None,
-            "classification_method": "deterministic_title_and_summary_phrase_rules_non_social_fallback",
+            "semantic_status": "not_social_evidence",
             "page_number": None,
         })
     items.sort(key=lambda item: item.get("publish_time") or "", reverse=True)
@@ -266,21 +224,16 @@ def _fetch_xueqiu_mentions(code: str, name: str | None, *, days: int) -> tuple[l
             published = published.astimezone()
         if published and published < cutoff:
             continue
-        score, positive_hits, negative_hits = _classify_sentiment(f"{title} {summary}")
         items.append({
             "title": title,
             "source": "雪球热榜/RSSHub",
             "author": str(raw.get("author") or "").strip() or None,
-            "post_kind": "xueqiu_hot",
+            "post_kind": "public_discussion",
             "url": str(raw.get("link") or "").strip(),
             "read_count": None,
             "reply_count": None,
-            "sentiment_score": score,
-            "label": "positive" if score > 0 else "negative" if score < 0 else "neutral",
-            "positive_hits": positive_hits,
-            "negative_hits": negative_hits,
             "publish_time": published.isoformat() if published else None,
-            "classification_method": "deterministic_title_and_summary_phrase_rules",
+            "semantic_status": "model_required",
             "page_number": None,
         })
     return items, [str(error) for error in result.get("errors") or []]
@@ -330,17 +283,6 @@ def _fetch_diagnose_score(code: str, *, days: int) -> tuple[list[dict[str, Any]]
     trend.sort(key=lambda item: item["date"])
     current = next((item["score"] for item in reversed(trend) if item.get("score") is not None), None)
     return trend, current, []
-
-
-def _weighted_score(items: list[dict[str, Any]]) -> float:
-    weighted = 0.0
-    weight_total = 0.0
-    for item in items:
-        engagement = int(item.get("read_count") or 0) + 3 * int(item.get("reply_count") or 0)
-        weight = 1.0 + math.log1p(engagement)
-        weighted += float(item.get("sentiment_score") or 0) * weight
-        weight_total += weight
-    return round(weighted / weight_total * 100, 1) if weight_total else 0.0
 
 
 def get_social_sentiment(
@@ -403,24 +345,11 @@ def get_social_sentiment(
             continue
         seen.add(key)
         deduped.append(item)
-    user_items = [item for item in deduped if item.get("post_kind") == "user_post"]
-    xueqiu_sample = [item for item in deduped if item.get("post_kind") == "xueqiu_hot"]
+    discussion_items = [
+        item for item in deduped if item.get("post_kind") == "public_discussion"
+    ]
     syndicated_sample = [item for item in deduped if item.get("post_kind") == "syndicated_info"]
-    # For an Agent asking about social sentiment, user-authored evidence is more
-    # useful than a page full of syndicated headlines.  Keep each subgroup in
-    # newest-first order but prioritize user posts in the returned window.
-    items = [*user_items, *xueqiu_sample, *syndicated_sample][:limit]
-
-    # Syndicated headlines are context, not investor speech.  If Guba user
-    # posts are unavailable, only Xueqiu discussion evidence may contribute to
-    # the score; company-news fallback rows never do.
-    scoring_items = user_items or xueqiu_sample
-    positive_count = sum(item.get("label") == "positive" for item in scoring_items)
-    negative_count = sum(item.get("label") == "negative" for item in scoring_items)
-    neutral_count = sum(item.get("label") == "neutral" for item in scoring_items)
-    total = len(scoring_items)
-    sentiment_score = round((positive_count - negative_count) / total * 100, 1) if total else 0.0
-    sentiment_confidence = "high" if len(user_items) >= 20 else "medium" if len(user_items) >= 5 else "low"
+    items = [*discussion_items, *syndicated_sample][:limit]
     total_read = sum(int(item.get("read_count") or 0) for item in deduped)
     total_reply = sum(int(item.get("reply_count") or 0) for item in deduped)
     known_times = [
@@ -447,8 +376,8 @@ def get_social_sentiment(
         warnings.append("东方财富股吧抓取失败，已降级为 AKShare/东方财富公司新闻摘要；这些资讯不计入用户情绪分数")
     if coverage_warning:
         warnings.append(coverage_warning)
-    if len(user_items) < 5:
-        warnings.append(f"时间窗内仅采到 {len(user_items)} 条用户帖，社交情绪分数置信度较低")
+    if not discussion_items:
+        warnings.append("时间窗内没有取得可供模型研判的公开讨论样本")
     acquisition_succeeded = guba_available or bool(xueqiu_items) or fallback_used
     if not items and acquisition_succeeded:
         warnings.append("已完成公开讨论源采样，但没有取得时间窗内可用帖子")
@@ -458,11 +387,9 @@ def get_social_sentiment(
         if not date_key:
             continue
         row = daily.setdefault(date_key, {
-            "total": 0, "positive": 0, "negative": 0, "neutral": 0,
-            "read_total": 0, "reply_total": 0,
+            "total": 0, "read_total": 0, "reply_total": 0,
         })
         row["total"] += 1
-        row[str(item.get("label") or "neutral")] += 1
         row["read_total"] += int(item.get("read_count") or 0)
         row["reply_total"] += int(item.get("reply_count") or 0)
     score_by_date = {str(item.get("date")): item.get("score") for item in score_trend}
@@ -480,18 +407,19 @@ def get_social_sentiment(
         "items": items,
         "item_count": len(items),
         "total_discussion": len(deduped),
-        "user_post_count": len(user_items),
+        "user_post_count": len(discussion_items),
         "syndicated_info_count": len(syndicated_sample),
-        "xueqiu_hot_count": len(xueqiu_sample),
-        "returned_item_order": "user_posts_then_xueqiu_hot_then_syndicated_info_each_newest_first",
-        "sentiment_sample_scope": "guba_user_posts_then_xueqiu_discussion; syndicated_information_excluded",
-        "sentiment_score": sentiment_score,
-        "overall_score": sentiment_score,
-        "sentiment_confidence": sentiment_confidence,
-        "engagement_weighted_score": _weighted_score(scoring_items),
-        "positive_count": positive_count,
-        "negative_count": negative_count,
-        "neutral_count": neutral_count,
+        "xueqiu_hot_count": sum(
+            1 for item in discussion_items if item.get("source") == "雪球热榜/RSSHub"
+        ),
+        "returned_item_order": "public_discussion_then_syndicated_information_each_newest_first",
+        "sentiment_sample_scope": "bounded_public_discussion_for_model_synthesis",
+        "sentiment_score": None,
+        "overall_score": None,
+        "sentiment_confidence": None,
+        "positive_count": None,
+        "negative_count": None,
+        "neutral_count": None,
         "total_read": total_read,
         "total_reply": total_reply,
         "eastmoney_diagnose_score": diagnose_score,
@@ -500,13 +428,11 @@ def get_social_sentiment(
         "score_trend": score_trend,
         "daily_trend": daily_trend,
         "analysis": {
-            "positive_ratio_pct": round(positive_count / total * 100, 1) if total else 0.0,
-            "negative_ratio_pct": round(negative_count / total * 100, 1) if total else 0.0,
-            "neutral_ratio_pct": round(neutral_count / total * 100, 1) if total else 0.0,
-            "classification_method": "deterministic_phrase_rules_on_titles_and_available_rss_summaries",
+            "semantic_status": "model_required",
+            "classification_method": None,
             "limitations": [
                 "股吧为有限页公开样本，不代表全部投资者",
-                "大多数股吧列表项只有标题，情绪标签不能替代正文语义判断",
+                "大多数股吧列表项只有标题，必须结合上下文由模型判断",
                 "阅读和回复数仅表示抓取时点可见热度",
             ],
         },
@@ -545,8 +471,8 @@ TOOL = ToolSpec(
     name="get_social_sentiment",
     description=(
         "采样单只 A 股的东方财富股吧公开帖子，并补充 47 条 Infos 路由中的雪球热榜精确提及；"
-        "返回用户帖与资讯号拆分、标题规则情绪、阅读回复热度、实际时间覆盖和东方财富千股千评趋势。"
-        "这是有限公开样本，不代表全市场观点；千股千评分数与社交情绪分数严格分开。"
+        "返回公开讨论与资讯来源拆分、阅读回复热度、实际时间覆盖和东方财富千股千评趋势。"
+        "工具不使用词典判断情绪；语义极性由最终模型结合上下文分析。"
     ),
     parameters=object_schema({
         "symbol": {"type": "string", "description": "A 股代码或名称"},

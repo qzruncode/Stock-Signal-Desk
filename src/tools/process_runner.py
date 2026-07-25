@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from src.services.buy_criteria.professional_analysis import (
+    DIMENSION_DEFINITIONS,
+    PROFESSIONAL_BUY_ANALYSIS_MODE,
+    PROFESSIONAL_BUY_CONTRACT_VERSION,
+)
 from src.tools.process_worker import RESULT_PREFIX
 
 
@@ -18,7 +26,6 @@ ISOLATED_TOOL_NAMES = frozenset({
     "evaluate_multi_stock_buy_criteria",
     "analyze_stock_catalysts",
     "get_domain_stock_candidates",
-    "get_theme_stock_candidates",
     "get_market_status",
     "get_market_breadth",
     "get_sector_list",
@@ -48,12 +55,12 @@ def _professional_buy_stock_concurrency() -> int:
         return max(
             1,
             min(
-                6,
-                int(os.getenv("PROFESSIONAL_BUY_STOCK_CONCURRENCY", "1")),
+                4,
+                int(os.getenv("PROFESSIONAL_BUY_STOCK_CONCURRENCY", "4")),
             ),
         )
     except (TypeError, ValueError):
-        return 1
+        return 4
 
 
 def _execute_tool_process(
@@ -61,20 +68,90 @@ def _execute_tool_process(
     arguments: dict[str, Any],
     *,
     timeout_seconds: float,
+    cancel_event: threading.Event | None = None,
 ) -> Any:
     """Execute exactly one worker process without higher-level fan-out."""
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-m", "src.tools.process_worker"],
-            input=json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False),
-            text=True,
+    command = [sys.executable, "-m", "src.tools.process_worker"]
+    input_text = json.dumps(
+        {"name": name, "arguments": arguments},
+        ensure_ascii=False,
+    )
+    if cancel_event is None:
+        try:
+            completed = subprocess.run(
+                command,
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=max(1.0, timeout_seconds),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"隔离工具执行超时（>{timeout_seconds:.0f}s）"
+            ) from exc
+    else:
+        if cancel_event.is_set():
+            raise RuntimeError("隔离工具执行已取消")
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=max(1.0, timeout_seconds),
-            check=False,
+            text=True,
+            start_new_session=os.name != "nt",
         )
-    except subprocess.TimeoutExpired as exc:
-        raise TimeoutError(f"隔离工具执行超时（>{timeout_seconds:.0f}s）") from exc
+
+        def terminate_process_group() -> None:
+            if process.poll() is not None:
+                return
+            try:
+                if os.name != "nt":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+                process.wait(timeout=0.75)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                if process.poll() is None:
+                    try:
+                        if os.name != "nt":
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.wait(timeout=0.75)
+                    except subprocess.TimeoutExpired:
+                        pass
+
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        first_communication = True
+        while True:
+            if cancel_event.is_set():
+                terminate_process_group()
+                raise RuntimeError("隔离工具执行已取消")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_process_group()
+                raise TimeoutError(
+                    f"隔离工具执行超时（>{timeout_seconds:.0f}s）"
+                )
+            try:
+                stdout, stderr = process.communicate(
+                    input=input_text if first_communication else None,
+                    timeout=min(0.25, remaining),
+                )
+                completed = subprocess.CompletedProcess(
+                    args=command,
+                    returncode=int(process.returncode or 0),
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                break
+            except subprocess.TimeoutExpired:
+                first_communication = False
 
     marker_line = next(
         (
@@ -102,12 +179,16 @@ def _snapshot_fallback_for_professional_chunk(
     error: Exception,
     *,
     timeout_seconds: float,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Preserve every requested company when one deep-evidence shard stalls."""
+    process_options: dict[str, Any] = {"timeout_seconds": timeout_seconds}
+    if cancel_event is not None:
+        process_options["cancel_event"] = cancel_event
     snapshot = _execute_tool_process(
         "get_multi_stock_snapshot",
         {"symbols": symbols},
-        timeout_seconds=timeout_seconds,
+        **process_options,
     )
     missing_dimensions = [
         "business_reality", "financial_quality", "valuation", "expectations",
@@ -129,7 +210,6 @@ def _snapshot_fallback_for_professional_chunk(
                 "missing": missing_dimensions,
                 "complete": False,
             },
-            "screening_flags": {"positive": [], "negative": []},
         })
     message = f"专业证据分片 {symbols} 未在时限内完成，已保留多股快照：{error}"
     return {
@@ -184,13 +264,19 @@ def _execute_professional_evidence_chunked(
     arguments: dict[str, Any],
     *,
     timeout_seconds: float,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
     if not symbols:
+        process_options: dict[str, Any] = {
+            "timeout_seconds": timeout_seconds,
+        }
+        if cancel_event is not None:
+            process_options["cancel_event"] = cancel_event
         return _execute_tool_process(
             _PROFESSIONAL_EVIDENCE_TOOL,
             arguments,
-            timeout_seconds=timeout_seconds,
+            **process_options,
         )
     symbol_chunks = [
         symbols[index:index + _PROFESSIONAL_EVIDENCE_CHUNK_SIZE]
@@ -207,18 +293,26 @@ def _execute_professional_evidence_chunked(
     def run_chunk(index: int, chunk: list[str]) -> tuple[int, dict[str, Any]]:
         chunk_symbols = ",".join(chunk)
         chunk_arguments = {**arguments, "symbols": chunk_symbols}
+        process_options: dict[str, Any] = {
+            "timeout_seconds": deep_timeout,
+        }
+        if cancel_event is not None:
+            process_options["cancel_event"] = cancel_event
         try:
             result = _execute_tool_process(
                 _PROFESSIONAL_EVIDENCE_TOOL,
                 chunk_arguments,
-                timeout_seconds=deep_timeout,
+                **process_options,
             )
         except Exception as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise
             result = _snapshot_fallback_for_professional_chunk(
                 chunk_symbols,
                 thesis,
                 exc,
                 timeout_seconds=fallback_timeout,
+                cancel_event=cancel_event,
             )
         return index, result
 
@@ -234,38 +328,39 @@ def _execute_professional_evidence_chunked(
 def _professional_buy_failure_item(entity: str, error: Exception) -> dict[str, Any]:
     """Turn one failed worker into an explicit evidence-insufficient result."""
     message = f"{entity}专业买入分析进程失败：{type(error).__name__}: {str(error)[:240]}"
+    first_id, first_name = DIMENSION_DEFINITIONS[0]
+    blocking = {
+        "criterion_id": first_id,
+        "criterion_name": first_name,
+        "index": 0,
+        "passed": False,
+        "status": "insufficient",
+        "confidence": "",
+        "verdict": message,
+        "details": {},
+    }
     return {
         "success": True,
         "partial": True,
-        "contract_version": "professional_buy_analysis_v2",
-        "playbook": "professional_eight_dimension_buy_analysis",
+        "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+        "playbook": PROFESSIONAL_BUY_ANALYSIS_MODE,
         "items": [{
             "symbol": entity,
             "name": entity,
-            "analysis_mode": "professional_eight_dimension_buy_analysis",
-            "investment_profile": "分析进程失败",
-            "overall_summary": "本轮没有形成可验证的八维完整分析。",
-            "core_thesis": "待重新分析",
-            "biggest_issue": message,
-            "recommendation_code": "evidence_insufficient",
-            "recommendation": "证据不足，暂停判断",
-            "recommendation_reason": message,
-            "score": 0,
-            "score_total": 8,
-            "counts": {
-                "pass": 0,
-                "partial": 0,
-                "fail": 0,
-                "insufficient": 8,
-            },
-            "dimensions": [],
+            "analysis_mode": PROFESSIONAL_BUY_ANALYSIS_MODE,
+            "final_decision": "不可买入",
+            "gate_pass_complete": False,
             "coverage_complete": False,
-            "bull_case_chain": "分析失败，暂不构造看多链条",
-            "risk_chain": "分析进程失败 → 证据无法复核 → 暂停买入判断",
-            "monitoring_points": ["重新运行完整八维分析"],
-            "evidence_gaps": [message],
-            "source_links": [],
-            "model_error": message,
+            "passed_count": 0,
+            "failed_count": 0,
+            "insufficient_count": 1,
+            "not_evaluated_count": len(DIMENSION_DEFINITIONS) - 1,
+            "total": len(DIMENSION_DEFINITIONS),
+            "stopped_at": first_id,
+            "stopped_at_name": first_name,
+            "stopped_verdict": message,
+            "blocking_reasons": [blocking],
+            "criteria": [blocking],
         }],
         "resolved_entities": [],
         "unresolved_entities": [],
@@ -294,8 +389,8 @@ def _merge_professional_buy_chunks(
         **first,
         "success": bool(items),
         "partial": bool(errors) or not coverage_complete,
-        "contract_version": "professional_buy_analysis_v2",
-        "playbook": "professional_eight_dimension_buy_analysis",
+        "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+        "playbook": PROFESSIONAL_BUY_ANALYSIS_MODE,
         "items": items,
         "resolved_entities": resolved,
         "unresolved_entities": unresolved,
@@ -311,24 +406,37 @@ def _execute_professional_buy_analysis_chunked(
     arguments: dict[str, Any],
     *,
     timeout_seconds: float,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Isolate each company and evaluate the collection with bounded concurrency."""
     symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
     if not symbols:
+        process_options: dict[str, Any] = {
+            "timeout_seconds": timeout_seconds,
+        }
+        if cancel_event is not None:
+            process_options["cancel_event"] = cancel_event
         return _execute_tool_process(
             _PROFESSIONAL_BUY_ANALYSIS_TOOL,
             arguments,
-            timeout_seconds=timeout_seconds,
+            **process_options,
         )
 
     def run_one(index: int, symbol: str) -> tuple[int, dict[str, Any]]:
+        process_options: dict[str, Any] = {
+            "timeout_seconds": min(2100.0, timeout_seconds),
+        }
+        if cancel_event is not None:
+            process_options["cancel_event"] = cancel_event
         try:
             result = _execute_tool_process(
                 _PROFESSIONAL_BUY_ANALYSIS_TOOL,
                 {**arguments, "symbols": symbol},
-                timeout_seconds=min(2100.0, timeout_seconds),
+                **process_options,
             )
         except Exception as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise
             result = _professional_buy_failure_item(symbol, exc)
         return index, result
 
@@ -352,6 +460,7 @@ def execute_tool_isolated(
     arguments: dict[str, Any],
     *,
     timeout_seconds: float = 40.0,
+    cancel_event: threading.Event | None = None,
 ) -> Any:
     """Execute a tool in a one-shot Python process and return its result.
 
@@ -363,13 +472,18 @@ def execute_tool_isolated(
         return _execute_professional_evidence_chunked(
             arguments,
             timeout_seconds=timeout_seconds,
+            cancel_event=cancel_event,
         )
     if name == _PROFESSIONAL_BUY_ANALYSIS_TOOL:
         return _execute_professional_buy_analysis_chunked(
             arguments,
             timeout_seconds=timeout_seconds,
+            cancel_event=cancel_event,
         )
-    return _execute_tool_process(name, arguments, timeout_seconds=timeout_seconds)
+    process_options: dict[str, Any] = {"timeout_seconds": timeout_seconds}
+    if cancel_event is not None:
+        process_options["cancel_event"] = cancel_event
+    return _execute_tool_process(name, arguments, **process_options)
 
 
 __all__ = ["ISOLATED_TOOL_NAMES", "STATEFUL_TOOL_NAMES", "execute_tool_isolated"]

@@ -150,11 +150,9 @@ def _compact_risks(data: dict[str, Any]) -> dict[str, Any]:
         )),
         "items": [
             _pick(item, (
-                "title", "date", "publish_time", "risk_category", "risk_label",
-                "severity", "status", "source", "source_type", "url",
-                "risk_summary", "summary", "tags", "confidence",
-                "evidence_basis", "requires_fulltext_verification",
-                "lifecycle_basis",
+                "title", "date", "source", "source_type", "url", "summary",
+                "evidence_basis", "semantic_status",
+                "requires_fulltext_verification",
             ))
             for item in (data.get("items") or [])[:20]
             if isinstance(item, dict)
@@ -164,11 +162,6 @@ def _compact_risks(data: dict[str, Any]) -> dict[str, Any]:
 
 def _compact_announcements(data: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in data.get("items") or [] if isinstance(item, dict)]
-    important = [
-        item for item in items
-        if item.get("notice_type") != "其他" or item.get("importance") in {"high", "medium"}
-    ]
-    selected = (important or items)[:20]
     return {
         **_pick(data, (
             "success", "partial", "symbol", "name", "has_announcements", "analysis",
@@ -177,9 +170,10 @@ def _compact_announcements(data: dict[str, Any]) -> dict[str, Any]:
         )),
         "items": [
             _pick(item, (
-                "title", "notice_type", "publish_date", "importance", "tags", "url", "source",
+                "title", "notice_type", "source_notice_type", "publish_date",
+                "url", "source", "source_type", "semantic_status",
             ))
-            for item in selected
+            for item in items[:20]
         ],
     }
 
@@ -242,23 +236,13 @@ def _run_dimension(
 
 
 def _coverage(item: dict[str, Any]) -> dict[str, Any]:
-    financials = item.get("financials") or {}
-    valuation = item.get("valuation") or {}
-    consensus = item.get("consensus") or {}
-    peers = item.get("peer_comparison") or {}
     technical = (item.get("snapshot") or {}).get("technical") or {}
     dimensions = {
         "business_reality": _ok(item.get("profile")) and _ok(item.get("business_segments")),
-        "financial_quality": _ok(financials) and len(financials.get("items") or []) >= 4,
-        "valuation": _ok(valuation) and any(valuation.get(key) is not None for key in ("pe_ttm", "pb_mrq", "ps_ttm")),
-        # Zero analyst coverage is itself a verified expectation state when
-        # both summary queries completed. Only an unavailable source is a
-        # missing evidence dimension.
-        "expectations": _ok(consensus) and (
-            bool(consensus.get("coverage_available"))
-            or consensus.get("coverage_status") == "no_sell_side_coverage"
-        ),
-        "peer_context": _ok(peers) and bool(peers.get("dimensions")),
+        "financial_quality": _ok(item.get("financials")),
+        "valuation": _ok(item.get("valuation")),
+        "expectations": _ok(item.get("consensus")),
+        "peer_context": _ok(item.get("peer_comparison")),
         "trading_state": bool(technical.get("success")) and _ok(item.get("capital_flow")),
         "catalyst_and_risk": _ok(item.get("announcements")) and _ok(item.get("risk_events")),
     }
@@ -270,57 +254,6 @@ def _coverage(item: dict[str, Any]) -> dict[str, Any]:
         "missing": missing,
         "complete": not missing,
     }
-
-
-def _screening_flags(item: dict[str, Any]) -> dict[str, list[str]]:
-    negatives: list[str] = []
-    positives: list[str] = []
-    periods = (item.get("financials") or {}).get("items") or []
-    latest = periods[-1] if periods else {}
-    valuation = item.get("valuation") or {}
-    technical = ((item.get("snapshot") or {}).get("technical") or {}).get("indicators") or {}
-    flow_windows = (item.get("capital_flow") or {}).get("windows") or {}
-    risks = item.get("risk_events") or {}
-
-    if latest.get("parent_net_profit") is not None:
-        (positives if latest["parent_net_profit"] > 0 else negatives).append(
-            "最新单季度盈利" if latest["parent_net_profit"] > 0 else "最新单季度亏损"
-        )
-    if latest.get("revenue_yoy") is not None:
-        (positives if latest["revenue_yoy"] > 0 else negatives).append(
-            "最新单季度收入同比增长" if latest["revenue_yoy"] > 0 else "最新单季度收入同比下降"
-        )
-    if latest.get("operating_cash_flow") is not None:
-        (positives if latest["operating_cash_flow"] > 0 else negatives).append(
-            "最新单季度经营现金流为正" if latest["operating_cash_flow"] > 0 else "最新单季度经营现金流为负"
-        )
-    if (latest.get("debt_ratio") or 0) >= 70:
-        negatives.append("资产负债率较高")
-    pe_ttm = valuation.get("pe_ttm")
-    industry_pe = (valuation.get("industry_average") or {}).get("pe")
-    if pe_ttm and industry_pe and pe_ttm > industry_pe * 1.5:
-        negatives.append("PE(TTM)显著高于行业中值口径")
-    if valuation.get("peg_forward") is not None:
-        (positives if valuation["peg_forward"] <= 1.5 else negatives).append(
-            "远期PEG不高于1.5" if valuation["peg_forward"] <= 1.5 else "远期PEG高于1.5"
-        )
-    if technical.get("return_20d_pct") is not None and technical["return_20d_pct"] <= -15:
-        negatives.append("近20日跌幅超过15%")
-    flow_10d = flow_windows.get("10d") or {}
-    if flow_10d.get("main_net_inflow") is not None:
-        (positives if flow_10d["main_net_inflow"] > 0 else negatives).append(
-            "10日主力口径资金净流入" if flow_10d["main_net_inflow"] > 0 else "10日主力口径资金净流出"
-        )
-    detected_high = (
-        (risks.get("analysis") or {}).get("detected_high_severity_count")
-        or 0
-    )
-    if detected_high:
-        negatives.append(
-            f"存在{detected_high}项高风险文本命中，须按正式公告时间线复核当前状态"
-        )
-    return {"positive": positives, "negative": negatives}
-
 
 def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[str, Any]:
     resolved, unresolved = resolve_securities_csv(symbols)
@@ -385,7 +318,6 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
             **details[code],
         }
         item["evidence_coverage"] = _coverage(item)
-        item["screening_flags"] = _screening_flags(item)
         if not item["evidence_coverage"]["complete"]:
             warnings.append(
                 f"{entity['name']}({code}) 缺少证据维度: "
@@ -416,7 +348,7 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
             "financials": "同花顺/AKShare核心指标 + 东方财富单季度财报",
             "business_segments": "东方财富主营构成",
             "valuation_consensus_peers": "东方财富结构化估值与预测",
-            "events": "东方财富公司公告 + 公司新闻规则筛查",
+            "events": "东方财富公司公告 + 公司新闻原始证据",
             "capital_flow": "东方财富成交单大小口径",
         },
         "evidence_standard": [
@@ -424,8 +356,8 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
             "peer_context", "trading_state", "catalyst_and_risk",
         ],
         "decision_rule": (
-            "必须逐家公司综合全部维度，不得因估值高、亏损或技术走弱而提前停止后续分析；"
-            "screening_flags 只是确定性信号清单，不是最终买卖建议。"
+            "本工具只报告各来源是否成功及原始结构化证据，不根据数值阈值生成买卖标签；"
+            "语义判断由后续分析模型完成。"
         ),
         "errors": errors,
         "warnings": warnings,

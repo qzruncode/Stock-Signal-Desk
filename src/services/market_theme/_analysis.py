@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Rule-based analysis and response assembly for summary/analysis/evidence/insight layers."""
+"""Market evidence and validated-model response assembly."""
 
 from __future__ import annotations
 
@@ -7,170 +7,192 @@ import json
 import logging
 import subprocess
 import sys
-from datetime import datetime
 from typing import Any, Optional
 
 from src.ai_caller import current_shanghai_timestamp
 
-from ._context import (
-    collect_context,
-    build_minimal_evidence_fallback,
-    build_minimal_fallback,
-    build_minimal_model_report,
-    _summarize_sources,
-)
-from ._market import (
-    build_deep_summary,
-    build_market_stage,
-    build_next_themes,
-    build_policy_watchlist,
-    build_rule_themes,
-    build_trade_action,
-    collect_headlines,
-    summarize_market_regime,
-)
-from ._utils import cache_get, cache_put
+from ._context import _summarize_sources, build_report_evidence_pack
+from ._market import build_deep_summary, build_trade_action, empty_market_stage
 
 logger = logging.getLogger(__name__)
 
 _JSON_MARKER = "__MARKET_THEME_JSON__="
 
 
-def build_summary_response(context: dict[str, Any]) -> dict[str, Any]:
-    snapshot = context["source_snapshot"]
-    themes = build_rule_themes(snapshot, [])
-    next_themes = build_next_themes(snapshot, [])
-    market_regime = summarize_market_regime(snapshot["market_status"], snapshot["market_breadth"])
-    leading = themes[0] if themes else None
+def _model_report_view(report: dict[str, Any]) -> dict[str, Any]:
+    current = [
+        item for item in report.get("current_mainlines") or []
+        if isinstance(item, dict)
+    ]
+    future = [
+        item for item in report.get("future_mainlines") or []
+        if isinstance(item, dict)
+    ]
     return {
-        "generated_at": context["generated_at"],
-        "headline": (
-            f"当前A股主线不是单线，更像 { ' / '.join(theme['name'] for theme in themes[:3]) } 并行。"
-            if themes else "当前市场主线仍偏轮动，尚未形成特别稳定的单一方向。"
+        "generated_at": report.get("generated_at") or current_shanghai_timestamp(),
+        "headline": str(report.get("overview") or "市场主线动态研判已完成。"),
+        "market_regime": str(
+            (report.get("market_stage") or {}).get("label") or "动态语义研判"
         ),
-        "market_regime": market_regime,
-        "market_stage": build_market_stage(snapshot["market_status"], snapshot["market_breadth"], themes),
-        "current_themes": [
-            {
-                "name": theme["name"],
-                "stage": theme["stage"],
-                "rank_label": theme.get("rank_label"),
-                "components": theme.get("components", []),
-                "stage_reason": theme.get("stage_reason"),
-            }
-            for theme in themes[:3]
+        "market_stage": report.get("market_stage") or empty_market_stage(),
+        "primary_judgement": str(report.get("full_report") or report.get("overview") or ""),
+        "investment_takeaway": "；".join(
+            str(item) for item in report.get("action_summary") or [] if str(item).strip()
+        ),
+        "policy_watchlist": [
+            str(item) for item in report.get("policy_watchlist") or [] if str(item).strip()
         ],
-        "next_theme_pool": [candidate["name"] for candidate in next_themes[:4]],
-        "investment_takeaway": (
-            f"当前更该围绕 {leading['name']} 这类仍有产业和资金共振的方向做取舍，"
-            "而不是追逐纯情绪题材。"
-            if leading else "当前更适合等待更清晰的主线聚焦。"
-        ),
-        "source_snapshot": {
-            "market_status": snapshot["market_status"],
-            "market_breadth": snapshot["market_breadth"],
-        },
+        "current_themes": current,
+        "next_themes": future,
+        "current_mainlines": current,
+        "future_mainlines": future,
+        "llm_used": bool(report.get("llm_used")),
+        "model_used": report.get("model_used"),
+        "semantic_status": "completed",
     }
 
 
-def build_response(context: dict[str, Any]) -> dict[str, Any]:
+def build_summary_response(
+    context: dict[str, Any],
+    *,
+    model_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     snapshot = context["source_snapshot"]
-    headlines = collect_headlines(snapshot["rss"])
-    themes = build_rule_themes(snapshot, headlines)
-    next_themes = build_next_themes(snapshot, headlines)
-
-    market_status = snapshot["market_status"]
-    breadth = snapshot["market_breadth"]
-    market_regime = summarize_market_regime(market_status, breadth)
-
-    headline = (
-        f"当前市场不是单一主线，而是由“{themes[0]['name']}”领衔、"
-        f"“{themes[1]['name']}”与“{themes[2]['name']}”共同构成主线梯队。"
-        if len(themes) >= 3
-        else (f"当前更像“{themes[0]['name']}”领衔的结构性主线。" if themes else "当前市场更像多方向轮动，尚未形成特别清晰且稳定的单一主线。")
-    )
-    primary = (
-        "这版结果不是在猜下一个概念名，而是把板块涨跌、资金流、官方公开信息、行业研报和政策线索"
-        "收敛成几个能被用户直接理解的叙事级主线，再判断它们分别处在预热、发酵、加速还是分歧阶段。"
-    )
-    takeaway = (
-        "优先关注具备政策催化、产业趋势验证和估值性价比三者共振的方向；"
-        "对只有短线热度、缺少中期逻辑支撑的题材保持克制。"
-    )
+    if model_report and model_report.get("current_mainlines"):
+        view = _model_report_view(model_report)
+        view["source_snapshot"] = {
+            "market_status": snapshot.get("market_status") or {},
+            "market_breadth": snapshot.get("market_breadth") or {},
+        }
+        return view
     return {
         "generated_at": context["generated_at"],
-        "headline": headline,
-        "market_regime": market_regime,
-        "primary_judgement": primary,
-        "investment_takeaway": takeaway,
-        "policy_watchlist": build_policy_watchlist(headlines),
-        "current_themes": themes,
-        "next_themes": next_themes,
+        "headline": "原始市场证据已更新，动态主线研判尚未完成。",
+        "market_regime": "未研判",
+        "market_stage": empty_market_stage(),
+        "current_themes": [],
+        "next_theme_pool": [],
+        "investment_takeaway": "模型完成基于证据的动态归纳前，不输出主线名称或阶段。",
+        "source_snapshot": {
+            "market_status": snapshot.get("market_status") or {},
+            "market_breadth": snapshot.get("market_breadth") or {},
+        },
+        "llm_used": False,
+        "model_used": None,
+        "semantic_status": "pending",
+    }
+
+
+def build_response(
+    context: dict[str, Any],
+    *,
+    model_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    snapshot = context["source_snapshot"]
+    if model_report and model_report.get("current_mainlines"):
+        result = _model_report_view(model_report)
+    else:
+        result = {
+            "generated_at": context["generated_at"],
+            "headline": "已收集市场、板块、资金和公开信息，动态主线研判暂不可用。",
+            "market_regime": "未研判",
+            "market_stage": empty_market_stage(),
+            "primary_judgement": (
+                "系统不再使用关键词目录、固定叙事或阈值公式代替策略研判。"
+                "模型未完成时只返回原始证据。"
+            ),
+            "investment_takeaway": "本轮不生成未经语义研判的主题结论。",
+            "policy_watchlist": [],
+            "current_themes": [],
+            "next_themes": [],
+            "current_mainlines": [],
+            "future_mainlines": [],
+            "llm_used": False,
+            "model_used": None,
+            "semantic_status": "unavailable",
+        }
+    result.update({
         "source_notes": [
-            "公开市场数据：市场状态、市场宽度、行业/概念板块、板块资金流向",
-            "官方/交易所信息：上交所问询、上交所披露、中国外汇交易中心公开信息",
-            "公共资讯与研报：财联社电报、华尔街见闻日历、东方财富策略/宏观/行业研报",
+            "公开市场状态、市场宽度、行业与概念板块、板块资金流",
+            "交易所与官方公开信息",
+            "公共资讯与公开研究资料",
+        ],
+        "source_summary": _summarize_sources(snapshot),
+        "source_snapshot": snapshot,
+    })
+    return result
+
+
+def build_evidence_response(context: dict[str, Any]) -> dict[str, Any]:
+    """Expose raw observations only; no rule-based theme synthesis."""
+    snapshot = context["source_snapshot"]
+    return {
+        "generated_at": context["generated_at"],
+        "market_stage": empty_market_stage(),
+        "current_themes": [],
+        "next_themes": [],
+        "policy_watchlist": [],
+        "semantic_status": "model_required",
+        "evidence_pack": build_report_evidence_pack(context),
+        "source_notes": [
+            "该层只提供原始结构化证据，不判断主题、生命周期或主线排名。",
         ],
         "source_summary": _summarize_sources(snapshot),
         "source_snapshot": snapshot,
     }
 
 
-def build_evidence_response(context: dict[str, Any]) -> dict[str, Any]:
-    full = build_response(context)
-    snapshot = context["source_snapshot"]
-    return {
-        "generated_at": context["generated_at"],
-        "market_stage": build_market_stage(snapshot["market_status"], snapshot["market_breadth"], full["current_themes"]),
-        "current_themes": full["current_themes"],
-        "next_themes": full["next_themes"],
-        "policy_watchlist": full["policy_watchlist"],
-        "source_notes": full["source_notes"],
-        "source_summary": full["source_summary"],
-        "source_snapshot": full["source_snapshot"],
-    }
-
-
 def build_insight_response(evidence: dict[str, Any]) -> dict[str, Any]:
-    current_themes = evidence.get("current_themes") or []
-    next_themes = evidence.get("next_themes") or []
-    market_stage = evidence.get("market_stage") or {"label": "结构轮动", "description": "当前市场仍在多方向轮动。"}
-    leading = current_themes[0] if current_themes else None
-    second = current_themes[1] if len(current_themes) > 1 else None
-    third = current_themes[2] if len(current_themes) > 2 else None
-
-    overview = (
-        f"我的判断是：当前A股不是单一主线，而是“{leading['name']} + {second['name']} + {third['name']}”三条线并行，"
-        f"其中最强主线是 {leading['name']}，市场整体处在{market_stage.get('label')}。"
-        if leading and second and third
-        else "我的判断是：当前市场仍以结构轮动为主，尚未形成完全单一的主线。"
-    )
-    lifecycle_notes = []
-    for theme in current_themes[:3]:
-        lifecycle_notes.append({
-            "theme": theme["name"],
-            "stage": theme["stage"],
-            "judgement": theme.get("thesis") or "",
-            "reason": theme.get("stage_reason") or "",
-            "action": build_trade_action(theme),
-        })
+    current = [
+        item for item in (
+            evidence.get("current_mainlines") or evidence.get("current_themes") or []
+        )
+        if isinstance(item, dict)
+    ]
+    future = [
+        item for item in (
+            evidence.get("future_mainlines") or evidence.get("next_themes") or []
+        )
+        if isinstance(item, dict)
+    ]
+    market_stage = evidence.get("market_stage") or empty_market_stage()
+    lifecycle_notes = [
+        {
+            "theme": item.get("name"),
+            "stage": item.get("stage"),
+            "judgement": item.get("reason") or item.get("thesis") or "",
+            "reason": item.get("reason") or item.get("stage_reason") or "",
+            "action": build_trade_action(item),
+        }
+        for item in current
+    ]
     future_outlook = [
         {
-            "name": item["name"],
-            "why_now": item["why_now"],
-            "stage_hint": "候选观察期",
+            "name": item.get("name"),
+            "why_now": item.get("reason") or item.get("why_now") or "",
+            "stage_hint": item.get("stage_hint") or "",
         }
-        for item in next_themes[:4]
+        for item in future
     ]
     return {
         "generated_at": evidence.get("generated_at") or current_shanghai_timestamp(),
-        "overview": overview,
+        "overview": str(
+            evidence.get("overview")
+            or (
+                "动态主线研判已完成。"
+                if current
+                else "原始证据已收集，动态主线研判尚未完成。"
+            )
+        ),
         "market_stage": market_stage,
         "lifecycle_notes": lifecycle_notes,
         "future_outlook": future_outlook,
-        "deep_summary": build_deep_summary(market_stage, lifecycle_notes, future_outlook),
-        "llm_used": False,
-        "model_used": None,
+        "deep_summary": build_deep_summary(
+            market_stage, lifecycle_notes, future_outlook,
+        ),
+        "llm_used": bool(evidence.get("llm_used")),
+        "model_used": evidence.get("model_used"),
+        "semantic_status": "completed" if current else "pending",
     }
 
 
@@ -194,9 +216,11 @@ def run_isolated(*, force: bool, layer: str, timeout: int = 35) -> Optional[dict
     except Exception:
         logger.exception("market theme isolated runner failed to start")
         return None
-
     stdout = completed.stdout or ""
-    payload_line = next((line for line in stdout.splitlines() if line.startswith(_JSON_MARKER)), None)
+    payload_line = next(
+        (line for line in stdout.splitlines() if line.startswith(_JSON_MARKER)),
+        None,
+    )
     if completed.returncode != 0 or not payload_line:
         logger.error(
             "market theme isolated runner failed: code=%s stderr=%s stdout_tail=%s",
@@ -205,11 +229,9 @@ def run_isolated(*, force: bool, layer: str, timeout: int = 35) -> Optional[dict
             stdout.strip()[-1200:],
         )
         return None
-
     try:
         payload = json.loads(payload_line[len(_JSON_MARKER):])
-        if isinstance(payload, dict):
-            return payload
+        return payload if isinstance(payload, dict) else None
     except Exception:
         logger.exception("market theme isolated runner returned invalid json")
-    return None
+        return None

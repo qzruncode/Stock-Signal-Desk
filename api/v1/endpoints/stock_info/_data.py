@@ -213,17 +213,22 @@ def _get_stock_industry(symbol: str) -> str:
                 return meta.industry
     except Exception:
         logger.warning("[StockBusiness] DB industry lookup failed for symbol=%s", symbol, exc_info=True)
-    # Fallback: infer industry from stock name keywords. (stock_mapping only exports
-    # STOCK_NAME_MAP; an earlier STOCK_SECTOR_MAP reference never existed and raised ImportError.)
-    from src.data.stock_mapping import STOCK_NAME_MAP
-    name = STOCK_NAME_MAP.get(symbol, "")
-    if name:
-        if any(word in name for word in ['银行', '证券', '保险', '信托']):
-            return "金融"
-        if any(word in name for word in ['医药', '生物', '医疗']):
-            return "医药生物"
-        if any(word in name for word in ['科技', '信息', '软件', '电子']):
-            return "信息技术"
-        if any(word in name for word in ['地产', '房产']):
-            return "房地产"
-    return "综合"
+    try:
+        import akshare as ak
+
+        frame = ak.stock_individual_info_em(symbol=symbol, timeout=10)
+        if frame is not None and not frame.empty:
+            info = {
+                str(row.get("item") or "").strip(): row.get("value")
+                for _, row in frame.iterrows()
+            }
+            industry = str(info.get("行业") or "").strip()
+            if industry:
+                return industry
+    except Exception:
+        logger.warning(
+            "[StockBusiness] provider industry lookup failed for symbol=%s",
+            symbol,
+            exc_info=True,
+        )
+    return "未知"

@@ -13,7 +13,7 @@ def _uncached(key, fn, **kwargs):
     return fn(), False
 
 
-def test_announcements_keep_buyback_and_shareholder_increase_separate() -> None:
+def test_announcements_preserve_source_types_without_semantic_filtering() -> None:
     frame = pd.DataFrame([
         {
             "代码": "600519",
@@ -35,10 +35,12 @@ def test_announcements_keep_buyback_and_shareholder_increase_separate() -> None:
     with patch("src.tools.get_announcements.cached_call", side_effect=_uncached), \
          patch("src.tools.get_announcements._fetch_akshare", return_value=frame):
         all_items = get_announcements("600519", type="all")
-        buybacks = get_announcements("600519", type="回购")
 
-    assert [item["notice_type"] for item in all_items["items"]] == ["回购", "增持"]
-    assert [item["url"] for item in buybacks["items"]] == ["https://example.com/buyback"]
+    assert [item["notice_type"] for item in all_items["items"]] == [
+        "回购事项进展",
+        "股东增持股份",
+    ]
+    assert all(item["semantic_status"] == "model_required" for item in all_items["items"])
     assert all_items["source"] == "AKShare/东方财富公司公告"
     assert all_items["success"] is True
 

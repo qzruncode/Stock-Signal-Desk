@@ -12,7 +12,7 @@ from src.tools.base import ToolSpec, object_schema
 
 
 INDICATORS: dict[str, dict[str, Any]] = {
-    "PMI": {"name": "制造业采购经理指数", "frequency": "monthly", "unit": "index_point", "threshold": 50},
+    "PMI": {"name": "制造业采购经理指数", "frequency": "monthly", "unit": "index_point"},
     "CPI": {"name": "居民消费价格指数", "frequency": "monthly", "unit": "index_previous_year_100"},
     "PPI": {"name": "工业生产者出厂价格指数", "frequency": "monthly", "unit": "index_previous_year_100"},
     "GDP": {"name": "国内生产总值", "frequency": "quarterly", "unit": "亿元"},
@@ -97,10 +97,20 @@ def _trend(records: list[dict[str, Any]]) -> dict[str, Any]:
     values = [number(row.get(metric)) for row in records[-5:]]
     values = [value for value in values if value is not None]
     if len(values) < 2:
-        return {"direction": "unknown", "metric": metric, "change": None}
+        return {
+            "direction": None,
+            "semantic_status": "model_required",
+            "metric": metric,
+            "change": None,
+        }
     change = values[-1] - values[0]
-    direction = "rising" if change > 0.05 else "falling" if change < -0.05 else "flat"
-    return {"direction": direction, "metric": metric, "change": round(change, 4), "window_observations": len(values)}
+    return {
+        "direction": None,
+        "semantic_status": "model_required",
+        "metric": metric,
+        "change": round(change, 4),
+        "window_observations": len(values),
+    }
 
 
 def get_macro_indicator(
@@ -160,7 +170,6 @@ def get_macro_indicator(
         "indicator_name": INDICATORS[indicator]["name"],
         "frequency": INDICATORS[indicator]["frequency"],
         "unit": INDICATORS[indicator]["unit"],
-        "threshold": INDICATORS[indicator].get("threshold"),
         "latest": latest,
         "history": records,
         "history_count": len(records),

@@ -20,19 +20,6 @@ from src.tools.base import ToolSpec, enforce_result_contract
 ToolDef = ToolSpec  # compatibility for existing API metadata imports
 
 
-_ENUM_VALUE_ALIASES: dict[tuple[str, str], dict[str, Any]] = {
-    ("get_sector_flow", "period"): {
-        "今日": "today", "当天": "today", "1日": "today",
-        "5日": "5d", "近5日": "5d", "五日": "5d",
-        "10日": "10d", "近10日": "10d", "十日": "10d",
-    },
-    ("get_sector_flow", "type"): {
-        "行业": "industry", "行业板块": "industry",
-        "概念": "concept", "概念板块": "concept",
-    },
-}
-
-
 def _snake_case(value: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
 
@@ -84,9 +71,6 @@ def normalize_tool_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[
         if key not in properties:
             key = raw_key
         value = _coerce_schema_scalar(value, properties.get(key) or {})
-        aliases = _ENUM_VALUE_ALIASES.get((tool.name, key)) or {}
-        if isinstance(value, str):
-            value = aliases.get(value.strip(), aliases.get(value.strip().lower(), value))
         normalized[key] = value
     return normalized
 
@@ -120,7 +104,6 @@ TOOL_MODULES: tuple[str, ...] = (
     "evaluate_multi_stock_buy_criteria",
     "analyze_stock_catalysts",
     "get_domain_stock_candidates",
-    "get_theme_stock_candidates",
     "screen_atr_volatility_stocks",
     # Market and sector state
     "get_market_status",

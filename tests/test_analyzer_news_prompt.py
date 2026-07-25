@@ -14,68 +14,25 @@ except ModuleNotFoundError:
 
 from src.analyzer import (
     GeminiAnalyzer,
-    _BULLISH_TREND_HINTS,
-    _contains_trend_hint,
     _infer_trend_direction,
     _sanitize_trend_analysis_for_prompt,
 )
 
 
 class AnalyzerNewsPromptTestCase(unittest.TestCase):
-    def test_contains_trend_hint_treats_non_adjacent_negation_as_negated(self) -> None:
-        self.assertFalse(_contains_trend_hint("尚未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("并未形成上升趋势，继续观察。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("没有形成多头排列，继续观察。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("当前无多头排列，仍需观察。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("尚不属于上升趋势，反弹仍待确认。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("当前非多头排列，仍需观察。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("This is not a bullish trend yet.", _BULLISH_TREND_HINTS))
+    def test_infer_trend_direction_reads_only_typed_fields(self) -> None:
+        self.assertEqual(_infer_trend_direction({"trend_direction": "bullish"}), "bullish")
+        self.assertEqual(_infer_trend_direction({"direction": "bearish"}), "bearish")
+        self.assertEqual(_infer_trend_direction({"is_bullish": True}), "bullish")
+        self.assertEqual(_infer_trend_direction({"is_bullish": False}), "bearish")
 
-    def test_contains_trend_hint_scans_later_non_negated_occurrences(self) -> None:
-        self.assertTrue(
-            _contains_trend_hint(
-                "不是多头排列，后续放量后再次出现多头排列信号。",
-                _BULLISH_TREND_HINTS,
-            )
-        )
-
-    def test_contains_trend_hint_keeps_contrast_clause_target_hint(self) -> None:
-        self.assertTrue(_contains_trend_hint("不是空头而是多头排列，趋势修复。", _BULLISH_TREND_HINTS))
-        self.assertFalse(_contains_trend_hint("未转为上升趋势，反弹仍待确认。", _BULLISH_TREND_HINTS))
-
-    def test_contains_trend_hint_ignores_single_character_prefixes_in_common_words(self) -> None:
-        self.assertTrue(_contains_trend_hint("非常明显的多头排列，趋势仍在延续。", _BULLISH_TREND_HINTS))
-        self.assertTrue(_contains_trend_hint("未来上升趋势若放量将进一步确认。", _BULLISH_TREND_HINTS))
+    def test_infer_trend_direction_does_not_classify_prose(self) -> None:
         self.assertEqual(
-            _infer_trend_direction({"trend_status": "非常明显的多头排列", "ma_alignment": "未来上升趋势逐步明确"}),
-            "bullish",
-        )
-
-    def test_infer_trend_direction_recognizes_weak_bullish_and_bearish_states(self) -> None:
-        self.assertEqual(
-            _infer_trend_direction({"trend_status": "弱势多头", "ma_alignment": "弱势多头，MA5>MA10 但 MA10≤MA20"}),
-            "bullish",
-        )
-        self.assertEqual(
-            _infer_trend_direction({"trend_status": "弱势空头", "ma_alignment": "弱势空头，MA5<MA10 但 MA10≥MA20"}),
-            "bearish",
-        )
-
-    def test_infer_trend_direction_ignores_negated_bullish_hints(self) -> None:
-        self.assertEqual(
-            _infer_trend_direction({"trend_status": "未形成上升趋势", "ma_alignment": "当前非多头排列"}),
+            _infer_trend_direction({
+                "trend_status": "不是空头而是多头排列",
+                "ma_alignment": "MA5 > MA10 > MA20",
+            }),
             "neutral",
-        )
-        self.assertEqual(
-            _infer_trend_direction({"trend_status": "没有形成多头排列", "ma_alignment": "当前无上升趋势"}),
-            "neutral",
-        )
-
-    def test_infer_trend_direction_keeps_contrast_clause_final_direction(self) -> None:
-        self.assertEqual(
-            _infer_trend_direction({"trend_status": "不是空头而是多头排列", "ma_alignment": ""}),
-            "bullish",
         )
 
     def test_analysis_prompt_contains_actionability_guardrails(self) -> None:
@@ -85,8 +42,8 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
 
         self.assertIn("可操作性与稳定性约束", prompt)
         self.assertIn("不得仅因为单日涨跌", prompt)
-        self.assertIn("支撑/压力位", prompt)
-        self.assertIn("洗盘观察", prompt)
+        self.assertIn("支撑、压力", prompt)
+        self.assertIn("独立解释证据", prompt)
 
     def test_prompt_contains_time_constraints(self) -> None:
         analyzer = GeminiAnalyzer()
@@ -147,11 +104,10 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
 
         prompt = analyzer._format_prompt(context, "恩捷股份", news_context=None)
 
-        self.assertIn("主力资金流向（操作建议过滤器）", prompt)
+        self.assertIn("主力资金流向（原始交易证据）", prompt)
         self.assertIn("主力净流入", prompt)
         self.assertIn("-1200000", prompt)
-        self.assertIn("接近压力且主力流出时不得追买", prompt)
-        self.assertIn("洗盘观察", prompt)
+        self.assertIn("不得由正负号直接生成操作结论", prompt)
 
     def test_prompt_prefers_context_news_window_days(self) -> None:
         analyzer = GeminiAnalyzer()
@@ -189,8 +145,9 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         )
         self.assertNotIn("prompt_consistency_notes", original)
         self.assertNotIn("prompt_trend_direction", original)
-        self.assertNotIn("多头排列，持续上涨", sanitized["signal_reasons"])
-        self.assertEqual(sanitized["prompt_trend_direction"], "bearish")
+        self.assertIn("多头排列，持续上涨", sanitized["signal_reasons"])
+        self.assertEqual(sanitized["prompt_trend_direction"], "neutral")
+        self.assertEqual(sanitized["prompt_volume_change_ratio"], 12.4)
 
 
 if __name__ == "__main__":

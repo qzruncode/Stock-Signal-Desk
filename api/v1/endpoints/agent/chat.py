@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -51,11 +52,9 @@ from src.agent.result_contracts import (
     CollectionFinancialFilterSpec,
     INDUSTRY_CHAIN,
     INVESTMENT_DECISION,
-    MappingSelectionContext,
     STOCK_DEEP_RESEARCH,
     THEME_COMPANY_MAPPING,
 )
-from src.agent.evidence_facts import BoundEvidenceFact
 from src.agent.task_executor import PlanExecutionResult, WorkflowExecutor
 from src.agent.task_planner import (
     TaskPlanValidationError,
@@ -137,17 +136,6 @@ def _last_user_text(messages: List[Dict[str, Any]]) -> str:
         if isinstance(content, list):
             return _join_text_parts(content)
     return ""
-
-
-def _legacy_previous_answer_entities(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Format-agnostic compatibility for conversations without structured state."""
-    for message in reversed(messages[:-1]):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
-            continue
-        content = message.get("content")
-        text = content if isinstance(content, str) else _join_text_parts(content or [])
-        return find_securities_in_text(text, limit=300)
-    return []
 
 
 _TOOL_DETAIL_ARRAY_KEYS = (
@@ -594,173 +582,42 @@ def _build_professional_decision_fallback(
     *,
     decision_requested: Optional[bool] = None,
 ) -> str:
-    """Render a complete seven-dimension decision when model synthesis fails."""
-
-    if decision_requested is None:
-        decision_requested = False
-    heading = "专业买入决策结论" if decision_requested else "综合研究结论"
-    intro = (
-        "本轮按七个维度逐家公司完成介入条件检查。"
-        if decision_requested
-        else "本轮按七个维度逐家公司完成基本面与风险研究。"
-    )
-
-    def number(value: Any, digits: int = 2, suffix: str = "") -> str:
-        try:
-            return f"{float(value):,.{digits}f}{suffix}"
-        except (TypeError, ValueError):
-            return "缺失"
-
-    def short(value: Any, limit: int = 34) -> str:
-        text = str(value or "证据缺失").strip()
-        return text if len(text) <= limit else text[: limit - 1] + "…"
-
-    def amount_yi(value: Any) -> str:
-        try:
-            return f"{float(value) / 100000000:,.2f}亿"
-        except (TypeError, ValueError):
-            return "缺失"
-
+    """Report evidence coverage when semantic synthesis is unavailable."""
+    del decision_requested
     rows: List[str] = []
-    details: List[str] = []
-    priority_groups: Dict[str, List[str]] = {}
     for item in batch.get("items") or []:
         if not isinstance(item, dict):
             continue
         symbol = str(item.get("symbol") or "—")
         name = str(item.get("name") or symbol)
-        snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), dict) else {}
-        quote = snapshot.get("quote") if isinstance(snapshot.get("quote"), dict) else {}
-        technical = snapshot.get("technical") if isinstance(snapshot.get("technical"), dict) else {}
-        indicators = technical.get("indicators") if isinstance(technical.get("indicators"), dict) else {}
-        financials = item.get("financials") if isinstance(item.get("financials"), dict) else {}
-        periods = financials.get("items") if isinstance(financials.get("items"), list) else []
-        latest = periods[-1] if periods and isinstance(periods[-1], dict) else {}
-        valuation = item.get("valuation") if isinstance(item.get("valuation"), dict) else {}
-        consensus = item.get("consensus") if isinstance(item.get("consensus"), dict) else {}
-        estimates = consensus.get("estimates") if isinstance(consensus.get("estimates"), list) else []
-        first_estimate = estimates[0] if estimates and isinstance(estimates[0], dict) else {}
-        capital = item.get("capital_flow") if isinstance(item.get("capital_flow"), dict) else {}
-        flow_10d = ((capital.get("windows") or {}).get("10d") or {}) if isinstance(capital.get("windows"), dict) else {}
-        risks = item.get("risk_events") if isinstance(item.get("risk_events"), dict) else {}
-        risk_analysis = risks.get("analysis") if isinstance(risks.get("analysis"), dict) else {}
         coverage = item.get("evidence_coverage") if isinstance(item.get("evidence_coverage"), dict) else {}
-        profile = item.get("profile") if isinstance(item.get("profile"), dict) else {}
-        segments = item.get("business_segments") if isinstance(item.get("business_segments"), dict) else {}
-        segment_names = [
-            str(segment.get("segment_name"))
-            for segment in (segments.get("items") or [])[:3]
-            if isinstance(segment, dict) and segment.get("segment_name")
-        ]
-
-        negative_profit = latest.get("parent_net_profit") is not None and latest.get("parent_net_profit") <= 0
-        high_debt = (latest.get("debt_ratio") or 0) >= 80
-        high_risk = (risk_analysis.get("active_high_severity_count") or 0) > 0
-        weak_growth = latest.get("revenue_yoy") is not None and latest.get("revenue_yoy") < 0
-        pe_ttm = valuation.get("pe_ttm")
-        industry_pe = (valuation.get("industry_average") or {}).get("pe") if isinstance(valuation.get("industry_average"), dict) else None
-        expensive = bool(pe_ttm and industry_pe and pe_ttm > industry_pe * 1.5)
-        trend_weak = indicators.get("return_20d_pct") is not None and indicators.get("return_20d_pct") <= -15
-        flow_weak = flow_10d.get("main_net_inflow") is not None and flow_10d.get("main_net_inflow") < 0
-
-        if not coverage.get("complete"):
-            verdict = "数据源异常（证据链未完成）"
-        elif negative_profit or high_debt or high_risk:
-            verdict = "风险规避"
-        elif expensive and weak_growth:
-            verdict = "暂不买入"
-        elif expensive or trend_weak or flow_weak:
-            verdict = "暂不介入（条件未满足）"
-        else:
-            verdict = "可研究候选"
-        priority_groups.setdefault(verdict, []).append(f"{name} ({symbol})")
-
-        business = short("、".join(segment_names) or profile.get("main_business"), 28)
-        financial = (
-            f"收入YoY {number(latest.get('revenue_yoy'), 1, '%')}；"
-            f"净利YoY {number(latest.get('parent_net_profit_yoy'), 1, '%')}；"
-            f"OCF {amount_yi(latest.get('operating_cash_flow'))}"
-        )
-        expectation = (
-            "机构一致预期覆盖0家（查询完成）"
-            if consensus.get("coverage_status") == "no_sell_side_coverage"
-            else "一致预期来源异常"
-        )
-        if first_estimate:
-            np_forecast = first_estimate.get("net_profit") if isinstance(first_estimate.get("net_profit"), dict) else {}
-            expectation = (
-                f"{first_estimate.get('year', '—')}净利均值"
-                f"{number(np_forecast.get('mean'), 2, '亿')}({first_estimate.get('coverage_count', 0)}家)"
-            )
-        valuation_text = (
-            f"PE(TTM) {number(pe_ttm)}；PB {number(valuation.get('pb_mrq'))}；"
-            f"远期PEG {number(valuation.get('peg_forward'))}；{expectation}"
-        )
-        trading = (
-            f"20日 {number(indicators.get('return_20d_pct'), 1, '%')}；"
-            f"10日资金 {amount_yi(flow_10d.get('main_net_inflow'))}"
-        )
-        risk_text = (
-            f"规则风险{risks.get('item_count', len(risks.get('items') or []))}项；"
-            f"公告覆盖至{(item.get('announcements') or {}).get('data_time') or '缺失'}"
-        )
-        rows.append(
-            f"| {name} ({symbol}) | {business} | {financial} | {valuation_text} | "
-            f"{trading} | {risk_text} | **{verdict}** |"
-        )
-
-        flags = item.get("screening_flags") if isinstance(item.get("screening_flags"), dict) else {}
-        positives = "、".join(str(value) for value in flags.get("positive") or []) or "无明确正面信号"
-        negatives = "、".join(str(value) for value in flags.get("negative") or []) or "未识别硬性负面信号"
         missing = "、".join(str(value) for value in coverage.get("missing") or []) or "无"
-        details.append(
-            f"- **{name} ({symbol})**：支持证据：{positives}。反证/风险：{negatives}。"
-            f"数据源执行缺口：{missing}。主题业务订单/收入仍需公司级原文持续核验。"
-            "成立条件：主营相关订单或收入可核验、盈利与估值匹配、"
-            "交易状态止跌；失效条件：业绩/现金流继续恶化或风险事件升级。"
+        rows.append(
+            f"| {name} ({symbol}) | {'完整' if coverage.get('complete') else '不完整'} | {missing} |"
         )
-
-    priority_order = (
-        "可研究候选",
-        "暂不介入（条件未满足）",
-        "暂不买入",
-        "风险规避",
-        "数据源异常（证据链未完成）",
-    )
-    priority_lines = [
-        f"- **{verdict}**：{'、'.join(priority_groups[verdict])}"
-        for verdict in priority_order
-        if priority_groups.get(verdict)
-    ]
-
+    table = "\n".join(rows) if rows else "| — | 未返回 | 全部证据 |"
     return (
-        f"## {heading}\n\n"
-        f"{intro}结论是研究分层，不是收益承诺。\n\n"
-        "| 公司/代码 | 主营与兑现基础 | 财务质量 | 估值与预期 | 交易与资金 | 公告/风险 | 当前结论 |\n"
-        "|---|---|---|---|---|---|---|\n"
-        + "\n".join(rows)
-        + "\n\n### 逐家公司成立条件与反证\n\n"
-        + "\n".join(details)
-        + "\n\n### 横向优先级\n\n"
-        + ("\n".join(priority_lines) if priority_lines else "本轮没有可排序的公司证据。")
-        + "\n\n### 组合层面的共同边界\n\n"
-        "- 业务关联必须以财报收入、正式订单或客户验证为准；主营构成只能证明业务基础，不能自动证明主题收入。\n"
-        "- 高估值不会单独终止分析，但需要更高的盈利增速和订单兑现来消化；资金流是成交单大小口径，不是机构持仓。\n"
-        "- 数据口径："
-        + str(batch.get("data_time") or "时间缺失")
-        + "，"
-        + str(batch.get("quote_basis") or "行情口径缺失")
-        + "。完整来源包括公司资料、财报、主营构成、估值、一致预期、同行、公告、风险和资金流。"
+        "## 深度研究证据已获取，但语义综合未完成\n\n"
+        "本轮模型没有形成可校验的结构化分析，程序不会用固定阈值代替分析师下结论。\n\n"
+        "| 公司/代码 | 证据覆盖 | 缺失项 |\n"
+        "|---|---|---|\n"
+        + table
+        + "\n\n请重试本轮分析；证据可以复用，未形成结构化结论前不输出买入或规避判断。"
     )
+
+
+_PROFESSIONAL_BUY_DIMENSION_IDS = tuple(
+    dimension_id
+    for dimension_id, _title in DIMENSION_DEFINITIONS
+)
 
 
 def _build_professional_buy_decision_answer(
     evidence: Optional[List[Dict[str, Any]]],
 ) -> Optional[str]:
-    """Render the validated eight-dimension analyst result without rewriting it."""
+    """Render only the validated eight-dimension Boolean state machine."""
     packets = [
-        packet
-        for packet in evidence or []
+        packet for packet in evidence or []
         if isinstance(packet, dict)
         and packet.get("tool") == "evaluate_multi_stock_buy_criteria"
     ]
@@ -769,8 +626,7 @@ def _build_professional_buy_decision_answer(
 
     requested: List[str] = []
     items_by_code: Dict[str, Dict[str, Any]] = {}
-    batch_errors: List[str] = []
-    data_times: List[str] = []
+    errors: List[str] = []
     for packet in packets:
         arguments = packet.get("arguments") if isinstance(packet.get("arguments"), dict) else {}
         for code in re.split(r"[,，、;；]+", str(arguments.get("symbols") or "")):
@@ -780,9 +636,7 @@ def _build_professional_buy_decision_answer(
         result = packet.get("result")
         if not isinstance(result, dict):
             continue
-        batch_errors.extend(str(error) for error in result.get("errors") or [] if error)
-        if result.get("data_time"):
-            data_times.append(str(result["data_time"]))
+        errors.extend(str(value) for value in result.get("errors") or [] if value)
         for item in result.get("items") or []:
             if not isinstance(item, dict):
                 continue
@@ -793,348 +647,86 @@ def _build_professional_buy_decision_answer(
     if not requested:
         requested = list(items_by_code)
     if not requested:
-        return (
-            "## 专业买入分析未完成\n\n"
-            "本轮没有取得通过本地证券库核验的股票代码，因此没有输出买入结论。"
-        )
+        return "## 八维专业买入判断未执行\n\n本轮没有取得可核验的股票代码。"
 
-    status_meta = {
-        "pass": ("✅", "可以打勾"),
-        "partial": ("◐", "只能半打勾"),
-        "fail": ("❌", "不能打勾"),
-        "insufficient": ("?", "关键取证未完成，暂不打勾"),
-    }
-    dimension_titles = dict(DIMENSION_DEFINITIONS)
-
-    def clean_inline(value: Any, limit: int = 240) -> str:
-        text = re.sub(r"\s+", " ", str(value or "").strip())
-        return text[:limit]
-
-    def markdown_link(source: Dict[str, Any]) -> str:
-        url = str(source.get("url") or "").strip()
-        if not re.match(r"^https?://", url, re.I):
-            return ""
-        title = clean_inline(
-            source.get("title") or source.get("source") or "原始资料",
-            80,
-        ).replace("[", "［").replace("]", "］")
-        date = clean_inline(source.get("date"), 24)
-        suffix = f"（{date}）" if date else ""
-        return f"[{title}]({url}){suffix}"
-
-    def normalized_dimensions(item: Dict[str, Any]) -> List[Dict[str, Any]]:
-        by_id = {
-            str(value.get("dimension_id") or ""): value
-            for value in item.get("dimensions") or []
-            if isinstance(value, dict)
-        }
-        normalized: List[Dict[str, Any]] = []
-        for dimension_id, title in DIMENSION_DEFINITIONS:
-            value = by_id.get(dimension_id)
-            if isinstance(value, dict):
-                normalized.append(value)
-            else:
-                normalized.append({
-                    "dimension_id": dimension_id,
-                    "status": "insufficient",
-                    "headline": "该维度没有返回有效分析",
-                    "analysis": "程序未取得这一维度的结构化判断，不能用其他维度代替。",
-                    "key_evidence": [],
-                    "counter_evidence": [],
-                    "monitoring_points": [f"重新核验“{title}”"],
-                })
-        return normalized
-
-    def item_statistics(item: Dict[str, Any]) -> tuple[Dict[str, int], float]:
-        dimensions = normalized_dimensions(item)
-        counts = {
-            status: sum(
-                1 for dimension in dimensions
-                if str(dimension.get("status") or "") == status
-            )
-            for status in status_meta
-        }
-        return counts, round(counts["pass"] + counts["partial"] * 0.5, 1)
-
+    rows: List[str] = []
+    details: List[str] = []
+    buyable: List[str] = []
     missing = [code for code in requested if code not in items_by_code]
-    overview_rows: List[str] = []
-    reports: List[str] = []
+    labels = {"pass": "通过", "fail": "不通过", "insufficient": "证据不足"}
     for code in requested:
         item = items_by_code.get(code)
         if not isinstance(item, dict):
-            overview_rows.append(
-                f"| {code} | ? 8项 | 0/8 | **关键取证未完成，暂停判断** | 结果未返回 |"
-            )
+            rows.append(f"| {code} | **未完成** | 数据未返回 | 0/8 |")
             continue
         name = str(item.get("name") or code)
-        counts, score = item_statistics(item)
-        status_text = (
-            f"✅{counts['pass']} / ◐{counts['partial']} / "
-            f"❌{counts['fail']} / ?{counts['insufficient']}"
+        criteria = [value for value in item.get("criteria") or [] if isinstance(value, dict)]
+        gate_ids = tuple(str(value.get("criterion_id") or "") for value in criteria)
+        statuses = tuple(str(value.get("status") or "insufficient") for value in criteria)
+        valid_prefix = (
+            gate_ids
+            == _PROFESSIONAL_BUY_DIMENSION_IDS[:len(gate_ids)]
         )
-        overview_rows.append(
-            f"| {name} ({code}) | {status_text} | {score:g}/8 | "
-            f"**{clean_inline(item.get('recommendation') or '关键取证未完成，暂停判断', 40)}** | "
-            f"{clean_inline(item.get('biggest_issue') or '未给出', 90)} |"
+        all_pass = (
+            gate_ids == _PROFESSIONAL_BUY_DIMENSION_IDS
+            and all(status == "pass" for status in statuses)
+            and item.get("gate_pass_complete") is True
+            and item.get("final_decision") == "可买入"
         )
-
-        as_of = str(item.get("data_time") or "").strip()
-        quote_basis = clean_inline(item.get("quote_basis"), 80)
-        basis_text = "；".join(value for value in (as_of, quote_basis) if value) or "数据时间未完整返回"
-        count_line = (
-            f"**✅ {counts['pass']}项｜◐ {counts['partial']}项｜"
-            f"❌ {counts['fail']}项"
-            + (f"｜? {counts['insufficient']}项" if counts["insufficient"] else "")
-            + f"，折算约 {score:g}/8。**"
+        conclusion = "可买入" if all_pass else "不可买入"
+        if all_pass:
+            buyable.append(f"{name} ({code})")
+        stopped = next(
+            (gate for gate, status in zip(criteria, statuses) if status != "pass"),
+            None,
         )
-        sections = [
-            f"## {name} ({code})",
-            "",
-            "### 结论先行",
-            "",
-            f"截至 **{basis_text}**，{name}的检查结果是：",
-            "",
-            count_line,
-            "",
-            str(item.get("overall_summary") or "本轮没有形成完整结论。").strip(),
-            "",
-            f"- **当前定位**：{item.get('investment_profile') or '待验证'}",
-            f"- **当前判断**：{item.get('recommendation') or '关键取证未完成，暂停判断'}。"
-            f"{item.get('recommendation_reason') or ''}",
-            f"- **最大问题**：{item.get('biggest_issue') or '尚未识别'}",
-        ]
-
-        for index, dimension in enumerate(normalized_dimensions(item), 1):
-            dimension_id = str(dimension.get("dimension_id") or "")
-            status = str(dimension.get("status") or "insufficient")
-            icon, label = status_meta.get(status, status_meta["insufficient"])
-            sections.extend([
-                "",
-                f"### {index}. {icon} {dimension_titles.get(dimension_id, dimension_id)}",
-                "",
-                f"**{label}。{clean_inline(dimension.get('headline') or '', 120)}**",
-                "",
-                str(dimension.get("analysis") or "该维度没有返回有效分析。").strip(),
-            ])
-            key_evidence = [
-                clean_inline(value, 320)
-                for value in dimension.get("key_evidence") or []
-                if clean_inline(value, 320)
-            ]
-            counter_evidence = [
-                clean_inline(value, 320)
-                for value in dimension.get("counter_evidence") or []
-                if clean_inline(value, 320)
-            ]
-            monitoring = [
-                clean_inline(value, 260)
-                for value in dimension.get("monitoring_points") or []
-                if clean_inline(value, 260)
-            ]
-            if key_evidence:
-                sections.extend(["", "**关键证据：**", ""])
-                sections.extend(f"- {value}" for value in key_evidence)
-            if counter_evidence:
-                sections.extend(["", "**主要反证：**", ""])
-                sections.extend(f"- {value}" for value in counter_evidence)
-            if monitoring:
-                sections.extend(["", "**这一项后续看什么：**", ""])
-                sections.extend(f"- {value}" for value in monitoring)
-
-        sections.extend([
-            "",
-            "### 最终判断",
-            "",
-            f"**{item.get('recommendation') or '关键取证未完成，暂停判断'}。**"
-            f"{item.get('recommendation_reason') or ''}",
-            "",
-            f"- **核心逻辑**：{item.get('core_thesis') or '待验证'}",
-            f"- **看多链条**：{item.get('bull_case_chain') or '待验证'}",
-            f"- **风险链条**：{item.get('risk_chain') or '待验证'}",
-            "",
-            "后续最关键的验证指标是：",
-            "",
-        ])
-        monitoring_points = [
-            clean_inline(value, 320)
-            for value in item.get("monitoring_points") or []
-            if clean_inline(value, 320)
-        ]
-        sections.extend(
-            f"{index}. **{value}**"
-            for index, value in enumerate(monitoring_points[:6], 1)
+        stop_name = (
+            str((stopped or {}).get("criterion_name") or item.get("stopped_at_name") or "执行结构异常")
+            if not all_pass else "八维全部通过"
         )
+        passed_count = sum(status == "pass" for status in statuses)
+        progress = "8/8" if all_pass else f"{passed_count}/8，首个阻断后停止"
+        rows.append(f"| {name} ({code}) | **{conclusion}** | {stop_name} | {progress} |")
 
-        source_links = [
-            markdown_link(source)
-            for source in item.get("source_links") or []
-            if isinstance(source, dict)
-        ]
-        source_links = [value for value in source_links if value]
-        if source_links:
-            sections.extend(["", "### 主要原始来源", ""])
-            sections.extend(f"- {value}" for value in source_links[:12])
-        evidence_gaps = [
-            clean_inline(value, 320)
-            for value in item.get("evidence_gaps") or []
-            if clean_inline(value, 320)
-        ]
-        if evidence_gaps:
-            sections.extend([
-                "",
-                "### 证据边界",
-                "",
-                "以下信息仍需补证，不能被理解为已经确认：",
-                "",
-            ])
-            sections.extend(f"- {value}" for value in evidence_gaps[:8])
-        reports.append("\n".join(sections))
+        gate_lines: List[str] = []
+        for gate, status in zip(criteria, statuses):
+            index = int(gate.get("index") or 0) + 1
+            title = gate.get("criterion_name") or gate.get("criterion_id")
+            verdict = str(gate.get("verdict") or "未给出理由")
+            gate_lines.append(f"- {index}. **{title}：{labels.get(status, '证据不足')}**。{verdict}")
+            gate_details = gate.get("details") if isinstance(gate.get("details"), dict) else {}
+            evidence_items = [str(value) for value in gate_details.get("key_evidence") or [] if str(value).strip()]
+            counter_items = [str(value) for value in gate_details.get("counter_evidence") or [] if str(value).strip()]
+            if evidence_items:
+                gate_lines.append("  - 支持证据：" + "；".join(evidence_items))
+            if counter_items:
+                gate_lines.append("  - 主要反证：" + "；".join(counter_items))
+        if not valid_prefix:
+            gate_lines.append("- **执行结构异常**：维度不符合八维契约顺序，本轮按不可买入处理。")
+        elif len(criteria) < len(_PROFESSIONAL_BUY_DIMENSION_IDS):
+            gate_lines.append(
+                f"- 后续 {len(_PROFESSIONAL_BUY_DIMENSION_IDS) - len(criteria)} 维未执行："
+                "首个不通过或证据不足已经关闭该股买入闸门。"
+            )
+        details.append(f"### {name} ({code})\n\n" + "\n".join(gate_lines))
 
-    coverage_lines = [
-        f"- 请求 **{len(requested)} 只**，返回 **{len(items_by_code)} 只**，缺失 **{len(missing)} 只**。",
-        "- 八项均完整分析，不因某一项不通过而停止后续维度。",
-        "- 计分口径：通过1分、半通过0.5分、不通过或取证未完成0分；分数用于表达证据强弱，不是收益预测。",
-    ]
     if missing:
-        coverage_lines.append("- 未返回代码：" + "、".join(missing) + "。")
-    if batch_errors:
-        coverage_lines.append("- 执行异常：" + "；".join(dict.fromkeys(batch_errors)) + "。")
-    if data_times:
-        coverage_lines.append("- 集合汇总时间：" + max(data_times) + "。")
-
-    if len(requested) == 1 and reports:
-        return reports[0] + "\n\n### 覆盖与口径\n\n" + "\n".join(coverage_lines)
-    return (
-        "## 专业买入分析总览\n\n"
-        "| 公司/代码 | 八项结果 | 得分 | 当前判断 | 最大问题 |\n"
-        "|---|---|---:|---|---|\n"
-        + "\n".join(overview_rows)
-        + "\n\n"
-        + "\n\n---\n\n".join(reports)
-        + "\n\n## 覆盖与口径\n\n"
-        + "\n".join(coverage_lines)
-    )
-
-
-def _build_theme_mapping_fallback(
-    result: Dict[str, Any],
-    evidence: Optional[List[Dict[str, Any]]] = None,
-    semantic_facts: Optional[List[BoundEvidenceFact]] = None,
-    semantic_intent: Optional[MappingSelectionContext] = None,
-) -> str:
-    """Render only semantically bound company facts and the structured recall set."""
-    if semantic_facts is None:
-        return "公司级证据语义校验未完成，本轮不使用文本关键词替代判断。"
-
-    selected: List[Dict[str, Any]] = []
-    boundaries: List[Dict[str, Any]] = []
-    for fact_model in semantic_facts:
-        fact = (
-            fact_model.model_dump()
-            if isinstance(fact_model, BoundEvidenceFact)
-            else dict(fact_model)
-        )
-        symbol = str(fact.get("symbol") or "").strip()
-        name = str(fact.get("company_name") or symbol).strip()
-        stage = str(fact.get("stage") or "").strip()
-        if not symbol or not name or stage == "L1":
-            continue
-        if (
-            semantic_intent is not None
-            and semantic_intent.selection_mode == "ranked_shortlist"
-            and fact.get("thesis_fit") != "exact"
-        ):
-            continue
-        row = {
-            "symbol": symbol,
-            "name": name,
-            "relationship": str(fact.get("relationship") or "相关业务"),
-            "stage": stage,
-            "fact": str(fact.get("fact") or fact.get("support_quote") or "").replace("|", "／")[:180],
-            "source_name": str(fact.get("source_name") or "公开资料"),
-            "source_url": str(fact.get("source_url") or ""),
-            "source_date": str(fact.get("source_date") or "日期缺失"),
-        }
-        (boundaries if stage == "boundary" else selected).append(row)
-
-    candidates = [
-        item for item in result.get("items") or []
-        if isinstance(item, dict)
-        and re.fullmatch(r"\d{6}", str(item.get("symbol") or ""))
-        and str(item.get("name") or "").strip()
-    ]
-    if not candidates:
-        return "主题候选池未取得本地证券库交叉结果，本轮不能可靠生成公司名单。"
-
-    def render_fact_table(rows: List[Dict[str, Any]]) -> str:
-        if not rows:
-            return "无。"
-        lines = [
-            "| 公司/代码 | 对应关系 | 证据等级 | 已验证事实 | 来源日期 |",
-            "|---|---|---|---|---|",
-        ]
-        for row in rows:
-            source = (
-                f"[{row['source_name']}]({row['source_url']})"
-                if row["source_url"] else row["source_name"]
-            )
-            level = "反证" if row["stage"] == "boundary" else row["stage"]
-            lines.append(
-                f"| {row['name']} ({row['symbol']}) | {row['relationship']} | {level} | "
-                f"{row['fact'] or '事实摘要缺失'} | {source}，{row['source_date']} |"
-            )
-        return "\n".join(lines)
-
-    grouped: Dict[str, List[str]] = {}
-    for item in candidates:
-        boards = [str(value) for value in item.get("boards") or [] if value]
-        group = boards[0] if boards else "其他结构化候选"
-        grouped.setdefault(group, []).append(
-            f"{item.get('name')} ({item.get('symbol')})"
-        )
-    inventory_lines: List[str] = []
-    for group, entries in grouped.items():
-        for index in range(0, len(entries), 20):
-            label = group if index == 0 else f"{group}（续）"
-            inventory_lines.append(f"- **{label}**：{'、'.join(entries[index:index + 20])}")
-
-    requirements = ""
-    if semantic_intent is not None:
-        requirements = "、".join(semantic_intent.thesis_requirements)
-    is_ranked_shortlist = bool(
-        semantic_intent is not None
-        and semantic_intent.selection_mode == "ranked_shortlist"
-    )
-    heading = (
-        "## 与投资命题精确匹配的 A 股短名单"
-        if is_ranked_shortlist else "## 产业主题 A 股公司级证据"
-    )
-    scope_line = f"> 结构化候选池共 **{len(candidates)} 家**。"
-    if requirements:
-        scope_line += f" 公司级纳入条件：{requirements}。"
-
-    inventory_section = ""
-    if not is_ranked_shortlist:
-        inventory_section = (
-            f"\n\n### 结构化候选池（L1，共 {len(candidates)} 家）\n\n"
-            "> L1 只证明结构化板块成员关系和证券身份，不代表订单、收入或买入建议。\n\n"
-            + "\n".join(inventory_lines)
-        )
+        collection_result = "集合覆盖不完整，本轮不输出部分集合的最终买入名单。"
+    elif buyable:
+        collection_result = "八维全部通过的标的是：**" + "、".join(buyable) + "**。"
     else:
-        inventory_section = (
-            "\n\n> 排名只采用与命题精确匹配的公司级事实；概念成员关系不参与最终排名。"
-        )
-
+        collection_result = "这组股票中当前**没有八维全部通过的标的**。"
+    coverage = f"请求 {len(requested)} 只，返回 {len(items_by_code)} 只，缺失 {len(missing)} 只。"
+    if errors:
+        coverage += " 执行异常：" + "；".join(dict.fromkeys(errors)) + "。"
     return (
-        heading
-        + "\n\n"
-        + scope_line
-        + "\n\n### 已核验正向事实\n\n"
-        + render_fact_table(selected)
-        + "\n\n### 已核验反证与边界\n\n"
-        + render_fact_table(boundaries)
-        + inventory_section
-        + "\n\n> 公司级事实仅采用语义证据绑定器的结构化结果；未使用关键词扫描升级证据等级。"
+        "## 八维专业买入判断\n\n" + collection_result
+        + "\n\n| 公司/代码 | 结论 | 首个停止项 | 进度 |\n"
+        + "|---|---|---|---|\n" + "\n".join(rows)
+        + "\n\n## 逐股闸门记录\n\n" + "\n\n".join(details)
+        + "\n\n## 覆盖与规则\n\n- " + coverage
+        + "\n- 每只股票独立执行；首个 fail 或 insufficient 立即停止，后续项目不得抵消。"
+        + "\n- 只有八维按契约顺序全部 pass，且集合覆盖完整，程序才允许输出可买入。"
     )
 
 
@@ -1403,14 +995,9 @@ def _build_staged_news_search_answer(
                 "source": str(raw.get("source") or raw.get("author") or "来源未标明").strip(),
                 "published": str(raw.get("published") or "时间未标明").strip()[:10],
                 "summary": re.sub(r"\s+", " ", str(raw.get("summary") or "").strip())[:220],
-                "importance": str(raw.get("importance") or "").strip(),
             })
     if not items:
         return None
-    # Precise single-stock news carries an explicit importance tag. Preserve
-    # source order within each tier so the tool's recency/relevance sort wins.
-    rank = {"high": 0, "medium": 1, "low": 2, "": 1}
-    items.sort(key=lambda item: rank.get(item["importance"], 1))
     items = items[:12]
     lines = [
         f"已找到 **{len(items)} 条**近期资讯。请回复编号，我再读取该条完整正文；本轮不提前做投资分析。\n",
@@ -1687,12 +1274,9 @@ def _build_domain_candidate_answer(
         ))
         mapping_type = str(domain_result.get("mapping_type") or "")
         basis = {
-            "exact_board": "当前目录同名板块",
-            "proxy_board": "当前目录最窄代理板块",
+            "catalog_binding": "当前实时目录语义绑定板块",
             "unresolved": "当前目录未解析",
         }.get(mapping_type, "结构化板块")
-        if domain_result.get("context_filter_applied"):
-            basis += f"，再与上位主题“{domain_result.get('context_theme') or result.get('context_theme')}”取交集"
         coverage = "完整" if domain_result.get("coverage_complete") else "部分"
         count = int(domain_result.get("candidate_count") or 0)
         rationale = str(domain_result.get("mapping_rationale") or "").strip()
@@ -2089,8 +1673,6 @@ def _build_verified_evidence_fallback(
     evidence: Optional[List[Dict[str, Any]]],
     *,
     professional_decision_requested: Optional[bool] = None,
-    semantic_facts: Optional[List[BoundEvidenceFact]] = None,
-    semantic_intent: Optional[MappingSelectionContext] = None,
 ) -> str:
     """Return a complete deterministic answer when final model text is empty.
 
@@ -2192,18 +1774,6 @@ def _build_verified_evidence_fallback(
         return domain_answer
 
     for item in evidence or []:
-        if not isinstance(item, dict) or item.get("tool") != "get_theme_stock_candidates":
-            continue
-        result = item.get("result")
-        if isinstance(result, dict) and result.get("success") is not False:
-            return _build_theme_mapping_fallback(
-                result,
-                evidence,
-                semantic_facts=semantic_facts,
-                semantic_intent=semantic_intent,
-            )
-
-    for item in evidence or []:
         if not isinstance(item, dict) or item.get("tool") != "get_multi_stock_decision_evidence":
             continue
         result = item.get("result")
@@ -2277,33 +1847,10 @@ def _build_verified_evidence_fallback(
         if technical.get("is_stale"):
             stale_names.append(f"{name}({symbol})")
 
-        try:
-            pe_value = float(pe)
-        except (TypeError, ValueError):
-            pe_value = 0.0
-        try:
-            debt_value = float(debt)
-        except (TypeError, ValueError):
-            debt_value = 0.0
-        try:
-            profit_value = float(profit)
-        except (TypeError, ValueError):
-            profit_value = 0.0
-
-        if profit_value < 0 or pe_value <= 0:
-            screen = "亏损，先观察"
-        elif debt_value >= 70:
-            screen = "高负债，先观察"
-        elif pe_value >= 100:
-            screen = "估值高，等业绩兑现"
-        elif pe_value >= 60:
-            screen = "估值偏高，谨慎观察"
-        else:
-            screen = "先核验业务兑现"
         rows.append(
             f"| {name} ({symbol}) | {number(quote.get('price'))} / "
             f"{number(quote.get('change_pct'))}% | {number(pe)} / "
-            f"{number(quote.get('pb_ratio'))} | {screen} |"
+            f"{number(quote.get('pb_ratio'))} | 未生成结构化语义结论 |"
         )
 
     warning = ""
@@ -2567,50 +2114,13 @@ def _build_quantitative_screen_answer(evidence: Optional[List[Dict[str, Any]]]) 
     )
 
 
-def _build_atr_screen_answer(evidence: Optional[List[Dict[str, Any]]]) -> str:
-    """Compatibility alias for existing imports while the tool keeps its name."""
-    return _build_quantitative_screen_answer(evidence)
-
-
 def _unsupported_final_claims(
     content: str,
     evidence: Optional[List[Dict[str, Any]]],
 ) -> List[str]:
-    """Catch high-risk claims whose required evidence dimension is absent."""
-    tool_names = {
-        str(item.get("tool") or "")
-        for item in evidence or []
-        if isinstance(item, dict)
-    }
+    """Validate objective date consistency without interpreting prose."""
+    del evidence
     reasons: List[str] = []
-    has_flow_evidence = (
-        any("flow" in name for name in tool_names)
-        or "get_multi_stock_decision_evidence" in tool_names
-    )
-    if not has_flow_evidence and re.search(
-        r"(?:主力资金|资金(?:仍在|持续|明显|大幅)?(?:净)?流(?:入|出))",
-        content,
-    ):
-        reasons.append("资金流结论没有资金流工具证据")
-
-    has_channel_price_evidence = bool(tool_names.intersection({
-        "search_news", "search_financial_news", "search_research_library", "websearch", "webfetch",
-    }))
-    if not has_channel_price_evidence and re.search(r"(?:一)?批价", content):
-        reasons.append("白酒批价或阈值没有新闻、公告或网页证据")
-
-    has_market_evidence = bool(
-        tool_names.intersection({"get_market_status", "get_market_breadth", "get_index_data"})
-    )
-    if not has_market_evidence and re.search(
-        r"(?:上证指数|深证成指|创业板指)[^。\n]{0,30}\d+(?:\.\d+)?%|"
-        r"(?:上涨|下跌)(?:个股)?\s*\d+\s*家|"
-        r"(?:两市|沪深两市)成交额[^。\n]{0,20}\d|"
-        r"抗跌(?:性)?|跑赢大盘|弱于大盘",
-        content,
-    ):
-        reasons.append("大盘涨跌、市场宽度或相对强弱结论没有市场工具证据")
-
     weekday_labels = "一二三四五六日"
     for match in re.finditer(
         r"(20\d{2})[-年](\d{1,2})[-月](\d{1,2})日?\s*[（(]周([一二三四五六日天])[）)]",
@@ -2628,84 +2138,6 @@ def _unsupported_final_claims(
             reasons.append(
                 f"日期星期不一致：{stated_date.isoformat()} 应为周{actual_weekday}"
             )
-
-    market_snapshot_tools = {
-        "get_realtime_quotes", "get_kline", "get_history_data",
-        "get_technical_indicators", "get_market_status", "get_market_breadth",
-        "get_index_data", "get_multi_stock_snapshot",
-    }
-    if tool_names and tool_names.issubset(market_snapshot_tools) and re.search(r"今日|当天", content):
-        evidence_dates = []
-        for packet in evidence or []:
-            result = packet.get("result") if isinstance(packet, dict) else None
-            if not isinstance(result, dict):
-                continue
-            for raw_date in (result.get("data_time"), result.get("latest_trade_date")):
-                match = re.search(r"20\d{2}-\d{2}-\d{2}", str(raw_date or ""))
-                if match:
-                    try:
-                        evidence_dates.append(datetime.fromisoformat(match.group(0)).date())
-                    except ValueError:
-                        pass
-        if evidence_dates and max(evidence_dates) < datetime.now().astimezone().date():
-            reasons.append("行情证据全部来自之前的交易日，不能称为今日或当天数据")
-
-    # Eastmoney single-quarter statements label Q4 as ``flow_basis=single_quarter``.
-    # A model must not silently promote that Q4 cash flow into a full-year value.
-    for packet in evidence or []:
-        result = packet.get("result") if isinstance(packet, dict) else None
-        if not isinstance(result, dict):
-            continue
-        for company in result.get("items") or []:
-            if not isinstance(company, dict):
-                continue
-            financials = company.get("financials")
-            if not isinstance(financials, dict):
-                continue
-            for period in financials.get("items") or []:
-                if not isinstance(period, dict):
-                    continue
-                if period.get("flow_basis") != "single_quarter" or not str(period.get("report_period") or "").endswith("Q4"):
-                    continue
-                cash_flow = period.get("operating_cash_flow")
-                try:
-                    amount_yi = f"{float(cash_flow) / 100000000:.2f}"
-                except (TypeError, ValueError):
-                    continue
-                if re.search(
-                    rf"(?:全年|年度)[^。\n]{{0,24}}(?:经营现金流|OCF)[^。\n]{{0,16}}{re.escape(amount_yi)}|"
-                    rf"(?:经营现金流|OCF)[^。\n]{{0,16}}{re.escape(amount_yi)}[^。\n]{{0,24}}(?:全年|年度)",
-                    content,
-                    flags=re.I,
-                ):
-                    reasons.append(
-                        f"{period.get('report_period')} 经营现金流是单季度值，不能写成全年数据"
-                    )
-
-    batch_results = [
-        item.get("result")
-        for item in evidence or []
-        if isinstance(item, dict)
-        and item.get("tool") in {
-            "get_multi_stock_snapshot",
-            "get_multi_stock_decision_evidence",
-        }
-        and isinstance(item.get("result"), dict)
-    ]
-    only_simple_snapshots = batch_results and all(
-        result.get("playbook") != "professional_investment_decision"
-        for result in batch_results
-    )
-    has_structured_valuation = "get_valuation_ratios" in tool_names
-    only_dynamic_quote_pe = (
-        "get_realtime_quotes" in tool_names or bool(only_simple_snapshots)
-    ) and not has_structured_valuation
-    if only_dynamic_quote_pe and "PE(TTM)" in content:
-        reasons.append("实时行情或批量快照只提供动态 PE，不能写成 PE(TTM)")
-    if any(result.get("quote_is_intraday") for result in batch_results):
-        cleaned = content.replace("不是收盘价", "")
-        if re.search(r"(?:今日|当日|截至[^，。；]{0,12})?收盘价", cleaned):
-            reasons.append("盘中快照不能写成收盘价")
     return reasons
 
 
@@ -2713,138 +2145,22 @@ def _professional_answer_contract_issues(
     content: str,
     evidence: Optional[List[Dict[str, Any]]],
 ) -> List[str]:
-    """Prove that a professional decision answer covered every required axis."""
+    """Protect the exact Boolean result without keyword-scanning prose."""
     professional_buy_answer = _build_professional_buy_decision_answer(evidence)
     if professional_buy_answer is not None:
         return [] if content.strip() == professional_buy_answer.strip() else [
             "专业买入分析必须使用程序校验后的八维结果，不能由最终写作模型改写"
         ]
-    result = next(
-        (
-            item.get("result")
-            for item in evidence or []
-            if isinstance(item, dict)
-            and item.get("tool") == "get_multi_stock_decision_evidence"
-            and isinstance(item.get("result"), dict)
-            and item["result"].get("success") is not False
-        ),
-        None,
-    )
-    if not isinstance(result, dict):
-        # A buy/hold/sell answer without the comprehensive evidence packet is
-        # not allowed to fall back to model memory.  It may only fail closed
-        # and explain that no decision can be made yet.
-        failure_markers = ("证据不足", "证据缺失", "无法完成", "无法确认", "暂不做买入判断", "不提供买入结论")
-        if any(marker in content for marker in failure_markers):
-            return []
-        return ["专业决策证据未成功取得，必须停止买入判断并说明证据缺口"]
-    issues: List[str] = []
-    for entity in result.get("resolved_entities") or []:
-        if isinstance(entity, dict) and str(entity.get("symbol") or "") not in content:
-            issues.append(f"遗漏公司 {entity.get('name') or entity.get('symbol')}")
-    required_groups = {
-        "业务兑现": ("业务", "主营", "兑现"),
-        "财务质量": ("财务", "营收", "净利", "现金流"),
-        "估值预期": ("估值", "PE", "PEG", "一致预期"),
-        "交易状态": ("交易", "趋势", "技术", "资金"),
-        "风险催化": ("风险", "公告", "催化"),
-        "决策边界": (
-            "成立条件", "失效条件", "等待验证", "暂不介入", "暂不买入", "风险规避",
-        ),
-    }
-    for label, markers in required_groups.items():
-        if not any(marker in content for marker in markers):
-            issues.append(f"缺少{label}")
-    return issues
+    return []
 
 
 def _sanitize_mapping_answer(content: str) -> str:
-    """Drop unsupported company rows while preserving a valid mapping report.
-
-    A model may include five properly sourced companies and one remembered
-    concept stock.  Rejecting the whole report wastes good evidence; keeping
-    the bad row violates the Playbook.  This deterministic pass removes only
-    rows that fail code/name/source/date verification and records the omission.
-    """
-    lines = content.splitlines()
-    in_company_table = False
-    valid_row_count = 0
-    removed: List[str] = []
-    kept: List[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            in_company_table = False
-            kept.append(line)
-            continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-        if not cells:
-            kept.append(line)
-            continue
-        if "公司" in cells[0] and "代码" in cells[0]:
-            in_company_table = True
-            kept.append(line)
-            continue
-        if not in_company_table or re.fullmatch(r"[:\- ]+", cells[0] or ""):
-            kept.append(line)
-            continue
-
-        first_cell = cells[0]
-        code_match = re.search(r"(?<!\d)(\d{6})(?!\d)", first_cell)
-        resolved = find_securities_in_text(first_cell, limit=5) if code_match else []
-        entity_matches = bool(
-            code_match
-            and any(item.get("symbol") == code_match.group(1) for item in resolved)
-        )
-        has_source = "http://" in stripped or "https://" in stripped
-        has_date = bool(re.search(r"20\d{2}[-年/.]\d{1,2}", stripped))
-        if entity_matches and has_source and has_date and "代码待核验" not in first_cell:
-            kept.append(line)
-            valid_row_count += 1
-            continue
-        removed.append(re.sub(r"[*_`]", "", first_cell).strip())
-
-    if valid_row_count == 0:
-        return content
-    # Once rows are removed, any model-written count summary can become false
-    # (for example “2 L2 + 2 L1” above a one-row table). Replace it with the
-    # count proven by the surviving rows.
-    normalized = [
-        line
-        for line in kept
-        if not (
-            line.lstrip().startswith("> 运行时逐行复核后")
-            or (
-                "本轮证据" in line
-                and re.search(r"\d+\s*家", line)
-                and re.search(r"L[123]", line)
-            )
-        )
-    ]
-    note = f"> 运行时逐行复核后，最终保留 **{valid_row_count} 家**代码、来源与日期均完整的代表公司。"
-    insert_at = next(
-        (
-            index
-            for index, line in enumerate(normalized)
-            if line.startswith("### L") or line.lstrip().startswith("| 公司/代码")
-        ),
-        0,
-    )
-    normalized[insert_at:insert_at] = [note, ""]
-    suffix = ""
-    if removed:
-        suffix = (
-            "\n\n### 因证据校验未通过而未列入\n\n"
-            + "、".join(dict.fromkeys(removed))
-            + "：公司/代码、可点击来源或来源日期未同时通过本轮核验，故未列入代表公司；"
-            "如需覆盖这些公司，应进一步核验公告、财报或公司级证据。"
-        )
-    return "\n".join(normalized).rstrip() + suffix
+    """Compatibility no-op; semantic validation uses typed model output."""
+    return content
 
 
 def _prepare_playbook_answer(playbook: Optional[AnalysisPlaybook], content: str) -> str:
-    if playbook is not None and playbook.id == THEME_COMPANY_MAPPING.id:
-        return _sanitize_mapping_answer(content)
+    del playbook
     return content
 
 
@@ -2873,139 +2189,8 @@ def _playbook_answer_contract_issues(
     if playbook.id == STOCK_DEEP_RESEARCH.id:
         return _professional_answer_contract_issues(content, evidence)
 
-    issues: List[str] = []
-    if playbook.id == INDUSTRY_CHAIN.id:
-        required_groups = {
-            "受益优先级": ("优先级", "排序", "最受益"),
-            "产业链拆解": ("上游", "中游", "下游", "产业链"),
-            "受益机制与兑现指标": ("受益机制", "价值量", "兑现指标", "订单", "产能"),
-            "反证与风险": ("反证", "风险", "不及预期"),
-            "持续跟踪项": ("跟踪", "量化指标", "观察指标"),
-            "证据时间与置信度": ("来源", "截至", "数据时间", "置信度"),
-        }
-        for label, markers in required_groups.items():
-            if not any(marker in content for marker in markers):
-                issues.append(f"缺少{label}")
-        if not (
-            (
-                "持续跟踪" in content
-                or "后续跟踪" in content
-                or re.search(r"^#{2,4}\s+.*跟踪", content, re.MULTILINE)
-            )
-            and ("指标" in content or "观察项" in content)
-        ):
-            issues.append("缺少独立的持续跟踪指标结尾")
-        if "置信度" not in content:
-            issues.append("缺少明确的整体置信度")
-        # Source-link formatting is a presentation quality signal, not a fact
-        # safety boundary.  The complete source packet remains visible in the
-        # tool cards and evidence context.  Reject unsupported securities and
-        # numbers below, but never discard an otherwise grounded industry
-        # answer solely because the provider omitted a second Markdown link.
-        return issues
-
     if playbook.id == THEME_COMPANY_MAPPING.id:
-        valid_entities: List[Dict[str, str]] = []
-        valid_codes: set[str] = set()
-        data_rows: List[tuple[str, str, List[str]]] = []
-        in_company_table = False
-        for line in content.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("|"):
-                if in_company_table:
-                    in_company_table = False
-                continue
-            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
-            if not cells:
-                continue
-            if "公司" in cells[0] and "代码" in cells[0]:
-                in_company_table = True
-                continue
-            if not in_company_table or re.fullmatch(r"[:\- ]+", cells[0] or ""):
-                continue
-            data_rows.append((cells[0], stripped, cells))
-        for first_cell, row, cells in data_rows:
-            code_match = re.search(r"(?<!\d)(\d{6})(?!\d)", first_cell)
-            if not code_match:
-                issues.append(f"公司第一列缺少六位代码: {first_cell}")
-                continue
-            code = code_match.group(1)
-            resolved = find_securities_in_text(first_cell, limit=5)
-            entity = next((item for item in resolved if item.get("symbol") == code), None)
-            if entity is None:
-                issues.append(f"公司名称与本地证券代码不匹配: {first_cell}")
-                continue
-            if "http://" not in row and "https://" not in row:
-                issues.append(f"公司行缺少可点击来源: {first_cell}")
-            if not re.search(r"20\d{2}[-年/.]\d{1,2}", row):
-                issues.append(f"公司行缺少来源日期: {first_cell}")
-            board_only_source = bool(re.search(
-                r"(?:vip\.stock\.finance\.sina\.com\.cn/mkt|q\.10jqka\.com\.cn/gn/detail)",
-                row,
-            ))
-            if board_only_source:
-                segment = cells[1] if len(cells) > 1 else ""
-                verified_fact = cells[3] if len(cells) > 3 else ""
-                if not any(marker in segment for marker in ("待公司级", "概念关联", "主题候选")):
-                    issues.append(f"板块证据不能直接确定产业链环节: {first_cell}")
-                unsupported_business_markers = (
-                    "龙头", "主营", "产品", "用于", "应用于", "订单", "收入", "客户",
-                    "伺服", "减速器", "丝杠", "执行器", "整机", "系统集成", "营收", "净利润", "亏损",
-                )
-                if any(marker in verified_fact for marker in unsupported_business_markers):
-                    issues.append(f"板块成员证据被扩写成未经核验的公司业务事实: {first_cell}")
-            valid_entities.append(entity)
-            valid_codes.add(code)
-        candidate_result = next(
-            (
-                item.get("result")
-                for item in evidence or []
-                if isinstance(item, dict)
-                and item.get("tool") == "get_theme_stock_candidates"
-                and isinstance(item.get("result"), dict)
-                and item["result"].get("success") is not False
-            ),
-            None,
-        )
-        candidate_items = (
-            candidate_result.get("items")
-            if isinstance(candidate_result, dict) and isinstance(candidate_result.get("items"), list)
-            else []
-        )
-        candidate_codes = {
-            str(item.get("symbol") or "")
-            for item in candidate_items
-            if isinstance(item, dict) and re.fullmatch(r"\d{6}", str(item.get("symbol") or ""))
-        }
-        codes_in_answer = set(re.findall(r"(?<!\d)(\d{6})(?!\d)", content))
-        missing_candidate_codes = sorted(candidate_codes - codes_in_answer)
-        if missing_candidate_codes:
-            issues.append(
-                f"主题候选池返回{len(candidate_codes)}家公司，最终答案遗漏{len(missing_candidate_codes)}家；"
-                "必须在完整候选索引中逐一列出公司/代码"
-            )
-        if not valid_entities and not (
-            candidate_codes
-            and not missing_candidate_codes
-            and "L2/L3" in content
-            and any(marker in content for marker in ("没有形成", "未形成", "0 家"))
-        ):
-            issues.append("没有把取得公司级直接证据的公司/六位代码放入Markdown表格第一列")
-        if "代码待核验" in content or "代码缺失" in content:
-            issues.append("存在未核验证券代码")
-        required_groups = {
-            "产业链环节": ("环节", "上游", "中游", "下游"),
-            "L1/L2/L3证据等级": ("L1", "L2", "L3"),
-            "已验证事实": ("已验证", "披露", "订单", "送样", "收入"),
-            "证据边界": ("待核验", "仅概念", "不等同", "证据口径"),
-            "来源与日期": ("来源", "公告", "财报", "日期", "截至", "20"),
-        }
-        if candidate_codes:
-            required_groups["完整候选范围"] = ("完整候选池", "完整候选索引", "全部候选")
-        for label, markers in required_groups.items():
-            if not any(marker in content for marker in markers):
-                issues.append(f"缺少{label}")
-        return issues
+        return []
     return []
 
 
@@ -3524,14 +2709,10 @@ async def _run_standard_task_pipeline(
 ) -> str:
     """Planner → fixed Workflow → policy validator → executor → aggregator."""
     latest_user_text = _last_user_text(messages)
-    latest_user_entities = find_securities_in_text(latest_user_text, limit=100)
     semantic_context = ConversationContext.from_value(
         conversation_context
     ).before_request(latest_user_text)
-    previous_answer_entities = (
-        semantic_context.latest_entities()
-        or _legacy_previous_answer_entities(messages)
-    )
+    previous_answer_entities = semantic_context.latest_entities()
     controller.append_text("正在拆分标准任务并校验执行流程...\n\n")
 
     try:
@@ -3540,7 +2721,7 @@ async def _run_standard_task_pipeline(
                 messages,
                 llm_cfg,
                 completion=litellm.acompletion,
-                current_entities=latest_user_entities,
+                current_entities=[],
                 previous_answer_entities=previous_answer_entities,
                 conversation_context=semantic_context,
             )
@@ -3600,7 +2781,7 @@ async def _run_standard_task_pipeline(
     try:
         resolved_tasks = resolve_plan_entities(
             plan,
-            current_entities=latest_user_entities,
+            current_entities=[],
             previous_answer_entities=previous_answer_entities,
             conversation_entities=semantic_context.all_entities(),
         )
@@ -3641,7 +2822,6 @@ async def _run_standard_task_pipeline(
                 "get_multi_stock_snapshot",
                 "get_multi_stock_decision_evidence",
                 "get_domain_stock_candidates",
-                "get_theme_stock_candidates",
             }
             else TOOL_EXECUTION_TIMEOUT_SECONDS
         )
@@ -3649,6 +2829,8 @@ async def _run_standard_task_pipeline(
         max_attempts = workflow_specs_by_task[call.task_id].max_attempts
         last_error: Exception | None = None
         for attempt in range(1, max_attempts + 1):
+            isolated_cancel_event = threading.Event()
+
             def execute_sync() -> Dict[str, Any]:
                 if call.tool_name in STATEFUL_TOOL_NAMES:
                     raw_result = _registry.execute(call.tool_name, arguments)
@@ -3657,6 +2839,7 @@ async def _run_standard_task_pipeline(
                         call.tool_name,
                         arguments,
                         timeout_seconds=timeout_seconds - 3,
+                        cancel_event=isolated_cancel_event,
                     )
                 else:
                     raw_result = _registry.execute(call.tool_name, arguments)
@@ -3692,7 +2875,11 @@ async def _run_standard_task_pipeline(
                     int((time.monotonic() - started_at) * 1000),
                 )
                 return result
+            except asyncio.CancelledError:
+                isolated_cancel_event.set()
+                raise
             except (asyncio.TimeoutError, TimeoutError) as exc:
+                isolated_cancel_event.set()
                 last_error = exc
                 logger.warning(
                     "[WorkflowTool] task=%s step=%s tool=%s timed out attempt=%d/%d",
@@ -3703,6 +2890,7 @@ async def _run_standard_task_pipeline(
                     max_attempts,
                 )
             except Exception as exc:
+                isolated_cancel_event.set()
                 last_error = exc
                 logger.warning(
                     "[WorkflowTool] task=%s step=%s tool=%s failed attempt=%d/%d: %s",

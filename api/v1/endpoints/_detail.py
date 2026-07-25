@@ -120,9 +120,11 @@ def _build_analysis_report(result: dict, db_manager: DatabaseManager) -> Analysi
         ),
         sentiment_score=result.get("sentiment_score"),
         sentiment_label=(
-            get_sentiment_label(result.get("sentiment_score"), report_language)
-            if result.get("sentiment_score") is not None
-            else result.get("sentiment_label")
+            result.get("sentiment_label")
+            or get_sentiment_label(
+                result.get("sentiment_score"),
+                report_language,
+            )
         ),
     )
 

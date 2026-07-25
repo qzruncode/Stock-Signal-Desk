@@ -202,13 +202,19 @@ def test_batch_summary_respects_final_no_buy_over_section_pass():
                     "结论：不通过\n\n"
                     "### 最终结论\n"
                     "**不买**\n"
-                    "最核心的否定原因：行业催化不足。"
+                    "最核心的否定原因：行业催化不足。\n"
+                    "BATCH_DECISION_JSON\n"
+                    '{"decision":"reject","decision_label":"不买","reason":"行业催化不足"}'
                 ),
                 "model": "model-a",
             },
             "605118": {
                 "success": True,
-                "text": "### 最终结论：建议买入\n理由：业绩改善且趋势向上",
+                "text": (
+                    "### 最终结论：建议买入\n理由：业绩改善且趋势向上\n"
+                    "BATCH_DECISION_JSON\n"
+                    '{"decision":"buy","decision_label":"建议买入","reason":"模型综合判断"}'
+                ),
                 "model": "model-a",
             },
         },
@@ -226,15 +232,31 @@ def test_batch_summary_respects_final_no_buy_over_section_pass():
     assert "筛选通过: **1**" in content
 
 
-def test_batch_summary_accepts_buy_variants_and_rejects_no_buy_phrase():
+def test_batch_summary_uses_structured_decisions_and_preserves_labels():
     state = BatchRunState(
         "run-1",
         total=4,
         existing_results={
-            "000001": {"success": True, "text": "最终结论：可买入\n原因：赔率较好", "model": "model-a"},
-            "000002": {"success": True, "text": "操作建议：建议买入\n理由：催化明确", "model": "model-a"},
-            "000003": {"success": True, "text": "最终结论：不买\n原因：没有买点", "model": "model-a"},
-            "000004": {"success": True, "text": "综合结论：不建议买入\n原因：估值偏贵", "model": "model-a"},
+            "000001": {
+                "success": True,
+                "text": 'BATCH_DECISION_JSON\n{"decision":"buy","decision_label":"可买入","reason":"赔率较好"}',
+                "model": "model-a",
+            },
+            "000002": {
+                "success": True,
+                "text": 'BATCH_DECISION_JSON\n{"decision":"buy","decision_label":"建议买入","reason":"催化明确"}',
+                "model": "model-a",
+            },
+            "000003": {
+                "success": True,
+                "text": 'BATCH_DECISION_JSON\n{"decision":"reject","decision_label":"不买","reason":"没有买点"}',
+                "model": "model-a",
+            },
+            "000004": {
+                "success": True,
+                "text": 'BATCH_DECISION_JSON\n{"decision":"reject","decision_label":"不建议买入","reason":"估值偏贵"}',
+                "model": "model-a",
+            },
         },
     )
 
@@ -252,7 +274,7 @@ def test_batch_summary_accepts_buy_variants_and_rejects_no_buy_phrase():
     assert "筛选通过: **2**" in content
 
 
-def test_batch_summary_prefers_leading_no_buy_over_future_may_buy():
+def test_batch_summary_does_not_reclassify_future_scenario_prose():
     state = BatchRunState(
         "run-1",
         total=1,
@@ -263,7 +285,9 @@ def test_batch_summary_prefers_leading_no_buy_over_future_may_buy():
                     "不买\n\n"
                     "最核心的否定原因：行业β不满足且存在风险否决项。\n\n"
                     "最关键验证点：若后续订单实质性落地，可能转为可买。\n"
-                    "核心逻辑溯源：不符合主线属性与行业β。"
+                    "核心逻辑溯源：不符合主线属性与行业β。\n"
+                    "BATCH_DECISION_JSON\n"
+                    '{"decision":"reject","decision_label":"不买","reason":"当前条件不满足"}'
                 ),
                 "model": "model-a",
             },
@@ -321,7 +345,11 @@ def test_batch_notification_includes_all_passed_stocks_without_summary_ellipsis(
         existing_results={
             f"{index:06d}": {
                 "success": True,
-                "text": "最终结论：建议买入\n理由：结构化测试",
+                "text": (
+                    "最终结论：建议买入\n理由：结构化测试\n"
+                    "BATCH_DECISION_JSON\n"
+                    '{"decision":"buy","decision_label":"建议买入","reason":"结构化测试"}'
+                ),
                 "model": "model-a",
             }
             for index in range(25)

@@ -115,10 +115,14 @@ def test_market_mainline_context_passes_explicit_sector_flow_period(monkeypatch)
 
     payload = collect_context(force=False, include_rss=False)
 
-    assert payload["source_snapshot"]["industry_flow"] == {"inflow_top": [], "outflow_top": []}
+    assert payload["source_snapshot"]["industry_flow"] == {
+        "inflow_top": [],
+        "outflow_top": [],
+        "records": [],
+    }
     assert calls == [
-        ("industry", 8, "today"),
-        ("concept", 8, "today"),
+        ("industry", 30, "today"),
+        ("concept", 30, "today"),
     ]
 
 
@@ -178,9 +182,11 @@ def test_report_evidence_pack_uses_the_public_feed_summarizer() -> None:
     }
     packed = build_report_evidence_pack(context)
     assert packed["market_news"] == [{
+        "evidence_id": "market_news:0",
         "title": "人形机器人产业进展",
         "summary": "核心零部件进入验证阶段",
         "published": "2026-07-21",
+        "link": "",
     }]
 
 

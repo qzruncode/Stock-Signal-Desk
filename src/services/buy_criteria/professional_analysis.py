@@ -1,15 +1,13 @@
 """Evidence-complete professional buy analysis for A-share securities.
 
-The conversational ``能否买入`` workflow uses one coherent analyst judgment
-per company.  Data collection is still program-owned, but the model sees every
-dimension together so it can explain trade-offs instead of emitting isolated
-Boolean fragments.
+The conversational ``能否买入`` workflow uses the user-required eight Boolean
+dimensions. Data collection is program-owned, while the model judges each
+dimension in order. The first non-pass result stops subsequent model analysis.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -24,14 +22,10 @@ from src.services.buy_criteria.evaluators.competition_landscape import (
 from src.services.buy_criteria.evaluators.catalyst_events import (
     CatalystEventsEvaluator,
 )
-from src.services.buy_criteria.evaluators.entry_risk_reward import (
-    EntryRiskRewardEvaluator,
-)
 from src.services.buy_criteria.evaluators.fatal_risks import FatalRisksEvaluator
 from src.services.buy_criteria.evaluators.growth_drivers import (
     GrowthDriversEvaluator,
 )
-from src.services.buy_criteria.evaluators.growth_space import GrowthSpaceEvaluator
 from src.services.buy_criteria.evaluators.industrial_competitiveness import (
     IndustrialCompetitivenessEvaluator,
 )
@@ -50,7 +44,8 @@ from src.services.buy_criteria.research_enrichment import (
 logger = logging.getLogger(__name__)
 
 
-PROFESSIONAL_BUY_CONTRACT_VERSION = "professional_buy_analysis_v3"
+PROFESSIONAL_BUY_CONTRACT_VERSION = "professional_eight_dimension_gate_v5"
+PROFESSIONAL_BUY_ANALYSIS_MODE = "professional_eight_dimension_boolean_gate"
 
 DIMENSION_DEFINITIONS: tuple[tuple[str, str], ...] = (
     ("market_mainline", "业务属于当前市场主线"),
@@ -71,7 +66,6 @@ PUBLIC_RESEARCH_LENSES_BY_DIMENSION: dict[str, set[str]] = {
         "competition_structure",
     },
     "industry_cycle": {"structural_trend", "cycle_supply_demand"},
-    "three_year_space": {"structural_trend", "cycle_supply_demand"},
     "competition_quality": {
         "competition_structure",
         "company_position",
@@ -89,7 +83,7 @@ DimensionId = Literal[
     "valuation_odds",
     "major_risks",
 ]
-DimensionStatus = Literal["pass", "partial", "fail", "insufficient"]
+DimensionStatus = Literal["pass", "fail", "insufficient", "not_evaluated"]
 RecommendationCode = Literal[
     "conditional_buy",
     "watchlist",
@@ -97,16 +91,6 @@ RecommendationCode = Literal[
     "avoid",
     "evidence_insufficient",
 ]
-
-
-def _dimension_model_concurrency() -> int:
-    try:
-        return max(
-            1,
-            min(4, int(os.getenv("PROFESSIONAL_BUY_LLM_CONCURRENCY", "2"))),
-        )
-    except (TypeError, ValueError):
-        return 2
 
 
 class DimensionAssessment(BaseModel):
@@ -171,7 +155,7 @@ ANALYST_SYSTEM_PROMPT = """\
 你是管理A股组合的资深买方分析师。你的任务不是机械筛选，也不是宣传公司，而是回答“现在能否买入”。
 你必须把公司、产业、市场、估值和风险放进同一套逻辑中，像正式投委会材料一样同时列出支持证据与反证。
 
-你必须完整分析八项，任何一项不通过都不能提前停止后续分析：
+程序按以下八个维度依次调用你。你每次只判断当前维度；当前维度不通过时，程序不会再调用后续维度：
 1. 业务属于当前市场主线；
 2. 公司在产业链中有竞争力；
 3. 行业处于上升周期，不是存量博弈；
@@ -183,12 +167,11 @@ ANALYST_SYSTEM_PROMPT = """\
 
 状态口径：
 - pass：证据链充分，主要反证不足以推翻；
-- partial：方向成立但交易热度、兑现程度、赔率或证据存在重要保留；
 - fail：证据明确不满足，或存在足以否决该项的风险；
 - insufficient：关键来源失败或证据太少，不能把“没查到”写成通过或事实性否定。
 
 分析纪律：
-- 市场主线必须分三层：1—3年结构性产业趋势、1—6个月A股主导叙事、1—10日交易确认。三层必须分别陈述并综合，任何单日板块排名都不得单独决定结论；
+- 市场主线必须分三层：1—3年结构性产业趋势、1—6个月A股主导叙事、1—10日板块交易确认。三层必须分别陈述并综合，任何单日板块排名都不得单独决定结论；个股涨跌、均线和资金流不能否定业务的主线归属；
 - 竞争力必须落到产品、份额、技术、客户、盈利能力、成本或正式经营证据，概念关系不算；
 - 周期必须检查订单、装机、出货、价格、库存、产能利用率、资本开支或连续财务趋势；
 - 内卷必须检查同一细分行业的价格、供给、毛利率、客户议价和产能，不能靠关键词或股价下跌判断；
@@ -201,15 +184,7 @@ ANALYST_SYSTEM_PROMPT = """\
 - 数字、日期、产品、客户、订单、产能和行业判断只能来自本轮证据。允许根据证据做明确算术，但必须说明口径；
 - 证据有冲突时主动写冲突。不得用模型记忆补全本轮没有的事实，不得编造来源链接。
 
-recommendation_code 口径：
-- conditional_buy：八项没有 fail/insufficient，且估值赔率和重大风险均至少为 partial；
-- watchlist：产业逻辑较强但仍有一到数项关键验证；
-- wait：公司可研究，但价格、景气或催化尚未给出合适介入条件；
-- avoid：基本逻辑或重大风险使当前不值得介入；
-- evidence_insufficient：关键证据源失败，无法完成可信判断。
-
-请只返回符合给定结构的 JSON，不输出 Markdown，也不要自行计算总分；总分由程序按
-pass=1、partial=0.5、fail/insufficient=0 统一计算。
+请只返回符合给定结构的 JSON，不输出 Markdown。禁止自行打总分或用其他维度抵消当前维度。
 """
 
 
@@ -433,10 +408,9 @@ def _run_evidence_collector(
             stock_info,
             pre_fetched_data,
         )
-        failure = evaluator.evidence_failure_reason(evidence)
         return section, {
-            "success": failure is None,
-            "evidence_gap": failure,
+            "success": True,
+            "evidence_gap": None,
             "summary": _bounded_text(evidence.data_summary),
             "raw_data": evidence.raw_data,
         }
@@ -544,7 +518,6 @@ def collect_professional_evidence(
         ("market_mainline", MainlinePositionEvaluator()),
         ("industrial_competitiveness", IndustrialCompetitivenessEvaluator()),
         ("industry_cycle", ProsperityCycleEvaluator()),
-        ("three_year_space", GrowthSpaceEvaluator()),
         ("competition_quality", CompetitionLandscapeEvaluator()),
         ("growth_drivers", GrowthDriversEvaluator()),
         ("forward_catalysts", CatalystEventsEvaluator()),
@@ -622,34 +595,35 @@ def collect_professional_evidence(
             },
         }
 
-    # The deterministic entry calculation is evidence for the valuation/odds
-    # discussion, not a ninth veto and not the final recommendation.
-    try:
-        entry = EntryRiskRewardEvaluator().evaluate(
-            symbol,
-            stock_info,
-            pre_fetched_data,
-        )
-        sections["valuation_odds"] = {
-            "success": entry.status != "insufficient",
-            "evidence_gap": (
-                entry.verdict if entry.status == "insufficient" else None
+    valuation_packet = {
+        "quote": (base_item.get("snapshot") or {}).get("quote") or {},
+        "valuation": base_item.get("valuation") or {},
+        "consensus": base_item.get("consensus") or {},
+        "peer_comparison": base_item.get("peer_comparison") or {},
+        "financials": base_item.get("financials") or {},
+    }
+    valuation_sources_ok = any(
+        isinstance(value, dict) and value.get("success") is not False
+        for value in valuation_packet.values()
+    )
+    sections["valuation_odds"] = {
+        "success": valuation_sources_ok,
+        "evidence_gap": (
+            None
+            if valuation_sources_ok
+            else "本轮估值、预期、同行与行情来源均未取得有效数据"
+        ),
+        "summary": _bounded_text(
+            json.dumps(
+                valuation_packet,
+                ensure_ascii=False,
+                default=str,
             ),
-            "summary": _bounded_text(entry.evidence.data_summary, 4_000),
-            "deterministic_entry_context": {
-                "status": entry.status,
-                "verdict": entry.verdict,
-                "details": entry.details,
-            },
-            "raw_data": entry.evidence.raw_data,
-        }
-    except Exception as exc:
-        sections["valuation_odds"] = {
-            "success": False,
-            "evidence_gap": f"{type(exc).__name__}: {str(exc)[:240]}",
-            "summary": "当前行情与风险收益证据获取失败。",
-            "raw_data": {},
-        }
+            6_000,
+        ),
+        "raw_data": valuation_packet,
+        "semantic_status": "model_required",
+    }
 
     evidence = {
         "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
@@ -702,7 +676,6 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
         "market_mainline": 2_800,
         "industrial_competitiveness": 3_200,
         "industry_cycle": 2_000,
-        "three_year_space": 2_000,
         "competition_quality": 2_000,
         "growth_drivers": 2_600,
         "forward_catalysts": 3_200,
@@ -887,7 +860,6 @@ def _compact_base_company_packet(value: Any) -> dict[str, Any]:
         },
         "capital_flow": item.get("capital_flow") or {},
         "evidence_coverage": item.get("evidence_coverage") or {},
-        "screening_flags": item.get("screening_flags") or {},
     }
 
 
@@ -1049,11 +1021,6 @@ def _dimension_company_context(
         "latest_quarters": period_rows[-2:],
     }
     quote = packet.get("quote") if isinstance(packet.get("quote"), dict) else {}
-    technical = (
-        packet.get("technical")
-        if isinstance(packet.get("technical"), dict)
-        else {}
-    )
     valuation = (
         packet.get("valuation")
         if isinstance(packet.get("valuation"), dict)
@@ -1123,11 +1090,7 @@ def _dimension_company_context(
 
     base: dict[str, Any] = {"profile": compact_profile}
     if dimension_id == "market_mainline":
-        base.update({
-            "quote": quote,
-            "technical": technical,
-            "capital_flow": packet.get("capital_flow") or {},
-        })
+        pass
     elif dimension_id == "industrial_competitiveness":
         base.update({
             "financials": recent_financial_context,
@@ -1169,7 +1132,6 @@ def _dimension_company_context(
             "financials": recent_financial_context,
             "risk_events": packet.get("risk_events") or {},
             "announcements": packet.get("announcements") or {},
-            "screening_flags": packet.get("screening_flags") or {},
         })
     return base
 
@@ -1293,7 +1255,7 @@ def _call_professional_model(
     adjacent_evidence = {
         "market_mainline": {"industry_cycle", "growth_drivers"},
         "industrial_competitiveness": {"competition_quality"},
-        "industry_cycle": {"three_year_space"},
+        "industry_cycle": set(),
         "competition_quality": {"industrial_competitiveness"},
         "growth_drivers": {"industry_cycle"},
         "forward_catalysts": {"growth_drivers", "major_risks"},
@@ -1303,14 +1265,17 @@ def _call_professional_model(
     dimension_instructions = {
         "market_mainline": (
             "按三个时间层分别判断：1—3年结构性产业趋势、1—6个月A股主导叙事、"
-            "1—10日板块与个股交易确认。先识别当前市场占主导的叙事，再说明公司细分业务"
+            "1—10日板块交易确认。先识别当前市场占主导的叙事，再说明公司细分业务"
             "处于主线核心、活跃分支、轮动支线还是仅有长期趋势。不得因某一天未进入Top N、"
             "单日回撤或单日资金流出直接否决；也不得用长期产业前景冒充当前交易主线。必须"
             "实际核验 public_research 的 market_consensus 与原始板块数据，明确写出当前全市场"
             "占主导的中期叙事，再判断公司方向与它的关系；主线报告不可用不等于其他证据不可用。"
             "1—6个月主导叙事只能由机构策略、连续市场证据或主线报告判断，绝不能由某一天的"
             "涨幅榜改写。单日领涨板块只能进入1—10日交易确认。最终headline必须同时点明中期"
-            "主导叙事和公司方向的层级关系。"
+            "主导叙事和公司方向的层级关系。个股累计涨跌、均线、个股资金净流入和当前收入占比"
+            "都不能否定业务的主线归属：前者属于交易时点，后者的兑现与竞争力属于后续维度。"
+            "只要正式公司资料证明存在对应产品、项目或合作，且市场证据确认该方向是当前主线或"
+            "活跃分支，本维度可以通过；不得仅凭分部名称把产品写成“传统”或“非AI”。"
         ),
         "industrial_competitiveness": (
             "精确市场份额、客户名称或专利数量不是唯一合格证据。若正式分部收入占比、"
@@ -1346,8 +1311,9 @@ def _call_professional_model(
             "本身包装成催化。审批、投产、达产、客户验证和订单时间均不得自行预测。"
         ),
         "major_risks": (
-            "把公告按事项和年份建立时间线。status=detected 只是文本命中，绝不能改写成"
-            "当前active。后续回复、审核决定、注册、发行结果、判决或终止公告覆盖早期阶段。"
+            "把公告按事项和年份建立时间线。风险工具只提供原始证据，不提供事件类型、严重度"
+            "或当前状态；必须根据内容研判。后续回复、审核决定、注册、发行结果、判决或终止"
+            "公告覆盖早期阶段。"
             "不同融资/交易方案不得串联：旧方案已发行不代表新方案已完成；交易所审核通过也"
             "不等于证监会注册或发行完成。对现金流、应收、存货等说明风险传导，不得把风险信号"
             "夸大成已经爆雷。质押次数或补充质押标题本身不能证明控股股东资金链紧张，只有"
@@ -1356,10 +1322,15 @@ def _call_professional_model(
     }
     dimension_system_prompt = (
         "你是管理A股组合的资深买方分析师。只核验程序指定的一个买入维度，"
-        "同时写支持证据、主要反证和后续验证。状态只能是 pass、partial、fail、insufficient。"
-        "主线按结构性产业趋势、中期市场叙事、短期交易确认三层分析；当前资金热度不强但"
-        "产业趋势成立时，主线项通常是 partial；"
-        "主线报告不可用时必须降低置信度，不能把缺失本身写成 fail。"
+        "同时写支持证据、主要反证和后续验证。状态只能是 pass、fail、insufficient；"
+        "只有当前维度的核心条件被证据充分支持时才可 pass，重要保留必须 fail，关键取证失败"
+        "必须 insufficient。"
+        "主线按结构性产业趋势、中期市场叙事、短期板块确认三层分析；当前资金热度不强但"
+        "产业趋势成立并不自动通过当前交易主线闸门；"
+        "第一维判断业务的主线归属，不判断个股买点。个股累计涨跌、均线、个股资金流以及"
+        "当前收入占比不得作为第一维 fail 的依据；订单、收入兑现和竞争优势留给第二维；"
+        "不得仅凭分部名称把现有终端或零部件写成“传统”或“非AI”；"
+        "主线报告不可用时不能把缺失本身写成事实性 fail，应根据其余证据判断或返回 insufficient。"
         "概念关系不能证明竞争力；周期看供需和连续经营数据；内卷看同一细分行业的价格、"
         "供给、毛利率和客户议价。催化只接受证据中明确披露的事件与时间窗，"
         "不得自行预测审批月份、投产日期、订单或业绩。估值必须用基本面估值锚、历史或同行、"
@@ -1375,10 +1346,10 @@ def _call_professional_model(
         "报告期同比相加或平均。"
         "事项名称中的方案年度不是公告发生年份，例如“2025年度方案”可能在2026年审核；"
         "所有进展日期必须逐字复制正式公告日期，禁止把方案年度嫁接到公告月份。"
-        "仅有补充质押公告而没有质押比例时，不得推断高比例、超过50%或伴随减持；"
+        "仅有补充质押公告而没有累计质押比例时，不得推断高比例或伴随减持；"
         "再融资问询及回复不等于监管处罚，也不能仅凭关键词判断当前生命周期。"
         "主线报告缺失但原始板块与产业证据仍可用时，"
-        "应基于现有证据判断 partial/fail，只有关键市场证据整体缺失才用 insufficient。"
+        "应基于现有证据判断 pass/fail，只有关键市场证据整体缺失才用 insufficient。"
         "只使用本轮证据，禁止补造数字、同行区间、客户、原因解释、行业数据或未来日期；"
         "所有数字必须原样复制证据，不做格式转换、舍入或自设阈值；"
         "public_research 中 source_quality=ugc_lead_only 的材料只能作为线索，必须有正式披露、"
@@ -1450,7 +1421,6 @@ def _call_professional_model(
                     "latest_quarters": financial.get("latest_quarters"),
                 },
                 "risk_events": company_context.get("risk_events") or {},
-                "screening_flags": company_context.get("screening_flags") or {},
             }
         request = {
             "stock_info": compact_stock_info,
@@ -1515,7 +1485,11 @@ def _call_professional_model(
             system_prompt=active_system_prompt,
             user_prompt=user_prompt,
             response_model=DimensionAssessment,
-            max_tokens=8_000,
+            # llmops may count provider-side reasoning in the completion
+            # budget even when disabled. Keep enough room for the typed
+            # assessment without allowing one gate to consume an open-ended
+            # reasoning trace.
+            max_tokens=3_000 if retry else 4_000,
             timeout=360,
             call_type="professional_buy_dimensions",
         )
@@ -1524,6 +1498,10 @@ def _call_professional_model(
         if result.dimension_id != dimension_id:
             raise ValueError(
                 f"模型返回维度 {result.dimension_id}，预期 {dimension_id}"
+            )
+        if result.status == "not_evaluated":
+            raise ValueError(
+                "模型不得把当前已执行维度标记为 not_evaluated"
             )
         unsupported_claims = _unsupported_numeric_claims(
             result,
@@ -1542,74 +1520,59 @@ def _call_professional_model(
             )
         return _repair_incomplete_dimension_headline(result)
 
-    results_by_id: dict[str, DimensionAssessment] = {}
-    errors_by_id: dict[str, str] = {}
-    model_concurrency = _dimension_model_concurrency()
-    with ThreadPoolExecutor(max_workers=model_concurrency) as pool:
-        future_map = {
-            pool.submit(dimension_request, definition): definition
-            for definition in DIMENSION_DEFINITIONS
-        }
-        for future in as_completed(future_map):
-            dimension_id, title = future_map[future]
+    dimensions: list[DimensionAssessment] = []
+    model_errors: list[str] = []
+    blocked = False
+    for dimension_id, title in DIMENSION_DEFINITIONS:
+        if blocked:
+            dimensions.append(DimensionAssessment(
+                dimension_id=dimension_id,
+                status="not_evaluated",
+                headline="前序布尔闸门已关闭",
+                analysis="前一维度未通过，本维度按固定状态机不再执行，不能用于抵消首个阻断项。",
+                key_evidence=[],
+                counter_evidence=[],
+                monitoring_points=[],
+            ))
+            continue
+
+        try:
+            result = dimension_request((dimension_id, title))
+        except Exception as first_error:
             try:
-                results_by_id[dimension_id] = future.result()
-            except Exception as exc:
-                errors_by_id[dimension_id] = (
-                    f"{title}: {type(exc).__name__}: {str(exc)[:180]}"
+                result = dimension_request(
+                    (dimension_id, title),
+                    retry=True,
                 )
+            except Exception as retry_error:
+                error = (
+                    f"{title}: {type(retry_error).__name__}: "
+                    f"{str(retry_error)[:180]}"
+                )
+                model_errors.append(error)
                 logger.warning(
-                    "professional buy %s failed for %s",
-                    errors_by_id[dimension_id],
+                    "professional buy %s failed for %s; first=%s",
+                    error,
                     evidence.get("symbol"),
+                    first_error,
                 )
+                result = DimensionAssessment(
+                    dimension_id=dimension_id,
+                    status="insufficient",
+                    headline="当前维度的专业复核未完成",
+                    analysis=(
+                        f"模型没有返回“{title}”的有效结构化判断，"
+                        "程序按证据不足关闭后续闸门。"
+                    ),
+                    key_evidence=[],
+                    counter_evidence=[],
+                    monitoring_points=[f"重新核验“{title}”"],
+                )
+        dimensions.append(result)
+        if result.status != "pass":
+            blocked = True
 
-    # Successful axes are immutable.  Only failed axes are retried with a
-    # smaller evidence packet, so one provider timeout cannot erase the rest.
-    if errors_by_id:
-        failed_definitions = [
-            definition
-            for definition in DIMENSION_DEFINITIONS
-            if definition[0] in errors_by_id
-        ]
-        with ThreadPoolExecutor(
-            max_workers=min(model_concurrency, len(failed_definitions))
-        ) as pool:
-            future_map = {
-                pool.submit(dimension_request, definition, retry=True): definition
-                for definition in failed_definitions
-            }
-            for future in as_completed(future_map):
-                dimension_id, title = future_map[future]
-                try:
-                    results_by_id[dimension_id] = future.result()
-                    errors_by_id.pop(dimension_id, None)
-                except Exception as exc:
-                    errors_by_id[dimension_id] = (
-                        f"{title}重试: {type(exc).__name__}: {str(exc)[:180]}"
-                    )
-                    logger.warning(
-                        "professional buy %s failed for %s",
-                        errors_by_id[dimension_id],
-                        evidence.get("symbol"),
-                    )
-
-    dimensions = [
-        results_by_id.get(dimension_id)
-        or DimensionAssessment(
-            dimension_id=dimension_id,
-            status="insufficient",
-            headline="该维度的专业复核未完成",
-            analysis=f"模型没有返回“{title}”的有效结构化判断，不能用其他维度代替。",
-            key_evidence=[],
-            counter_evidence=[],
-            monitoring_points=[f"重新核验“{title}”"],
-        )
-        for dimension_id, title in DIMENSION_DEFINITIONS
-    ]
-    model_errors = list(errors_by_id.values())
-
-    if model_errors:
+    if blocked:
         error = "；".join(model_errors)
         return _derive_overall_from_dimensions(
             dimensions,
@@ -1640,13 +1603,8 @@ def _call_professional_model(
         "不得改变任何维度的状态，不得补造数字。请定义投资画像、核心逻辑、最大问题、"
         "当前建议、看多传导链、风险传导链和至少三个有明确数据口径的监控指标；"
         "证据没有给出目标值或阈值时，不得自行设定。"
-        "若任一维度是 insufficient，recommendation_code 必须是 evidence_insufficient；"
-        "反过来，八个维度均已完成且没有 insufficient 时，禁止返回 evidence_insufficient，"
-        "也禁止在摘要中写“证据不足以形成判断”；此时必须在 conditional_buy、watchlist、"
-        "wait、avoid 中按已完成的八维结果选择。"
-        "若有 fail，不得给 conditional_buy；估值或重大风险不足时也不得给 conditional_buy。"
-        "partial 并不自动禁止 conditional_buy，也不得声称存在本提示未定义的机械评级规则；"
-        "是否建议介入必须结合八项证据的严重程度形成专业判断。"
+        "调用本步骤意味着八个布尔闸门已经全部 pass，recommendation_code 必须为"
+        " conditional_buy；不得改成评分、加权或跨维度抵消。"
     )
     try:
         overall = forced_call(
@@ -1655,7 +1613,7 @@ def _call_professional_model(
             system_prompt=overall_system_prompt,
             user_prompt=json.dumps(overall_request, ensure_ascii=False, default=str),
             response_model=OverallAssessment,
-            max_tokens=6_000,
+            max_tokens=3_500,
             timeout=300,
             call_type="professional_buy_overall",
         )
@@ -1705,61 +1663,54 @@ def _derive_overall_from_dimensions(
     stock_info: dict[str, Any],
     errors: list[str],
 ) -> ProfessionalAssessment:
-    """Preserve valid axis judgments when only the conclusion call fails.
-
-    This is deliberately a structural fallback, not a second stock-picking
-    rule engine: statuses and evidence remain exactly those produced by the
-    eight analyst judgments.  The code only counts them and arranges their
-    already-written conclusions into a readable summary.
-    """
+    """Render the Boolean gate state without inventing a scoring fallback."""
     counts = {
         status: sum(1 for item in dimensions if item.status == status)
-        for status in ("pass", "partial", "fail", "insufficient")
+        for status in ("pass", "fail", "insufficient", "not_evaluated")
     }
-    score = counts["pass"] + counts["partial"] * 0.5
     name = str(
         stock_info.get("name")
         or stock_info.get("short_name")
         or stock_info.get("symbol")
         or "该公司"
     )
+    executed = [
+        item for item in dimensions
+        if item.status != "not_evaluated"
+    ]
     supportive = [
-        item for item in dimensions if item.status in {"pass", "partial"}
+        item for item in executed
+        if item.status == "pass"
     ]
-    blocking = [
-        item for item in dimensions if item.status in {"fail", "insufficient"}
-    ]
-    biggest = (
-        blocking[0]
-        if blocking
-        else next(
-            (item for item in reversed(dimensions) if item.status == "partial"),
-            dimensions[-1],
-        )
+    blocking = next(
+        (
+            item for item in executed
+            if item.status in {"fail", "insufficient"}
+        ),
+        None,
     )
-    if counts["insufficient"]:
+    biggest = blocking or executed[-1]
+    if blocking and blocking.status == "insufficient":
         recommendation_code: RecommendationCode = "evidence_insufficient"
-        recommendation_reason = "仍有维度未完成有效复核，当前不能形成可信的买入判断。"
-    elif counts["fail"]:
+        recommendation_reason = (
+            f"“{DIMENSION_TITLES[blocking.dimension_id]}”关键取证未完成，"
+            "布尔闸门已关闭。"
+        )
+    elif blocking:
         recommendation_code = "wait"
-        recommendation_reason = "至少一项核心条件明确不满足，当前更适合等待条件反转。"
-    elif score >= 6.5:
-        recommendation_code = "conditional_buy"
-        recommendation_reason = "八维没有硬性失败，且多数核心条件已有证据支持，可在价格与仓位纪律下制定计划。"
-    elif score >= 5:
-        recommendation_code = "watchlist"
-        recommendation_reason = "产业逻辑具备研究价值，但仍有多项关键验证没有完成。"
+        recommendation_reason = (
+            f"“{DIMENSION_TITLES[blocking.dimension_id]}”未通过，"
+            "后续维度不再执行，当前不可进入买入计划。"
+        )
     else:
-        recommendation_code = "wait"
-        recommendation_reason = "当前支持条件不足，赔率或兑现度尚不适合介入。"
+        recommendation_code = "conditional_buy"
+        recommendation_reason = "八个布尔闸门均已通过，可以进入有纪律的买入计划。"
 
     positive_headlines = [item.headline for item in supportive[:4]]
     risk_headlines = [
         item.headline
-        for item in (
-            blocking
-            or [item for item in dimensions if item.status == "partial"]
-        )[:4]
+        for item in ([blocking] if blocking else [])
+        if item is not None
     ]
     monitoring_points = list(dict.fromkeys(
         point
@@ -1772,12 +1723,12 @@ def _derive_overall_from_dimensions(
 
     return ProfessionalAssessment(
         investment_profile=(
-            f"{name}的八维画像为：通过{counts['pass']}项、半通过{counts['partial']}项、"
-            f"不通过{counts['fail']}项、取证未完成{counts['insufficient']}项"
+            f"{name}的八维布尔闸门：通过{counts['pass']}项、"
+            f"不通过{counts['fail']}项、取证未完成{counts['insufficient']}项、"
+            f"未执行{counts['not_evaluated']}项"
         ),
         overall_summary=(
-            f"{name}本轮折算得分约{score:g}/8。"
-            f"{recommendation_reason}"
+            f"{name}本轮执行到第{len(executed)}维。{recommendation_reason}"
         ),
         core_thesis=" → ".join(positive_headlines) or "本轮尚未形成可验证的核心看多逻辑",
         biggest_issue=biggest.headline,
@@ -1803,24 +1754,38 @@ def _fallback_assessment(error: str) -> ProfessionalAssessment:
     dimensions = [
         DimensionAssessment(
             dimension_id=dimension_id,
-            status="insufficient",
-            headline="关键分析未完成",
+            status=(
+                "insufficient"
+                if index == 0
+                else "not_evaluated"
+            ),
+            headline=(
+                "首个维度的专业复核未完成"
+                if index == 0
+                else "前序布尔闸门已关闭"
+            ),
             analysis=(
-                "本轮证据采集结果未能完成统一的资深分析师复核，因此不能把零散数据拼成买入结论。"
+                "本轮未能取得首个维度的有效结构化判断，程序按证据不足关闭后续闸门。"
+                if index == 0
+                else "前一维度未通过，本维度未执行，也不能用于抵消首个阻断项。"
             ),
             key_evidence=[],
             counter_evidence=[],
-            monitoring_points=["待分析服务恢复后基于同一证据包重新评估"],
+            monitoring_points=(
+                ["待分析服务恢复后基于同一证据包重新评估"]
+                if index == 0
+                else []
+            ),
         )
-        for dimension_id in DIMENSION_IDS
+        for index, dimension_id in enumerate(DIMENSION_IDS)
     ]
     return ProfessionalAssessment(
-        investment_profile="证据已采集，但专业综合判断尚未成功生成",
-        overall_summary="本轮没有形成可验证的八维完整分析，暂不提供买入结论。",
+        investment_profile="八维布尔闸门在首个维度因取证未完成而停止",
+        overall_summary="本轮首个维度未形成可验证判断，后续七维按状态机未执行。",
         core_thesis="待专业分析服务恢复后重新核验",
         biggest_issue=error or "专业分析服务不可用",
         recommendation_code="evidence_insufficient",
-        recommendation_reason="八个维度均未完成统一判断，不能使用模型记忆或机械规则替代。",
+        recommendation_reason="首个维度证据不足，程序已关闭买入闸门。",
         dimensions=dimensions,
         bull_case_chain="本轮专业复核未完成，暂不构造看多链条",
         risk_chain="分析服务失败 → 八维结论不可验证 → 暂停买入判断",
@@ -1887,7 +1852,7 @@ def analyze_professional_buy(
     thesis_context: dict[str, Any] | None = None,
     pre_fetched_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Collect all evidence, call the dedicated prompt once and normalize it."""
+    """Collect evidence, evaluate the eight gates in order and normalize them."""
     evidence = collect_professional_evidence(
         symbol,
         thesis=thesis,
@@ -1901,39 +1866,31 @@ def analyze_professional_buy(
     dimensions = [item.model_dump() for item in assessment.dimensions]
     counts = {
         status: sum(1 for item in dimensions if item["status"] == status)
-        for status in ("pass", "partial", "fail", "insufficient")
+        for status in ("pass", "fail", "insufficient", "not_evaluated")
     }
-    score = round(counts["pass"] + counts["partial"] * 0.5, 1)
-    recommendation = assessment.recommendation_code
+    blocking = next(
+        (
+            item for item in dimensions
+            if item["status"] in {"fail", "insufficient"}
+        ),
+        None,
+    )
+    all_passed = counts["pass"] == len(DIMENSION_IDS)
+    recommendation: RecommendationCode
+    if all_passed:
+        recommendation = "conditional_buy"
+    elif blocking and blocking["status"] == "insufficient":
+        recommendation = "evidence_insufficient"
+    else:
+        recommendation = "wait"
     recommendation_reason = assessment.recommendation_reason
     overall_summary = assessment.overall_summary
-    # The model can choose among nuanced non-buy labels, but it cannot emit a
-    # buy plan when the validated checklist still contains a hard failure.
-    if recommendation == "conditional_buy" and (
-        counts["fail"]
-        or counts["insufficient"]
-        or score < 6.5
-    ):
-        recommendation = "wait"
-    if counts["insufficient"] == len(DIMENSION_IDS):
-        recommendation = "evidence_insufficient"
-    elif recommendation == "evidence_insufficient" and not counts["insufficient"]:
-        recommendation = "watchlist" if score >= 5 else "wait"
-        recommendation_reason = (
-            "八个维度均已完成复核，不能使用“取证未完成”标签；"
-            "当前建议根据已完成维度的支持强度与主要保留重新归一。"
-        )
-        overall_summary = (
-            f"八个维度均已完成：通过{counts['pass']}项、半通过"
-            f"{counts['partial']}项、不通过{counts['fail']}项。"
-            f"最大问题是：{assessment.biggest_issue}"
-        )
 
     stock_info = evidence.get("stock_info") or {}
     base_meta = evidence.get("base_packet_meta") or {}
     return {
         "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
-        "analysis_mode": "professional_eight_dimension_buy_analysis",
+        "analysis_mode": PROFESSIONAL_BUY_ANALYSIS_MODE,
         "symbol": symbol,
         "name": (
             stock_info.get("name")
@@ -1948,10 +1905,21 @@ def analyze_professional_buy(
         "recommendation_code": recommendation,
         "recommendation": _recommendation_label(recommendation),
         "recommendation_reason": recommendation_reason,
-        "score": score,
-        "score_total": len(DIMENSION_IDS),
         "counts": counts,
         "dimensions": dimensions,
+        "executed_count": len(DIMENSION_IDS) - counts["not_evaluated"],
+        "not_evaluated_count": counts["not_evaluated"],
+        "stopped_at": (
+            blocking.get("dimension_id")
+            if blocking
+            else None
+        ),
+        "stopped_at_name": (
+            DIMENSION_TITLES.get(str(blocking.get("dimension_id") or ""))
+            if blocking
+            else None
+        ),
+        "gate_pass_complete": all_passed,
         "bull_case_chain": assessment.bull_case_chain,
         "risk_chain": assessment.risk_chain,
         "monitoring_points": assessment.monitoring_points,
@@ -1963,7 +1931,7 @@ def analyze_professional_buy(
         "data_time": base_meta.get("data_time") or evidence.get("requested_at"),
         "quote_basis": base_meta.get("quote_basis"),
         "quote_is_intraday": base_meta.get("quote_is_intraday"),
-        "coverage_complete": counts["insufficient"] == 0,
+        "coverage_complete": all_passed,
         "model_error": model_error or None,
     }
 
@@ -1971,6 +1939,7 @@ def analyze_professional_buy(
 __all__ = [
     "DIMENSION_DEFINITIONS",
     "DIMENSION_IDS",
+    "PROFESSIONAL_BUY_ANALYSIS_MODE",
     "PROFESSIONAL_BUY_CONTRACT_VERSION",
     "ProfessionalAssessment",
     "analyze_professional_buy",

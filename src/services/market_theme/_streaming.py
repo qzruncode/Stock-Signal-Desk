@@ -19,7 +19,11 @@ from src.llm.anthropic_gateway import (
 from src.llm.generation_params import apply_litellm_generation_params
 from src.storage import DatabaseManager, persist_llm_usage
 
-from ._llm import build_model_report_prompts, build_streaming_report_draft
+from ._llm import (
+    _validate_model_report,
+    build_model_report_prompts,
+    build_streaming_report_draft,
+)
 from ._context import build_report_evidence_pack, collect_context
 
 logger = logging.getLogger(__name__)
@@ -300,6 +304,7 @@ def build_llm_model_report_streaming(
         parsed = json.loads(json_payload_text)
         if not isinstance(parsed, dict):
             return None
+        parsed = _validate_model_report(parsed, evidence_pack)
         parsed.setdefault("generated_at", context["generated_at"])
         parsed.setdefault("as_of_date", evidence_pack["as_of_date"])
         parsed["llm_used"] = True
@@ -359,6 +364,7 @@ def build_llm_model_report_streaming(
         parsed = json.loads(response_text)
         if not isinstance(parsed, dict):
             return None
+        parsed = _validate_model_report(parsed, evidence_pack)
         parsed.setdefault("generated_at", context["generated_at"])
         parsed.setdefault("as_of_date", evidence_pack["as_of_date"])
         parsed["llm_used"] = True

@@ -153,17 +153,16 @@ class TestResolveNameToCode:
         mock_akshare.assert_called()
 
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
-    def test_fuzzy_match_fallback(self, mock_akshare):
+    def test_fuzzy_match_is_not_used(self, mock_akshare):
         mock_akshare.return_value = {"贵州茅台": "600519"}
-        # Typo: 贵州茅苔 -> should fuzzy match 贵州茅台
         result = resolve_name_to_code("贵州茅苔")
-        assert result == "600519"
+        assert result is None
 
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
     def test_strict_resolution_does_not_guess_similar_company(self, mock_akshare):
         mock_akshare.return_value = {"龙星科技": "002442"}
 
-        assert resolve_name_to_code("火星科技", allow_fuzzy=False) is None
+        assert resolve_name_to_code("火星科技") is None
 
     @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
     def test_returns_none_when_no_match(self, mock_akshare):

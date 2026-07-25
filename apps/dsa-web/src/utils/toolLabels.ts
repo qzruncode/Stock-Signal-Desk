@@ -9,7 +9,6 @@ export const TOOL_LABELS: Record<string, string> = {
   evaluate_multi_stock_buy_criteria: '资深分析师八维买入分析',
   analyze_stock_catalysts: '公司催化事件核验',
   get_domain_stock_candidates: '领域股票候选池',
-  get_theme_stock_candidates: '主题股票候选池',
   screen_atr_volatility_stocks: '全市场 ATR 量化筛选',
   get_realtime_quotes: '实时行情',
   get_kline: 'K线数据',

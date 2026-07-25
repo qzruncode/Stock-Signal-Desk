@@ -78,7 +78,6 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                 )
                 raw["thesis_membership"] = {
                     "requested_domains": candidates.get("requested_domains") or [],
-                    "context_themes": candidates.get("inferred_context_themes") or [],
                     "company_matched": bool(matched),
                     "matched_domains": (matched or {}).get("matched_domains") or [],
                     "lookup_themes": (matched or {}).get("lookup_themes") or [],
