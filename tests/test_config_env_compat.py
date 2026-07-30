@@ -30,6 +30,32 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         self.assertEqual(config.fundamental_stage_timeout_seconds, 8.0)
         self.assertEqual(config.fundamental_fetch_timeout_seconds, 3.0)
 
+    @patch("src.config.config_dataclass.setup_env")
+    def test_load_from_env_uses_configured_wechat_webhook_url(
+        self,
+        _mock_setup_env,
+    ) -> None:
+        webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+
+        with patch.dict(
+            os.environ,
+            {"WECHAT_WEBHOOK_URL": webhook_url},
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.wechat_webhook_url, webhook_url)
+
+    @patch("src.config.config_dataclass.setup_env")
+    def test_load_from_env_does_not_enable_wechat_without_a_url(
+        self,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.wechat_webhook_url, "")
+
     @patch("src.config.setup_env")
     def test_schedule_run_immediately_falls_back_to_legacy_run_immediately(
         self,
@@ -335,4 +361,3 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
             parsed = Config._parse_report_language("zh-cn")
 
         self.assertEqual(parsed, "zh")
-

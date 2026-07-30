@@ -366,6 +366,19 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(response["success"])
         self.assertEqual(Config.get_instance().stock_list, ["300750", "TSLA"])
 
+    def test_update_with_reload_applies_wechat_webhook_url(self) -> None:
+        webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=updated-key"
+
+        with self._notification_test_env():
+            response = self.service.update(
+                config_version=self.manager.get_config_version(),
+                items=[{"key": "WECHAT_WEBHOOK_URL", "value": webhook_url}],
+                reload_now=True,
+            )
+
+            self.assertTrue(response["success"])
+            self.assertEqual(Config.get_instance().wechat_webhook_url, webhook_url)
+
     def test_update_raises_conflict_for_stale_version(self) -> None:
         with self.assertRaises(ConfigConflictError):
             self.service.update(
@@ -484,4 +497,3 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertIn("启动期监听配置", bind_warning)
         self.assertIn("不会因为本次保存重新绑定监听地址或端口", bind_warning)
         self.assertIn("重启当前进程、Docker 容器或服务管理器后生效", bind_warning)
-

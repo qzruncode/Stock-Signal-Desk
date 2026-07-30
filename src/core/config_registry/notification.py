@@ -834,8 +834,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         'warning_codes': ['disabling_ssl_verify_is_risky'],
     },
     'WECHAT_WEBHOOK_URL': {
-        'title': 'WeChat Webhook URL',
-        'description': 'Webhook URL for enterprise WeChat bot.',
+        'title': '企业微信 Webhook URL',
+        'description': '在企业微信群中添加群机器人后，粘贴机器人的 Webhook 地址。URL 已包含发送通知所需的密钥。',
         'category': 'notification',
         'data_type': 'string',
         'ui_control': 'password',
@@ -844,7 +844,10 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         'is_editable': True,
         'default_value': None,
         'options': [],
-        'validation': {},
+        'validation': {
+            'item_type': 'url',
+            'allowed_schemes': ['https'],
+        },
         'display_order': 10,
         'help_key': 'settings.notification.webhooks',
         'examples': ['WECHAT_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx'],
@@ -852,4 +855,3 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         'warning_codes': ['webhook_secret_value'],
     },
 }
-

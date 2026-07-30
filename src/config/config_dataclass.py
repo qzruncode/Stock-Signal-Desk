@@ -86,7 +86,7 @@ class Config:
     bias_threshold: float = 5.0
 
     # === 通知配置 ===
-    wechat_webhook_url: str = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=c8b160e1-d0c5-468b-96ea-4953832096b1"
+    wechat_webhook_url: str = ""
     report_type: str = "simple"
     report_language: str = "zh"
     report_summary_only: bool = False
@@ -356,6 +356,7 @@ class Config:
             report_integrity_retry=parse_env_int(os.getenv('REPORT_INTEGRITY_RETRY'), 1, field_name='REPORT_INTEGRITY_RETRY', minimum=0),
             report_history_compare_n=parse_env_int(os.getenv('REPORT_HISTORY_COMPARE_N'), 0, field_name='REPORT_HISTORY_COMPARE_N', minimum=0),
             analysis_delay=parse_env_float(os.getenv('ANALYSIS_DELAY'), 0.0, field_name='ANALYSIS_DELAY', minimum=0.0),
+            wechat_webhook_url=(os.getenv('WECHAT_WEBHOOK_URL') or '').strip(),
             wechat_max_bytes=wechat_max_bytes,
             wechat_msg_type=wechat_msg_type_lower,
             database_url=(os.getenv('DATABASE_URL') or '').strip() or None,
