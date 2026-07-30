@@ -37,6 +37,7 @@ RealtimeQuoteIntent = EmptyIntent
 CatalystAnalysisIntent = EmptyIntent
 DataHealthIntent = EmptyIntent
 TradeExecutionIntent = EmptyIntent
+MarketMainlineResearchIntent = EmptyIntent
 
 
 class SecurityLookupIntent(StrictModel):

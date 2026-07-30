@@ -486,6 +486,7 @@ class AgentRunTrace(Base):
     normalized_intents_json = Column(Text, nullable=False, default='{}')
     repairs_json = Column(Text, nullable=False, default='[]')
     verification_json = Column(Text)
+    goal_state_json = Column(Text)
     latest_stage_json = Column(Text)
     compiled_plan_json = Column(Text)
     outcomes_json = Column(Text)

@@ -74,3 +74,40 @@ def test_semantic_release_gate_requires_every_case_to_pass():
         "pass_rate": 0.5,
         "release_gate_passed": False,
     }
+
+
+def test_semantic_score_enforces_goal_and_safe_recovery_trajectory():
+    case = SemanticGoldenCase(
+        case_id="forecast",
+        prompt="未来市场主线是什么",
+        required_capabilities=frozenset({"market_mainline_research"}),
+        forbidden_capabilities=frozenset({"market_overview"}),
+        required_question_type="forecast",
+        required_evidence_dimensions=frozenset({
+            "market_mainline",
+            "macro_policy",
+        }),
+        required_artifact_resources=frozenset({
+            "security_collection",
+        }),
+        maximum_plan_revisions=2,
+    )
+
+    score = score_semantic_case(
+        case,
+        ["market_mainline_research"],
+        question_type="research",
+        evidence_dimensions=["market_mainline"],
+        plan_revisions=3,
+        recovery_effects=["read", "mutation"],
+        artifact_resources=[],
+    )
+
+    assert score["passed"] is False
+    assert score["question_type_mismatch"] is True
+    assert score["missing_evidence_dimensions"] == ["macro_policy"]
+    assert score["too_many_revisions"] is True
+    assert score["unsafe_recovery_effects"] == ["mutation"]
+    assert score["missing_artifact_resources"] == [
+        "security_collection",
+    ]

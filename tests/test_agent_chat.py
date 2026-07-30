@@ -116,7 +116,7 @@ class _FakeController:
         return tool
 
 
-def test_pipeline_contract_failure_marks_the_run_failed() -> None:
+def test_pipeline_contract_failure_degrades_to_a_no_tool_answer() -> None:
     controller = _FakeController()
     state = {}
     error = chat_mod.OrchestratorV2Error(
@@ -129,6 +129,10 @@ def test_pipeline_contract_failure_marks_the_run_failed() -> None:
         chat_mod,
         "plan_intent_graph_v2",
         new=AsyncMock(side_effect=error),
+    ), patch.object(
+        chat_mod,
+        "_stream_final_answer_without_tools",
+        new=AsyncMock(return_value="这是不依赖实时数据的降级回答。"),
     ):
         result = asyncio.run(chat_mod._run_standard_task_pipeline(
             controller,
@@ -139,12 +143,162 @@ def test_pipeline_contract_failure_marks_the_run_failed() -> None:
             run_id="run-contract-failed",
         ))
 
-    assert "内部规划契约错误" in result
-    assert state["_run_status"] == "failed"
+    assert result == "这是不依赖实时数据的降级回答。"
+    assert state["_run_status"] == "partial"
     assert state["_run_error_code"] == "planner_schema_invalid"
-    assert chat_mod._terminal_run_status(state) == "failed"
+    assert chat_mod._terminal_run_status(state) == "partial"
     assert chat_mod._terminal_run_status({"_run_status": "partial"}) == "partial"
     assert chat_mod._terminal_run_status({}) == "completed"
+
+
+def test_pipeline_runs_one_safe_goal_recovery_then_returns_best_effort(
+    monkeypatch,
+) -> None:
+    controller = _FakeController()
+    state = {}
+    goal = {
+        "objective": "研判未来一至六个月市场主线",
+        "question_type": "forecast",
+        "uncertainty_mode": "scenario",
+        "time_horizon": "未来一至六个月",
+        "deliverables": ["候选主线排序", "成立条件与失效信号"],
+        "claims": [{
+            "claim_id": "mainline",
+            "question": "未来市场主线及其验证条件是什么",
+            "required_dimensions": [
+                "market_mainline",
+                "research_consensus",
+                "macro_policy",
+                "industry_structure",
+            ],
+            "optional_dimensions": [],
+            "mandatory": True,
+        }],
+    }
+    submitted_outlines = 0
+
+    def response(function_name, payload):
+        return {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": function_name,
+                            "arguments": json.dumps(
+                                payload,
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }],
+                },
+            }],
+        }
+
+    async def completion(**kwargs):
+        nonlocal submitted_outlines
+        function_name = kwargs["tool_choice"]["function"]["name"]
+        if function_name == "submit_intent_outline_v2":
+            submitted_outlines += 1
+            payload = {
+                "goal": goal,
+                "nodes": [{
+                    "node_id": (
+                        "mainline"
+                        if submitted_outlines == 1
+                        else "repair_1_macro"
+                    ),
+                    "capability": (
+                        "market_mainline_research"
+                        if submitted_outlines == 1
+                        else "macro_analysis"
+                    ),
+                    "objective": "补充宏观政策证据",
+                    "input_refs": [],
+                    "result_selection": None,
+                }],
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+            return response(function_name, payload)
+        if function_name == "verify_intent_outline_v2":
+            return response(function_name, {
+                "accepted": True,
+                "confidence": 0.95,
+                "missing_capabilities": [],
+                "extraneous_node_ids": [],
+                "resource_issues": [],
+                "rationale": "目标与市场主线能力匹配。",
+            })
+        if function_name == "submit_macro_analysis_intent_v2":
+            return response(function_name, {
+                "indicators": ["GDP"],
+                "periods": 4,
+                "bond_yield": False,
+                "country": None,
+                "term": None,
+                "days": None,
+                "monetary_operations": False,
+                "instrument": None,
+                "research_query": None,
+                "research_subjects": [],
+                "limit": None,
+            })
+        raise AssertionError(function_name)
+
+    def execute_dispatch(_self, request, **_kwargs):
+        if request.tool_name == "prepare_market_mainline_snapshot":
+            return {
+                "success": False,
+                "partial": False,
+                "available": False,
+                "errors": ["primary source unavailable"],
+                "warnings": [],
+            }
+        assert request.tool_name == "get_macro_indicator"
+        return {
+            "success": True,
+            "partial": False,
+            "indicator": "GDP",
+            "items": [],
+            "errors": [],
+            "warnings": [],
+        }
+
+    monkeypatch.setenv("AGENT_GOAL_MAX_REVISIONS", "1")
+    with patch.object(
+        chat_mod.litellm,
+        "acompletion",
+        new=completion,
+    ), patch.object(
+        chat_mod.ToolDispatcher,
+        "execute",
+        new=execute_dispatch,
+    ), patch.object(
+        chat_mod,
+        "_stream_final_answer_without_tools",
+        new=AsyncMock(return_value="基于现有证据的条件化主线研判。"),
+    ):
+        result = asyncio.run(chat_mod._run_standard_task_pipeline(
+            controller,
+            [{"role": "user", "content": "未来市场主线会是什么？"}],
+            {"model": "test-model"},
+            state=state,
+            run_id="run-goal-recovery",
+        ))
+
+    assert result == "基于现有证据的条件化主线研判。"
+    goal_state = state["_terminal_trace"]["goal_state"]
+    assert goal_state["plan_revision"] == 1
+    assert goal_state["evaluation"]["disposition"] == "best_effort"
+    assert goal_state["evaluation"]["terminal_reason"] == "budget_exhausted"
+    assert goal_state["attempted_capabilities"] == [
+        "market_mainline_research",
+        "macro_analysis",
+    ]
+    assert [name for name, _ in controller.tool_calls] == [
+        "prepare_market_mainline_snapshot",
+        "get_macro_indicator",
+    ]
 
 
 def test_agent_execution_has_no_retry_classifier() -> None:
@@ -217,6 +371,32 @@ def test_structured_completion_coalesces_small_reasoning_deltas():
     reasoning = "".join(controller.reasoning)
     assert reasoning.endswith("分析" * 300 + "\n")
     assert len(controller.reasoning) < 10
+
+
+def test_structured_completion_hides_provider_reasoning_that_ignores_chinese():
+    controller = _FakeController()
+
+    async def completion(**_kwargs):
+        return _AsyncChunkStream([
+            _mock_llm_chunk(
+                reasoning_content=(
+                    "The user asks for a market forecast. "
+                    "I will inspect the capability catalog."
+                ),
+            ),
+            _mock_llm_chunk(content="{}"),
+        ])
+
+    response = asyncio.run(chat_mod._stream_structured_model_completion(
+        controller,
+        completion,
+        messages=[],
+    ))
+
+    assert response["choices"][0]["message"]["content"] == "{}"
+    assert response["choices"][0]["message"]["reasoning_content"]
+    assert "The user asks" not in "".join(controller.reasoning)
+    assert "模型可见分析" not in "".join(controller.reasoning)
 
 
 def test_visible_reasoning_language_contract_preserves_existing_system_prompt():
@@ -1059,7 +1239,7 @@ def test_industry_contract_does_not_discard_safe_answer_for_link_format_only():
     ) == []
 
 
-def test_final_synthesis_does_not_install_a_local_timeout():
+def test_final_synthesis_uses_one_shared_hard_deadline():
     controller = _FakeController()
     complete = (
         "优先级和最受益排序。上游、中游、下游产业链。"
@@ -1079,16 +1259,18 @@ def test_final_synthesis_does_not_install_a_local_timeout():
     async def run():
         with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, patch(
             "api.v1.endpoints.agent.chat.asyncio.timeout",
-            side_effect=AssertionError("final synthesis must not install a local timeout"),
-        ):
+            wraps=asyncio.timeout,
+        ) as timeout_factory:
             llm_mod.acompletion = fake_acompletion
-            return await chat_mod._stream_final_answer_without_tools(
+            result = await chat_mod._stream_final_answer_without_tools(
                 controller,
                 [{"role": "user", "content": "分析产业链"}],
                 cfg,
                 evidence=[],
                 playbook=chat_mod.INDUSTRY_CHAIN,
             )
+            assert timeout_factory.call_count == 1
+            return result
 
     assert asyncio.run(run()) == complete
     assert controller.texts == [complete]
@@ -1463,8 +1645,8 @@ def test_stream_final_answer_llm_failure_appends_error_text():
             )
 
     result = asyncio.run(run())
-    assert "模型本次没有返回最终文本" in result
-    assert any("模型本次没有返回最终文本" in t for t in controller.texts)
+    assert "当前回答服务暂时不可用" in result
+    assert any("当前回答服务暂时不可用" in t for t in controller.texts)
 
 
 def test_stream_final_answer_empty_content_appends_hint():
@@ -1481,8 +1663,8 @@ def test_stream_final_answer_empty_content_appends_hint():
             )
 
     result = asyncio.run(run())
-    assert "模型本次没有返回最终文本" in result
-    assert any("模型本次没有返回最终文本" in t for t in controller.texts)
+    assert "当前回答服务暂时不可用" in result
+    assert any("当前回答服务暂时不可用" in t for t in controller.texts)
 
 
 def test_empty_final_answer_returns_persisted_report_markdown():
@@ -1750,6 +1932,20 @@ def test_agent_chat_sse_normal_stream(client):
         )
         if function_name == "submit_intent_outline_v2":
             payload = {
+                "goal": {
+                    "objective": "回应问候",
+                    "question_type": "direct",
+                    "uncertainty_mode": "bounded",
+                    "time_horizon": None,
+                    "deliverables": ["直接回应用户问候"],
+                    "claims": [{
+                        "claim_id": "answer",
+                        "question": "向用户给出自然、直接的回应",
+                        "required_dimensions": ["general_knowledge"],
+                        "optional_dimensions": [],
+                        "mandatory": True,
+                    }],
+                },
                 "nodes": [{
                     "node_id": "answer",
                     "capability": "general_response",
@@ -1800,7 +1996,7 @@ def test_agent_chat_sse_llm_failure_still_returns_stream(client):
     async def fake_acompletion(**kwargs):
         raise RuntimeError("LLM down")
 
-    marker = "规划模型请求被上游连接终止".encode(
+    marker = "当前回答服务暂时不可用".encode(
         "unicode_escape"
     )
     with patch("api.v1.endpoints.agent.chat._get_llm_config",

@@ -13,7 +13,7 @@ from src.storage.models import AgentRuntimeControl, Base
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2026.07.30.3"
+SCHEMA_VERSION = "2026.07.30.4"
 
 
 def get_schema_version(engine) -> str | None:
@@ -181,6 +181,11 @@ def _migrate_agent_run_trace_latest_stage(engine) -> None:
             session.execute(text(
                 "ALTER TABLE agent_run_traces "
                 "ADD COLUMN verification_json TEXT"
+            ))
+        if "goal_state_json" not in columns:
+            session.execute(text(
+                "ALTER TABLE agent_run_traces "
+                "ADD COLUMN goal_state_json TEXT"
             ))
         session.commit()
     except Exception:

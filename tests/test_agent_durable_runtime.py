@@ -6,6 +6,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,7 @@ from src.services.chat_session_service import ChatSessionService
 from src.agent.model_runtime import GuardedModelRuntime
 from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.storage import DatabaseManager
-from src.storage.models import AgentRun
+from src.storage.models import AgentRun, AgentRunTrace
 
 
 @pytest.fixture
@@ -71,6 +72,33 @@ def test_cross_thread_admission_enforces_one_global_slot(database):
     assert sum(result["claimed"] is True for result in results) == 1
     rejected = next(result for result in results if not result["claimed"])
     assert rejected["reason"] == "capacity"
+
+
+def test_goal_state_is_persisted_as_authoritative_run_trace(database):
+    conversation_id = _conversation(database, "goal-state")
+    goal_state = {
+        "version": "goal-state-1",
+        "plan_revision": 1,
+        "evaluation": {
+            "disposition": "best_effort",
+            "terminal_reason": "budget_exhausted",
+        },
+    }
+
+    database.upsert_agent_run_trace(
+        run_id="run-goal-state",
+        conversation_id=conversation_id,
+        orchestrator_mode="unified",
+        status="partial",
+        goal_state=goal_state,
+    )
+
+    with database.session_scope() as session:
+        record = session.query(AgentRunTrace).filter_by(
+            run_id="run-goal-state",
+            orchestrator_mode="unified",
+        ).one()
+        assert json.loads(record.goal_state_json) == goal_state
 
 
 def test_admission_enforces_owner_fairness_and_preserves_resume_conflicts(

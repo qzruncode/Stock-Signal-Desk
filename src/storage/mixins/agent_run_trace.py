@@ -149,6 +149,7 @@ class AgentRunTraceMixin:
         normalized_intents: Any = None,
         repairs: Any = None,
         verification: Any = None,
+        goal_state: Any = None,
         latest_stage: Any = None,
         compiled_plan: Any = None,
         outcomes: Any = None,
@@ -203,6 +204,11 @@ class AgentRunTraceMixin:
             if verification is not None:
                 record.verification_json = _json(
                     verification,
+                    encrypt=True,
+                )
+            if goal_state is not None:
+                record.goal_state_json = _json(
+                    goal_state,
                     encrypt=True,
                 )
             if latest_stage is not None:

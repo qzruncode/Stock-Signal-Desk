@@ -93,7 +93,7 @@ def serialize_compiled_intent_graph_v2(
 ) -> dict[str, Any]:
     """Create a versioned, JSON-safe recovery checkpoint after compilation."""
     return {
-        "checkpoint_version": "compiled-v1",
+        "checkpoint_version": "compiled-v2",
         "stage": "compiled",
         "request_fingerprint": request_fingerprint,
         "planning_trace": planning_trace.model_dump(mode="json"),
@@ -142,7 +142,7 @@ def restore_compiled_intent_graph_v2(
 ) -> tuple[CompiledIntentGraphV2, PlanningTraceV2] | None:
     """Restore only a checkpoint matching this request and current contracts."""
     if (
-        checkpoint.get("checkpoint_version") != "compiled-v1"
+        checkpoint.get("checkpoint_version") != "compiled-v2"
         or checkpoint.get("stage") != "compiled"
         or checkpoint.get("request_fingerprint") != request_fingerprint
     ):

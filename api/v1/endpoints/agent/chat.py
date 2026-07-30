@@ -75,13 +75,19 @@ from src.agent.orchestrator_v2.contracts import (
     AgentStage,
     AgentStageEventV2,
     EffectLevel,
+    GoalBudgetV2,
+    GoalContractV2,
+    GoalDisposition,
+    IntentOutlineV2,
     OrchestratorV2Error,
     PlanningTraceV2,
+    QuestionType,
     RendererMode,
     StageStatus,
     stable_fingerprint,
 )
 from src.agent.orchestrator_v2.outcomes import execution_outcomes_v2
+from src.agent.orchestrator_v2.goal_state import evaluate_goal_v2
 from src.agent.orchestrator_v2.planner import (
     PlannedIntentGraphV2,
     plan_intent_graph_v2,
@@ -104,6 +110,7 @@ from src.agent.result_contracts import (
     FinancialFilterCondition,
     INDUSTRY_CHAIN,
     INVESTMENT_DECISION,
+    MARKET_OUTLOOK,
     STOCK_DEEP_RESEARCH,
     THEME_COMPANY_MAPPING,
 )
@@ -2451,6 +2458,81 @@ def _build_verified_evidence_fallback(
     if professional_buy_answer:
         return professional_buy_answer
 
+    for item in reversed(evidence or []):
+        if (
+            not isinstance(item, dict)
+            or item.get("tool") != "prepare_market_mainline_snapshot"
+        ):
+            continue
+        result = item.get("result")
+        if (
+            not isinstance(result, dict)
+            or result.get("success") is False
+            or result.get("available") is not True
+        ):
+            continue
+        current = [
+            row for row in result.get("current_mainlines") or []
+            if isinstance(row, dict)
+        ]
+        candidates = [
+            row for row in (
+                result.get("candidate_mainlines")
+                or result.get("future_mainlines")
+                or []
+            )
+            if isinstance(row, dict)
+        ]
+        lines = [
+            "## 市场主线研判",
+            "",
+            str(result.get("overview") or "已形成结构化市场主线快照。"),
+        ]
+        if candidates:
+            lines.extend([
+                "",
+                "### 未来一至六个月候选排序",
+                "",
+            ])
+            for index, row in enumerate(candidates[:5], 1):
+                triggers = [
+                    str(value.get("description") or "").strip()
+                    for value in row.get("trigger_assessments") or []
+                    if isinstance(value, dict)
+                    and str(value.get("description") or "").strip()
+                ]
+                lines.append(
+                    f"{index}. **{row.get('name') or '未命名方向'}**："
+                    f"{row.get('reason') or '结构化理由缺失'}"
+                )
+                lines.append(
+                    "   - 成立条件："
+                    + ("；".join(triggers[:4]) if triggers else "尚待补充验证")
+                )
+                lines.append(
+                    f"   - 阶段/期限：{row.get('stage_hint') or '待验证'} / "
+                    f"{row.get('expected_horizon') or '期限未标注'}"
+                )
+        if current:
+            lines.extend([
+                "",
+                "### 当前已确认主线",
+                "",
+                "、".join(
+                    str(row.get("name") or "未命名方向")
+                    for row in current[:5]
+                ),
+            ])
+        lines.extend([
+            "",
+            "### 风险边界",
+            "",
+            "- 候选排序是条件化研判，不是对未来赢家的确定性承诺；"
+            "触发条件未兑现或反向证据增强时应下调排序。",
+            f"- 数据截至：{result.get('as_of_date') or result.get('data_time') or '未标注'}。",
+        ])
+        return "\n".join(lines)
+
     # Reading a persisted report is retrieval, not a new model judgement.  If
     # the provider emits no final text after the tool succeeds, return the
     # stored report itself instead of asking the user to retry.  The LLM-facing
@@ -2583,9 +2665,14 @@ def _build_verified_evidence_fallback(
             break
 
     if not batch or not isinstance(batch.get("items"), list):
+        if not evidence:
+            return (
+                "当前回答服务暂时不可用，因此没有生成不可靠的内容。"
+                "本轮没有执行数据查询、写入或其他外部动作；服务恢复后可以继续当前问题。"
+            )
         return (
             "已取得工具证据，但模型本次没有返回最终文本。为避免编造结论，本轮不补写未经"
-            "核验的判断；请直接重试当前问题，已取得的证据仍保留在工具卡片中。"
+            "核验的判断；已取得的证据仍保留在工具卡片中。"
         )
 
     def number(value: Any, digits: int = 2) -> str:
@@ -2952,6 +3039,20 @@ def _playbook_answer_contract_issues(
     if playbook.id == STOCK_DEEP_RESEARCH.id:
         return _professional_answer_contract_issues(content, evidence)
 
+    if playbook.id == MARKET_OUTLOOK.id:
+        issues: List[str] = []
+        if not any(term in content for term in ("主线排序", "候选排序", "基准情景")):
+            issues.append("市场主线研判必须先给基准情景或候选主线排序")
+        if "成立条件" not in content:
+            issues.append("每个候选主线必须给出成立条件")
+        if not any(term in content for term in ("失效信号", "失效条件")):
+            issues.append("每个候选主线必须给出失效信号")
+        if not any(term in content for term in ("乐观情景", "谨慎情景", "情景切换")):
+            issues.append("市场主线研判必须说明情景切换")
+        if "置信" not in content:
+            issues.append("市场主线研判必须标注相对置信度")
+        return issues
+
     if playbook.id == THEME_COMPANY_MAPPING.id:
         return []
     return []
@@ -3110,6 +3211,13 @@ def _append_process_reasoning(
         _append_model_reasoning(controller, text + "\n")
 
 
+def _visible_reasoning_uses_chinese(text: str) -> bool:
+    """Fail closed when a provider ignores the visible-language contract."""
+    cjk_chars = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", text or ""))
+    latin_chars = len(re.findall(r"[A-Za-z]", text or ""))
+    return cjk_chars >= 2 and cjk_chars * 3 >= latin_chars
+
+
 class _BufferedReasoningEmitter:
     """Coalesce provider token deltas before crossing the UI stream boundary."""
 
@@ -3117,15 +3225,22 @@ class _BufferedReasoningEmitter:
         self,
         controller: ControllerLike,
         *,
+        label: Optional[str] = None,
         flush_chars: int = 512,
         flush_seconds: float = 0.35,
     ) -> None:
         self._controller = controller
+        self._label = label
         self._flush_chars = flush_chars
         self._flush_seconds = flush_seconds
         self._parts: List[str] = []
         self._chars = 0
         self._last_flush = time.monotonic()
+        self._emitted = False
+
+    @property
+    def emitted(self) -> bool:
+        return self._emitted
 
     def append(self, text: str) -> None:
         if not text:
@@ -3145,7 +3260,12 @@ class _BufferedReasoningEmitter:
         self._parts.clear()
         self._chars = 0
         self._last_flush = time.monotonic()
+        if not _visible_reasoning_uses_chinese(text):
+            return
+        if not self._emitted and self._label:
+            _append_process_reasoning(self._controller, self._label)
         _append_model_reasoning(self._controller, text)
+        self._emitted = True
 
 
 _STAGE_TRACE_LABELS = {
@@ -3300,7 +3420,7 @@ async def _stream_structured_model_completion(
         for choice in choices:
             message = _response_field(choice, "message")
             reasoning = _extract_model_reasoning_delta(message)
-            if reasoning:
+            if reasoning and _visible_reasoning_uses_chinese(reasoning):
                 _append_process_reasoning(
                     controller,
                     f"模型可见分析 · {function_name}",
@@ -3312,8 +3432,10 @@ async def _stream_structured_model_completion(
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
     tool_calls: Dict[int, Dict[str, Any]] = {}
-    reasoning_started = False
-    reasoning_emitter = _BufferedReasoningEmitter(controller)
+    reasoning_emitter = _BufferedReasoningEmitter(
+        controller,
+        label=f"模型可见分析 · {function_name}",
+    )
     iterator = response.__aiter__()
     try:
         while True:
@@ -3333,12 +3455,6 @@ async def _stream_structured_model_completion(
             reasoning_delta = _extract_model_reasoning_delta(delta)
             if reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
-                if not reasoning_started:
-                    _append_process_reasoning(
-                        controller,
-                        f"模型可见分析 · {function_name}",
-                    )
-                    reasoning_started = True
                 reasoning_emitter.append(reasoning_delta)
             content = _response_field(delta, "content")
             if isinstance(content, str) and content:
@@ -3376,7 +3492,7 @@ async def _stream_structured_model_completion(
         closer = getattr(response, "aclose", None)
         if callable(closer):
             await closer()
-    if reasoning_started:
+    if reasoning_emitter.emitted:
         _append_model_reasoning(controller, "\n")
     rebuilt_calls = []
     for index in sorted(tool_calls):
@@ -3404,7 +3520,7 @@ async def _collect_streamed_model_answer(
     *,
     label: str,
 ) -> tuple[str, str]:
-    """Collect one answer stream without imposing an elapsed-time deadline."""
+    """Collect one answer stream; the caller owns the shared hard deadline."""
     started_at = time.monotonic()
     visible_request_kwargs = dict(request_kwargs)
     visible_request_kwargs["messages"] = _with_chinese_visible_reasoning(
@@ -3421,7 +3537,7 @@ async def _collect_streamed_model_answer(
         choice = choices[0] if choices else None
         message = _response_field(choice, "message")
         reasoning = _extract_model_reasoning_delta(message)
-        if reasoning:
+        if reasoning and _visible_reasoning_uses_chinese(reasoning):
             _append_process_reasoning(controller, f"模型可见分析 · {label}")
             _append_model_reasoning(controller, reasoning)
             _append_model_reasoning(controller, "\n")
@@ -3432,8 +3548,10 @@ async def _collect_streamed_model_answer(
 
     content_parts: List[str] = []
     finish_reason = ""
-    reasoning_started = False
-    reasoning_emitter = _BufferedReasoningEmitter(controller)
+    reasoning_emitter = _BufferedReasoningEmitter(
+        controller,
+        label=f"模型可见分析 · {label}",
+    )
     iterator = response.__aiter__()
     try:
         while True:
@@ -3456,12 +3574,6 @@ async def _collect_streamed_model_answer(
             delta = _response_field(choice, "delta")
             reasoning_delta = _extract_model_reasoning_delta(delta)
             if reasoning_delta:
-                if not reasoning_started:
-                    _append_process_reasoning(
-                        controller,
-                        f"模型可见分析 · {label}",
-                    )
-                    reasoning_started = True
                 reasoning_emitter.append(reasoning_delta)
             content = _response_field(delta, "content")
             if isinstance(content, str) and content:
@@ -3471,7 +3583,7 @@ async def _collect_streamed_model_answer(
         closer = getattr(response, "aclose", None)
         if callable(closer):
             await closer()
-    if reasoning_started:
+    if reasoning_emitter.emitted:
         _append_model_reasoning(controller, "\n")
     return "".join(content_parts), finish_reason
 
@@ -3495,6 +3607,36 @@ async def _stream_final_answer_without_tools(
     """
     completion = completion or litellm.acompletion
     forced_messages = _build_synthesis_messages(messages, evidence, playbook)
+    try:
+        synthesis_timeout_seconds = max(
+            5.0,
+            min(
+                300.0,
+                float(os.getenv(
+                    "AGENT_FINAL_SYNTHESIS_TIMEOUT_SECONDS",
+                    "75",
+                )),
+            ),
+        )
+    except (TypeError, ValueError):
+        synthesis_timeout_seconds = 75.0
+    synthesis_deadline = time.monotonic() + synthesis_timeout_seconds
+
+    async def collect_with_deadline(
+        request_kwargs: Mapping[str, Any],
+        *,
+        label: str,
+    ) -> tuple[str, str]:
+        remaining = synthesis_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("final synthesis deadline exhausted")
+        async with asyncio.timeout(remaining):
+            return await _collect_streamed_model_answer(
+                controller,
+                completion,
+                request_kwargs,
+                label=label,
+            )
 
     def contract_issues(content: str) -> List[str]:
         issues = _final_answer_contract_issues(playbook, content, evidence)
@@ -3514,9 +3656,7 @@ async def _stream_final_answer_without_tools(
     )
 
     try:
-        content_text, finish_reason = await _collect_streamed_model_answer(
-            controller,
-            completion,
+        content_text, finish_reason = await collect_with_deadline(
             kwargs,
             label="最终答案综合",
         )
@@ -3560,9 +3700,7 @@ async def _stream_final_answer_without_tools(
             repaired_finish_reason = ""
             try:
                 repaired_text, repaired_finish_reason = (
-                    await _collect_streamed_model_answer(
-                        controller,
-                        completion,
+                    await collect_with_deadline(
                         repair_kwargs,
                         label="最终答案字段修复",
                     )
@@ -3621,9 +3759,7 @@ async def _stream_final_answer_without_tools(
         retry_finish_reason = ""
         try:
             retry_text, retry_finish_reason = (
-                await _collect_streamed_model_answer(
-                    controller,
-                    completion,
+                await collect_with_deadline(
                     retry_kwargs,
                     label="最终答案完整性修复",
                 )
@@ -4100,6 +4236,7 @@ async def _run_standard_task_pipeline(
                     for item in planning_trace.repairs
                 ],
                 verification=planning_trace.verification,
+                goal_state=planning_trace.goal_state,
                 compiled_plan={
                     "assumptions": [
                         assumption.model_dump(mode="json")
@@ -4154,7 +4291,7 @@ async def _run_standard_task_pipeline(
                 schema_version=(
                     planning_trace.schema_version
                     if planning_trace is not None
-                    else "orchestrator-3.0"
+                    else "orchestrator-4.0"
                 ),
                 model_config=llm_cfg,
                 stage_durations=(
@@ -4212,6 +4349,59 @@ async def _run_standard_task_pipeline(
                 f"编排在 {exc.code.value} 阶段失败：{exc}；"
                 "本轮没有继续执行。"
             )
+        if exc.code in {
+            AgentErrorCode.PLANNER_SCHEMA_INVALID,
+            AgentErrorCode.PLANNER_TIMEOUT,
+        }:
+            degraded_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{SYSTEM_PROMPT}\n\n"
+                        "本轮结构化编排不可用。你没有工具权限，也没有实时数据。"
+                        "请仍然直接回答用户可以由通用知识、解释、推理或写作完成的部分；"
+                        "对需要实时数据或外部动作的部分明确边界，但不要暴露内部错误、"
+                        "Schema、编排器或要求用户重试。"
+                    ),
+                },
+                *_normalize_incoming_messages(messages),
+            ]
+            degraded_answer = await _stream_final_answer_without_tools(
+                controller,
+                degraded_messages,
+                llm_cfg,
+                state=state,
+                evidence=[],
+                answer_validator=_standard_task_answer_issues,
+                completion=guarded_model_completion,
+            )
+            if degraded_answer.strip():
+                await emit_v2_stage(AgentStageEventV2(
+                    run_id=active_run_id,
+                    stage=AgentStage.COMPLETED,
+                    status=StageStatus.SUCCEEDED,
+                    error_code=exc.code,
+                    summary="结构化编排失败，已降级为无工具回答",
+                ))
+                if state is not None:
+                    state["assistant_text"] = degraded_answer
+                    state["_run_status"] = "partial"
+                    state["_run_error_code"] = exc.code.value
+                    if context_v2 is not None:
+                        state["agent_context"] = context_v2.model_dump(
+                            mode="json"
+                        )
+                    controller.assistant_text_snapshot = degraded_answer
+                if db_manager is not None and conversation_id and state is None:
+                    await asyncio.to_thread(
+                        db_manager.upsert_agent_run_trace,
+                        run_id=active_run_id,
+                        conversation_id=conversation_id,
+                        orchestrator_mode="unified",
+                        status="partial",
+                        error_code=exc.code.value,
+                    )
+                return degraded_answer
         controller.append_text(failure_text)
         if state is not None:
             state["assistant_text"] = failure_text
@@ -4244,7 +4434,7 @@ async def _run_standard_task_pipeline(
                 schema_version=(
                     planning_trace.schema_version
                     if planning_trace is not None
-                    else "orchestrator-3.0"
+                    else "orchestrator-4.0"
                 ),
                 model_config=llm_cfg,
                 stage_durations=(
@@ -4309,6 +4499,13 @@ async def _run_standard_task_pipeline(
         return failure_text
 
     assert planning_trace is not None
+    planned_goal = (
+        graph_v2.outline.goal
+        if graph_v2 is not None
+        else IntentOutlineV2.model_validate(
+            planning_trace.normalized_outline
+        ).goal
+    )
     if plan.needs_clarification:
         clarification = plan.clarification_question or "请补充本轮要执行的对象或条件。"
         controller.append_text(clarification)
@@ -5016,6 +5213,224 @@ async def _run_standard_task_pipeline(
             strict=True,
         )
     )
+    limits = get_agent_runtime_limits()
+    try:
+        max_goal_revisions = max(
+            0,
+            min(4, int(os.getenv("AGENT_GOAL_MAX_REVISIONS", "2"))),
+        )
+    except (TypeError, ValueError):
+        max_goal_revisions = 2
+    goal_budget = GoalBudgetV2(
+        max_plan_revisions=max_goal_revisions,
+        max_provider_calls=limits.max_provider_calls,
+        max_tool_calls=limits.max_plan_tool_calls,
+        tool_calls_used=sum(len(item.calls) for item in execution.tasks),
+        hard_deadline_seconds=limits.run_deadline_seconds,
+    )
+
+    def evaluate_current_goal():
+        return evaluate_goal_v2(
+            goal=planned_goal,
+            task_outcomes=tuple(
+                (compiled_task.capability, outcome)
+                for compiled_task, outcome in zip(
+                    compiled_v2.tasks,
+                    outcomes_v2,
+                    strict=True,
+                )
+            ),
+            attempted_capabilities=tuple(
+                item.capability for item in compiled_v2.tasks
+            ),
+            budget=goal_budget,
+            plan_revision=goal_budget.plan_revisions_used,
+            max_expansion_capabilities=max(
+                0,
+                min(4, 12 - len(compiled_v2.tasks)),
+            ),
+        )
+
+    goal_state_v2 = evaluate_current_goal()
+    while (
+        goal_state_v2.evaluation is not None
+        and goal_state_v2.evaluation.disposition
+        == GoalDisposition.EXPAND_READS
+    ):
+        revision = goal_budget.plan_revisions_used + 1
+        proposed = goal_state_v2.evaluation.proposed_capabilities
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.RESULT_VALIDATION,
+            status=StageStatus.STARTED,
+            summary=(
+                f"目标证据仍有缺口，开始第 {revision} 次受控补充；"
+                "只允许追加无副作用读取能力"
+            ),
+        ))
+        try:
+            recovery_context = dict(context_v2.planner_payload(
+                current_request=latest_user_text,
+            ))
+            recovery_context["goal_recovery"] = (
+                goal_state_v2.model_dump(mode="json")
+            )
+            recovery_graph = await plan_intent_graph_v2(
+                messages,
+                llm_cfg,
+                completion=stream_structured_completion,
+                semantic_context=recovery_context,
+                stage_observer=emit_v2_stage,
+                run_id=active_run_id,
+                current_entities=current_entities,
+                fixed_goal=planned_goal,
+                allowed_capabilities=proposed,
+                plan_revision=revision,
+            )
+            recovery_compiled = await compile_intent_graph_v2(
+                recovery_graph,
+                llm_cfg,
+                completion=stream_structured_completion,
+                current_entities=current_entities,
+                artifacts=artifact_map,
+                stage_observer=emit_v2_stage,
+                registry=_registry,
+            )
+            existing_task_ids = {
+                item.task.task_id for item in compiled_v2.tasks
+            }
+            duplicate_task_ids = existing_task_ids & {
+                item.task.task_id for item in recovery_compiled.tasks
+            }
+            if duplicate_task_ids:
+                raise OrchestratorV2Error(
+                    AgentErrorCode.PLANNER_SCHEMA_INVALID,
+                    "goal recovery reused existing task ids: "
+                    + ", ".join(sorted(duplicate_task_ids)),
+                )
+            non_read = [
+                item.capability.value
+                for item in recovery_compiled.tasks
+                if item.execution_policy.effect != EffectLevel.READ
+            ]
+            if non_read:
+                raise OrchestratorV2Error(
+                    AgentErrorCode.POLICY_BLOCKED,
+                    "goal recovery attempted non-read capabilities: "
+                    + ", ".join(non_read),
+                )
+
+            workflow_specs_by_task.update({
+                task.task_id: workflow_for(task.kind)
+                for task in recovery_compiled.resolved_tasks
+            })
+            v2_policy_by_task.update(
+                recovery_compiled.policy_by_task_id
+            )
+            v2_compiled_by_task.update({
+                item.task.task_id: item
+                for item in recovery_compiled.tasks
+            })
+            recovery_executor = WorkflowExecutor(
+                _registry,
+                run_workflow_call,
+                max_plan_tool_calls=limits.max_plan_tool_calls,
+                approved_actions=context_v2.pending_action_fingerprints(),
+                processor_runner=run_result_processor,
+                outcome_observer=report_workflow_outcome,
+                execution_policies=recovery_compiled.policy_by_task_id,
+            )
+            recovery_execution = await recovery_executor.execute(
+                recovery_compiled.resolved_tasks
+            )
+            execution = PlanExecutionResult(tasks=[
+                *execution.tasks,
+                *recovery_execution.tasks,
+            ])
+            plan = TaskPlan.model_validate({
+                "tasks": [
+                    *plan.tasks,
+                    *recovery_compiled.plan.tasks,
+                ],
+                "needs_clarification": False,
+                "clarification_question": None,
+                "source": "semantic_goal_recovery",
+            })
+            compiled_v2 = CompiledIntentGraphV2(
+                run_id=active_run_id,
+                plan=plan,
+                tasks=(
+                    *compiled_v2.tasks,
+                    *recovery_compiled.tasks,
+                ),
+                assumptions=(
+                    *compiled_v2.assumptions,
+                    *recovery_compiled.assumptions,
+                ),
+            )
+            resolved_tasks = compiled_v2.resolved_tasks
+            goal_budget = goal_budget.model_copy(update={
+                "plan_revisions_used": revision,
+                "tool_calls_used": sum(
+                    len(item.calls) for item in execution.tasks
+                ),
+            })
+            raw_outcomes_v2 = execution_outcomes_v2(execution)
+            outcomes_v2 = tuple(
+                capability_for(
+                    compiled_task.capability
+                ).result_model.model_validate(outcome)
+                for compiled_task, outcome in zip(
+                    compiled_v2.tasks,
+                    raw_outcomes_v2,
+                    strict=True,
+                )
+            )
+            goal_state_v2 = evaluate_current_goal()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "[AgentGoal] bounded recovery stopped run=%s revision=%s: %s",
+                active_run_id,
+                revision,
+                exc,
+                exc_info=True,
+            )
+            goal_budget = goal_budget.model_copy(update={
+                "plan_revisions_used": goal_budget.max_plan_revisions,
+            })
+            goal_state_v2 = evaluate_current_goal()
+            break
+
+    evidence = [*execution.evidence, _task_status_evidence(plan, execution)]
+    planning_trace = planning_trace.model_copy(update={
+        "goal_state": goal_state_v2.model_dump(mode="json"),
+        "plan_revision": goal_state_v2.plan_revision,
+    })
+    if (
+        db_manager is not None
+        and conversation_id
+        and goal_state_v2.plan_revision > 0
+    ):
+        recovery_checkpoint_saved = await asyncio.to_thread(
+            db_manager.save_agent_run_checkpoint,
+            active_run_id,
+            worker_id=active_run_registry.worker_id,
+            attempt=run_attempt,
+            checkpoint=serialize_compiled_intent_graph_v2(
+                compiled_v2,
+                planning_trace=planning_trace,
+                request_fingerprint=request_fingerprint,
+            ),
+        )
+        if not recovery_checkpoint_saved:
+            logger.warning(
+                "[AgentGoal] merged recovery checkpoint lost ownership "
+                "run=%s revision=%s",
+                active_run_id,
+                goal_state_v2.plan_revision,
+            )
     artifacts_v2, turn_v2 = build_execution_artifacts_v2(
         compiled_v2,
         outcomes_v2,
@@ -5070,6 +5485,7 @@ async def _run_standard_task_pipeline(
             outcome.task_id: outcome.coverage.model_dump(mode="json")
             for outcome in outcomes_v2
         },
+        "goal_state": goal_state_v2.model_dump(mode="json"),
     }
     if state is not None:
         state["_terminal_artifacts"] = artifacts_v2
@@ -5150,48 +5566,39 @@ async def _run_standard_task_pipeline(
         return blocked_answer
 
     exact_answer = _exact_result_contract_answer(plan, execution)
-    if failed_outcomes:
-        failure_code = (
-            failed_outcomes[0].errors[0].code
-            if failed_outcomes[0].errors
-            else AgentErrorCode.TOOL_FAILED
-        )
-        failure_text = exact_answer or (
-            "固定 Workflow 没有形成完整的强类型结果，本轮已按失败终止。"
-        )
-        await emit_v2_stage(AgentStageEventV2(
-            run_id=active_run_id,
-            stage=AgentStage.COMPLETED,
-            status=StageStatus.FAILED,
-            error_code=failure_code,
-            summary="任务未形成成功终态",
-        ))
-        if db_manager is not None and conversation_id and state is None:
-            await asyncio.to_thread(
-                db_manager.upsert_agent_run_trace,
-                run_id=active_run_id,
-                conversation_id=conversation_id,
-                orchestrator_mode="unified",
-                status="failed",
-                error_code=failure_code.value,
-            )
-        controller.append_text(failure_text)
-        if state is not None:
-            state["assistant_text"] = failure_text
-            state["_run_status"] = "failed"
-            state["_run_error_code"] = failure_code.value
-            controller.assistant_text_snapshot = failure_text
-        return failure_text
     if exact_answer:
+        exact_failed = bool(failed_outcomes)
+        exact_error = (
+            failed_outcomes[0].errors[0].code
+            if (
+                exact_failed
+                and failed_outcomes[0].errors
+            )
+            else AgentErrorCode.TOOL_FAILED
+            if exact_failed
+            else None
+        )
         await emit_v2_stage(AgentStageEventV2(
             run_id=active_run_id,
             stage=AgentStage.COMPLETED,
-            status=StageStatus.SUCCEEDED,
-            summary="确定性 Renderer 已生成最终结果",
+            status=(
+                StageStatus.FAILED
+                if exact_failed
+                else StageStatus.SUCCEEDED
+            ),
+            error_code=exact_error,
+            summary=(
+                "确定性 Renderer 已生成失败终态"
+                if exact_failed
+                else "确定性 Renderer 已生成最终结果"
+            ),
         ))
         controller.append_text(exact_answer)
         if state is not None:
             state["assistant_text"] = exact_answer
+            if exact_failed:
+                state["_run_status"] = "failed"
+                state["_run_error_code"] = exact_error.value
             controller.assistant_text_snapshot = exact_answer
         return exact_answer
 
@@ -5233,7 +5640,7 @@ async def _run_standard_task_pipeline(
         run_id=active_run_id,
         stage=AgentStage.SYNTHESIS,
         status=StageStatus.STARTED,
-        summary="正在进行证据受限综合",
+        summary="正在整理结论",
     ))
     active_prompt = (system_prompt or "").strip()
     synthesis_prompt = SYSTEM_PROMPT
@@ -5263,7 +5670,9 @@ async def _run_standard_task_pipeline(
                         "output_requirements": task.output_requirements,
                     }
                     for task in plan.tasks
-                ]
+                ],
+                "goal_contract": planned_goal.model_dump(mode="json"),
+                "goal_evaluation": goal_state_v2.model_dump(mode="json"),
             }, ensure_ascii=False)
         ),
     }
@@ -5274,7 +5683,9 @@ async def _run_standard_task_pipeline(
         completion=guarded_model_completion,
     )
     playbook = (
-        INDUSTRY_CHAIN
+        MARKET_OUTLOOK
+        if planned_goal.question_type == QuestionType.FORECAST
+        else INDUSTRY_CHAIN
         if len(plan.tasks) == 1
         and plan.tasks[0].kind == StandardTaskKind.INDUSTRY_RESEARCH
         else None
@@ -5317,7 +5728,7 @@ async def _run_standard_task_pipeline(
             run_id=active_run_id,
             stage=AgentStage.SYNTHESIS,
             status=StageStatus.SUCCEEDED,
-            summary="证据受限综合完成",
+            summary="结论整理完成",
         ))
     completed_stage = AgentStageEventV2(
         run_id=active_run_id,
@@ -5335,7 +5746,7 @@ async def _run_standard_task_pipeline(
         summary=(
             "已用确定性证据回退生成最终结果"
             if synthesis_failed
-            else "证据受限综合完成"
+            else "结论整理完成"
         ),
     )
     await emit_v2_stage(completed_stage)

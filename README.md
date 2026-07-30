@@ -71,7 +71,7 @@ python main.py --serve-only
 - API 文档: `http://localhost:8000/docs`
 - 健康检查: `http://localhost:8000/api/health`
 
-生产部署前必须先执行数据库迁移和 AI 助手预检；数据库版本、认证、限流、模型、安全边界或前端产物任一不合格都会阻止启动。运行状态与事件已持久化，可使用多个 API worker。详见 [AI 助手生产部署](AI_ASSISTANT_PRODUCTION.md)。
+生产部署前必须先执行数据库迁移和 AI 助手预检；数据库版本、认证、限流、模型、安全边界或前端产物任一不合格都会阻止启动。运行状态与事件已持久化，可使用多个 API worker。详见 [Agent Orchestrator V4 架构](AGENT_ORCHESTRATOR_V4.md) 与 [AI 助手生产部署](AI_ASSISTANT_PRODUCTION.md)。
 
 ### 指定端口
 

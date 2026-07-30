@@ -1,4 +1,4 @@
-"""Prepare one shared current-market snapshot before a portfolio buy review."""
+"""Prepare one evidence-bound market-mainline snapshot for research workflows."""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ from src.services.market_theme_service import MarketThemeService
 from src.tools.base import ToolSpec, TypedToolResult, report_tool_progress
 
 DESCRIPTION = (
-    "在逐股八维买入判断前生成或复用一次当日A股市场主线快照。"
-    "该步骤只建立全批次共享市场基准，不判断任何个股。"
+    "生成或复用一次证据绑定的 A 股市场主线快照，供未来主线研判或"
+    "逐股八维买入判断共享。它区分当前已确认主线与未来候选主线，"
+    "并保留政策、产业、技术、资本开支、机构共识及触发条件证据；"
+    "不判断任何个股，也不把候选方向写成确定结果。"
 )
 
 

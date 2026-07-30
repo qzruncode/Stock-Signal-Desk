@@ -11,7 +11,13 @@ from api.v1.endpoints.agent.chat import (
     _build_catalyst_analysis_answer,
     _run_standard_task_pipeline,
 )
-from src.agent.orchestrator_v2.contracts import Capability
+from src.agent.orchestrator_v2.contracts import (
+    Capability,
+    ClaimRequirementV2,
+    GoalContractV2,
+    QuestionType,
+    UncertaintyMode,
+)
 from src.agent.orchestrator_v2.registry import capability_for
 from src.agent.orchestrator_v2.runtime import (
     CompiledIntentGraphV2,
@@ -411,7 +417,22 @@ def test_production_catalyst_request_calls_fixed_tool_then_semantic_synthesis() 
     )
     graph = MagicMock()
     graph.run_id = "test-run"
-    graph.trace.schema_version = "orchestrator-3.0"
+    graph.outline.goal = GoalContractV2(
+        objective="核验未来催化事件",
+        question_type=QuestionType.RESEARCH,
+        uncertainty_mode=UncertaintyMode.BOUNDED,
+        time_horizon="未来六至十二个月",
+        deliverables=("催化事件与反向风险",),
+        claims=(ClaimRequirementV2(
+            claim_id="catalysts",
+            question="有哪些可核验的未来催化与反向事件",
+            required_dimensions=tuple(sorted(
+                capability_for(capability).evidence_dimensions,
+                key=lambda item: item.value,
+            )),
+        ),),
+    )
+    graph.trace.schema_version = "orchestrator-4.0"
     graph.trace.stage_durations_ms = {}
     with patch.object(
         chat_mod, "plan_intent_graph_v2", new=AsyncMock(return_value=graph)

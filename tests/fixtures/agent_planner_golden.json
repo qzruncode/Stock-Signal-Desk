@@ -364,6 +364,67 @@
     "maximum_nodes": 1
   },
   {
+    "case_id": "future-market-mainline",
+    "prompt": "未来一到六个月的市场主线可能是什么？给出排序、成立条件和失效信号。",
+    "required_capabilities": ["market_mainline_research"],
+    "forbidden_capabilities": ["market_overview"],
+    "expected_effects": {"market_mainline_research": "read"},
+    "required_question_type": "forecast",
+    "required_evidence_dimensions": [
+      "market_mainline",
+      "research_consensus",
+      "macro_policy",
+      "industry_structure"
+    ],
+    "maximum_plan_revisions": 2,
+    "maximum_nodes": 1
+  },
+  {
+    "case_id": "future-market-mainline-paraphrase-next-stage",
+    "prompt": "下一阶段A股可能围绕哪些方向交易？按可能性排序。",
+    "required_capabilities": ["market_mainline_research"],
+    "forbidden_capabilities": ["market_overview"],
+    "required_question_type": "forecast",
+    "required_evidence_dimensions": ["market_mainline"],
+    "maximum_plan_revisions": 2,
+    "maximum_nodes": 1
+  },
+  {
+    "case_id": "future-market-mainline-paraphrase-successor",
+    "prompt": "现在的主线之后，哪些产业方向最可能接棒？给验证条件。",
+    "required_capabilities": ["market_mainline_research"],
+    "forbidden_capabilities": ["market_overview"],
+    "required_question_type": "forecast",
+    "required_evidence_dimensions": ["market_mainline"],
+    "maximum_plan_revisions": 2,
+    "maximum_nodes": 1
+  },
+  {
+    "case_id": "future-market-mainline-paraphrase-no-daily-heat",
+    "prompt": "别只看今天涨跌，未来半年最可能主导行情的产业是什么？",
+    "required_capabilities": ["market_mainline_research"],
+    "forbidden_capabilities": ["market_overview"],
+    "required_question_type": "forecast",
+    "required_evidence_dimensions": ["market_mainline"],
+    "maximum_plan_revisions": 2,
+    "maximum_nodes": 1
+  },
+  {
+    "case_id": "multi-turn-financial-filter-from-artifact",
+    "prompt": "继续用上轮完整候选集合，剔除去年归母净利润为负的公司。",
+    "required_capabilities": ["collection_financial_filter"],
+    "forbidden_capabilities": [
+      "theme_stock_discovery",
+      "public_web_research"
+    ],
+    "required_artifact_resources": ["security_collection"],
+    "required_evidence_dimensions": [
+      "screening",
+      "company_financials"
+    ],
+    "maximum_nodes": 1
+  },
+  {
     "case_id": "trade-execution",
     "prompt": "以限价1500元买入100股贵州茅台。",
     "required_capabilities": ["trade_execution"],

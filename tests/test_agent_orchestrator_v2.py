@@ -75,6 +75,8 @@ from src.tools.registry import ToolRegistry
 
 
 def _response(function_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if function_name == "submit_intent_outline_v2":
+        payload = _with_test_goal(payload)
     return {
         "choices": [{
             "message": {
@@ -86,6 +88,72 @@ def _response(function_name: str, payload: dict[str, Any]) -> dict[str, Any]:
                 }],
             },
         }],
+    }
+
+
+def _with_test_goal(payload: dict[str, Any]) -> dict[str, Any]:
+    if "goal" in payload:
+        return payload
+    nodes = [
+        item
+        for item in payload.get("nodes") or ()
+        if isinstance(item, dict) and item.get("capability")
+    ]
+    capabilities = [
+        Capability(str(item["capability"]))
+        for item in nodes
+    ]
+    specs = [capability_for(item) for item in capabilities]
+    if any(
+        Capability.INVESTMENT_DECISION == item
+        for item in capabilities
+    ):
+        question_type = "decision"
+        uncertainty_mode = "bounded"
+    elif any(
+        spec.execution_policy.effect.value != "read"
+        for spec in specs
+    ):
+        question_type = "operation"
+        uncertainty_mode = "not_applicable"
+    elif any(
+        __import__(
+            "src.agent.orchestrator_v2.contracts",
+            fromlist=["QuestionType"],
+        ).QuestionType.RESEARCH in spec.supported_question_types
+        for spec in specs
+    ):
+        question_type = "research"
+        uncertainty_mode = "bounded"
+    else:
+        question_type = "direct"
+        uncertainty_mode = "bounded"
+    dimensions = sorted({
+        dimension.value
+        for spec in specs
+        for dimension in spec.evidence_dimensions
+    })
+    objective = "；".join(
+        str(item.get("objective") or "").strip()
+        for item in nodes
+        if str(item.get("objective") or "").strip()
+    ) or "完成当前请求"
+    return {
+        **payload,
+        "goal": {
+            "objective": objective,
+            "question_type": question_type,
+            "uncertainty_mode": uncertainty_mode,
+            "time_horizon": None,
+            "deliverables": [objective],
+            "claims": [{
+                "claim_id": "answer",
+                "question": objective,
+                "required_dimensions": dimensions or ["general_knowledge"],
+                "optional_dimensions": [],
+                "mandatory": True,
+            }],
+        },
     }
 
 
@@ -155,16 +223,16 @@ def test_unified_registry_covers_every_standard_capability_once() -> None:
     }
     assert set(CAPABILITY_REGISTRY) == set(Capability)
     assert migration_coverage()["complete"] is True
-    assert migration_coverage()["migrated"] == 45
+    assert migration_coverage()["migrated"] == 46
     with pytest.raises(TypeError):
         CAPABILITY_REGISTRY[Capability.GENERAL_RESPONSE] = None  # type: ignore[index]
 
     for spec in CAPABILITY_REGISTRY.values():
         assert spec.intent_model.model_config.get("extra") == "forbid"
         expected_version = (
-            "3.2.0"
+            "4.2.0"
             if spec.capability == Capability.INVESTMENT_DECISION
-            else "3.0.0"
+            else "4.0.0"
         )
         assert spec.schema_version.startswith(f"{expected_version}:")
         assert spec.result_model.__name__ == "TaskOutcomeV2"
@@ -296,7 +364,7 @@ def test_compiled_graph_checkpoint_round_trips_and_rejects_contract_drift():
     )
     trace = PlanningTraceV2(
         run_id="checkpoint-run",
-        schema_version="orchestrator-3.0",
+        schema_version="orchestrator-4.0",
     )
     checkpoint = serialize_compiled_intent_graph_v2(
         compiled,
@@ -450,7 +518,7 @@ def test_no_capability_exposes_one_open_parameters_object() -> None:
 
 
 def test_industry_result_count_defaults_to_program_owned_top_16() -> None:
-    outline = IntentOutlineV2.model_validate({
+    outline = IntentOutlineV2.model_validate(_with_test_goal({
         "nodes": [{
             "node_id": "industry",
             "capability": "industry_research",
@@ -460,7 +528,7 @@ def test_industry_result_count_defaults_to_program_owned_top_16() -> None:
         }],
         "needs_clarification": False,
         "clarification_question": None,
-    })
+    }))
     normalized = normalize_capability_intent(
         node_id="industry",
         objective=outline.nodes[0].objective,
@@ -500,7 +568,7 @@ def test_industry_result_count_defaults_to_program_owned_top_16() -> None:
 
 
 def test_explicit_industry_top_k_count_is_not_clamped_to_the_default() -> None:
-    outline = IntentOutlineV2.model_validate({
+    outline = IntentOutlineV2.model_validate(_with_test_goal({
         "nodes": [{
             "node_id": "industry",
             "capability": "industry_research",
@@ -510,7 +578,7 @@ def test_explicit_industry_top_k_count_is_not_clamped_to_the_default() -> None:
         }],
         "needs_clarification": False,
         "clarification_question": None,
-    })
+    }))
     normalized = normalize_capability_intent(
         node_id="industry",
         objective=outline.nodes[0].objective,
@@ -919,7 +987,7 @@ def test_financial_filter_does_not_inherit_domain_parameters_from_security_linea
         result_selection=None,
         current_year=2026,
     )
-    outline = IntentOutlineV2.model_validate({
+    outline = IntentOutlineV2.model_validate(_with_test_goal({
         "nodes": [{
             "node_id": "financial_filter",
             "capability": "collection_financial_filter",
@@ -930,7 +998,7 @@ def test_financial_filter_does_not_inherit_domain_parameters_from_security_linea
                 "resource_type": "security_collection",
             }],
         }],
-    })
+    }))
     graph = PlannedIntentGraphV2(
         run_id="run-financial-filter-lineage",
         outline=outline,
@@ -1277,6 +1345,23 @@ def test_historical_domain_identity_bridge_collapses_before_parameterization() -
         calls.append(function_name)
         if function_name == "submit_intent_outline_v2":
             return _response(function_name, {
+                "goal": {
+                    "objective": "从上轮减速器领域找出相关公司",
+                    "question_type": "research",
+                    "uncertainty_mode": "bounded",
+                    "time_horizon": None,
+                    "deliverables": ["减速器领域相关公司候选集合"],
+                    "claims": [{
+                        "claim_id": "candidates",
+                        "question": "哪些公司属于上轮减速器领域候选集合",
+                        "required_dimensions": [
+                            "domain_candidates",
+                            "security_identity",
+                        ],
+                        "optional_dimensions": [],
+                        "mandatory": True,
+                    }],
+                },
                 "nodes": [{
                     "node_id": "harmonic_reducer_industry",
                     "capability": "industry_research",
@@ -1780,6 +1865,47 @@ def test_targeted_repair_keeps_the_frozen_graph() -> None:
     )
 
 
+def test_exact_contract_unwraps_provider_stringified_nested_models() -> None:
+    goal = _with_test_goal({
+        "nodes": [{
+            "node_id": "lookup",
+            "capability": "security_lookup",
+            "objective": "查找贵州茅台",
+            "input_refs": [],
+            "result_selection": None,
+        }],
+    })["goal"]
+
+    async def completion(**kwargs: Any) -> dict[str, Any]:
+        function_name = _function_name(kwargs)
+        if function_name == "submit_intent_outline_v2":
+            return _response(function_name, {
+                "goal": json.dumps(goal, ensure_ascii=False),
+                "nodes": [{
+                    "node_id": "lookup",
+                    "capability": "security_lookup",
+                    "objective": "查找贵州茅台",
+                    "input_refs": [],
+                    "result_selection": None,
+                }],
+                "needs_clarification": False,
+                "clarification_question": None,
+            })
+        if function_name == "submit_security_lookup_intent_v2":
+            return _response(function_name, {"query": "贵州茅台"})
+        raise AssertionError(function_name)
+
+    graph = asyncio.run(plan_intent_graph_v2(
+        [{"role": "user", "content": "查找贵州茅台"}],
+        {"model": "test-model"},
+        completion=completion,
+        today=date(2026, 7, 28),
+    ))
+
+    assert graph.outline.goal.objective
+    assert graph.outline.nodes[0].capability == Capability.SECURITY_LOOKUP
+
+
 def test_outline_repairs_result_selection_from_capability_contract() -> None:
     outline_attempts = 0
     repair_context: dict[str, Any] = {}
@@ -2060,7 +2186,7 @@ def test_runtime_rejects_unsupported_result_selection_as_v2_error() -> None:
         {"model": "test-model"},
         completion=completion,
     ))
-    invalid_outline = IntentOutlineV2.model_validate({
+    invalid_outline = IntentOutlineV2.model_validate(_with_test_goal({
         **valid.outline.model_dump(mode="json"),
         "nodes": [{
             **valid.outline.nodes[0].model_dump(mode="json"),
@@ -2069,7 +2195,7 @@ def test_runtime_rejects_unsupported_result_selection_as_v2_error() -> None:
                 "max_items": None,
             },
         }],
-    })
+    }))
     invalid = PlannedIntentGraphV2(
         run_id=valid.run_id,
         outline=invalid_outline,

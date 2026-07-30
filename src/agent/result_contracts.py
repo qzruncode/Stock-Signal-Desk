@@ -56,6 +56,24 @@ INDUSTRY_CHAIN = AnalysisPlaybook(
 )
 
 
+MARKET_OUTLOOK = AnalysisPlaybook(
+    id="market_outlook_scenarios",
+    title="市场主线情景研判",
+    evidence_standard=(
+        "当前市场状态与未来主线分开表述，单日指数涨跌和板块热度不能单独证明中期主线。",
+        "候选主线至少由政策、产业供需或资本开支、技术路线和机构研究中的多类证据交叉支持。",
+        "机构预测、媒体叙事和已实现事实必须分层，不把预测写成确定结果。",
+        "每个方向同时检查支持证据、反证、拥挤或估值风险以及数据截至时间。",
+    ),
+    output_contract=(
+        "先给基准情景下的主线排序和一句话结论，不用‘无法预测’代替判断。",
+        "列出不超过五个候选方向，并分别写明核心逻辑、成立条件、失效信号和相对置信度。",
+        "补充乐观与谨慎情景，说明哪些可观察变量会导致排序切换。",
+        "最后集中说明一次证据缺口和跟踪清单，不逐段重复免责声明。",
+    ),
+)
+
+
 THEME_COMPANY_MAPPING = AnalysisPlaybook(
     id="theme_company_mapping",
     title="产业主题到 A 股公司的证据化映射",
@@ -650,6 +668,7 @@ __all__ = [
     "InvestmentThesisContext",
     "INDUSTRY_CHAIN",
     "INVESTMENT_DECISION",
+    "MARKET_OUTLOOK",
     "MappingSelectionContext",
     "STOCK_DEEP_RESEARCH",
     "ThemeDomainThesis",

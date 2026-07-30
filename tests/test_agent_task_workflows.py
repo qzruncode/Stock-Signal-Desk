@@ -20,7 +20,11 @@ from src.agent.task_executor import (
 from src.agent.orchestrator_v2.contracts import (
     AgentErrorCode,
     Capability,
+    ClaimRequirementV2,
+    GoalContractV2,
     OrchestratorV2Error,
+    QuestionType,
+    UncertaintyMode,
 )
 from src.agent.orchestrator_v2.registry import capability_catalog, capability_for
 from src.agent.orchestrator_v2.runtime import (
@@ -75,6 +79,24 @@ def _unified_pipeline(
     plan: TaskPlan,
     resolved: list[ResolvedTask],
 ):
+    dimensions = tuple(sorted({
+        dimension
+        for task in resolved
+        for dimension in capability_for(
+            Capability(task.kind.value)
+        ).evidence_dimensions
+    }, key=lambda item: item.value))
+    goal = GoalContractV2(
+        objective="完成测试计划",
+        question_type=QuestionType.RESEARCH,
+        uncertainty_mode=UncertaintyMode.BOUNDED,
+        deliverables=("返回测试计划结果",),
+        claims=(ClaimRequirementV2(
+            claim_id="result",
+            question="测试计划是否形成结果",
+            required_dimensions=dimensions,
+        ),),
+    )
     compiled = CompiledIntentGraphV2(
         run_id="test-run",
         plan=plan,
@@ -82,7 +104,9 @@ def _unified_pipeline(
             CompiledTaskV2(
                 task=task,
                 capability=Capability(task.kind.value),
-                capability_version="3.0.0",
+                capability_version=capability_for(
+                    Capability(task.kind.value)
+                ).version,
                 intent_schema_version=capability_for(
                     Capability(task.kind.value)
                 ).schema_version,
@@ -97,7 +121,8 @@ def _unified_pipeline(
     )
     graph = MagicMock()
     graph.run_id = "test-run"
-    graph.trace.schema_version = "orchestrator-3.0"
+    graph.outline.goal = goal
+    graph.trace.schema_version = "orchestrator-4.0"
     graph.trace.stage_durations_ms = {}
     with patch.object(
         chat_mod,

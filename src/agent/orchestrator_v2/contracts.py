@@ -100,6 +100,66 @@ class RendererMode(str, Enum):
     EVIDENCE_SYNTHESIS = "evidence_synthesis"
 
 
+class QuestionType(str, Enum):
+    """User-visible answer mode, independent from tools and workflows."""
+
+    DIRECT = "direct"
+    FACTUAL = "factual"
+    EXPLANATION = "explanation"
+    DIAGNOSIS = "diagnosis"
+    COMPARISON = "comparison"
+    RESEARCH = "research"
+    FORECAST = "forecast"
+    DECISION = "decision"
+    OPERATION = "operation"
+
+
+class UncertaintyMode(str, Enum):
+    """How an answer may communicate uncertainty without becoming a refusal."""
+
+    EXACT = "exact"
+    BOUNDED = "bounded"
+    SCENARIO = "scenario"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class EvidenceDimension(str, Enum):
+    """Stable semantic evidence axes consumed by Goal evaluation."""
+
+    GENERAL_KNOWLEDGE = "general_knowledge"
+    SECURITY_IDENTITY = "security_identity"
+    REALTIME_MARKET = "realtime_market"
+    PRICE_HISTORY = "price_history"
+    TECHNICAL_SIGNALS = "technical_signals"
+    COMPANY_BUSINESS = "company_business"
+    COMPANY_FINANCIALS = "company_financials"
+    VALUATION = "valuation"
+    FINANCIAL_STATEMENTS = "financial_statements"
+    NEWS = "news"
+    ANNOUNCEMENTS = "announcements"
+    RISK_EVENTS = "risk_events"
+    REGULATORY = "regulatory"
+    RESEARCH_CONSENSUS = "research_consensus"
+    CATALYSTS = "catalysts"
+    SOCIAL_SENTIMENT = "social_sentiment"
+    COMPARATIVE_SNAPSHOT = "comparative_snapshot"
+    MARKET_REGIME = "market_regime"
+    MARKET_MAINLINE = "market_mainline"
+    SECTOR_STRUCTURE = "sector_structure"
+    CAPITAL_FLOW = "capital_flow"
+    MACRO_POLICY = "macro_policy"
+    INDUSTRY_STRUCTURE = "industry_structure"
+    DOMAIN_CANDIDATES = "domain_candidates"
+    THEME_BUSINESS = "theme_business"
+    SCREENING = "screening"
+    WATCHLIST_STATE = "watchlist_state"
+    DATA_QUALITY = "data_quality"
+    ANALYSIS_OPERATIONS = "analysis_operations"
+    FEED_CONTENT = "feed_content"
+    PUBLIC_WEB = "public_web"
+    TRADE_STATE = "trade_state"
+
+
 class Capability(str, Enum):
     """Complete standard-capability surface of the unified control plane."""
 
@@ -122,6 +182,7 @@ class Capability(str, Enum):
     STOCK_DEEP_RESEARCH = "stock_deep_research"
     INVESTMENT_DECISION = "investment_decision"
     MARKET_OVERVIEW = "market_overview"
+    MARKET_MAINLINE_RESEARCH = "market_mainline_research"
     SECTOR_ANALYSIS = "sector_analysis"
     CAPITAL_FLOW_ANALYSIS = "capital_flow_analysis"
     MACRO_ANALYSIS = "macro_analysis"
@@ -173,6 +234,64 @@ class ResultSelectionV2(StrictModel):
         return self
 
 
+class ClaimRequirementV2(StrictModel):
+    """One user-facing claim that must be supported before the run can finish."""
+
+    claim_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")
+    question: str = Field(min_length=1, max_length=500)
+    required_dimensions: tuple[EvidenceDimension, ...] = Field(
+        min_length=1,
+        max_length=12,
+    )
+    optional_dimensions: tuple[EvidenceDimension, ...] = Field(
+        default_factory=tuple,
+        max_length=12,
+    )
+    mandatory: bool = True
+
+    @model_validator(mode="after")
+    def _unique_dimensions(self) -> "ClaimRequirementV2":
+        if len(self.required_dimensions) != len(set(self.required_dimensions)):
+            raise ValueError("required_dimensions must be unique")
+        if len(self.optional_dimensions) != len(set(self.optional_dimensions)):
+            raise ValueError("optional_dimensions must be unique")
+        if set(self.required_dimensions) & set(self.optional_dimensions):
+            raise ValueError(
+                "required_dimensions and optional_dimensions cannot overlap"
+            )
+        return self
+
+
+class GoalContractV2(StrictModel):
+    """Typed definition of what a successful answer must deliver."""
+
+    objective: str = Field(min_length=1, max_length=1_000)
+    question_type: QuestionType
+    uncertainty_mode: UncertaintyMode
+    time_horizon: str | None = Field(default=None, max_length=120)
+    deliverables: tuple[str, ...] = Field(min_length=1, max_length=12)
+    claims: tuple[ClaimRequirementV2, ...] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def _validate_goal(self) -> "GoalContractV2":
+        claim_ids = [item.claim_id for item in self.claims]
+        if len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("goal claim_id values must be unique")
+        if (
+            self.question_type == QuestionType.FORECAST
+            and self.uncertainty_mode != UncertaintyMode.SCENARIO
+        ):
+            raise ValueError("forecast goals require scenario uncertainty mode")
+        if (
+            self.question_type == QuestionType.OPERATION
+            and self.uncertainty_mode != UncertaintyMode.NOT_APPLICABLE
+        ):
+            raise ValueError(
+                "operation goals require not_applicable uncertainty mode"
+            )
+        return self
+
+
 class InputReferenceV2(StrictModel):
     source: Literal["node", "artifact"] = "node"
     node_id: str | None = Field(
@@ -215,6 +334,7 @@ class IntentOutlineNodeV2(StrictModel):
 
 
 class IntentOutlineV2(StrictModel):
+    goal: GoalContractV2
     nodes: tuple[IntentOutlineNodeV2, ...] = Field(min_length=1, max_length=12)
     needs_clarification: bool = False
     clarification_question: str | None = Field(default=None, max_length=500)
@@ -436,6 +556,8 @@ class PlanningTraceV2(StrictModel):
     assumptions: tuple[AssumptionRecord, ...] = ()
     repairs: tuple[RepairRecordV2, ...] = ()
     verification: Any = None
+    goal_state: Any = None
+    plan_revision: int = Field(default=0, ge=0, le=16)
     stage_durations_ms: Mapping[str, int] = Field(default_factory=dict)
 
 
@@ -456,11 +578,135 @@ class PlannerVerificationV2(StrictModel):
             or self.extraneous_node_ids
             or self.resource_issues
         )
-        if self.accepted == has_issues:
+        # A positive verdict is only valid when every typed diagnostic list is
+        # empty.  A negative verdict may still rely on ``rationale`` when the
+        # verifier identifies a semantic mismatch that does not fit one of the
+        # bounded diagnostic categories.  Treat that as a real rejection for
+        # bounded replanning instead of turning a valid semantic veto into a
+        # schema failure.
+        if self.accepted and has_issues:
             raise ValueError(
-                "accepted must be true exactly when no semantic issues exist"
+                "accepted cannot be true when semantic issues exist"
             )
         return self
+
+
+class ClaimStatus(str, Enum):
+    UNASSESSED = "unassessed"
+    SUPPORTED = "supported"
+    CONTESTED = "contested"
+    PARTIAL = "partial"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class EvidenceQuality(str, Enum):
+    AUTHORITATIVE = "authoritative"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
+class GoalDisposition(str, Enum):
+    COMPLETE = "complete"
+    EXPAND_READS = "expand_reads"
+    CLARIFY = "clarify"
+    BEST_EFFORT = "best_effort"
+    FAILED = "failed"
+
+
+class GoalTerminalReason(str, Enum):
+    GOAL_SATISFIED = "goal_satisfied"
+    COMPLETED_WITH_UNCERTAINTY = "completed_with_uncertainty"
+    USER_INPUT_REQUIRED = "user_input_required"
+    POLICY_BLOCKED = "policy_blocked"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    NO_SAFE_EXPANSION = "no_safe_expansion"
+    EXECUTION_FAILED = "execution_failed"
+
+
+class EvidenceLedgerEntryV2(StrictModel):
+    evidence_id: str = Field(pattern=r"^e_[a-f0-9]{16}$")
+    task_id: str
+    capability: Capability
+    dimensions: tuple[EvidenceDimension, ...]
+    quality: EvidenceQuality
+    source: str
+    locator: str | None = None
+    observed_at: datetime | None = None
+    summary: str | None = Field(default=None, max_length=2_000)
+    warnings: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
+class ClaimAssessmentV2(StrictModel):
+    claim_id: str
+    status: ClaimStatus
+    confidence: float = Field(ge=0.0, le=1.0)
+    supported_by: tuple[str, ...] = ()
+    missing_dimensions: tuple[EvidenceDimension, ...] = ()
+    conflicts: tuple[str, ...] = ()
+    rationale: str = Field(min_length=1, max_length=1_000)
+
+
+class GoalBudgetV2(StrictModel):
+    max_plan_revisions: int = Field(default=2, ge=0, le=8)
+    plan_revisions_used: int = Field(default=0, ge=0, le=8)
+    max_provider_calls: int = Field(default=64, ge=1, le=1_000)
+    provider_calls_used: int = Field(default=0, ge=0, le=1_000)
+    max_tool_calls: int = Field(default=1_000, ge=0, le=10_000)
+    tool_calls_used: int = Field(default=0, ge=0, le=10_000)
+    hard_deadline_seconds: int = Field(default=1_200, ge=30, le=14_400)
+
+    @property
+    def can_revise(self) -> bool:
+        return (
+            self.plan_revisions_used < self.max_plan_revisions
+            and self.provider_calls_used < self.max_provider_calls
+            and self.tool_calls_used < self.max_tool_calls
+        )
+
+
+class GoalEvaluationV2(StrictModel):
+    disposition: GoalDisposition
+    assessments: tuple[ClaimAssessmentV2, ...]
+    missing_dimensions: tuple[EvidenceDimension, ...] = ()
+    proposed_capabilities: tuple[Capability, ...] = ()
+    terminal_reason: GoalTerminalReason | None = None
+    rationale: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def _validate_disposition(self) -> "GoalEvaluationV2":
+        if (
+            self.disposition == GoalDisposition.EXPAND_READS
+            and not self.proposed_capabilities
+        ):
+            raise ValueError(
+                "expand_reads requires at least one proposed capability"
+            )
+        if (
+            self.disposition
+            in {
+                GoalDisposition.COMPLETE,
+                GoalDisposition.BEST_EFFORT,
+                GoalDisposition.CLARIFY,
+                GoalDisposition.FAILED,
+            }
+            and self.terminal_reason is None
+        ):
+            raise ValueError("terminal disposition requires terminal_reason")
+        return self
+
+
+class GoalRunStateV2(StrictModel):
+    version: str = "goal-state-1"
+    goal: GoalContractV2
+    claim_ledger: tuple[ClaimAssessmentV2, ...] = ()
+    evidence_ledger: tuple[EvidenceLedgerEntryV2, ...] = ()
+    attempted_capabilities: tuple[Capability, ...] = ()
+    plan_revision: int = Field(default=0, ge=0, le=16)
+    budget: GoalBudgetV2
+    evaluation: GoalEvaluationV2 | None = None
+    terminal_reason: GoalTerminalReason | None = None
 
 
 class OrchestratorV2Error(RuntimeError):
@@ -520,6 +766,12 @@ class CapabilitySpec(Generic[IntentT, ResultT]):
         ProjectedResourceV2 | None,
     ]
     renderer: RendererMode
+    supported_question_types: frozenset[QuestionType]
+    evidence_dimensions: frozenset[EvidenceDimension]
+    supported_claims: tuple[str, ...]
+    limitations: tuple[str, ...]
+    fallback_capabilities: tuple[Capability, ...] = ()
+    auto_expandable: bool = False
     allow_direct_entities: bool = False
     supports_result_selection: bool = False
     program_default_fields: frozenset[str] = field(default_factory=frozenset)
@@ -570,10 +822,22 @@ __all__ = [
     "CapabilitySpec",
     "CompiledCallV2",
     "CoverageV2",
+    "ClaimAssessmentV2",
+    "ClaimRequirementV2",
+    "ClaimStatus",
     "EffectLevel",
+    "EvidenceDimension",
+    "EvidenceLedgerEntryV2",
+    "EvidenceQuality",
     "ErrorDetailV2",
     "ExecutionPolicy",
     "FreshnessPolicy",
+    "GoalBudgetV2",
+    "GoalContractV2",
+    "GoalDisposition",
+    "GoalEvaluationV2",
+    "GoalRunStateV2",
+    "GoalTerminalReason",
     "InputReferenceV2",
     "IntentOutlineNodeV2",
     "IntentOutlineV2",
@@ -588,11 +852,13 @@ __all__ = [
     "RepairRecordV2",
     "RendererMode",
     "ResourceType",
+    "QuestionType",
     "ResultSelectionV2",
     "SelectionMode",
     "StageObserver",
     "StageStatus",
     "StrictModel",
     "TaskOutcomeV2",
+    "UncertaintyMode",
     "stable_fingerprint",
 ]

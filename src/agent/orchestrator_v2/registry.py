@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, cast
 
@@ -18,11 +19,13 @@ from src.agent.orchestrator_v2.contracts import (
     CoverageV2,
     EffectLevel,
     ExecutionPolicy,
+    EvidenceDimension,
     FreshnessPolicy,
     InputReferenceV2,
     NormalizedIntent,
     OrchestratorV2Error,
     ProjectedResourceV2,
+    QuestionType,
     RendererMode,
     ResourceType,
     ResultSelectionV2,
@@ -136,6 +139,16 @@ def _project_outcome_resource(
                     ),
                 })
             return projected(direct)
+    if resource_type == ResourceType.MARKET_MAINLINE_SNAPSHOT:
+        for call in result.get("calls") or ():
+            if (
+                isinstance(call, Mapping)
+                and call.get("tool") == "prepare_market_mainline_snapshot"
+                and isinstance(call.get("result"), Mapping)
+                and call["result"].get("available") is True
+            ):
+                return projected(dict(call["result"]))
+        return None
     if resource_type == ResourceType.EVIDENCE_COLLECTION:
         return projected(result)
     if resource_type == ResourceType.GENERIC_RESULT:
@@ -202,6 +215,11 @@ def _simple_compiler(
         )
         raw.pop("output", None)
         raw.pop("user_confirmed", None)
+        raw = {
+            key: value
+            for key, value in raw.items()
+            if value not in ([], {}, ())
+        }
         parameters: dict[str, Any] = {}
         for key, value in raw.items():
             parameters[field_aliases.get(key, key)] = value
@@ -588,6 +606,7 @@ _INTENT_MODELS: Mapping[Capability, type[BaseModel]] = MappingProxyType({
     Capability.STOCK_DEEP_RESEARCH: intent_models.StockDeepResearchIntent,
     Capability.INVESTMENT_DECISION: intent_models.InvestmentDecisionIntent,
     Capability.MARKET_OVERVIEW: intent_models.MarketOverviewIntent,
+    Capability.MARKET_MAINLINE_RESEARCH: intent_models.MarketMainlineResearchIntent,
     Capability.SECTOR_ANALYSIS: intent_models.SectorAnalysisIntent,
     Capability.CAPITAL_FLOW_ANALYSIS: intent_models.CapitalFlowAnalysisIntent,
     Capability.MACRO_ANALYSIS: intent_models.MacroAnalysisIntent,
@@ -798,6 +817,11 @@ _FRESHNESS_BY_CAPABILITY: Mapping[
         market_session_sensitive=True,
         require_observed_at=True,
     ),
+    Capability.MARKET_MAINLINE_RESEARCH: _cross_run_freshness(
+        300,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
     Capability.CAPITAL_FLOW_ANALYSIS: _cross_run_freshness(
         30,
         market_session_sensitive=True,
@@ -881,6 +905,461 @@ if set(_FRESHNESS_BY_CAPABILITY) != _READ_CAPABILITIES:
     )
 
 
+@dataclass(frozen=True)
+class _CapabilitySemantics:
+    question_types: frozenset[QuestionType]
+    dimensions: frozenset[EvidenceDimension]
+    claims: tuple[str, ...]
+    limitations: tuple[str, ...]
+    fallbacks: tuple[Capability, ...] = ()
+    auto_expandable: bool = False
+
+
+_FACT_RESEARCH = frozenset({
+    QuestionType.FACTUAL,
+    QuestionType.EXPLANATION,
+    QuestionType.DIAGNOSIS,
+    QuestionType.COMPARISON,
+    QuestionType.RESEARCH,
+})
+_RESEARCH_FORECAST = frozenset({
+    *_FACT_RESEARCH,
+    QuestionType.FORECAST,
+})
+_OPERATIONAL = frozenset({
+    QuestionType.FACTUAL,
+    QuestionType.OPERATION,
+})
+
+
+def _sem(
+    dimensions: tuple[EvidenceDimension, ...],
+    claims: tuple[str, ...],
+    limitations: tuple[str, ...],
+    *,
+    question_types: frozenset[QuestionType] = _FACT_RESEARCH,
+    fallbacks: tuple[Capability, ...] = (),
+    auto_expandable: bool = False,
+) -> _CapabilitySemantics:
+    return _CapabilitySemantics(
+        question_types=question_types,
+        dimensions=frozenset(dimensions),
+        claims=claims,
+        limitations=limitations,
+        fallbacks=fallbacks,
+        auto_expandable=auto_expandable,
+    )
+
+
+# This registry is the program-owned semantic boundary between a user's Goal
+# Contract and executable workflows.  It is deliberately exhaustive: adding a
+# capability without declaring what it can and cannot prove fails at import.
+_SEMANTICS_BY_CAPABILITY: Mapping[
+    Capability,
+    _CapabilitySemantics,
+] = MappingProxyType({
+    Capability.GENERAL_RESPONSE: _sem(
+        (EvidenceDimension.GENERAL_KNOWLEDGE,),
+        ("无需实时外部数据的知识、解释、写作或计算",),
+        ("不能提供本轮未检索的实时市场或公司事实",),
+        question_types=frozenset({
+            QuestionType.DIRECT,
+            QuestionType.FACTUAL,
+            QuestionType.EXPLANATION,
+        }),
+    ),
+    Capability.SECURITY_LOOKUP: _sem(
+        (EvidenceDimension.SECURITY_IDENTITY,),
+        ("证券名称、代码、市场和行业身份",),
+        ("不能证明公司业务质量、价格或投资价值",),
+        auto_expandable=True,
+    ),
+    Capability.REALTIME_QUOTE: _sem(
+        (EvidenceDimension.REALTIME_MARKET,),
+        ("证券当前行情快照",),
+        ("不能单独解释涨跌原因或预测后续走势",),
+        auto_expandable=True,
+    ),
+    Capability.PRICE_HISTORY: _sem(
+        (EvidenceDimension.PRICE_HISTORY,),
+        ("证券指定时间范围内的历史行情",),
+        ("不能单独建立基本面因果或未来主线",),
+        auto_expandable=True,
+    ),
+    Capability.TECHNICAL_ANALYSIS: _sem(
+        (EvidenceDimension.TECHNICAL_SIGNALS,),
+        ("趋势、动量、波动和量价技术状态",),
+        ("技术信号不是公司基本面或产业主线证据",),
+        auto_expandable=True,
+    ),
+    Capability.FUNDAMENTAL_ANALYSIS: _sem(
+        (
+            EvidenceDimension.COMPANY_BUSINESS,
+            EvidenceDimension.COMPANY_FINANCIALS,
+        ),
+        ("公司业务结构、财务概况和股东结构",),
+        ("不能替代完整估值、催化或市场交易状态",),
+        auto_expandable=True,
+    ),
+    Capability.VALUATION_ANALYSIS: _sem(
+        (
+            EvidenceDimension.VALUATION,
+            EvidenceDimension.RESEARCH_CONSENSUS,
+        ),
+        ("当前、历史、预期和同行相对估值",),
+        ("估值便宜不能单独推出可以买入",),
+        auto_expandable=True,
+    ),
+    Capability.FINANCIAL_STATEMENT_ANALYSIS: _sem(
+        (EvidenceDimension.FINANCIAL_STATEMENTS,),
+        ("资产负债表、利润表和现金流量表",),
+        ("不能单独证明业务竞争力或未来催化",),
+        auto_expandable=True,
+    ),
+    Capability.NEWS_ANALYSIS: _sem(
+        (EvidenceDimension.NEWS,),
+        ("近期公司、行业、市场或宏观新闻及其影响",),
+        ("媒体报道不能冒充公司正式披露",),
+        fallbacks=(Capability.PUBLIC_WEB_RESEARCH,),
+        auto_expandable=True,
+    ),
+    Capability.ANNOUNCEMENT_ANALYSIS: _sem(
+        (EvidenceDimension.ANNOUNCEMENTS,),
+        ("公司正式公告事实",),
+        ("没有公告不能证明事件不存在",),
+        auto_expandable=True,
+    ),
+    Capability.RISK_ANALYSIS: _sem(
+        (
+            EvidenceDimension.RISK_EVENTS,
+            EvidenceDimension.ANNOUNCEMENTS,
+        ),
+        ("公司已披露或公开可核验的风险事件",),
+        ("不能把未检索到风险解释为没有风险",),
+        fallbacks=(Capability.NEWS_ANALYSIS,),
+        auto_expandable=True,
+    ),
+    Capability.REGULATORY_ANALYSIS: _sem(
+        (EvidenceDimension.REGULATORY,),
+        ("交易所、监管和上市项目动态",),
+        ("不能替代公司财务或市场行情",),
+        fallbacks=(Capability.PUBLIC_WEB_RESEARCH,),
+        auto_expandable=True,
+    ),
+    Capability.RESEARCH_REPORT_ANALYSIS: _sem(
+        (EvidenceDimension.RESEARCH_CONSENSUS,),
+        ("券商研报与一致预期证据",),
+        ("机构观点属于预测而不是已实现事实",),
+        fallbacks=(Capability.PUBLIC_WEB_RESEARCH,),
+        auto_expandable=True,
+    ),
+    Capability.CATALYST_ANALYSIS: _sem(
+        (
+            EvidenceDimension.CATALYSTS,
+            EvidenceDimension.ANNOUNCEMENTS,
+            EvidenceDimension.NEWS,
+        ),
+        ("未来六至十二个月可回查的公司催化与反向事件",),
+        ("没有明确时间窗和来源的叙事不能升级为催化",),
+        auto_expandable=True,
+    ),
+    Capability.SOCIAL_SENTIMENT_ANALYSIS: _sem(
+        (EvidenceDimension.SOCIAL_SENTIMENT,),
+        ("公开讨论样本中的情绪分布",),
+        ("舆情样本不能替代基本面或全市场共识",),
+        auto_expandable=True,
+    ),
+    Capability.STOCK_COMPARISON: _sem(
+        (EvidenceDimension.COMPARATIVE_SNAPSHOT,),
+        ("多只证券在行情、估值、技术与财务上的横向差异",),
+        ("快照对比不是完整买入判断",),
+        question_types=frozenset({
+            QuestionType.COMPARISON,
+            QuestionType.RESEARCH,
+            QuestionType.DECISION,
+        }),
+        auto_expandable=True,
+    ),
+    Capability.STOCK_DEEP_RESEARCH: _sem(
+        (
+            EvidenceDimension.COMPANY_BUSINESS,
+            EvidenceDimension.COMPANY_FINANCIALS,
+            EvidenceDimension.VALUATION,
+            EvidenceDimension.REALTIME_MARKET,
+            EvidenceDimension.RISK_EVENTS,
+            EvidenceDimension.CATALYSTS,
+        ),
+        ("完整个股业务、财务、估值、交易状态、风险与催化证据",),
+        ("深度研究不等于确定性买卖指令",),
+        question_types=frozenset({
+            QuestionType.RESEARCH,
+            QuestionType.DIAGNOSIS,
+            QuestionType.COMPARISON,
+            QuestionType.FORECAST,
+            QuestionType.DECISION,
+        }),
+        auto_expandable=True,
+    ),
+    Capability.INVESTMENT_DECISION: _sem(
+        (
+            EvidenceDimension.MARKET_MAINLINE,
+            EvidenceDimension.COMPANY_BUSINESS,
+            EvidenceDimension.COMPANY_FINANCIALS,
+            EvidenceDimension.VALUATION,
+            EvidenceDimension.RISK_EVENTS,
+            EvidenceDimension.CATALYSTS,
+        ),
+        ("八维顺序闸门下的逐股条件买入判断",),
+        ("只有八维全部通过才允许输出可买入",),
+        question_types=frozenset({QuestionType.DECISION}),
+    ),
+    Capability.MARKET_OVERVIEW: _sem(
+        (
+            EvidenceDimension.MARKET_REGIME,
+            EvidenceDimension.REALTIME_MARKET,
+        ),
+        ("指数、市场宽度、成交和整体交易状态",),
+        ("不能单独识别未来产业主线或建立板块因果",),
+        fallbacks=(Capability.SECTOR_ANALYSIS,),
+        auto_expandable=True,
+    ),
+    Capability.MARKET_MAINLINE_RESEARCH: _sem(
+        (
+            EvidenceDimension.MARKET_MAINLINE,
+            EvidenceDimension.RESEARCH_CONSENSUS,
+            EvidenceDimension.MACRO_POLICY,
+            EvidenceDimension.INDUSTRY_STRUCTURE,
+        ),
+        ("未来一至六个月当前主线、候选主线及验证条件",),
+        ("候选主线不是对未来赢家的确定性承诺",),
+        question_types=frozenset({
+            QuestionType.RESEARCH,
+            QuestionType.FORECAST,
+            QuestionType.DECISION,
+        }),
+        fallbacks=(
+            Capability.MACRO_ANALYSIS,
+            Capability.INDUSTRY_RESEARCH,
+            Capability.SECTOR_ANALYSIS,
+            Capability.PUBLIC_WEB_RESEARCH,
+        ),
+        auto_expandable=True,
+    ),
+    Capability.SECTOR_ANALYSIS: _sem(
+        (
+            EvidenceDimension.SECTOR_STRUCTURE,
+            EvidenceDimension.NEWS,
+        ),
+        ("行业或概念板块强弱、资金和近期信息",),
+        ("单日板块热度不能单独升级为中期市场主线",),
+        fallbacks=(Capability.NEWS_ANALYSIS,),
+        auto_expandable=True,
+    ),
+    Capability.CAPITAL_FLOW_ANALYSIS: _sem(
+        (EvidenceDimension.CAPITAL_FLOW,),
+        ("个股多周期资金流持续性",),
+        ("资金流不能替代公司基本面或主线证据",),
+        auto_expandable=True,
+    ),
+    Capability.MACRO_ANALYSIS: _sem(
+        (EvidenceDimension.MACRO_POLICY,),
+        ("宏观指标、利率和货币政策证据",),
+        ("宏观证据不能单独推出具体公司结论",),
+        question_types=_RESEARCH_FORECAST,
+        fallbacks=(Capability.PUBLIC_WEB_RESEARCH,),
+        auto_expandable=True,
+    ),
+    Capability.INDUSTRY_RESEARCH: _sem(
+        (
+            EvidenceDimension.INDUSTRY_STRUCTURE,
+            EvidenceDimension.DOMAIN_CANDIDATES,
+        ),
+        ("产业受益链与项目实时板块目录中的候选方向",),
+        ("产业受益方向不等于公司业务、订单或收入证明",),
+        question_types=_RESEARCH_FORECAST,
+        auto_expandable=True,
+    ),
+    Capability.THEME_STOCK_DISCOVERY: _sem(
+        (
+            EvidenceDimension.DOMAIN_CANDIDATES,
+            EvidenceDimension.SECURITY_IDENTITY,
+        ),
+        ("结构化领域对应的完整板块成分股候选集合",),
+        ("候选成员关系不等于公司业务匹配",),
+        question_types=frozenset({
+            QuestionType.FACTUAL,
+            QuestionType.RESEARCH,
+        }),
+    ),
+    Capability.THEME_BUSINESS_EVIDENCE: _sem(
+        (
+            EvidenceDimension.THEME_BUSINESS,
+            EvidenceDimension.COMPANY_BUSINESS,
+        ),
+        ("候选集合逐股主题业务、投入和发展强度",),
+        ("行业新闻不能代替逐家公司证据",),
+        question_types=frozenset({
+            QuestionType.RESEARCH,
+            QuestionType.COMPARISON,
+        }),
+    ),
+    Capability.STOCK_SCREENING: _sem(
+        (EvidenceDimension.SCREENING,),
+        ("完整强类型规则下的全市场量化筛选结果",),
+        ("未声明的筛选条件不会被自动补入",),
+        question_types=frozenset({
+            QuestionType.FACTUAL,
+            QuestionType.RESEARCH,
+        }),
+    ),
+    Capability.COLLECTION_FINANCIAL_FILTER: _sem(
+        (
+            EvidenceDimension.SCREENING,
+            EvidenceDimension.COMPANY_FINANCIALS,
+        ),
+        ("结构化公司集合上的联合财务条件筛选",),
+        ("只能消费明确集合，不能扩大股票范围",),
+        question_types=frozenset({
+            QuestionType.FACTUAL,
+            QuestionType.RESEARCH,
+        }),
+    ),
+    Capability.WATCHLIST_QUERY: _sem(
+        (EvidenceDimension.WATCHLIST_STATE,),
+        ("当前自选和自选分组状态",),
+        ("自选集合不代表推荐或持仓",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.WATCHLIST_MUTATION: _sem(
+        (EvidenceDimension.WATCHLIST_STATE,),
+        ("按确认动作修改自选成员",),
+        ("不能在未确认时执行修改",),
+        question_types=frozenset({QuestionType.OPERATION}),
+    ),
+    Capability.WATCHLIST_GROUP_MANAGEMENT: _sem(
+        (EvidenceDimension.WATCHLIST_STATE,),
+        ("查看或管理自选分组",),
+        ("高影响分组修改必须确认",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.DATA_HEALTH: _sem(
+        (EvidenceDimension.DATA_QUALITY,),
+        ("股票池、行情和财务数据覆盖与维护状态",),
+        ("数据健康不能替代具体投资分析",),
+        question_types=frozenset({
+            QuestionType.FACTUAL,
+            QuestionType.DIAGNOSIS,
+        }),
+        auto_expandable=True,
+    ),
+    Capability.FORMAL_ANALYSIS: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("启动或查询正式分析任务",),
+        ("启动持久任务必须按策略确认",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.ANALYSIS_HISTORY: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("搜索、读取或删除正式分析历史",),
+        ("删除操作必须确认",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.ANALYSIS_TEMPLATE_MANAGEMENT: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("查看或管理分析模板",),
+        ("模板修改不会自动改变已完成报告",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.BATCH_ANALYSIS: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("启动指定范围的批量分析",),
+        ("批量执行必须确认且保持完整范围",),
+        question_types=frozenset({QuestionType.OPERATION}),
+    ),
+    Capability.BATCH_RUN_MANAGEMENT: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("查看或控制批量任务",),
+        ("控制和删除动作必须确认",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.ANALYSIS_SCHEDULE_MANAGEMENT: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("查看或修改自动分析计划",),
+        ("修改计划必须确认",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.NOTIFICATION: _sem(
+        (EvidenceDimension.ANALYSIS_OPERATIONS,),
+        ("检查通知配置或发送确认内容",),
+        ("发送属于外部副作用，不能自动扩展",),
+        question_types=_OPERATIONAL,
+    ),
+    Capability.FINANCIAL_SOURCE_DISCOVERY: _sem(
+        (EvidenceDimension.FEED_CONTENT,),
+        ("可用财经资讯源及其用途",),
+        ("来源目录不是资讯内容本身",),
+        auto_expandable=True,
+    ),
+    Capability.FINANCIAL_FEED_READ: _sem(
+        (EvidenceDimension.FEED_CONTENT,),
+        ("指定财经 Feed 的结构化内容",),
+        ("只读取明确路由，不替代语义搜索",),
+        auto_expandable=True,
+    ),
+    Capability.FINANCIAL_ARTICLE_READ: _sem(
+        (EvidenceDimension.FEED_CONTENT,),
+        ("用户指定财经文章的正文",),
+        ("单篇文章不能代表多源共识",),
+        auto_expandable=True,
+    ),
+    Capability.WEBPAGE_FEED_TRANSFORM: _sem(
+        (EvidenceDimension.FEED_CONTENT,),
+        ("用户指定网页的 Feed 预览",),
+        ("转换预览不写入外部系统",),
+        question_types=frozenset({
+            QuestionType.FACTUAL,
+            QuestionType.OPERATION,
+        }),
+    ),
+    Capability.FINANCIAL_FEED_EXPORT: _sem(
+        (EvidenceDimension.FEED_CONTENT,),
+        ("导出用户指定的财经 Feed",),
+        ("导出属于外部副作用，必须确认",),
+        question_types=frozenset({QuestionType.OPERATION}),
+    ),
+    Capability.PUBLIC_WEB_RESEARCH: _sem(
+        (EvidenceDimension.PUBLIC_WEB,),
+        ("内部结构化来源无法覆盖时的公开网页证据",),
+        ("公开网页不能冒充交易所公告或内部权威数据",),
+        question_types=_RESEARCH_FORECAST,
+        auto_expandable=True,
+    ),
+    Capability.TRADE_EXECUTION: _sem(
+        (EvidenceDimension.TRADE_STATE,),
+        ("独立交易状态机中的账户、风控和订单状态",),
+        ("当前未接入账户与下单工具，不能执行交易",),
+        question_types=frozenset({
+            QuestionType.DECISION,
+            QuestionType.OPERATION,
+        }),
+    ),
+})
+
+if set(_SEMANTICS_BY_CAPABILITY) != set(Capability):
+    missing = sorted(
+        item.value
+        for item in set(Capability) - set(_SEMANTICS_BY_CAPABILITY)
+    )
+    unexpected = sorted(
+        item.value
+        for item in set(_SEMANTICS_BY_CAPABILITY) - set(Capability)
+    )
+    raise RuntimeError(
+        "semantic registry must cover every capability exactly; "
+        f"missing={missing}, unexpected={unexpected}"
+    )
+
+
 def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
     workflow = workflow_for(StandardTaskKind(capability.value))
     input_resources = _resources(workflow.input_resources)
@@ -894,6 +1373,11 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
     }:
         output_resources = frozenset({
             *output_resources,
+            ResourceType.EVIDENCE_COLLECTION,
+        })
+    if capability == Capability.MARKET_MAINLINE_RESEARCH:
+        output_resources = frozenset({
+            ResourceType.MARKET_MAINLINE_SNAPSHOT,
             ResourceType.EVIDENCE_COLLECTION,
         })
     policy = ExecutionPolicy(
@@ -915,10 +1399,11 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
     )
     compiler = _COMPILERS.get(capability, _simple_compiler())
     capability_version = (
-        "3.2.0"
+        "4.2.0"
         if capability == Capability.INVESTMENT_DECISION
-        else "3.0.0"
+        else "4.0.0"
     )
+    semantics = _SEMANTICS_BY_CAPABILITY[capability]
     return CapabilitySpec(
         capability=capability,
         version=capability_version,
@@ -941,6 +1426,12 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
             if workflow.result_contract in _DETERMINISTIC_CONTRACTS
             else RendererMode.EVIDENCE_SYNTHESIS
         ),
+        supported_question_types=semantics.question_types,
+        evidence_dimensions=semantics.dimensions,
+        supported_claims=semantics.claims,
+        limitations=semantics.limitations,
+        fallback_capabilities=semantics.fallbacks,
+        auto_expandable=semantics.auto_expandable,
         allow_direct_entities=(
             workflow.requires_entities
             or any(req.requires_entities for req in workflow.parameter_requirements)
@@ -982,6 +1473,18 @@ def capability_catalog() -> list[dict[str, Any]]:
             "output_resources": sorted(item.value for item in spec.output_resources),
             "allow_direct_entities": spec.allow_direct_entities,
             "supports_result_selection": spec.supports_result_selection,
+            "supported_question_types": sorted(
+                item.value for item in spec.supported_question_types
+            ),
+            "evidence_dimensions": sorted(
+                item.value for item in spec.evidence_dimensions
+            ),
+            "supported_claims": list(spec.supported_claims),
+            "limitations": list(spec.limitations),
+            "fallback_capabilities": [
+                item.value for item in spec.fallback_capabilities
+            ],
+            "auto_expandable": spec.auto_expandable,
             "subsumes_capabilities": sorted(
                 item.value for item in spec.subsumes_capabilities
             ),

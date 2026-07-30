@@ -17,6 +17,10 @@ class SemanticGoldenCase:
     required_dependencies: frozenset[tuple[str, str]] = frozenset()
     expected_effects: tuple[tuple[str, str], ...] = ()
     required_scope_terms: frozenset[str] = frozenset()
+    required_question_type: str | None = None
+    required_evidence_dimensions: frozenset[str] = frozenset()
+    required_artifact_resources: frozenset[str] = frozenset()
+    maximum_plan_revisions: int = 2
 
     @classmethod
     def from_value(cls, value: Mapping[str, Any]) -> "SemanticGoldenCase":
@@ -45,6 +49,29 @@ class SemanticGoldenCase:
                 str(item)
                 for item in value.get("required_scope_terms", ())
             ),
+            required_question_type=(
+                str(value["required_question_type"])
+                if value.get("required_question_type")
+                else None
+            ),
+            required_evidence_dimensions=frozenset(
+                str(item)
+                for item in value.get(
+                    "required_evidence_dimensions",
+                    (),
+                )
+            ),
+            required_artifact_resources=frozenset(
+                str(item)
+                for item in value.get(
+                    "required_artifact_resources",
+                    (),
+                )
+            ),
+            maximum_plan_revisions=max(
+                0,
+                int(value.get("maximum_plan_revisions", 2)),
+            ),
         )
 
 
@@ -55,6 +82,11 @@ def score_semantic_case(
     dependencies: Sequence[tuple[str, str]] = (),
     effects: Mapping[str, str] | None = None,
     scope_text: str = "",
+    question_type: str | None = None,
+    evidence_dimensions: Sequence[str] = (),
+    plan_revisions: int = 0,
+    recovery_effects: Sequence[str] = (),
+    artifact_resources: Sequence[str] = (),
 ) -> dict[str, Any]:
     actual = tuple(str(item) for item in capabilities)
     actual_set = set(actual)
@@ -85,6 +117,26 @@ def score_semantic_case(
         for term in case.required_scope_terms
         if term not in scope_text
     )
+    question_type_mismatch = (
+        case.required_question_type is not None
+        and question_type != case.required_question_type
+    )
+    missing_evidence_dimensions = sorted(
+        case.required_evidence_dimensions
+        - {str(item) for item in evidence_dimensions}
+    )
+    too_many_revisions = (
+        plan_revisions > case.maximum_plan_revisions
+    )
+    unsafe_recovery_effects = sorted({
+        str(item)
+        for item in recovery_effects
+        if str(item) != "read"
+    })
+    missing_artifact_resources = sorted(
+        case.required_artifact_resources
+        - {str(item) for item in artifact_resources}
+    )
     return {
         "case_id": case.case_id,
         "passed": not (
@@ -95,6 +147,11 @@ def score_semantic_case(
             or missing_dependencies
             or effect_mismatches
             or missing_scope_terms
+            or question_type_mismatch
+            or missing_evidence_dimensions
+            or too_many_revisions
+            or unsafe_recovery_effects
+            or missing_artifact_resources
         ),
         "actual_capabilities": list(actual),
         "missing_required": missing,
@@ -106,6 +163,11 @@ def score_semantic_case(
         ],
         "effect_mismatches": effect_mismatches,
         "missing_scope_terms": missing_scope_terms,
+        "question_type_mismatch": question_type_mismatch,
+        "missing_evidence_dimensions": missing_evidence_dimensions,
+        "too_many_revisions": too_many_revisions,
+        "unsafe_recovery_effects": unsafe_recovery_effects,
+        "missing_artifact_resources": missing_artifact_resources,
     }
 
 

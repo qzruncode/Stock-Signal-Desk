@@ -23,6 +23,7 @@ from src.agent.orchestrator_v2.contracts import (
     AgentStage,
     AgentStageEventV2,
     AssumptionRecord,
+    GoalContractV2,
     InputReferenceV2,
     IntentOutlineNodeV2,
     IntentOutlineV2,
@@ -30,6 +31,7 @@ from src.agent.orchestrator_v2.contracts import (
     OrchestratorV2Error,
     PlanningTraceV2,
     PlannerVerificationV2,
+    QuestionType,
     RepairIssueV2,
     RepairRecordV2,
     ResourceType,
@@ -45,7 +47,7 @@ from src.agent.task_planner import current_user_request
 from src.llm.anthropic_gateway import build_litellm_kwargs
 
 
-V2_SCHEMA_VERSION = "orchestrator-3.0"
+V2_SCHEMA_VERSION = "orchestrator-4.0"
 MODEL_PROGRESS_HEARTBEAT_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
@@ -257,6 +259,123 @@ def _schema_at_location(
             current = current["items"]
             continue
     return _deref_schema(current, root)
+
+
+def _normalize_json_encoded_contract_fields(
+    payload: dict[str, Any],
+    model: type[BaseModel],
+) -> dict[str, Any]:
+    """Unwrap provider-stringified nested objects using the exact Schema.
+
+    Some OpenAI-compatible providers preserve the outer function arguments as
+    JSON but serialize nested object/array fields a second time. The transport
+    boundary may safely undo that encoding only where the contract requires a
+    structured value; the strict Pydantic model remains authoritative.
+    """
+
+    root = model.model_json_schema()
+
+    def branches(schema: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+        resolved = _deref_schema(schema, root)
+        alternatives = resolved.get("anyOf") or resolved.get("oneOf")
+        if not isinstance(alternatives, list):
+            return (resolved,)
+        return tuple(
+            _deref_schema(item, root)
+            for item in alternatives
+            if isinstance(item, Mapping)
+        )
+
+    def structured_branch(
+        schema: Mapping[str, Any],
+        kind: str,
+    ) -> Mapping[str, Any] | None:
+        return next((
+            item
+            for item in branches(schema)
+            if item.get("type") == kind
+            or (
+                kind == "object"
+                and isinstance(item.get("properties"), Mapping)
+            )
+        ), None)
+
+    def normalize(
+        value: Any,
+        schema: Mapping[str, Any],
+        *,
+        depth: int,
+    ) -> Any:
+        if depth > 24:
+            return value
+        candidates = branches(schema)
+        string_allowed = any(
+            item.get("type") == "string"
+            for item in candidates
+        )
+        object_schema = structured_branch(schema, "object")
+        array_schema = structured_branch(schema, "array")
+        if isinstance(value, str) and not string_allowed:
+            stripped = value.strip()
+            expected_container = (
+                object_schema
+                if stripped.startswith("{") and stripped.endswith("}")
+                else (
+                    array_schema
+                    if stripped.startswith("[") and stripped.endswith("]")
+                    else None
+                )
+            )
+            if expected_container is not None and len(stripped) <= 250_000:
+                try:
+                    decoded = json.loads(stripped)
+                except (TypeError, ValueError):
+                    decoded = value
+                if (
+                    expected_container is object_schema
+                    and isinstance(decoded, dict)
+                ) or (
+                    expected_container is array_schema
+                    and isinstance(decoded, list)
+                ):
+                    value = decoded
+        if isinstance(value, Mapping) and object_schema is not None:
+            properties = object_schema.get("properties")
+            additional = object_schema.get("additionalProperties")
+            return {
+                key: normalize(
+                    item,
+                    (
+                        properties[key]
+                        if isinstance(properties, Mapping)
+                        and key in properties
+                        and isinstance(properties[key], Mapping)
+                        else additional
+                    ),
+                    depth=depth + 1,
+                )
+                if (
+                    (
+                        isinstance(properties, Mapping)
+                        and key in properties
+                        and isinstance(properties[key], Mapping)
+                    )
+                    or isinstance(additional, Mapping)
+                )
+                else item
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)) and array_schema is not None:
+            items = array_schema.get("items")
+            if isinstance(items, Mapping):
+                return [
+                    normalize(item, items, depth=depth + 1)
+                    for item in value
+                ]
+        return value
+
+    normalized = normalize(payload, root, depth=0)
+    return dict(normalized) if isinstance(normalized, Mapping) else payload
 
 
 def _schema_expectation(schema: Mapping[str, Any]) -> tuple[str, tuple[Any, ...]]:
@@ -544,10 +663,14 @@ async def call_model_exact_v2(
 
         try:
             raw_payload = _payload_from_response(response, function_name)
+            normalized_payload = _normalize_json_encoded_contract_fields(
+                raw_payload,
+                model,
+            )
             payload = (
-                payload_normalizer(raw_payload)
+                payload_normalizer(normalized_payload)
                 if payload_normalizer is not None
-                else raw_payload
+                else normalized_payload
             )
             validated = model.model_validate(payload)
             if value_validator is not None:
@@ -600,6 +723,63 @@ async def call_model_exact_v2(
 def _validate_outline_capability_contracts(value: BaseModel) -> None:
     outline = IntentOutlineV2.model_validate(value)
     issues: list[RepairIssueV2] = []
+    selected_specs = [
+        capability_for(node.capability)
+        for node in outline.nodes
+    ]
+    covered_dimensions = frozenset(
+        dimension
+        for spec in selected_specs
+        for dimension in spec.evidence_dimensions
+    )
+    required_dimensions = frozenset(
+        dimension
+        for claim in outline.goal.claims
+        if claim.mandatory
+        for dimension in claim.required_dimensions
+    )
+    missing_dimensions = tuple(sorted(
+        required_dimensions - covered_dimensions,
+        key=lambda item: item.value,
+    ))
+    if missing_dimensions and not outline.needs_clarification:
+        issues.append(RepairIssueV2(
+            pointer="/goal/claims",
+            code="goal_evidence_coverage_incomplete",
+            expected=(
+                "selected capabilities must jointly cover every required "
+                "evidence dimension of every mandatory claim"
+            ),
+            allowed=tuple(item.value for item in covered_dimensions),
+            message=(
+                "capability graph does not cover required evidence dimensions: "
+                + ", ".join(item.value for item in missing_dimensions)
+            ),
+        ))
+    if (
+        not outline.needs_clarification
+        and not any(
+            outline.goal.question_type in spec.supported_question_types
+            for spec in selected_specs
+        )
+    ):
+        issues.append(RepairIssueV2(
+            pointer="/goal/question_type",
+            code="goal_question_type_unsupported",
+            expected=(
+                "at least one selected terminal capability must support "
+                f"{outline.goal.question_type.value}"
+            ),
+            allowed=tuple(sorted({
+                item.value
+                for spec in selected_specs
+                for item in spec.supported_question_types
+            })),
+            message=(
+                "selected capabilities cannot produce the requested answer "
+                f"mode: {outline.goal.question_type.value}"
+            ),
+        ))
     for index, node in enumerate(outline.nodes):
         spec = capability_for(node.capability)
         if (
@@ -618,6 +798,82 @@ def _validate_outline_capability_contracts(value: BaseModel) -> None:
                     f"{node.capability.value} does not support result_selection"
                 ),
             ))
+    if issues:
+        raise ExactContractValidationError(tuple(issues))
+
+
+def _validate_recovery_outline_contracts(
+    value: BaseModel,
+    *,
+    fixed_goal: GoalContractV2,
+    allowed_capabilities: frozenset[Capability],
+    node_id_prefix: str,
+) -> None:
+    """Keep a repair round inside the frozen goal and read-only allowlist."""
+
+    outline = IntentOutlineV2.model_validate(value)
+    issues: list[RepairIssueV2] = []
+    for index, node in enumerate(outline.nodes):
+        spec = capability_for(node.capability)
+        if (
+            node.result_selection is not None
+            and not spec.supports_result_selection
+        ):
+            issues.append(RepairIssueV2(
+                pointer=f"/nodes/{index}/result_selection",
+                code="capability_result_selection_forbidden",
+                expected=(
+                    "null because capability "
+                    f"{node.capability.value} does not support result selection"
+                ),
+                allowed=(None,),
+                message=(
+                    f"{node.capability.value} does not support result_selection"
+                ),
+            ))
+    if outline.goal != fixed_goal:
+        issues.append(RepairIssueV2(
+            pointer="/goal",
+            code="recovery_goal_changed",
+            expected="the exact frozen Goal Contract from the initial plan",
+            allowed=(fixed_goal.model_dump(mode="json"),),
+            message="recovery planning cannot change the user's frozen goal",
+        ))
+    unexpected = tuple(
+        node.capability
+        for node in outline.nodes
+        if node.capability not in allowed_capabilities
+    )
+    if unexpected:
+        issues.append(RepairIssueV2(
+            pointer="/nodes",
+            code="recovery_capability_out_of_scope",
+            expected="only program-proposed read-only recovery capabilities",
+            allowed=tuple(sorted(
+                item.value for item in allowed_capabilities
+            )),
+            message=(
+                "recovery plan selected capabilities outside the bounded "
+                "allowlist: "
+                + ", ".join(item.value for item in unexpected)
+            ),
+        ))
+    invalid_node_ids = tuple(
+        node.node_id
+        for node in outline.nodes
+        if not node.node_id.startswith(node_id_prefix)
+    )
+    if invalid_node_ids:
+        issues.append(RepairIssueV2(
+            pointer="/nodes",
+            code="recovery_node_id_not_namespaced",
+            expected=f"every recovery node id starts with {node_id_prefix}",
+            allowed=(f"{node_id_prefix}<name>",),
+            message=(
+                "recovery node ids must be namespaced for durable merging: "
+                + ", ".join(invalid_node_ids)
+            ),
+        ))
     if issues:
         raise ExactContractValidationError(tuple(issues))
 
@@ -1050,7 +1306,21 @@ def _bind_outline_resources(
 
 
 _OUTLINE_SYSTEM_PROMPT = """\
-你是 Agent Orchestrator V2 的语义拆解器。你只表达用户目标、能力和资源关系。
+你是 Agent Orchestrator V2 的目标与语义拆解器。先形成 Goal Contract，再选择能力图。
+Goal Contract 是本轮唯一完成定义，必须直接来自 current_request：
+1. objective 明确用户真正要解决的问题；
+2. question_type 区分事实、解释、诊断、比较、研究、预测、决策和操作；
+3. deliverables 是用户最终要看到的内容，不是内部执行步骤；
+4. claims 拆成必须得到支持的用户可见结论，并为每条结论声明 required_dimensions；
+5. 预测问题必须使用 question_type=forecast 和 uncertainty_mode=scenario，输出候选情景、
+   相对排序、成立条件与失效信号，不能把“无法确定未来”作为主要答案；
+6. 操作问题使用 uncertainty_mode=not_applicable；其余问题按事实确定性选择 exact 或 bounded。
+只允许使用 capability_catalog 已声明的 evidence_dimensions。能力图中全部能力的
+evidence_dimensions 并集必须覆盖每条强制 claim 的 required_dimensions；
+能力的 limitations 明确说明它不能证明什么，禁止用相邻数据冒充目标证据。
+例如 market_overview 只能证明市场状态，不能证明未来市场主线；
+未来市场主线必须选择 market_mainline_research。
+你只表达用户目标、能力和资源关系。
 禁止输出任何工具名、批次、并发、超时、重试、缓存、抓取深度、搜索条数、内部字段或默认值。
 source=node 的 input_refs 只能引用本张图中的上游 node_id 和它真实产生的资源类型。
 引用 conversation_context 中的跨轮终态资源时必须使用 source=artifact 和对应 artifact_id；
@@ -1083,18 +1353,26 @@ _INTENT_SYSTEM_PROMPT = """\
 """
 
 _VERIFIER_SYSTEM_PROMPT = """\
-你是独立的 Agent 计划验收器。只比较 current_request 与 frozen_outline：
-1. 图必须覆盖用户本轮明确要求的每一种终态能力，不能只做前置发现；
-2. 不得包含用户没有要求的能力；
-3. 每条资源边必须让下游消费上游真实的结构化结果；
-4. 复合能力已经包含的子能力不能重复出现；
-5. 不评价工具、参数、实现方式或答案内容。
+你是独立的 Agent 计划验收器。只比较 current_request、Goal Contract 与 frozen_outline：
+1. Goal 的问题类型、交付物、强制结论和不确定性模式必须完整且忠于当前请求；
+2. 图中能力的证据维度并集必须覆盖 Goal 每条强制结论，不能只做前置发现或相邻分析；
+3. 不得包含用户没有要求、也不为 Goal 证据覆盖所必需的能力；
+4. 每条资源边必须让下游消费上游真实的结构化结果；
+5. 复合能力已经包含的子能力不能重复出现；
+6. 预测问题必须接受不确定性并要求情景、排序、触发条件和失效信号，不能要求确定性预言；
+7. 没有资源边的单节点终态能力是合法图，不要求节点消费自己的输出；
+8. fallback_capabilities 只供执行失败后的程序化补证，不是初始图的必选节点；
+9. 不评价工具、参数、实现方式或答案文风。
 严格输出验收 Schema。没有问题时 accepted=true 且所有问题数组为空；
-存在任何遗漏、越界或资源错误时 accepted=false。不得替计划辩护。\
+存在任何遗漏、越界或资源错误时 accepted=false，且至少把一项问题写入对应的
+问题数组。若无法完成验收，则 accepted=false、confidence=0 且问题数组为空，
+表示主动弃权，不得用占位文字否决计划。不得替计划辩护。\
 """
 
 
-def _planner_verifier_mode() -> str:
+def _planner_verifier_mode(
+    question_type: QuestionType | None = None,
+) -> str:
     configured = (
         os.getenv("AGENT_PLANNER_VERIFIER_MODE") or ""
     ).strip().lower()
@@ -1103,7 +1381,16 @@ def _planner_verifier_mode() -> str:
     environment = str(
         os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or ""
     ).strip().lower()
-    return "enforce" if environment in {"prod", "production"} else "off"
+    if environment in {"prod", "production"}:
+        return "enforce"
+    # Forecasts are the highest-risk semantic mode: a superficially related
+    # snapshot can easily be mistaken for evidence about the future.  Keep the
+    # independent verifier active in local/demo deployments for this mode too.
+    return (
+        "enforce"
+        if question_type == QuestionType.FORECAST
+        else "off"
+    )
 
 
 async def plan_intent_graph_v2(
@@ -1116,6 +1403,9 @@ async def plan_intent_graph_v2(
     run_id: str | None = None,
     today: date | None = None,
     current_entities: list[dict[str, str]] | None = None,
+    fixed_goal: GoalContractV2 | None = None,
+    allowed_capabilities: tuple[Capability, ...] | None = None,
+    plan_revision: int = 0,
 ) -> PlannedIntentGraphV2:
     """Produce a frozen V2 graph under bounded provider and total deadlines."""
     active_run_id = run_id or uuid.uuid4().hex
@@ -1130,6 +1420,13 @@ async def plan_intent_graph_v2(
     raw_intents: dict[str, Any] = {}
     verification: PlannerVerificationV2 | None = None
     available_artifacts = _available_artifacts(semantic_context)
+    recovery_allowlist = (
+        frozenset(allowed_capabilities or ())
+        if fixed_goal is not None
+        else frozenset()
+    )
+    if fixed_goal is not None and not recovery_allowlist:
+        raise ValueError("recovery planning requires allowed_capabilities")
 
     async def execute() -> PlannedIntentGraphV2:
         nonlocal raw_outline, verification
@@ -1141,6 +1438,48 @@ async def plan_intent_graph_v2(
             status=StageStatus.STARTED,
             summary="正在识别能力与资源关系",
         )
+        outline_semantic_context = {
+            "current_request": request,
+            "conversation_context": dict(semantic_context or {}),
+            "capability_catalog": capability_catalog(),
+            "runtime_date": now.isoformat(),
+            **(
+                {
+                    "recovery_mode": True,
+                    "frozen_goal": fixed_goal.model_dump(mode="json"),
+                    "allowed_capabilities": sorted(
+                        item.value for item in recovery_allowlist
+                    ),
+                    "plan_revision": plan_revision,
+                    "recovery_rule": (
+                        "Keep frozen_goal exactly unchanged and select "
+                        "only allowed_capabilities that improve its "
+                        "missing evidence coverage. Use node ids prefixed "
+                        f"repair_{plan_revision}_"
+                    ),
+                }
+                if fixed_goal is not None
+                else {}
+            ),
+        }
+        outline_validator = (
+            (
+                lambda value: _validate_recovery_outline_contracts(
+                    value,
+                    fixed_goal=fixed_goal,
+                    allowed_capabilities=recovery_allowlist,
+                    node_id_prefix=f"repair_{plan_revision}_",
+                )
+            )
+            if fixed_goal is not None
+            else _validate_outline_capability_contracts
+        )
+        outline_normalizer = (
+            lambda payload: _normalize_outline_resource_refs(
+                payload,
+                available_artifacts=available_artifacts,
+            )
+        )
         outline_value, raw_outline, repair = await call_model_exact_v2(
             llm_cfg=llm_cfg,
             completion=completion,
@@ -1148,18 +1487,10 @@ async def plan_intent_graph_v2(
             description="Submit only the capability graph and resource references.",
             model=IntentOutlineV2,
             system_prompt=_OUTLINE_SYSTEM_PROMPT,
-            semantic_context={
-                "current_request": request,
-                "conversation_context": dict(semantic_context or {}),
-                "capability_catalog": capability_catalog(),
-                "runtime_date": now.isoformat(),
-            },
+            semantic_context=outline_semantic_context,
             node_id=None,
-            value_validator=_validate_outline_capability_contracts,
-            payload_normalizer=lambda payload: _normalize_outline_resource_refs(
-                payload,
-                available_artifacts=available_artifacts,
-            ),
+            value_validator=outline_validator,
+            payload_normalizer=outline_normalizer,
             progress_observer=lambda elapsed: _emit(
                 stage_observer,
                 run_id=active_run_id,
@@ -1188,51 +1519,159 @@ async def plan_intent_graph_v2(
             },
             has_direct_entities=bool(current_entities),
         )
-        verifier_mode = _planner_verifier_mode()
+        verifier_mode = (
+            "off"
+            if fixed_goal is not None
+            else _planner_verifier_mode(
+                outline.goal.question_type
+            )
+        )
         if verifier_mode != "off":
-            verification_value, _raw_verification, _repair = (
-                await call_model_exact_v2(
-                    llm_cfg=llm_cfg,
-                    completion=completion,
-                    function_name="verify_intent_outline_v2",
-                    description=(
-                        "Independently verify semantic coverage, minimality, "
-                        "and resource edges of the frozen intent graph."
-                    ),
-                    model=PlannerVerificationV2,
-                    system_prompt=_VERIFIER_SYSTEM_PROMPT,
-                    semantic_context={
-                        "current_request": request,
-                        "frozen_outline": outline.model_dump(mode="json"),
-                        "capability_catalog": capability_catalog(),
-                        "conversation_context": dict(semantic_context or {}),
-                    },
-                    node_id=None,
-                    max_tokens=1_500,
+            async def verify_candidate(
+                candidate: IntentOutlineV2,
+            ) -> PlannerVerificationV2:
+                verification_value, _raw_verification, _repair = (
+                    await call_model_exact_v2(
+                        llm_cfg=llm_cfg,
+                        completion=completion,
+                        function_name="verify_intent_outline_v2",
+                        description=(
+                            "Independently verify semantic coverage, "
+                            "minimality, and resource edges of the frozen "
+                            "intent graph."
+                        ),
+                        model=PlannerVerificationV2,
+                        system_prompt=_VERIFIER_SYSTEM_PROMPT,
+                        semantic_context={
+                            "current_request": request,
+                            "frozen_outline": candidate.model_dump(
+                                mode="json"
+                            ),
+                            "capability_catalog": capability_catalog(),
+                            "conversation_context": dict(
+                                semantic_context or {}
+                            ),
+                        },
+                        node_id=None,
+                        max_tokens=1_500,
+                    )
                 )
-            )
-            verification = PlannerVerificationV2.model_validate(
-                verification_value
-            )
+                return PlannerVerificationV2.model_validate(
+                    verification_value
+                )
+
+            verification = await verify_candidate(outline)
             minimum_confidence = _runtime_float(
                 "AGENT_PLANNER_VERIFIER_MIN_CONFIDENCE",
                 0.8,
                 minimum=0.0,
             )
-            rejected = (
-                not verification.accepted
-                or verification.confidence < minimum_confidence
-            )
-            if rejected and verifier_mode == "enforce":
-                raise OrchestratorV2Error(
-                    AgentErrorCode.PLANNER_SCHEMA_INVALID,
-                    "independent semantic verifier rejected the capability graph",
-                    metadata={
-                        "verification": verification.model_dump(mode="json"),
-                        "minimum_confidence": minimum_confidence,
-                    },
+
+            def verifier_rejected(
+                value: PlannerVerificationV2,
+            ) -> bool:
+                return (
+                    not value.accepted
+                    and value.confidence >= minimum_confidence
+                    and bool(
+                        value.missing_capabilities
+                        or value.extraneous_node_ids
+                        or value.resource_issues
+                    )
                 )
-            if rejected:
+
+            rejected = verifier_rejected(verification)
+            if (
+                verification.confidence < minimum_confidence
+                or (
+                    not verification.accepted
+                    and not (
+                        verification.missing_capabilities
+                        or verification.extraneous_node_ids
+                        or verification.resource_issues
+                    )
+                )
+            ):
+                logger.warning(
+                    "[AgentPlanner] verifier abstained run=%s: %s",
+                    active_run_id,
+                    verification.model_dump(mode="json"),
+                )
+            if rejected and verifier_mode == "enforce":
+                await _emit(
+                    stage_observer,
+                    run_id=active_run_id,
+                    stage=AgentStage.OUTLINE,
+                    status=StageStatus.STARTED,
+                    summary="独立验收发现语义缺口，正在进行一次受控重规划",
+                )
+                replanned_value, raw_outline, replan_repair = (
+                    await call_model_exact_v2(
+                        llm_cfg=llm_cfg,
+                        completion=completion,
+                        function_name="submit_intent_outline_v2",
+                        description=(
+                            "Repair the Goal Contract and capability graph "
+                            "using the independent verifier feedback."
+                        ),
+                        model=IntentOutlineV2,
+                        system_prompt=(
+                            _OUTLINE_SYSTEM_PROMPT
+                            + "\n独立验收反馈只能用于修正当前目标与能力覆盖，"
+                            "不得扩大用户请求。"
+                        ),
+                        semantic_context={
+                            **outline_semantic_context,
+                            "independent_verifier_feedback": (
+                                verification.model_dump(mode="json")
+                            ),
+                            "replan_attempt": 1,
+                        },
+                        node_id=None,
+                        value_validator=outline_validator,
+                        payload_normalizer=outline_normalizer,
+                    )
+                )
+                if replan_repair is not None:
+                    repairs.append(replan_repair)
+                outline = IntentOutlineV2.model_validate(
+                    replanned_value
+                )
+                if outline.needs_clarification:
+                    raise OrchestratorV2Error(
+                        AgentErrorCode.CLARIFICATION_REQUIRED,
+                        outline.clarification_question
+                        or "需要补充任务目标。",
+                    )
+                outline, replan_collapsed = (
+                    _collapse_subsumed_capabilities(outline)
+                )
+                collapsed_count += replan_collapsed
+                outline = _bind_outline_resources(
+                    outline,
+                    available_artifacts={
+                        artifact.artifact_id: artifact.resource_type
+                        for artifact in available_artifacts
+                    },
+                    has_direct_entities=bool(current_entities),
+                )
+                verification = await verify_candidate(outline)
+                rejected = verifier_rejected(verification)
+                if rejected:
+                    raise OrchestratorV2Error(
+                        AgentErrorCode.PLANNER_SCHEMA_INVALID,
+                        (
+                            "independent semantic verifier rejected the "
+                            "capability graph after one bounded replan"
+                        ),
+                        metadata={
+                            "verification": verification.model_dump(
+                                mode="json"
+                            ),
+                            "minimum_confidence": minimum_confidence,
+                        },
+                    )
+            elif rejected:
                 logger.warning(
                     "[AgentPlanner] shadow verifier rejected run=%s: %s",
                     active_run_id,
@@ -1387,6 +1826,11 @@ async def plan_intent_graph_v2(
                 if verification is not None
                 else None
             ),
+            goal_state={
+                "goal": outline.goal.model_dump(mode="json"),
+                "status": "planned",
+            },
+            plan_revision=plan_revision,
             stage_durations_ms=durations,
         )
         return PlannedIntentGraphV2(

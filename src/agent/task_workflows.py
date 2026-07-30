@@ -53,6 +53,7 @@ class StandardTaskKind(str, Enum):
     STOCK_DEEP_RESEARCH = "stock_deep_research"
     INVESTMENT_DECISION = "investment_decision"
     MARKET_OVERVIEW = "market_overview"
+    MARKET_MAINLINE_RESEARCH = "market_mainline_research"
     SECTOR_ANALYSIS = "sector_analysis"
     CAPITAL_FLOW_ANALYSIS = "capital_flow_analysis"
     MACRO_ANALYSIS = "macro_analysis"
@@ -726,6 +727,19 @@ def _compile_market(task: ResolvedTask) -> list[WorkflowCall]:
     return calls
 
 
+def _compile_market_mainline_research(
+    task: ResolvedTask,
+) -> list[WorkflowCall]:
+    return [
+        _call(
+            task,
+            "market_mainline_snapshot",
+            "prepare_market_mainline_snapshot",
+            {"force": False},
+        )
+    ]
+
+
 def _compile_sector(task: ResolvedTask) -> list[WorkflowCall]:
     base = _params(task, {"type"})
     flow = _params(task, {"type", "period", "top_n"})
@@ -1382,6 +1396,15 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
 
     ),
     StandardTaskKind.MARKET_OVERVIEW: _spec(StandardTaskKind.MARKET_OVERVIEW, "市场概览", "分析指数、市场宽度与整体交易状态。", {"get_market_status", "get_market_breadth", "get_index_data"}, _compile_market),
+    StandardTaskKind.MARKET_MAINLINE_RESEARCH: _spec(
+        StandardTaskKind.MARKET_MAINLINE_RESEARCH,
+        "市场主线研究",
+        "基于政策、产业供需、技术路线、资本开支和机构策略证据，研判未来一至六个月的当前主线与候选主线；指数涨跌和单日热度不能单独建立主线。",
+        {"prepare_market_mainline_snapshot"},
+        _compile_market_mainline_research,
+        max_tool_calls=1,
+        max_parallel_steps=1,
+    ),
     StandardTaskKind.SECTOR_ANALYSIS: _spec(StandardTaskKind.SECTOR_ANALYSIS, "板块分析", "比较行业或概念板块强弱、资金和近期信息。", {"get_sector_list", "get_sector_flow", "search_financial_news"}, _compile_sector),
     StandardTaskKind.CAPITAL_FLOW_ANALYSIS: _spec(StandardTaskKind.CAPITAL_FLOW_ANALYSIS, "资金流分析", "分析个股多周期资金流持续性。", {"get_stock_capital_flow"}, _compile_capital_flow,  entities=True),
     StandardTaskKind.MACRO_ANALYSIS: _spec(StandardTaskKind.MACRO_ANALYSIS, "宏观分析", "分析宏观指标、利率或货币政策操作。", {"get_macro_indicator", "get_bond_yield", "get_monetary_policy_operations", "search_research_library"}, _compile_macro),
@@ -1494,7 +1517,7 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
     StandardTaskKind.FINANCIAL_ARTICLE_READ: _spec(StandardTaskKind.FINANCIAL_ARTICLE_READ, "文章读取", "读取用户指定的一篇财经资讯正文。", {"read_financial_article"}, _compile_article),
     StandardTaskKind.WEBPAGE_FEED_TRANSFORM: _spec(StandardTaskKind.WEBPAGE_FEED_TRANSFORM, "网页转Feed", "按用户提供的网页和选择器生成 Feed 预览。", {"transform_webpage_to_feed"}, _compile_transform),
     StandardTaskKind.FINANCIAL_FEED_EXPORT: _spec(StandardTaskKind.FINANCIAL_FEED_EXPORT, "Feed导出", "导出用户明确指定的财经 Feed。", {"export_financial_feed"}, _compile_export,   effect=EffectClass.EXTERNAL, confirmation_policy=ConfirmationPolicy.ALWAYS),
-    StandardTaskKind.PUBLIC_WEB_RESEARCH: _spec(StandardTaskKind.PUBLIC_WEB_RESEARCH, "公开网页研究", "仅在用户明确要求联网搜索或读取公开网页时使用。", {"websearch", "webfetch"}, _compile_web),
+    StandardTaskKind.PUBLIC_WEB_RESEARCH: _spec(StandardTaskKind.PUBLIC_WEB_RESEARCH, "公开网页研究", "当用户明确要求联网，或完成当前时效性研究目标确实缺少内部权威来源时，检索或读取公开网页；不得替代已有结构化金融能力。", {"websearch", "webfetch"}, _compile_web),
     StandardTaskKind.TRADE_EXECUTION: _spec(StandardTaskKind.TRADE_EXECUTION, "交易执行", "交易类请求只能进入独立状态机；当前系统未接入账户、风控和下单工具。", (), _compile_no_tools, effect=EffectClass.TRADE, confirmation_policy=ConfirmationPolicy.ALWAYS, enabled=False, state_machine=("参数校验", "账户检查", "风控检查", "用户确认", "下单", "订单状态")),
 }
 
