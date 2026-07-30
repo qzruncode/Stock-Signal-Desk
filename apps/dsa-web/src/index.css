@@ -2,6 +2,30 @@
 @config "../tailwind.config.js";
 /* Tailwind v4 strategy: keep theme extensions in tailwind.config.js via @config until a dedicated @theme/@utility migration. */
 
+@keyframes routeViewOut {
+  to {
+    opacity: 0.72;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes routeViewIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) {
+    animation: 140ms cubic-bezier(0.4, 0, 1, 1) both routeViewOut;
+  }
+
+  ::view-transition-new(root) {
+    animation: 240ms 30ms cubic-bezier(0.22, 1, 0.36, 1) both routeViewIn;
+  }
+}
+
 /* =========================================
    1. THEME VARIABLES (Base/Classic)
    ========================================= */

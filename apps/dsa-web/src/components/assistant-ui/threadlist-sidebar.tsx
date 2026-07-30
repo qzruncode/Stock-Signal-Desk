@@ -360,11 +360,12 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
       <div className="flex items-center border-t border-border/70 bg-white px-3 py-2">
         <Link
           to="/setting"
-          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          viewTransition
+          className="group inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-all duration-200 hover:bg-muted hover:text-foreground active:scale-90"
           aria-label="AI 助手设置"
           title="AI 助手设置"
         >
-          <SettingsIcon className="size-3.5" />
+          <SettingsIcon className="size-3.5 transition-transform duration-300 group-hover:rotate-45 group-active:rotate-90" />
         </Link>
       </div>
 

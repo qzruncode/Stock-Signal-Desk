@@ -10,6 +10,7 @@ interface SettingsFieldProps {
   value: string;
   onChange: (key: string, value: string) => void;
   isMasked?: boolean;
+  placeholder?: string;
 }
 
 function fieldOptions(field: SystemConfigFieldSchema): { value: string; label: string }[] {
@@ -30,6 +31,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   value,
   onChange,
   isMasked = false,
+  placeholder,
 }) => {
   const fieldId = useId();
   const [revealed, setRevealed] = useState(false);
@@ -154,7 +156,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
         min={min}
         max={max}
         step={field.validation?.step as number | undefined}
-        placeholder={field.defaultValue ?? undefined}
+        placeholder={placeholder ?? field.defaultValue ?? undefined}
       />
     );
   }
@@ -170,7 +172,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
         hint={hint}
         iconType="key"
         allowTogglePassword
-        placeholder={value ? '' : (field.defaultValue ?? '输入 API Key')}
+        placeholder={value ? '' : (placeholder ?? field.defaultValue ?? '输入敏感配置')}
       />
     );
   }
@@ -183,7 +185,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
       value={value}
       onChange={(e) => handleChange(e.target.value)}
       hint={hint}
-      placeholder={field.defaultValue ?? undefined}
+      placeholder={placeholder ?? field.defaultValue ?? undefined}
     />
   );
 };

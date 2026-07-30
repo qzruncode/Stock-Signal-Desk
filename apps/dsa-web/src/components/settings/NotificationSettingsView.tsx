@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bell, Loader2, RotateCcw, Save, Send } from 'lucide-react';
+import { Bell, Loader2, Save, Send } from 'lucide-react';
 import { Button, InlineAlert } from '../common';
 import { SettingsField } from './SettingsField';
 import {
@@ -10,6 +10,7 @@ import {
 import type { SystemConfigFieldSchema, SystemConfigResponse, SystemConfigSchemaResponse } from '../../types/systemConfig';
 
 type Notice = { type: 'success' | 'error'; message: string } | null;
+const WECHAT_WEBHOOK_KEY = 'WECHAT_WEBHOOK_URL';
 
 export function NotificationSettingsView() {
   const [schema, setSchema] = useState<SystemConfigSchemaResponse | null>(null);
@@ -39,12 +40,13 @@ export function NotificationSettingsView() {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- settings are initialized from the persisted API config
     void load();
   }, [load]);
 
   const fields = useMemo<SystemConfigFieldSchema[]>(() => (
-    schema?.categories.find((category) => category.category === 'notification')?.fields ?? []
+    schema?.categories
+      .find((category) => category.category === 'notification')
+      ?.fields.filter((field) => field.key === WECHAT_WEBHOOK_KEY) ?? []
   ), [schema]);
   const masked = useMemo(() => new Set(
     config?.items.filter((item) => item.isMasked).map((item) => item.key) ?? [],
@@ -108,7 +110,7 @@ export function NotificationSettingsView() {
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="flex size-9 items-center justify-center rounded-md bg-primary/10 text-primary"><Bell className="size-4" /></span>
-          <div><h2 className="text-xl font-semibold text-foreground">通知设置</h2><p className="mt-0.5 text-xs text-muted-foreground">助手只会在你明确要求时发送通知。</p></div>
+          <div><h2 className="text-xl font-semibold text-foreground">企业微信通知</h2><p className="mt-0.5 text-xs text-muted-foreground">粘贴群机器人的 Webhook URL 即可接收通知。</p></div>
         </div>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={test} disabled={testing} isLoading={testing} loadingText="测试中..."><Send className="size-4" />测试通知</Button>
@@ -117,13 +119,24 @@ export function NotificationSettingsView() {
       </header>
       {notice && <InlineAlert variant={notice.type === 'success' ? 'success' : 'danger'} title={notice.type === 'success' ? '操作成功' : '操作失败'} message={<span className="whitespace-pre-wrap">{notice.message}</span>} />}
       {fields.length === 0 ? (
-        <InlineAlert variant="warning" title="暂无通知配置" message="后端没有返回通知渠道配置字段。" />
+        <InlineAlert variant="warning" title="暂时无法配置" message="后端没有返回企业微信 Webhook 配置。" />
       ) : (
-        <div className="terminal-card space-y-5 rounded-2xl p-5">
-          {fields.map((field) => <SettingsField key={field.key} field={field} value={values[field.key] ?? ''} onChange={(key, value) => { setValues((current) => ({ ...current, [key]: value })); setNotice(null); }} isMasked={masked.has(field.key)} />)}
+        <div className="terminal-card rounded-2xl p-5">
+          {fields.map((field) => (
+            <SettingsField
+              key={field.key}
+              field={field}
+              value={values[field.key] ?? ''}
+              onChange={(key, value) => {
+                setValues((current) => ({ ...current, [key]: value }));
+                setNotice(null);
+              }}
+              isMasked={masked.has(field.key)}
+              placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+            />
+          ))}
         </div>
       )}
-      <Button variant="ghost" onClick={load}><RotateCcw className="size-4" />重新加载</Button>
     </section>
   );
 }
