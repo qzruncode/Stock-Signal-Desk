@@ -14,6 +14,12 @@ FIRECRAWL_PORT=3002
 FIRECRAWL_PLAYWRIGHT_PORT=3003
 FIRECRAWL_REDIS_PORT=6380
 SEARXNG_PORT=8888
+DEV_TUNNEL="${DEV_TUNNEL:-1}"
+TUNNEL_SCREEN_NAME="dsa-web-pinggy"
+TUNNEL_LOG="$PROJECT_DIR/logs/frontend-tunnel.log"
+TUNNEL_URL_FILE="$PROJECT_DIR/logs/frontend-tunnel.url"
+TUNNEL_PID_FILE="$PROJECT_DIR/logs/frontend-tunnel.pid"
+PINGGY_HOST="${PINGGY_HOST:-free.pinggy.io}"
 
 if [[ -n "${NVM_BIN:-}" ]]; then
     export PATH="$NVM_BIN:$PATH"
@@ -39,7 +45,114 @@ os.execvp(sys.argv[1], sys.argv[1:])
 }
 
 get_pids() {
-    lsof -i ":$1" -t 2>/dev/null || true
+    lsof -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true
+}
+
+frontend_tunnel_running() {
+    local tunnel_pid
+    if [[ -f "$TUNNEL_PID_FILE" ]]; then
+        tunnel_pid=$(tr -d '[:space:]' < "$TUNNEL_PID_FILE")
+        [[ -n "$tunnel_pid" ]] && kill -0 "$tunnel_pid" 2>/dev/null && return 0
+    fi
+
+    command -v screen >/dev/null 2>&1 || return 1
+    screen -ls 2>/dev/null | grep -q "[.]$TUNNEL_SCREEN_NAME[[:space:]]"
+}
+
+extract_tunnel_urls() {
+    [[ -f "$TUNNEL_LOG" ]] || return 0
+    grep -Eao 'https://[[:alnum:]-]+(\.free\.pinggy\.net|\.run\.pinggy-free\.link)' "$TUNNEL_LOG" 2>/dev/null | sort -u || true
+}
+
+tunnel_http_ready() {
+    local url="$1"
+    local status
+    status=$(curl --max-time 8 --silent --output /dev/null --write-out '%{http_code}' \
+        "$url" 2>/dev/null || true)
+    [[ "$status" =~ ^[1-4][0-9][0-9]$ ]]
+}
+
+wait_for_frontend_tunnel() {
+    local timeout="${1:-45}"
+    local waited=0
+    local urls url
+
+    while [[ "$waited" -lt "$timeout" ]]; do
+        urls=$(extract_tunnel_urls)
+        if [[ -n "$urls" ]]; then
+            : > "$TUNNEL_URL_FILE"
+            while IFS= read -r url; do
+                [[ -n "$url" ]] && echo "$url" >> "$TUNNEL_URL_FILE"
+            done <<< "$urls"
+
+            while IFS= read -r url; do
+                if tunnel_http_ready "$url"; then
+                    log "前端公网隧道已启动: $url"
+                    log "全部公网地址:"
+                    sed 's/^/  /' "$TUNNEL_URL_FILE"
+                    return 0
+                fi
+            done <<< "$urls"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    log "警告: 前端公网隧道未在 ${timeout}s 内就绪，请检查 $TUNNEL_LOG"
+    return 1
+}
+
+stop_frontend_tunnel() {
+    local tunnel_pids screen_sessions screen_session
+
+    screen_sessions=""
+    if command -v screen >/dev/null 2>&1; then
+        screen_sessions=$(screen -ls 2>/dev/null | awk -v name="$TUNNEL_SCREEN_NAME" '$1 ~ ("\\." name "$") { print $1 }' || true)
+    fi
+    if [[ -n "$screen_sessions" ]]; then
+        log "停止前端公网隧道..."
+        while IFS= read -r screen_session; do
+            [[ -n "$screen_session" ]] && screen -S "$screen_session" -X quit >/dev/null 2>&1 || true
+        done <<< "$screen_sessions"
+    fi
+
+    if [[ -f "$TUNNEL_PID_FILE" ]]; then
+        tunnel_pids=$(tr -d '[:space:]' < "$TUNNEL_PID_FILE")
+        [[ -n "$tunnel_pids" ]] && kill "$tunnel_pids" 2>/dev/null || true
+    fi
+
+    tunnel_pids=$(pgrep -f "[s]sh .*${PINGGY_HOST}.*127[.]0[.]0[.]1:${FRONTEND_PORT}" 2>/dev/null || true)
+    [[ -n "$tunnel_pids" ]] && kill $tunnel_pids 2>/dev/null || true
+    rm -f "$TUNNEL_URL_FILE" "$TUNNEL_PID_FILE"
+    [[ -n "$screen_sessions$tunnel_pids" ]] && sleep 1
+    return 0
+}
+
+start_frontend_tunnel() {
+    if [[ "$DEV_TUNNEL" == "0" ]]; then
+        log "已跳过前端公网隧道 (DEV_TUNNEL=0)"
+        return 0
+    fi
+
+    if ! command -v ssh >/dev/null 2>&1; then
+        log "警告: 未找到 ssh，无法启动前端公网隧道"
+        return 1
+    fi
+
+    if ! command -v screen >/dev/null 2>&1; then
+        log "警告: 未找到 screen，无法稳定保持 Pinggy 隧道"
+        return 1
+    fi
+
+    stop_frontend_tunnel
+    : > "$TUNNEL_LOG"
+
+    log "启动前端公网隧道 (Pinggy -> 127.0.0.1:$FRONTEND_PORT)..."
+    TUNNEL_LOG="$TUNNEL_LOG" TUNNEL_PID_FILE="$TUNNEL_PID_FILE" FRONTEND_PORT="$FRONTEND_PORT" PINGGY_HOST="$PINGGY_HOST" \
+        screen -dmS "$TUNNEL_SCREEN_NAME" bash -lc \
+        'echo "$$" > "$TUNNEL_PID_FILE"; exec ssh -tt -p 443 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R0:127.0.0.1:"$FRONTEND_PORT" "$PINGGY_HOST" >> "$TUNNEL_LOG" 2>&1' || true
+
+    wait_for_frontend_tunnel 45
 }
 
 firecrawl_http_ready() {
@@ -152,18 +265,20 @@ wait_for_port() {
 }
 
 stop_services() {
-    local backend_pids frontend_pids rsshub_pids firecrawl_pids searxng_pids
+    local backend_pids frontend_pids rsshub_pids firecrawl_pids searxng_pids tunnel_pids
     backend_pids=$(get_pids "$BACKEND_PORT")
     frontend_pids=$(get_pids "$FRONTEND_PORT")
     rsshub_pids=$(get_pids "$RSSHUB_PORT")
     firecrawl_pids=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT")
     searxng_pids=$(get_pids "$SEARXNG_PORT")
+    tunnel_pids=$(pgrep -f "[s]sh .*${PINGGY_HOST}.*127[.]0[.]0[.]1:${FRONTEND_PORT}" 2>/dev/null || true)
 
-    if [[ -z "$backend_pids" && -z "$frontend_pids" && -z "$rsshub_pids" && -z "$firecrawl_pids" && -z "$searxng_pids" ]]; then
+    if [[ -z "$backend_pids" && -z "$frontend_pids" && -z "$rsshub_pids" && -z "$firecrawl_pids" && -z "$searxng_pids" && -z "$tunnel_pids" ]] && ! frontend_tunnel_running; then
         log "没有运行中的服务"
         return 0
     fi
 
+    stop_frontend_tunnel
     stop_firecrawl
     stop_searxng
     [[ -n "$rsshub_pids" ]] && { log "停止 RSSHub (port $RSSHUB_PORT)..."; kill $rsshub_pids 2>/dev/null || true; }
@@ -205,16 +320,40 @@ start_services() {
 
     log "启动后端 FastAPI (port $BACKEND_PORT)..."
     start_detached "$PROJECT_DIR" "$PROJECT_DIR/logs/backend.log" \
-        uvicorn server:app --reload --host 0.0.0.0 --port "$BACKEND_PORT"
+        uvicorn server:app \
+            --reload \
+            --reload-dir "$PROJECT_DIR/api" \
+            --reload-dir "$PROJECT_DIR/src" \
+            --timeout-graceful-shutdown 3 \
+            --host 0.0.0.0 \
+            --port "$BACKEND_PORT"
 
     log "启动前端 Vite Dev (port $FRONTEND_PORT)..."
-    start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
-        npm run dev -- --host 0.0.0.0
+    if [[ "$DEV_TUNNEL" == "0" ]]; then
+        if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+            start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
+                bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run dev -- --host 0.0.0.0'
+        else
+            start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
+                npm run dev -- --host 0.0.0.0
+        fi
+    else
+        if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+            start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
+                bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run dev:tunnel'
+        else
+            start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
+                npm run dev:tunnel
+        fi
+    fi
 
     wait_for_firecrawl 180 || true
     wait_for_port "$RSSHUB_PORT" "RSSHub" 90 || true
     wait_for_port "$BACKEND_PORT" "backend" 30 || true
     wait_for_port "$FRONTEND_PORT" "frontend" 30 || true
+    if [[ -n "$(get_pids "$FRONTEND_PORT")" ]]; then
+        start_frontend_tunnel || true
+    fi
 
     if searxng_http_ready && firecrawl_http_ready && [[ -n "$(get_pids "$RSSHUB_PORT")" && -n "$(get_pids "$BACKEND_PORT")" && -n "$(get_pids "$FRONTEND_PORT")" ]]; then
         log "服务启动成功!"
@@ -223,6 +362,10 @@ start_services() {
         log "  RSSHub: http://localhost:$RSSHUB_PORT"
         log "  后端: http://localhost:$BACKEND_PORT"
         log "  前端: http://localhost:$FRONTEND_PORT"
+        if [[ -f "$TUNNEL_URL_FILE" ]]; then
+            log "  前端公网:"
+            sed 's/^/    /' "$TUNNEL_URL_FILE"
+        fi
         log "  API文档: http://localhost:$BACKEND_PORT/docs"
     else
         log "警告: 部分服务可能未启动成功，请检查端口"
@@ -264,6 +407,23 @@ status() {
     else
         log "前端未运行"
     fi
+
+    if frontend_tunnel_running; then
+        log "前端公网隧道运行中"
+        if [[ -f "$TUNNEL_URL_FILE" ]]; then
+            sed 's/^/  /' "$TUNNEL_URL_FILE"
+        else
+            local urls
+            urls=$(extract_tunnel_urls)
+            if [[ -n "$urls" ]]; then
+                printf '%s\n' "$urls" | sed 's/^/  /'
+            else
+                log "  地址尚未解析，请检查 $TUNNEL_LOG"
+            fi
+        fi
+    else
+        log "前端公网隧道未运行"
+    fi
 }
 
 case "${1:-}" in
@@ -280,13 +440,26 @@ case "${1:-}" in
     status)
         status
         ;;
+    tunnel)
+        mkdir -p "$PROJECT_DIR/logs"
+        if [[ -z "$(get_pids "$FRONTEND_PORT")" ]]; then
+            log "错误: 前端未运行，请先运行: $0 start"
+            exit 1
+        fi
+        start_frontend_tunnel
+        ;;
     *)
-        echo "用法: $0 {start|stop|restart|status}"
+        echo "用法: $0 {start|stop|restart|status|tunnel}"
         echo ""
-        echo "  start    启动 SearXNG、Firecrawl、RSSHub、后端、前端服务"
-        echo "  stop     停止所有服务"
-        echo "  restart  重启所有服务"
-        echo "  status   查看服务运行状态"
+        echo "  start    启动 SearXNG、Firecrawl、RSSHub、后端、前端服务，并默认创建前端公网隧道"
+        echo "  stop     停止所有服务和前端公网隧道"
+        echo "  restart  重启所有服务和前端公网隧道"
+        echo "  status   查看服务和前端公网隧道状态"
+        echo "  tunnel   在前端已运行时重建并打印前端公网隧道"
+        echo ""
+        echo "环境变量:"
+        echo "  DEV_TUNNEL=0     跳过前端公网隧道"
+        echo "  PINGGY_HOST=...  覆盖 Pinggy SSH 入口，默认 free.pinggy.io"
         exit 1
         ;;
 esac

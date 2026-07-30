@@ -25,6 +25,8 @@ WEBFETCH_ALLOW_PRIVATE=false
 TRUST_X_FORWARDED_FOR=true
 ```
 
+Agent 只有一套强类型编排控制面，不再通过环境变量切换规划或执行路径。
+
 如果 WebUI 与 API 同域，不需要配置 `CORS_ORIGINS`。只有分离部署时才填写精确的 HTTPS 来源，不要使用 `*`。
 
 首次上线前初始化管理员密码：
