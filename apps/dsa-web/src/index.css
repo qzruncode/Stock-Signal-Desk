@@ -319,13 +319,6 @@
     select {
       font-size: max(16px, 1em);
     }
-
-    .chat-composer-input {
-      width: 114.2857%;
-      height: 114.2857%;
-      transform: scale(0.875);
-      transform-origin: top left;
-    }
   }
 
   @media (min-width: 640px) {

@@ -28,8 +28,6 @@ import {
   Volume2Icon,
   SquareIcon as StopIcon,
   MicIcon,
-  Maximize2Icon,
-  Minimize2Icon,
 } from 'lucide-react';
 import {
   GenericToolUI,
@@ -457,7 +455,6 @@ const SuppressedReasoning: FC<ReasoningMessagePartProps> = () => null;
 
 const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
   const isRunning = useThread((s) => s.isRunning);
-  const [isExpanded, setIsExpanded] = useState(false);
   return (
     <div className="shrink-0 border-t border-border/70 bg-background/90 px-3 py-3 backdrop-blur-xl sm:px-4 sm:py-4">
       <ComposerPrimitive.Root className="group/composer relative mx-auto flex w-full max-w-3xl flex-col rounded-xl border border-border/80 bg-card/90 shadow-[0_8px_28px_hsl(220_22%_34%/0.06)] transition focus-within:border-primary/35 focus-within:shadow-[0_10px_32px_hsl(var(--primary)/0.08)]">
@@ -473,26 +470,12 @@ const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
           </div>
         </AuiIf>
 
-        <div className={cn('overflow-hidden transition-[height] duration-300 ease-out motion-reduce:transition-none', isExpanded ? 'h-32' : 'h-11')}>
-          <ComposerPrimitive.Input
-            placeholder="问问市场、个股、板块或财务数据..."
-            className={cn(
-              'chat-composer-input h-full w-full resize-none bg-transparent px-4 pt-3.5 pb-2 pr-12 text-foreground placeholder-muted-foreground focus:outline-none sm:px-4 sm:pt-2.5 sm:pb-1.5 sm:pr-10',
-              isExpanded ? 'overflow-y-auto' : 'overflow-hidden',
-            )}
-            rows={6}
-          />
-        </div>
-        <button
-          type="button"
-          onClick={() => setIsExpanded((value) => !value)}
-          className="absolute right-2 top-2 flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 group-hover/composer:opacity-100 group-focus-within/composer:opacity-100"
-          title={isExpanded ? '收起输入框' : '展开输入框'}
-          aria-label={isExpanded ? '收起输入框' : '展开输入框'}
-          aria-pressed={isExpanded}
-        >
-          {isExpanded ? <Minimize2Icon className="size-3" /> : <Maximize2Icon className="size-3" />}
-        </button>
+        <ComposerPrimitive.Input
+          placeholder="问问市场、个股、板块或财务数据..."
+          className="chat-composer-input min-h-11 w-full resize-none overflow-y-auto bg-transparent px-4 pt-3.5 pb-2 text-foreground placeholder-muted-foreground focus:outline-none [scrollbar-gutter:stable] sm:px-4 sm:pt-2.5 sm:pb-1.5"
+          minRows={1}
+          maxRows={10}
+        />
 
         <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
           <div className="flex items-center gap-0.5">

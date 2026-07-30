@@ -1,6 +1,9 @@
 const ATR_SCREEN_PROMPT =
   '请从全部 active A 股（沪深北，包含 ST）中筛选：使用 14 日 SMA ATR 相对波动率，以其 60 日 SMA 作为长期均值，动态线为长期均值除以 1.27；当 ATR 相对波动率大于动态线时记为达标。统计最近 250 个交易日，要求至少 175 天达标且达标比例不低于 70%，上市交易历史不少于 250 日；营业收入 TTM 大于 5 亿元、扣非净利润 TTM 大于 0、资产负债率低于 70%。按近 250 日达标比例降序。输出当前 ATR%、60 日长期均值、动态线、250 日达标天数及比例、三项财务指标、财务报告期和来源、行情日期；超过 10 只给完整 CSV。';
 
+const MARKET_MAINLINE_PROMPT =
+  '研判未来一至六个月的 A 股市场主线：先给出基准情景和候选主线排序，再分别说明政策、产业供需、机构共识等证据，列出每条主线的成立条件、失效信号、情景切换变量和相对置信度';
+
 export interface AssistantCapability {
   label: string;
   prompt: string;
@@ -30,8 +33,8 @@ export const SUGGESTIONS: readonly { label: string; prompt: string }[] = [
     prompt: '宁德时代最近有哪些重要公告和风险事件？',
   },
   {
-    label: '当前 A 股市场宽度如何，哪些板块资金更强？',
-    prompt: '当前 A 股市场宽度如何，哪些板块资金更强？',
+    label: '未来一至六个月，A 股市场主线会是什么？',
+    prompt: MARKET_MAINLINE_PROMPT,
   },
   {
     label: '按 14 日 ATR 相对波动率与财务条件筛选全部 A 股',
@@ -115,7 +118,11 @@ export const ASSISTANT_CAPABILITY_GROUPS: readonly AssistantCapabilityGroup[] = 
     description: '观察交易状态、市场宽度、板块轮动与资金流。',
     items: [
       { label: '今天 A 股开市吗，现在是什么交易状态？', prompt: '查看当前 A 股市场是否开市，并标明交易日和数据时间', toolName: 'get_market_status' },
-      { label: '准备一份当前市场主线基准', prompt: '生成或复用当日市场主线快照，作为后续多股买入分析的统一市场基准', toolName: 'prepare_market_mainline_snapshot' },
+      {
+        label: '未来一至六个月市场主线会是什么？',
+        prompt: MARKET_MAINLINE_PROMPT,
+        toolName: 'prepare_market_mainline_snapshot',
+      },
       { label: '今天市场整体是普涨还是普跌？', prompt: '分析当前 A 股市场宽度，包括涨跌家数、涨跌停和整体强弱', toolName: 'get_market_breadth' },
       { label: '现在哪些行业和概念板块更强？', prompt: '列出当前表现较强和较弱的行业及概念板块，并标明领涨股', toolName: 'get_sector_list' },
       { label: '最近资金主要流向了哪些板块？', prompt: '比较最近 5 日主要行业板块的资金流向和持续性', toolName: 'get_sector_flow' },
@@ -177,6 +184,11 @@ export const ASSISTANT_CAPABILITY_GROUPS: readonly AssistantCapabilityGroup[] = 
 
 export const ASSISTANT_CAPABILITY_COUNT = ASSISTANT_CAPABILITY_GROUPS.reduce(
   (total, group) => total + group.items.length,
+  0,
+);
+
+export const ASSISTANT_TOOL_CAPABILITY_COUNT = ASSISTANT_CAPABILITY_GROUPS.reduce(
+  (total, group) => total + group.items.filter((item) => item.toolName).length,
   0,
 );
 
