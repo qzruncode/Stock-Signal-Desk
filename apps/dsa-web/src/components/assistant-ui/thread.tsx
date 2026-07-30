@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AuiIf,
   ThreadPrimitive,
@@ -15,8 +15,6 @@ import {
 import {
   ArrowUpIcon,
   ChevronDownIcon,
-  BrainCircuitIcon,
-  CheckCircle2Icon,
   DatabaseIcon,
   FileSearchIcon,
   GitCompareArrowsIcon,
@@ -25,6 +23,7 @@ import {
   CopyIcon,
   RefreshCwIcon,
   PencilIcon,
+  Trash2Icon,
   DownloadIcon,
   Volume2Icon,
   SquareIcon as StopIcon,
@@ -45,6 +44,7 @@ import {
   FinancialSourcesToolUI,
   WorkflowToolsUI,
 } from '../../hooks/useAssistantTools';
+import { ToolStatusGroupProvider } from './tool-ui/shared';
 import { ASSISTANT_SUGGESTION_GROUPS } from '../../utils/assistantQuickActions';
 import {
   ComposerAttachments,
@@ -56,22 +56,36 @@ import { Tooltip } from '../common/Tooltip';
 import { AssistantMarkdownText } from './AssistantMarkdownText';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
 import { cn } from '../../utils/cn';
+import { latestAgentStageEvent } from '../../utils/agentStage';
+import { getChatQuestionDomId } from '../../utils/chatQuestionLocator';
+import { QuestionNavigator } from './QuestionNavigator';
+import { AgentStageIndicator, AssistantReasoning } from './AgentReasoning';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
 
-const Thread: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
+const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: string) => void }> = ({
+  onUserCancel,
+  onDeleteUserTurn,
+}) => {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
-      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pt-14 pb-4 sm:gap-4 sm:px-4 sm:pt-5 sm:pb-5 lg:px-6">
+      <ThreadPrimitive.Viewport
+        data-chat-thread-viewport="true"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pt-14 pb-4 sm:gap-4 sm:px-4 sm:pt-5 sm:pb-5 lg:px-6"
+      >
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <EmptyState />
+        </AuiIf>
+
+        <AuiIf condition={(s) => !s.thread.isEmpty}>
+          <QuestionNavigator />
         </AuiIf>
 
         <AuiIf condition={(s) => !s.thread.isEmpty}>
           <div className="mx-auto w-full max-w-3xl">
             <ThreadPrimitive.Messages
               components={{
-                UserMessage,
+                UserMessage: () => <UserMessage onDeleteTurn={onDeleteUserTurn} />,
                 AssistantMessage,
               }}
             />
@@ -207,48 +221,68 @@ const CAPABILITIES = [
 
 /* ── User Message ────────────────────────────────────────────────────── */
 
-const UserMessage: FC = () => (
-  <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-end">
-    <div className="relative flex min-w-0 max-w-[82%] flex-col items-end pb-5 sm:max-w-[68%]">
-      <UserMessageAttachments />
-      {/* 编辑态:点击 Edit 后 composer.isEditing=true,这里渲染编辑输入框;
-          ComposerPrimitive 在 message 上下文下会自动绑定到该消息的 edit composer,
-          提交(Send)即覆盖原消息并重新生成。 */}
-      <AuiIf condition={(s) => s.composer.isEditing}>
-        <ComposerPrimitive.Root className="w-full rounded-2xl rounded-br-md border border-primary/30 bg-card shadow-sm focus-within:border-primary/45">
-          <ComposerPrimitive.Input
-            autoFocus
-            className="min-h-14 w-full resize-none bg-transparent px-4 py-3 text-[13px] leading-5 text-foreground placeholder-muted-foreground focus:outline-none [overflow-wrap:anywhere]"
-            style={{ fontSize: '12px', lineHeight: '18px' }}
-          />
-          <div className="flex items-center justify-end gap-2 px-3 pb-3">
-            <ComposerPrimitive.Cancel
-              className="flex h-8 items-center rounded-lg border border-border bg-card px-3 text-xs text-foreground transition hover:bg-muted"
-              title="取消编辑"
-            >
-              取消
-            </ComposerPrimitive.Cancel>
-            <EditComposerSendButton />
-          </div>
-        </ComposerPrimitive.Root>
-      </AuiIf>
-      {/* 非编辑态:静态气泡 + Edit 按钮 */}
-      <AuiIf condition={(s) => !s.composer.isEditing}>
-        <div className="min-w-0 max-w-full overflow-hidden rounded-xl rounded-br-md bg-primary/[0.06] px-3 py-2 text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
-          <MessagePrimitive.Parts />
-        </div>
-        <div className="absolute bottom-0 right-0 flex h-5 items-center gap-0.5 opacity-0 transition-opacity group-hover/message:opacity-100">
-          <ActionBarPrimitive.Edit
-            className="flex size-5 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            title="编辑并重新发送"
+const UserMessage: FC<{ onDeleteTurn?: (messageId: string) => void }> = ({ onDeleteTurn }) => {
+  const messageId = useMessage((state) => state.id);
+
+  return (
+    <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-end">
+      <div className="relative flex min-w-0 max-w-[82%] flex-col items-end pb-6 sm:max-w-[68%] sm:pb-5">
+        <UserMessageAttachments />
+        {/* 编辑态:点击 Edit 后 composer.isEditing=true,这里渲染编辑输入框;
+            ComposerPrimitive 在 message 上下文下会自动绑定到该消息的 edit composer,
+            提交(Send)即覆盖原消息并重新生成。 */}
+        <AuiIf condition={(s) => s.composer.isEditing}>
+          <ComposerPrimitive.Root className="w-full rounded-2xl rounded-br-md border border-primary/30 bg-card shadow-sm focus-within:border-primary/45">
+            <ComposerPrimitive.Input
+              autoFocus
+              className="chat-composer-input min-h-14 w-full resize-none bg-transparent px-4 py-3 text-foreground placeholder-muted-foreground focus:outline-none [overflow-wrap:anywhere]"
+            />
+            <div className="flex items-center justify-end gap-2 px-3 pb-3">
+              <ComposerPrimitive.Cancel
+                className="flex h-8 items-center rounded-lg border border-border bg-card px-3 text-xs text-foreground transition hover:bg-muted"
+                title="取消编辑"
+              >
+                取消
+              </ComposerPrimitive.Cancel>
+              <EditComposerSendButton />
+            </div>
+          </ComposerPrimitive.Root>
+        </AuiIf>
+        {/* 非编辑态:静态气泡 + Edit/Delete 按钮 */}
+        <AuiIf condition={(s) => !s.composer.isEditing}>
+          <div
+            id={getChatQuestionDomId(messageId)}
+            data-chat-question-bubble="true"
+            tabIndex={-1}
+            className={cn(
+              'min-w-0 max-w-full scroll-mt-16 overflow-hidden rounded-xl rounded-br-md bg-primary/[0.06] px-3 py-2 text-sm leading-6 text-foreground outline-none [overflow-wrap:anywhere]',
+              'transition-[background-color,box-shadow] duration-300 data-[chat-question-located=true]:bg-primary/[0.12] data-[chat-question-located=true]:shadow-[0_0_0_3px_hsl(var(--primary)/0.28)]',
+            )}
           >
-            <PencilIcon className="size-3" />
-          </ActionBarPrimitive.Edit>
-        </div>
-      </AuiIf>
-    </div>
-  </MessagePrimitive.Root>
-);
+            <MessagePrimitive.Parts />
+          </div>
+          <div className="absolute bottom-0 right-0 flex h-6 items-center gap-0.5 opacity-100 transition-opacity sm:h-5 sm:opacity-0 sm:group-hover/message:opacity-100 sm:focus-within:opacity-100">
+            <button
+              type="button"
+              className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-red-50 hover:text-red-600 sm:size-5"
+              title="删除这一轮对话"
+              aria-label="删除这一轮对话"
+              onClick={() => onDeleteTurn?.(messageId)}
+            >
+              <Trash2Icon className="size-3.5 sm:size-3" />
+            </button>
+            <ActionBarPrimitive.Edit
+              className="flex size-6 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground sm:size-5"
+              title="编辑并重新发送"
+            >
+              <PencilIcon className="size-3.5 sm:size-3" />
+            </ActionBarPrimitive.Edit>
+          </div>
+        </AuiIf>
+      </div>
+    </MessagePrimitive.Root>
+  );
+};
 
 const EditComposerSendButton: FC = () => {
   const aui = useAui();
@@ -271,6 +305,17 @@ const EditComposerSendButton: FC = () => {
 
 const AssistantMessage: FC = () => {
   const isRunning = useMessage((s) => s.status?.type === 'running');
+  const stageEvents = useMessage((s) => s.metadata?.unstable_data);
+  const latestStage = useMemo(
+    () => latestAgentStageEvent(stageEvents),
+    [stageEvents],
+  );
+  const reasoningText = useMessage((s) =>
+    s.content
+      .map((part) => (part.type === 'reasoning' ? part.text : ''))
+      .filter(Boolean)
+      .join('\n'),
+  );
   const hasVisibleContent = useMessage((s) =>
     s.content.some((part) => {
       if (part.type === 'text') {
@@ -282,47 +327,62 @@ const AssistantMessage: FC = () => {
       return true;
     }),
   );
+  if (!isRunning && !hasVisibleContent) {
+    return null;
+  }
   return (
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
         <div className="w-full min-w-0 overflow-hidden rounded-xl bg-card/75 px-3.5 py-3 text-sm text-foreground sm:px-4 sm:py-3.5">
-          {isRunning && !hasVisibleContent && <AssistantPendingIndicator />}
-          <MessagePrimitive.Parts
-            components={{
-              Text: AssistantMarkdownText,
-              Reasoning: AssistantReasoning,
-              tools: {
-                by_name: {
-                  get_kline: KlineToolUI,
-                  get_realtime_quotes: RealtimeQuotesToolUI,
-                  get_financials: FinancialsToolUI,
-                  search_news: NewsToolUI,
-                  search_financial_news: RssFeedToolUI,
-                  search_research_library: RssFeedToolUI,
-                  list_financial_sources: FinancialSourcesToolUI,
-                  inspect_financial_source: FinancialSourcesToolUI,
-                  read_financial_feed: FinancialFeedToolUI,
-                  transform_webpage_to_feed: FinancialFeedToolUI,
-                  read_financial_article: FinancialArticleToolUI,
-                  export_financial_feed: FinancialExportToolUI,
-                  manage_watchlist: WorkflowToolsUI,
-                  manage_watchlist_groups: WorkflowToolsUI,
-                  run_stock_analysis: WorkflowToolsUI,
-                  get_analysis_status: WorkflowToolsUI,
-                  search_analysis_history: WorkflowToolsUI,
-                  read_analysis_report: WorkflowToolsUI,
-                  delete_analysis_history: WorkflowToolsUI,
-                  manage_analysis_templates: WorkflowToolsUI,
-                  run_batch_analysis: WorkflowToolsUI,
-                  manage_batch_run: WorkflowToolsUI,
-                  manage_analysis_schedule: WorkflowToolsUI,
-                  get_notification_status: WorkflowToolsUI,
-                  send_notification: WorkflowToolsUI,
+          {latestStage && (
+            isRunning
+            || latestStage.status === 'failed'
+            || latestStage.status === 'blocked'
+            || latestStage.status === 'cancelled'
+          ) ? (
+            <AgentStageIndicator event={latestStage} />
+          ) : isRunning && !hasVisibleContent ? (
+            <AssistantPendingIndicator />
+          ) : null}
+          <AssistantReasoning text={reasoningText} />
+          <ToolStatusGroupProvider>
+            <MessagePrimitive.Parts
+              components={{
+                Text: AssistantMarkdownText,
+                Reasoning: SuppressedReasoning,
+                tools: {
+                  by_name: {
+                    get_kline: KlineToolUI,
+                    get_realtime_quotes: RealtimeQuotesToolUI,
+                    get_financials: FinancialsToolUI,
+                    search_news: NewsToolUI,
+                    search_financial_news: RssFeedToolUI,
+                    search_research_library: RssFeedToolUI,
+                    list_financial_sources: FinancialSourcesToolUI,
+                    inspect_financial_source: FinancialSourcesToolUI,
+                    read_financial_feed: FinancialFeedToolUI,
+                    transform_webpage_to_feed: FinancialFeedToolUI,
+                    read_financial_article: FinancialArticleToolUI,
+                    export_financial_feed: FinancialExportToolUI,
+                    manage_watchlist: WorkflowToolsUI,
+                    manage_watchlist_groups: WorkflowToolsUI,
+                    run_stock_analysis: WorkflowToolsUI,
+                    get_analysis_status: WorkflowToolsUI,
+                    search_analysis_history: WorkflowToolsUI,
+                    read_analysis_report: WorkflowToolsUI,
+                    delete_analysis_history: WorkflowToolsUI,
+                    manage_analysis_templates: WorkflowToolsUI,
+                    run_batch_analysis: WorkflowToolsUI,
+                    manage_batch_run: WorkflowToolsUI,
+                    manage_analysis_schedule: WorkflowToolsUI,
+                    get_notification_status: WorkflowToolsUI,
+                    send_notification: WorkflowToolsUI,
+                  },
+                  Fallback: GenericToolUI,
                 },
-                Fallback: GenericToolUI,
-              },
-            }}
-          />
+              }}
+            />
+          </ToolStatusGroupProvider>
         </div>
         <div className="absolute bottom-0 left-0 flex h-5 items-center gap-1">
           <AssistantActionBar />
@@ -391,44 +451,7 @@ const AssistantPendingIndicator: FC = () => (
   </div>
 );
 
-const AssistantReasoning: FC<ReasoningMessagePartProps> = ({ text, status }) => {
-  const [expanded, setExpanded] = useState(true);
-
-  if (!text.trim()) return null;
-
-  return (
-    <div className="mb-3 w-full min-w-0 rounded-xl border border-primary/15 bg-primary/[0.035]">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-        aria-expanded={expanded}
-      >
-        <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
-          <BrainCircuitIcon className="size-4 shrink-0 text-primary" />
-          <span>模型思考</span>
-        </span>
-        <span className="flex items-center gap-2 text-xs text-muted-foreground">
-          {status.type === 'running' ? (
-            <Loader2Icon className="size-3.5 animate-spin" />
-          ) : (
-            <CheckCircle2Icon className="size-3.5 text-emerald-500" />
-          )}
-          {status.type === 'running' ? '思考中' : '完成'}
-          <ChevronDownIcon className={`size-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-primary/10 px-3 py-2.5">
-          <div className="whitespace-pre-wrap break-words text-xs leading-6 text-muted-foreground">
-            {text}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+const SuppressedReasoning: FC<ReasoningMessagePartProps> = () => null;
 
 /* ── Composer ────────────────────────────────────────────────────────── */
 
@@ -450,15 +473,16 @@ const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
           </div>
         </AuiIf>
 
-        <ComposerPrimitive.Input
-          placeholder="问问市场、个股、板块或财务数据..."
-          className={cn(
-            'w-full resize-none bg-transparent px-3 pt-2.5 pb-1.5 pr-10 text-xs leading-5 text-foreground placeholder-muted-foreground focus:outline-none sm:px-4 sm:pr-10',
-            isExpanded ? 'min-h-32 max-h-56 overflow-y-auto' : 'min-h-11 overflow-hidden',
-          )}
-          rows={isExpanded ? 6 : 1}
-          style={{ fontSize: '12px', lineHeight: '18px' }}
-        />
+        <div className={cn('overflow-hidden transition-[height] duration-300 ease-out motion-reduce:transition-none', isExpanded ? 'h-32' : 'h-11')}>
+          <ComposerPrimitive.Input
+            placeholder="问问市场、个股、板块或财务数据..."
+            className={cn(
+              'chat-composer-input h-full w-full resize-none bg-transparent px-4 pt-3.5 pb-2 pr-12 text-foreground placeholder-muted-foreground focus:outline-none sm:px-4 sm:pt-2.5 sm:pb-1.5 sm:pr-10',
+              isExpanded ? 'overflow-y-auto' : 'overflow-hidden',
+            )}
+            rows={6}
+          />
+        </div>
         <button
           type="button"
           onClick={() => setIsExpanded((value) => !value)}
@@ -471,7 +495,7 @@ const Composer: FC<{ onUserCancel?: () => void }> = ({ onUserCancel }) => {
         </button>
 
         <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-0.5">
             <ComposerAddAttachment />
             {/* 语音输入:无 DictationAdapter(浏览器不支持)或非编辑态时 Dictate 自动隐藏;
                 录音中显示 StopDictation(红点)+ 实时转写预览。 */}

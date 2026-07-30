@@ -134,6 +134,89 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
+  it('hydrates the persisted terminal stage into plain assistant history', async () => {
+    const detail = makeDetail(false);
+    detail.resumeState = {
+      active: false,
+      status: 'failed',
+      afterChunkIndex: 0,
+      assistantText: '',
+      latestStage: {
+        event: 'agent_stage_v2',
+        runId: 'run-failed',
+        stage: 'completed',
+        status: 'failed',
+        errorCode: 'planner_schema_invalid',
+        summary: '板块绑定失败',
+      },
+    };
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'assistant-1',
+          metadata: {
+            unstable_data: [detail.resumeState!.latestStage],
+          },
+        }),
+      ]));
+    });
+  });
+
+  it('overrides stale rich-history status with the persisted terminal stage', async () => {
+    const detail = makeDetail(false);
+    detail.threadState!.messages[0]!.message.content = [
+      { type: 'reasoning', text: '模型仍在处理，已等待 816 秒' },
+      { type: 'text', text: '任务失败' },
+    ];
+    detail.threadState!.messages[0]!.message.metadata = {
+      unstable_data: [{
+        event: 'agent_stage_v2',
+        run_id: 'run-failed',
+        stage: 'catalog_mapping',
+        status: 'started',
+        summary: '仍在处理',
+      }],
+    };
+    detail.resumeState = {
+      active: false,
+      status: 'failed',
+      afterChunkIndex: 0,
+      assistantText: '',
+      latestStage: {
+        event: 'agent_stage_v2',
+        runId: 'run-failed',
+        stage: 'completed',
+        status: 'failed',
+        summary: '本轮已经失败',
+      },
+    };
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      const imported = runtime.import.mock.calls.at(-1)?.[0] as {
+        messages: Array<{ message: { metadata: { unstable_data: unknown[] } } }>;
+      };
+      const events = imported.messages[0]!.message.metadata.unstable_data;
+      expect(events.at(-1)).toBe(detail.resumeState!.latestStage);
+    });
+  });
+
   it('does not restart a cancelled run whose persisted history ends with a user message', async () => {
     const detail = makeDetail(false);
     detail.messages = detail.messages.slice(0, 1);
@@ -174,6 +257,40 @@ describe('ChatRuntimeBridge', () => {
       expect(runtime.cancelRun).not.toHaveBeenCalled();
       expect(runtime.reset).not.toHaveBeenCalled();
       expect(runtime.import).not.toHaveBeenCalled();
+    });
+  });
+
+  it('resumes a long active run from the server cursor instead of replaying from zero', async () => {
+    const detail = makeDetail(false);
+    detail.messages.push({
+      id: 'user-2',
+      conversationId: detail.id,
+      role: 'user',
+      content: '重试',
+      sequence: 2,
+      createdAt: '2026-07-17T10:02:00Z',
+    });
+    detail.isGenerating = true;
+    detail.resumeState = {
+      active: true,
+      status: 'running',
+      afterChunkIndex: 21_902,
+      assistantText: '',
+      hasToolEvents: true,
+    };
+    const prepareResume = vi.fn();
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={prepareResume}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(prepareResume).toHaveBeenLastCalledWith(detail.id, 21_902);
+      expect(runtime.startRun).toHaveBeenCalledOnce();
     });
   });
 });

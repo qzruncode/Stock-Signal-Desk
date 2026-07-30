@@ -30,6 +30,21 @@ export interface ChatConversationThreadState {
   messages: ChatConversationThreadStateMessage[];
 }
 
+export interface PersistedAgentStageV2 {
+  event: 'agent_stage_v2';
+  runId?: string;
+  run_id?: string;
+  stage: string;
+  status: 'started' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
+  taskId?: string | null;
+  task_id?: string | null;
+  errorCode?: string | null;
+  error_code?: string | null;
+  summary?: string;
+  occurredAt?: string;
+  occurred_at?: string;
+}
+
 export interface ChatConversationDetail extends ChatConversationItem {
   messages: ChatConversationMessage[];
   threadState?: ChatConversationThreadState | null;
@@ -38,10 +53,11 @@ export interface ChatConversationDetail extends ChatConversationItem {
   resumeState?: {
     active: boolean;
     isGenerating?: boolean;
-    status?: 'running' | 'completed' | 'failed' | 'cancelled' | string | null;
+    status?: 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | string | null;
     afterChunkIndex: number;
     assistantText: string;
     hasToolEvents?: boolean;
+    latestStage?: PersistedAgentStageV2 | null;
   };
 }
 
@@ -81,14 +97,21 @@ export const agentApi = {
     payload: {
       messages?: Array<Record<string, unknown>>;
       threadState?: ChatConversationThreadState;
+      pruneAgentContextToMessages?: boolean;
     },
   ): Promise<ChatConversationDetail> {
+    const requestBody: Record<string, unknown> = {
+      thread_state: payload.threadState,
+    };
+    if (payload.messages !== undefined) {
+      requestBody.messages = payload.messages;
+    }
+    if (payload.pruneAgentContextToMessages === true) {
+      requestBody.prune_agent_context_to_messages = true;
+    }
     const response = await apiClient.put<Record<string, unknown>>(
       `/api/v1/agent/conversations/${conversationId}/snapshot`,
-      {
-        messages: payload.messages || [],
-        thread_state: payload.threadState,
-      },
+      requestBody,
     );
     const data = toCamelCase<ChatConversationDetail>(response.data);
     return {

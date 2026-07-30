@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readThrownStreamErrorMessage } from '../chatStreamError';
+import { isStreamAbortError, readThrownStreamErrorMessage } from '../chatStreamError';
 
 
 describe('readThrownStreamErrorMessage', () => {
@@ -14,5 +14,15 @@ describe('readThrownStreamErrorMessage', () => {
 
   it('keeps a plain adapter error readable', () => {
     expect(readThrownStreamErrorMessage(new Error('network failed'))).toBe('network failed');
+  });
+});
+
+describe('isStreamAbortError', () => {
+  it('recognizes an explicit abort', () => {
+    expect(isStreamAbortError(new DOMException('aborted', 'AbortError'))).toBe(true);
+  });
+
+  it('does not mistake a broken response stream for a user cancellation', () => {
+    expect(isStreamAbortError(new TypeError('Failed to execute enqueue on ReadableStream'))).toBe(false);
   });
 });

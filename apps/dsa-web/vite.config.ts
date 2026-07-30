@@ -24,7 +24,9 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',  // 允许公网访问
     port: 5173,       // 默认端口
-    allowedHosts: ['.loca.lt', '.trycloudflare.com', '.cpolar.top', '.cpolar.cn'],
+    // Let the Vite client derive ws/wss, host and port from the page URL.
+    // This keeps localhost on ws://:5173 while HTTPS tunnels use wss://:443.
+    allowedHosts: ['.loca.lt', '.trycloudflare.com', '.lhr.life', '.serveousercontent.com', '.pinggy.link', '.pinggy.io', '.pinggy-free.link', '.pinggy.net', '.cpolar.top', '.cpolar.cn'],
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:8000',

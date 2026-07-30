@@ -33,3 +33,11 @@ export function readThrownStreamErrorMessage(error: unknown): string {
   }
   return raw || '对话请求失败，请稍后重试';
 }
+
+/** Only explicit aborts mean that the local stream was intentionally cancelled. */
+export function isStreamAbortError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'name' in error
+    && error.name === 'AbortError';
+}

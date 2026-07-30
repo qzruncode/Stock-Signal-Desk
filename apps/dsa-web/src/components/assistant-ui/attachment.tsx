@@ -45,7 +45,7 @@ const ComposerAttachmentItem: FC = () => (
 export const ComposerAddAttachment: FC = () => (
   <ComposerPrimitive.AddAttachment asChild>
     <TooltipIconButton tooltip="添加附件" className="size-8">
-      <PaperclipIcon className="size-4" />
+      <PaperclipIcon className="size-3.5" />
     </TooltipIconButton>
   </ComposerPrimitive.AddAttachment>
 );

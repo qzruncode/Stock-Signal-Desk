@@ -46,20 +46,32 @@ const GenericToolUI = ({
   const professionalCollectionCount = toolName === 'evaluate_multi_stock_buy_criteria'
     ? String(args?.symbols || '').split(',').filter(Boolean).length
     : 0;
-  const label = professionalCollectionCount > 0
+  const singleCompanyLabel = toolName === 'get_company_theme_evidence'
+    ? String(args?.company_name || args?.symbol || '').trim()
+    : '';
+  const label = singleCompanyLabel
+    ? `逐股主题分析 · ${singleCompanyLabel}`
+    : professionalCollectionCount > 0
     ? `${professionalCollectionCount}只股票八维专业买入分析`
     : baseLabel;
-  const argsDisplay = stringifyCompact(args) || argsText;
   const failed = isError || (status.type === 'incomplete' && status.reason === 'error');
   const statusText = status.type === 'running' ? '运行中' : failed ? '失败' : '已完成';
-  const resultDisplay = failed
-    ? getToolError(result) || getStatusError(status.type === 'incomplete' ? status.error : undefined)
-    : stringifyCompact(result);
   const tone = failed
-    ? 'border-red-300 bg-red-50 text-red-700'
-    : 'border-blue-300 bg-blue-50 text-blue-700';
+    ? 'border-red-200 bg-red-50 text-red-700'
+    : status.type === 'running'
+      ? 'border-cyan-200 bg-cyan-50 text-cyan-700'
+      : 'border-emerald-200 bg-emerald-50 text-emerald-700';
   const StatusIcon = failed ? XCircleIcon : status.type === 'running' ? Loader2Icon : CheckCircle2Icon;
   const open = drawerState !== 'closed';
+  // Closed pills only need label/status. Serializing every large tool result
+  // on each reasoning delta made 100+ tool cards repeatedly allocate megabytes
+  // of JSON strings and could crash the embedded renderer.
+  const argsDisplay = open ? stringifyCompact(args) || argsText : '';
+  const resultDisplay = open
+    ? failed
+      ? getToolError(result) || getStatusError(status.type === 'incomplete' ? status.error : undefined)
+      : stringifyCompact(result)
+    : '';
 
   useEffect(() => {
     if (drawerState !== 'closing') return undefined;
@@ -144,15 +156,15 @@ const GenericToolUI = ({
     ) : null;
 
   return (
-    <div className="my-0.5 max-w-full overflow-hidden">
+    <div className="my-0.5 mr-1.5 inline-flex max-w-full overflow-hidden align-top">
       <button
         type="button"
         onClick={() => setDrawerState('open')}
-        className={`inline-flex max-w-full items-center gap-1 overflow-hidden rounded border px-1.5 py-0.5 text-left text-[10px] font-medium leading-3 transition hover:bg-white ${tone}`}
+        className={`inline-flex max-w-full items-center gap-1 overflow-hidden rounded-md border px-2 py-1 text-left text-[11px] font-medium leading-4 transition hover:bg-white ${tone}`}
       >
-        <BotIcon className="size-2.5 shrink-0" />
+        <BotIcon className="size-3 shrink-0" />
         <span className="min-w-0 truncate">{status.type === 'running' ? `正在查询 · ${label}` : label}</span>
-        <StatusIcon className={`size-2.5 shrink-0 ${status.type === 'running' ? 'animate-spin' : ''}`} />
+        <StatusIcon className={`size-3 shrink-0 ${status.type === 'running' ? 'animate-spin' : ''}`} />
       </button>
       {drawer}
     </div>

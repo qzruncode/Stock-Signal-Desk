@@ -46,6 +46,26 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia('(pointer: coarse)').matches) {
+      return undefined;
+    }
+
+    const preventZoom = (event: Event) => {
+      event.preventDefault();
+    };
+
+    document.addEventListener('gesturestart', preventZoom, { passive: false });
+    document.addEventListener('gesturechange', preventZoom, { passive: false });
+    document.addEventListener('gestureend', preventZoom, { passive: false });
+
+    return () => {
+      document.removeEventListener('gesturestart', preventZoom);
+      document.removeEventListener('gesturechange', preventZoom);
+      document.removeEventListener('gestureend', preventZoom);
+    };
+  }, []);
+
   return (
     <div
       className={cn(

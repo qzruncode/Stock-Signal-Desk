@@ -1,7 +1,8 @@
 import type React from 'react';
 import { useEffect, useRef } from 'react';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
-import type { ExportedMessageRepository } from '@assistant-ui/core';
+import type { ExportedMessageRepository, ThreadMessageLike } from '@assistant-ui/core';
+import type { ReadonlyJSONValue } from 'assistant-stream/utils';
 import { type ChatConversationDetail } from '../../api/agent';
 
 /**
@@ -21,15 +22,65 @@ const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => 
   return 'assistant';
 };
 
-const toRuntimeMessages = (messages: ChatConversationDetail['messages']) =>
-  messages
+const toRuntimeMessages = (
+  messages: ChatConversationDetail['messages'],
+  latestStage?: NonNullable<ChatConversationDetail['resumeState']>['latestStage'],
+): ThreadMessageLike[] => {
+  const lastAssistantId = [...messages]
+    .reverse()
+    .find((message) => message.role === 'assistant')?.id;
+  const persistedStage = latestStage as ReadonlyJSONValue | undefined;
+  return messages
     .filter((message) => (message.content || '').trim().length > 0)
     .map((message) => ({
       id: message.id,
       role: normalizeMessageRole(message.role),
       createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
       content: [{ type: 'text' as const, text: message.content || '' }],
+      ...(persistedStage && message.id === lastAssistantId
+        ? { metadata: { unstable_data: [persistedStage] } }
+        : {}),
     }));
+};
+
+const withPersistedStage = (
+  threadState: ChatConversationDetail['threadState'],
+  latestStage?: NonNullable<ChatConversationDetail['resumeState']>['latestStage'],
+): ChatConversationDetail['threadState'] => {
+  if (!threadState || !latestStage) return threadState;
+  let injected = false;
+  const messages = [...threadState.messages]
+    .reverse()
+    .map((entry) => {
+      if (injected || entry.message?.role !== 'assistant') return entry;
+      injected = true;
+      const metadata = (
+        typeof entry.message.metadata === 'object'
+        && entry.message.metadata !== null
+        && !Array.isArray(entry.message.metadata)
+      )
+        ? entry.message.metadata as Record<string, unknown>
+        : {};
+      const existing = Array.isArray(metadata.unstable_data)
+        ? metadata.unstable_data
+        : [];
+      return {
+        ...entry,
+        message: {
+          ...entry.message,
+          metadata: {
+            ...metadata,
+            unstable_data: [...existing, latestStage],
+          },
+        },
+      };
+    })
+    .reverse();
+  return {
+    ...threadState,
+    messages,
+  };
+};
 
 const getConversationHydrationKey = (detail: ChatConversationDetail): string => {
   const lastMessage = detail.messages.at(-1);
@@ -39,6 +90,11 @@ const getConversationHydrationKey = (detail: ChatConversationDetail): string => 
     detail.isGenerating ? 'running' : 'idle',
     detail.resumeState?.active ? 'resumable' : 'not-resumable',
     detail.resumeState?.status ?? '',
+    detail.resumeState?.latestStage?.stage ?? '',
+    detail.resumeState?.latestStage?.status ?? '',
+    detail.resumeState?.latestStage?.occurredAt
+      ?? detail.resumeState?.latestStage?.occurred_at
+      ?? '',
     detail.resumeState?.afterChunkIndex ?? '',
     detail.threadState?.headId ?? '',
     detail.messages.length,
@@ -131,6 +187,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     const canReplayStream = conversationDetail.resumeState?.active === true;
     const threadStateHasRichParts = hasRichParts(conversationDetail.threadState);
     const retainedFinalText = (conversationDetail.resumeState?.assistantText || '').trim();
+    const latestStage = conversationDetail.resumeState?.latestStage;
     const lastAssistantText = getLastAssistantText(conversationDetail.messages);
     const retainedTextMismatch = Boolean(
       retainedFinalText && lastAssistantText && retainedFinalText !== lastAssistantText,
@@ -162,14 +219,17 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     if (canImportThreadState) {
       try {
         threadRuntime.import(
-          conversationDetail.threadState as unknown as ExportedMessageRepository,
+          withPersistedStage(
+            conversationDetail.threadState,
+            latestStage,
+          ) as unknown as ExportedMessageRepository,
         );
       } catch (error) {
         console.warn('[Chat] Invalid conversation thread state, falling back to messages', error);
-        threadRuntime.reset(toRuntimeMessages(visibleMessages));
+        threadRuntime.reset(toRuntimeMessages(visibleMessages, latestStage));
       }
     } else {
-      threadRuntime.reset(toRuntimeMessages(visibleMessages));
+      threadRuntime.reset(toRuntimeMessages(visibleMessages, latestStage));
     }
 
     if (!shouldReplayStream) {
@@ -185,7 +245,15 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     // 复用 useDataStreamRuntime 的完整 data-stream 管道,保证 K 线图等 tool UI
     // 与初次生成一致。
     const parentId = visibleMessages.at(-1)?.id ?? null;
-    onPrepareResumeExisting(conversationDetail.id, 0);
+    // The detail snapshot already represents every chunk emitted before this
+    // request. Replaying a long run from chunk 0 can enqueue tens of thousands
+    // of old reasoning/tool deltas and crash the renderer. Resume from the
+    // server cursor and render only new events; onFinish reconciles canonical
+    // text and the persisted terminal stage.
+    onPrepareResumeExisting(
+      conversationDetail.id,
+      conversationDetail.resumeState?.afterChunkIndex ?? 0,
+    );
     threadRuntime.startRun({
       parentId,
       sourceId: parentId,
