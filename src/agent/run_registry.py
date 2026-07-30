@@ -11,17 +11,20 @@ assistant-stream 0.0.32 的 ``create_run`` 把"生成 task 生命周期"与"消�
   add_data / add_error / append_reasoning)，供标准任务流水线持续写入。
 - 保留 chunk 历史游标。刷新时先用 conversations detail 恢复稳定 messages,
   再从 ``after_chunk_index`` 之后续流增量,避免重建一条空白运行气泡。
-- 慢订阅者:queue maxsize=256,满则 drop oldest,避免拖死生成。
+- 慢订阅者:有界 queue 溢出时终止该订阅，客户端可从持久游标续流；
+  不静默丢弃中间事件。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Set
 
 from assistant_stream.assistant_stream_chunk import (
     AssistantStreamChunk,
@@ -45,6 +48,66 @@ _SUBSCRIBER_QUEUE_MAXSIZE = 256
 _RUN_HISTORY_MAX_CHUNKS = 20_000
 # run 结束后在注册表保留的时长:让最后断开的连接仍能拿到 final chunk / 哨兵。
 _RUN_RETENTION_SECONDS = 300.0
+_RUN_LEASE_SECONDS = 45.0
+_RUN_HEARTBEAT_SECONDS = 15.0
+_RUN_CANCEL_POLL_SECONDS = 1.0
+
+
+def runtime_worker_id() -> str:
+    """Stable identity for one API worker process."""
+    configured = (os.getenv("AGENT_WORKER_ID") or "").strip()
+    if configured:
+        return configured[:128]
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _json_safe(value: Any, *, depth: int = 0) -> Any:
+    if depth > 20:
+        return "[depth-truncated]"
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_safe(item, depth=depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item, depth=depth + 1) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _json_safe(model_dump(mode="json"), depth=depth + 1)
+    return str(value)
+
+
+def serialize_assistant_chunk(chunk: AssistantStreamChunk) -> dict[str, Any]:
+    """Serialize assistant-stream dataclasses without private implementation APIs."""
+    return {
+        str(key): _json_safe(value)
+        for key, value in vars(chunk).items()
+        if not str(key).startswith("_")
+    }
+
+
+def deserialize_assistant_chunk(
+    event_type: str,
+    payload: Mapping[str, Any],
+) -> AssistantStreamChunk:
+    """Rebuild a persisted event for ``DataStreamResponse`` replay."""
+    data = dict(payload)
+    data.pop("type", None)
+    constructors = {
+        "text-delta": TextDeltaChunk,
+        "reasoning-delta": ReasoningDeltaChunk,
+        "data": DataChunk,
+        "error": ErrorChunk,
+        "tool-call-begin": ToolCallBeginChunk,
+        "tool-call-delta": ToolCallDeltaChunk,
+        "tool-result": ToolResultChunk,
+    }
+    constructor = constructors.get(event_type)
+    if constructor is None:
+        raise ValueError(f"unsupported assistant stream event type: {event_type}")
+    return constructor(**data)
 
 
 class _BroadcasterToolCallController:
@@ -99,13 +162,21 @@ class RunBroadcaster:
     可独立存活,断连只取消对应订阅,不杀生成。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: str | None = None,
+        event_sink: Callable[[str, int, AssistantStreamChunk], None] | None = None,
+        initial_sequence: int = 0,
+    ) -> None:
         self._subscribers: Set[asyncio.Queue] = set()
         self.finished: asyncio.Event = asyncio.Event()
         self._history: List[AssistantStreamChunk] = []
-        self._history_start_index = 0
-        self._history_next_index = 0
+        self._history_start_index = max(0, int(initial_sequence))
+        self._history_next_index = max(0, int(initial_sequence))
         self._has_tool_events = False
+        self._run_id = run_id
+        self._event_sink = event_sink
         # 生成逻辑会把已累积的 assistant 文本写到这里,供续流端点补齐用。
         # (与 chat.py 的 state["assistant_text"] 同源,由 run_callback 实时镜像。)
         self.assistant_text_snapshot: str = ""
@@ -165,9 +236,8 @@ class RunBroadcaster:
             history_offset = safe_index - self._history_start_index
             replay_chunks = self._history[history_offset:]
 
-        # 续流重放历史时不能套用慢订阅者 drop-oldest 策略,否则超过 256 个
-        # chunk 的回答会从中间开始显示。给 replay 队列预留完整历史容量,
-        # 后续实时增量仍保留慢消费者保护。
+        # 进程内兼容重放为完整历史预留空间；正式跨连接续流使用数据库事件
+        # 游标，避免历史裁剪或慢消费者队列造成缺口。
         queue_size = _SUBSCRIBER_QUEUE_MAXSIZE
         if replay_chunks:
             queue_size = max(queue_size, len(replay_chunks) + _SUBSCRIBER_QUEUE_MAXSIZE)
@@ -187,11 +257,17 @@ class RunBroadcaster:
         """生成结束:向所有订阅者投递 None 哨兵,让续流 generator 自然结束。"""
         self.finished.set()
         for queue in list(self._subscribers):
-            self._safe_put(queue, None)
+            if not self._safe_put(queue, None):
+                self._subscribers.discard(queue)
 
     # ── 内部 ───────────────────────────────────────────────────────────
 
     def _emit(self, chunk: AssistantStreamChunk) -> None:
+        sequence = self._history_next_index
+        if self._event_sink is not None and self._run_id is not None:
+            # Persist before publishing.  A client can therefore never observe
+            # an event whose resume cursor has no durable representation.
+            self._event_sink(self._run_id, sequence, chunk)
         self._history.append(chunk)
         self._history_next_index += 1
         if isinstance(
@@ -204,22 +280,40 @@ class RunBroadcaster:
             del self._history[:trim_count]
             self._history_start_index += trim_count
         for queue in list(self._subscribers):
-            self._safe_put(queue, chunk)
+            if not self._safe_put(queue, chunk):
+                self._subscribers.discard(queue)
 
     @staticmethod
-    def _safe_put(queue: "asyncio.Queue", chunk: Optional[AssistantStreamChunk]) -> None:
-        """向订阅者 queue 投递 chunk;满则 drop oldest 再投,避免阻塞生成。"""
+    def _safe_put(
+        queue: "asyncio.Queue",
+        chunk: Optional[AssistantStreamChunk],
+    ) -> bool:
+        """Deliver one chunk, or terminate a subscriber that fell behind.
+
+        Dropping the oldest item would create an undetectable hole in tool and
+        stage events. A terminated connection can replay every missing event
+        from the durable cursor without slowing the owning run.
+        """
         try:
             queue.put_nowait(chunk)
+            return True
         except asyncio.QueueFull:
-            try:
-                queue.get_nowait()  # 丢弃最旧
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                queue.put_nowait(chunk)
-            except asyncio.QueueFull:
-                logger.debug("[RunBroadcaster] subscriber queue full, dropped chunk")
+            while not queue.empty():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            queue.put_nowait(ErrorChunk(
+                error=(
+                    "subscriber_backpressure: reconnect with the last "
+                    "durable event cursor"
+                )
+            ))
+            queue.put_nowait(None)
+            logger.warning(
+                "[RunBroadcaster] slow subscriber disconnected for durable replay"
+            )
+            return False
 
     # 兼容 _flush_substreams (chat.py:423) 访问 controller._stream_tasks:
     # broadcaster 不用 substream task,提供空列表使现有调用成为 no-op。
@@ -242,12 +336,16 @@ class ActiveRun:
     conversation_id: str
     broadcaster: RunBroadcaster
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    attempt: int = 1
     task: Optional["asyncio.Task"] = None
     status: RunStatus = "running"
     started_at: datetime = field(default_factory=datetime.now)
     final_text: Optional[str] = None
     error: Optional[str] = None
     terminal_recorded: bool = False
+    lease_task: Optional["asyncio.Task"] = None
+    lease_callback: Optional[Callable[[], Awaitable[bool]]] = None
+    cancel_callback: Optional[Callable[[], Awaitable[bool]]] = None
 
     @property
     def is_running(self) -> bool:
@@ -262,17 +360,58 @@ class ActiveRun:
         if self.task is not None:
             return
         self.task = await factory(self.broadcaster)
+        if self.lease_callback is not None:
+            self.lease_task = asyncio.create_task(
+                self._lease_loop(),
+                name=f"agent-run-lease-{self.run_id}",
+            )
+
+    async def _lease_loop(self) -> None:
+        last_heartbeat = 0.0
+        while self.task is not None and not self.task.done():
+            await asyncio.sleep(_RUN_CANCEL_POLL_SECONDS)
+            if self.task.done():
+                break
+            try:
+                cancel_requested = (
+                    await self.cancel_callback()
+                    if self.cancel_callback is not None
+                    else False
+                )
+                now = asyncio.get_running_loop().time()
+                if (
+                    not cancel_requested
+                    and self.lease_callback is not None
+                    and now - last_heartbeat >= _RUN_HEARTBEAT_SECONDS
+                ):
+                    cancel_requested = await self.lease_callback()
+                    last_heartbeat = now
+            except Exception:
+                # Losing the durable lease is unsafe: another worker may
+                # recover the same run.  Stop local execution instead of
+                # permitting split-brain effects.
+                logger.exception("[AgentRun] lease heartbeat failed run_id=%s", self.run_id)
+                self.task.cancel()
+                break
+            if cancel_requested:
+                self.task.cancel()
+                break
 
 
 class ActiveRunRegistry:
-    """进程内活跃 run 注册表 (单例)。
+    """Local execution handles backed by an optional durable database ledger.
 
-    多 worker 部署下不跨进程 —— 当前部署为单 worker (DatabaseManager 单例 +
-    _pending_approvals 进程级均暗示单进程)。多 worker 需 sticky session 或
-    外置注册表 (Redis pub/sub),本次不解决。
+    The dictionary contains only tasks owned by this worker.  Claim,
+    cancellation, events and terminal state use the configured database, so
+    other workers can attach, cancel and recover without sticky sessions.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        database: Any | None = None,
+        *,
+        worker_id: str | None = None,
+    ) -> None:
         self._runs: Dict[str, ActiveRun] = {}
         self._lock = asyncio.Lock()
         self._cleanup_handles: Set["asyncio.TimerHandle"] = set()
@@ -284,6 +423,72 @@ class ActiveRunRegistry:
             "failed": 0,
             "cancelled": 0,
         }
+        self._database = database
+        self._worker_id = worker_id or runtime_worker_id()
+        self._shutting_down = False
+
+    def configure(self, database: Any) -> None:
+        """Attach the application database once dependencies are initialized."""
+        self._database = database
+
+    @property
+    def durable(self) -> bool:
+        return self._database is not None
+
+    @property
+    def worker_id(self) -> str:
+        return self._worker_id
+
+    @property
+    def shutting_down(self) -> bool:
+        return self._shutting_down
+
+    def _persist_event(
+        self,
+        run_id: str,
+        sequence: int,
+        chunk: AssistantStreamChunk,
+    ) -> None:
+        if self._database is None:
+            return
+        payload = serialize_assistant_chunk(chunk)
+        self._database.append_agent_run_event(
+            run_id=run_id,
+            sequence=sequence,
+            event_type=str(payload.get("type") or type(chunk).__name__),
+            payload=payload,
+        )
+
+    async def _heartbeat(self, run_id: str) -> bool:
+        if self._database is None:
+            return False
+        record = await asyncio.to_thread(
+            self._database.heartbeat_agent_run,
+            run_id,
+            worker_id=self._worker_id,
+            lease_seconds=_RUN_LEASE_SECONDS,
+        )
+        if record is None:
+            raise RuntimeError("durable Agent run lease no longer exists")
+        if record.get("worker_id") != self._worker_id:
+            raise RuntimeError("durable Agent run lease is owned by another worker")
+        return bool(record.get("cancel_requested"))
+
+    async def _cancel_requested(self, run_id: str) -> bool:
+        if self._database is None:
+            return False
+        record = await asyncio.to_thread(
+            self._database.get_agent_run,
+            run_id=run_id,
+        )
+        if record is None:
+            raise RuntimeError("durable Agent run no longer exists")
+        if (
+            record.get("worker_id") != self._worker_id
+            and record.get("status") in {"queued", "running", "recovering"}
+        ):
+            raise RuntimeError("durable Agent run is owned by another worker")
+        return bool(record.get("cancel_requested"))
 
     async def start_or_get(self, conversation_id: str) -> ActiveRun:
         """若有 running run 则返回它 (首连复用),否则建一个新 run (尚未启动 task)。
@@ -309,6 +514,11 @@ class ActiveRunRegistry:
         conversation_id: str,
         *,
         max_active_runs: Optional[int] = None,
+        max_owner_active_runs: Optional[int] = None,
+        run_id: str | None = None,
+        request_payload: Mapping[str, Any] | None = None,
+        tenant_id: str = "local",
+        owner_id: str = "admin",
     ) -> Optional[ActiveRun]:
         """原子地「判定无活跃 run + 创建新 run」。
 
@@ -325,14 +535,59 @@ class ActiveRunRegistry:
             if existing is not None and existing.is_running:
                 return None
             active_count = sum(1 for candidate in self._runs.values() if candidate.is_running)
-            if max_active_runs is not None and active_count >= max_active_runs:
+            claimed_run_id = run_id or uuid.uuid4().hex
+            if self._database is not None:
+                claim = await asyncio.to_thread(
+                    self._database.claim_agent_run,
+                    run_id=claimed_run_id,
+                    conversation_id=conversation_id,
+                    request_payload=dict(request_payload or {}),
+                    worker_id=self._worker_id,
+                    tenant_id=tenant_id,
+                    owner_id=owner_id,
+                    lease_seconds=_RUN_LEASE_SECONDS,
+                    max_active_runs=max_active_runs,
+                    max_owner_active_runs=max_owner_active_runs,
+                )
+                if not claim.get("claimed"):
+                    if claim.get("reason") in {
+                        "capacity",
+                        "owner_capacity",
+                    }:
+                        raise RunCapacityExceeded(
+                            f"durable Agent {claim.get('reason')} exhausted "
+                            f"({claim.get('active_count')}/"
+                            f"{max_owner_active_runs if claim.get('reason') == 'owner_capacity' else max_active_runs})"
+                        )
+                    return None
+            elif max_active_runs is not None and active_count >= max_active_runs:
                 raise RunCapacityExceeded(
                     f"active Agent run capacity exhausted ({active_count}/{max_active_runs})"
                 )
-            broadcaster = RunBroadcaster()
+
+            broadcaster = RunBroadcaster(
+                run_id=claimed_run_id if self._database is not None else None,
+                event_sink=self._persist_event if self._database is not None else None,
+            )
             run = ActiveRun(
                 conversation_id=conversation_id,
                 broadcaster=broadcaster,
+                run_id=claimed_run_id,
+                attempt=(
+                    int((claim.get("run") or {}).get("attempt") or 1)
+                    if self._database is not None
+                    else 1
+                ),
+                lease_callback=(
+                    (lambda: self._heartbeat(claimed_run_id))
+                    if self._database is not None
+                    else None
+                ),
+                cancel_callback=(
+                    (lambda: self._cancel_requested(claimed_run_id))
+                    if self._database is not None
+                    else None
+                ),
             )
             self._runs[conversation_id] = run
             self._total_started += 1
@@ -342,6 +597,39 @@ class ActiveRunRegistry:
                 conversation_id,
                 active_count + 1,
             )
+            return run
+
+    async def adopt_recovered(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        event_cursor: int,
+        attempt: int,
+    ) -> ActiveRun:
+        """Register a database-reclaimed run as locally owned execution."""
+        if self._database is None:
+            raise RuntimeError("durable database is not configured")
+        async with self._lock:
+            existing = self._runs.get(conversation_id)
+            if existing is not None and existing.is_running:
+                return existing
+            broadcaster = RunBroadcaster(
+                run_id=run_id,
+                event_sink=self._persist_event,
+                initial_sequence=event_cursor,
+            )
+            run = ActiveRun(
+                conversation_id=conversation_id,
+                broadcaster=broadcaster,
+                run_id=run_id,
+                attempt=max(1, int(attempt)),
+                status="running",
+                lease_callback=lambda: self._heartbeat(run_id),
+                cancel_callback=lambda: self._cancel_requested(run_id),
+            )
+            self._runs[conversation_id] = run
+            self._total_started += 1
             return run
 
     def get(self, conversation_id: str) -> Optional[ActiveRun]:
@@ -357,6 +645,8 @@ class ActiveRunRegistry:
         status: RunStatus,
         final_text: Optional[str] = None,
         error: Optional[str] = None,
+        *,
+        persist: bool = True,
     ) -> None:
         """run 结束:置状态、通知订阅者、延迟清理注册表项。"""
         async with self._lock:
@@ -367,6 +657,17 @@ class ActiveRunRegistry:
             run.final_text = final_text
             run.error = error
             run.broadcaster.mark_finished()
+            if run.lease_task is not None and not run.lease_task.done():
+                run.lease_task.cancel()
+            if self._database is not None and persist:
+                await asyncio.to_thread(
+                    self._database.finish_agent_run,
+                    run.run_id,
+                    status=status,
+                    final_text=final_text,
+                    error_code=error,
+                    error_detail=error,
+                )
             if not run.terminal_recorded:
                 self._terminal_counts[status] = self._terminal_counts.get(status, 0) + 1
                 run.terminal_recorded = True
@@ -411,10 +712,17 @@ class ActiveRunRegistry:
         与普通断连不同,删除会话意味着这个后台生成结果已经没有落点,
         必须取消 task,否则会继续占用模型请求并拖慢新会话。
         """
+        if self._database is not None:
+            durable_cancelled = await asyncio.to_thread(
+                self._database.request_agent_run_cancel,
+                conversation_id,
+            )
+        else:
+            durable_cancelled = False
         async with self._lock:
             run = self._runs.get(conversation_id)
             if run is None or not run.is_running:
-                return False
+                return durable_cancelled
             task = run.task
             run.status = "cancelled"
             run.error = "cancelled"
@@ -424,6 +732,8 @@ class ActiveRunRegistry:
                 run.terminal_recorded = True
             if remove:
                 self._runs.pop(conversation_id, None)
+            if run.lease_task is not None and not run.lease_task.done():
+                run.lease_task.cancel()
 
         if task is not None and not task.done():
             task.cancel()
@@ -449,16 +759,23 @@ class ActiveRunRegistry:
             ((now - run.started_at).total_seconds() for run in active),
             default=0.0,
         )
-        return {
+        stats = {
             "active_runs": len(active),
             "retained_runs": len(self._runs),
             "oldest_active_seconds": round(max(0.0, oldest_seconds), 3),
             "total_started": self._total_started,
             "terminal": dict(self._terminal_counts),
         }
+        if self._database is not None:
+            try:
+                stats["durable"] = self._database.agent_runtime_metrics()
+            except Exception:
+                logger.debug("[AgentRun] durable metrics unavailable", exc_info=True)
+        return stats
 
     async def shutdown(self) -> None:
         """进程关闭时取消所有进行中的后台 task (lifespan 调用)。"""
+        self._shutting_down = True
         async with self._lock:
             runs = list(self._runs.values())
             cleanup_handles = list(self._cleanup_handles)
@@ -466,9 +783,25 @@ class ActiveRunRegistry:
                 handle.cancel()
             self._cleanup_handles.clear()
             cleanup_tasks = list(self._cleanup_tasks)
+        if self._database is not None:
+            for run in runs:
+                if run.is_running:
+                    try:
+                        await asyncio.to_thread(
+                            self._database.release_agent_run_lease,
+                            run.run_id,
+                            worker_id=self._worker_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[AgentRun] failed to release lease run_id=%s",
+                            run.run_id,
+                        )
         for run in runs:
             if run.task is not None and not run.task.done():
                 run.task.cancel()
+            if run.lease_task is not None and not run.lease_task.done():
+                run.lease_task.cancel()
         for run in runs:
             if run.task is None:
                 continue
@@ -478,10 +811,18 @@ class ActiveRunRegistry:
                 pass
         for task in cleanup_tasks:
             task.cancel()
+        lease_tasks = [
+            run.lease_task
+            for run in runs
+            if run.lease_task is not None
+        ]
+        if lease_tasks:
+            await asyncio.gather(*lease_tasks, return_exceptions=True)
         if cleanup_tasks:
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
         self._cleanup_tasks.clear()
         self._runs.clear()
+        self._shutting_down = False
 
 
 # 模块级单例:与 chat.py 的 _pending_approvals 同级,便于 approve.py /
@@ -494,5 +835,8 @@ __all__ = [
     "ActiveRunRegistry",
     "RunBroadcaster",
     "RunCapacityExceeded",
+    "deserialize_assistant_chunk",
+    "runtime_worker_id",
+    "serialize_assistant_chunk",
     "active_run_registry",
 ]

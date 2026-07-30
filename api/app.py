@@ -15,6 +15,7 @@ FastAPI 应用工厂模块
     app = create_app()
 """
 
+import asyncio
 import logging
 import mimetypes
 import os
@@ -130,17 +131,19 @@ from src.agent.runtime_safety import (
     is_production_environment,
 )
 from src.services.system_config_service import SystemConfigService
+from src.storage import DatabaseManager
 
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
-    # Fail closed on unsupported multi-worker or unsafe production settings.
-    # The interactive Agent keeps resumable stream state in this process; a
-    # seemingly healthy multi-worker deployment would otherwise lose stop and
-    # resume requests nondeterministically.
+    # Fail closed on unsafe production settings. Durable run leases, events and
+    # cancellation state make this path safe across multiple API workers.
     enforce_agent_runtime_configuration(getattr(app.state, "static_dir", None))
     app.state.system_config_service = SystemConfigService()
+    database = DatabaseManager.get_instance()
+    active_run_registry.configure(database)
+    maintenance_task = None
     try:
         from api.v1.endpoints.batches.helpers import resume_incomplete_batches_on_startup
 
@@ -148,8 +151,27 @@ async def app_lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to auto-resume incomplete batch runs")
     try:
+        from api.v1.endpoints.agent.chat import recover_interrupted_agent_runs
+        from src.agent.runtime_maintenance import run_agent_runtime_maintenance
+
+        recovered = await recover_interrupted_agent_runs(database)
+        if recovered:
+            logger.info("Recovered %s interrupted Agent run(s) at startup", recovered)
+        maintenance_task = asyncio.create_task(
+            run_agent_runtime_maintenance(
+                database,
+                recover_interrupted_agent_runs,
+            ),
+            name="agent-runtime-maintenance",
+        )
+    except Exception:
+        logger.exception("Failed to initialize durable Agent runtime recovery")
+    try:
         yield
     finally:
+        if maintenance_task is not None:
+            maintenance_task.cancel()
+            await asyncio.gather(maintenance_task, return_exceptions=True)
         # 取消所有进行中的后台 agent 生成 task,避免进程关闭时残留的 LLM 请求
         # 继续烧 token;shutdown 会 cancel 并 await 每个 task。
         try:

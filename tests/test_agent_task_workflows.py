@@ -1375,7 +1375,7 @@ def test_production_pipeline_reports_binding_unavailable_without_public_fallback
     assert "没有改用新闻或公网来源兜底" in answer
 
 
-def test_production_collection_filter_does_not_retry_a_failed_batch() -> None:
+def test_production_collection_filter_retries_a_transient_failed_batch() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
     symbols = tuple(f"{index:06d}" for index in range(47))
@@ -1444,9 +1444,9 @@ def test_production_collection_filter_does_not_retry_a_failed_batch() -> None:
 
     answer = asyncio.run(run())
     assert len(controller.tool_calls) == 2
-    assert sum(attempts.values()) == 2
-    assert max(attempts.values()) == 1
-    assert "本轮筛选未完成" in answer
+    assert sum(attempts.values()) == 3
+    assert max(attempts.values()) == 2
+    assert "本轮筛选未完成" not in answer
 
 
 def test_original_three_condition_request_executes_all_35_candidates() -> None:

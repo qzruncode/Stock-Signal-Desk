@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 import signal
 import subprocess
 import threading
@@ -10,7 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.tools.process_runner import execute_tool_isolated
-from src.tools.process_worker import _exit_after_result
+from src.tools.base import (
+    current_tool_idempotency_key,
+    tool_idempotency_context,
+)
+from src.tools.process_worker import _exit_after_result, main as process_worker_main
 
 
 def test_isolated_runner_parses_structured_result_after_noisy_stdout():
@@ -22,6 +27,63 @@ def test_isolated_runner_parses_structured_result_after_noisy_stdout():
     )
     with patch("src.tools.process_runner.subprocess.run", return_value=completed):
         assert execute_tool_isolated("get_market_status", {}) == {"success": True}
+
+
+def test_isolated_runner_forwards_a_stable_scoped_idempotency_key():
+    forwarded_keys: list[str] = []
+
+    def complete(_command, **kwargs):
+        request = json.loads(kwargs["input"])
+        forwarded_keys.append(request["idempotency_key"])
+        assert request["idempotency_key"] != "durable-step-key"
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='__DSA_TOOL_RESULT__={"ok":true,"result":{"success":true}}\n',
+            stderr="",
+        )
+
+    with patch("src.tools.process_runner.subprocess.run", side_effect=complete):
+        execute_tool_isolated(
+            "get_market_status",
+            {"market": "A股"},
+            idempotency_key="durable-step-key",
+        )
+        execute_tool_isolated(
+            "get_market_status",
+            {"market": "A股"},
+            idempotency_key="durable-step-key",
+        )
+
+    assert len(forwarded_keys[0]) == 64
+    assert forwarded_keys[0] == forwarded_keys[1]
+
+
+def test_process_worker_exposes_and_resets_idempotency_context():
+    request_stream = StringIO(json.dumps({
+        "name": "get_market_status",
+        "arguments": {},
+        "idempotency_key": "worker-key",
+    }))
+    response_stream = StringIO()
+
+    with patch("src.tools.process_worker.sys.stdin", request_stream), patch(
+        "src.tools.process_worker.sys.stdout",
+        response_stream,
+    ), patch(
+        "src.tools.registry.ToolRegistry.execute",
+        side_effect=lambda *_args, **_kwargs: {
+            "success": True,
+            "key": current_tool_idempotency_key(),
+        },
+    ):
+        assert process_worker_main() == 0
+
+    assert '"key": "worker-key"' in response_stream.getvalue()
+    assert current_tool_idempotency_key() is None
+    with tool_idempotency_context("parent-key"):
+        assert current_tool_idempotency_key() == "parent-key"
+    assert current_tool_idempotency_key() is None
 
 
 def test_isolated_runner_turns_native_abort_into_regular_error():

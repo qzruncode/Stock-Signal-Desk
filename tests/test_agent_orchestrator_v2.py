@@ -172,9 +172,11 @@ def test_unified_registry_covers_every_standard_capability_once() -> None:
     assert catalog["theme_stock_discovery"]["supports_result_selection"] is False
     for spec in CAPABILITY_REGISTRY.values():
         policy_fields = type(spec.execution_policy).model_fields
-        assert "timeout_seconds" not in policy_fields
-        assert "max_attempts" not in policy_fields
-        assert "retryable_error_codes" not in policy_fields
+        assert "timeout_seconds" in policy_fields
+        assert "max_attempts" in policy_fields
+        assert "retryable_error_codes" in policy_fields
+        assert spec.execution_policy.timeout_seconds > 0
+        assert spec.execution_policy.max_attempts >= 1
 
 
 def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> None:
@@ -388,7 +390,7 @@ def test_explicit_industry_top_k_count_is_not_clamped_to_the_default() -> None:
     assert normalized.assumptions == ()
 
 
-def test_planner_does_not_install_local_timeouts() -> None:
+def test_planner_installs_one_total_deadline() -> None:
     calls: list[str] = []
 
     async def completion(**kwargs: Any) -> dict[str, Any]:
@@ -416,10 +418,11 @@ def test_planner_does_not_install_local_timeouts() -> None:
             })
         raise AssertionError(function_name)
 
+    original_timeout = asyncio.timeout
     with patch(
         "src.agent.orchestrator_v2.planner.asyncio.timeout",
-        side_effect=AssertionError("planner must not install a local timeout"),
-    ):
+        wraps=original_timeout,
+    ) as timeout_factory:
         graph = asyncio.run(plan_intent_graph_v2(
             [{"role": "user", "content": "人形机器人哪些领域最受益"}],
             {"model": "test-model"},
@@ -427,6 +430,7 @@ def test_planner_does_not_install_local_timeouts() -> None:
             today=date(2026, 7, 28),
         ))
 
+    timeout_factory.assert_called_once()
     assert graph.nodes[0].outline.capability == Capability.INDUSTRY_RESEARCH
     assert calls == [
         "submit_intent_outline_v2",

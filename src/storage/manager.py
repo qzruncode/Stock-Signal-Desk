@@ -3,24 +3,30 @@
 
 import atexit
 import logging
+import os
 import threading
 import time
 from contextlib import contextmanager
 from typing import Optional, Any, Callable, TypeVar, Dict
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker, Session
 
 from src.config import get_config
 from src.storage.models import Base
-from src.storage.migrations import ensure_compatible_schema
+from src.storage.migrations import (
+    assert_schema_compatible,
+    ensure_compatible_schema,
+)
 from src.storage.mixins import (
     DailyDataMixin, NewsMixin, QuoteKlineMixin, MacroMixin,
     PortfolioMixin, AnalysisMixin, ChatMixin, BatchMixin,
     AlertMixin, WatchlistMixin, AgentPromptMixin, RssCacheMixin, ToolCacheMixin,
     AgentArtifactMixin,
     AgentRunTraceMixin,
+    AgentRuntimeMixin,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,7 @@ class DatabaseManager(
     AlertMixin, WatchlistMixin, AgentPromptMixin, RssCacheMixin, ToolCacheMixin,
     AgentArtifactMixin,
     AgentRunTraceMixin,
+    AgentRuntimeMixin,
 ):
     """
     数据库管理器 - 单例模式
@@ -171,20 +178,83 @@ class DatabaseManager(
             "echo": False,
             "pool_pre_ping": True,
         }
-        if str(db_url).startswith("sqlite:") and self._sqlite_busy_timeout_ms > 0:
+        backend_name = make_url(db_url).get_backend_name()
+        if backend_name == "sqlite" and self._sqlite_busy_timeout_ms > 0:
             engine_kwargs["connect_args"] = {
                 "timeout": self._sqlite_busy_timeout_ms / 1000,
             }
+        elif backend_name != "sqlite":
+            def _pool_int(name: str, default: int, minimum: int = 0) -> int:
+                try:
+                    return max(
+                        minimum,
+                        int((os.getenv(name) or str(default)).strip()),
+                    )
+                except (TypeError, ValueError):
+                    return default
+
+            engine_kwargs.update({
+                "pool_size": _pool_int("DATABASE_POOL_SIZE", 10, 1),
+                "max_overflow": _pool_int(
+                    "DATABASE_MAX_OVERFLOW",
+                    10,
+                ),
+                "pool_timeout": _pool_int(
+                    "DATABASE_POOL_TIMEOUT_SECONDS",
+                    30,
+                    1,
+                ),
+                "pool_recycle": _pool_int(
+                    "DATABASE_POOL_RECYCLE_SECONDS",
+                    1800,
+                    30,
+                ),
+            })
+            if backend_name.startswith("postgresql"):
+                statement_timeout_ms = _pool_int(
+                    "DATABASE_STATEMENT_TIMEOUT_MS",
+                    30_000,
+                    1_000,
+                )
+                lock_timeout_ms = _pool_int(
+                    "DATABASE_LOCK_TIMEOUT_MS",
+                    5_000,
+                    100,
+                )
+                engine_kwargs["connect_args"] = {
+                    "options": (
+                        f"-c statement_timeout={statement_timeout_ms} "
+                        f"-c lock_timeout={lock_timeout_ms}"
+                    ),
+                }
 
         self._engine = create_engine(db_url, **engine_kwargs)
         self._is_sqlite_engine = self._engine.url.get_backend_name() == 'sqlite'
         self._sqlite_file_db = self._is_sqlite_engine and self._is_file_sqlite_database()
         self._install_sqlite_pragma_handler()
 
-        if self._is_sqlite_engine:
-            # 文件库与内存库（测试）都需要建表；此前内存库被漏掉导致测试 no such table。
+        environment = str(
+            os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or ""
+        ).strip().lower()
+        production = (
+            environment in {"prod", "production"}
+            or str(os.getenv("DSA_PRODUCTION") or "").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        auto_migrate_raw = str(
+            os.getenv("DATABASE_AUTO_MIGRATE") or ""
+        ).strip().lower()
+        auto_migrate = (
+            auto_migrate_raw in {"1", "true", "yes", "on"}
+            if auto_migrate_raw
+            else not production
+        )
+        if auto_migrate:
             ensure_compatible_schema(self._engine, self._is_sqlite_engine)
-            self._ensure_compatible_schema()
+        else:
+            # Production rollout owns migration ordering. Application workers
+            # only verify the schema, so multiple replicas never race DDL.
+            assert_schema_compatible(self._engine)
 
         self._SessionLocal = sessionmaker(bind=self._engine, expire_on_commit=False)
         self._initialized = True

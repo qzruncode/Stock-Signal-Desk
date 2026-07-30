@@ -8,7 +8,11 @@ from sqlalchemy.orm import Session
 
 from src.storage.models import (
     AgentArtifact,
+    AgentEffectOutbox,
+    AgentRun,
+    AgentRunEvent,
     AgentRunTrace,
+    AgentStepExecution,
     ChatConversation,
     ChatMessage,
     ConversationMessage,
@@ -24,6 +28,9 @@ class ChatMixin:
         conversation_id: str,
         title: str = "新对话",
         title_source: str = "auto",
+        *,
+        tenant_id: str = "local",
+        owner_id: str = "admin",
     ) -> ChatConversation:
         """创建对话会话。"""
         now = datetime.now()
@@ -32,6 +39,8 @@ class ChatMixin:
         with self.session_scope() as session:
             record = ChatConversation(
                 id=conversation_id,
+                tenant_id=tenant_id,
+                owner_id=owner_id,
                 title=normalized_title,
                 title_source=title_source or "auto",
                 created_at=now,
@@ -42,12 +51,23 @@ class ChatMixin:
             session.expunge(record)
             return record
 
-    def get_chat_conversation(self, conversation_id: str) -> Optional[ChatConversation]:
+    def get_chat_conversation(
+        self,
+        conversation_id: str,
+        *,
+        tenant_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> Optional[ChatConversation]:
         """按 ID 查询单个对话会话。"""
         with self.get_session() as session:
-            record = session.execute(
-                select(ChatConversation).where(ChatConversation.id == conversation_id)
-            ).scalars().first()
+            statement = select(ChatConversation).where(
+                ChatConversation.id == conversation_id
+            )
+            if tenant_id is not None:
+                statement = statement.where(ChatConversation.tenant_id == tenant_id)
+            if owner_id is not None:
+                statement = statement.where(ChatConversation.owner_id == owner_id)
+            record = session.execute(statement).scalars().first()
             if record:
                 session.expunge(record)
             return record
@@ -56,14 +76,25 @@ class ChatMixin:
         self,
         offset: int = 0,
         limit: int = 50,
+        *,
+        tenant_id: str | None = None,
+        owner_id: str | None = None,
     ) -> Tuple[List[ChatConversation], int]:
         """分页查询对话会话列表。"""
         with self.get_session() as session:
-            total = session.execute(
-                select(func.count(ChatConversation.id))
-            ).scalar() or 0
+            predicate = []
+            if tenant_id is not None:
+                predicate.append(ChatConversation.tenant_id == tenant_id)
+            if owner_id is not None:
+                predicate.append(ChatConversation.owner_id == owner_id)
+            total_statement = select(func.count(ChatConversation.id))
+            list_statement = select(ChatConversation)
+            if predicate:
+                total_statement = total_statement.where(*predicate)
+                list_statement = list_statement.where(*predicate)
+            total = session.execute(total_statement).scalar() or 0
             records = session.execute(
-                select(ChatConversation)
+                list_statement
                 .order_by(desc(ChatConversation.updated_at), desc(ChatConversation.created_at))
                 .offset(offset)
                 .limit(limit)
@@ -104,6 +135,27 @@ class ChatMixin:
     def delete_chat_conversation(self, conversation_id: str) -> int:
         """删除对话会话及其消息。"""
         with self.session_scope() as session:
+            run_ids = select(AgentRun.id).where(
+                AgentRun.conversation_id == conversation_id
+            )
+            session.execute(
+                delete(AgentRunEvent).where(AgentRunEvent.run_id.in_(run_ids))
+            )
+            session.execute(
+                delete(AgentStepExecution).where(
+                    AgentStepExecution.run_id.in_(run_ids)
+                )
+            )
+            session.execute(
+                delete(AgentEffectOutbox).where(
+                    AgentEffectOutbox.run_id.in_(run_ids)
+                )
+            )
+            session.execute(
+                delete(AgentRun).where(
+                    AgentRun.conversation_id == conversation_id
+                )
+            )
             session.execute(
                 delete(AgentArtifact).where(
                     AgentArtifact.conversation_id == conversation_id

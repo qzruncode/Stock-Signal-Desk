@@ -33,6 +33,9 @@ class AgentErrorCode(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     RESOURCE_UNAVAILABLE = "resource_unavailable"
     POLICY_BLOCKED = "policy_blocked"
+    DEADLINE_EXCEEDED = "deadline_exceeded"
+    CIRCUIT_OPEN = "circuit_open"
+    BUDGET_EXCEEDED = "budget_exceeded"
     TOOL_FAILED = "tool_failed"
     COVERAGE_INCOMPLETE = "coverage_incomplete"
     SYNTHESIS_FAILED = "synthesis_failed"
@@ -274,6 +277,17 @@ class ExecutionPolicy(StrictModel):
     confirmation_required: bool = False
     max_calls: int = Field(default=8, ge=0, le=10_000)
     max_parallelism: int = Field(default=4, ge=1, le=64)
+    timeout_seconds: float = Field(default=180.0, ge=1.0, le=3_600.0)
+    max_attempts: int = Field(default=2, ge=1, le=5)
+    retry_backoff_seconds: float = Field(default=0.5, ge=0.0, le=30.0)
+    retry_backoff_multiplier: float = Field(default=2.0, ge=1.0, le=10.0)
+    retryable_error_codes: tuple[str, ...] = (
+        "timeout",
+        "connection_error",
+        "provider_rate_limited",
+        "provider_unavailable",
+        "tool_process_crashed",
+    )
     cache_policy: CachePolicy = CachePolicy.READ_ONLY
     cache_ttl_seconds: int | None = Field(default=None, ge=1, le=604_800)
 
@@ -281,6 +295,11 @@ class ExecutionPolicy(StrictModel):
     def _validate_effect_policy(self) -> "ExecutionPolicy":
         if self.effect != EffectLevel.READ and self.cache_policy != CachePolicy.DISABLED:
             raise ValueError("only read-only capabilities may be cached")
+        if self.effect != EffectLevel.READ and self.max_attempts != 1:
+            raise ValueError(
+                "non-read capabilities require max_attempts=1; retries must be "
+                "dispatched through an effect-specific outbox adapter"
+            )
         return self
 
 
@@ -392,7 +411,32 @@ class PlanningTraceV2(StrictModel):
     normalized_intents: Mapping[str, Any] = Field(default_factory=dict)
     assumptions: tuple[AssumptionRecord, ...] = ()
     repairs: tuple[RepairRecordV2, ...] = ()
+    verification: Any = None
     stage_durations_ms: Mapping[str, int] = Field(default_factory=dict)
+
+
+class PlannerVerificationV2(StrictModel):
+    """Independent semantic review of a frozen capability/resource graph."""
+
+    accepted: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    missing_capabilities: tuple[Capability, ...] = ()
+    extraneous_node_ids: tuple[str, ...] = ()
+    resource_issues: tuple[str, ...] = Field(default=(), max_length=24)
+    rationale: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def _accepted_has_no_issues(self) -> "PlannerVerificationV2":
+        has_issues = bool(
+            self.missing_capabilities
+            or self.extraneous_node_ids
+            or self.resource_issues
+        )
+        if self.accepted == has_issues:
+            raise ValueError(
+                "accepted must be true exactly when no semantic issues exist"
+            )
+        return self
 
 
 class OrchestratorV2Error(RuntimeError):
@@ -512,6 +556,7 @@ __all__ = [
     "OrchestratorV2Error",
     "OutcomeStatus",
     "PlanningTraceV2",
+    "PlannerVerificationV2",
     "ProjectedResourceV2",
     "RepairIssueV2",
     "RepairRecordV2",

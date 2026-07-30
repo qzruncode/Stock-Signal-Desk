@@ -116,11 +116,23 @@ def test_rate_limiter_returns_retry_after_and_can_reset():
 
 
 def _set_safe_production_env(monkeypatch) -> None:
+    from cryptography.fernet import Fernet
+
     monkeypatch.setenv("DSA_PRODUCTION", "true")
     monkeypatch.setenv("ADMIN_AUTH_ENABLED", "true")
     monkeypatch.setenv("AGENT_REQUESTS_PER_MINUTE", "30")
     monkeypatch.setenv("WEB_CONCURRENCY", "1")
     monkeypatch.setenv("UVICORN_WORKERS", "1")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://agent:test@db.example/agent",
+    )
+    monkeypatch.setenv(
+        "AGENT_TRACE_ENCRYPTION_KEY",
+        Fernet.generate_key().decode("ascii"),
+    )
+    monkeypatch.setenv("AGENT_PLANNER_VERIFIER_MODE", "enforce")
+    monkeypatch.setenv("AGENT_ISOLATE_ALL_STATELESS", "true")
     monkeypatch.delenv("GUNICORN_WORKERS", raising=False)
     monkeypatch.delenv("GUNICORN_CMD_ARGS", raising=False)
     monkeypatch.delenv("CORS_ALLOW_ALL", raising=False)
@@ -140,14 +152,14 @@ def test_production_preflight_accepts_safe_contract(monkeypatch, tmp_path: Path)
     assert agent_production_issues(tmp_path) == []
 
 
-def test_worker_detection_and_preflight_reject_multiple_workers(monkeypatch, tmp_path: Path):
+def test_worker_detection_and_preflight_accepts_multiple_workers(monkeypatch, tmp_path: Path):
     _set_safe_production_env(monkeypatch)
     monkeypatch.setenv("WEB_CONCURRENCY", "3")
     (tmp_path / "index.html").write_text("ok", encoding="utf-8")
 
     assert configured_worker_count() == 3
     issues = agent_production_issues(tmp_path)
-    assert any("exactly one ASGI worker" in issue for issue in issues)
+    assert not any("ASGI worker" in issue for issue in issues)
 
 
 def test_production_preflight_rejects_unsafe_web_settings(monkeypatch, tmp_path: Path):
@@ -161,6 +173,21 @@ def test_production_preflight_rejects_unsafe_web_settings(monkeypatch, tmp_path:
     assert any("WEBFETCH_ALLOW_PRIVATE" in issue for issue in issues)
     assert any("AGENT_REQUESTS_PER_MINUTE" in issue for issue in issues)
     assert any("frontend bundle is missing" in issue for issue in issues)
+
+
+def test_production_preflight_requires_secret_for_proxy_identity_headers(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _set_safe_production_env(monkeypatch)
+    monkeypatch.setenv("TRUSTED_IDENTITY_HEADERS", "true")
+    monkeypatch.setenv("TRUSTED_PROXY_IDENTITY", "true")
+    monkeypatch.delenv("TRUSTED_IDENTITY_SHARED_SECRET", raising=False)
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    issues = agent_production_issues(tmp_path)
+
+    assert any("TRUSTED_IDENTITY_SHARED_SECRET" in issue for issue in issues)
 
 
 def test_production_preflight_has_no_runtime_mode_cutover(

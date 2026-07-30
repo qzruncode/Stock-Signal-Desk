@@ -245,11 +245,9 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     // 复用 useDataStreamRuntime 的完整 data-stream 管道,保证 K 线图等 tool UI
     // 与初次生成一致。
     const parentId = visibleMessages.at(-1)?.id ?? null;
-    // The detail snapshot already represents every chunk emitted before this
-    // request. Replaying a long run from chunk 0 can enqueue tens of thousands
-    // of old reasoning/tool deltas and crash the renderer. Resume from the
-    // server cursor and render only new events; onFinish reconciles canonical
-    // text and the persisted terminal stage.
+    // The server chooses the cursor. A durable run may intentionally return
+    // zero when the browser died before persisting rich tool/reasoning parts;
+    // replay then reconstructs those parts from the ordered event log.
     onPrepareResumeExisting(
       conversationDetail.id,
       conversationDetail.resumeState?.afterChunkIndex ?? 0,

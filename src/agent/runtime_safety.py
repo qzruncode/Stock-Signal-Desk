@@ -39,10 +39,16 @@ def _truthy(name: str) -> bool:
 @dataclass(frozen=True)
 class AgentRuntimeLimits:
     max_active_runs: int
+    max_active_runs_per_owner: int
     requests_per_minute: int
     max_messages: int
     max_message_chars: int
     max_request_chars: int
+    run_deadline_seconds: int
+    max_plan_tool_calls: int
+    max_provider_calls: int
+    max_estimated_tokens: int
+    max_estimated_cost_micros: int
 
 
 def get_agent_runtime_limits() -> AgentRuntimeLimits:
@@ -54,6 +60,12 @@ def get_agent_runtime_limits() -> AgentRuntimeLimits:
     """
     return AgentRuntimeLimits(
         max_active_runs=_env_int("AGENT_MAX_ACTIVE_RUNS", 4, minimum=1, maximum=64),
+        max_active_runs_per_owner=_env_int(
+            "AGENT_MAX_ACTIVE_RUNS_PER_OWNER",
+            2,
+            minimum=1,
+            maximum=64,
+        ),
         requests_per_minute=_env_int("AGENT_REQUESTS_PER_MINUTE", 0, minimum=0, maximum=10_000),
         max_messages=_env_int("AGENT_MAX_MESSAGES", 100, minimum=1, maximum=1_000),
         max_message_chars=_env_int("AGENT_MAX_MESSAGE_CHARS", 100_000, minimum=1_000, maximum=2_000_000),
@@ -62,6 +74,36 @@ def get_agent_runtime_limits() -> AgentRuntimeLimits:
         # per-user-message, rate and concurrency limits provide tighter abuse
         # controls.
         max_request_chars=_env_int("AGENT_MAX_REQUEST_CHARS", 1_000_000, minimum=10_000, maximum=5_000_000),
+        run_deadline_seconds=_env_int(
+            "AGENT_RUN_DEADLINE_SECONDS",
+            1_200,
+            minimum=30,
+            maximum=14_400,
+        ),
+        max_plan_tool_calls=_env_int(
+            "AGENT_MAX_PLAN_TOOL_CALLS",
+            1_000,
+            minimum=1,
+            maximum=10_000,
+        ),
+        max_provider_calls=_env_int(
+            "AGENT_MAX_PROVIDER_CALLS",
+            64,
+            minimum=1,
+            maximum=1_000,
+        ),
+        max_estimated_tokens=_env_int(
+            "AGENT_MAX_ESTIMATED_TOKENS",
+            1_000_000,
+            minimum=1_000,
+            maximum=100_000_000,
+        ),
+        max_estimated_cost_micros=_env_int(
+            "AGENT_MAX_ESTIMATED_COST_MICROS",
+            5_000_000,
+            minimum=1_000,
+            maximum=1_000_000_000,
+        ),
     )
 
 
@@ -153,21 +195,29 @@ def validate_chat_request_body(body: Any) -> tuple[list[dict[str, Any]], str | N
 
 
 class AgentRequestRateLimiter:
-    """Small single-process sliding-window limiter.
-
-    The Agent runtime deliberately supports one ASGI worker.  A threading lock
-    makes this safe across request threads without binding a global asyncio
-    primitive to a particular test/server event loop.
-    """
+    """Admission limiter with a database-shared production path."""
 
     def __init__(self) -> None:
         self._events: dict[str, Deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
-    def check_and_record(self, key: str, *, limit: int, window_seconds: float = 60.0) -> int:
+    def check_and_record(
+        self,
+        key: str,
+        *,
+        limit: int,
+        window_seconds: float = 60.0,
+        database: Any | None = None,
+    ) -> int:
         """Return retry-after seconds, or zero when the request is admitted."""
         if limit <= 0:
             return 0
+        if database is not None:
+            return int(database.check_agent_rate_limit(
+                key,
+                limit=limit,
+                window_seconds=window_seconds,
+            ))
         now = time.monotonic()
         cutoff = now - window_seconds
         with self._lock:
@@ -212,11 +262,6 @@ def is_production_environment() -> bool:
 def agent_production_issues(static_dir: Path | None = None) -> list[str]:
     """Return actionable runtime issues; empty means the checked contract holds."""
     issues: list[str] = []
-    if configured_worker_count() != 1:
-        issues.append(
-            "Agent active-run state is process-local; configure exactly one ASGI worker "
-            "(WEB_CONCURRENCY=1 / UVICORN_WORKERS=1)"
-        )
     try:
         from src.agent.orchestrator_v2.registry import migration_coverage
 
@@ -244,6 +289,68 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
         issues.append("WEBFETCH_ALLOW_PRIVATE must be false in production")
     if limits.requests_per_minute <= 0:
         issues.append("AGENT_REQUESTS_PER_MINUTE must be greater than zero in production")
+    try:
+        from src.config import get_config
+
+        db_url = (
+            (os.getenv("DATABASE_URL") or "").strip()
+            or get_config().get_db_url()
+        )
+        if str(db_url).lower().startswith("sqlite:") and not _truthy(
+            "ALLOW_SQLITE_PRODUCTION"
+        ):
+            issues.append(
+                "DATABASE_URL must use a production database in production "
+                "(set ALLOW_SQLITE_PRODUCTION=true only for a deliberate single-node deployment)"
+            )
+    except Exception as exc:
+        issues.append(f"database configuration is invalid: {exc}")
+    if _truthy("AGENT_MULTI_TENANT_ENABLED") and not _truthy(
+        "TRUSTED_IDENTITY_HEADERS"
+    ):
+        issues.append(
+            "TRUSTED_IDENTITY_HEADERS=true is required when "
+            "AGENT_MULTI_TENANT_ENABLED=true"
+        )
+    if _truthy("TRUSTED_IDENTITY_HEADERS") and not _truthy(
+        "TRUSTED_PROXY_IDENTITY"
+    ):
+        issues.append(
+            "TRUSTED_PROXY_IDENTITY=true is required before accepting "
+            "identity headers from an upstream proxy"
+        )
+    if _truthy("TRUSTED_IDENTITY_HEADERS") and len(
+        (os.getenv("TRUSTED_IDENTITY_SHARED_SECRET") or "").strip()
+    ) < 32:
+        issues.append(
+            "TRUSTED_IDENTITY_SHARED_SECRET must contain at least 32 "
+            "characters before accepting proxy identity headers"
+        )
+    trace_key = (os.getenv("AGENT_TRACE_ENCRYPTION_KEY") or "").strip()
+    if not trace_key:
+        issues.append(
+            "AGENT_TRACE_ENCRYPTION_KEY is required in production for "
+            "stored normalized plans and outcomes"
+        )
+    else:
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(trace_key.encode("ascii"))
+        except Exception:
+            issues.append(
+                "AGENT_TRACE_ENCRYPTION_KEY must be a valid Fernet key"
+            )
+    if str(
+        os.getenv("AGENT_PLANNER_VERIFIER_MODE") or ""
+    ).strip().lower() != "enforce":
+        issues.append(
+            "AGENT_PLANNER_VERIFIER_MODE=enforce is required in production"
+        )
+    if not _truthy("AGENT_ISOLATE_ALL_STATELESS"):
+        issues.append(
+            "AGENT_ISOLATE_ALL_STATELESS=true is required in production"
+        )
     if static_dir is not None:
         index_path = static_dir / "index.html"
         if not index_path.is_file():

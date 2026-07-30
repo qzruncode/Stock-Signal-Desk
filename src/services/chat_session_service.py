@@ -16,8 +16,27 @@ class ChatSessionService:
     DEFAULT_TITLE = "新对话"
     AGENT_CONTEXT_KEY = "agent_context"
 
-    def __init__(self, db_manager: Optional[DatabaseManager] = None):
+    def __init__(
+        self,
+        db_manager: Optional[DatabaseManager] = None,
+        *,
+        tenant_id: str = "local",
+        owner_id: str = "admin",
+    ):
         self.db = db_manager or DatabaseManager.get_instance()
+        self.tenant_id = str(tenant_id or "local")[:64]
+        self.owner_id = str(owner_id or "admin")[:128]
+
+    @property
+    def _tenant_id(self) -> str:
+        # A few focused tests and legacy extensions construct the service
+        # without invoking __init__. Defaulting preserves the single-user
+        # boundary while normal request paths always set an explicit value.
+        return str(getattr(self, "tenant_id", "local") or "local")[:64]
+
+    @property
+    def _owner_id(self) -> str:
+        return str(getattr(self, "owner_id", "admin") or "admin")[:128]
 
     @staticmethod
     def _normalize_title(title: Optional[str]) -> str:
@@ -51,14 +70,24 @@ class ChatSessionService:
         return (first_clause or text)[:24]
 
     def create_conversation(self) -> Dict[str, Any]:
-        conversation = self.db.create_chat_conversation(uuid.uuid4().hex, title=self.DEFAULT_TITLE)
+        conversation = self.db.create_chat_conversation(
+            uuid.uuid4().hex,
+            title=self.DEFAULT_TITLE,
+            tenant_id=self._tenant_id,
+            owner_id=self._owner_id,
+        )
         return conversation.to_dict()
 
     def list_conversations(self, page: int = 1, limit: int = 50) -> Dict[str, Any]:
         safe_page = max(page, 1)
         safe_limit = min(max(limit, 1), 100)
         offset = (safe_page - 1) * safe_limit
-        items, total = self.db.list_chat_conversations(offset=offset, limit=safe_limit)
+        items, total = self.db.list_chat_conversations(
+            offset=offset,
+            limit=safe_limit,
+            tenant_id=self._tenant_id,
+            owner_id=self._owner_id,
+        )
         return {
             "items": [item.to_dict() for item in items],
             "total": total,
@@ -67,7 +96,11 @@ class ChatSessionService:
         }
 
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
-        conversation = self.db.get_chat_conversation(conversation_id)
+        conversation = self.db.get_chat_conversation(
+            conversation_id,
+            tenant_id=self._tenant_id,
+            owner_id=self._owner_id,
+        )
         if not conversation:
             return None
         messages = self.db.get_chat_messages(conversation_id)
@@ -87,7 +120,11 @@ class ChatSessionService:
 
     def get_agent_context(self, conversation_id: str) -> Dict[str, Any]:
         """Read server-owned semantic context without inspecting rendered answers."""
-        conversation = self.db.get_chat_conversation(conversation_id)
+        conversation = self.db.get_chat_conversation(
+            conversation_id,
+            tenant_id=self._tenant_id,
+            owner_id=self._owner_id,
+        )
         if not conversation:
             return {}
         raw_context = getattr(conversation, "agent_context_json", None)
@@ -117,6 +154,8 @@ class ChatSessionService:
         return recovered.model_dump() if recovered.turns else {}
 
     def rename_conversation(self, conversation_id: str, title: str) -> Optional[Dict[str, Any]]:
+        if not self.get_conversation(conversation_id):
+            return None
         conversation = self.db.update_chat_conversation(
             conversation_id,
             title=self._normalize_title(title),
@@ -125,11 +164,17 @@ class ChatSessionService:
         return conversation.to_dict() if conversation else None
 
     def delete_conversation(self, conversation_id: str) -> int:
+        if not self.get_conversation(conversation_id):
+            return 0
         return self.db.delete_chat_conversation(conversation_id)
 
     def ensure_conversation(self, conversation_id: Optional[str]) -> Dict[str, Any]:
         if conversation_id:
-            existing = self.db.get_chat_conversation(conversation_id)
+            existing = self.db.get_chat_conversation(
+                conversation_id,
+                tenant_id=self._tenant_id,
+                owner_id=self._owner_id,
+            )
             if existing:
                 return existing.to_dict()
         return self.create_conversation()
@@ -208,7 +253,11 @@ class ChatSessionService:
         prune_agent_context_to_messages: bool = False,
         skip_title: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        conversation = self.db.get_chat_conversation(conversation_id)
+        conversation = self.db.get_chat_conversation(
+            conversation_id,
+            tenant_id=self._tenant_id,
+            owner_id=self._owner_id,
+        )
         if not conversation:
             return None
 
@@ -390,6 +439,13 @@ class ChatSessionService:
                 }
             )
         return normalized_messages
+
+    def normalize_messages(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Public normalization boundary for atomic runtime commits."""
+        return self._normalize_messages(messages)
 
     def _normalize_thread_state_messages(self, thread_state: Dict[str, Any]) -> List[Dict[str, Any]]:
         entries = thread_state.get("messages")

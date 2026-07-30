@@ -6,6 +6,8 @@
 python-dotenv>=1.0.0        # 环境变量配置管理
 tenacity>=8.2.0             # 重试机制（指数退避）
 sqlalchemy>=2.0.0           # ORM数据库操作
+psycopg[binary]>=3.1.0      # production PostgreSQL runtime
+cryptography>=43.0.0        # encrypted Agent traces
 
 # 数据源依赖
 akshare>=1.18.55            # 结构化股票数据；包含主营构成/一致预期/同行比较/资金流接口

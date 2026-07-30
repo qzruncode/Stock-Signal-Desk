@@ -35,6 +35,10 @@ _TOOL_PROGRESS_OBSERVER: ContextVar[ToolProgressObserver | None] = ContextVar(
     "tool_progress_observer",
     default=None,
 )
+_TOOL_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar(
+    "tool_idempotency_key",
+    default=None,
+)
 
 
 @contextmanager
@@ -46,6 +50,27 @@ def tool_progress_observer(
         yield
     finally:
         _TOOL_PROGRESS_OBSERVER.reset(token)
+
+
+@contextmanager
+def tool_idempotency_context(
+    idempotency_key: str | None,
+) -> Iterator[None]:
+    """Expose the durable step key to side-effect adapters.
+
+    Providers that support their own idempotency field can forward this key.
+    The value is task-local and is reset before the worker handles other work.
+    """
+    token = _TOOL_IDEMPOTENCY_KEY.set(idempotency_key or None)
+    try:
+        yield
+    finally:
+        _TOOL_IDEMPOTENCY_KEY.reset(token)
+
+
+def current_tool_idempotency_key() -> str | None:
+    """Return the durable idempotency key for the current tool invocation."""
+    return _TOOL_IDEMPOTENCY_KEY.get()
 
 
 def report_tool_progress(

@@ -15,12 +15,14 @@ RESULT_PREFIX = "__DSA_TOOL_RESULT__="
 def main() -> int:
     try:
         request = json.loads(sys.stdin.read() or "{}")
+        from src.tools.base import tool_idempotency_context
         from src.tools.registry import ToolRegistry
 
-        result = ToolRegistry().execute(
-            str(request.get("name") or ""),
-            request.get("arguments") or {},
-        )
+        with tool_idempotency_context(request.get("idempotency_key")):
+            result = ToolRegistry().execute(
+                str(request.get("name") or ""),
+                request.get("arguments") or {},
+            )
         payload = {"ok": True, "result": result}
     except Exception as exc:
         payload = {

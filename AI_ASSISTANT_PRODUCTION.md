@@ -1,101 +1,181 @@
 # AI 助手生产部署
 
-AI 助手的运行中续流、停止和刷新恢复状态保存在 API 进程内。当前生产合同是“单 ASGI worker + 反向代理”，不是多 worker。应用启动时会执行同一套 fail-closed 预检；不满足条件会直接拒绝启动，避免服务看似在线但停止/续流随机失效。
+当前助手使用一套强类型编排主线。Run、Step、副作用 Outbox、流事件、取消信号、租约、限流、熔断和资源配额均以数据库为权威状态源；API 进程只保存当前连接所需的短期对象。因此可以运行多个 API worker，客户端刷新或切换 worker 后仍能从持久事件游标续流。
 
-## 1. 准备配置
+## 1. 必要基础设施
 
-复制 `.env.example` 为 `.env`，至少设置：
+生产环境使用 PostgreSQL，不允许把 SQLite 当作默认生产数据库。建议：
+
+- PostgreSQL 主实例启用自动备份、WAL 归档或云厂商 PITR，保留期至少 7 天；
+- 至少一次在隔离环境完成“备份 → 恢复 → schema check → 冒烟测试”的恢复演练；
+- 模型网关、行情源和搜索服务有独立超时、容量与告警；
+- API、迁移任务和备份任务使用不同数据库账号，遵循最小权限。
+
+核心配置示例：
 
 ```dotenv
 APP_ENV=production
 DSA_PRODUCTION=true
+DATABASE_URL=postgresql+psycopg://agent:replace-me@postgres:5432/agent
+DATABASE_AUTO_MIGRATE=false
+DATABASE_POOL_SIZE=10
+DATABASE_MAX_OVERFLOW=10
+DATABASE_POOL_TIMEOUT_SECONDS=30
+DATABASE_POOL_RECYCLE_SECONDS=1800
+DATABASE_STATEMENT_TIMEOUT_MS=30000
+DATABASE_LOCK_TIMEOUT_MS=5000
 
 ANTHROPIC_BASE_URL=https://your-anthropic-compatible-gateway.example.com
 ANTHROPIC_AUTH_TOKEN=replace-with-secret
 ANTHROPIC_MODEL=claude-sonnet-4-6
 
 ADMIN_AUTH_ENABLED=true
-AGENT_MAX_ACTIVE_RUNS=4
 AGENT_REQUESTS_PER_MINUTE=30
-WEB_CONCURRENCY=1
-UVICORN_WORKERS=1
+AGENT_MAX_ACTIVE_RUNS=12
+AGENT_ISOLATE_ALL_STATELESS=true
+AGENT_PLANNER_VERIFIER_MODE=enforce
+AGENT_TRACE_ENCRYPTION_KEY=replace-with-valid-fernet-key
 
+WEB_CONCURRENCY=3
+UVICORN_WORKERS=3
 CORS_ALLOW_ALL=false
 WEBFETCH_ALLOW_PRIVATE=false
-TRUST_X_FORWARDED_FOR=true
 ```
 
-Agent 只有一套强类型编排控制面，不再通过环境变量切换规划或执行路径。
-
-如果 WebUI 与 API 同域，不需要配置 `CORS_ORIGINS`。只有分离部署时才填写精确的 HTTPS 来源，不要使用 `*`。
-
-首次上线前初始化管理员密码：
+使用以下命令生成 trace 加密密钥：
 
 ```bash
-python -m src.auth reset_password
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-`data/.admin_password_hash`、`data/.session_secret`、数据库和 RSS 缓存目录必须放在持久卷中，权限仅授予服务账号。不要把 `.env`、密码文件或令牌写入镜像与版本库。
+多租户环境必须由可信反向代理覆盖身份头，并额外设置：
 
-## 2. 构建与预检
+```dotenv
+AGENT_MULTI_TENANT_ENABLED=true
+TRUSTED_IDENTITY_HEADERS=true
+TRUSTED_PROXY_IDENTITY=true
+TRUSTED_IDENTITY_SHARED_SECRET=replace-with-at-least-32-random-characters
+```
+
+反向代理必须覆盖 `X-DSA-Tenant-Id`、`X-DSA-User-Id` 和 `X-DSA-Identity-Secret`；共享密钥只存在于代理与应用的密钥管理系统中。应用不会直接接受公网客户端伪造的身份头，健康检查豁免身份头但不承载租户数据。
+
+## 2. 发布顺序
+
+每次发布严格执行：
 
 ```bash
 python -m pip install -r requirements.txt
+python scripts/manage_database.py backup --output /backups/pre-release.dump
+python scripts/manage_database.py migrate
+python scripts/manage_database.py check
+
 cd apps/dsa-web
 npm ci
 npm run build
 cd ../..
+
 python scripts/agent_production_preflight.py
 python scripts/agent_tool_audit.py
+pytest -q
 ```
 
-预检同时验证：生产认证、管理员密码、模型配置、单 worker、请求限流、危险网络开关、前端产物、数据库和工具注册表。输出 `"ok": true` 后，再运行全工具审计；审计必须显示注册数与用例数一致且全部通过后才能启动。启用认证的环境可通过 `DSA_SESSION_COOKIE` 临时环境变量提供已登录会话值，不要把它写入命令历史或配置文件。
+迁移是独立 release job。生产 worker 的 `DATABASE_AUTO_MIGRATE=false` 会令启动只检查 schema 版本，避免多个副本并发执行 DDL。升级程序必须先向后兼容旧 worker，再滚动新 worker；破坏性字段删除放在后续版本。
 
-## 3. 启动
+数据库运维入口：
 
 ```bash
-uvicorn server:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers
+python scripts/manage_database.py pitr-check
+python scripts/manage_database.py backup --output /backups/agent-20260730.dump
+python scripts/manage_database.py restore --input /backups/agent-20260730.dump --confirm RESTORE
 ```
 
-由 systemd、Supervisor 或容器编排器托管进程，配置自动重启、资源上限和日志采集。不要使用 `--reload`，也不要增加 worker 数；要横向扩容必须先把运行注册表、广播与取消信号迁移到 Redis 等共享基础设施。
+恢复是破坏性操作，只能在停止写流量、确认目标实例和保留当前备份之后执行。PostgreSQL 的时间点恢复由数据库平台完成；`pitr-check` 只检查可见的 WAL 设置，不能替代真实恢复演练。
 
-## 4. 反向代理
+## 3. 运行与网络
 
-只暴露 HTTPS 反向代理，不直接暴露 Uvicorn。代理需要：
+```bash
+uvicorn server:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --workers 3 \
+  --proxy-headers
+```
 
-- 关闭 SSE 响应缓冲和压缩缓存；
-- 将读取超时设为大于最长模型任务时间（建议至少 15 分钟）；
-- 覆盖并传递可信的 `X-Forwarded-For`、`X-Forwarded-Proto`；
-- 限制请求体大小，并保留 `/api/v1/agent/chat` 的流式传输；
-- 对登录、AI 对话和工具试运行端点增加边缘限流。
+反向代理必须关闭 SSE 缓冲，读取超时大于 `AGENT_RUN_DEADLINE_SECONDS`，限制请求体并覆盖可信转发头。不要启用 `--reload`。优雅停机时间应大于一个事件持久化周期；worker 退出时会释放运行租约，其他 worker 随后接管。
 
-`TRUST_X_FORWARDED_FOR=true` 仅适用于应用只接受可信单层反向代理连接的拓扑。直连公网时必须为 `false`。
+数据库最大连接数按 `worker 数 × (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)` 预留并保留迁移、备份和运维余量；连接池等待超时必须小于请求总 deadline。
 
-## 5. 监控与验收
+## 4. 可靠性合同
 
-- `/api/health`：进程存活检查，可供负载均衡器使用；
-- `/api/v1/agent/readiness`：需登录的 AI 助手就绪检查，包含数据库、模型、运行容量和工具注册数量；
-- 日志中的 `[AgentRun]`：包含 `run_id`、状态、耗时和流式 chunk 数；
-- 工具日志：包含成功/部分成功/兜底、条目数和耗时，不记录鉴权令牌。
+- 一次会话最多一个活跃 Run，数据库唯一约束负责仲裁跨 worker 竞争。
+- 每个 Run 有总 deadline；Planner、模型流和 Tool 还有各自 deadline。
+- 只读 Tool 仅对声明的瞬时错误做有限指数退避；非只读 Tool 不自动重试。
+- Step 的幂等键会落库。完成结果可复用，运行中 Step 由租约保护，租约过期后才允许接管。
+- 副作用 Tool 在执行前写入 Outbox。下游服务仍必须接受同一幂等键，才能覆盖“对方已成功、本地确认前崩溃”的最后窗口。
+- 模型、Tool 和外部服务均受共享资源槽、熔断器和 Run 级调用量/token/成本预算约束。
+- transcript、结构化上下文、artifact、trace 和 Run 终态在同一事务提交，失败不会发布半套终态。
+- 每个流 chunk 先持久化再广播；客户端通过事件序号续流，不依赖原 worker 内存。
+- 外部网页与 Tool 证据始终包在不可信数据边界中，模型不得执行其中指令。
+- trace 写入前会按键名与内容模式脱敏；生产默认不保存原始 Planner 输出，结构化计划和结果使用 Fernet 加密，并按 TTL 清理。
 
-上线前至少回放以下场景：普通问答、实时行情、财务与估值、产业链研究、财经资讯零结果、工具上游失败、刷新续流、停止生成、重复提交、超限与 429/503。确认失败时页面展示具体原因，不能把“上游失败”伪装成“没有数据”。
+## 5. 语义质量门禁
 
-AI 助手的任务执行还必须满足以下生产合同：
+Planner 只生成强类型 Intent，不接触 Tool 名。程序随后完成参数校验、固定 Workflow 编译和 Policy 验证。生产模式必须启用第二个语义校验器；校验器输出置信度、问题列表和建议处置：
 
-- 所有自然语言请求只能进入同一个语义 Planner；运行时代码不得按中文关键词、正则、句式或答案排版选择标准任务。Planner 接收本轮最后一条用户问题、紧邻上一回答的通用文本片段、滚动结构化会话上下文和标准子任务目录，不能看到或选择任何数据 Tool。历史内容只用于解析指代、沿用范围或修改条件，不能把已经完成的旧问题重新创建成任务。
-- 跨轮证券集合、任务参数和执行结果必须保存为结构化会话状态；不得从 Markdown 表格、标题、固定标签或自然语言模板反向解析执行上下文。旧对话没有结构化状态时只能使用通用证券身份识别兼容，不能恢复任何任务专用语义。
-- 每个标准子任务必须由只读的 `Workflow Registry` 编译成不可修改的固定流程。单个流程只允许 0～8 个白名单 Tool；模型输出中即使出现 Tool 名，也不得改变白名单、步骤顺序或调用预算。新增 Tool 若未归入固定流程，生产预检必须失败。
-- 需要实时能力目录的语义参数采用二阶段绑定：Planner 只输出用户表达的语义对象；Resource Binder 只能从程序提供的完整实时目录选择值，随后由程序校验目录成员关系。不得用字符重合度、关键词词典或请求本地匹配代替语义绑定。
-- 财经资讯和跨机构研报检索必须接收 Planner/Workflow 已解析的 `topic`、`category` 与 `subjects`；底层检索工具不得再从原始 query 的关键词、股票简称或固定主题词表猜测类别。程序只负责把结构化类别编译成固定数据源流程，并使用结构化主题做结果相关性过滤。
-- 所有调用必须在 UI 展示前通过 Policy Validator：检查 Tool 归属、前置任务和步骤、JSON Schema 参数、重复调用、已有结果复用、次数上限、影响等级和用户确认。任一项失败都应在调用前拦截。
-- 搜索/读取/删除、查询/发送等复合任务必须在 Registry 中声明动作级条件参数；例如读取报告必须先有 `record_id`、发送自定义通知必须先有正文。不得把这些条件留到 Tool 内部执行后才报错。
-- 无依赖的读取任务并行执行，有依赖的任务按 DAG 顺序执行；相同 Tool 与相同参数在一轮内只执行一次，其他任务复用同一结果。任何前置任务失败时，后续任务必须标为跳过，不能继续猜测执行。
-- 删除、通知、计划修改等高影响操作必须先被程序拦截并保存精确动作指纹；只有紧邻下一轮的结构化任务、参数和证券范围与待确认指纹完全一致，且 Planner 标记用户已确认时才允许执行。单轮内即使模型直接输出 `explicit` 也不能越过首次审阅。交易请求只能进入“参数校验 → 账户检查 → 风控检查 → 用户确认 → 下单 → 订单状态”状态机；当前未接入账户、风控和下单 Tool，因此必须明确拒绝执行，不能降级成普通 Tool 调用。
-- 领域找股与公司经营事实举证是两个独立标准能力，具体任务由语义 Planner 按用户目标选择；领域找股的执行只调用内部结构化候选流程。八维专业买入分析沿用的产业方向必须是结构化 `thesis_context`，不得解析上一回答中的展示文案来恢复板块映射。
-- Planner 网关超时时，先使用更小的紧邻上下文恢复一次；验证通过的任务计划持久缓存 7 天。重复请求和重新生成直接复用缓存，编辑后的问题必须生成不同缓存键。两次超时都失败时，不得开放任何数据 Tool。
-- 多股财务筛选按每批最多 12 只执行，单任务最多 8 批；所有批次均需进入同一固定 Workflow。最终结果必须给出总数、成功覆盖数与缺失数，任一批失败时列出未覆盖股票。
-- `investment_decision` 只允许调用八维专业买入分析工具。Agent 把完整集合交给一个逻辑任务（最多 300 只），底层按公司做有界并发并校验请求数、返回数和缺失数。每家公司完整分析“当前市场主线 → 产业竞争力 → 行业周期 → 价格战/内卷 → 政策/技术/需求/供给驱动 → 6—12个月催化 → 估值赔率 → 重大风险”，任何单项较弱都不能省略后续维度。每项状态为通过、半通过、不通过或证据不足，程序按 1/0.5/0 计算八分制总分；报告必须给出正反证据、当前定位、看多链条、风险链条和至少三个持续验证指标。只有八项没有明确失败或证据不足，且估值赔率与重大风险至少半通过，才允许输出条件买入；任何分批缺失、数据异常或分析失败都必须明确标注。
+- `enforce`：低置信度或语义冲突直接阻断；
+- `shadow`：记录结果但不影响执行，只用于发布前对比；
+- `off`：仅允许本地开发。
 
-对应的上线回放至少包含：普通问答不开放 Tool、同一语义的多种自然语言改写、估值与新闻组合拆题、重复财务数据只查询一次、依赖失败阻止后续任务、删除/通知未确认拦截、交易请求固定状态机拦截、结构化跨轮引用、引用上轮产业领域只走内部候选、超过 48 只股票的完整分批筛选、上轮股票集合的八维逐股专业分析，以及任一批次失败的故障注入。
+模型、Prompt、Intent schema 或 Workflow 变更必须先跑黄金语料集，对任务分类、证券范围、依赖关系、影响等级和“证据不足时 fail-closed”分别计分。先 shadow，再小流量 canary，最后全量；失败率、规划阻断率或用户重试率超过基线即回滚。
 
-RSSHub、SearXNG、Firecrawl 等可选数据服务应作为独立受监控服务部署。它们不可用时 AI 助手会暴露来源失败或使用明确标注的兜底；就绪检查不把可选外部源的瞬时抖动当作进程故障。
+```bash
+python scripts/evaluate_agent_planner.py
+python scripts/evaluate_agent_planner.py --max-cases 5
+```
+
+## 6. 健康、指标和告警
+
+- `/api/health`：进程存活；
+- `/api/v1/agent/readiness`：schema、注册表、容量和可选深度依赖探测；
+- `/api/v1/agent/metrics`：结构化运行指标和当前告警；
+- `/api/v1/agent/metrics/prometheus`：Prometheus 文本格式。
+
+至少建立以下 SLO：
+
+- Run 成功率与部分成功率；
+- p50/p95/p99 总耗时；
+- Planner、模型和 Tool 分阶段耗时；
+- 恢复次数、重复 Step 复用次数、租约过期数；
+- 熔断器打开数、资源等待超时数、预算拒绝数；
+- 流断连率、续流成功率、终态原子提交失败数。
+
+告警分级：
+
+- P1：终态事务失败、跨租户访问、schema 不兼容、事件序号缺口；
+- P2：成功率低于 SLO、p95 超阈值、熔断持续打开、恢复积压；
+- P3：单一可选数据源降级或缓存命中率异常。
+
+## 7. 上线验收与故障注入
+
+发布前必须自动回放：
+
+- 普通问答、实时行情、财务、估值、新闻、产业链、多股批处理和八维买入判断；
+- 同义改写、跨轮引用、编辑后重发、刷新续流、停止生成和重复提交；
+- Planner 低置信度、Prompt 注入证据、数据覆盖不足、空结果和 schema 错误；
+- 模型超时/429/5xx、Tool 超时/进程崩溃、数据库短暂失败；
+- worker 在规划中、Tool 中、终态提交前退出后的接管；
+- 相同幂等键并发执行、副作用 Outbox 已完成后的重放；
+- 多租户越权读取、取消和续流；
+- 容量、限流、token 与成本预算耗尽；
+- 备份恢复和 PostgreSQL PITR 演练。
+
+压力测试至少覆盖目标并发两倍、持续 30 分钟，确认数据库连接池、事件表增长、SSE 连接数和外部服务并发均有明确上限。测试通过只表示本次构建满足门禁，不替代线上 canary 与回滚策略。
+
+仓库内提供了有界黑盒压测入口；先在隔离或 canary 环境验证小流量，再逐步提高并发：
+
+```bash
+python scripts/load_agent_runtime.py \
+  --base-url http://127.0.0.1:8000 \
+  --requests 40 \
+  --concurrency 8
+```

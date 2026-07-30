@@ -55,6 +55,39 @@ def test_agent_readiness_fails_closed_when_model_is_unavailable():
     assert response.json()["checks"]["model"]["ok"] is False
 
 
+def test_agent_readiness_only_calls_live_dependencies_when_requested():
+    auth._auth_enabled = None
+    app = create_app()
+    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
+         patch("src.auth.is_auth_enabled", return_value=False), \
+         patch(
+             "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
+             return_value={"model": "verified-model"},
+         ), \
+         patch(
+             "api.v1.endpoints.agent.health.agent_production_issues",
+             return_value=[],
+         ), \
+         patch(
+             "api.v1.endpoints.agent.health._live_dependency_probe",
+             return_value={
+                 "ok": True,
+                 "cached": False,
+                 "checks": {},
+                 "probed_at": "2026-07-30T00:00:00+08:00",
+             },
+         ) as live_probe:
+        shallow = TestClient(app).get("/api/v1/agent/readiness")
+        deep = TestClient(app).get("/api/v1/agent/readiness?deep=true")
+
+    auth._auth_enabled = None
+    assert shallow.status_code == 200
+    assert "dependencies" not in shallow.json()["checks"]
+    assert deep.status_code == 200
+    assert deep.json()["checks"]["dependencies"]["ok"] is True
+    live_probe.assert_awaited_once_with()
+
+
 def test_tool_probe_preserves_normalized_arguments_and_payload_failure():
     registry = MagicMock()
     registry.normalize_arguments.return_value = {"days": 7}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -54,6 +56,11 @@ STATEFUL_TOOL_NAMES = frozenset({
 _PROFESSIONAL_EVIDENCE_TOOL = "get_multi_stock_decision_evidence"
 _PROFESSIONAL_EVIDENCE_CHUNK_SIZE = 2
 _PROFESSIONAL_BUY_ANALYSIS_TOOL = "evaluate_multi_stock_buy_criteria"
+
+
+class ToolProcessTimeout(TimeoutError):
+    """An isolated tool exceeded the application-owned deadline."""
+
 def _professional_buy_stock_concurrency() -> int:
     try:
         return max(
@@ -72,22 +79,54 @@ def _execute_tool_process(
     arguments: dict[str, Any],
     *,
     cancel_event: threading.Event | None = None,
+    deadline_seconds: float | None = None,
+    idempotency_key: str | None = None,
 ) -> Any:
-    """Execute exactly one worker process without an application deadline."""
+    """Execute exactly one worker process under cancellation and a deadline."""
     command = [sys.executable, "-m", "src.tools.process_worker"]
+    worker_idempotency_key = (
+        hashlib.sha256(
+            json.dumps(
+                {
+                    "parent": idempotency_key,
+                    "tool": name,
+                    "arguments": arguments,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+        if idempotency_key
+        else None
+    )
     input_text = json.dumps(
-        {"name": name, "arguments": arguments},
+        {
+            "name": name,
+            "arguments": arguments,
+            "idempotency_key": worker_idempotency_key,
+        },
         ensure_ascii=False,
     )
     if cancel_event is None:
-        completed = subprocess.run(
-            command,
-            input=input_text,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=input_text,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=(
+                    max(0.1, float(deadline_seconds))
+                    if deadline_seconds is not None
+                    else None
+                ),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ToolProcessTimeout(
+                f"隔离工具 {name} 超过 {float(deadline_seconds):.1f} 秒截止时间"
+            ) from exc
     else:
         if cancel_event.is_set():
             raise RuntimeError("隔离工具执行已取消")
@@ -116,6 +155,11 @@ def _execute_tool_process(
                     stderr=stderr_handle,
                     text=True,
                     start_new_session=os.name != "nt",
+                )
+                deadline_at = (
+                    time.monotonic() + max(0.1, float(deadline_seconds))
+                    if deadline_seconds is not None
+                    else None
                 )
 
                 def terminate_process_group() -> None:
@@ -148,6 +192,12 @@ def _execute_tool_process(
                     if cancel_event.is_set():
                         terminate_process_group()
                         raise RuntimeError("隔离工具执行已取消")
+                    if deadline_at is not None and time.monotonic() >= deadline_at:
+                        terminate_process_group()
+                        raise ToolProcessTimeout(
+                            f"隔离工具 {name} 超过 "
+                            f"{float(deadline_seconds):.1f} 秒截止时间"
+                        )
                     cancel_event.wait(timeout=0.05)
 
                 stdout_handle.flush()
@@ -187,11 +237,17 @@ def _snapshot_fallback_for_professional_chunk(
     error: Exception,
     *,
     cancel_event: threading.Event | None = None,
+    deadline_seconds: float | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Preserve every requested company when one deep-evidence shard stalls."""
     process_options: dict[str, Any] = {}
     if cancel_event is not None:
         process_options["cancel_event"] = cancel_event
+    if deadline_seconds is not None:
+        process_options["deadline_seconds"] = deadline_seconds
+    if idempotency_key is not None:
+        process_options["idempotency_key"] = idempotency_key
     snapshot = _execute_tool_process(
         "get_multi_stock_snapshot",
         {"symbols": symbols},
@@ -271,12 +327,18 @@ def _execute_professional_evidence_chunked(
     arguments: dict[str, Any],
     *,
     cancel_event: threading.Event | None = None,
+    deadline_seconds: float | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
     if not symbols:
         process_options: dict[str, Any] = {}
         if cancel_event is not None:
             process_options["cancel_event"] = cancel_event
+        if deadline_seconds is not None:
+            process_options["deadline_seconds"] = deadline_seconds
+        if idempotency_key is not None:
+            process_options["idempotency_key"] = idempotency_key
         return _execute_tool_process(
             _PROFESSIONAL_EVIDENCE_TOOL,
             arguments,
@@ -294,6 +356,10 @@ def _execute_professional_evidence_chunked(
         process_options: dict[str, Any] = {}
         if cancel_event is not None:
             process_options["cancel_event"] = cancel_event
+        if deadline_seconds is not None:
+            process_options["deadline_seconds"] = deadline_seconds
+        if idempotency_key is not None:
+            process_options["idempotency_key"] = idempotency_key
         try:
             result = _execute_tool_process(
                 _PROFESSIONAL_EVIDENCE_TOOL,
@@ -308,6 +374,8 @@ def _execute_professional_evidence_chunked(
                 thesis,
                 exc,
                 cancel_event=cancel_event,
+                deadline_seconds=deadline_seconds,
+                idempotency_key=idempotency_key,
             )
         return index, result
 
@@ -386,6 +454,8 @@ def _execute_professional_buy_analysis_chunked(
     arguments: dict[str, Any],
     *,
     cancel_event: threading.Event | None = None,
+    deadline_seconds: float | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Isolate each company and evaluate the collection with bounded concurrency."""
     symbols = [part.strip() for part in str(arguments.get("symbols") or "").split(",") if part.strip()]
@@ -393,6 +463,10 @@ def _execute_professional_buy_analysis_chunked(
         process_options: dict[str, Any] = {}
         if cancel_event is not None:
             process_options["cancel_event"] = cancel_event
+        if deadline_seconds is not None:
+            process_options["deadline_seconds"] = deadline_seconds
+        if idempotency_key is not None:
+            process_options["idempotency_key"] = idempotency_key
         return _execute_tool_process(
             _PROFESSIONAL_BUY_ANALYSIS_TOOL,
             arguments,
@@ -403,6 +477,10 @@ def _execute_professional_buy_analysis_chunked(
         process_options: dict[str, Any] = {}
         if cancel_event is not None:
             process_options["cancel_event"] = cancel_event
+        if deadline_seconds is not None:
+            process_options["deadline_seconds"] = deadline_seconds
+        if idempotency_key is not None:
+            process_options["idempotency_key"] = idempotency_key
         try:
             result = _execute_tool_process(
                 _PROFESSIONAL_BUY_ANALYSIS_TOOL,
@@ -448,6 +526,8 @@ def execute_tool_isolated(
     arguments: dict[str, Any],
     *,
     cancel_event: threading.Event | None = None,
+    deadline_seconds: float | None = None,
+    idempotency_key: str | None = None,
 ) -> Any:
     """Execute a tool in a cancellable one-shot process and return its result.
 
@@ -461,16 +541,29 @@ def execute_tool_isolated(
         return _execute_professional_evidence_chunked(
             arguments,
             cancel_event=cancel_event,
+            deadline_seconds=deadline_seconds,
+            idempotency_key=idempotency_key,
         )
     if name == _PROFESSIONAL_BUY_ANALYSIS_TOOL:
         return _execute_professional_buy_analysis_chunked(
             arguments,
             cancel_event=cancel_event,
+            deadline_seconds=deadline_seconds,
+            idempotency_key=idempotency_key,
         )
     process_options: dict[str, Any] = {}
     if cancel_event is not None:
         process_options["cancel_event"] = cancel_event
+    if deadline_seconds is not None:
+        process_options["deadline_seconds"] = deadline_seconds
+    if idempotency_key is not None:
+        process_options["idempotency_key"] = idempotency_key
     return _execute_tool_process(name, arguments, **process_options)
 
 
-__all__ = ["ISOLATED_TOOL_NAMES", "STATEFUL_TOOL_NAMES", "execute_tool_isolated"]
+__all__ = [
+    "ISOLATED_TOOL_NAMES",
+    "STATEFUL_TOOL_NAMES",
+    "ToolProcessTimeout",
+    "execute_tool_isolated",
+]

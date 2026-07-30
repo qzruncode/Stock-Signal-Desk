@@ -99,6 +99,7 @@ class Config:
     wechat_msg_type: str = "markdown"
 
     # === 数据库配置 ===
+    database_url: Optional[str] = None
     database_path: str = "./data/stock_analysis.db"
     sqlite_wal_enabled: bool = True
     sqlite_busy_timeout_ms: int = 5000
@@ -357,6 +358,7 @@ class Config:
             analysis_delay=parse_env_float(os.getenv('ANALYSIS_DELAY'), 0.0, field_name='ANALYSIS_DELAY', minimum=0.0),
             wechat_max_bytes=wechat_max_bytes,
             wechat_msg_type=wechat_msg_type_lower,
+            database_url=(os.getenv('DATABASE_URL') or '').strip() or None,
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             sqlite_wal_enabled=os.getenv('SQLITE_WAL_ENABLED', 'true').lower() == 'true',
             sqlite_busy_timeout_ms=parse_env_int(os.getenv('SQLITE_BUSY_TIMEOUT_MS'), 5000, field_name='SQLITE_BUSY_TIMEOUT_MS', minimum=0),
@@ -667,6 +669,8 @@ class Config:
         return [issue.message for issue in self.validate_structured()]
 
     def get_db_url(self) -> str:
+        if self.database_url:
+            return self.database_url
         db_path = Path(self.database_path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{db_path.absolute()}"

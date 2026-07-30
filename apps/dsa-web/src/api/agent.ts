@@ -55,6 +55,7 @@ export interface ChatConversationDetail extends ChatConversationItem {
     isGenerating?: boolean;
     status?: 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | string | null;
     afterChunkIndex: number;
+    eventCursor?: number;
     assistantText: string;
     hasToolEvents?: boolean;
     latestStage?: PersistedAgentStageV2 | null;

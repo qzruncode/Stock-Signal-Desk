@@ -2109,6 +2109,35 @@ def test_agent_chat_rejects_client_system_prompt_before_model_call(client):
     get_config.assert_not_called()
 
 
+def test_agent_chat_bounds_chunked_body_without_content_length(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_MAX_REQUEST_CHARS", "10000")
+    raw = json.dumps({
+        "messages": [{
+            "role": "user",
+            "content": "x" * 50000,
+        }],
+    }).encode("utf-8")
+
+    def chunks():
+        for index in range(0, len(raw), 128):
+            yield raw[index:index + 128]
+
+    response = client.post(
+        "/api/v1/agent/chat",
+        content=chunks(),
+        headers={
+            "content-type": "application/json",
+            "transfer-encoding": "chunked",
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "request_too_large"
+
+
 def test_agent_chat_rate_limit_returns_retry_after_before_model_call(client):
     with patch(
         "api.v1.endpoints.agent.chat.agent_request_rate_limiter.check_and_record",

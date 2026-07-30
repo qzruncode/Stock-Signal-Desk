@@ -371,6 +371,12 @@ class ChatConversation(Base):
     __tablename__ = 'chat_conversations'
 
     id = Column(String(64), primary_key=True)
+    # Ownership is stored on the durable boundary instead of being inferred
+    # from a browser cookie.  The current local deployment uses one
+    # tenant/owner, while hosted deployments can bind these fields to their
+    # authenticated principal without changing the conversation schema.
+    tenant_id = Column(String(64), nullable=False, default='local', index=True)
+    owner_id = Column(String(128), nullable=False, default='admin', index=True)
     title = Column(String(120), nullable=False, default='新对话')
     title_source = Column(String(16), nullable=False, default='auto', index=True)
     preview_text = Column(String(200))
@@ -384,6 +390,8 @@ class ChatConversation(Base):
     def to_dict(self) -> Dict[str, Any]:
         return {
             'id': self.id, 'title': self.title,
+            'tenant_id': self.tenant_id,
+            'owner_id': self.owner_id,
             'title_source': self.title_source,
             'preview_text': self.preview_text,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -477,6 +485,7 @@ class AgentRunTrace(Base):
     raw_intents_json = Column(Text, nullable=False, default='{}')
     normalized_intents_json = Column(Text, nullable=False, default='{}')
     repairs_json = Column(Text, nullable=False, default='[]')
+    verification_json = Column(Text)
     latest_stage_json = Column(Text)
     compiled_plan_json = Column(Text)
     outcomes_json = Column(Text)
@@ -496,6 +505,228 @@ class AgentRunTrace(Base):
             'created_at',
         ),
     )
+
+
+class AgentRuntimeControl(Base):
+    """Singleton rows used to serialize cross-worker admission decisions."""
+    __tablename__ = 'agent_runtime_controls'
+
+    name = Column(String(64), primary_key=True)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+
+class AgentRun(Base):
+    """Durable lifecycle record for one Agent request.
+
+    ``active_slot`` is equal to ``conversation_id`` while the run is queued or
+    running and becomes NULL at a terminal state.  A unique constraint on this
+    nullable column gives every supported database an atomic, cross-process
+    "one active run per conversation" guard without relying on a process-local
+    dictionary.
+    """
+    __tablename__ = 'agent_runs'
+
+    id = Column(String(64), primary_key=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey('chat_conversations.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    tenant_id = Column(String(64), nullable=False, default='local', index=True)
+    owner_id = Column(String(128), nullable=False, default='admin', index=True)
+    active_slot = Column(String(64), unique=True)
+    status = Column(String(24), nullable=False, default='queued', index=True)
+    request_json = Column(Text, nullable=False, default='{}')
+    context_snapshot_json = Column(Text)
+    result_json = Column(Text)
+    final_text = Column(Text)
+    error_code = Column(String(64))
+    error_detail = Column(Text)
+    worker_id = Column(String(128), index=True)
+    lease_expires_at = Column(DateTime, index=True)
+    heartbeat_at = Column(DateTime, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False, index=True)
+    event_cursor = Column(Integer, nullable=False, default=0)
+    attempt = Column(Integer, nullable=False, default=1)
+    tool_call_count = Column(Integer, nullable=False, default=0)
+    provider_call_count = Column(Integer, nullable=False, default=0)
+    estimated_token_count = Column(Integer, nullable=False, default=0)
+    estimated_cost_micros = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime, index=True)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+        index=True,
+    )
+
+    __table_args__ = (
+        Index('ix_agent_runs_tenant_owner_created', 'tenant_id', 'owner_id', 'created_at'),
+        Index('ix_agent_runs_status_lease', 'status', 'lease_expires_at'),
+    )
+
+
+class AgentRunEvent(Base):
+    """Ordered, replayable assistant-stream event for a durable Agent run."""
+    __tablename__ = 'agent_run_events'
+
+    id = Column(String(96), primary_key=True)
+    run_id = Column(
+        String(64),
+        ForeignKey('agent_runs.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String(32), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('run_id', 'sequence', name='uix_agent_run_event_sequence'),
+        Index('ix_agent_run_events_run_sequence', 'run_id', 'sequence'),
+    )
+
+
+class AgentStepExecution(Base):
+    """Idempotent execution ledger for one compiled workflow call."""
+    __tablename__ = 'agent_step_executions'
+
+    idempotency_key = Column(String(96), primary_key=True)
+    run_id = Column(
+        String(64),
+        ForeignKey('agent_runs.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(String(64), nullable=False, index=True)
+    task_id = Column(String(96), nullable=False, index=True)
+    step_id = Column(String(96), nullable=False)
+    tool_name = Column(String(128), nullable=False, index=True)
+    effect = Column(String(24), nullable=False, default='read', index=True)
+    status = Column(String(24), nullable=False, default='pending', index=True)
+    arguments_json = Column(Text, nullable=False, default='{}')
+    result_json = Column(Text)
+    error_code = Column(String(64))
+    error_detail = Column(Text)
+    worker_id = Column(String(128), index=True)
+    lease_expires_at = Column(DateTime, index=True)
+    attempt = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=1)
+    reuse_count = Column(Integer, nullable=False, default=0)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+        index=True,
+    )
+
+    __table_args__ = (
+        Index('ix_agent_steps_run_status', 'run_id', 'status'),
+        Index('ix_agent_steps_tool_status', 'tool_name', 'status'),
+    )
+
+
+class AgentEffectOutbox(Base):
+    """Transactional dispatch ledger for non-read effects.
+
+    Effect adapters can persist a dispatch request and its idempotency key
+    before talking to an external system.  Recovered workers then continue the
+    same record instead of issuing an unrelated duplicate request.
+    """
+    __tablename__ = 'agent_effect_outbox'
+
+    idempotency_key = Column(String(96), primary_key=True)
+    run_id = Column(
+        String(64),
+        ForeignKey('agent_runs.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    tool_name = Column(String(128), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    status = Column(String(24), nullable=False, default='pending', index=True)
+    provider_reference = Column(String(256))
+    result_json = Column(Text)
+    error_detail = Column(Text)
+    attempt = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+        index=True,
+    )
+
+    __table_args__ = (
+        Index('ix_agent_effect_outbox_status_created', 'status', 'created_at'),
+    )
+
+
+class AgentRateLimitBucket(Base):
+    """Database-backed admission counter shared by all API workers."""
+    __tablename__ = 'agent_rate_limit_buckets'
+
+    id = Column(String(128), primary_key=True)
+    key_hash = Column(String(64), nullable=False, index=True)
+    window_started_at = Column(DateTime, nullable=False, index=True)
+    request_count = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        Index('ix_agent_rate_limit_expiry', 'expires_at'),
+    )
+
+
+class AgentResourceLease(Base):
+    """One database-coordinated concurrency slot."""
+    __tablename__ = 'agent_resource_leases'
+
+    id = Column(String(192), primary_key=True)
+    resource_name = Column(String(160), nullable=False, index=True)
+    slot_index = Column(Integer, nullable=False)
+    lease_owner = Column(String(128), index=True)
+    run_id = Column(String(64), index=True)
+    step_id = Column(String(96))
+    lease_expires_at = Column(DateTime, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'resource_name',
+            'slot_index',
+            name='uix_agent_resource_slot',
+        ),
+        Index('ix_agent_resource_lease_expiry', 'resource_name', 'lease_expires_at'),
+    )
+
+
+class AgentCircuitBreaker(Base):
+    """Shared circuit state for a tool or provider dependency."""
+    __tablename__ = 'agent_circuit_breakers'
+
+    resource_name = Column(String(160), primary_key=True)
+    state = Column(String(16), nullable=False, default='closed', index=True)
+    failure_count = Column(Integer, nullable=False, default=0)
+    opened_until = Column(DateTime, index=True)
+    probe_owner = Column(String(128))
+    last_error = Column(Text)
+    updated_at = Column(DateTime, nullable=False, default=datetime.now)
 
 
 class BacktestResult(Base):

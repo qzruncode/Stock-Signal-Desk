@@ -4,7 +4,7 @@
 覆盖:
 - 多订阅者收到相同 chunk、unsubscribe 后不再收
 - mark_done 投 None 哨兵,订阅 generator 自然结束
-- 慢订阅者 queue 满 drop oldest
+- 慢订阅者 queue 满后断开，避免静默事件缺口
 - is_active / start_or_get 复用
 - 断连不杀:订阅者中途断开(cancel 消费),后台 task 仍跑完并落库回调
 """
@@ -84,23 +84,18 @@ def test_unsubscribe_stops_receiving():
     asyncio.new_event_loop().run_until_complete(run())
 
 
-def test_drop_oldest_when_queue_full():
-    """订阅者 queue 满(容量受限)时,drop oldest,不阻塞生成。"""
+def test_slow_subscriber_is_disconnected_instead_of_losing_events():
+    """Queue 溢出必须断开订阅，不能静默拼接一个缺少中间事件的流。"""
     async def run():
         b = RunBroadcaster()
         q = b.subscribe()
-        # 模拟满 queue:capacity 是模块常量,这里发足够多 chunk 触发 drop。
+        # 模拟满 queue:capacity 是模块常量,这里发足够多 chunk 触发断开。
         for i in range(300):
             b.append_text(f"t{i}")
-        # queue 不会无限增长(drop oldest),put_nowait 不抛 QueueFull
-        collected: List[str] = []
-        while not q.empty():
-            c = q.get_nowait()
-            if c is not None:
-                collected.append(c.text_delta)
-        # 容量 256,故最多 256 条;最早的被丢弃
-        assert len(collected) <= 256
-        assert collected[-1] == "t299"
+        overflow = q.get_nowait()
+        assert "subscriber_backpressure" in overflow.error
+        assert q.get_nowait() is None
+        assert q not in b._subscribers
 
     asyncio.new_event_loop().run_until_complete(run())
 

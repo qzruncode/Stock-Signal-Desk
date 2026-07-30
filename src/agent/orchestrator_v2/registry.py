@@ -785,6 +785,17 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
         confirmation_required=False,
         max_calls=workflow.max_tool_calls,
         max_parallelism=workflow.max_parallel_steps,
+        timeout_seconds=180.0,
+        max_attempts=(2 if workflow.effect == EffectClass.READ else 1),
+        retry_backoff_seconds=0.5,
+        retry_backoff_multiplier=2.0,
+        retryable_error_codes=(
+            "timeout",
+            "connection_error",
+            "provider_rate_limited",
+            "provider_unavailable",
+            "tool_process_crashed",
+        ),
         cache_policy=(
             CachePolicy.READ_ONLY
             if workflow.effect == EffectClass.READ

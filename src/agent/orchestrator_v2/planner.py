@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from datetime import date
 import inspect
 import json
+import logging
+import os
 import re
 import time
 from types import MappingProxyType
@@ -27,6 +29,7 @@ from src.agent.orchestrator_v2.contracts import (
     Capability,
     OrchestratorV2Error,
     PlanningTraceV2,
+    PlannerVerificationV2,
     RepairIssueV2,
     RepairRecordV2,
     ResourceType,
@@ -44,6 +47,51 @@ from src.llm.anthropic_gateway import build_litellm_kwargs
 
 V2_SCHEMA_VERSION = "orchestrator-3.0"
 MODEL_PROGRESS_HEARTBEAT_SECONDS = 5.0
+logger = logging.getLogger(__name__)
+
+
+def _runtime_float(name: str, default: float, *, minimum: float) -> float:
+    try:
+        return max(minimum, float((os.getenv(name) or str(default)).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _runtime_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        return min(
+            maximum,
+            max(minimum, int((os.getenv(name) or str(default)).strip())),
+        )
+    except (TypeError, ValueError):
+        return default
+
+
+def _provider_error_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429 or (
+        isinstance(status_code, int) and 500 <= status_code <= 599
+    ):
+        return True
+    name = type(exc).__name__.lower()
+    return any(
+        token in name
+        for token in (
+            "timeout",
+            "connection",
+            "ratelimit",
+            "serviceunavailable",
+            "internalserver",
+        )
+    )
 
 
 class RawProviderPayloadError(ValueError):
@@ -392,7 +440,28 @@ async def call_model_exact_v2(
     schema_error_code: AgentErrorCode = AgentErrorCode.PLANNER_SCHEMA_INVALID,
     max_tokens: int = 4_000,
     contract_transport: Literal["function", "json_content"] = "function",
+    timeout_seconds: float | None = None,
+    provider_max_attempts: int | None = None,
 ) -> tuple[BaseModel, Any, RepairRecordV2 | None]:
+    request_timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else _runtime_float(
+            "AGENT_PLANNER_REQUEST_TIMEOUT_SECONDS",
+            90.0,
+            minimum=1.0,
+        )
+    )
+    provider_attempt_limit = (
+        int(provider_max_attempts)
+        if provider_max_attempts is not None
+        else _runtime_int(
+            "AGENT_PLANNER_PROVIDER_MAX_ATTEMPTS",
+            2,
+            minimum=1,
+            maximum=4,
+        )
+    )
     tool = _function_tool(function_name, description, model)
     first_payload: Any = None
     first_error: BaseException | None = None
@@ -451,14 +520,26 @@ async def call_model_exact_v2(
             **structured_kwargs,
         )
         raw_payload: Any = None
-        try:
-            completion_task = asyncio.create_task(completion(**kwargs))
-            wait_started = time.monotonic()
+        response: Any = None
+        provider_error: BaseException | None = None
+        for provider_attempt in range(provider_attempt_limit):
+            completion_task: asyncio.Task | None = None
             try:
+                completion_task = asyncio.create_task(completion(**kwargs))
+                wait_started = time.monotonic()
+                deadline = wait_started + request_timeout
                 while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            f"{function_name} exceeded {request_timeout:.1f}s"
+                        )
                     done, _ = await asyncio.wait(
                         {completion_task},
-                        timeout=MODEL_PROGRESS_HEARTBEAT_SECONDS,
+                        timeout=min(
+                            MODEL_PROGRESS_HEARTBEAT_SECONDS,
+                            remaining,
+                        ),
                     )
                     if done:
                         response = completion_task.result()
@@ -469,30 +550,39 @@ async def call_model_exact_v2(
                         )
                         if inspect.isawaitable(progress_result):
                             await progress_result
+                provider_error = None
+                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                provider_error = exc
+                if (
+                    provider_attempt + 1 >= provider_attempt_limit
+                    or not _provider_error_retryable(exc)
+                ):
+                    break
+                await asyncio.sleep(min(4.0, 0.5 * (2 ** provider_attempt)))
             finally:
-                if not completion_task.done():
+                if completion_task is not None and not completion_task.done():
                     completion_task.cancel()
                     await asyncio.gather(
                         completion_task,
                         return_exceptions=True,
                     )
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError as exc:
-            raise OrchestratorV2Error(
-                provider_error_code,
-                f"{function_name} provider request ended with TimeoutError",
-                task_id=node_id,
-            ) from exc
-        except Exception as exc:
+        if provider_error is not None:
             raise OrchestratorV2Error(
                 provider_error_code,
                 (
-                    f"{function_name} provider request failed: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{function_name} provider request failed after "
+                    f"{provider_attempt_limit} attempt(s): "
+                    f"{type(provider_error).__name__}: {provider_error}"
                 ),
                 task_id=node_id,
-            ) from exc
+                metadata={
+                    "provider_attempts": provider_attempt_limit,
+                    "timeout_seconds": request_timeout,
+                },
+            ) from provider_error
 
         try:
             raw_payload = _payload_from_response(response, function_name)
@@ -1034,6 +1124,29 @@ _INTENT_SYSTEM_PROMPT = """\
 财务指标必须区分资产负债率、营收、归母净利润和扣非净利润，金额保留用户表达的单位。
 """
 
+_VERIFIER_SYSTEM_PROMPT = """\
+你是独立的 Agent 计划验收器。只比较 current_request 与 frozen_outline：
+1. 图必须覆盖用户本轮明确要求的每一种终态能力，不能只做前置发现；
+2. 不得包含用户没有要求的能力；
+3. 每条资源边必须让下游消费上游真实的结构化结果；
+4. 复合能力已经包含的子能力不能重复出现；
+5. 不评价工具、参数、实现方式或答案内容。
+严格输出验收 Schema。没有问题时 accepted=true 且所有问题数组为空；
+存在任何遗漏、越界或资源错误时 accepted=false。不得替计划辩护。\
+"""
+
+
+def _planner_verifier_mode() -> str:
+    configured = (
+        os.getenv("AGENT_PLANNER_VERIFIER_MODE") or ""
+    ).strip().lower()
+    if configured in {"off", "shadow", "enforce"}:
+        return configured
+    environment = str(
+        os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or ""
+    ).strip().lower()
+    return "enforce" if environment in {"prod", "production"} else "off"
+
 
 async def plan_intent_graph_v2(
     messages: list[dict[str, Any]],
@@ -1046,7 +1159,7 @@ async def plan_intent_graph_v2(
     today: date | None = None,
     current_entities: list[dict[str, str]] | None = None,
 ) -> PlannedIntentGraphV2:
-    """Produce a frozen V2 graph without planner-owned time limits."""
+    """Produce a frozen V2 graph under bounded provider and total deadlines."""
     active_run_id = run_id or uuid.uuid4().hex
     request = current_user_request(messages)
     if not request:
@@ -1057,10 +1170,11 @@ async def plan_intent_graph_v2(
     started = time.monotonic()
     raw_outline: Any = None
     raw_intents: dict[str, Any] = {}
+    verification: PlannerVerificationV2 | None = None
     available_artifacts = _available_artifacts(semantic_context)
 
     async def execute() -> PlannedIntentGraphV2:
-        nonlocal raw_outline
+        nonlocal raw_outline, verification
         stage_started = time.monotonic()
         await _emit(
             stage_observer,
@@ -1116,6 +1230,56 @@ async def plan_intent_graph_v2(
             },
             has_direct_entities=bool(current_entities),
         )
+        verifier_mode = _planner_verifier_mode()
+        if verifier_mode != "off":
+            verification_value, _raw_verification, _repair = (
+                await call_model_exact_v2(
+                    llm_cfg=llm_cfg,
+                    completion=completion,
+                    function_name="verify_intent_outline_v2",
+                    description=(
+                        "Independently verify semantic coverage, minimality, "
+                        "and resource edges of the frozen intent graph."
+                    ),
+                    model=PlannerVerificationV2,
+                    system_prompt=_VERIFIER_SYSTEM_PROMPT,
+                    semantic_context={
+                        "current_request": request,
+                        "frozen_outline": outline.model_dump(mode="json"),
+                        "capability_catalog": capability_catalog(),
+                        "conversation_context": dict(semantic_context or {}),
+                    },
+                    node_id=None,
+                    max_tokens=1_500,
+                )
+            )
+            verification = PlannerVerificationV2.model_validate(
+                verification_value
+            )
+            minimum_confidence = _runtime_float(
+                "AGENT_PLANNER_VERIFIER_MIN_CONFIDENCE",
+                0.8,
+                minimum=0.0,
+            )
+            rejected = (
+                not verification.accepted
+                or verification.confidence < minimum_confidence
+            )
+            if rejected and verifier_mode == "enforce":
+                raise OrchestratorV2Error(
+                    AgentErrorCode.PLANNER_SCHEMA_INVALID,
+                    "independent semantic verifier rejected the capability graph",
+                    metadata={
+                        "verification": verification.model_dump(mode="json"),
+                        "minimum_confidence": minimum_confidence,
+                    },
+                )
+            if rejected:
+                logger.warning(
+                    "[AgentPlanner] shadow verifier rejected run=%s: %s",
+                    active_run_id,
+                    verification.model_dump(mode="json"),
+                )
         durations[AgentStage.OUTLINE.value] = int(
             (time.monotonic() - stage_started) * 1000
         )
@@ -1143,6 +1307,13 @@ async def plan_intent_graph_v2(
             summary="正在按节点填充精确业务 Schema",
         )
 
+        parameter_semaphore = asyncio.Semaphore(_runtime_int(
+            "AGENT_PLANNER_PARAMETER_CONCURRENCY",
+            4,
+            minimum=1,
+            maximum=12,
+        ))
+
         async def parameterize(
             node: IntentOutlineNodeV2,
         ) -> tuple[IntentOutlineNodeV2, BaseModel, Any, RepairRecordV2 | None]:
@@ -1150,34 +1321,35 @@ async def plan_intent_graph_v2(
             if not spec.intent_model.model_fields:
                 empty = spec.intent_model.model_validate({})
                 return node, empty, {}, None
-            value, raw, node_repair = await call_model_exact_v2(
-                llm_cfg=llm_cfg,
-                completion=completion,
-                function_name=f"submit_{node.capability.value}_intent_v2",
-                description=f"Submit semantic intent for {spec.title}.",
-                model=spec.intent_model,
-                system_prompt=_INTENT_SYSTEM_PROMPT,
-                semantic_context={
-                    "current_request": request,
-                    "frozen_node": node.model_dump(mode="json"),
-                    "upstream_resources": [
-                        ref.model_dump(mode="json") for ref in node.input_refs
-                    ],
-                    "conversation_context": dict(semantic_context or {}),
-                    "runtime_date": now.isoformat(),
-                },
-                node_id=node.node_id,
-                progress_observer=lambda elapsed: _emit(
-                    stage_observer,
-                    run_id=active_run_id,
-                    stage=AgentStage.PARAMETERIZATION,
-                    status=StageStatus.STARTED,
-                    summary=(
-                        f"模型正在填写“{spec.title}”业务 Schema，"
-                        f"已持续分析 {elapsed} 秒"
+            async with parameter_semaphore:
+                value, raw, node_repair = await call_model_exact_v2(
+                    llm_cfg=llm_cfg,
+                    completion=completion,
+                    function_name=f"submit_{node.capability.value}_intent_v2",
+                    description=f"Submit semantic intent for {spec.title}.",
+                    model=spec.intent_model,
+                    system_prompt=_INTENT_SYSTEM_PROMPT,
+                    semantic_context={
+                        "current_request": request,
+                        "frozen_node": node.model_dump(mode="json"),
+                        "upstream_resources": [
+                            ref.model_dump(mode="json") for ref in node.input_refs
+                        ],
+                        "conversation_context": dict(semantic_context or {}),
+                        "runtime_date": now.isoformat(),
+                    },
+                    node_id=node.node_id,
+                    progress_observer=lambda elapsed: _emit(
+                        stage_observer,
+                        run_id=active_run_id,
+                        stage=AgentStage.PARAMETERIZATION,
+                        status=StageStatus.STARTED,
+                        summary=(
+                            f"模型正在填写“{spec.title}”业务 Schema，"
+                            f"已持续分析 {elapsed} 秒"
+                        ),
                     ),
-                ),
-            )
+                )
             return node, value, raw, node_repair
 
         parameterized = await asyncio.gather(*(
@@ -1252,6 +1424,11 @@ async def plan_intent_graph_v2(
             normalized_intents=normalized_intents,
             assumptions=tuple(all_assumptions),
             repairs=tuple(repairs),
+            verification=(
+                verification.model_dump(mode="json")
+                if verification is not None
+                else None
+            ),
             stage_durations_ms=durations,
         )
         return PlannedIntentGraphV2(
@@ -1262,7 +1439,32 @@ async def plan_intent_graph_v2(
         )
 
     try:
-        graph = await execute()
+        total_timeout = _runtime_float(
+            "AGENT_PLANNER_TOTAL_TIMEOUT_SECONDS",
+            240.0,
+            minimum=5.0,
+        )
+        async with asyncio.timeout(total_timeout):
+            graph = await execute()
+    except TimeoutError as exc:
+        timeout_error = OrchestratorV2Error(
+            AgentErrorCode.PLANNER_TIMEOUT,
+            "Agent planner exceeded its total deadline",
+            metadata={"timeout_seconds": total_timeout},
+        )
+        await _emit(
+            stage_observer,
+            run_id=active_run_id,
+            stage=(
+                AgentStage.OUTLINE
+                if raw_outline is None
+                else AgentStage.PARAMETERIZATION
+            ),
+            status=StageStatus.FAILED,
+            error_code=AgentErrorCode.PLANNER_TIMEOUT,
+            summary=str(timeout_error),
+        )
+        raise timeout_error from exc
     except OrchestratorV2Error as exc:
         await _emit(
             stage_observer,
