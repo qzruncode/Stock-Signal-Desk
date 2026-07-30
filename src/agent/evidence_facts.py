@@ -12,13 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.agent.result_contracts import MappingSelectionContext
 from src.llm.anthropic_gateway import build_litellm_kwargs
-from src.tools.symbols import find_securities_in_text
+from src.tools.symbols import find_securities_in_text, resolve_symbol
 
 
 class ExtractedEvidenceFact(BaseModel):
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     company_name: str
+    company_mention: str
     symbol: Optional[str] = None
     stage: Literal["L3", "L2", "L1", "boundary"]
     theme_relevance: Literal["direct", "supporting", "unrelated"]
@@ -72,6 +73,7 @@ _FACT_TOOL = {
                         "additionalProperties": False,
                         "properties": {
                             "company_name": {"type": "string"},
+                            "company_mention": {"type": "string"},
                             "symbol": {"type": ["string", "null"]},
                             "stage": {"type": "string", "enum": ["L3", "L2", "L1", "boundary"]},
                             "theme_relevance": {
@@ -96,7 +98,8 @@ _FACT_TOOL = {
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         },
                         "required": [
-                            "company_name", "symbol", "stage", "theme_relevance", "thesis_fit",
+                            "company_name", "company_mention", "symbol", "stage",
+                            "theme_relevance", "thesis_fit",
                             "commercialization_signal", "relationship",
                             "fact", "support_quote", "source_id", "confidence",
                         ],
@@ -130,11 +133,19 @@ _FACT_SYSTEM_PROMPT = """\
    - 只有“商业化应用”、产品发布、技术布局而无订单/收入/批量交付，一律为 L1；
    - 明确否认或尚未形成收入为 boundary。
 6. support_quote 必须是 source_id 对应原文中可逐字回查的短片段，包含公司名称；不得改写、拼接或补充原文没有的词。
-7. symbol 只在原文明示时填写；不得猜代码。
-8. 必须遍历 sources 中出现的每家 A 股公司，不得围绕同一家公司重复返回大量事实而遗漏其他公司。
-9. 同一公司若同时存在不同命题匹配度或兑现阶段的事实，可返回最多 3 条候选；必须包含最强的
+7. company_name 填本地 A 股证券标准名；company_mention 必须逐字填写来源中使用的完整公司称谓。
+   如果一个证券简称只是另一个公司称谓或普通名词的一部分，company_mention 必须保留完整原词，
+   不得截取其中的证券简称。
+8. source.candidate_securities 是本地证券目录按字面命中提供的身份候选，不是业务证据。
+   只有原文确实把名称作为公司主体，并且 support_quote 证明其与当前主题的关系时才可抽取；
+   不得把行业词、产品词等普通名词误当成同名证券。symbol 可从对应候选复制或使用原文明示值，不得猜代码。
+9. 必须遍历 sources 中出现的每家 A 股公司，不得围绕同一家公司重复返回大量事实而遗漏其他公司；
+   candidate_securities 不是穷尽列表，原文中的其他 A 股公司也必须判断。
+10. 同一公司若同时存在不同命题匹配度或兑现阶段的事实，可返回最多 3 条候选；必须包含最强的
    量产、批量交付、订单或主题收入事实。最终去重由校验器完成，不能先用较弱事实覆盖较强事实。
-10. 必须通过 bind_company_evidence 工具返回结构化结果。\
+11. 输入提供 candidate_to_evaluate 时，必须优先、单独核验该证券；有符合命题的原文事实就返回，
+    原文只出现名称而没有相关事实才返回空 facts，不得改为分析其他公司。
+12. 必须通过 bind_company_evidence 工具返回结构化结果。\
 """
 
 
@@ -163,7 +174,7 @@ def _source_date(source_item: dict[str, Any], result: dict[str, Any]) -> tuple[s
     return "", False
 
 
-def _collect_sources(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def collect_evidence_sources(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     total_characters = 0
     # Full crawled pages usually carry the company-specific realization
@@ -244,6 +255,34 @@ def _normalized_source_text(value: str) -> str:
     return re.sub(r"[\s*_`#>]+", "", value).replace("／", "/").lower()
 
 
+def _has_independent_mention(value: str, text: str) -> bool:
+    """Reject a security short name found only inside a longer name/token."""
+    start = 0
+    while True:
+        position = text.find(value, start)
+        if position < 0:
+            return False
+        if position == 0 or not text[position - 1].isalnum():
+            return True
+        start = position + 1
+
+
+def _same_security_display_name(left: str, right: str) -> bool:
+    """Ignore exchange display markers while preserving the company identity."""
+    def normalize(value: str) -> str:
+        text = re.sub(r"\s+", "", str(value or "")).upper()
+        text = re.sub(r"^\*?ST", "", text)
+        return re.sub(r"-(?:U|W|UW|WD)$", "", text)
+
+    normalized_left = normalize(left)
+    normalized_right = normalize(right)
+    return bool(
+        normalized_left
+        and normalized_right
+        and normalized_left == normalized_right
+    )
+
+
 def _validate_facts(
     raw_facts: list[Any],
     sources: list[dict[str, Any]],
@@ -264,9 +303,16 @@ def _validate_facts(
         source_text = str(source.get("text") or "")
         if not quote or _normalized_source_text(quote) not in _normalized_source_text(source_text):
             continue
-        company_token = _normalized_source_text(fact.company_name)
-        if company_token not in _normalized_source_text(quote) and company_token not in _normalized_source_text(
-            str(source.get("title") or "")
+        mention = fact.company_mention.strip()
+        title = str(source.get("title") or "")
+        if not mention or (
+            mention not in quote
+            and mention not in title
+        ):
+            continue
+        if not (
+            _has_independent_mention(mention, source_text)
+            or _has_independent_mention(mention, title)
         ):
             continue
         resolution_text = f"{fact.company_name} {fact.symbol or ''}".strip()
@@ -281,6 +327,14 @@ def _validate_facts(
             None,
         )
         if entity is None:
+            continue
+        if (
+            not _same_security_display_name(
+                mention,
+                str(entity.get("name") or fact.company_name),
+            )
+            and resolve_symbol(mention) != str(entity.get("symbol") or "")
+        ):
             continue
         symbol = str(entity.get("symbol") or "")
         effective_stage = fact.stage
@@ -328,9 +382,25 @@ async def bind_company_evidence(
     completion: Callable[..., Awaitable[Any]],
 ) -> list[BoundEvidenceFact]:
     """Extract and source-validate company facts for the resolved topic."""
-    sources = _collect_sources(evidence)
+    sources = collect_evidence_sources(evidence)[:12]
     if not sources or not intent.normalized_topic:
         return []
+    model_sources = []
+    for source in sources:
+        source_with_candidates = dict(source)
+        identity_text = "\n".join((
+            str(source.get("title") or ""),
+            str(source.get("text") or ""),
+        ))
+        source_with_candidates["candidate_securities"] = [
+            candidate
+            for candidate in find_securities_in_text(identity_text, limit=20)
+            if _has_independent_mention(
+                str(candidate.get("name") or ""),
+                identity_text,
+            )
+        ]
+        model_sources.append(source_with_candidates)
 
     # A single 80k-character extraction frequently exhausted the gateway's
     # structured-output budget and returned an empty assistant message.  Split
@@ -340,9 +410,22 @@ async def bind_company_evidence(
     source_batches: list[list[dict[str, Any]]] = []
     current_batch: list[dict[str, Any]] = []
     current_characters = 0
-    for source in sources:
+    for source in model_sources:
         source_characters = len(str(source.get("text") or ""))
-        if current_batch and (len(current_batch) >= 10 or current_characters + source_characters > 28_000):
+        # Give every source with a locally verified company identity its own
+        # semantic pass. This avoids one company's fact being omitted because
+        # another source in the same batch is more salient.
+        if source.get("candidate_securities"):
+            if current_batch:
+                source_batches.append(current_batch)
+                current_batch = []
+                current_characters = 0
+            source_batches.append([source])
+            continue
+        if current_batch and (
+            len(current_batch) >= 2
+            or current_characters + source_characters > 12_000
+        ):
             source_batches.append(current_batch)
             current_batch = []
             current_characters = 0
@@ -351,14 +434,7 @@ async def bind_company_evidence(
     if current_batch:
         source_batches.append(current_batch)
 
-    async def extract_batch(batch: list[dict[str, Any]]) -> list[Any]:
-        request = {
-            "requested_topic": intent.normalized_topic,
-            "research_objective": intent.objective,
-            "research_dimensions": intent.research_dimensions,
-            "thesis_requirements": intent.thesis_requirements,
-            "sources": batch,
-        }
+    async def request_facts(request: dict[str, Any]) -> list[Any]:
         kwargs = build_litellm_kwargs(
             llm_cfg,
             stream=False,
@@ -370,6 +446,10 @@ async def bind_company_evidence(
             tool_choice={"type": "function", "function": {"name": "bind_company_evidence"}},
             temperature=0,
             max_tokens=4000,
+            extra_body={
+                "thinking": {"type": "disabled"},
+                "reasoning_effort": "none",
+            },
         )
         response = await completion(**kwargs)
         payload = _payload_from_response(response)
@@ -378,13 +458,43 @@ async def bind_company_evidence(
             raise ValueError("evidence response facts is not a list")
         return facts
 
+    async def extract_batch(batch: list[dict[str, Any]]) -> list[Any]:
+        base_request = {
+            "requested_topic": intent.normalized_topic,
+            "research_objective": intent.objective,
+            "research_dimensions": intent.research_dimensions,
+            "thesis_requirements": intent.thesis_requirements,
+            "sources": batch,
+        }
+        facts = await request_facts(base_request)
+        if len(batch) != 1:
+            return facts
+        source = batch[0]
+        topic_text = _normalized_source_text(intent.normalized_topic)
+        source_text = _normalized_source_text(str(source.get("text") or ""))
+        if not topic_text or topic_text not in source_text:
+            return facts
+        validated = _validate_facts(facts, batch)
+        covered_symbols = {
+            fact.symbol
+            for fact in validated
+            if fact.thesis_fit == "exact"
+        }
+        missing_candidates = [
+            candidate
+            for candidate in source.get("candidate_securities") or []
+            if str(candidate.get("symbol") or "") not in covered_symbols
+        ][:5]
+        for candidate in missing_candidates:
+            focused_request = {
+                **base_request,
+                "candidate_to_evaluate": candidate,
+            }
+            facts.extend(await request_facts(focused_request))
+        return facts
+
     tasks = [asyncio.create_task(extract_batch(batch)) for batch in source_batches]
-    done, pending = await asyncio.wait(tasks, timeout=28.0)
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-    batch_results = [task.result() if not task.exception() else task.exception() for task in done]
+    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
     raw_facts: list[Any] = []
     failures: list[BaseException] = []
     for result in batch_results:
@@ -397,4 +507,8 @@ async def bind_company_evidence(
     return _validate_facts(raw_facts, sources)
 
 
-__all__ = ["BoundEvidenceFact", "bind_company_evidence"]
+__all__ = [
+    "BoundEvidenceFact",
+    "bind_company_evidence",
+    "collect_evidence_sources",
+]

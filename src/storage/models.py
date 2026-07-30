@@ -375,6 +375,7 @@ class ChatConversation(Base):
     title_source = Column(String(16), nullable=False, default='auto', index=True)
     preview_text = Column(String(200))
     thread_state_json = Column(Text)
+    agent_context_json = Column(Text)
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
@@ -413,6 +414,88 @@ class ChatMessage(Base):
             'sequence': self.sequence,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class AgentArtifact(Base):
+    """Independent, versioned orchestration artifact payload."""
+    __tablename__ = 'agent_artifacts'
+
+    id = Column(String(64), primary_key=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey('chat_conversations.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    run_id = Column(String(64), nullable=False, index=True)
+    schema_version = Column(String(64), nullable=False)
+    producer_node_id = Column(String(64), nullable=False, index=True)
+    resource_type = Column(String(64), nullable=False, index=True)
+    coverage_json = Column(Text, nullable=False)
+    sources_json = Column(Text, nullable=False, default='[]')
+    fingerprint = Column(String(64), nullable=False, index=True)
+    lineage_json = Column(Text, nullable=False, default='[]')
+    payload_json = Column(Text, nullable=False)
+    produced_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index(
+            'ix_agent_artifacts_conversation_resource_time',
+            'conversation_id',
+            'resource_type',
+            'produced_at',
+        ),
+        UniqueConstraint(
+            'conversation_id',
+            'fingerprint',
+            name='uix_agent_artifact_conversation_fingerprint',
+        ),
+    )
+
+
+class AgentRunTrace(Base):
+    """Redacted stage-level observability record for one orchestrator run."""
+    __tablename__ = 'agent_run_traces'
+
+    id = Column(String(64), primary_key=True)
+    run_id = Column(String(64), nullable=False, index=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey('chat_conversations.id', ondelete='CASCADE'),
+        nullable=False,
+        index=True,
+    )
+    orchestrator_mode = Column(String(24), nullable=False, index=True)
+    status = Column(String(24), nullable=False, index=True)
+    error_code = Column(String(64))
+    schema_version = Column(String(64))
+    model_config_json = Column(Text, nullable=False, default='{}')
+    stage_durations_json = Column(Text, nullable=False, default='{}')
+    raw_outline_json = Column(Text)
+    normalized_outline_json = Column(Text)
+    raw_intents_json = Column(Text, nullable=False, default='{}')
+    normalized_intents_json = Column(Text, nullable=False, default='{}')
+    repairs_json = Column(Text, nullable=False, default='[]')
+    latest_stage_json = Column(Text)
+    compiled_plan_json = Column(Text)
+    outcomes_json = Column(Text)
+    coverage_json = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'run_id',
+            'orchestrator_mode',
+            name='uix_agent_run_trace_run_mode',
+        ),
+        Index(
+            'ix_agent_run_trace_conversation_created',
+            'conversation_id',
+            'created_at',
+        ),
+    )
 
 
 class BacktestResult(Base):

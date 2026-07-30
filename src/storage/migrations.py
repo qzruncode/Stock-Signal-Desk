@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Database migration and schema compatibility logic."""
 
+import json
 import logging
 from typing import Optional
 
@@ -15,10 +16,93 @@ logger = logging.getLogger(__name__)
 def ensure_compatible_schema(engine, is_sqlite_engine: bool) -> None:
     """Create missing tables and run any lightweight migrations."""
     Base.metadata.create_all(engine)
+    _migrate_chat_agent_context_field(engine)
+    _migrate_agent_run_trace_latest_stage(engine)
     if is_sqlite_engine:
         _migrate_legacy_kline_tables(engine)
         _migrate_financial_fields_rename(engine)
         _migrate_quant_screen_fields(engine)
+
+
+def _migrate_agent_run_trace_latest_stage(engine) -> None:
+    """Persist the authoritative terminal Agent stage across reconnects."""
+    inspector = inspect(engine)
+    if "agent_run_traces" not in inspector.get_table_names():
+        return
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("agent_run_traces")
+    }
+    if "latest_stage_json" in columns:
+        return
+    session = Session(bind=engine)
+    try:
+        session.execute(text(
+            "ALTER TABLE agent_run_traces "
+            "ADD COLUMN latest_stage_json TEXT"
+        ))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _migrate_chat_agent_context_field(engine) -> None:
+    """Move server-owned semantic state out of the UI presentation snapshot."""
+    inspector = inspect(engine)
+    if "chat_conversations" not in inspector.get_table_names():
+        return
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("chat_conversations")
+    }
+    session = Session(bind=engine)
+    try:
+        if "agent_context_json" not in columns:
+            session.execute(text(
+                "ALTER TABLE chat_conversations "
+                "ADD COLUMN agent_context_json TEXT"
+            ))
+            session.commit()
+
+        rows = session.execute(text(
+            "SELECT id, thread_state_json, agent_context_json "
+            "FROM chat_conversations "
+            "WHERE agent_context_json IS NULL AND thread_state_json IS NOT NULL"
+        )).mappings().all()
+        for row in rows:
+            try:
+                thread_state = json.loads(row["thread_state_json"])
+            except (TypeError, ValueError):
+                continue
+            context = (
+                thread_state.get("agent_context")
+                if isinstance(thread_state, dict)
+                else None
+            )
+            if not isinstance(context, dict):
+                continue
+            session.execute(
+                text(
+                    "UPDATE chat_conversations "
+                    "SET agent_context_json = :agent_context_json "
+                    "WHERE id = :conversation_id"
+                ),
+                {
+                    "conversation_id": row["id"],
+                    "agent_context_json": json.dumps(
+                        context, ensure_ascii=False,
+                    ),
+                },
+            )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def _migrate_quant_screen_fields(engine) -> None:

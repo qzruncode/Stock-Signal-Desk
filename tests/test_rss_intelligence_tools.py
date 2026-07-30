@@ -230,11 +230,11 @@ def test_research_library_returns_recent_candidates_without_semantic_filtering()
         )
 
     assert [item["title"] for item in result["items"]] == [
-        "2026年中国风机价值链分析",
         "人形机器人核心零部件研究",
+        "2026年中国风机价值链分析",
     ]
-    assert result["items"][0]["exact_subject_mentions"] == []
-    assert result["items"][1]["exact_subject_mentions"] == ["人形机器人"]
+    assert result["items"][0]["exact_subject_mentions"] == ["人形机器人"]
+    assert result["items"][1]["exact_subject_mentions"] == []
     assert all(item["semantic_status"] == "model_required" for item in result["items"])
 
 
@@ -271,13 +271,13 @@ def test_research_library_does_not_infer_topic_from_playbook_wording():
         )
 
     assert [item["title"] for item in result["items"]] == [
-        "纺织服装ESG专题报告：技术与供应链重构",
         "人形机器人核心零部件产业研究",
+        "纺织服装ESG专题报告：技术与供应链重构",
         "微特电机行业政策汇总",
     ]
     assert [item["exact_subject_mentions"] for item in result["items"]] == [
-        [],
         ["人形机器人"],
+        [],
         [],
     ]
 

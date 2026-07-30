@@ -41,35 +41,7 @@ _VALID_CATEGORIES = {
     "research", "regulatory", "events", "risk",
     "action",
 }
-_TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
-_PROFESSIONAL_TOOL_TIMEOUT_SECONDS = 90.0
-_PROFESSIONAL_BUY_ANALYSIS_TIMEOUT_SECONDS = 2100.0
-_CATALYST_ANALYSIS_TIMEOUT_SECONDS = 180.0
-_QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
-
 _registry = ToolRegistry()
-
-
-def _execution_timeout(tool_name: str, arguments: Dict[str, Any]) -> float:
-    if tool_name == "screen_atr_volatility_stocks":
-        return _QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
-    if tool_name == "evaluate_multi_stock_buy_criteria":
-        return _PROFESSIONAL_BUY_ANALYSIS_TIMEOUT_SECONDS
-    if tool_name == "analyze_stock_catalysts":
-        return _CATALYST_ANALYSIS_TIMEOUT_SECONDS
-    if tool_name in {
-        "get_multi_stock_snapshot",
-        "get_multi_stock_decision_evidence",
-        "get_domain_stock_candidates",
-    }:
-        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    if tool_name == "websearch" and bool(arguments.get("includeContent")):
-        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    if tool_name == "get_monetary_policy_operations" and bool(arguments.get("include_content")):
-        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    if tool_name == "get_regulatory_updates" and bool(arguments.get("include_content")):
-        return _PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    return _TOOL_EXECUTION_TIMEOUT_SECONDS
 
 
 def _truncate_description(text: str, limit: int = _DESCRIPTION_MAX_LEN) -> str:
@@ -121,6 +93,16 @@ def _build_tool_meta(tool_def: Any) -> ToolMeta:
         category=category,  # type: ignore[arg-type]
         description=_truncate_description(tool_def.description or ""),
         parameters=_flatten_parameters(tool_def.parameters or {}),
+        typed=(
+            tool_def.args_model is not None
+            and tool_def.result_model is not None
+        ),
+        args_schema=dict(tool_def.parameters or {}),
+        result_schema=(
+            tool_def.result_model.model_json_schema()
+            if tool_def.result_model is not None
+            else None
+        ),
     )
 
 
@@ -158,8 +140,8 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
     使 setting 页「测试」结果与 LLM 实际看到的相同。同步网络 IO 丢进线程池,
     避免阻塞事件循环(与 chat.py 的 _execute_one_tool 同思路)。工具不存在、
     参数错误或任意异常均以 success=False + error 返回,保持响应结构统一,
-    供前端按 success 字段判断。执行使用与 chat.py 相同的超时档位和原生风险
-    工具进程隔离，避免设置页试运行拖死 API worker 或把上游失败误报为成功。
+    供前端按 success 字段判断。原生风险工具仍使用进程隔离，但不设置应用层
+    硬截止；执行由工具完成、真实异常或用户取消结束。
     """
     tool_name = (req.tool_name or "").strip()
     args = _registry.normalize_arguments(tool_name, req.arguments or {})
@@ -170,7 +152,6 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
 
     try:
         def _sync_fetch() -> Any:
-            timeout = _execution_timeout(tool_name, args)
             # Every registered tool runs out-of-process.  Several apparently
             # harmless tools can enter AKShare/libmini_racer indirectly when a
             # cache misses.  Running only a hand-maintained subset in isolation
@@ -183,14 +164,12 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
                 else execute_tool_isolated(
                     tool_name,
                     args,
-                    timeout_seconds=timeout - 3,
                 )
             )
             compacted = _compact_tool_result(tool_name, result)
             return _maybe_attach_search_fallback(tool_name, args, compacted)
 
-        timeout = _execution_timeout(tool_name, args)
-        payload = await asyncio.wait_for(asyncio.to_thread(_sync_fetch), timeout=timeout)
+        payload = await asyncio.to_thread(_sync_fetch)
         succeeded = not (isinstance(payload, dict) and payload.get("success") is False)
         errors = payload.get("errors") if isinstance(payload, dict) else None
         return ToolExecuteResponse(
@@ -199,15 +178,6 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
             success=succeeded,
             result=payload,
             error=(str(errors[0]) if not succeeded and isinstance(errors, list) and errors else None),
-            duration_ms=_elapsed_ms(),
-        )
-    except (asyncio.TimeoutError, TimeoutError):
-        logger.warning("[tool-registry] execute timed out: %s", tool_name)
-        return ToolExecuteResponse(
-            tool_name=tool_name,
-            arguments=args,
-            success=False,
-            error="工具执行超时",
             duration_ms=_elapsed_ms(),
         )
     except KeyError:

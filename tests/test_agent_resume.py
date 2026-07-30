@@ -265,18 +265,51 @@ def test_history_persisted_at_generation_start(client):
             skip_title=skip_title,
         )
 
+    final_completion = _slow_async_completion([_chunk("回复")], delay=0.01)
+
+    async def dispatch_completion(**kwargs):
+        function_name = (
+            kwargs.get("tool_choice", {})
+            .get("function", {})
+            .get("name")
+        )
+        if function_name == "submit_intent_outline_v2":
+            payload = {
+                "nodes": [{
+                    "node_id": "answer",
+                    "capability": "general_response",
+                    "objective": "回复用户",
+                    "input_refs": [],
+                    "result_selection": None,
+                }],
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        elif function_name == "submit_general_response_intent_v2":
+            payload = {}
+        else:
+            return await final_completion(**kwargs)
+        return {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": function_name,
+                            "arguments": json.dumps(payload),
+                        },
+                    }],
+                },
+            }],
+        }
+
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
-         patch(
-             "api.v1.endpoints.agent.chat.resolve_task_plan",
-             new=AsyncMock(return_value=plan),
-         ), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm, \
          patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()), \
          patch("src.services.agent_prompt_service.AgentPromptService") as PS, \
          patch.object(chat_mod.ChatSessionService, "save_conversation_snapshot", spy_snapshot):
         PS.return_value.get_active_system_prompt.return_value = ("sys", False)
-        llm.acompletion = _slow_async_completion([_chunk("回复")], delay=0.01)
+        llm.acompletion = dispatch_completion
         with client.stream("POST", "/api/v1/agent/chat",
                             json={"messages": [user_msg], "conversation_id": cid}) as resp:
             body = b""

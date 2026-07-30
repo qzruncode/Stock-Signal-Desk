@@ -38,9 +38,11 @@ logger = logging.getLogger(__name__)
 
 # 订阅者 queue 容量上限:满则丢弃最旧的 chunk (慢订阅者保护)。
 _SUBSCRIBER_QUEUE_MAXSIZE = 256
-# 单次 run 内保留已广播 chunk,用于刷新后 resume 回放。一个 agent run 的 chunk
-# 数量通常不大;设置上限是为了避免极端工具输出把进程内存撑爆。
-_RUN_HISTORY_MAX_CHUNKS = 100_000
+# 单次 run 内保留已广播 chunk,用于刷新后 resume 回放。实时分析可能持续数十
+# 分钟，供应商 reasoning 又可能按 token 产生 delta；100k 级历史会同时放大
+# 后端内存和浏览器恢复压力。保留最近 20k 条作为硬保护，并用全局游标记录被裁
+# 掉的前缀，避免 trim 后 after_chunk_index 语义错位。
+_RUN_HISTORY_MAX_CHUNKS = 20_000
 # run 结束后在注册表保留的时长:让最后断开的连接仍能拿到 final chunk / 哨兵。
 _RUN_RETENTION_SECONDS = 300.0
 
@@ -101,6 +103,9 @@ class RunBroadcaster:
         self._subscribers: Set[asyncio.Queue] = set()
         self.finished: asyncio.Event = asyncio.Event()
         self._history: List[AssistantStreamChunk] = []
+        self._history_start_index = 0
+        self._history_next_index = 0
+        self._has_tool_events = False
         # 生成逻辑会把已累积的 assistant 文本写到这里,供续流端点补齐用。
         # (与 chat.py 的 state["assistant_text"] 同源,由 run_callback 实时镜像。)
         self.assistant_text_snapshot: str = ""
@@ -139,14 +144,11 @@ class RunBroadcaster:
 
     @property
     def history_length(self) -> int:
-        return len(self._history)
+        return self._history_next_index
 
     @property
     def has_tool_events(self) -> bool:
-        return any(
-            isinstance(chunk, (ToolCallBeginChunk, ToolCallDeltaChunk, ToolResultChunk))
-            for chunk in self._history
-        )
+        return self._has_tool_events
 
     def subscribe(
         self,
@@ -155,8 +157,13 @@ class RunBroadcaster:
     ) -> "asyncio.Queue[Optional[AssistantStreamChunk]]":
         replay_chunks: List[AssistantStreamChunk] = []
         if replay_from is not None:
-            safe_index = max(0, min(replay_from, len(self._history)))
-            replay_chunks = self._history[safe_index:]
+            requested_index = max(0, replay_from)
+            safe_index = max(
+                self._history_start_index,
+                min(requested_index, self._history_next_index),
+            )
+            history_offset = safe_index - self._history_start_index
+            replay_chunks = self._history[history_offset:]
 
         # 续流重放历史时不能套用慢订阅者 drop-oldest 策略,否则超过 256 个
         # chunk 的回答会从中间开始显示。给 replay 队列预留完整历史容量,
@@ -186,8 +193,16 @@ class RunBroadcaster:
 
     def _emit(self, chunk: AssistantStreamChunk) -> None:
         self._history.append(chunk)
+        self._history_next_index += 1
+        if isinstance(
+            chunk,
+            (ToolCallBeginChunk, ToolCallDeltaChunk, ToolResultChunk),
+        ):
+            self._has_tool_events = True
         if len(self._history) > _RUN_HISTORY_MAX_CHUNKS:
-            del self._history[: len(self._history) - _RUN_HISTORY_MAX_CHUNKS]
+            trim_count = len(self._history) - _RUN_HISTORY_MAX_CHUNKS
+            del self._history[:trim_count]
+            self._history_start_index += trim_count
         for queue in list(self._subscribers):
             self._safe_put(queue, chunk)
 
@@ -213,7 +228,7 @@ class RunBroadcaster:
         return []
 
 
-RunStatus = str  # "running" | "completed" | "failed" | "cancelled"
+RunStatus = str  # "running" | "completed" | "partial" | "failed" | "cancelled"
 
 
 class RunCapacityExceeded(RuntimeError):
@@ -265,6 +280,7 @@ class ActiveRunRegistry:
         self._total_started = 0
         self._terminal_counts: Dict[str, int] = {
             "completed": 0,
+            "partial": 0,
             "failed": 0,
             "cancelled": 0,
         }

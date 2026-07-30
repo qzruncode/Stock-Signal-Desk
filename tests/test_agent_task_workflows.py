@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import inspect
 import json
 from datetime import date
@@ -16,22 +17,32 @@ from src.agent.task_executor import (
     WorkflowPolicyValidator,
     action_fingerprint,
 )
+from src.agent.orchestrator_v2.contracts import (
+    AgentErrorCode,
+    Capability,
+    OrchestratorV2Error,
+)
+from src.agent.orchestrator_v2.registry import capability_catalog, capability_for
+from src.agent.orchestrator_v2.runtime import (
+    CompiledIntentGraphV2,
+    CompiledTaskV2,
+)
 from src.agent.task_planner import (
-    previous_assistant_outline,
-    resolve_task_plan,
+    resolve_plan_entities,
     validate_candidate_plan,
 )
 import src.agent.task_planner as task_planner_module
 from src.agent.task_workflows import (
     ConfirmationState,
     EntityScope,
+    ResultSelectionMode,
+    ResultSelectionSpec,
     ResolvedTask,
     StandardTask,
     StandardTaskKind,
     TaskPlan,
     WORKFLOW_REGISTRY,
     compile_task,
-    planner_task_catalog,
     registered_workflow_tools,
 )
 from src.tools.registry import ToolRegistry
@@ -58,6 +69,48 @@ class _Controller:
         return tool
 
 
+@contextmanager
+def _unified_pipeline(
+    chat_mod,
+    plan: TaskPlan,
+    resolved: list[ResolvedTask],
+):
+    compiled = CompiledIntentGraphV2(
+        run_id="test-run",
+        plan=plan,
+        tasks=tuple(
+            CompiledTaskV2(
+                task=task,
+                capability=Capability(task.kind.value),
+                capability_version="3.0.0",
+                intent_schema_version=capability_for(
+                    Capability(task.kind.value)
+                ).schema_version,
+                execution_policy=capability_for(
+                    Capability(task.kind.value)
+                ).execution_policy,
+                resource_fingerprint=f"test-{task.task_id}",
+            )
+            for task in resolved
+        ),
+        assumptions=(),
+    )
+    graph = MagicMock()
+    graph.run_id = "test-run"
+    graph.trace.schema_version = "orchestrator-3.0"
+    graph.trace.stage_durations_ms = {}
+    with patch.object(
+        chat_mod,
+        "plan_intent_graph_v2",
+        new=AsyncMock(return_value=graph),
+    ), patch.object(
+        chat_mod,
+        "compile_intent_graph_v2",
+        new=AsyncMock(return_value=compiled),
+    ):
+        yield
+
+
 def _task(
     kind: StandardTaskKind,
     *,
@@ -66,15 +119,38 @@ def _task(
     parameters: dict | None = None,
     depends_on: list[str] | None = None,
     confirmation: ConfirmationState = ConfirmationState.NOT_REQUIRED,
+    result_selection: ResultSelectionSpec | None = None,
 ) -> StandardTask:
+    normalized_parameters = dict(parameters or {})
+    if kind == StandardTaskKind.THEME_BUSINESS_EVIDENCE:
+        normalized_parameters.setdefault("evidence_context", {
+            "target_topics": ["人形机器人"],
+            "domain_theses": [
+                {
+                    "label": str(domain.get("label") or ""),
+                    "rationale": "该板块是人形机器人产业链的直接受益环节",
+                }
+                for domain in normalized_parameters.get("domains") or []
+                if isinstance(domain, dict) and domain.get("label")
+            ],
+        })
     return StandardTask(
         task_id=task_id,
         kind=kind,
         objective=kind.value,
         entity_scope=EntityScope.NONE,
         entities=entities or [],
-        parameters=parameters or {},
+        parameters=normalized_parameters,
         depends_on=depends_on or [],
+        result_selection=(
+            result_selection
+            or ResultSelectionSpec(
+                mode=ResultSelectionMode.ALL_RELEVANT,
+                max_items=None,
+            )
+            if kind == StandardTaskKind.INDUSTRY_RESEARCH
+            else None
+        ),
         output_requirements=[],
         confirmation=confirmation,
         confidence=0.95,
@@ -88,14 +164,19 @@ def _domain(
     rationale: str = "测试中的板块目录解析结果",
     unresolved_parts: list[str] | None = None,
 ) -> dict:
-    selected = list(boards) or [label]
+    unresolved = mapping_type == "unresolved"
+    selected = list(boards) or ([] if unresolved else [label])
     return {
         "label": label,
         "board_queries": selected,
         "mapping_type": mapping_type or "catalog_binding",
         "rationale": rationale,
-        "unresolved_parts": unresolved_parts or [],
+        "unresolved_parts": unresolved_parts or ([label] if unresolved else []),
     }
+
+
+def _financial_conditions(*conditions: dict) -> dict:
+    return {"conditions": list(conditions)}
 
 
 def _model_response(function_name: str, payload: dict) -> SimpleNamespace:
@@ -111,17 +192,23 @@ def _model_response(function_name: str, payload: dict) -> SimpleNamespace:
 def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
     assert set(ToolRegistry().get_tool_names()) == set(registered_workflow_tools())
     assert all(
-        spec.max_tool_calls <= 8
+        spec.max_tool_calls <= 104
         for kind, spec in WORKFLOW_REGISTRY.items()
-        if kind != StandardTaskKind.INVESTMENT_DECISION
+        if kind not in {
+            StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+            StandardTaskKind.INVESTMENT_DECISION,
+        }
     )
     assert WORKFLOW_REGISTRY[
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE
+    ].max_tool_calls == 6000
+    assert WORKFLOW_REGISTRY[
         StandardTaskKind.INVESTMENT_DECISION
-    ].max_tool_calls == 1
+    ].max_tool_calls == 302
 
 
 def test_planner_catalog_does_not_expose_tool_names() -> None:
-    catalog_text = json.dumps(planner_task_catalog(), ensure_ascii=False)
+    catalog_text = json.dumps(capability_catalog(), ensure_ascii=False)
     assert "tool_whitelist" not in catalog_text
     for tool_name in ToolRegistry().get_tool_names():
         assert tool_name not in catalog_text
@@ -168,7 +255,7 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
     parameters = {
         StandardTaskKind.SECURITY_LOOKUP: {"query": "贵州茅台"},
         StandardTaskKind.PRICE_HISTORY: {"count": 60},
-        StandardTaskKind.TECHNICAL_ANALYSIS: {"count": 60},
+        StandardTaskKind.TECHNICAL_ANALYSIS: {},
         StandardTaskKind.NEWS_ANALYSIS: {
             "query": "白酒行业", "topic": "industry", "subjects": ["白酒"], "days": 7,
         },
@@ -177,21 +264,23 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         StandardTaskKind.SECTOR_ANALYSIS: {"type": "industry", "period": "today"},
         StandardTaskKind.MACRO_ANALYSIS: {"indicators": ["PMI"]},
         StandardTaskKind.INDUSTRY_RESEARCH: {
-            "query": "人形机器人产业链", "subjects": ["人形机器人"],
+            "query": "人形机器人产业链",
+            "domains": [_domain("人形机器人")],
         },
         StandardTaskKind.THEME_STOCK_DISCOVERY: {"domains": [_domain("减速器")]},
         StandardTaskKind.THEME_BUSINESS_EVIDENCE: {
             "domains": [_domain("人形机器人")],
+            "candidate_scope": "public_fallback",
         },
         StandardTaskKind.STOCK_SCREENING: {"screen_spec": screen_spec},
-        StandardTaskKind.COLLECTION_FINANCIAL_FILTER: {
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER: _financial_conditions({
             "metric": "debt_ratio",
             "period_basis": "latest_report",
             "operator": "gt",
             "threshold": 70,
             "threshold_unit": "percent",
             "action": "exclude_matching",
-        },
+        }),
         StandardTaskKind.WATCHLIST_MUTATION: {"action": "add"},
         StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: {"action": "list"},
         StandardTaskKind.FORMAL_ANALYSIS: {"action": "status"},
@@ -252,7 +341,7 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
             approved_actions={action_fingerprint(resolved)},
         )
         calls = validator.preflight_task(resolved)
-        assert len(calls) <= 8
+        assert len(calls) <= spec.max_tool_calls
         assert {call.call.tool_name for call in calls} <= spec.tool_whitelist
         exercised.add(kind)
     assert exercised == {
@@ -282,6 +371,122 @@ def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
     }
 
 
+def test_industry_research_always_uses_one_project_catalog_snapshot() -> None:
+    project_task = _task(
+        StandardTaskKind.INDUSTRY_RESEARCH,
+        parameters={
+            "query": "某新兴产业哪些方向最受益",
+            "domains": [_domain("某新兴产业", "实际主题板块")],
+        },
+    )
+    project_calls = compile_task(ResolvedTask(candidate=project_task))
+    assert [call.tool_name for call in project_calls] == [
+        "get_domain_board_catalog"
+    ]
+
+    fallback_task = _task(
+        StandardTaskKind.INDUSTRY_RESEARCH,
+        parameters={
+            "query": "目录外产业哪些方向最受益",
+            "domains": [
+                _domain(
+                    "目录外产业",
+                    mapping_type="unresolved",
+                    rationale="当前实时板块目录没有合理相关板块。",
+                ),
+            ],
+        },
+    )
+    fallback_calls = compile_task(ResolvedTask(candidate=fallback_task))
+    assert [call.tool_name for call in fallback_calls] == [
+        "get_domain_board_catalog",
+    ]
+
+
+def test_theme_business_evidence_compiles_only_after_candidates_are_bound() -> None:
+    candidate = _task(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        parameters={
+            "domains": [
+                {"label": "灵巧手"},
+                {"label": "六维力传感器"},
+                {"label": "谐波减速器"},
+            ],
+            "candidate_scope": "candidate_collection",
+            "query": "有哪些公司正在大力发展",
+        },
+    )
+
+    calls = compile_task(ResolvedTask(
+        candidate=candidate,
+        symbols=("002979", "300007", "301368"),
+    ))
+
+    assert "get_domain_stock_candidates" not in [
+        call.tool_name for call in calls
+    ]
+    assert [call.tool_name for call in calls] == [
+        "get_company_theme_evidence",
+        "get_company_theme_evidence",
+        "get_company_theme_evidence",
+    ]
+    assert [call.arguments["symbol"] for call in calls] == [
+        "002979",
+        "300007",
+        "301368",
+    ]
+    assert all(call.arguments["target_topics"] == ["人形机器人"] for call in calls)
+    assert all(call.arguments["domains"] == [
+        "灵巧手",
+        "六维力传感器",
+        "谐波减速器",
+    ] for call in calls)
+
+
+def test_theme_business_evidence_compiles_all_488_candidates_as_single_stock_calls() -> None:
+    candidate = _task(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        parameters={
+            "domains": [{"label": "目标领域"}],
+            "candidate_scope": "candidate_collection",
+            "query": "逐股核验业务进展",
+        },
+    )
+    symbols = tuple(f"{100000 + index:06d}" for index in range(488))
+
+    calls = WorkflowPolicyValidator(ToolRegistry()).preflight_task(
+        ResolvedTask(candidate=candidate, symbols=symbols)
+    )
+
+    assert len(calls) == 488
+    assert {
+        call.call.tool_name
+        for call in calls
+    } == {"get_company_theme_evidence"}
+    assert [
+        call.arguments["symbol"]
+        for call in calls
+    ] == list(symbols)
+    assert all("," not in call.arguments["symbol"] for call in calls)
+
+
+def test_theme_business_evidence_plan_rejects_missing_candidate_dependency() -> None:
+    candidate = _task(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        parameters={
+            "domains": [{"label": "减速器"}],
+            "candidate_scope": "candidate_collection",
+            "query": "找正在大力发展的股票",
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="dependency that produces security_collection",
+    ):
+        validate_candidate_plan(TaskPlan(tasks=[candidate]))
+
+
 def test_free_form_context_is_not_forwarded_as_a_board_identifier() -> None:
     candidate = _task(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
@@ -300,66 +505,96 @@ def test_free_form_context_is_not_forwarded_as_a_board_identifier() -> None:
     assert set(calls[0].arguments) == {"domains"}
 
 
-def test_previous_answer_outline_keeps_middle_markdown_scope() -> None:
-    long_prefix = "背景信息。" * 1200
-    long_suffix = "风险提示。" * 800
-    previous = (
-        long_prefix
-        + "\n## 第一梯队上游核心零部件\n"
-        + "| 领域 | 受益逻辑 |\n|---|---|\n"
-        + "| 行星滚柱丝杠 | 高价值量 |\n"
-        + "| 减速器 | 核心传动 |\n"
-        + "| 无框力矩电机 | 关节驱动 |\n"
-        + long_suffix
-    )
-    outline = previous_assistant_outline([
-        {"role": "user", "content": "分析产业链"},
-        {"role": "assistant", "content": previous},
-        {"role": "user", "content": "按上面第一梯队找股票"},
-    ])
-    assert "行星滚柱丝杠" in outline
-    assert "减速器" in outline
-    assert "无框力矩电机" in outline
-
-
 def test_collection_financial_filter_compiles_all_batches_without_truncation() -> None:
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "debt_ratio",
             "period_basis": "latest_report",
             "operator": "gt",
             "threshold": 70,
             "threshold_unit": "percent",
             "action": "exclude_matching",
-        },
+        }),
     )
     calls = compile_task(ResolvedTask(candidate=candidate, symbols=symbols))
-    assert len(calls) == 4
-    assert [len(call.arguments["symbols"].split(",")) for call in calls] == [12, 12, 12, 11]
+    assert len(calls) == 2
+    assert [len(call.arguments["symbols"].split(",")) for call in calls] == [24, 23]
     assert all(call.arguments["metric"] == "debt_ratio" for call in calls)
     assert all(call.arguments["period_basis"] == "latest_report" for call in calls)
+
+
+def test_domain_discovery_and_multi_condition_filter_form_one_resource_dag() -> None:
+    discovery = _task(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        task_id="discover",
+        parameters={"domains": [_domain("灵巧手"), _domain("丝杠"), _domain("减速器")]},
+    )
+    financial_filter = _task(
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        task_id="filter",
+        parameters=_financial_conditions(
+            {
+                "metric": "debt_ratio", "period_basis": "latest_report",
+                "operator": "gt", "threshold": 70,
+                "threshold_unit": "percent", "action": "exclude_matching",
+            },
+            {
+                "metric": "net_profit", "period_basis": "previous_fiscal_year",
+                "operator": "lt", "threshold": 0,
+                "threshold_unit": "cny", "action": "exclude_matching",
+            },
+            {
+                "metric": "revenue", "period_basis": "fiscal_year",
+                "fiscal_year": 2025, "operator": "lt", "threshold": 5,
+                "threshold_unit": "yi_cny", "action": "exclude_matching",
+            },
+        ),
+        depends_on=["discover"],
+    )
+    plan = TaskPlan(tasks=[discovery, financial_filter])
+
+    validate_candidate_plan(plan)
+    resolved = resolve_plan_entities(
+        plan,
+        current_entities=[],
+        previous_answer_entities=[],
+    )
+
+    assert [task.task_id for task in resolved] == ["discover", "filter"]
+    assert resolved[1].symbols == ()
+    contracts = {
+        item["capability"]: item
+        for item in capability_catalog()
+    }
+    assert contracts["theme_stock_discovery"]["output_resources"] == [
+        "domain_collection",
+        "security_collection"
+    ]
+    assert contracts["collection_financial_filter"]["input_resources"] == [
+        "security_collection"
+    ]
 
 
 def test_previous_fiscal_year_revenue_filter_has_one_typed_contract_for_every_batch() -> None:
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "revenue",
             "period_basis": "previous_fiscal_year",
             "operator": "lt",
             "threshold": 5,
             "threshold_unit": "yi_cny",
             "action": "exclude_matching",
-        },
+        }),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
     calls = compile_task(ResolvedTask(candidate=candidate, symbols=symbols))
 
-    assert len(calls) == 4
+    assert len(calls) == 2
     assert all(call.arguments["metric"] == "revenue" for call in calls)
     assert all(call.arguments["period_basis"] == "previous_fiscal_year" for call in calls)
     assert all("fiscal_year" not in call.arguments for call in calls)
@@ -368,14 +603,14 @@ def test_previous_fiscal_year_revenue_filter_has_one_typed_contract_for_every_ba
 def test_collection_financial_filter_rejects_metric_unit_mismatch() -> None:
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "revenue",
             "period_basis": "previous_fiscal_year",
             "operator": "lt",
             "threshold": 5,
             "threshold_unit": "percent",
             "action": "exclude_matching",
-        },
+        }),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     with pytest.raises(ValueError, match="currency metrics require a CNY threshold unit"):
@@ -385,14 +620,14 @@ def test_collection_financial_filter_rejects_metric_unit_mismatch() -> None:
 def test_collection_financial_filter_accepts_negative_profit_threshold() -> None:
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "deducted_net_profit",
             "period_basis": "previous_fiscal_year",
             "operator": "lt",
             "threshold": -1,
             "threshold_unit": "yi_cny",
             "action": "exclude_matching",
-        },
+        }),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
@@ -401,14 +636,14 @@ def test_collection_financial_filter_accepts_negative_profit_threshold() -> None
 def test_collection_financial_filter_keeps_net_profit_distinct_from_deducted_profit() -> None:
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "net_profit",
             "period_basis": "previous_fiscal_year",
             "operator": "lt",
             "threshold": 0,
             "threshold_unit": "cny",
             "action": "exclude_matching",
-        },
+        }),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
@@ -421,14 +656,14 @@ def test_collection_filter_executor_runs_every_batch_even_when_one_fails() -> No
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "debt_ratio",
             "period_basis": "latest_report",
             "operator": "gt",
             "threshold": 70,
             "threshold_unit": "percent",
             "action": "exclude_matching",
-        },
+        }),
     )
     seen: list[str] = []
     active = 0
@@ -453,20 +688,17 @@ def test_collection_filter_executor_runs_every_batch_even_when_one_fails() -> No
     result = asyncio.run(WorkflowExecutor(ToolRegistry(), runner).execute([
         ResolvedTask(candidate=candidate, symbols=symbols),
     ]))
-    assert len(seen) == 4
-    assert sorted(len(batch.split(",")) for batch in seen) == [11, 12, 12, 12]
+    assert len(seen) == 2
+    assert sorted(len(batch.split(",")) for batch in seen) == [23, 24]
     assert result.tasks[0].status == "failed"
-    assert len(result.tasks[0].calls) == 4
-    assert max_active == 1
+    assert len(result.tasks[0].calls) == 2
+    assert max_active == 2
 
 
-def test_candidate_plan_rejects_parameters_outside_task_contract() -> None:
-    plan = TaskPlan(tasks=[_task(
-        StandardTaskKind.REALTIME_QUOTE,
-        parameters={"query": "联网找股票"},
-    )])
-    with pytest.raises(ValueError, match="unsupported parameters"):
-        validate_candidate_plan(plan)
+def test_capability_intent_rejects_fields_outside_its_exact_schema() -> None:
+    intent_model = capability_for(Capability.REALTIME_QUOTE).intent_model
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        intent_model.model_validate({"query": "联网找股票"})
 
 
 def test_policy_requires_explicit_confirmation_before_delete() -> None:
@@ -513,18 +745,17 @@ def test_action_specific_parameters_are_rejected_before_tool_execution(
     parameters: dict,
     missing_name: str,
 ) -> None:
-    candidate = _task(kind, parameters=parameters, confirmation=ConfirmationState.MISSING)
+    intent_model = capability_for(Capability(kind.value)).intent_model
     with pytest.raises(ValueError, match=missing_name):
-        validate_candidate_plan(TaskPlan(tasks=[candidate]))
+        intent_model.model_validate(parameters)
 
 
 def test_template_update_requires_a_real_change() -> None:
-    candidate = _task(
-        StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT,
-        parameters={"action": "update", "template_id": "template-1"},
-    )
-    with pytest.raises(ValueError, match="at least one"):
-        validate_candidate_plan(TaskPlan(tasks=[candidate]))
+    intent_model = capability_for(
+        Capability.ANALYSIS_TEMPLATE_MANAGEMENT
+    ).intent_model
+    with pytest.raises(ValueError, match="update requires"):
+        intent_model.model_validate({"action": "update", "template_id": 1})
 
 
 def test_saved_batch_scope_requires_declared_and_explicit_confirmation() -> None:
@@ -677,6 +908,293 @@ def test_executor_stops_dependent_task_after_failure() -> None:
     assert result.tasks[1].calls == []
 
 
+def test_executor_binds_declared_collection_resources_without_task_type_rules() -> None:
+    source = _task(
+        StandardTaskKind.SECURITY_LOOKUP,
+        task_id="lookup",
+        parameters={"query": "白酒"},
+    )
+    consumer = _task(
+        StandardTaskKind.REALTIME_QUOTE,
+        task_id="quotes",
+        depends_on=["lookup"],
+    )
+    plan = TaskPlan(tasks=[source, consumer])
+    validate_candidate_plan(plan)
+    seen: list[tuple[str, dict]] = []
+
+    async def runner(call, arguments):
+        seen.append((call.tool_name, arguments))
+        if call.tool_name == "search_stocks":
+            return {
+                "success": True,
+                "items": [
+                    {"symbol": "600519", "name": "贵州茅台"},
+                    {"symbol": "000858", "name": "五粮液"},
+                ],
+            }
+        return {"success": True, "items": []}
+
+    result = asyncio.run(WorkflowExecutor(ToolRegistry(), runner).execute([
+        ResolvedTask(candidate=source),
+        ResolvedTask(candidate=consumer),
+    ]))
+
+    assert result.success is True
+    assert seen == [
+        ("search_stocks", {"query": "白酒"}),
+        ("get_realtime_quotes", {"symbols": "600519,000858"}),
+    ]
+    assert [entity.symbol for entity in result.tasks[1].output_entities] == [
+        "600519",
+        "000858",
+    ]
+
+
+def test_executor_discovers_board_candidates_before_business_evidence() -> None:
+    industry = _task(
+        StandardTaskKind.INDUSTRY_RESEARCH,
+        task_id="industry",
+        parameters={
+            "query": "人形机器人哪些领域最受益",
+            "domains": [_domain("人形机器人")],
+        },
+    )
+    domain_candidates = _task(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        task_id="domain_candidates",
+        parameters={},
+        depends_on=["industry"],
+    )
+    companies = _task(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        task_id="companies",
+        parameters={
+            "candidate_scope": "candidate_collection",
+            "query": "哪些公司正在大力发展",
+        },
+        depends_on=["domain_candidates"],
+    )
+    plan = TaskPlan(tasks=[industry, domain_candidates, companies])
+    validate_candidate_plan(plan)
+    tool_names: list[str] = []
+    processor_tasks: list[tuple[str, list[dict], tuple[str, ...]]] = []
+
+    async def runner(call, _arguments):
+        tool_names.append(call.tool_name)
+        if call.tool_name == "get_domain_stock_candidates":
+            return {
+                "success": True,
+                "errors": [],
+                "partial": False,
+                "items": [
+                    {"symbol": "002979", "name": "雷赛智能"},
+                    {"symbol": "300007", "name": "汉威科技"},
+                ],
+            }
+        return {"success": True, "errors": [], "partial": False, "items": []}
+
+    async def processor(name, task, _evidence):
+        processor_tasks.append((
+            name,
+            list(task.parameters.get("domains") or []),
+            task.symbols,
+        ))
+        if name == "ranked_domain_selection":
+            return {
+                "success": True,
+                "errors": [],
+                "semantic_artifacts": [{
+                    "type": "ranked_domains",
+                    "groups": [{
+                        "tier": 1,
+                        "domains": [
+                            {"label": "灵巧手", "tier": 1},
+                            {"label": "六维力传感器", "tier": 1},
+                        ],
+                    }],
+                }],
+                "resource_outputs": {
+                    "domain_collection": [
+                        _domain("灵巧手", "机器人执行器"),
+                        _domain("六维力传感器", "传感器"),
+                    ],
+                },
+            }
+        return {
+            "success": True,
+            "errors": [],
+            "semantic_artifacts": [],
+            "resource_outputs": {
+                "security_collection": [
+                    {"symbol": "002979", "name": "雷赛智能"},
+                    {"symbol": "300007", "name": "汉威科技"},
+                ],
+            },
+        }
+
+    result = asyncio.run(WorkflowExecutor(
+        ToolRegistry(),
+        runner,
+        processor_runner=processor,
+    ).execute([
+        ResolvedTask(candidate=industry),
+        ResolvedTask(candidate=domain_candidates),
+        ResolvedTask(
+            candidate=companies,
+            # Simulates the incidental name resolution that turns the phrase
+            # “人形机器人” into the listed company 300024. The explicit
+            # dependency collection must remain authoritative.
+            symbols=("300024",),
+            entity_names=(("300024", "机器人"),),
+        ),
+    ]))
+
+    assert result.success is True
+    assert tool_names.index("get_domain_stock_candidates") < tool_names.index(
+        "get_company_theme_evidence"
+    )
+    assert tool_names.count("get_domain_board_catalog") == 1
+    assert tool_names.count("get_domain_stock_candidates") == 1
+    assert tool_names.count("get_company_theme_evidence") == 2
+    assert tool_names.count("search_financial_news") == 0
+    assert tool_names.count("search_research_library") == 0
+    assert processor_tasks[1] == (
+        "company_evidence_binding",
+        [
+            _domain("灵巧手", "机器人执行器"),
+            _domain("六维力传感器", "传感器"),
+        ],
+        ("002979", "300007"),
+    )
+    assert result.tasks[1].resource_outputs["domain_collection"] == [
+        _domain("灵巧手", "机器人执行器"),
+        _domain("六维力传感器", "传感器"),
+    ]
+    assert [entity.symbol for entity in result.tasks[2].output_entities] == [
+        "002979",
+        "300007",
+    ]
+
+
+def test_failed_domain_collection_v2_blocks_every_downstream_data_tool() -> None:
+    industry = _task(
+        StandardTaskKind.INDUSTRY_RESEARCH,
+        task_id="industry",
+        parameters={
+            "query": "人形机器人哪些领域最受益",
+            "domains": [_domain("人形机器人")],
+        },
+    )
+    domain_candidates = _task(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        task_id="domain_candidates",
+        parameters={},
+        depends_on=["industry"],
+    )
+    companies = _task(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        task_id="companies",
+        parameters={"candidate_scope": "candidate_collection"},
+        depends_on=["domain_candidates"],
+    )
+    tool_names: list[str] = []
+
+    async def runner(call, _arguments):
+        tool_names.append(call.tool_name)
+        return {
+            "success": True,
+            "partial": False,
+            "errors": [],
+            "warnings": [],
+            "boards": [{"sector_code": "BK0566", "name": "减速器"}],
+        }
+
+    async def processor(name, _task, _evidence):
+        assert name == "ranked_domain_selection"
+        return {
+            "success": False,
+            "partial": False,
+            "error_code": "planner_schema_invalid",
+            "errors": ["板块 ID 绑定未通过精确 Schema"],
+            "items": [],
+            "semantic_artifacts": [],
+            "resource_outputs": {},
+            "coverage": {
+                "catalog_total": 1,
+                "catalog_supplied": 1,
+                "selected_count": 0,
+                "binding_complete": False,
+            },
+        }
+
+    result = asyncio.run(WorkflowExecutor(
+        ToolRegistry(),
+        runner,
+        processor_runner=processor,
+    ).execute([
+        ResolvedTask(candidate=industry),
+        ResolvedTask(candidate=domain_candidates),
+        ResolvedTask(candidate=companies),
+    ]))
+
+    assert tool_names == ["get_domain_board_catalog"]
+    assert [task.status for task in result.tasks] == [
+        "failed",
+        "skipped",
+        "blocked",
+    ]
+    assert result.tasks[0].resource_outputs == {}
+
+
+def test_business_evidence_preserves_one_terminal_result_per_company() -> None:
+    companies = _task(
+        StandardTaskKind.THEME_BUSINESS_EVIDENCE,
+        task_id="companies",
+        parameters={
+            "domains": [{"label": "减速器"}],
+            "candidate_scope": "candidate_collection",
+            "query": "核验业务进展",
+        },
+    )
+
+    async def runner(_call, arguments):
+        return {
+            "success": True,
+            "errors": ["个股研报源超时"],
+            "partial": True,
+            "symbol": arguments["symbol"],
+            "evidence_documents": [],
+        }
+
+    async def processor(_name, _task, _evidence):
+        return {
+            "success": True,
+            "partial": True,
+            "errors": [],
+            "resource_outputs": {
+                "security_collection": [
+                    {"symbol": "301368", "name": "丰立智能"},
+                ],
+            },
+        }
+
+    result = asyncio.run(WorkflowExecutor(
+        ToolRegistry(),
+        runner,
+        processor_runner=processor,
+    ).execute([
+        ResolvedTask(candidate=companies, symbols=("301368",)),
+    ]))
+
+    assert result.success is True
+    assert result.tasks[0].status == "completed"
+    assert len(result.tasks[0].calls) == 1
+    assert result.tasks[0].calls[0].arguments["symbol"] == "301368"
+    assert result.tasks[0].calls[0].success is True
+    assert [entity.symbol for entity in result.final_entities] == ["301368"]
+
+
 def test_task_plan_rejects_dependency_cycles_before_execution() -> None:
     first = _task(
         StandardTaskKind.REALTIME_QUOTE,
@@ -743,309 +1261,6 @@ def test_executor_parallelizes_independent_reads_and_serializes_mutations() -> N
     assert asyncio.run(run_pair(mutations)) == 1
 
 
-def test_semantic_planner_uses_one_bounded_planning_stage_and_no_data_tools() -> None:
-    payload = {
-        "tasks": [{
-            "task_id": "valuation",
-            "kind": "valuation_analysis",
-            "objective": "分析贵州茅台估值",
-            "entity_scope": "current_message",
-            "entities": ["贵州茅台"],
-            "parameters": {},
-            "depends_on": [],
-            "output_requirements": [],
-            "confirmation": "not_required",
-            "confidence": 0.96,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    completion = AsyncMock(
-        return_value=_model_response("submit_standard_task_plan", payload)
-    )
-    plan = asyncio.run(resolve_task_plan(
-        [
-            {"role": "user", "content": "旧轮任务：分析机器人产业链"},
-            {"role": "assistant", "content": "上一轮已经完成产业链研究。"},
-            {"role": "user", "content": "分析贵州茅台估值"},
-        ],
-        {"model": "test", "api_base": ""},
-        completion=completion,
-    ))
-    assert plan.tasks[0].kind == StandardTaskKind.VALUATION_ANALYSIS
-    assert completion.await_count == 1
-    plan_kwargs = completion.await_args.kwargs
-    assert [tool["function"]["name"] for tool in plan_kwargs["tools"]] == [
-        "submit_standard_task_plan"
-    ]
-    serialized = json.dumps(plan_kwargs["tools"], ensure_ascii=False)
-    assert all(name not in serialized for name in ToolRegistry().get_tool_names())
-    planner_context = json.loads(plan_kwargs["messages"][1]["content"])
-    assert planner_context["current_request"] == "分析贵州茅台估值"
-    assert "旧轮任务" not in json.dumps(planner_context, ensure_ascii=False)
-    assert "standard_task_contracts" in planner_context
-    assert "valuation_analysis" in {
-        contract["kind"] for contract in planner_context["standard_task_contracts"]
-    }
-
-
-def test_plan_cache_uses_structured_context_instead_of_rendered_assistant_text() -> None:
-    context = task_planner_module.ConversationContext.from_value({
-        "version": "1",
-        "turns": [{
-            "request": "找候选公司",
-            "tasks": [],
-            "entities": [{"symbol": "000001", "name": "甲公司"}],
-        }],
-    })
-    base = [{"role": "user", "content": "筛掉不符合条件的公司"}]
-    first = task_planner_module._cache_key(
-        [{"role": "assistant", "content": "渲染版本甲"}, *base],
-        {"model": "test", "api_base": "https://model.example"},
-        [],
-        [{"symbol": "000001", "name": "甲公司"}],
-        context,
-    )
-    second = task_planner_module._cache_key(
-        [{"role": "assistant", "content": "完全不同的渲染版本乙"}, *base],
-        {"model": "test", "api_base": "https://model.example"},
-        [],
-        [{"symbol": "000001", "name": "甲公司"}],
-        context,
-    )
-
-    assert first == second
-
-
-def test_semantic_planner_resolves_compound_domains_only_from_current_board_catalog() -> None:
-    domain_specs = [
-        _domain(
-            "灵巧手及力控部件",
-            "机器人执行器",
-            rationale="当前目录没有同名板块，按执行机构语义使用最窄代理板块。",
-        ),
-        _domain(
-            "电机（伺服电机/步进电机）",
-            "机器人执行器",
-            rationale="关节驱动电机按执行器板块召回。",
-        ),
-    ]
-    plan_payload = {
-        "tasks": [{
-            "task_id": "domain_candidates",
-            "kind": "theme_stock_discovery",
-            "objective": "按上面领域找A股公司",
-            "entity_scope": "none",
-            "entities": [],
-            "parameters": {
-                "domains": [
-                    {"label": "灵巧手及力控部件"},
-                    {"label": "电机（伺服电机/步进电机）"},
-                ],
-            },
-            "depends_on": [],
-            "output_requirements": [],
-            "confirmation": "not_required",
-            "confidence": 0.96,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    binding_payload = {
-        "bindings": [{"task_id": "domain_candidates", "domains": domain_specs}],
-    }
-    completion = AsyncMock(side_effect=[
-        _model_response("submit_standard_task_plan", plan_payload),
-        _model_response("submit_semantic_resource_bindings", binding_payload),
-    ])
-    with patch(
-        "src.services.domain_board_catalog.get_domain_board_catalog",
-        return_value={
-            "success": True,
-            "board_names": ["人形机器人", "机器人执行器", "减速器", "机器人概念"],
-            "source": "测试板块目录",
-            "data_time": "2026-07-21",
-            "errors": [],
-        },
-    ):
-        plan = asyncio.run(resolve_task_plan(
-            [
-                {
-                    "role": "assistant",
-                    "content": "人形机器人第一梯队包括灵巧手及力控部件、电机（伺服电机/步进电机）。",
-                },
-                {"role": "user", "content": "按上面第一梯队找A股公司"},
-            ],
-            {"model": "test", "api_base": ""},
-            completion=completion,
-        ))
-
-    assert plan.tasks[0].parameters["domains"] == domain_specs
-    planner_context = json.loads(
-        completion.await_args_list[0].kwargs["messages"][1]["content"]
-    )
-    binder_context = json.loads(
-        completion.await_args_list[1].kwargs["messages"][1]["content"]
-    )
-    assert "catalog" not in planner_context
-    assert binder_context["catalog"]["board_names"] == [
-        "人形机器人", "机器人执行器", "减速器", "机器人概念",
-    ]
-    assert "get_domain_stock_candidates" not in json.dumps(
-        [planner_context, binder_context], ensure_ascii=False
-    )
-
-
-def test_domain_plan_rejects_a_board_name_absent_from_current_catalog() -> None:
-    candidate = _task(
-        StandardTaskKind.THEME_STOCK_DISCOVERY,
-        parameters={
-            "domains": [_domain("灵巧手", "模型虚构板块")],
-        },
-    )
-    with pytest.raises(ValueError, match="absent from the live concept-board catalog"):
-        validate_candidate_plan(
-            TaskPlan(tasks=[candidate]),
-            concept_board_names={"人形机器人", "机器人执行器"},
-        )
-
-
-def test_catalog_membership_validation_does_not_guess_semantic_affinity() -> None:
-    candidate = _task(
-        StandardTaskKind.THEME_STOCK_DISCOVERY,
-        parameters={
-            "domains": [_domain("伺服电机/步进电机", "轮毂电机")],
-        },
-    )
-    validate_candidate_plan(
-        TaskPlan(tasks=[candidate]),
-        concept_board_names={"人形机器人", "机器人执行器", "轮毂电机"},
-    )
-
-
-def test_semantic_planner_retries_a_transient_provider_failure() -> None:
-    payload = {
-        "tasks": [{
-            "task_id": "answer",
-            "kind": "general_response",
-            "objective": "解释概念",
-            "entity_scope": "none",
-            "entities": [],
-            "parameters": {},
-            "depends_on": [],
-            "output_requirements": [],
-            "confirmation": "not_required",
-            "confidence": 0.9,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_plan",
-            arguments=json.dumps(payload, ensure_ascii=False),
-        ))],
-        content=None,
-    ))])
-    completion = AsyncMock(side_effect=[
-        RuntimeError("temporary gateway error"),
-        response,
-    ])
-    plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": "解释这个概念"}],
-        {"model": "test", "api_base": ""},
-        completion=completion,
-    ))
-    assert plan.tasks[0].kind == StandardTaskKind.GENERAL_RESPONSE
-    assert completion.await_count == 2
-
-
-def test_industry_structure_question_never_opens_company_discovery() -> None:
-    payload = {
-        "tasks": [{
-            "task_id": "industry_structure",
-            "kind": "industry_research",
-            "objective": "分析人形机器人核心受益领域",
-            "entity_scope": "none",
-            "entities": [],
-            "parameters": {
-                "query": "人形机器人核心受益领域",
-                "subjects": ["人形机器人"],
-            },
-            "depends_on": [],
-            "output_requirements": ["不生成股票名单"],
-            "confirmation": "not_required",
-            "confidence": 0.96,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    completion = AsyncMock(
-        return_value=_model_response("submit_standard_task_plan", payload)
-    )
-    plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": "人形机器人方向哪些领域最核心最受益？"}],
-        {"model": "test", "api_base": ""},
-        completion=completion,
-    ))
-
-    assert completion.await_count == 1
-    assert [task.kind for task in plan.tasks] == [StandardTaskKind.INDUSTRY_RESEARCH]
-    assert "不生成股票名单" in plan.tasks[0].output_requirements
-
-
-@pytest.mark.parametrize(
-    "user_text",
-    [
-        "把上述公司中资产负债率超过70%的剔除",
-        "从刚才那批标的排除杠杆率高于七成的公司",
-        "对前述集合做财务过滤，只留下负债率不超过70%的公司",
-    ],
-)
-def test_financial_filter_phrasings_all_use_the_semantic_planner(user_text: str) -> None:
-    payload = {
-        "tasks": [{
-            "task_id": "filter",
-            "kind": "collection_financial_filter",
-            "objective": "按资产负债率过滤证券集合",
-            "entity_scope": "previous_answer",
-            "entities": [],
-            "parameters": {
-                "metric": "debt_ratio",
-                "period_basis": "latest_report",
-                "operator": "gt",
-                "threshold": 70,
-                "threshold_unit": "percent",
-                "action": "exclude_matching",
-            },
-            "depends_on": [],
-            "output_requirements": ["覆盖完整集合"],
-            "confirmation": "not_required",
-            "confidence": 0.95,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    completion = AsyncMock(
-        return_value=_model_response("submit_standard_task_plan", payload)
-    )
-    plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": user_text}],
-        {"model": "test", "api_base": ""},
-        completion=completion,
-        previous_answer_entities=[{"symbol": "000001", "name": "甲公司"}],
-    ))
-
-    assert completion.await_count == 1
-    assert plan.tasks[0].kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER
-    planner_context = json.loads(
-        completion.await_args.kwargs["messages"][1]["content"]
-    )
-    assert planner_context["current_request"] == user_text
-    assert "collection_financial_filter" in planner_context["parameter_schemas"]
-    assert planner_context["runtime_context"]["previous_fiscal_year"] == date.today().year - 1
-
-
 def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
@@ -1108,8 +1323,7 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
     controller = _Controller()
 
     async def run() -> str:
-        with patch.object(chat_mod, "resolve_task_plan", new=AsyncMock(return_value=plan)), \
-             patch.object(chat_mod, "resolve_plan_entities", return_value=resolved), \
+        with _unified_pipeline(chat_mod, plan, resolved), \
              patch.object(chat_mod, "execute_tool_isolated", return_value=result), \
              patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
              patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
@@ -1127,20 +1341,54 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
     assert "网络" not in " ".join(controller.tool_calls)
 
 
-def test_production_collection_filter_retries_one_failed_batch_without_duplicate_cards() -> None:
+def test_production_pipeline_reports_binding_unavailable_without_public_fallback() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    controller = _Controller()
+
+    async def run() -> str:
+        with patch.object(
+            chat_mod,
+            "plan_intent_graph_v2",
+            new=AsyncMock(side_effect=(
+                OrchestratorV2Error(
+                    AgentErrorCode.RESOURCE_UNAVAILABLE,
+                    "实时板块语义绑定暂不可用",
+                )
+            )),
+        ):
+            return await chat_mod._run_standard_task_pipeline(
+                controller,
+                [{"role": "user", "content": "找这个方向的股票"}],
+                {
+                    "model": "test",
+                    "api_base": "",
+                    "api_key": None,
+                    "extra_headers": None,
+                },
+            )
+
+    answer = asyncio.run(run())
+
+    assert controller.tool_calls == []
+    assert "实时板块语义绑定暂不可用" in answer
+    assert "没有改用新闻或公网来源兜底" in answer
+
+
+def test_production_collection_filter_does_not_retry_a_failed_batch() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "debt_ratio",
             "period_basis": "latest_report",
             "operator": "gt",
             "threshold": 70,
             "threshold_unit": "percent",
             "action": "exclude_matching",
-        },
+        }),
     )
     plan = TaskPlan(tasks=[candidate])
     resolved = [ResolvedTask(candidate=candidate, symbols=symbols)]
@@ -1151,8 +1399,8 @@ def test_production_collection_filter_retries_one_failed_batch_without_duplicate
         assert name == "get_multi_stock_financials"
         batch = arguments["symbols"]
         attempts[batch] = attempts.get(batch, 0) + 1
-        if batch.startswith("000012") and attempts[batch] == 1:
-            raise RuntimeError("temporary local connection error")
+        if batch.startswith("000024") and attempts[batch] == 1:
+            raise ConnectionError("temporary local connection error")
         batch_symbols = batch.split(",")
         return {
             "success": True,
@@ -1177,12 +1425,16 @@ def test_production_collection_filter_retries_one_failed_batch_without_duplicate
         }
 
     async def run() -> str:
-        with patch.object(chat_mod, "resolve_task_plan", new=AsyncMock(return_value=plan)), \
-             patch.object(chat_mod, "resolve_plan_entities", return_value=resolved), \
+        with _unified_pipeline(chat_mod, plan, resolved), \
              patch.object(chat_mod._registry, "execute", side_effect=execute), \
              patch.object(chat_mod, "execute_tool_isolated", side_effect=AssertionError("local finance must not be isolated")), \
              patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
              patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
+             patch.object(
+                 chat_mod.asyncio,
+                 "wait_for",
+                 side_effect=AssertionError("Agent execution must not install a deadline"),
+             ), \
              patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
@@ -1191,10 +1443,124 @@ def test_production_collection_filter_retries_one_failed_batch_without_duplicate
             )
 
     answer = asyncio.run(run())
-    assert len(controller.tool_calls) == 4
-    assert sum(attempts.values()) == 5
-    assert max(attempts.values()) == 2
-    assert "原集合 **47 只**，成功覆盖 **47 只**，缺失 **0 只**" in answer
+    assert len(controller.tool_calls) == 2
+    assert sum(attempts.values()) == 2
+    assert max(attempts.values()) == 1
+    assert "本轮筛选未完成" in answer
+
+
+def test_original_three_condition_request_executes_all_35_candidates() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    symbols = tuple(f"{index:06d}" for index in range(1, 36))
+    candidate = _task(
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        parameters=_financial_conditions(
+            {
+                "metric": "net_profit",
+                "period_basis": "fiscal_year",
+                "fiscal_year": 2025,
+                "operator": "lt",
+                "threshold": 0,
+                "threshold_unit": "cny",
+                "action": "exclude_matching",
+            },
+            {
+                "metric": "revenue",
+                "period_basis": "fiscal_year",
+                "fiscal_year": 2025,
+                "operator": "lt",
+                "threshold": 500_000_000,
+                "threshold_unit": "cny",
+                "action": "exclude_matching",
+            },
+            {
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            },
+        ),
+    )
+    plan = TaskPlan(tasks=[candidate])
+    resolved = [ResolvedTask(candidate=candidate, symbols=symbols)]
+    controller = _Controller()
+    seen: list[dict] = []
+
+    def execute(name: str, arguments: dict) -> dict:
+        assert name == "get_multi_stock_financials"
+        seen.append(arguments)
+        batch_symbols = arguments["symbols"].split(",")
+        metric = arguments["metric"]
+        values = {
+            "net_profit": lambda number: -1.0 if number % 5 == 0 else 1.0,
+            "revenue": lambda number: (
+                400_000_000.0 if number % 7 == 0 else 600_000_000.0
+            ),
+            "debt_ratio": lambda number: 80.0 if number % 11 == 0 else 50.0,
+        }
+        return {
+            "success": True,
+            "partial": False,
+            "errors": [],
+            "warnings": [],
+            "requested_count": len(batch_symbols),
+            "covered_count": len(batch_symbols),
+            "items": [{
+                "symbol": symbol,
+                "name": f"公司{symbol}",
+                "metric": metric,
+                "period_basis": arguments["period_basis"],
+                "fiscal_year": arguments.get("fiscal_year"),
+                "financial_value": values[metric](int(symbol)),
+                "value_unit": "percent" if metric == "debt_ratio" else "cny",
+                "report_date": (
+                    "2026-03-31"
+                    if metric == "debt_ratio"
+                    else "2025-12-31"
+                ),
+            } for symbol in batch_symbols],
+            "source": "typed-test-source",
+            "data_time": "2026-07-28T10:00:00",
+        }
+
+    async def run() -> str:
+        with _unified_pipeline(chat_mod, plan, resolved), \
+             patch.object(chat_mod._registry, "execute", side_effect=execute), \
+             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
+             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
+             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+            return await chat_mod._run_standard_task_pipeline(
+                controller,
+                [{
+                    "role": "user",
+                    "content": (
+                        "剔除其中归母净利润为负，去年营收低于5亿，"
+                        "负债率高于70%的股票"
+                    ),
+                }],
+                {
+                    "model": "test",
+                    "api_base": "",
+                    "api_key": None,
+                    "extra_headers": None,
+                },
+            )
+
+    answer = asyncio.run(run())
+    assert len(seen) == 6
+    for metric in ("net_profit", "revenue", "debt_ratio"):
+        covered = [
+            symbol
+            for call in seen
+            if call["metric"] == metric
+            for symbol in call["symbols"].split(",")
+        ]
+        assert len(covered) == len(symbols)
+        assert set(covered) == set(symbols)
+    assert "全部条件均完整覆盖 **35 只**" in answer
     assert "本轮筛选未完成" not in answer
 
 
@@ -1204,14 +1570,14 @@ def test_production_previous_year_revenue_follow_up_runs_every_batch() -> None:
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters={
+        parameters=_financial_conditions({
             "metric": "revenue",
             "period_basis": "previous_fiscal_year",
             "operator": "lt",
             "threshold": 5,
             "threshold_unit": "yi_cny",
             "action": "exclude_matching",
-        },
+        }),
     )
     plan = TaskPlan(tasks=[candidate])
     resolved = [ResolvedTask(candidate=candidate, symbols=symbols)]
@@ -1244,8 +1610,7 @@ def test_production_previous_year_revenue_follow_up_runs_every_batch() -> None:
         }
 
     async def run() -> str:
-        with patch.object(chat_mod, "resolve_task_plan", new=AsyncMock(return_value=plan)), \
-             patch.object(chat_mod, "resolve_plan_entities", return_value=resolved), \
+        with _unified_pipeline(chat_mod, plan, resolved), \
              patch.object(chat_mod._registry, "execute", side_effect=execute), \
              patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
              patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
@@ -1257,8 +1622,8 @@ def test_production_previous_year_revenue_follow_up_runs_every_batch() -> None:
             )
 
     answer = asyncio.run(run())
-    assert len(controller.tool_calls) == 4
-    assert [len(call["symbols"].split(",")) for call in seen] == [12, 12, 12, 11]
+    assert len(controller.tool_calls) == 2
+    assert sorted(len(call["symbols"].split(",")) for call in seen) == [23, 24]
     assert all(call["metric"] == "revenue" for call in seen)
     assert all(call["period_basis"] == "previous_fiscal_year" for call in seen)
     assert "2025 年报营业收入" in answer
@@ -1270,28 +1635,25 @@ def test_production_compound_collection_filter_returns_exact_intersection() -> N
     from api.v1.endpoints.agent import chat as chat_mod
 
     symbols = ("000001", "000002", "000003", "000004")
-    debt_task = _task(
+    filter_task = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        task_id="financial_filter_1",
-        parameters={
-            "metric": "debt_ratio", "period_basis": "latest_report",
-            "operator": "gt", "threshold": 70,
-            "threshold_unit": "percent", "action": "exclude_matching",
-        },
+        task_id="financial_filter",
+        parameters=_financial_conditions(
+            {
+                "metric": "debt_ratio", "period_basis": "latest_report",
+                "operator": "gt", "threshold": 70,
+                "threshold_unit": "percent", "action": "exclude_matching",
+            },
+            {
+                "metric": "revenue", "period_basis": "previous_fiscal_year",
+                "operator": "lt", "threshold": 5,
+                "threshold_unit": "yi_cny", "action": "exclude_matching",
+            },
+        ),
     )
-    revenue_task = _task(
-        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        task_id="financial_filter_2",
-        parameters={
-            "metric": "revenue", "period_basis": "previous_fiscal_year",
-            "operator": "lt", "threshold": 5,
-            "threshold_unit": "yi_cny", "action": "exclude_matching",
-        },
-    )
-    plan = TaskPlan(tasks=[debt_task, revenue_task])
+    plan = TaskPlan(tasks=[filter_task])
     resolved = [
-        ResolvedTask(candidate=debt_task, symbols=symbols),
-        ResolvedTask(candidate=revenue_task, symbols=symbols),
+        ResolvedTask(candidate=filter_task, symbols=symbols),
     ]
     controller = _Controller()
 
@@ -1322,8 +1684,7 @@ def test_production_compound_collection_filter_returns_exact_intersection() -> N
         }
 
     async def run() -> str:
-        with patch.object(chat_mod, "resolve_task_plan", new=AsyncMock(return_value=plan)), \
-             patch.object(chat_mod, "resolve_plan_entities", return_value=resolved), \
+        with _unified_pipeline(chat_mod, plan, resolved), \
              patch.object(chat_mod._registry, "execute", side_effect=execute), \
              patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
              patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
@@ -1340,6 +1701,126 @@ def test_production_compound_collection_filter_returns_exact_intersection() -> N
     assert "合并后筛除 **3 只**，最终保留 **1 只**" in answer
     assert "公司000004 (000004) | 全部条件通过" in answer
     assert "多条件结果由程序按集合交集计算" in answer
+
+
+def test_production_domain_discovery_feeds_same_turn_financial_filters() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    discovery_task = _task(
+        StandardTaskKind.THEME_STOCK_DISCOVERY,
+        task_id="domain_candidates",
+        parameters={
+            "domains": [
+                _domain("灵巧手", "机器人执行器"),
+                _domain("丝杠", "机器人执行器"),
+                _domain("减速器"),
+            ],
+        },
+    )
+    filter_task = _task(
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
+        task_id="financial_filter",
+        parameters=_financial_conditions(
+            {
+                "metric": "debt_ratio", "period_basis": "latest_report",
+                "operator": "gt", "threshold": 70,
+                "threshold_unit": "percent", "action": "exclude_matching",
+            },
+            {
+                "metric": "net_profit", "period_basis": "previous_fiscal_year",
+                "operator": "lt", "threshold": 0,
+                "threshold_unit": "cny", "action": "exclude_matching",
+            },
+            {
+                "metric": "revenue", "period_basis": "fiscal_year",
+                "fiscal_year": 2025, "operator": "lt", "threshold": 5,
+                "threshold_unit": "yi_cny", "action": "exclude_matching",
+            },
+        ),
+        depends_on=["domain_candidates"],
+    )
+    plan = TaskPlan(tasks=[discovery_task, filter_task])
+    resolved = [
+        ResolvedTask(candidate=discovery_task),
+        ResolvedTask(candidate=filter_task),
+    ]
+    controller = _Controller()
+    financial_calls: list[dict] = []
+
+    domain_result = {
+        "success": True,
+        "items": [
+            {"symbol": "000001", "name": "甲公司"},
+            {"symbol": "000002", "name": "乙公司"},
+            {"symbol": "000003", "name": "丙公司"},
+        ],
+        "domain_results": [{
+            "domain": "灵巧手",
+            "success": True,
+            "items": [
+                {"symbol": "000001", "name": "甲公司"},
+                {"symbol": "000002", "name": "乙公司"},
+            ],
+        }],
+    }
+
+    def execute(name: str, arguments: dict) -> dict:
+        assert name == "get_multi_stock_financials"
+        financial_calls.append(arguments)
+        metric = arguments["metric"]
+        values = {
+            "debt_ratio": [80.0, 50.0, 50.0],
+            "net_profit": [1_000_000.0, -1_000_000.0, 1_000_000.0],
+            "revenue": [800_000_000.0, 800_000_000.0, 400_000_000.0],
+        }[metric]
+        return {
+            "success": True,
+            "items": [
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "metric": metric,
+                    "period_basis": arguments["period_basis"],
+                    "financial_value": value,
+                    "value_unit": "percent" if metric == "debt_ratio" else "cny",
+                    "report_date": "2026-03-31" if metric == "debt_ratio" else "2025-12-31",
+                }
+                for symbol, name, value in zip(
+                    ["000001", "000002", "000003"],
+                    ["甲公司", "乙公司", "丙公司"],
+                    values,
+                )
+            ],
+            "source": "本地已同步财务库",
+            "data_time": "2026-07-25T10:00:00",
+        }
+
+    async def run() -> str:
+        with _unified_pipeline(chat_mod, plan, resolved), \
+             patch.object(chat_mod._registry, "execute", side_effect=execute), \
+             patch.object(chat_mod, "execute_tool_isolated", return_value=domain_result), \
+             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
+             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
+             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+            return await chat_mod._run_standard_task_pipeline(
+                controller,
+                [{"role": "user", "content": "找第一梯队并剔除负债率大于70%、净利润为负、2025年度营收低于5亿的股票"}],
+                {"model": "test", "api_base": "", "api_key": None, "extra_headers": None},
+            )
+
+    answer = asyncio.run(run())
+    assert controller.tool_calls == [
+        "get_domain_stock_candidates",
+        "get_multi_stock_financials",
+        "get_multi_stock_financials",
+        "get_multi_stock_financials",
+    ]
+    assert {call["metric"] for call in financial_calls} == {
+        "debt_ratio", "net_profit", "revenue",
+    }
+    assert all(call["symbols"] == "000001,000002,000003" for call in financial_calls)
+    assert "本轮同时执行 **3 项**财务条件" in answer
+    assert "合并后筛除 **3 只**，最终保留 **0 只**" in answer
 
 
 def test_standard_task_answer_validator_rejects_unsupported_codes_and_ratios() -> None:

@@ -52,11 +52,16 @@ def tool_cases() -> dict[str, dict[str, Any]]:
         },
         "get_technical_indicators": {"symbol": "600519", "count": 120},
         "get_multi_stock_snapshot": {"symbols": "600519,000858"},
-        "get_multi_stock_financials": {"symbols": "600519,000858"},
+        "get_multi_stock_financials": {
+            "symbols": "600519,000858",
+            "metric": "debt_ratio",
+            "period_basis": "latest_report",
+        },
         "get_multi_stock_decision_evidence": {
             "symbols": "600519,000858",
             "thesis": "高端白酒盈利质量与估值比较",
         },
+        "get_domain_board_catalog": {},
         "get_domain_stock_candidates": {
             "domains": [
                 {
@@ -74,6 +79,14 @@ def tool_cases() -> dict[str, dict[str, Any]]:
                     "unresolved_parts": [],
                 },
             ],
+        },
+        "get_company_theme_evidence": {
+            "symbol": "300007",
+            "company_name": "汉威科技",
+            "target_topics": ["人形机器人"],
+            "domains": ["传感器"],
+            "objective": "核验公司是否正在持续发展目标方向",
+            "days": 365,
         },
         "get_market_status": {},
         "get_market_breadth": {},
@@ -110,8 +123,8 @@ def tool_cases() -> dict[str, dict[str, Any]]:
             "fallback_to_web": True,
         },
         "list_financial_sources": {"limit": 100},
-        "inspect_financial_source": {"route_path": "/eeo/kuaixun"},
-        "read_financial_feed": {"route_path": "/eeo/kuaixun", "limit": 5},
+        "inspect_financial_source": {"route_path": "/cls/telegraph/:category?"},
+        "read_financial_feed": {"route_path": "/cls/telegraph/:category?", "limit": 5},
         "get_regulatory_updates": {
             "keyword": "贵州茅台",
             "event_type": "all",
@@ -156,7 +169,9 @@ def schema_only_tools() -> set[str]:
         "run_batch_analysis",
         "send_notification",
         "screen_atr_volatility_stocks",
+        "evaluate_market_mainline_gate",
         "evaluate_multi_stock_buy_criteria",
+        "prepare_market_mainline_snapshot",
         "analyze_stock_catalysts",
         "read_financial_article",
         "transform_webpage_to_feed",

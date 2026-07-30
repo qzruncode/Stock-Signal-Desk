@@ -217,6 +217,16 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
             "Agent active-run state is process-local; configure exactly one ASGI worker "
             "(WEB_CONCURRENCY=1 / UVICORN_WORKERS=1)"
         )
+    try:
+        from src.agent.orchestrator_v2.registry import migration_coverage
+
+        orchestrator_coverage = migration_coverage()
+        if not orchestrator_coverage["complete"]:
+            issues.append(
+                "Agent orchestrator capability registry is incomplete"
+            )
+    except Exception as exc:
+        issues.append(f"Agent orchestrator registry is invalid: {exc}")
 
     if not is_production_environment():
         return issues

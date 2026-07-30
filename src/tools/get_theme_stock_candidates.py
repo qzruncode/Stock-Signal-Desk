@@ -16,12 +16,20 @@ board.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timedelta
 from io import StringIO
 from typing import Any
+
+
+_CACHE_VERSION = "v1"
+_CACHE_MAX_AGE = timedelta(days=30)
+
 
 def _compact(value: Any) -> str:
     return re.sub(r"[\s·•（）()\-_/]+", "", str(value or "")).lower()
@@ -32,6 +40,62 @@ def _same_catalog_identifier(board_name: str, requested_board: str) -> bool:
     board = _compact(board_name)
     requested = _compact(requested_board)
     return bool(board and requested and board == requested)
+
+
+def _cache_key(theme: str) -> str:
+    digest = hashlib.sha256(theme.encode("utf-8")).hexdigest()
+    return f"concept_constituents:{_CACHE_VERSION}:{digest}"
+
+
+def _load_complete_constituent_cache(
+    theme: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], datetime] | None:
+    try:
+        from src.storage import DatabaseManager
+
+        cached = DatabaseManager.get_instance().get_tool_cache(_cache_key(theme))
+        if not isinstance(cached, dict):
+            return None
+        updated_at = cached.get("updated_at")
+        if (
+            not isinstance(updated_at, datetime)
+            or datetime.now() - updated_at > _CACHE_MAX_AGE
+        ):
+            return None
+        payload = json.loads(bytes(cached["payload"]).decode("utf-8"))
+        items = payload.get("items") if isinstance(payload, dict) else None
+        boards = payload.get("boards") if isinstance(payload, dict) else None
+        if not isinstance(items, list) or not isinstance(boards, list):
+            return None
+        if not any(
+            isinstance(board, dict)
+            and board.get("coverage") == "full"
+            and board.get("primary_theme") is True
+            for board in boards
+        ):
+            return None
+        return items, boards, updated_at
+    except Exception:
+        return None
+
+
+def _save_complete_constituent_cache(
+    theme: str,
+    items: list[dict[str, Any]],
+    boards: list[dict[str, Any]],
+) -> None:
+    try:
+        from src.storage import DatabaseManager
+
+        DatabaseManager.get_instance().save_tool_cache(
+            _cache_key(theme),
+            json.dumps(
+                {"theme": theme, "items": items, "boards": boards},
+                ensure_ascii=False,
+            ).encode("utf-8"),
+        )
+    except Exception:
+        return
 
 
 def _load_local_universe() -> dict[str, dict[str, Any]]:
@@ -118,7 +182,10 @@ def _ths_board_map() -> dict[str, str]:
     return result
 
 
-def _fetch_eastmoney_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+def _fetch_eastmoney_constituents(
+    theme: str,
+    board_code: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """Fetch the complete Eastmoney concept board through the reachable delay host."""
     import requests
 
@@ -130,31 +197,48 @@ def _fetch_eastmoney_constituents(theme: str) -> tuple[list[dict[str, Any]], lis
     }
 
     def fetch_page(fs: str, page: int) -> tuple[int, list[dict[str, Any]]]:
-        response = requests.get(
-            endpoint,
-            params={**common, "pn": str(page), "pz": "100", "fs": fs},
-            headers=headers,
-            timeout=12,
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    endpoint,
+                    params={**common, "pn": str(page), "pz": "100", "fs": fs},
+                    headers=headers,
+                    timeout=12,
+                )
+                response.raise_for_status()
+                data = response.json().get("data") or {}
+                return int(data.get("total") or 0), [
+                    item
+                    for item in data.get("diff") or []
+                    if isinstance(item, dict)
+                ]
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(0.3)
+        raise RuntimeError(
+            f"东方财富第 {page} 页连续失败: {last_error}"
         )
-        response.raise_for_status()
-        data = response.json().get("data") or {}
-        return int(data.get("total") or 0), [item for item in data.get("diff") or [] if isinstance(item, dict)]
 
-    board_records: list[dict[str, Any]] = []
-    total, first = fetch_page("m:90 t:3 f:!50", 1)
-    board_records.extend(first)
-    for page in range(2, math.ceil(total / 100) + 1):
-        _, records = fetch_page("m:90 t:3 f:!50", page)
-        board_records.extend(records)
+    if board_code:
+        matched = [(theme, str(board_code).strip())]
+    else:
+        board_records: list[dict[str, Any]] = []
+        total, first = fetch_page("m:90 t:3 f:!50", 1)
+        board_records.extend(first)
+        for page in range(2, math.ceil(total / 100) + 1):
+            _, records = fetch_page("m:90 t:3 f:!50", page)
+            board_records.extend(records)
 
-    matched = sorted(
-        (
-            (str(item.get("f14") or ""), str(item.get("f12") or ""))
-            for item in board_records
-            if _same_catalog_identifier(str(item.get("f14") or ""), theme)
-        ),
-        key=lambda item: item[0],
-    )
+        matched = sorted(
+            (
+                (str(item.get("f14") or ""), str(item.get("f12") or ""))
+                for item in board_records
+                if _same_catalog_identifier(str(item.get("f14") or ""), theme)
+            ),
+            key=lambda item: item[0],
+        )
 
     items: list[dict[str, Any]] = []
     boards: list[dict[str, Any]] = []
@@ -306,6 +390,7 @@ def _fetch_ths_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dict
 def get_theme_stock_candidates(
     theme: str,
     *,
+    board_code: str | None = None,
     local_universe: dict[str, dict[str, Any]] | None = None,
     maintenance_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -319,10 +404,20 @@ def get_theme_stock_candidates(
     warnings: list[str] = [maintenance["warning"]] if maintenance.get("warning") else []
     raw_items: list[dict[str, Any]] = []
     boards: list[dict[str, Any]] = []
+    cache_fallback_used = False
+    cache_updated_at: datetime | None = None
 
-    for fetcher in (_fetch_eastmoney_constituents, _fetch_sina_constituents, _fetch_ths_constituents):
+    fetchers = (
+        (
+            _fetch_eastmoney_constituents,
+            lambda: _fetch_eastmoney_constituents(topic, board_code=board_code),
+        ),
+        (_fetch_sina_constituents, lambda: _fetch_sina_constituents(topic)),
+        (_fetch_ths_constituents, lambda: _fetch_ths_constituents(topic)),
+    )
+    for fetcher, fetch in fetchers:
         try:
-            fetched, fetched_boards, errors = fetcher(topic)
+            fetched, fetched_boards, errors = fetch()
             raw_items.extend(fetched)
             boards.extend(fetched_boards)
             warnings.extend(errors)
@@ -337,15 +432,26 @@ def get_theme_stock_candidates(
         for board in boards
     )
     if not coverage_complete:
-        warnings.append(
-            "没有任何精确主题源完成全分页抓取，本轮候选池不是主题全量成分股；"
-            "已保留逐来源覆盖范围，不能把 returned_count 写成全市场主题公司总数。"
-        )
+        cached = _load_complete_constituent_cache(topic)
+        if cached is not None:
+            raw_items, boards, cache_updated_at = cached
+            coverage_complete = True
+            cache_fallback_used = True
+            warnings.append(
+                "实时概念成分源未完成，本轮复用最近一次完整板块成分缓存；"
+                "候选仍来自项目板块数据，不使用网页名单补充。"
+            )
+        else:
+            warnings.append(
+                "没有任何精确主题源完成全分页抓取，本轮候选池不是主题全量成分股；"
+                "已保留逐来源覆盖范围，不能把 returned_count 写成全市场主题公司总数。"
+            )
     else:
         # Once at least one source has fully covered the exact requested board,
         # only exact-board records belong in the returned candidate inventory.
         raw_items = [item for item in raw_items if item.get("primary_theme") is True]
         boards = [board for board in boards if board.get("primary_theme") is True]
+        _save_complete_constituent_cache(topic, raw_items, boards)
 
     merged: dict[str, dict[str, Any]] = {}
     for raw in raw_items:
@@ -390,6 +496,7 @@ def get_theme_stock_candidates(
     success = bool(returned)
     if not success:
         warnings.append("概念板块成分股未能与本地 stock_meta 形成有效交集")
+    observed_at = cache_updated_at or datetime.now()
     return {
         "success": success,
         "partial": success and bool(warnings),
@@ -404,12 +511,13 @@ def get_theme_stock_candidates(
         "matched_boards": boards,
         "maintenance": maintenance,
         "source_scope": "public_concept_constituents_intersected_with_local_stock_meta",
+        "cache_fallback_used": cache_fallback_used,
         "decision_boundary": (
             "items 是完整性优先的候选召回，不是受益公司定论。回答必须同时给出完整候选索引，"
             "并把公告、财报、主营构成、订单或客户验证形成的公司级证据单独分层。"
         ),
-        "data_time": date.today().isoformat(),
-        "is_stale": False,
+        "data_time": observed_at.isoformat(),
+        "is_stale": True if cache_fallback_used else False,
         "freshness_unknown": False,
         "warnings": warnings,
         "errors": [] if success else list(warnings),

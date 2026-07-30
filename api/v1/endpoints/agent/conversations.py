@@ -47,15 +47,49 @@ def get_agent_conversation(
     # 附加运行态:后端是否仍在生成该对话的回复(供前端刷新后判断是否续流)。
     run = active_run_registry.get(conversation_id)
     is_generating = active_run_registry.is_active(conversation_id)
+    trace = db_manager.get_latest_agent_run_trace(conversation_id)
+    persisted_stage = (
+        trace.get("latest_stage")
+        if isinstance(trace, dict)
+        and (
+            run is None
+            or trace.get("run_id") == run.run_id
+        )
+        else None
+    )
+    reconciled_trace_status = (
+        trace.get("status")
+        if isinstance(trace, dict)
+        else None
+    )
+    if (
+        run is None
+        and isinstance(trace, dict)
+        and reconciled_trace_status in {"running", "compiled"}
+    ):
+        reconciled_trace_status = "failed"
+        persisted_stage = {
+            "event": "agent_stage_v2",
+            "run_id": trace.get("run_id"),
+            "stage": "completed",
+            "status": "failed",
+            "error_code": "tool_failed",
+            "summary": "后台运行已经中断，没有仍在执行的任务",
+        }
     conversation["is_generating"] = is_generating
     conversation["resume_state"] = {
         "run_id": run.run_id if run else None,
         "active": run is not None,
         "is_generating": is_generating,
-        "status": run.status if run else None,
+        "status": (
+            run.status
+            if run
+            else reconciled_trace_status
+        ),
         "after_chunk_index": run.broadcaster.history_length if run else 0,
         "assistant_text": run.broadcaster.assistant_text_snapshot if run else "",
         "has_tool_events": run.broadcaster.has_tool_events if run else False,
+        "latest_stage": persisted_stage,
     }
     return conversation
 
@@ -121,12 +155,18 @@ def sync_agent_conversation_snapshot(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
     service = ChatSessionService(db_manager)
-    messages = payload.get("messages", [])
+    raw_messages = payload.get("messages") if "messages" in payload else None
+    messages = raw_messages if isinstance(raw_messages, list) else (
+        [] if raw_messages is not None else None
+    )
     thread_state = payload.get("thread_state")
     conversation = service.save_conversation_snapshot(
         conversation_id,
-        messages if isinstance(messages, list) else [],
+        messages,
         thread_state=thread_state if isinstance(thread_state, dict) else None,
+        prune_agent_context_to_messages=bool(
+            payload.get("prune_agent_context_to_messages")
+        ),
     )
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")

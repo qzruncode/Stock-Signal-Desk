@@ -161,3 +161,13 @@ def test_production_preflight_rejects_unsafe_web_settings(monkeypatch, tmp_path:
     assert any("WEBFETCH_ALLOW_PRIVATE" in issue for issue in issues)
     assert any("AGENT_REQUESTS_PER_MINUTE" in issue for issue in issues)
     assert any("frontend bundle is missing" in issue for issue in issues)
+
+
+def test_production_preflight_has_no_runtime_mode_cutover(
+    monkeypatch,
+    tmp_path: Path,
+):
+    _set_safe_production_env(monkeypatch)
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+
+    assert agent_production_issues(tmp_path) == []

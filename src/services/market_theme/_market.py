@@ -55,7 +55,9 @@ def validated_themes(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def validated_future_themes(report: dict[str, Any]) -> list[dict[str, Any]]:
-    values = report.get("future_mainlines")
+    values = report.get("candidate_mainlines") or report.get(
+        "future_mainlines"
+    )
     return [item for item in values or [] if isinstance(item, dict)]
 
 

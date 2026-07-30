@@ -19,6 +19,8 @@ from src.storage.mixins import (
     DailyDataMixin, NewsMixin, QuoteKlineMixin, MacroMixin,
     PortfolioMixin, AnalysisMixin, ChatMixin, BatchMixin,
     AlertMixin, WatchlistMixin, AgentPromptMixin, RssCacheMixin, ToolCacheMixin,
+    AgentArtifactMixin,
+    AgentRunTraceMixin,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,8 @@ class DatabaseManager(
     DailyDataMixin, NewsMixin, QuoteKlineMixin, MacroMixin,
     PortfolioMixin, AnalysisMixin, ChatMixin, BatchMixin,
     AlertMixin, WatchlistMixin, AgentPromptMixin, RssCacheMixin, ToolCacheMixin,
+    AgentArtifactMixin,
+    AgentRunTraceMixin,
 ):
     """
     数据库管理器 - 单例模式

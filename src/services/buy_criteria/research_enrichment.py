@@ -9,7 +9,7 @@ current A-share narrative.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -61,6 +61,7 @@ _SOURCE_QUALITY_RANK = {
     "unrated_public_source": 2,
     "ugc_lead_only": 3,
 }
+_MARKET_CONSENSUS_MAX_AGE_DAYS = 186
 
 
 def _clean_label(value: Any) -> str:
@@ -79,6 +80,32 @@ def _source_quality(url: Any) -> str:
     if host in _USER_GENERATED_SOURCE_HOSTS:
         return "ugc_lead_only"
     return "unrated_public_source"
+
+
+def _published_timestamp(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _is_current_market_consensus(item: dict[str, Any]) -> bool:
+    timestamp = _published_timestamp(item.get("published_date"))
+    if timestamp <= 0:
+        return True
+    age_days = (
+        datetime.now(timezone.utc).timestamp() - timestamp
+    ) / 86_400
+    return age_days <= _MARKET_CONSENSUS_MAX_AGE_DAYS
 
 
 def _requested_subjects(stock_info: dict[str, Any]) -> list[dict[str, Any]]:
@@ -185,9 +212,17 @@ def derive_research_scope(
                 break
 
     requested = _requested_subjects(stock_info)
+    requested_domains = [
+        item for item in requested
+        if item.get("basis") != "thesis_summary"
+    ]
+    thesis_summaries = [
+        item for item in requested
+        if item.get("basis") == "thesis_summary"
+    ]
     primary: list[dict[str, Any]] = []
     primary_seen: set[str] = set()
-    for item in [*requested, *business_subjects]:
+    for item in [*requested_domains, *business_subjects, *thesis_summaries]:
         normalized = str(item.get("label") or "").lower()
         if not normalized or normalized in primary_seen:
             continue
@@ -288,6 +323,8 @@ def _search_one(
 
 def collect_public_research(
     stock_info: dict[str, Any],
+    *,
+    requested_lenses: set[str] | None = None,
 ) -> dict[str, Any]:
     """Fill predictable research blind spots before any analyst judgment."""
     scope = stock_info.get("_derived_research_scope")
@@ -303,34 +340,45 @@ def collect_public_research(
         or stock_info.get("symbol")
     )
     now = datetime.now().astimezone()
-    requests: list[tuple[str, str, str, str]] = [
-        (
-            "market_consensus",
-            "机构策略",
-            f"{now:%Y年%m月} A股 近三个月 券商策略 市场主线 机构观点",
-            company_name,
-        ),
-        (
-            "market_consensus",
-            "市场复盘",
-            f"{now:%Y年%m月%d日} A股 市场复盘 热点主线 成交结构",
-            company_name,
-        ),
-        (
-            "market_consensus",
-            "中期主线细分",
-            f"{now:%Y年%m月} A股 中期主线 产业方向 券商策略",
-            company_name,
-        ),
-    ]
+    active_lenses = requested_lenses or {
+        "market_consensus",
+        "structural_trend",
+        "cycle_supply_demand",
+        "competition_structure",
+        "company_position",
+    }
+    requests: list[tuple[str, str, str, str]] = []
+    if "market_consensus" in active_lenses:
+        requests.extend([
+            (
+                "market_consensus",
+                "机构策略",
+                f"{now:%Y年%m月} A股 近三个月 券商策略 市场主线 机构观点",
+                company_name,
+            ),
+            (
+                "market_consensus",
+                "市场复盘",
+                f"{now:%Y年%m月%d日} A股 市场复盘 热点主线 成交结构",
+                company_name,
+            ),
+            (
+                "market_consensus",
+                "中期主线细分",
+                f"{now:%Y年%m月} A股 中期主线 产业方向 券商策略",
+                company_name,
+            ),
+        ])
     for subject in subjects:
         requests.extend(
             (lens, subject, focus, company_name)
             for lens, focus in _RESEARCH_LENSES
+            if lens in active_lenses
         )
-        requests.append(
-            ("company_position", subject, "", company_name)
-        )
+        if "company_position" in active_lenses:
+            requests.append(
+                ("company_position", subject, "", company_name)
+            )
 
     attempts: list[dict[str, Any]] = []
     if requests:
@@ -366,13 +414,15 @@ def collect_public_research(
         if isinstance(item, dict)
     ]
     lens_status: dict[str, str] = {}
-    for lens, _ in (
-        ("market_consensus", ""),
-        ("structural_trend", ""),
-        ("cycle_supply_demand", ""),
-        ("competition_structure", ""),
-        ("company_position", ""),
+    for lens in (
+        "market_consensus",
+        "structural_trend",
+        "cycle_supply_demand",
+        "competition_structure",
+        "company_position",
     ):
+        if lens not in active_lenses:
+            continue
         relevant = [
             item for item in attempts if item.get("lens") == lens
         ]
@@ -396,6 +446,10 @@ def collect_public_research(
             candidate
             for candidate in items
             if candidate.get("lens") == lens
+            and (
+                lens != "market_consensus"
+                or _is_current_market_consensus(candidate)
+            )
         ]
         candidates.sort(
             key=lambda item: (
@@ -403,6 +457,7 @@ def collect_public_research(
                     str(item.get("source_quality") or ""),
                     9,
                 ),
+                -_published_timestamp(item.get("published_date")),
                 str(item.get("subject") or ""),
             )
         )

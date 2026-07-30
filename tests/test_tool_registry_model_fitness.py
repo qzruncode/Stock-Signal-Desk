@@ -70,18 +70,21 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertEqual(captured["days"], 1095)
         self.assertNotIn("includeContent", captured)
 
-    def test_registry_clamps_numeric_arguments_to_declared_schema_bounds(self) -> None:
+    def test_registry_rejects_numeric_arguments_outside_declared_schema_bounds(self) -> None:
         registry = ToolRegistry()
-        normalized = registry.normalize_arguments("search_financial_news", {
+        arguments = {
             "query": "人形机器人",
             "topic": "industry",
             "subjects": ["人形机器人"],
             "days": 730,
             "limit": "100",
-        })
+        }
 
-        self.assertEqual(normalized["days"], 365)
-        self.assertEqual(normalized["limit"], 30)
+        normalized = registry.normalize_arguments("search_financial_news", arguments)
+        self.assertEqual(normalized["days"], 730)
+        self.assertEqual(normalized["limit"], 100)
+        with self.assertRaises(ValueError):
+            registry.validate_arguments("search_financial_news", arguments)
 
     def test_registry_repairs_iso_dates_for_compact_date_schema(self) -> None:
         registry = ToolRegistry()
@@ -217,11 +220,8 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         normalized = registry.normalize_arguments("screen_atr_volatility_stocks", arguments)
         self.assertEqual(normalized["screen_spec"]["technical_rule"]["atr_period"], 1)
 
-        result = registry.execute("screen_atr_volatility_stocks", arguments)
-
-        self.assertIs(result["success"], False)
-        self.assertEqual(result["failure_stage"], "spec_validation")
-        self.assertEqual(result["items"], [])
+        with self.assertRaises(ValueError):
+            registry.execute("screen_atr_volatility_stocks", arguments)
 
     def test_result_contract_completes_nullable_freshness_fields(self) -> None:
         result = enforce_result_contract("demo", {"success": True, "errors": []})

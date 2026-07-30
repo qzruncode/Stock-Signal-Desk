@@ -355,7 +355,10 @@ def search_financial_news(
         ]
         item["semantic_status"] = "model_required"
     items.sort(
-        key=_published_key,
+        key=lambda item: (
+            len(item.get("exact_subject_mentions") or []),
+            _published_key(item),
+        ),
         reverse=True,
     )
     selected = items[: max(1, min(int(limit), 30))]

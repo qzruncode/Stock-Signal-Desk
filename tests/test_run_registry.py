@@ -16,6 +16,7 @@ from typing import List
 
 import pytest
 
+import src.agent.run_registry as run_registry_module
 from src.agent.run_registry import (
     ActiveRun,
     ActiveRunRegistry,
@@ -123,6 +124,31 @@ def test_replay_subscriber_keeps_full_history_beyond_live_queue_limit():
         assert len(collected) == 300
         assert collected[0] == "t0"
         assert collected[-1] == "t299"
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_trimmed_history_keeps_monotonic_resume_cursor(monkeypatch):
+    """裁剪旧 chunk 后游标仍是全局递增值，续流只回放保留窗口。"""
+    async def run():
+        monkeypatch.setattr(run_registry_module, "_RUN_HISTORY_MAX_CHUNKS", 3)
+        b = RunBroadcaster()
+        for i in range(5):
+            b.append_text(f"t{i}")
+        b.mark_finished()
+
+        assert b.history_length == 5
+        q = b.subscribe(replay_from=0)
+        collected: List[str] = []
+        while True:
+            chunk = await asyncio.wait_for(q.get(), timeout=1.0)
+            if chunk is None:
+                break
+            collected.append(chunk.text_delta)
+        assert collected == ["t2", "t3", "t4"]
+
+        at_end = b.subscribe(replay_from=5)
+        assert await asyncio.wait_for(at_end.get(), timeout=1.0) is None
 
     asyncio.new_event_loop().run_until_complete(run())
 
@@ -259,6 +285,27 @@ def test_cancel_does_not_rewrite_completed_status(reset_registry):
         assert await registry.cancel("completed") is False
         assert completed.status == "completed"
         assert registry.stats()["terminal"]["completed"] == 1
+        await registry.shutdown()
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_partial_run_is_a_distinct_terminal_status(reset_registry):
+    registry = reset_registry
+
+    async def run():
+        partial = await registry.try_claim("partial")
+        assert partial is not None
+        await registry.mark_done(
+            "partial",
+            "partial",
+            final_text="部分任务未完成",
+            error="coverage_incomplete",
+        )
+
+        assert partial.is_running is False
+        assert partial.status == "partial"
+        assert registry.stats()["terminal"]["partial"] == 1
         await registry.shutdown()
 
     asyncio.new_event_loop().run_until_complete(run())

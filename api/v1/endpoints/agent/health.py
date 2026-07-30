@@ -14,6 +14,7 @@ from sqlalchemy import text
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
 from src.agent.run_registry import active_run_registry
+from src.agent.orchestrator_v2.registry import migration_coverage
 from src.agent.runtime_safety import (
     agent_production_issues,
     configured_worker_count,
@@ -169,6 +170,8 @@ def agent_readiness(
         "production": is_production_environment(),
         "workers": configured_worker_count(),
         "auth_enabled": is_auth_enabled(),
+        "orchestrator_mode": "unified",
+        "orchestrator_capabilities": migration_coverage(),
         "issues": runtime_issues,
         "limits": {
             "max_active_runs": limits.max_active_runs,

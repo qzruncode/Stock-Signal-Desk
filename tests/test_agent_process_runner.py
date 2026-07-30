@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import json
 import signal
 import subprocess
 import threading
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.tools.process_runner import execute_tool_isolated
+from src.tools.process_worker import _exit_after_result
 
 
 def test_isolated_runner_parses_structured_result_after_noisy_stdout():
@@ -32,6 +34,25 @@ def test_isolated_runner_turns_native_abort_into_regular_error():
     with patch("src.tools.process_runner.subprocess.run", return_value=completed):
         with pytest.raises(RuntimeError, match="隔离工具进程异常退出"):
             execute_tool_isolated("get_market_status", {})
+
+
+def test_one_shot_worker_exits_without_interpreter_thread_finalization():
+    stdout = MagicMock()
+    stderr = MagicMock()
+    with patch("src.tools.process_worker.sys.stdout", stdout), patch(
+        "src.tools.process_worker.sys.stderr",
+        stderr,
+    ), patch(
+        "src.tools.process_worker.os._exit",
+        side_effect=SystemExit(7),
+    ) as immediate_exit:
+        with pytest.raises(SystemExit) as captured:
+            _exit_after_result(7)
+
+    assert captured.value.code == 7
+    stdout.flush.assert_called_once_with()
+    stderr.flush.assert_called_once_with()
+    immediate_exit.assert_called_once_with(7)
 
 
 def test_isolated_runner_terminates_process_group_when_cancelled():
@@ -73,11 +94,56 @@ def test_isolated_runner_terminates_process_group_when_cancelled():
     kill_group.assert_called_once_with(4242, signal.SIGTERM)
 
 
+def test_cancel_aware_runner_transports_large_request_and_result_without_pipes():
+    request_blob = "请求" * 12_000
+    result_blob = "结果" * 12_000
+
+    class CompletedFileProcess:
+        pid = 4343
+        returncode = 0
+
+        def __init__(self, _command, *, stdin, stdout, stderr, **kwargs):
+            del stderr, kwargs
+            request = json.load(stdin)
+            assert request["arguments"]["blob"] == request_blob
+            stdout.write(
+                "__DSA_TOOL_RESULT__="
+                + json.dumps({
+                    "ok": True,
+                    "result": {
+                        "success": True,
+                        "blob": result_blob,
+                    },
+                }, ensure_ascii=False)
+                + "\n"
+            )
+            stdout.flush()
+
+        def poll(self):
+            return self.returncode
+
+    with patch(
+        "src.tools.process_runner.subprocess.Popen",
+        side_effect=CompletedFileProcess,
+    ):
+        result = execute_tool_isolated(
+            "get_market_status",
+            {"blob": request_blob},
+            cancel_event=threading.Event(),
+        )
+
+    assert result == {
+        "success": True,
+        "blob": result_blob,
+    }
+
+
 def test_professional_evidence_is_split_into_parallel_two_stock_shards():
     calls: list[str] = []
     lock = threading.Lock()
 
-    def run_process(name, arguments, *, timeout_seconds):
+    def run_process(name, arguments, **kwargs):
+        assert "timeout_seconds" not in kwargs
         assert name == "get_multi_stock_decision_evidence"
         symbols = arguments["symbols"]
         with lock:
@@ -101,7 +167,6 @@ def test_professional_evidence_is_split_into_parallel_two_stock_shards():
         result = execute_tool_isolated(
             "get_multi_stock_decision_evidence",
             {"symbols": "000001,000002,000003,000004,000005", "thesis": "测试"},
-            timeout_seconds=87,
         )
 
     assert sorted(calls) == ["000001,000002", "000003,000004", "000005"]
@@ -112,10 +177,11 @@ def test_professional_evidence_is_split_into_parallel_two_stock_shards():
     assert result["partial"] is False
 
 
-def test_professional_evidence_keeps_snapshot_when_one_shard_times_out():
-    def run_process(name, arguments, *, timeout_seconds):
+def test_professional_evidence_keeps_snapshot_when_one_shard_fails():
+    def run_process(name, arguments, **kwargs):
+        assert "timeout_seconds" not in kwargs
         if name == "get_multi_stock_decision_evidence" and arguments["symbols"] == "000003,000004":
-            raise TimeoutError("upstream stalled")
+            raise RuntimeError("upstream failed")
         if name == "get_multi_stock_snapshot":
             return {
                 "success": True,
@@ -148,7 +214,6 @@ def test_professional_evidence_keeps_snapshot_when_one_shard_times_out():
         result = execute_tool_isolated(
             "get_multi_stock_decision_evidence",
             {"symbols": "000001,000002,000003,000004", "thesis": "测试"},
-            timeout_seconds=87,
         )
 
     assert result["success"] is True
@@ -162,11 +227,11 @@ def test_professional_evidence_keeps_snapshot_when_one_shard_times_out():
     assert any("000003,000004" in error for error in result["errors"])
 
 
-def test_two_stock_professional_evidence_also_falls_back_before_deadline():
-    def run_process(name, arguments, *, timeout_seconds):
-        del timeout_seconds
+def test_two_stock_professional_evidence_falls_back_after_real_failure():
+    def run_process(name, arguments, **kwargs):
+        assert "timeout_seconds" not in kwargs
         if name == "get_multi_stock_decision_evidence":
-            raise TimeoutError("upstream stalled")
+            raise RuntimeError("upstream failed")
         assert name == "get_multi_stock_snapshot"
         return {
             "success": True,
@@ -182,7 +247,6 @@ def test_two_stock_professional_evidence_also_falls_back_before_deadline():
         result = execute_tool_isolated(
             "get_multi_stock_decision_evidence",
             {"symbols": "000001,000002", "thesis": "测试"},
-            timeout_seconds=87,
         )
 
     assert result["success"] is True
@@ -195,14 +259,14 @@ def test_professional_buy_analysis_isolates_each_stock_preserves_order_and_failu
     calls: list[str] = []
     lock = threading.Lock()
 
-    def run_process(name, arguments, *, timeout_seconds):
-        del timeout_seconds
+    def run_process(name, arguments, **kwargs):
+        assert "timeout_seconds" not in kwargs
         assert name == "evaluate_multi_stock_buy_criteria"
         symbol = arguments["symbols"]
         with lock:
             calls.append(symbol)
         if symbol == "000002":
-            raise TimeoutError("model stalled")
+            raise RuntimeError("model failed")
         return {
             "success": True,
             "partial": False,
@@ -240,15 +304,15 @@ def test_professional_buy_analysis_isolates_each_stock_preserves_order_and_failu
         result = execute_tool_isolated(
             "evaluate_multi_stock_buy_criteria",
             {"symbols": "000001,000002,000003", "thesis": "测试"},
-            timeout_seconds=297,
         )
 
     assert sorted(calls) == ["000001", "000002", "000003"]
     assert [item["symbol"] for item in result["items"]] == ["000001", "000002", "000003"]
     failed = result["items"][1]
-    assert failed["final_decision"] == "不可买入"
-    assert failed["insufficient_count"] == 1
-    assert failed["not_evaluated_count"] == 7
-    assert failed["criteria"][0]["status"] == "insufficient"
+    assert failed["final_decision"] == "分析失败"
+    assert failed["analysis_status"] == "execution_failed"
+    assert failed["insufficient_count"] == 0
+    assert failed["not_evaluated_count"] == 8
+    assert failed["criteria"] == []
     assert result["partial"] is True
     assert result["coverage_complete"] is True

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """Validated multi-domain A-share candidate discovery.
 
-This is the runtime-owned bridge between an industry conclusion (for example
-``行星滚柱丝杠、减速器、无框力矩电机``) and the synchronized A-share
-universe.  It never discovers company identities from generic web results.
+This is the runtime-owned bridge between structured industry-board bindings
+and the synchronized A-share universe.  It never discovers company identities
+from generic web results.
 Every returned code comes from structured concept-board constituents and is
 intersected with local ``stock_meta`` by ``get_theme_stock_candidates``.
 """
@@ -13,12 +13,32 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from src.agent.result_contracts import DomainBoardQuerySpec
-from src.tools.base import ToolSpec, object_schema
+from src.tools.base import ToolSpec, TypedToolResult
 from src.tools.get_theme_stock_candidates import (
     _load_local_universe,
     get_theme_stock_candidates,
 )
+
+
+class GetDomainStockCandidatesArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domains: list[DomainBoardQuerySpec] = Field(min_length=1, max_length=512)
+
+
+class GetDomainStockCandidatesResult(TypedToolResult):
+    items: list[dict[str, Any]]
+    candidate_count: int = Field(ge=0)
+    returned_count: int = Field(ge=0)
+    requested_domains: list[str]
+    domain_specs: list[DomainBoardQuerySpec]
+    local_universe_count: int = Field(ge=0)
+    domain_results: list[dict[str, Any]]
+    source_scope: str
+    decision_boundary: str
 
 
 def _compact(value: Any) -> str:
@@ -36,9 +56,50 @@ def _normalize_domain_specs(domains: list[Any]) -> list[DomainBoardQuerySpec]:
             continue
         seen.add(key)
         normalized.append(spec)
-        if len(normalized) >= 12:
+        if len(normalized) >= 512:
             break
     return normalized
+
+
+def _live_board_catalog() -> dict[str, Any]:
+    try:
+        from src.services.domain_board_catalog import get_domain_board_catalog
+
+        catalog = get_domain_board_catalog()
+        identities = [
+            (
+                str(item.get("sector_code") or "").strip(),
+                str(item.get("name") or "").strip(),
+            )
+            for item in catalog.get("boards") or []
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+            and str(item.get("sector_code") or "").strip()
+        ]
+        return {
+            "catalog_snapshot_id": str(
+                catalog.get("catalog_snapshot_id") or ""
+            ).strip(),
+            "by_name": {
+                board_name: board_id
+                for board_id, board_name in identities
+            },
+            "by_id": {
+                board_id: board_name
+                for board_id, board_name in identities
+            },
+        }
+    except Exception:
+        return {
+            "catalog_snapshot_id": "",
+            "by_name": {},
+            "by_id": {},
+        }
+
+
+def _live_board_codes() -> dict[str, str]:
+    """Compatibility view for persisted pre-V2 domain bindings."""
+    return dict(_live_board_catalog()["by_name"])
 
 
 def get_domain_stock_candidates(
@@ -56,12 +117,63 @@ def get_domain_stock_candidates(
 
     maintenance = ensure_stock_universe(trigger="agent_domain_candidates")
     local_universe = _load_local_universe()
-    lookup_themes: list[str] = []
-    for spec in domain_specs:
-        for theme in spec.board_queries:
-            if theme not in lookup_themes:
-                lookup_themes.append(theme)
+    has_v2_identity = any(spec.board_id for spec in domain_specs)
+    live_catalog = _live_board_catalog() if has_v2_identity else None
+    live_snapshot_id = (
+        str(live_catalog.get("catalog_snapshot_id") or "")
+        if live_catalog is not None
+        else ""
+    )
+    board_codes = (
+        dict(live_catalog.get("by_name") or {})
+        if live_catalog is not None
+        else _live_board_codes()
+    )
+    board_names_by_id = (
+        dict(live_catalog.get("by_id") or {})
+        if live_catalog is not None
+        else {}
+    )
+    resolved_themes: dict[int, list[str]] = {}
+    identity_errors: dict[int, list[str]] = {}
+    lookup_board_codes: dict[str, str | None] = {}
+    for index, spec in enumerate(domain_specs):
+        errors: list[str] = []
+        themes: list[str] = []
+        if spec.board_id:
+            if (
+                spec.catalog_snapshot_id
+                and spec.catalog_snapshot_id != live_snapshot_id
+            ):
+                errors.append(
+                    "板块目录快照已变化，拒绝使用历史 board_id 绑定。"
+                )
+            live_name = board_names_by_id.get(spec.board_id)
+            if not live_name:
+                errors.append(
+                    f"实时目录不存在板块 ID {spec.board_id}。"
+                )
+            elif live_name != spec.board_name:
+                errors.append(
+                    f"板块 ID {spec.board_id} 当前名称为“{live_name}”，"
+                    f"与绑定名称“{spec.board_name}”不一致。"
+                )
+            elif spec.board_queries != [spec.board_name]:
+                errors.append(
+                    "强类型板块绑定必须只查询其 board_name。"
+                )
+            elif not errors:
+                themes.append(spec.board_name)
+                lookup_board_codes[spec.board_name] = spec.board_id
+        else:
+            for theme in spec.board_queries:
+                if theme not in themes:
+                    themes.append(theme)
+                lookup_board_codes.setdefault(theme, board_codes.get(theme))
+        resolved_themes[index] = themes
+        identity_errors[index] = errors
 
+    lookup_themes = list(lookup_board_codes)
     fetched: dict[str, dict[str, Any]] = {}
     workers = min(4, len(lookup_themes))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -69,6 +181,7 @@ def get_domain_stock_candidates(
             pool.submit(
                 get_theme_stock_candidates,
                 theme,
+                board_code=lookup_board_codes.get(theme),
                 local_universe=local_universe,
                 maintenance_result=maintenance,
             ): theme
@@ -94,17 +207,18 @@ def get_domain_stock_candidates(
     local_universe_count = 0
     all_warnings: list[str] = []
     all_errors: list[str] = []
-    for domain_spec in domain_specs:
+    for domain_index, domain_spec in enumerate(domain_specs):
         domain = domain_spec.label
-        themes = list(domain_spec.board_queries)
+        themes = list(resolved_themes[domain_index])
         by_symbol: dict[str, dict[str, Any]] = {}
         matched_boards: list[dict[str, Any]] = []
         rejected_boards: list[dict[str, Any]] = []
         domain_warnings: list[str] = []
-        domain_errors: list[str] = []
+        domain_errors: list[str] = list(identity_errors[domain_index])
         coverage_complete = (
             domain_spec.mapping_type != "unresolved"
             and not domain_spec.unresolved_parts
+            and not domain_errors
         )
         successful_theme_count = 0
 
@@ -115,7 +229,7 @@ def get_domain_stock_candidates(
         if not themes:
             coverage_complete = False
             domain_errors.append(
-                "当前完整板块目录中没有可验证的窄板块映射，未执行近似板块取数。"
+                "当前完整板块目录中没有可执行的结构化召回路径。"
             )
 
         for theme in themes:
@@ -150,17 +264,25 @@ def get_domain_stock_candidates(
                 symbol = str(item.get("symbol") or "")
                 if len(symbol) != 6 or not symbol.isdigit():
                     continue
-                current = by_symbol.setdefault(symbol, {
+                merged = by_symbol.setdefault(symbol, {
                     **item,
-                    "matched_domains": [],
+                    "matched_domains": [domain],
                     "lookup_themes": [],
+                    "boards": [],
+                    "sources": [],
+                    "evidence_level": "L1",
+                    "company_evidence_required": True,
                 })
-                if domain not in current["matched_domains"]:
-                    current["matched_domains"].append(domain)
-                if theme not in current["lookup_themes"]:
-                    current["lookup_themes"].append(theme)
+                if theme not in merged["lookup_themes"]:
+                    merged["lookup_themes"].append(theme)
+                for board in item.get("boards") or []:
+                    if board not in merged["boards"]:
+                        merged["boards"].append(board)
+                for source in item.get("sources") or []:
+                    if isinstance(source, dict) and source not in merged["sources"]:
+                        merged["sources"].append(source)
 
-        items = list(by_symbol.values())
+        items = sorted(by_symbol.values(), key=lambda item: str(item.get("symbol") or ""))
         domain_result = {
             "domain": domain,
             "lookup_themes": themes,
@@ -171,6 +293,7 @@ def get_domain_stock_candidates(
                 "catalog_binding": "live_catalog_binding",
                 "unresolved": "catalog_unresolved",
             }[domain_spec.mapping_type],
+            "membership_is_business_proof": False,
             "success": bool(items),
             "partial": bool(items) and (not coverage_complete or bool(domain_warnings or domain_errors)),
             "coverage_complete": (
@@ -223,8 +346,8 @@ def get_domain_stock_candidates(
         "returned_count": len(union_items),
         "source_scope": "structured_concept_constituents_intersected_with_local_stock_meta",
         "decision_boundary": (
-            "候选仅证明结构化概念板块成员关系与本地证券身份有效；"
-            "不等同相关订单、客户验证、收入兑现或投资建议。"
+            "候选来自实时结构化板块成分与本地完整证券库；"
+            "板块成员关系不等同目标子领域主营、订单、客户验证、收入兑现或投资建议。"
         ),
         "warnings": list(dict.fromkeys(all_warnings)),
         "errors": [] if success else list(dict.fromkeys(all_errors)),
@@ -237,36 +360,17 @@ TOOL = ToolSpec(
         "按一个或多个产业领域从结构化概念板块成分股中查找A股候选，并与本地完整证券库核验。"
         "这是领域找股的唯一入口；不得用search_stocks或通用网页搜索替代。"
     ),
-    parameters=object_schema({
-        "domains": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "label": {"type": "string", "minLength": 1, "maxLength": 64},
-                    "board_queries": {
-                        "type": "array", "items": {"type": "string"}, "maxItems": 4,
-                    },
-                    "mapping_type": {
-                        "type": "string",
-                        "enum": ["catalog_binding", "unresolved"],
-                    },
-                    "rationale": {"type": "string", "maxLength": 240},
-                    "unresolved_parts": {
-                        "type": "array", "items": {"type": "string"}, "maxItems": 8,
-                    },
-                },
-                "required": ["label", "board_queries", "mapping_type", "rationale", "unresolved_parts"],
-            },
-            "minItems": 1,
-            "maxItems": 12,
-            "description": "已由任务规划器对照当前完整板块目录解析的产业领域对象",
-        },
-    }, required=("domains",)),
+    parameters=None,
     executor=get_domain_stock_candidates,
     category="research",
+    args_model=GetDomainStockCandidatesArgs,
+    result_model=GetDomainStockCandidatesResult,
 )
 
 
-__all__ = ["TOOL", "get_domain_stock_candidates"]
+__all__ = [
+    "GetDomainStockCandidatesArgs",
+    "GetDomainStockCandidatesResult",
+    "TOOL",
+    "get_domain_stock_candidates",
+]

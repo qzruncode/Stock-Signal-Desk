@@ -15,24 +15,56 @@ from ._utils import shorten, strip_html
 
 logger = logging.getLogger(__name__)
 
+MARKET_MAINLINE_REPORT_CONTRACT = "market_mainline_lifecycle_strategy_v3"
+
 
 def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
-    from api.v1.endpoints.macro import get_market_breadth, get_sector_flow
     from api.v1.endpoints.market_status import get_market_status
     from api.v1.endpoints.sectors import get_sector_list
 
-    market_status = get_market_status(force=force)
-    breadth = get_market_breadth()
-    industry_sectors = get_sector_list(type="industry", force=force)
-    concept_sectors = get_sector_list(type="concept", force=force)
-    # This endpoint is also called directly by in-process services.  Its HTTP
-    # defaults are FastAPI ``Query`` objects, so callers must pass the period
-    # explicitly instead of relying on the route-level default.
-    # ``records`` contains the complete provider result.  ``top_n`` only
-    # controls convenience projections in the endpoint response and must not
-    # become a hidden semantic candidate quota.
-    industry_flow = get_sector_flow(type="industry", top_n=30, period="today")
-    concept_flow = get_sector_flow(type="concept", top_n=30, period="today")
+    try:
+        market_status = get_market_status(force=force)
+    except Exception as exc:
+        logger.warning("market theme market status failed", exc_info=True)
+        market_status = {
+            "data_time": datetime.now().date().isoformat(),
+            "success": False,
+            "errors": [str(exc)],
+        }
+
+    def _board_catalog(sector_type: str) -> dict[str, Any]:
+        try:
+            payload = get_sector_list(type=sector_type, force=force)
+        except Exception as exc:
+            logger.warning(
+                "market theme %s board catalog failed",
+                sector_type,
+                exc_info=True,
+            )
+            return {
+                "items": [],
+                "data_time": None,
+                "errors": [str(exc)],
+            }
+        return {
+            "items": [
+                {
+                    "name": item.get("name"),
+                    "code": item.get("code"),
+                    "data_source": item.get("data_source"),
+                }
+                for item in payload.get("items") or []
+                if isinstance(item, dict) and item.get("name")
+            ],
+            "data_time": payload.get("data_time"),
+            "errors": payload.get("errors") or [],
+        }
+
+    # Board catalogs are taxonomy only.  Prices, rankings and capital flows
+    # must never become evidence that a direction is or is not a market
+    # mainline.
+    industry_catalog = _board_catalog("industry")
+    concept_catalog = _board_catalog("concept")
 
     rss_context: dict[str, Any] = {}
     if include_rss:
@@ -88,18 +120,17 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
         "generated_at": current_shanghai_timestamp(),
         "source_snapshot": {
             "market_status": market_status,
-            "market_breadth": breadth,
-            "industry_sectors": industry_sectors.get("items") or [],
-            "concept_sectors": concept_sectors.get("items") or [],
-            "industry_flow": {
-                "records": industry_flow.get("records") or [],
-                "inflow_top": industry_flow.get("inflow_top") or [],
-                "outflow_top": industry_flow.get("outflow_top") or [],
-            },
-            "concept_flow": {
-                "records": concept_flow.get("records") or [],
-                "inflow_top": concept_flow.get("inflow_top") or [],
-                "outflow_top": concept_flow.get("outflow_top") or [],
+            "industry_sectors": industry_catalog["items"],
+            "concept_sectors": concept_catalog["items"],
+            "board_catalog_status": {
+                "industry": {
+                    "data_time": industry_catalog["data_time"],
+                    "errors": industry_catalog["errors"],
+                },
+                "concept": {
+                    "data_time": concept_catalog["data_time"],
+                    "errors": concept_catalog["errors"],
+                },
             },
             "rss": rss_context,
             "source_catalog": source_catalog,
@@ -110,11 +141,23 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
 def get_latest_report(report_key: str) -> Optional[dict[str, Any]]:
     try:
         current_as_of_date = _current_report_as_of_date()
-        return DatabaseManager.get_instance().get_latest_market_mainline_report(
+        report = DatabaseManager.get_instance().get_latest_market_mainline_report(
             report_key=report_key,
             mode="llm",
             as_of_date=current_as_of_date,
         )
+        if (
+            report
+            and report.get("contract_version")
+            != MARKET_MAINLINE_REPORT_CONTRACT
+        ):
+            logger.info(
+                "忽略旧版市场主线报告：expected=%s actual=%s",
+                MARKET_MAINLINE_REPORT_CONTRACT,
+                report.get("contract_version"),
+            )
+            return None
+        return report
     except Exception:
         logger.exception("读取最新市场主线模型报告失败")
         return None
@@ -124,20 +167,6 @@ def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
     snapshot = context["source_snapshot"]
     rss = snapshot.get("rss") or {}
     sections: dict[str, list[dict[str, Any]]] = {
-        "industry_flow": _identified_items(
-            (snapshot.get("industry_flow") or {}).get("records") or [],
-            "industry_flow",
-        ),
-        "concept_flow": _identified_items(
-            (snapshot.get("concept_flow") or {}).get("records") or [],
-            "concept_flow",
-        ),
-        "industry_sectors": _identified_items(
-            snapshot.get("industry_sectors") or [], "industry_sector",
-        ),
-        "concept_sectors": _identified_items(
-            snapshot.get("concept_sectors") or [], "concept_sector",
-        ),
         "policy_headlines": summarize_feed_items(
             rss.get("policy_calendar"), section="policy",
         ),
@@ -175,7 +204,16 @@ def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
         "generated_at": context["generated_at"],
         "as_of_date": snapshot.get("market_status", {}).get("data_time") or datetime.now().date().isoformat(),
         "market_status": snapshot.get("market_status") or {},
-        "market_breadth": snapshot.get("market_breadth") or {},
+        "board_catalog": {
+            "industry": [
+                item for item in snapshot.get("industry_sectors") or []
+                if isinstance(item, dict)
+            ],
+            "concept": [
+                item for item in snapshot.get("concept_sectors") or []
+                if isinstance(item, dict)
+            ],
+        },
         **sections,
         "evidence_refs": evidence_refs,
         "source_summary": _summarize_sources(snapshot),
@@ -237,6 +275,7 @@ def build_minimal_fallback() -> dict[str, Any]:
 
 def build_minimal_model_report() -> dict[str, Any]:
     return {
+        "contract_version": MARKET_MAINLINE_REPORT_CONTRACT,
         "generated_at": current_shanghai_timestamp(),
         "as_of_date": datetime.now().date().isoformat(),
         "overview": "市场主线模型研判暂不可用，请稍后重试。",
@@ -246,6 +285,7 @@ def build_minimal_model_report() -> dict[str, Any]:
             "description": "模型报告暂时不可用。",
         },
         "current_mainlines": [],
+        "candidate_mainlines": [],
         "future_mainlines": [],
         "action_summary": ["稍后重试模型研判接口。"],
         "evidence_digest": {"policy": [], "industry": [], "market": []},
@@ -285,8 +325,7 @@ def _current_report_as_of_date() -> str:
 
 def _build_source_catalog(rss_context: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        {"name": "同花顺行业板块汇总", "category": "公开市场数据", "credibility": "高", "used": True},
-        {"name": "东方财富板块异动/资金流", "category": "公开市场数据", "credibility": "中高", "used": True},
+        {"name": "行业与概念板块目录", "category": "方向映射目录", "credibility": "中高", "used": True},
         {"name": "上交所问询与披露", "category": "交易所", "credibility": "高", "used": bool((rss_context.get("exchange_inquire") or {}).get("items") or (rss_context.get("exchange_disclosure") or {}).get("items"))},
         {"name": "中国外汇交易中心公开信息", "category": "官方公开信息", "credibility": "高", "used": bool((rss_context.get("money_center") or {}).get("items"))},
         {"name": "财联社电报 / 华尔街见闻日历", "category": "公共资讯", "credibility": "中高", "used": bool((rss_context.get("market_news") or {}).get("items") or (rss_context.get("policy_calendar") or {}).get("items"))},

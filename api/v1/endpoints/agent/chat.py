@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import litellm
 from assistant_stream.serialization.data_stream import DataStreamResponse
@@ -46,21 +46,52 @@ from src.agent.runtime_safety import (
     validate_chat_request_body,
 )
 from src.agent.progress import strip_agent_progress
-from src.agent.conversation_context import ConversationContext, build_turn_reference
+from src.agent.conversation_context import ConversationContext
+from src.agent.orchestrator_v2.artifacts import (
+    attach_artifact_refs_v2,
+    build_execution_artifacts_v2,
+)
+from src.agent.orchestrator_v2.cache import (
+    execution_cache_key_v2,
+    load_execution_cache_v2,
+    save_execution_cache_v2,
+)
+from src.agent.orchestrator_v2.contracts import (
+    AgentErrorCode,
+    AgentStage,
+    AgentStageEventV2,
+    OrchestratorV2Error,
+    RendererMode,
+    StageStatus,
+)
+from src.agent.orchestrator_v2.outcomes import execution_outcomes_v2
+from src.agent.orchestrator_v2.planner import (
+    PlannedIntentGraphV2,
+    plan_intent_graph_v2,
+)
+from src.agent.orchestrator_v2.registry import capability_for
+from src.agent.orchestrator_v2.runtime import (
+    CompiledIntentGraphV2,
+    compile_intent_graph_v2,
+    compile_workflow_call_v2,
+)
+from src.agent.orchestrator_v2.state import (
+    ConversationContextV2,
+    migrate_legacy_context,
+)
 from src.agent.result_contracts import (
     AnalysisPlaybook,
     CollectionFinancialFilterSpec,
+    FinancialFilterCondition,
     INDUSTRY_CHAIN,
     INVESTMENT_DECISION,
     STOCK_DEEP_RESEARCH,
     THEME_COMPANY_MAPPING,
 )
+from src.agent.result_processors import process_task_result
 from src.agent.task_executor import PlanExecutionResult, WorkflowExecutor
 from src.agent.task_planner import (
     TaskPlanValidationError,
-    TaskPlannerUnavailableError,
-    resolve_plan_entities,
-    resolve_task_plan,
 )
 from src.agent.task_workflows import (
     StandardTaskKind,
@@ -69,6 +100,7 @@ from src.agent.task_workflows import (
     workflow_for,
 )
 from src.tools.registry import ToolRegistry
+from src.tools.base import ToolProgressUpdate, tool_progress_observer
 from src.tools.process_runner import (
     ISOLATED_TOOL_NAMES,
     STATEFUL_TOOL_NAMES,
@@ -81,6 +113,7 @@ from src.llm.anthropic_gateway import (
 )
 from src.services.chat_session_service import ChatSessionService
 from src.services.buy_criteria.professional_analysis import DIMENSION_DEFINITIONS
+from src.tools.evaluate_multi_stock_buy_criteria import public_buy_analysis_error
 from src.storage import DatabaseManager
 from src.auth import get_client_ip
 from src.tools.symbols import (
@@ -90,13 +123,7 @@ from src.tools.symbols import (
 
 logger = logging.getLogger(__name__)
 
-TOOL_EXECUTION_TIMEOUT_SECONDS = 45.0
-PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS = 90.0
-PROFESSIONAL_BUY_ANALYSIS_TIMEOUT_SECONDS = 2400.0
-CATALYST_ANALYSIS_TIMEOUT_SECONDS = 180.0
-QUANTITATIVE_SCREEN_TIMEOUT_SECONDS = 210.0
-FINAL_SYNTHESIS_TIMEOUT_SECONDS = 60.0
-STANDARD_TASK_PLAN_TIMEOUT_SECONDS = 310.0
+MODEL_STREAM_HEARTBEAT_SECONDS = 5.0
 
 # controller 产出层:当前生产路径走自建后台运行时的 RunBroadcaster (方法名与
 # assistant-stream 的 RunController 对齐:append_text/add_tool_call/add_data/
@@ -136,6 +163,25 @@ def _last_user_text(messages: List[Dict[str, Any]]) -> str:
         if isinstance(content, list):
             return _join_text_parts(content)
     return ""
+
+
+def _terminal_run_status(state: Mapping[str, Any]) -> str:
+    """Map typed pipeline terminal state to the run registry status."""
+    status = str(state.get("_run_status") or "")
+    if status in {"failed", "blocked"}:
+        return "failed"
+    if status == "partial":
+        return "partial"
+    return "completed"
+
+
+def _last_user_message_id(messages: List[Dict[str, Any]]) -> str | None:
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        message_id = str(message.get("id") or "").strip()
+        return message_id or None
+    return None
 
 
 _TOOL_DETAIL_ARRAY_KEYS = (
@@ -445,8 +491,8 @@ async def _compact_history_if_needed(
         *recent,
     ]
     tokens_after = _estimate_messages_tokens(compacted, llm_cfg["model"])
-    # 只记日志，不向前端推提示：append_text 会进 assistant 消息正文被持久化和回传 LLM，
-    # 污染对话；data-stream 协议又无 onData 钩子接收结构化事件。压缩对用户透明即可。
+    # 只记日志，不向前端推提示：上下文压缩是内部维护动作，不属于用户可验证的
+    # agent_stage_v2 阶段；写入正文会污染持久化对话和后续 LLM 输入。
     logger.info(
         "[Agent] context compacted: %d msgs → summary, tokens %d → %d (threshold %d)",
         len(to_summarize), tokens_before, tokens_after, threshold,
@@ -626,17 +672,42 @@ def _build_professional_buy_decision_answer(
 
     requested: List[str] = []
     items_by_code: Dict[str, Dict[str, Any]] = {}
+    execution_failures: Dict[str, Dict[str, Any]] = {}
     errors: List[str] = []
+    mainline_strategies: List[str] = []
     for packet in packets:
         arguments = packet.get("arguments") if isinstance(packet.get("arguments"), dict) else {}
+        packet_codes: List[str] = []
         for code in re.split(r"[,，、;；]+", str(arguments.get("symbols") or "")):
             code = code.strip()
             if re.fullmatch(r"\d{6}", code) and code not in requested:
                 requested.append(code)
+            if re.fullmatch(r"\d{6}", code):
+                packet_codes.append(code)
         result = packet.get("result")
         if not isinstance(result, dict):
+            for code in packet_codes:
+                execution_failures[code] = {
+                    "executed": packet.get("executed") is not False,
+                    "error": "工具没有返回结构化结果",
+                }
             continue
-        errors.extend(str(value) for value in result.get("errors") or [] if value)
+        result_errors = [
+            public_buy_analysis_error(value)
+            for value in result.get("errors") or []
+            if value
+        ]
+        errors.extend(result_errors)
+        strategy = str(result.get("mainline_strategy") or "").strip()
+        if strategy and strategy not in mainline_strategies:
+            mainline_strategies.append(strategy)
+        if not result.get("items"):
+            for code in packet_codes:
+                execution_failures[code] = {
+                    "executed": packet.get("executed") is not False,
+                    "error": "；".join(result_errors)
+                    or "工具没有返回逐股八维结果",
+                }
         for item in result.get("items") or []:
             if not isinstance(item, dict):
                 continue
@@ -652,12 +723,36 @@ def _build_professional_buy_decision_answer(
     rows: List[str] = []
     details: List[str] = []
     buyable: List[str] = []
+    rejected: List[str] = []
+    unavailable_items: List[str] = []
+    failed_items: List[str] = []
     missing = [code for code in requested if code not in items_by_code]
-    labels = {"pass": "通过", "fail": "不通过", "insufficient": "证据不足"}
+    labels = {
+        "pass": "通过",
+        "fail": "不符合本次买入条件",
+        "insufficient": "分析未完成",
+    }
     for code in requested:
         item = items_by_code.get(code)
         if not isinstance(item, dict):
-            rows.append(f"| {code} | **未完成** | 数据未返回 | 0/8 |")
+            failure = execution_failures.get(code) or {}
+            executed = failure.get("executed") is not False
+            conclusion = "执行失败" if executed else "未执行"
+            reason = str(
+                failure.get("error")
+                or (
+                    "前置流程阻止了逐股调用"
+                    if not executed
+                    else "逐股工具未返回结构化结果"
+                )
+            )
+            rows.append(
+                f"| {code} | **{conclusion}** | {reason[:120]} | — |"
+            )
+            details.append(
+                f"### {code}\n\n- **{conclusion}**：{reason}\n"
+                "- 本轮没有形成任何八维判断，不得解释为某项不通过。"
+            )
             continue
         name = str(item.get("name") or code)
         criteria = [value for value in item.get("criteria") or [] if isinstance(value, dict)]
@@ -673,28 +768,131 @@ def _build_professional_buy_decision_answer(
             and item.get("gate_pass_complete") is True
             and item.get("final_decision") == "可买入"
         )
-        conclusion = "可买入" if all_pass else "不可买入"
+        analysis_status = str(item.get("analysis_status") or "").strip()
+        if not valid_prefix:
+            analysis_status = "execution_failed"
+        elif not analysis_status:
+            analysis_status = (
+                "source_unavailable"
+                if "insufficient" in statuses
+                else "completed"
+            )
+        elif analysis_status == "evidence_insufficient":
+            # Read-only compatibility for V8 persisted results.
+            analysis_status = "source_unavailable"
+        conclusion = (
+            "分析失败"
+            if analysis_status == "execution_failed"
+            else "分析未完成"
+            if analysis_status == "source_unavailable"
+            else "可买入"
+            if all_pass
+            else "不符合本次买入条件"
+        )
         if all_pass:
             buyable.append(f"{name} ({code})")
+        elif conclusion == "不符合本次买入条件":
+            rejected.append(f"{name} ({code})")
+        elif conclusion == "分析未完成":
+            unavailable_items.append(f"{name} ({code})")
+        else:
+            failed_items.append(f"{name} ({code})")
         stopped = next(
             (gate for gate, status in zip(criteria, statuses) if status != "pass"),
             None,
         )
         stop_name = (
+            "模型或执行异常"
+            if conclusion == "分析失败"
+            else "关键来源未完成"
+            if conclusion == "分析未完成"
+            else
             str((stopped or {}).get("criterion_name") or item.get("stopped_at_name") or "执行结构异常")
             if not all_pass else "八维全部通过"
         )
-        passed_count = sum(status == "pass" for status in statuses)
-        progress = "8/8" if all_pass else f"{passed_count}/8，首个阻断后停止"
+        executed_count = len(criteria)
+        progress = (
+            "8/8"
+            if all_pass
+            else f"{executed_count}/8，分析异常"
+            if conclusion == "分析失败"
+            else f"{executed_count}/8，分析未完成"
+            if conclusion == "分析未完成"
+            else f"{executed_count}/8，首个阻断后停止"
+        )
         rows.append(f"| {name} ({code}) | **{conclusion}** | {stop_name} | {progress} |")
 
         gate_lines: List[str] = []
+        if conclusion == "分析失败":
+            gate_lines.append(
+                "- **分析失败**："
+                + public_buy_analysis_error(
+                    item.get("model_error")
+                    or item.get("stopped_verdict")
+                    or "本轮没有形成可校验的结构化结果"
+                )
+            )
+        elif conclusion == "分析未完成":
+            gate_lines.append(
+                "- **分析未完成**：关键来源未完成，本轮不对公司形成买入结论。"
+            )
         for gate, status in zip(criteria, statuses):
             index = int(gate.get("index") or 0) + 1
             title = gate.get("criterion_name") or gate.get("criterion_id")
             verdict = str(gate.get("verdict") or "未给出理由")
-            gate_lines.append(f"- {index}. **{title}：{labels.get(status, '证据不足')}**。{verdict}")
+            rendered_verdict = verdict.replace(
+                "证据不足",
+                (
+                    "本轮分析未完成"
+                    if status == "insufficient"
+                    else "未达到本次准入证明"
+                ),
+            )
+            gate_lines.append(
+                f"- {index}. **{title}：{labels.get(status, '分析未完成')}**。"
+                f"{rendered_verdict}"
+            )
             gate_details = gate.get("details") if isinstance(gate.get("details"), dict) else {}
+            classification = (
+                gate_details.get("mainline_classification")
+                if isinstance(
+                    gate_details.get("mainline_classification"),
+                    dict,
+                )
+                else {}
+            )
+            if classification:
+                relation_label = {
+                    "core": "主线核心",
+                    "active_branch": "当前活跃分支",
+                    "emerging_branch": "候选主线分支",
+                    "long_term_only": "仅长期趋势",
+                    "unrelated": "未形成主线关系",
+                }.get(
+                    str(classification.get("direction_relation") or ""),
+                    "待核验",
+                )
+                lifecycle_label = {
+                    "emerging": "酝酿期",
+                    "validating": "验证期",
+                    "confirmed": "确认期",
+                    "expanding": "扩散期",
+                    "fading": "退潮期",
+                }.get(
+                    str(classification.get("lifecycle") or ""),
+                    "未确定",
+                )
+                matched_mainline = str(
+                    classification.get("matched_mainline") or "无"
+                )
+                matched_branch = str(
+                    classification.get("matched_branch") or "核心方向"
+                )
+                gate_lines.append(
+                    "  - 主线归属："
+                    f"{matched_mainline} / {matched_branch}；"
+                    f"关系：{relation_label}；阶段：{lifecycle_label}。"
+                )
             evidence_items = [str(value) for value in gate_details.get("key_evidence") or [] if str(value).strip()]
             counter_items = [str(value) for value in gate_details.get("counter_evidence") or [] if str(value).strip()]
             if evidence_items:
@@ -702,30 +900,68 @@ def _build_professional_buy_decision_answer(
             if counter_items:
                 gate_lines.append("  - 主要反证：" + "；".join(counter_items))
         if not valid_prefix:
-            gate_lines.append("- **执行结构异常**：维度不符合八维契约顺序，本轮按不可买入处理。")
+            gate_lines.append(
+                "- **执行结构异常**：维度不符合八维契约顺序，"
+                "本轮标记为分析失败，不得解释为某项事实性不通过。"
+            )
         elif len(criteria) < len(_PROFESSIONAL_BUY_DIMENSION_IDS):
             gate_lines.append(
                 f"- 后续 {len(_PROFESSIONAL_BUY_DIMENSION_IDS) - len(criteria)} 维未执行："
-                "首个不通过或证据不足已经关闭该股买入闸门。"
+                + (
+                    "模型或执行异常中断了本轮分析。"
+                    if conclusion == "分析失败"
+                    else "关键来源未完成，系统已中止且未形成公司结论。"
+                    if conclusion == "分析未完成"
+                    else "首个未达到正向准入条件的维度已经关闭该股买入闸门。"
+                )
             )
         details.append(f"### {name} ({code})\n\n" + "\n".join(gate_lines))
 
     if missing:
         collection_result = "集合覆盖不完整，本轮不输出部分集合的最终买入名单。"
-    elif buyable:
-        collection_result = "八维全部通过的标的是：**" + "、".join(buyable) + "**。"
     else:
-        collection_result = "这组股票中当前**没有八维全部通过的标的**。"
+        result_parts: List[str] = []
+        if buyable:
+            result_parts.append(
+                "八维全部通过：**" + "、".join(buyable) + "**"
+            )
+        if rejected:
+            result_parts.append(
+                f"不符合本次买入条件 {len(rejected)} 只"
+            )
+        if unavailable_items:
+            result_parts.append(
+                f"分析未完成 {len(unavailable_items)} 只"
+            )
+        if failed_items:
+            result_parts.append(
+                f"分析失败 {len(failed_items)} 只"
+            )
+        collection_result = "；".join(result_parts) + "。"
     coverage = f"请求 {len(requested)} 只，返回 {len(items_by_code)} 只，缺失 {len(missing)} 只。"
     if errors:
         coverage += " 执行异常：" + "；".join(dict.fromkeys(errors)) + "。"
+    strategy_labels = [
+        {
+            "confirmed_mainline": "确认型主线",
+            "early_positioning": "前瞻布局型",
+        }.get(value, value)
+        for value in mainline_strategies
+    ]
+    strategy_rule = (
+        "\n- 本轮主线策略：" + "、".join(strategy_labels) + "。"
+        if strategy_labels
+        else ""
+    )
     return (
         "## 八维专业买入判断\n\n" + collection_result
         + "\n\n| 公司/代码 | 结论 | 首个停止项 | 进度 |\n"
         + "|---|---|---|---|\n" + "\n".join(rows)
         + "\n\n## 逐股闸门记录\n\n" + "\n\n".join(details)
         + "\n\n## 覆盖与规则\n\n- " + coverage
-        + "\n- 每只股票独立执行；首个 fail 或 insufficient 立即停止，后续项目不得抵消。"
+        + strategy_rule
+        + "\n- 每只股票独立执行；首个 fail 表示未达到本次正向准入条件并立即停止。"
+        + "\n- 关键来源或执行故障只标记分析未完成，不得改写成公司不符合。"
         + "\n- 只有八维按契约顺序全部 pass，且集合覆盖完整，程序才允许输出可买入。"
     )
 
@@ -1361,19 +1597,482 @@ def _build_domain_candidate_answer(
     )
 
 
+def _processor_result(
+    evidence: Optional[List[Dict[str, Any]]],
+    processor_name: str,
+) -> Optional[Dict[str, Any]]:
+    return next(
+        (
+            packet.get("result")
+            for packet in evidence or []
+            if isinstance(packet, dict)
+            and packet.get("processor") == processor_name
+            and isinstance(packet.get("result"), dict)
+        ),
+        None,
+    )
+
+
+def _build_ranked_domain_answer(
+    evidence: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    result = _processor_result(evidence, "ranked_domain_selection")
+    if not isinstance(result, dict):
+        return None
+    if (
+        result.get("success") is not True
+        or result.get("coverage_complete") is False
+        or result.get("ranking_complete") is False
+    ):
+        catalog_total = int(
+            result.get("catalog_total")
+            or result.get("catalog_count")
+            or 0
+        )
+        catalog_supplied = int(result.get("catalog_supplied") or 0)
+        errors = [
+            str(value).strip()
+            for value in result.get("errors") or []
+            if str(value).strip()
+        ]
+        lines = [
+            "## 产业受益领域排序未完成",
+            "",
+            (
+                f"本轮取得 **{catalog_total} 个**实时板块，"
+                f"有限集合选择器实际收到 **{catalog_supplied} 个**。"
+                if catalog_total
+                else "本轮没有取得可执行的项目实时板块目录。"
+            ),
+            "",
+            (
+                "板块 ID 与资源契约没有全部通过校验，因此本轮没有展示"
+                "部分梯队或其他部分结果，也没有发布可供后续找股使用的领域集合。"
+            ),
+        ]
+        error_code = str(result.get("error_code") or "").strip()
+        public_error = {
+            "planner_schema_invalid": (
+                "目录选择模型没有返回完整的结构化结果，单次定点修复仍未通过。"
+            ),
+            "synthesis_failed": (
+                "上游模型调用失败，未形成可校验的板块集合。"
+            ),
+            "resource_unavailable": (
+                "实时板块目录不可用，无法形成可校验的板块集合。"
+            ),
+        }.get(error_code)
+        if public_error:
+            lines.extend([
+                "",
+                f"执行信息：{public_error}（错误代码：`{error_code}`）",
+            ])
+        elif errors:
+            lines.extend(["", "执行信息：" + "；".join(errors)])
+        return "\n".join(lines)
+    items = [
+        item
+        for item in result.get("items") or []
+        if isinstance(item, dict) and item.get("label")
+    ]
+    if not items:
+        return (
+            "## 产业受益领域排序未完成\n\n"
+            "本轮没有形成通过结构校验的领域排序，因此没有输出或保存梯队。"
+        )
+
+    project_catalog = (
+        result.get("source_scope") == "project_live_board_catalog"
+    )
+    selection = (
+        result.get("result_selection")
+        if isinstance(result.get("result_selection"), dict)
+        else {}
+    )
+    selection_mode = str(selection.get("mode") or "all_relevant")
+    single_result = selection_mode == "best_one"
+    top_k_result = selection_mode == "top_k"
+    project_summary = (
+        f"有限集合选择器读取项目当前完整的 "
+        f"**{int(result.get('catalog_count') or 0)} 个**实时概念板块，"
+        "模型只返回紧凑板块 ID，程序随后完成目录成员、角色和数量校验"
+    )
+    if single_result:
+        heading = (
+            "## 项目实时板块最受益方向"
+            if project_catalog
+            else "## 最受益方向"
+        )
+        summary = (
+            project_summary + "，并按本轮结果约束只保留最优的一个方向。"
+            if project_catalog
+            else "项目板块目录无法覆盖该主题，本轮使用公开来源兜底，并只保留最优的一个方向。"
+        )
+    elif top_k_result:
+        heading = (
+            "## 项目实时板块最受益方向排序"
+            if project_catalog
+            else "## 最受益方向排序"
+        )
+        summary = (
+            project_summary
+            + f"，并按本轮结果约束保留前 **{len(items)} 个**方向。"
+            if project_catalog
+            else (
+                "项目板块目录无法覆盖该主题，本轮使用公开来源兜底，"
+                f"并按结果约束保留前 **{len(items)} 个**方向。"
+            )
+        )
+    else:
+        heading = (
+            "## 项目实时板块受益梯队"
+            if project_catalog
+            else "## 受益领域梯队"
+        )
+        summary = (
+            project_summary
+            + "；以下名称都可直接用于后续板块成分股查询。"
+            if project_catalog
+            else "项目板块目录无法覆盖该主题，本轮使用公开来源兜底；以下排序仍保存为结构化领域产物。"
+        )
+    lines = [
+        heading,
+        "",
+        summary,
+    ]
+    artifacts = [
+        artifact
+        for artifact in result.get("semantic_artifacts") or []
+        if isinstance(artifact, dict)
+        and artifact.get("type") == "domain_collection_v2"
+    ]
+    assumptions = (
+        artifacts[0].get("assumptions") or []
+        if artifacts
+        else []
+    )
+    if assumptions:
+        lines.extend([
+            "",
+            "执行口径：" + "；".join(
+                str(item.get("reason") or "").strip()
+                for item in assumptions
+                if isinstance(item, dict)
+                and str(item.get("reason") or "").strip()
+            ),
+        ])
+
+    def append_item(item: Dict[str, Any], prefix: str) -> None:
+        label = str(item.get("label") or "")
+        rationale = str(item.get("rationale") or "").strip()
+        if project_catalog:
+            board_code = str(item.get("board_code") or "").strip()
+            code_text = f"（{board_code}）" if board_code else ""
+            lines.append(f"{prefix} **{label}**{code_text}：{rationale}")
+            return
+        quote = re.sub(
+            r"\s+", " ", str(item.get("support_quote") or "")
+        ).strip()
+        source_name = str(item.get("source_name") or "公开资料")
+        source_date = str(item.get("source_date") or "日期未标明")
+        source_url = str(item.get("source_url") or "").strip()
+        source = (
+            f"[{source_name}]({source_url})"
+            if re.match(r"^https?://", source_url)
+            else source_name
+        )
+        lines.append(f"{prefix} **{label}**：{rationale}")
+        lines.append(f"   来源原文：{quote}（{source}，{source_date}）")
+
+    if single_result:
+        lines.append("")
+        append_item(items[0], "-")
+    elif top_k_result:
+        lines.append("")
+        for index, item in enumerate(items, start=1):
+            append_item(item, f"{index}.")
+    else:
+        for tier in sorted({
+            int(item.get("tier") or 0)
+            for item in items
+            if int(item.get("tier") or 0) > 0
+        }):
+            lines.extend(["", f"### 第{tier}梯队", ""])
+            for item in items:
+                if int(item.get("tier") or 0) == tier:
+                    append_item(item, "-")
+    lines.extend([
+        "",
+        (
+            "> 后续提到“这个方向”时，Planner 读取的是本轮只保留一个结果的结构化领域集合，"
+            if single_result
+            else
+            "> 后续提到“这些方向”或“第一梯队”时，Planner 读取的是本轮保存的结构化领域集合，"
+        )
+        + "不是重新解析这段 Markdown。"
+        + (
+            " 后续找股将直接查询这些真实板块的项目成分股数据。"
+            if project_catalog
+            else ""
+        ),
+    ])
+    return "\n".join(lines)
+
+
+def _build_per_security_theme_answer(result: Dict[str, Any]) -> str:
+    candidate_count = int(result.get("candidate_count") or 0)
+    analyzed_count = int(result.get("analyzed_candidate_count") or 0)
+    coverage_complete = bool(result.get("candidate_coverage_complete"))
+    counts = (
+        result.get("verdict_counts")
+        if isinstance(result.get("verdict_counts"), dict)
+        else {}
+    )
+    passed = int(counts.get("pass") or 0)
+    failed = int(counts.get("fail") or 0)
+    insufficient = int(counts.get("insufficient") or 0)
+    errored = int(counts.get("error") or 0)
+    items = [
+        item
+        for item in result.get("items") or []
+        if isinstance(item, dict)
+    ]
+    lines = [
+        "## 候选公司逐股主题分析",
+        "",
+        (
+            f"项目板块候选池共有 **{candidate_count} 家**，已为其中 "
+            f"**{analyzed_count} 家**分别建立公司资料、主营构成、公告、"
+            "个股新闻和个股研报证据档案，并逐家公司完成独立判断。"
+        ),
+        "",
+        (
+            f"- 通过：**{passed} 家**"
+            f"\n- 不符合：**{failed} 家**"
+            f"\n- 证据不足：**{insufficient} 家**"
+            f"\n- 分析错误：**{errored} 家**"
+        ),
+        "",
+        (
+            "本轮逐股覆盖完整。"
+            if coverage_complete
+            else
+            "本轮逐股覆盖不完整，不能把当前通过名单描述成完整筛选结果。"
+        ),
+        "",
+    ]
+    if not items:
+        lines.append(
+            "没有公司同时通过上位产业、具体子领域、发展强度和逐字证据校验。"
+        )
+    else:
+        lines.extend([
+            "| 公司/代码 | 匹配领域 | 已证实阶段 | 独立判断 | 已核验证据 |",
+            "|---|---|---|---|---|",
+        ])
+        level_labels = {
+            "layout": "产品/技术布局",
+            "investment": "研发或战略投入",
+            "customer_validation": "客户验证/定点",
+            "order": "订单",
+            "mass_production": "量产/批量交付",
+            "revenue": "相关业务收入",
+            "none": "无",
+        }
+        for item in items:
+            references = [
+                reference
+                for reference in item.get("evidence") or []
+                if isinstance(reference, dict)
+            ]
+            reference = references[0] if references else {}
+            quote = re.sub(
+                r"\s+",
+                " ",
+                str(reference.get("support_quote") or ""),
+            ).strip().replace("|", "｜")
+            if len(quote) > 180:
+                quote = quote[:177] + "..."
+            source_name = str(reference.get("source_name") or "项目数据源")
+            source_url = str(reference.get("source_url") or "").strip()
+            source_date = str(reference.get("source_date") or "日期未标明")
+            source = (
+                f"[{source_name}]({source_url})"
+                if re.match(r"^https?://", source_url)
+                else source_name
+            )
+            evidence_text = (
+                f"{quote}（{source}，{source_date}）"
+                if quote
+                else "无通过校验的引用"
+            )
+            lines.append(
+                f"| {item.get('company_name') or ''} ({item.get('symbol') or ''})"
+                f" | {'、'.join(item.get('matched_domains') or [])}"
+                f" | {level_labels.get(str(item.get('development_level') or ''), '未分级')}"
+                f" | {str(item.get('reason') or '').replace('|', '｜')}"
+                f" | {evidence_text} |"
+            )
+    lines.extend([
+        "",
+        "> 每家公司均有独立终态；不符合、证据不足和执行错误不会被静默丢弃。"
+        "网络搜索只会在该公司所有项目数据源均未形成可分析资料时逐股兜底。"
+        "以上不构成买入建议。",
+    ])
+    return "\n".join(lines)
+
+
+def _build_theme_business_evidence_answer(
+    evidence: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    result = _processor_result(evidence, "company_evidence_binding")
+    if not isinstance(result, dict):
+        return None
+    if result.get("screening_mode") == "per_security_full_analysis":
+        return _build_per_security_theme_answer(result)
+    items = [
+        item
+        for item in result.get("items") or []
+        if isinstance(item, dict)
+    ]
+    domain_results = [
+        item
+        for item in result.get("domain_results") or []
+        if isinstance(item, dict)
+    ]
+    candidate_scope = str(result.get("candidate_scope") or "")
+    candidate_count = int(result.get("candidate_count") or 0)
+    source_observed_count = int(
+        result.get("source_observed_candidate_count") or 0
+    )
+    not_observed_count = int(
+        result.get("not_observed_candidate_count")
+        if result.get("not_observed_candidate_count") is not None
+        else max(0, candidate_count - source_observed_count)
+    )
+    coverage_complete = bool(result.get("candidate_coverage_complete"))
+    scope_description = (
+        (
+            f"项目结构化板块候选池共有 **{candidate_count} 家**；本轮公开来源材料实际提及其中 "
+            f"**{source_observed_count} 家**，仍有 **{not_observed_count} 家**未被本轮来源覆盖。"
+            "下面是候选池内的公开证据命中名单，不代表完整筛选后只剩这些公司；"
+            "新闻和研报也不能向候选池外补股票。"
+            if not coverage_complete
+            else
+            f"项目结构化板块候选池共有 **{candidate_count} 家**，本轮来源已覆盖全部候选；"
+            "新闻和研报不能向候选池外补股票。"
+        )
+        if candidate_scope == "candidate_collection"
+        else
+        "项目实时板块目录无法覆盖这些领域，本轮才使用公开来源发现并核验 A 股公司。"
+    )
+    lines = [
+        "## 按领域命中公开业务证据的 A 股公司",
+        "",
+        scope_description,
+        "",
+    ]
+    if items:
+        lines.extend([
+            "| 领域 | 公司/代码 | 进展层级 | 已核验原文 | 来源 |",
+            "|---|---|---|---|---|",
+        ])
+        stage_labels = {
+            "L3": "L3 已有收入/订单/量产交付",
+            "L2": "L2 客户验证/定点",
+            "L1": "L1 产品或技术布局",
+        }
+        for item in sorted(
+            items,
+            key=lambda value: (
+                str(value.get("domain") or ""),
+                -{"L3": 3, "L2": 2, "L1": 1}.get(
+                    str(value.get("stage") or ""), 0
+                ),
+                str(value.get("symbol") or ""),
+            ),
+        ):
+            domain = str(item.get("domain") or "")
+            name = str(item.get("company_name") or "")
+            symbol = str(item.get("symbol") or "")
+            stage = stage_labels.get(
+                str(item.get("stage") or ""),
+                str(item.get("stage") or "未分级"),
+            )
+            quote = re.sub(
+                r"\s+", " ", str(item.get("support_quote") or "")
+            ).strip().replace("|", "｜")
+            if len(quote) > 180:
+                quote = quote[:177] + "..."
+            source_name = str(item.get("source_name") or "公开资料")
+            source_date = str(item.get("source_date") or "日期未标明")
+            source_url = str(item.get("source_url") or "").strip()
+            source = (
+                f"[{source_name}]({source_url})"
+                if re.match(r"^https?://", source_url)
+                else source_name
+            )
+            lines.append(
+                f"| {domain} | {name} ({symbol}) | {stage} | {quote} | "
+                f"{source}，{source_date} |"
+            )
+    else:
+        lines.append(
+            "本轮来源里没有找到通过公司、领域和原文三重校验的正向事实，"
+            "因此没有用概念板块、网页名单或模型记忆补股票。"
+        )
+
+    if domain_results:
+        lines.extend(["", "### 来源覆盖", ""])
+        for domain in domain_results:
+            label = str(domain.get("domain") or "未命名领域")
+            count = int(domain.get("company_count") or 0)
+            source_count = int(domain.get("source_item_count") or 0)
+            observed_count = int(
+                domain.get("source_observed_candidate_count") or 0
+            )
+            rejected = int(
+                domain.get("rejected_outside_candidate_count") or 0
+            )
+            status = "已处理" if domain.get("success") else "处理失败"
+            detail = "；".join(
+                str(value)
+                for value in domain.get("errors") or []
+                if value
+            )
+            lines.append(
+                f"- **{label}**：{status} {source_count} 条来源材料，"
+                f"其中逐字提及候选池内 {observed_count} 家，"
+                f"通过主题与原文校验 {count} 家。"
+                + (
+                    f" 另有 {rejected} 条集合外公司事实被程序拒绝。"
+                    if rejected
+                    else ""
+                )
+                + (f" {detail}" if detail else "")
+            )
+    lines.extend([
+        "",
+        "> 层级口径：L3 才表示收入、订单、量产或批量交付；L2 是客户验证或定点；"
+        "L1 只证明产品、技术或商业应用布局。以上均不等于买入建议。",
+    ])
+    return "\n".join(lines)
+
+
 def _evaluate_collection_financial_filter(
     evidence: Optional[List[Dict[str, Any]]],
-    spec: CollectionFinancialFilterSpec,
+    condition: FinancialFilterCondition,
 ) -> Optional[Dict[str, Any]]:
     """Aggregate all batches for one typed predicate without writing prose."""
-    operator = spec.operator
-    threshold = spec.normalized_threshold
-    exclude_matching = spec.action == "exclude_matching"
     packets = [
         packet
         for packet in evidence or []
         if isinstance(packet, dict)
         and packet.get("tool") == "get_multi_stock_financials"
+        and isinstance(packet.get("arguments"), dict)
+        and packet["arguments"].get("metric") == condition.metric
+        and packet["arguments"].get("period_basis") == condition.period_basis
+        and packet["arguments"].get("fiscal_year") == condition.fiscal_year
     ]
     if not packets:
         return None
@@ -1407,27 +2106,38 @@ def _evaluate_collection_financial_filter(
             rows_by_code[code] = item
 
     missing = [code for code in requested if code not in rows_by_code]
-    comparator = {
-        "gt": lambda value: value > threshold,
-        "gte": lambda value: value >= threshold,
-        "lt": lambda value: value < threshold,
-        "lte": lambda value: value <= threshold,
-        "eq": lambda value: value == threshold,
-    }[operator]
     operator_label = {
         "gt": "高于", "gte": "不低于", "lt": "低于", "lte": "不高于", "eq": "等于",
-    }[operator]
+    }[condition.operator]
     ordered_rows = [rows_by_code[code] for code in requested if code in rows_by_code]
-    matching = [row for row in ordered_rows if comparator(float(row["financial_value"]))]
-    non_matching = [row for row in ordered_rows if not comparator(float(row["financial_value"]))]
-    excluded = matching if exclude_matching else non_matching
-    kept = non_matching if exclude_matching else matching
-    threshold_text = {
-        "percent": f"{spec.threshold:g}%",
-        "cny": f"{spec.threshold:g} 元",
-        "wan_cny": f"{spec.threshold:g} 万元",
-        "yi_cny": f"{spec.threshold:g} 亿元",
-    }[spec.threshold_unit]
+    matching = [
+        row
+        for row in ordered_rows
+        if condition.matches(float(row["financial_value"]))
+    ]
+    excluded = [
+        row
+        for row in ordered_rows
+        if not condition.keeps(float(row["financial_value"]))
+    ]
+    kept = [
+        row
+        for row in ordered_rows
+        if condition.keeps(float(row["financial_value"]))
+    ]
+    if condition.threshold_unit == "percent":
+        threshold_text = f"{condition.threshold:g}%"
+    elif condition.threshold_unit == "cny":
+        if abs(condition.threshold) >= 100_000_000:
+            threshold_text = f"{condition.threshold / 100_000_000:g} 亿元"
+        elif abs(condition.threshold) >= 10_000:
+            threshold_text = f"{condition.threshold / 10_000:g} 万元"
+        else:
+            threshold_text = f"{condition.threshold:g} 元"
+    elif condition.threshold_unit == "wan_cny":
+        threshold_text = f"{condition.threshold:g} 万元"
+    else:
+        threshold_text = f"{condition.threshold:g} 亿元"
     annual_years = sorted({
         str(row.get("report_date") or "")[:4]
         for row in ordered_rows
@@ -1439,9 +2149,13 @@ def _evaluate_collection_financial_filter(
         "previous_fiscal_year": (
             f"{annual_years[0]} 年报" if len(annual_years) == 1 else "去年完整年报"
         ),
-        "fiscal_year": f"{spec.fiscal_year} 年报",
-    }[spec.period_basis]
-    action_text = "筛除命中项" if exclude_matching else "只保留命中项"
+        "fiscal_year": f"{condition.fiscal_year} 年报",
+    }[condition.period_basis]
+    action_text = (
+        "筛除命中项"
+        if condition.action == "exclude_matching"
+        else "只保留命中项"
+    )
     return {
         "requested": requested,
         "rows_by_code": rows_by_code,
@@ -1460,10 +2174,10 @@ def _evaluate_collection_financial_filter(
 
 def _format_collection_financial_value(
     row: Dict[str, Any],
-    spec: CollectionFinancialFilterSpec,
+    condition: FinancialFilterCondition,
 ) -> str:
     value = float(row["financial_value"])
-    if spec.metric == "debt_ratio":
+    if condition.metric == "debt_ratio":
         return f"{value:.2f}%"
     if abs(value) >= 100_000_000:
         return f"{value / 100_000_000:.2f} 亿元"
@@ -1473,105 +2187,85 @@ def _format_collection_financial_value(
 
 
 def _collection_financial_rule_text(
-    spec: CollectionFinancialFilterSpec,
+    condition: FinancialFilterCondition,
     evaluation: Dict[str, Any],
 ) -> str:
     return (
-        f"{evaluation['period_label']}{spec.metric_label} "
+        f"{evaluation['period_label']}{condition.metric_label} "
         f"{evaluation['operator_label']} {evaluation['threshold_text']}，"
         f"{evaluation['action_text']}"
     )
+
+
+def _collection_source_boundary(
+    evidence: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Render collection provenance supplied by an upstream source contract."""
+    domain_result = next(
+        (
+            packet.get("result")
+            for packet in evidence or []
+            if isinstance(packet, dict)
+            and isinstance(packet.get("result"), dict)
+            and isinstance(packet["result"].get("domain_results"), list)
+        ),
+        None,
+    )
+    if not isinstance(domain_result, dict):
+        return []
+
+    coverage_lines: List[str] = []
+    covered: List[str] = []
+    unresolved: List[str] = []
+    for item in domain_result.get("domain_results") or []:
+        if not isinstance(item, dict):
+            continue
+        domain = str(item.get("domain") or "未命名领域")
+        themes = [
+            str(value) for value in item.get("lookup_themes") or [] if value
+        ]
+        count = int(item.get("candidate_count") or 0)
+        rationale = str(item.get("mapping_rationale") or "").strip()
+        if item.get("mapping_type") == "unresolved" or not themes:
+            unresolved.append(domain)
+            coverage_lines.append(
+                f"- **{domain}**：当前目录未解析，未纳入候选集合。"
+                + (f" {rationale}" if rationale else "")
+            )
+            continue
+        covered.append(domain)
+        coverage_lines.append(
+            f"- **{domain}**：结构化板块 `{'、'.join(themes)}`，"
+            f"候选 **{count} 只**。"
+        )
+    if not coverage_lines:
+        return []
+
+    lines = ["### 候选集合来源", "", *coverage_lines, ""]
+    if unresolved:
+        lines.append(
+            "> 本轮财务筛选仅覆盖已解析领域"
+            + (f"（{'、'.join(covered)}）" if covered else "")
+            + f"；{'、'.join(unresolved)}未被近似板块替代。"
+        )
+    lines.append(
+        "> 候选仅证明结构化板块成员关系，不证明公司正在大力发展该业务，"
+        "也不代表订单、收入兑现或投资建议。"
+    )
+    return lines
 
 
 def _build_collection_financial_filter_answer(
     evidence: Optional[List[Dict[str, Any]]],
     spec: CollectionFinancialFilterSpec,
 ) -> Optional[str]:
-    """Render a validated single-predicate collection filter."""
-    evaluation = _evaluate_collection_financial_filter(evidence, spec)
-    if evaluation is None:
-        return None
-    requested = evaluation["requested"]
-    rows_by_code = evaluation["rows_by_code"]
-    missing = evaluation["missing"]
-    excluded = evaluation["excluded"]
-    kept = evaluation["kept"]
-    sources = evaluation["sources"]
-    data_times = evaluation["data_times"]
-    period_label = evaluation["period_label"]
-    operator_label = evaluation["operator_label"]
-    threshold_text = evaluation["threshold_text"]
-    action_text = evaluation["action_text"]
-    lines = [
-        f"## 上文股票{period_label}{spec.metric_label}筛选",
-        "",
-        f"规则：{period_label}{spec.metric_label} **{operator_label} {threshold_text}**，{action_text}。",
-        f"原集合 **{len(requested)} 只**，成功覆盖 **{len(rows_by_code)} 只**，缺失 **{len(missing)} 只**。",
-    ]
-    if missing:
-        lines.extend([
-            "",
-            "> 本轮筛选未完成，不能把已覆盖的部分结果当作完整名单。",
-            "> 未取得数据或工具批次失败的代码：" + "、".join(missing),
-        ])
-    else:
-        lines.append(
-            f"完整筛选结果：筛除 **{len(excluded)} 只**，筛选后保留 **{len(kept)} 只**。"
-        )
-
-    def append_table(title: str, rows: list[dict[str, Any]]) -> None:
-        lines.extend(["", f"### {title}", ""])
-        if not rows:
-            lines.append("无。")
-            return
-        lines.extend([
-            f"| 公司/代码 | {spec.metric_label} | 报告期 |",
-            "|---|---:|---|",
-        ])
-        for row in rows:
-            value_text = _format_collection_financial_value(row, spec)
-            lines.append(
-                f"| {row.get('name') or '未命名'} ({row.get('symbol')}) | "
-                f"{value_text} | {row.get('report_date') or '未标明'} |"
-            )
-
-    append_table("筛除项", excluded)
-    append_table("筛选后保留项" if not missing else "已覆盖范围内的暂定保留项", kept)
-    lines.extend([
-        "",
-        "> 数据来源：" + ("；".join(sources) or "本地已同步财务库")
-        + (f"；同步时间 {max(data_times)}" if data_times else "；同步时间未标明")
-        + "。本轮未调用实时行情、K线或技术指标。",
-    ])
-    return "\n".join(lines)
-
-
-def _build_compound_collection_financial_filter_answer(
-    plan: TaskPlan,
-    execution: PlanExecutionResult,
-) -> Optional[str]:
-    """Combine multiple independent predicates into one exact set result."""
-    if len(plan.tasks) < 2 or not all(
-        task.kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER
-        for task in plan.tasks
-    ):
-        return None
-
-    results_by_task = {result.task.task_id: result for result in execution.tasks}
-    evaluated: list[tuple[CollectionFinancialFilterSpec, Dict[str, Any]]] = []
-    for task in plan.tasks:
-        result = results_by_task.get(task.task_id)
-        if result is None:
-            return None
-        try:
-            spec = CollectionFinancialFilterSpec.model_validate(task.parameters)
-        except Exception:
-            return None
-        evidence = [call.evidence() for call in result.calls]
-        evaluation = _evaluate_collection_financial_filter(evidence, spec)
+    """Render one collection transform containing one or more predicates."""
+    evaluated: list[tuple[FinancialFilterCondition, Dict[str, Any]]] = []
+    for condition in spec.conditions:
+        evaluation = _evaluate_collection_financial_filter(evidence, condition)
         if evaluation is None:
             return None
-        evaluated.append((spec, evaluation))
+        evaluated.append((condition, evaluation))
 
     requested = list(evaluated[0][1]["requested"])
     requested_set = set(requested)
@@ -1582,8 +2276,8 @@ def _build_compound_collection_financial_filter_answer(
     sources: list[str] = []
     data_times: list[str] = []
 
-    for spec, evaluation in evaluated:
-        rule_text = _collection_financial_rule_text(spec, evaluation)
+    for condition, evaluation in evaluated:
+        rule_text = _collection_financial_rule_text(condition, evaluation)
         rule_requested = set(evaluation["requested"])
         missing = sorted(
             set(evaluation["missing"]) | (requested_set - rule_requested)
@@ -1601,8 +2295,8 @@ def _build_compound_collection_financial_filter_answer(
             if not code:
                 continue
             reason = (
-                f"{evaluation['period_label']}{spec.metric_label} "
-                f"{_format_collection_financial_value(row, spec)}"
+                f"{evaluation['period_label']}{condition.metric_label} "
+                f"{_format_collection_financial_value(row, condition)}"
             )
             excluded_reasons.setdefault(code, []).append(reason)
         for source in evaluation["sources"]:
@@ -1612,30 +2306,53 @@ def _build_compound_collection_financial_filter_answer(
 
     final_excluded = [code for code in requested if code not in final_kept]
     final_kept_ordered = [code for code in requested if code in final_kept]
-    lines = [
-        "## 上文股票复合财务筛选",
-        "",
-        f"原集合 **{len(requested)} 只**，本轮同时执行 **{len(evaluated)} 项**财务条件。",
-        "",
-        "### 筛选规则",
-        "",
-    ]
-    lines.extend(
-        f"{index}. {_collection_financial_rule_text(spec, evaluation)}。"
-        for index, (spec, evaluation) in enumerate(evaluated, 1)
-    )
+    if len(evaluated) == 1:
+        condition, evaluation = evaluated[0]
+        lines = [
+            f"## 上文股票{evaluation['period_label']}{condition.metric_label}筛选",
+            "",
+            f"规则：{_collection_financial_rule_text(condition, evaluation)}。",
+            f"原集合 **{len(requested)} 只**，成功覆盖 "
+            f"**{len(evaluation['rows_by_code'])} 只**，缺失 "
+            f"**{len(evaluation['missing'])} 只**。",
+        ]
+    else:
+        lines = [
+            "## 上文股票复合财务筛选",
+            "",
+            f"原集合 **{len(requested)} 只**，本轮同时执行 **{len(evaluated)} 项**财务条件。",
+            "",
+            "### 筛选规则",
+            "",
+        ]
+        lines.extend(
+            f"{index}. {_collection_financial_rule_text(condition, evaluation)}。"
+            for index, (condition, evaluation) in enumerate(evaluated, 1)
+        )
+    source_boundary = _collection_source_boundary(evidence)
+    if source_boundary:
+        lines.extend(["", *source_boundary])
     if missing_by_rule:
         lines.extend([
             "",
-            "> 本轮复合筛选未完成，不能把部分覆盖结果当作最终名单。",
+            (
+                "> 本轮筛选未完成，不能把已覆盖的部分结果当作完整名单。"
+                if len(evaluated) == 1
+                else "> 本轮复合筛选未完成，不能把部分覆盖结果当作最终名单。"
+            ),
         ])
         for rule_text, missing in missing_by_rule:
             lines.append(f"> {rule_text}：缺失 {'、'.join(missing)}。")
     else:
         lines.extend([
             "",
-            f"全部条件均完整覆盖 **{len(requested)} 只**；合并后筛除 "
-            f"**{len(final_excluded)} 只**，最终保留 **{len(final_kept_ordered)} 只**。",
+            (
+                f"完整筛选结果：筛除 **{len(final_excluded)} 只**，筛选后保留 "
+                f"**{len(final_kept_ordered)} 只**。"
+                if len(evaluated) == 1
+                else f"全部条件均完整覆盖 **{len(requested)} 只**；合并后筛除 "
+                f"**{len(final_excluded)} 只**，最终保留 **{len(final_kept_ordered)} 只**。"
+            ),
         ])
 
     lines.extend(["", "### 筛除项", ""])
@@ -1664,7 +2381,11 @@ def _build_compound_collection_financial_filter_answer(
         "",
         "> 数据来源：" + ("；".join(sources) or "本地已同步财务库")
         + (f"；同步时间 {max(data_times)}" if data_times else "；同步时间未标明")
-        + "。多条件结果由程序按集合交集计算，未交给模型改写名单。",
+        + (
+            "。多条件结果由程序按集合交集计算，未交给模型改写名单。"
+            if len(evaluated) > 1
+            else "。筛选集合由程序按强类型条件计算，未交给模型改写名单。"
+        ),
     ])
     return "\n".join(lines)
 
@@ -2289,6 +3010,46 @@ def _extract_model_reasoning_delta(delta: Any) -> str:
     return "".join(values)
 
 
+_VISIBLE_REASONING_LANGUAGE_INSTRUCTION = (
+    "所有通过供应商独立 reasoning 或 reasoning_content 字段返回、并展示给用户的"
+    "分析过程都必须使用简体中文；除专有名词、证券代码和必要英文缩写外，不得输出"
+    "英文句子。最终 content 的既有格式与结构化输出契约保持不变。"
+)
+
+
+def _with_chinese_visible_reasoning(
+    messages: Any,
+) -> List[Dict[str, Any]]:
+    """Add one system-level language contract without mutating caller messages."""
+    normalized = [
+        dict(message) if isinstance(message, dict) else message
+        for message in (messages if isinstance(messages, list) else [])
+    ]
+    for index, message in enumerate(normalized):
+        if not isinstance(message, dict) or message.get("role") != "system":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        if _VISIBLE_REASONING_LANGUAGE_INSTRUCTION not in content:
+            normalized[index] = {
+                **message,
+                "content": (
+                    content.rstrip()
+                    + "\n\n"
+                    + _VISIBLE_REASONING_LANGUAGE_INSTRUCTION
+                ),
+            }
+        return normalized
+    return [
+        {
+            "role": "system",
+            "content": _VISIBLE_REASONING_LANGUAGE_INSTRUCTION,
+        },
+        *normalized,
+    ]
+
+
 def _append_model_reasoning(controller: ControllerLike, reasoning_delta: str) -> None:
     """Emit model-provided reasoning when the active stream controller supports it."""
     if not reasoning_delta:
@@ -2298,12 +3059,368 @@ def _append_model_reasoning(controller: ControllerLike, reasoning_delta: str) ->
         append_reasoning(reasoning_delta)
 
 
+def _append_process_reasoning(
+    controller: ControllerLike,
+    message: str,
+) -> None:
+    text = str(message or "").strip()
+    if text:
+        _append_model_reasoning(controller, text + "\n")
+
+
+class _BufferedReasoningEmitter:
+    """Coalesce provider token deltas before crossing the UI stream boundary."""
+
+    def __init__(
+        self,
+        controller: ControllerLike,
+        *,
+        flush_chars: int = 512,
+        flush_seconds: float = 0.35,
+    ) -> None:
+        self._controller = controller
+        self._flush_chars = flush_chars
+        self._flush_seconds = flush_seconds
+        self._parts: List[str] = []
+        self._chars = 0
+        self._last_flush = time.monotonic()
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        self._parts.append(text)
+        self._chars += len(text)
+        if (
+            self._chars >= self._flush_chars
+            or time.monotonic() - self._last_flush >= self._flush_seconds
+        ):
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._parts:
+            return
+        text = "".join(self._parts)
+        self._parts.clear()
+        self._chars = 0
+        self._last_flush = time.monotonic()
+        _append_model_reasoning(self._controller, text)
+
+
+_STAGE_TRACE_LABELS = {
+    AgentStage.OUTLINE: "理解任务",
+    AgentStage.PARAMETERIZATION: "确认业务条件",
+    AgentStage.NORMALIZATION: "确定执行口径",
+    AgentStage.RESOURCE_BINDING: "绑定数据范围",
+    AgentStage.COMPILATION: "生成执行流程",
+    AgentStage.POLICY: "安全与权限校验",
+    AgentStage.EXECUTION: "执行任务",
+    AgentStage.BENEFIT_OUTLINE: "拆解产业受益链",
+    AgentStage.CATALOG_LOADING: "载入实时板块目录",
+    AgentStage.CATALOG_MAPPING: "匹配真实板块",
+    AgentStage.RESULT_VALIDATION: "核对结果与覆盖",
+    AgentStage.RESOURCE_PUBLISHED: "发布板块集合",
+    AgentStage.SYNTHESIS: "整理最终回答",
+    AgentStage.COMPLETED: "完成",
+}
+
+_STAGE_TRACE_STATUS = {
+    StageStatus.STARTED: "进行中",
+    StageStatus.SUCCEEDED: "已完成",
+    StageStatus.FAILED: "失败",
+    StageStatus.BLOCKED: "已阻断",
+    StageStatus.CANCELLED: "已取消",
+}
+
+
+def _agent_stage_reasoning_line(event: AgentStageEventV2) -> str:
+    label = _STAGE_TRACE_LABELS.get(event.stage, event.stage.value)
+    status = _STAGE_TRACE_STATUS.get(event.status, event.status.value)
+    task = f" · {event.task_id}" if event.task_id else ""
+    error = (
+        f" · {event.error_code.value}"
+        if event.error_code is not None
+        else ""
+    )
+    detail = f"：{event.summary}" if event.summary else ""
+    return f"[{label}{task}] {status}{error}{detail}"
+
+
+def _trace_json_preview(value: Any, *, max_chars: int = 320) -> str:
+    sensitive = {
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+    }
+
+    def redact(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            return {
+                str(key): (
+                    "[redacted]"
+                    if str(key).replace("-", "_").lower() in sensitive
+                    else redact(child)
+                )
+                for key, child in item.items()
+            }
+        if isinstance(item, (list, tuple)):
+            return [redact(child) for child in item]
+        return item
+
+    text = json.dumps(
+        redact(value),
+        ensure_ascii=False,
+        default=str,
+        separators=(",", ":"),
+    )
+    return text if len(text) <= max_chars else text[:max_chars] + "…"
+
+
+def _response_field(value: Any, name: str) -> Any:
+    return (
+        value.get(name)
+        if isinstance(value, dict)
+        else getattr(value, name, None)
+    )
+
+
+async def _await_model_stream_step(
+    awaitable,
+    *,
+    controller: ControllerLike,
+    label: str,
+    started_at: float,
+):
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=MODEL_STREAM_HEARTBEAT_SECONDS,
+            )
+            if done:
+                return task.result()
+            _append_process_reasoning(
+                controller,
+                (
+                    f"模型仍在处理「{label}」，"
+                    f"已等待 {max(1, int(time.monotonic() - started_at))} 秒"
+                ),
+            )
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def _stream_structured_model_completion(
+    controller: ControllerLike,
+    completion: Callable[..., Any],
+    **kwargs: Any,
+) -> Any:
+    """Stream visible model analysis while rebuilding one tool-call response."""
+    request_kwargs = dict(kwargs)
+    request_kwargs["stream"] = True
+    request_kwargs["messages"] = _with_chinese_visible_reasoning(
+        request_kwargs.get("messages")
+    )
+    function_name = str(
+        (
+            request_kwargs.get("tool_choice") or {}
+        ).get("function", {}).get("name")
+        or "结构化分析"
+    )
+    started_at = time.monotonic()
+    response = await _await_model_stream_step(
+        completion(**request_kwargs),
+        controller=controller,
+        label=function_name,
+        started_at=started_at,
+    )
+    if not hasattr(response, "__aiter__"):
+        choices = _response_field(response, "choices") or []
+        for choice in choices:
+            message = _response_field(choice, "message")
+            reasoning = _extract_model_reasoning_delta(message)
+            if reasoning:
+                _append_process_reasoning(
+                    controller,
+                    f"模型可见分析 · {function_name}",
+                )
+                _append_model_reasoning(controller, reasoning)
+                _append_model_reasoning(controller, "\n")
+        return response
+
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    tool_calls: Dict[int, Dict[str, Any]] = {}
+    reasoning_started = False
+    reasoning_emitter = _BufferedReasoningEmitter(controller)
+    iterator = response.__aiter__()
+    try:
+        while True:
+            try:
+                chunk = await _await_model_stream_step(
+                    anext(iterator),
+                    controller=controller,
+                    label=function_name,
+                    started_at=started_at,
+                )
+            except StopAsyncIteration:
+                break
+            choices = _response_field(chunk, "choices") or []
+            if not choices:
+                continue
+            delta = _response_field(choices[0], "delta")
+            reasoning_delta = _extract_model_reasoning_delta(delta)
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+                if not reasoning_started:
+                    _append_process_reasoning(
+                        controller,
+                        f"模型可见分析 · {function_name}",
+                    )
+                    reasoning_started = True
+                reasoning_emitter.append(reasoning_delta)
+            content = _response_field(delta, "content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+            for fallback_index, raw_call in enumerate(
+                _response_field(delta, "tool_calls") or []
+            ):
+                raw_index = _response_field(raw_call, "index")
+                index = raw_index if isinstance(raw_index, int) else fallback_index
+                call = tool_calls.setdefault(index, {
+                    "id": "",
+                    "type": "function",
+                    "function": {
+                        "name": "",
+                        "arguments": "",
+                    },
+                })
+                call_id = _response_field(raw_call, "id")
+                if isinstance(call_id, str) and call_id:
+                    call["id"] = call_id
+                function = _response_field(raw_call, "function")
+                name_delta = _response_field(function, "name")
+                if isinstance(name_delta, str) and name_delta:
+                    call["function"]["name"] += name_delta
+                arguments_delta = _response_field(function, "arguments")
+                if isinstance(arguments_delta, str) and arguments_delta:
+                    call["function"]["arguments"] += arguments_delta
+                elif isinstance(arguments_delta, dict):
+                    call["function"]["arguments"] = json.dumps(
+                        arguments_delta,
+                        ensure_ascii=False,
+                    )
+    finally:
+        reasoning_emitter.flush()
+    if reasoning_started:
+        _append_model_reasoning(controller, "\n")
+    rebuilt_calls = []
+    for index in sorted(tool_calls):
+        call = tool_calls[index]
+        if not call["id"]:
+            call["id"] = f"structured_{index}"
+        if not call["function"]["name"]:
+            call["function"]["name"] = function_name
+        rebuilt_calls.append(call)
+    return {
+        "choices": [{
+            "message": {
+                "content": "".join(content_parts) or None,
+                "reasoning_content": "".join(reasoning_parts) or None,
+                "tool_calls": rebuilt_calls,
+            },
+        }],
+    }
+
+
+async def _collect_streamed_model_answer(
+    controller: ControllerLike,
+    completion: Callable[..., Any],
+    request_kwargs: Mapping[str, Any],
+    *,
+    label: str,
+) -> tuple[str, str]:
+    """Collect one answer stream without imposing an elapsed-time deadline."""
+    started_at = time.monotonic()
+    visible_request_kwargs = dict(request_kwargs)
+    visible_request_kwargs["messages"] = _with_chinese_visible_reasoning(
+        visible_request_kwargs.get("messages")
+    )
+    response = await _await_model_stream_step(
+        completion(**visible_request_kwargs),
+        controller=controller,
+        label=label,
+        started_at=started_at,
+    )
+    if not hasattr(response, "__aiter__"):
+        choices = _response_field(response, "choices") or []
+        choice = choices[0] if choices else None
+        message = _response_field(choice, "message")
+        reasoning = _extract_model_reasoning_delta(message)
+        if reasoning:
+            _append_process_reasoning(controller, f"模型可见分析 · {label}")
+            _append_model_reasoning(controller, reasoning)
+            _append_model_reasoning(controller, "\n")
+        return (
+            str(_response_field(message, "content") or ""),
+            str(_response_field(choice, "finish_reason") or ""),
+        )
+
+    content_parts: List[str] = []
+    finish_reason = ""
+    reasoning_started = False
+    reasoning_emitter = _BufferedReasoningEmitter(controller)
+    iterator = response.__aiter__()
+    try:
+        while True:
+            try:
+                chunk = await _await_model_stream_step(
+                    anext(iterator),
+                    controller=controller,
+                    label=label,
+                    started_at=started_at,
+                )
+            except StopAsyncIteration:
+                break
+            choices = _response_field(chunk, "choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            choice_finish_reason = _response_field(choice, "finish_reason")
+            if choice_finish_reason:
+                finish_reason = str(choice_finish_reason)
+            delta = _response_field(choice, "delta")
+            reasoning_delta = _extract_model_reasoning_delta(delta)
+            if reasoning_delta:
+                if not reasoning_started:
+                    _append_process_reasoning(
+                        controller,
+                        f"模型可见分析 · {label}",
+                    )
+                    reasoning_started = True
+                reasoning_emitter.append(reasoning_delta)
+            content = _response_field(delta, "content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+    finally:
+        reasoning_emitter.flush()
+    if reasoning_started:
+        _append_model_reasoning(controller, "\n")
+    return "".join(content_parts), finish_reason
+
+
 async def _stream_final_answer_without_tools(
     controller: ControllerLike,
     messages: List[Dict[str, Any]],
     llm_cfg: Dict[str, Any],
     *,
-    state: Optional[Dict[str, str]] = None,
+    state: Optional[Dict[str, Any]] = None,
     evidence: Optional[List[Dict[str, Any]]] = None,
     playbook: Optional[AnalysisPlaybook] = None,
     answer_validator: Optional[
@@ -2333,90 +3450,17 @@ async def _stream_final_answer_without_tools(
         temperature=0.1,
     )
 
-    content_text = ""
-    finish_reason = ""
     try:
-        synthesis_timeout = 120.0 if is_playbook_answer else FINAL_SYNTHESIS_TIMEOUT_SECONDS
-        async with asyncio.timeout(synthesis_timeout):
-            response = await litellm.acompletion(**kwargs)
-            async for chunk in response:
-                choice = chunk.choices[0] if chunk.choices else None
-                if choice and getattr(choice, "finish_reason", None):
-                    finish_reason = str(choice.finish_reason)
-                delta = choice.delta if choice else None
-                _append_model_reasoning(controller, _extract_model_reasoning_delta(delta))
-                if not delta or not delta.content:
-                    continue
-                content_text += delta.content
-    except TimeoutError:
-        content_text = _prepare_playbook_answer(playbook, content_text)
-        logger.warning("[Agent] final synthesis timed out after buffering %d chars", len(content_text))
-        # The provider can stop delivering the terminal frame after already
-        # streaming a complete answer.  Because output is buffered, accept it
-        # only if the same evidence and Playbook validators prove the required
-        # structure is complete; otherwise fail closed with the deterministic
-        # evidence fallback.
-        timed_out_issues = contract_issues(content_text)
-        if not content_text.strip() or timed_out_issues:
-            logger.warning(
-                "[Agent] timed-out synthesis incomplete: %s",
-                "; ".join(timed_out_issues) if timed_out_issues else "empty response",
-            )
-            retry_messages = [*forced_messages]
-            if content_text.strip():
-                retry_messages.append({"role": "assistant", "content": content_text})
-            retry_messages.append({
-                "role": "user",
-                "content": (
-                    "[上一次综合超时]\n请基于同一份已核验证据直接给出更紧凑的完整最终答案，"
-                    "不要复述任务或调用工具。必须满足 Playbook 输出合同，关键事实保留来源链接；"
-                    "缺失证据明确标注，不得猜测。"
-                    + (("当前缺项：" + "；".join(timed_out_issues)) if timed_out_issues else "")
-                ),
-            })
-            retry_kwargs = _build_llm_kwargs(
-                llm_cfg,
-                stream=True,
-                messages=retry_messages,
-                max_tokens=4200 if is_professional_decision else 2800,
-                temperature=0.0,
-            )
-            retry_text = ""
-            retry_finish_reason = ""
-            try:
-                async with asyncio.timeout(120.0 if is_playbook_answer else FINAL_SYNTHESIS_TIMEOUT_SECONDS):
-                    retry_response = await litellm.acompletion(**retry_kwargs)
-                    async for chunk in retry_response:
-                        choice = chunk.choices[0] if chunk.choices else None
-                        if choice and getattr(choice, "finish_reason", None):
-                            retry_finish_reason = str(choice.finish_reason)
-                        delta = choice.delta if choice else None
-                        _append_model_reasoning(controller, _extract_model_reasoning_delta(delta))
-                        if delta and delta.content:
-                            retry_text += delta.content
-            except Exception:
-                logger.exception("[Agent] timed-out synthesis retry failed")
-            retry_text = _prepare_playbook_answer(playbook, retry_text)
-            # Row-level evidence failures in mapping answers are removed
-            # deterministically before the whole report is judged.
-            retry_issues = contract_issues(retry_text)
-            if (
-                retry_text.strip()
-                and retry_finish_reason.lower() not in {"length", "max_tokens"}
-                and not retry_issues
-            ):
-                content_text = retry_text
-            else:
-                if retry_issues:
-                    logger.warning("[Agent] rejected timeout retry: %s", "; ".join(retry_issues))
-                content_text = _build_verified_evidence_fallback(evidence)
-        controller.append_text(content_text)
-        if state is not None:
-            state["assistant_text"] = content_text
-            controller.assistant_text_snapshot = content_text
-        return content_text
-    except Exception as e:
+        content_text, finish_reason = await _collect_streamed_model_answer(
+            controller,
+            litellm.acompletion,
+            kwargs,
+            label="最终答案综合",
+        )
+    except Exception:
         logger.exception("[Agent] Forced final answer failed")
+        if state is not None:
+            state["_synthesis_failed"] = True
         content_text = _build_verified_evidence_fallback(evidence)
         controller.append_text(content_text)
         if state is not None:
@@ -2452,17 +3496,14 @@ async def _stream_final_answer_without_tools(
             repaired_text = ""
             repaired_finish_reason = ""
             try:
-                repair_timeout = 120.0 if is_playbook_answer else FINAL_SYNTHESIS_TIMEOUT_SECONDS
-                async with asyncio.timeout(repair_timeout):
-                    repair_response = await litellm.acompletion(**repair_kwargs)
-                    async for chunk in repair_response:
-                        choice = chunk.choices[0] if chunk.choices else None
-                        if choice and getattr(choice, "finish_reason", None):
-                            repaired_finish_reason = str(choice.finish_reason)
-                        delta = choice.delta if choice else None
-                        _append_model_reasoning(controller, _extract_model_reasoning_delta(delta))
-                        if delta and delta.content:
-                            repaired_text += delta.content
+                repaired_text, repaired_finish_reason = (
+                    await _collect_streamed_model_answer(
+                        controller,
+                        litellm.acompletion,
+                        repair_kwargs,
+                        label="最终答案字段修复",
+                    )
+                )
             except Exception:
                 logger.exception("[Agent] final answer repair failed")
 
@@ -2477,6 +3518,8 @@ async def _stream_final_answer_without_tools(
             else:
                 if repair_issues:
                     logger.warning("[Agent] rejected repaired answer: %s", "; ".join(repair_issues))
+                if state is not None:
+                    state["_synthesis_failed"] = True
                 content_text = _build_verified_evidence_fallback(evidence)
         controller.append_text(content_text)
         if state is not None:
@@ -2514,16 +3557,14 @@ async def _stream_final_answer_without_tools(
         retry_text = ""
         retry_finish_reason = ""
         try:
-            async with asyncio.timeout(120.0):
-                retry_response = await litellm.acompletion(**retry_kwargs)
-                async for chunk in retry_response:
-                    choice = chunk.choices[0] if chunk.choices else None
-                    if choice and getattr(choice, "finish_reason", None):
-                        retry_finish_reason = str(choice.finish_reason)
-                    delta = choice.delta if choice else None
-                    _append_model_reasoning(controller, _extract_model_reasoning_delta(delta))
-                    if delta and delta.content:
-                        retry_text += delta.content
+            retry_text, retry_finish_reason = (
+                await _collect_streamed_model_answer(
+                    controller,
+                    litellm.acompletion,
+                    retry_kwargs,
+                    label="最终答案完整性修复",
+                )
+            )
         except Exception:
             logger.exception("[Agent] empty/truncated synthesis retry failed")
         retry_text = _prepare_playbook_answer(playbook, retry_text)
@@ -2542,6 +3583,8 @@ async def _stream_final_answer_without_tools(
         if retry_issues:
             logger.warning("[Agent] rejected empty/truncated retry: %s", "; ".join(retry_issues))
 
+    if state is not None:
+        state["_synthesis_failed"] = True
     content_text = _build_verified_evidence_fallback(evidence)
     controller.append_text(content_text)
     if state is not None:
@@ -2569,6 +3612,11 @@ def _task_status_evidence(
                     "errors": result.errors,
                     "executed_calls": sum(1 for call in result.calls if call.executed),
                     "reused_calls": sum(1 for call in result.calls if call.reused),
+                    "derived_result_count": len(result.derived_results),
+                    "output_entities": [
+                        {"symbol": entity.symbol, "name": entity.name}
+                        for entity in result.output_entities
+                    ],
                 }
                 for result in execution.tasks
             ],
@@ -2576,6 +3624,10 @@ def _task_status_evidence(
                 task.task_id: task.depends_on
                 for task in plan.tasks
             },
+            "final_entities": [
+                {"symbol": entity.symbol, "name": entity.name}
+                for entity in execution.final_entities
+            ],
         },
     }
 
@@ -2601,27 +3653,77 @@ def _exact_result_contract_answer(
     execution: PlanExecutionResult,
 ) -> Optional[str]:
     """Render only workflows whose exhaustive or safety result is machine-owned."""
-    compound_filter_answer = _build_compound_collection_financial_filter_answer(
-        plan,
-        execution,
-    )
-    if compound_filter_answer:
-        return compound_filter_answer
-    if len(plan.tasks) != 1:
+    dependency_ids = {
+        dependency_id
+        for task in plan.tasks
+        for dependency_id in task.depends_on
+    }
+    terminal_tasks = [
+        task for task in plan.tasks
+        if task.task_id not in dependency_ids
+    ]
+    if len(terminal_tasks) != 1:
         return None
-    task = plan.tasks[0]
-    evidence = execution.evidence
-    if task.kind == StandardTaskKind.THEME_STOCK_DISCOVERY:
+    task = terminal_tasks[0]
+    result = next(
+        (
+            item
+            for item in execution.tasks
+            if item.task.task_id == task.task_id
+        ),
+        None,
+    )
+    if result is None:
+        return None
+    lineage_ids: set[str] = set()
+    tasks_by_id = {item.task_id: item for item in plan.tasks}
+
+    def include_lineage(task_id: str) -> None:
+        if task_id in lineage_ids:
+            return
+        lineage_ids.add(task_id)
+        for dependency_id in tasks_by_id[task_id].depends_on:
+            include_lineage(dependency_id)
+
+    include_lineage(task.task_id)
+    evidence = [
+        packet
+        for item in execution.tasks
+        if item.task.task_id in lineage_ids
+        for packet in item.evidence
+    ]
+    result_contract = workflow_for(task.kind).result_contract
+    if result_contract == "industry_ranked_domains":
+        return _build_ranked_domain_answer(evidence) or (
+            "## 产业受益领域排序未完成\n\n"
+            "结构化领域处理没有成功，因此本轮不再由自由写作模型另行生成一套梯队。"
+            + (
+                "\n\n执行信息：" + "；".join(result.errors)
+                if result.errors
+                else ""
+            )
+        )
+    if result_contract == "theme_stock_discovery":
         return _build_domain_candidate_answer(evidence)
-    if task.kind == StandardTaskKind.COLLECTION_FINANCIAL_FILTER:
+    if result_contract == "theme_business_evidence":
+        return _build_theme_business_evidence_answer(evidence) or (
+            "## 领域公司核验未完成\n\n"
+            "公司证据绑定没有成功，因此本轮没有用概念板块、网页名单或模型记忆补股票。"
+            + (
+                "\n\n执行信息：" + "；".join(result.errors)
+                if result.errors
+                else ""
+            )
+        )
+    if result_contract == "collection_financial_filter":
         try:
             spec = CollectionFinancialFilterSpec.model_validate(task.parameters)
         except Exception:
             return None
         return _build_collection_financial_filter_answer(evidence, spec)
-    if task.kind == StandardTaskKind.STOCK_SCREENING:
+    if result_contract == "stock_screening":
         return _build_quantitative_screen_answer(evidence)
-    if task.kind == StandardTaskKind.INVESTMENT_DECISION:
+    if result_contract == "investment_decision":
         return _build_professional_buy_decision_answer(evidence) or (
             "## 专业买入分析未完成\n\n"
             "本轮没有成功取得八维专业分析结果，因此没有输出任何买入结论。请重试本轮问题。"
@@ -2706,24 +3808,192 @@ async def _run_standard_task_pipeline(
     *,
     state: Optional[Dict[str, Any]] = None,
     conversation_context: Optional[Dict[str, Any]] = None,
+    conversation_id: str | None = None,
+    run_id: str | None = None,
+    db_manager: DatabaseManager | None = None,
 ) -> str:
     """Planner → fixed Workflow → policy validator → executor → aggregator."""
     latest_user_text = _last_user_text(messages)
-    semantic_context = ConversationContext.from_value(
-        conversation_context
-    ).before_request(latest_user_text)
-    previous_answer_entities = semantic_context.latest_entities()
-    controller.append_text("正在拆分标准任务并校验执行流程...\n\n")
+    active_run_id = run_id or uuid.uuid4().hex
+    context_v2: ConversationContextV2
+    compiled_v2: CompiledIntentGraphV2
+    graph_v2: PlannedIntentGraphV2 | None = None
+    artifact_map: Dict[str, Any] = {}
+    v2_stage_started: Dict[tuple[str, str], float] = {}
+    v2_stage_durations_ms: Dict[str, int] = {}
+    current_entities = find_securities_in_text(latest_user_text, limit=300)
+
+    async def emit_v2_stage(event: AgentStageEventV2) -> None:
+        stage_key = (
+            event.stage.value,
+            event.task_id or "__run__",
+        )
+        if event.status == StageStatus.STARTED:
+            v2_stage_started.setdefault(stage_key, time.monotonic())
+        else:
+            started_at = v2_stage_started.pop(stage_key, None)
+            if started_at is not None:
+                duration = int((time.monotonic() - started_at) * 1000)
+                duration_key = (
+                    event.stage.value
+                    if event.task_id is None
+                    else f"{event.stage.value}:{event.task_id}"
+                )
+                v2_stage_durations_ms[duration_key] = duration
+        add_data = getattr(controller, "add_data", None)
+        if callable(add_data):
+            add_data(event.model_dump(mode="json"))
+        _append_process_reasoning(
+            controller,
+            _agent_stage_reasoning_line(event),
+        )
+        if (
+            db_manager is not None
+            and conversation_id
+            and event.status != StageStatus.STARTED
+        ):
+            trace_status = (
+                "completed"
+                if (
+                    event.stage == AgentStage.COMPLETED
+                    and event.status == StageStatus.SUCCEEDED
+                )
+                else "cancelled"
+                if event.status == StageStatus.CANCELLED
+                else "blocked"
+                if (
+                    event.stage == AgentStage.COMPLETED
+                    and event.status == StageStatus.BLOCKED
+                )
+                else "failed"
+                if (
+                    event.stage == AgentStage.COMPLETED
+                    and event.status == StageStatus.FAILED
+                )
+                else "running"
+            )
+            try:
+                await asyncio.to_thread(
+                    db_manager.upsert_agent_run_trace,
+                    run_id=active_run_id,
+                    conversation_id=conversation_id,
+                    orchestrator_mode="unified",
+                    status=trace_status,
+                    error_code=(
+                        event.error_code.value
+                        if event.error_code is not None
+                        else None
+                    ),
+                    latest_stage=event.model_dump(mode="json"),
+                )
+            except Exception:
+                logger.warning(
+                    "[AgentOrchestrator] failed to persist latest stage "
+                    "run=%s stage=%s",
+                    active_run_id,
+                    event.stage.value,
+                    exc_info=True,
+                )
+
+    async def stream_structured_completion(**kwargs: Any) -> Any:
+        return await _stream_structured_model_completion(
+            controller,
+            litellm.acompletion,
+            **kwargs,
+        )
+
+    if (
+        isinstance(conversation_context, dict)
+        and str(conversation_context.get("version") or "") == "3"
+    ):
+        context_v2 = ConversationContextV2.from_value(conversation_context)
+        migrated_artifacts = ()
+    else:
+        context_v2, migrated_artifacts = migrate_legacy_context(
+            conversation_context,
+            conversation_id=conversation_id or "ephemeral",
+        )
+        if db_manager is not None and migrated_artifacts:
+            await asyncio.to_thread(
+                db_manager.save_agent_artifacts,
+                migrated_artifacts,
+            )
+    artifact_map.update({
+        artifact.artifact_id: artifact
+        for artifact in migrated_artifacts
+    })
+    if db_manager is not None and conversation_id:
+        for turn in context_v2.turns:
+            for reference in turn.terminal_artifacts:
+                if reference.artifact_id in artifact_map:
+                    continue
+                artifact = await asyncio.to_thread(
+                    db_manager.get_agent_artifact,
+                    reference.artifact_id,
+                )
+                if artifact is not None:
+                    artifact_map[reference.artifact_id] = artifact
 
     try:
-        async with asyncio.timeout(STANDARD_TASK_PLAN_TIMEOUT_SECONDS):
-            plan = await resolve_task_plan(
-                messages,
-                llm_cfg,
-                completion=litellm.acompletion,
-                current_entities=[],
-                previous_answer_entities=previous_answer_entities,
-                conversation_context=semantic_context,
+        graph_v2 = await plan_intent_graph_v2(
+            messages,
+            llm_cfg,
+            completion=stream_structured_completion,
+            semantic_context=context_v2.planner_payload(
+                current_request=latest_user_text,
+            ),
+            stage_observer=emit_v2_stage,
+            run_id=active_run_id,
+            current_entities=current_entities,
+        )
+        compiled_v2 = await compile_intent_graph_v2(
+            graph_v2,
+            llm_cfg,
+            completion=stream_structured_completion,
+            current_entities=current_entities,
+            artifacts=artifact_map,
+            stage_observer=emit_v2_stage,
+            registry=_registry,
+        )
+        plan = compiled_v2.plan
+        resolved_tasks = compiled_v2.resolved_tasks
+        if db_manager is not None and conversation_id:
+            await asyncio.to_thread(
+                db_manager.upsert_agent_run_trace,
+                run_id=active_run_id,
+                conversation_id=conversation_id,
+                orchestrator_mode="unified",
+                status="compiled",
+                schema_version=graph_v2.trace.schema_version,
+                model_config=llm_cfg,
+                stage_durations=dict(graph_v2.trace.stage_durations_ms),
+                raw_outline=graph_v2.trace.raw_outline,
+                normalized_outline=graph_v2.trace.normalized_outline,
+                raw_intents=dict(graph_v2.trace.raw_intents),
+                normalized_intents=dict(graph_v2.trace.normalized_intents),
+                repairs=[
+                    item.model_dump(mode="json")
+                    for item in graph_v2.trace.repairs
+                ],
+                compiled_plan={
+                    "assumptions": [
+                        assumption.model_dump(mode="json")
+                        for assumption in compiled_v2.assumptions
+                    ],
+                    "tasks": [
+                        {
+                            "task_id": item.task.task_id,
+                            "capability": item.capability.value,
+                            "parameters": dict(item.task.parameters),
+                            "depends_on": list(item.task.candidate.depends_on),
+                            "execution_policy": item.execution_policy.model_dump(
+                                mode="json"
+                            ),
+                            "resource_fingerprint": item.resource_fingerprint,
+                        }
+                        for item in compiled_v2.tasks
+                    ]
+                },
             )
         logger.info(
             "[TaskPlanner] source=%s tasks=%s dependencies=%s",
@@ -2731,42 +4001,185 @@ async def _run_standard_task_pipeline(
             [task.kind.value for task in plan.tasks],
             {task.task_id: task.depends_on for task in plan.tasks},
         )
-    except TaskPlannerUnavailableError as exc:
-        logger.exception("[TaskPlanner] semantic planner unavailable after recovery")
-        reason_text = {
-            "timeout": "模型规划响应超过当前等待时间",
-            "connection": "模型规划服务连接失败",
-            "provider": "模型规划服务暂时不可用",
-        }.get(exc.reason, "模型规划服务暂时不可用")
-        failure_text = (
-            f"{reason_text}，本轮没有开放或调用任何数据工具。"
-            "重新生成会再次尝试；只有已经通过程序校验的相同任务计划才会复用缓存。"
+    except OrchestratorV2Error as exc:
+        logger.warning(
+            "[AgentOrchestrator] run=%s code=%s task=%s detail=%s",
+            active_run_id,
+            exc.code.value,
+            exc.task_id,
+            exc,
         )
+        failure_status = (
+            "blocked"
+            if exc.code in {
+                AgentErrorCode.CLARIFICATION_REQUIRED,
+                AgentErrorCode.RESOURCE_UNAVAILABLE,
+                AgentErrorCode.POLICY_BLOCKED,
+            }
+            else "failed"
+        )
+        if db_manager is not None and conversation_id:
+            await asyncio.to_thread(
+                db_manager.upsert_agent_run_trace,
+                run_id=active_run_id,
+                conversation_id=conversation_id,
+                orchestrator_mode="unified",
+                status=failure_status,
+                error_code=exc.code.value,
+                schema_version=(
+                    graph_v2.trace.schema_version
+                    if graph_v2 is not None
+                    else "orchestrator-3.0"
+                ),
+                model_config=llm_cfg,
+                stage_durations=(
+                    {
+                        **dict(graph_v2.trace.stage_durations_ms),
+                        **v2_stage_durations_ms,
+                    }
+                    if graph_v2 is not None
+                    else v2_stage_durations_ms
+                ),
+                raw_outline=(
+                    graph_v2.trace.raw_outline
+                    if graph_v2 is not None
+                    else None
+                ),
+                normalized_outline=(
+                    graph_v2.trace.normalized_outline
+                    if graph_v2 is not None
+                    else None
+                ),
+                raw_intents=(
+                    dict(graph_v2.trace.raw_intents)
+                    if graph_v2 is not None
+                    else None
+                ),
+                normalized_intents=(
+                    dict(graph_v2.trace.normalized_intents)
+                    if graph_v2 is not None
+                    else None
+                ),
+                repairs=(
+                    [exc.metadata["repair"]]
+                    if isinstance(exc.metadata.get("repair"), dict)
+                    else []
+                ),
+            )
+        if exc.code == AgentErrorCode.CLARIFICATION_REQUIRED:
+            failure_text = str(exc)
+        elif exc.code == AgentErrorCode.RESOURCE_UNAVAILABLE:
+            failure_text = (
+                f"{exc} 本轮没有调用数据工具，也没有改用新闻或公网来源兜底。"
+            )
+        elif exc.code == AgentErrorCode.PLANNER_TIMEOUT:
+            failure_text = (
+                f"规划模型请求被上游连接终止：{exc}；"
+                "本轮没有调用任何数据工具。"
+            )
+        elif exc.code == AgentErrorCode.PLANNER_SCHEMA_INVALID:
+            failure_text = (
+                "规划输出在一次字段级修复后仍未通过精确 Schema，"
+                "这是内部规划契约错误；本轮没有调用任何数据工具。"
+            )
+        else:
+            failure_text = (
+                f"编排在 {exc.code.value} 阶段失败：{exc}；"
+                "本轮没有继续执行。"
+            )
         controller.append_text(failure_text)
         if state is not None:
             state["assistant_text"] = failure_text
+            state["_run_status"] = failure_status
+            state["_run_error_code"] = exc.code.value
+            if context_v2 is not None:
+                state["agent_context"] = context_v2.model_dump(mode="json")
             controller.assistant_text_snapshot = failure_text
         return failure_text
-    except TimeoutError:
-        logger.exception("[TaskPlanner] orchestration deadline exceeded")
+    except TaskPlanValidationError as exc:
+        logger.warning(
+            "[TaskPlanner] internal contract validation failed: %s",
+            exc,
+        )
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.COMPILATION,
+            status=StageStatus.FAILED,
+            error_code=AgentErrorCode.PLANNER_SCHEMA_INVALID,
+            summary=str(exc),
+        ))
+        if db_manager is not None and conversation_id:
+            await asyncio.to_thread(
+                db_manager.upsert_agent_run_trace,
+                run_id=active_run_id,
+                conversation_id=conversation_id,
+                orchestrator_mode="unified",
+                status="failed",
+                error_code=AgentErrorCode.PLANNER_SCHEMA_INVALID.value,
+                schema_version=(
+                    graph_v2.trace.schema_version
+                    if graph_v2 is not None
+                    else "orchestrator-3.0"
+                ),
+                model_config=llm_cfg,
+                stage_durations=(
+                    {
+                        **dict(graph_v2.trace.stage_durations_ms),
+                        **v2_stage_durations_ms,
+                    }
+                    if graph_v2 is not None
+                    else v2_stage_durations_ms
+                ),
+                raw_outline=(
+                    graph_v2.trace.raw_outline
+                    if graph_v2 is not None
+                    else None
+                ),
+                normalized_outline=(
+                    graph_v2.trace.normalized_outline
+                    if graph_v2 is not None
+                    else None
+                ),
+                raw_intents=(
+                    dict(graph_v2.trace.raw_intents)
+                    if graph_v2 is not None
+                    else None
+                ),
+                normalized_intents=(
+                    dict(graph_v2.trace.normalized_intents)
+                    if graph_v2 is not None
+                    else None
+                ),
+                repairs=(
+                    [
+                        item.model_dump(mode="json")
+                        for item in graph_v2.trace.repairs
+                    ]
+                    if graph_v2 is not None
+                    else []
+                ),
+            )
         failure_text = (
-            "模型规划响应超过本轮总等待时间，本轮没有开放或调用任何数据工具。"
-            "重新生成会再次尝试；只有已经通过程序校验的相同任务计划才会复用缓存。"
+            "标准任务计划未通过程序校验：这是内部规划契约错误，不是你缺少对象"
+            "或条件；本轮没有调用任何数据工具。"
         )
         controller.append_text(failure_text)
         if state is not None:
             state["assistant_text"] = failure_text
+            state["_run_status"] = "failed"
+            state["_run_error_code"] = AgentErrorCode.PLANNER_SCHEMA_INVALID.value
             controller.assistant_text_snapshot = failure_text
         return failure_text
     except Exception:
         logger.exception("[TaskPlanner] failed closed")
         failure_text = (
-            "标准任务计划未通过程序校验，因此本轮没有调用任何数据工具。"
-            "请补充具体对象或条件后重试。"
+            "标准任务编排发生内部异常，本轮没有调用任何数据工具。"
+            "这不是用户条件缺失，系统已按失败关闭处理。"
         )
         controller.append_text(failure_text)
         if state is not None:
             state["assistant_text"] = failure_text
+            state["_run_status"] = "failed"
             controller.assistant_text_snapshot = failure_text
         return failure_text
 
@@ -2778,177 +4191,666 @@ async def _run_standard_task_pipeline(
             controller.assistant_text_snapshot = clarification
         return clarification
 
-    try:
-        resolved_tasks = resolve_plan_entities(
-            plan,
-            current_entities=[],
-            previous_answer_entities=previous_answer_entities,
-            conversation_entities=semantic_context.all_entities(),
-        )
-    except TaskPlanValidationError as exc:
-        logger.warning("[TaskPlanner] entity resolution blocked plan: %s", exc)
-        failure_text = (
-            "任务已经拆分，但所需证券对象未能通过本地 A 股证券库核验，"
-            "所以没有调用数据工具。请明确公司名称或代码。"
-        )
-        controller.append_text(failure_text)
-        if state is not None:
-            state["assistant_text"] = failure_text
-            controller.assistant_text_snapshot = failure_text
-        return failure_text
-
-    controller.append_text("正在执行已校验的标准任务...\n\n")
+    await emit_v2_stage(AgentStageEventV2(
+        run_id=active_run_id,
+        stage=AgentStage.EXECUTION,
+        status=StageStatus.STARTED,
+        summary="正在执行已通过 Policy 预检的固定 Workflow",
+    ))
     workflow_specs_by_task = {
         task.task_id: workflow_for(task.kind)
         for task in resolved_tasks
+    }
+    v2_policy_by_task = compiled_v2.policy_by_task_id
+    v2_compiled_by_task = {
+        item.task.task_id: item
+        for item in compiled_v2.tasks
     }
 
     async def run_workflow_call(
         call: WorkflowCall,
         arguments: Dict[str, Any],
     ) -> Dict[str, Any]:
+        compiled_task = v2_compiled_by_task[call.task_id]
+        compiled_call_v2 = compile_workflow_call_v2(
+            compiled_task,
+            call,
+            arguments,
+            registry=_registry,
+        )
+        # Dynamic/resource-bound arguments must pass the same typed model as
+        # the tool adapter before a tool card is exposed or any executor/cache
+        # path can observe them.
+        typed_arguments = (
+            compiled_call_v2.arguments.model_dump(mode="json")
+        )
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.EXECUTION,
+            status=StageStatus.STARTED,
+            task_id=call.task_id,
+            summary=(
+                f"准备执行 {call.tool_name}/{call.step_id}，"
+                f"参数={_trace_json_preview(typed_arguments)}"
+            ),
+        ))
         call_id = f"workflow_{uuid.uuid4().hex}"
         tool = await controller.add_tool_call(call.tool_name, tool_call_id=call_id)
-        tool.append_args_text(json.dumps(arguments, ensure_ascii=False))
-        timeout_seconds = (
-            QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
-            if call.tool_name == "screen_atr_volatility_stocks"
-            else PROFESSIONAL_BUY_ANALYSIS_TIMEOUT_SECONDS
-            if call.tool_name == "evaluate_multi_stock_buy_criteria"
-            else CATALYST_ANALYSIS_TIMEOUT_SECONDS
-            if call.tool_name == "analyze_stock_catalysts"
-            else PROFESSIONAL_EVIDENCE_TIMEOUT_SECONDS
-            if call.tool_name in {
-                "get_multi_stock_snapshot",
-                "get_multi_stock_decision_evidence",
-                "get_domain_stock_candidates",
-            }
-            else TOOL_EXECUTION_TIMEOUT_SECONDS
+        tool.append_args_text(json.dumps(typed_arguments, ensure_ascii=False))
+        cache_key = (
+            execution_cache_key_v2(
+                compiled_task,
+                call,
+                typed_arguments,
+                model_config=llm_cfg,
+            )
         )
-        started_at = time.monotonic()
-        max_attempts = workflow_specs_by_task[call.task_id].max_attempts
-        last_error: Exception | None = None
-        for attempt in range(1, max_attempts + 1):
-            isolated_cancel_event = threading.Event()
-
-            def execute_sync() -> Dict[str, Any]:
-                if call.tool_name in STATEFUL_TOOL_NAMES:
-                    raw_result = _registry.execute(call.tool_name, arguments)
-                elif call.tool_name in ISOLATED_TOOL_NAMES:
-                    raw_result = execute_tool_isolated(
-                        call.tool_name,
-                        arguments,
-                        timeout_seconds=timeout_seconds - 3,
-                        cancel_event=isolated_cancel_event,
-                    )
-                else:
-                    raw_result = _registry.execute(call.tool_name, arguments)
-                compacted = _compact_tool_result(call.tool_name, raw_result)
-                result = _maybe_attach_search_fallback(
-                    call.tool_name,
-                    arguments,
-                    compacted,
-                )
-                return result if isinstance(result, dict) else {
-                    "success": True,
-                    "result": result,
-                    "errors": [],
-                    "partial": False,
-                }
-
-            try:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(execute_sync),
-                    timeout=timeout_seconds,
-                )
-                succeeded = result.get("success") is not False
-                if attempt > 1:
-                    result = {**result, "runtime_attempts": attempt}
-                tool.set_response(result, is_error=not succeeded)
-                logger.info(
-                    "[WorkflowTool] task=%s step=%s tool=%s success=%s attempts=%d duration_ms=%d",
-                    call.task_id,
-                    call.step_id,
-                    call.tool_name,
-                    succeeded,
-                    attempt,
-                    int((time.monotonic() - started_at) * 1000),
+        if (
+            cache_key is not None
+            and db_manager is not None
+            and compiled_task.execution_policy.cache_ttl_seconds is not None
+        ):
+            cached_result = await asyncio.to_thread(
+                load_execution_cache_v2,
+                db_manager,
+                cache_key,
+                ttl_seconds=(
+                    compiled_task.execution_policy.cache_ttl_seconds
+                ),
+            )
+            if cached_result is not None:
+                result = {**cached_result, "runtime_cache_hit": True}
+                tool.set_response(
+                    result,
+                    is_error=result.get("success") is False,
                 )
                 return result
-            except asyncio.CancelledError:
-                isolated_cancel_event.set()
-                raise
-            except (asyncio.TimeoutError, TimeoutError) as exc:
-                isolated_cancel_event.set()
-                last_error = exc
-                logger.warning(
-                    "[WorkflowTool] task=%s step=%s tool=%s timed out attempt=%d/%d",
-                    call.task_id,
-                    call.step_id,
-                    call.tool_name,
-                    attempt,
-                    max_attempts,
-                )
+        started_at = time.monotonic()
+        isolated_cancel_event = threading.Event()
+        event_loop = asyncio.get_running_loop()
+        reasoning_buffer: List[str] = []
+        reasoning_buffer_chars = 0
+        last_reasoning_flush = time.monotonic()
+        reasoning_buffer_lock = threading.Lock()
+
+        def flush_tool_reasoning() -> None:
+            nonlocal reasoning_buffer_chars, last_reasoning_flush
+            with reasoning_buffer_lock:
+                if not reasoning_buffer:
+                    return
+                text = "".join(reasoning_buffer)
+                reasoning_buffer.clear()
+                reasoning_buffer_chars = 0
+                last_reasoning_flush = time.monotonic()
+            event_loop.call_soon_threadsafe(
+                _append_model_reasoning,
+                controller,
+                text,
+            )
+
+        def report_tool_update(update: ToolProgressUpdate) -> None:
+            nonlocal reasoning_buffer_chars
+            if update.reasoning_delta:
+                with reasoning_buffer_lock:
+                    reasoning_buffer.append(update.reasoning_delta)
+                    reasoning_buffer_chars += len(update.reasoning_delta)
+                    should_flush = (
+                        reasoning_buffer_chars >= 160
+                        or time.monotonic() - last_reasoning_flush >= 0.1
+                    )
+                if should_flush:
+                    flush_tool_reasoning()
+                return
+            progress_suffix = (
+                f"（{update.progress}%）"
+                if update.progress is not None
+                else ""
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                emit_v2_stage(AgentStageEventV2(
+                    run_id=active_run_id,
+                    stage=AgentStage.EXECUTION,
+                    status=StageStatus.STARTED,
+                    task_id=call.task_id,
+                    summary=(
+                        f"{call.tool_name}/{call.step_id}："
+                        f"{update.message}{progress_suffix}"
+                    ),
+                )),
+                event_loop,
+            )
+            try:
+                future.result()
             except Exception as exc:
-                isolated_cancel_event.set()
-                last_error = exc
-                logger.warning(
-                    "[WorkflowTool] task=%s step=%s tool=%s failed attempt=%d/%d: %s",
+                logger.debug(
+                    "Tool progress observer stopped for task=%s step=%s: %s",
                     call.task_id,
                     call.step_id,
-                    call.tool_name,
-                    attempt,
-                    max_attempts,
                     exc,
                 )
 
-        if isinstance(last_error, (asyncio.TimeoutError, TimeoutError)):
-            error_text = f"工具执行超时（>{timeout_seconds:.0f}s，已尝试 {max_attempts} 次）"
-        else:
-            error_text = f"工具执行失败（已尝试 {max_attempts} 次）：{last_error}"
-        result = {
-            "success": False,
-            "errors": [error_text],
-            "partial": False,
-            "runtime_attempts": max_attempts,
-        }
-        tool.set_response(result, is_error=True)
-        return result
+        def execute_sync() -> Dict[str, Any]:
+            try:
+                with tool_progress_observer(report_tool_update):
+                    if call.tool_name in STATEFUL_TOOL_NAMES:
+                        raw_result = _registry.execute(
+                            call.tool_name,
+                            typed_arguments,
+                        )
+                    elif call.tool_name in ISOLATED_TOOL_NAMES:
+                        raw_result = execute_tool_isolated(
+                            call.tool_name,
+                            typed_arguments,
+                            cancel_event=isolated_cancel_event,
+                        )
+                    else:
+                        raw_result = _registry.execute(
+                            call.tool_name,
+                            typed_arguments,
+                        )
+            finally:
+                flush_tool_reasoning()
+            compacted = _compact_tool_result(call.tool_name, raw_result)
+            result = _maybe_attach_search_fallback(
+                call.tool_name,
+                typed_arguments,
+                compacted,
+            )
+            return result if isinstance(result, dict) else {
+                "success": True,
+                "result": result,
+                "errors": [],
+                "partial": False,
+            }
+
+        async def execute_with_heartbeat() -> Dict[str, Any]:
+            worker = asyncio.create_task(asyncio.to_thread(execute_sync))
+            while True:
+                done, _pending = await asyncio.wait(
+                    {worker},
+                    timeout=MODEL_STREAM_HEARTBEAT_SECONDS,
+                )
+                if worker in done:
+                    return await worker
+                await emit_v2_stage(AgentStageEventV2(
+                    run_id=active_run_id,
+                    stage=AgentStage.EXECUTION,
+                    status=StageStatus.STARTED,
+                    task_id=call.task_id,
+                    summary=(
+                        f"{call.tool_name}/{call.step_id} 仍在执行，"
+                        f"已运行 {int(time.monotonic() - started_at)} 秒"
+                    ),
+                ))
+
+        try:
+            result = await execute_with_heartbeat()
+            succeeded = result.get("success") is not False
+            tool.set_response(result, is_error=not succeeded)
+            logger.info(
+                "[WorkflowTool] task=%s step=%s tool=%s success=%s duration_ms=%d",
+                call.task_id,
+                call.step_id,
+                call.tool_name,
+                succeeded,
+                int((time.monotonic() - started_at) * 1000),
+            )
+            if cache_key is not None and db_manager is not None:
+                await asyncio.to_thread(
+                    save_execution_cache_v2,
+                    db_manager,
+                    cache_key,
+                    result,
+                )
+            return result
+        except asyncio.CancelledError:
+            isolated_cancel_event.set()
+            raise
+        except Exception as exc:
+            isolated_cancel_event.set()
+            logger.warning(
+                "[WorkflowTool] task=%s step=%s tool=%s failed: %s",
+                call.task_id,
+                call.step_id,
+                call.tool_name,
+                exc,
+            )
+            error_text = f"工具执行失败：{type(exc).__name__}: {exc}"
+            tool_spec = _registry.get_tool(call.tool_name)
+            if tool_spec is not None and tool_spec.failure_result is not None:
+                result = tool_spec.failure_result(
+                    typed_arguments,
+                    error_text,
+                    1,
+                )
+                tool.set_response(result, is_error=True)
+                return result
+            result = {
+                "success": False,
+                "errors": [error_text],
+                "partial": False,
+            }
+            tool.set_response(result, is_error=True)
+            return result
+
+    async def run_result_processor(
+        processor_name: str,
+        task,
+        processor_evidence: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        async def report_company_progress(
+            completed: int,
+            total: int,
+            company_result: Dict[str, Any],
+        ) -> None:
+            verdict_labels = {
+                "pass": "通过",
+                "fail": "不符合",
+                "insufficient": "证据不足",
+                "error": "分析错误",
+            }
+            company_name = str(
+                company_result.get("company_name")
+                or company_result.get("symbol")
+                or ""
+            ).strip()
+            verdict = verdict_labels.get(
+                str(company_result.get("verdict") or ""),
+                "已完成",
+            )
+            detail = f"；刚完成：{company_name}（{verdict}）" if company_name else ""
+            await emit_v2_stage(AgentStageEventV2(
+                run_id=active_run_id,
+                stage=AgentStage.RESULT_VALIDATION,
+                status=StageStatus.STARTED,
+                task_id=task.task_id,
+                summary=f"逐股独立判断进度：{completed}/{total}{detail}",
+            ))
+
+        async def report_domain_progress(
+            completed: int,
+            total: int,
+            detail: Dict[str, Any],
+        ) -> None:
+            raw_stage = str(detail.get("stage") or "")
+            raw_status = str(detail.get("status") or "started")
+            try:
+                stage = AgentStage(raw_stage)
+            except ValueError:
+                stage = AgentStage.RESULT_VALIDATION
+            try:
+                status = StageStatus(raw_status)
+            except ValueError:
+                status = StageStatus.STARTED
+            raw_error_code = str(detail.get("error_code") or "")
+            try:
+                error_code = AgentErrorCode(raw_error_code)
+            except ValueError:
+                error_code = None
+            summary = str(detail.get("summary") or "").strip()
+            if not summary:
+                summary = f"实时板块有限集合选择进度：{completed}/{total}"
+            await emit_v2_stage(AgentStageEventV2(
+                run_id=active_run_id,
+                stage=stage,
+                status=status,
+                task_id=task.task_id,
+                error_code=error_code,
+                summary=summary,
+            ))
+
+        processor_completion = (
+            litellm.acompletion
+            if processor_name == "company_evidence_binding"
+            else stream_structured_completion
+        )
+        return await process_task_result(
+            processor_name,
+            task,
+            processor_evidence,
+            llm_cfg,
+            # 高基数逐股处理保留每家公司终态进度，但不把上百个内部模型
+            # token 流叠加到一个页面 reasoning part；最终结构化结果不受影响。
+            completion=processor_completion,
+            progress=(
+                report_company_progress
+                if processor_name == "company_evidence_binding"
+                else report_domain_progress
+                if processor_name == "ranked_domain_selection"
+                else None
+            ),
+        )
+
+    buy_progress_counts: Dict[str, int] = {}
+
+    async def report_workflow_outcome(
+        task,
+        outcome,
+        completed: int,
+        total: int,
+    ) -> None:
+        result = outcome.result if isinstance(outcome.result, Mapping) else {}
+        coverage_parts = [
+            f"{key}={result[key]}"
+            for key in ("requested_count", "covered_count")
+            if result.get(key) is not None
+        ]
+        result_detail = (
+            "，" + "，".join(coverage_parts)
+            if coverage_parts
+            else ""
+        )
+        outcome_label = (
+            "已由共享首关形成终态"
+            if outcome.success and not outcome.executed
+            else "执行成功"
+            if outcome.success
+            else "执行失败"
+        )
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.EXECUTION,
+            status=StageStatus.STARTED,
+            task_id=task.task_id,
+            summary=(
+                f"{outcome.tool_name}/{outcome.step_id} "
+                f"{outcome_label}，"
+                f"任务内进度 {completed}/{total}{result_detail}"
+            ),
+        ))
+        if (
+            task.kind == StandardTaskKind.INVESTMENT_DECISION
+            and outcome.step_id.startswith("professional_buy_")
+        ):
+            stock_completed = buy_progress_counts.get(task.task_id, 0) + 1
+            buy_progress_counts[task.task_id] = stock_completed
+            stock_total = len(task.symbols)
+            if (
+                stock_completed == 1
+                or stock_completed == stock_total
+                or stock_completed % 5 == 0
+            ):
+                symbol = str(outcome.arguments.get("symbols") or "").strip()
+                state_label = (
+                    "已由共享首关阻断"
+                    if outcome.success and not outcome.executed
+                    else "已形成终态"
+                    if outcome.success
+                    else "执行失败"
+                )
+                progress_summary = (
+                    f"逐股八维判断进度：{stock_completed}/{stock_total}"
+                    + (f"（{symbol} {state_label}）" if symbol else "")
+                )
+                await emit_v2_stage(AgentStageEventV2(
+                    run_id=active_run_id,
+                    stage=AgentStage.EXECUTION,
+                    status=StageStatus.STARTED,
+                    task_id=task.task_id,
+                    summary=progress_summary,
+                ))
 
     executor = WorkflowExecutor(
         _registry,
         run_workflow_call,
-        approved_actions=semantic_context.pending_action_fingerprints(),
+        approved_actions=context_v2.pending_action_fingerprints(),
+        processor_runner=run_result_processor,
+        outcome_observer=report_workflow_outcome,
+        execution_policies=v2_policy_by_task,
     )
     execution = await executor.execute(resolved_tasks)
     await _flush_substreams(controller)
     evidence = [*execution.evidence, _task_status_evidence(plan, execution)]
-    if state is not None:
-        turn_reference = build_turn_reference(
-            latest_user_text,
-            plan,
-            resolved_tasks,
-            execution,
+    assert context_v2 is not None
+    await emit_v2_stage(AgentStageEventV2(
+        run_id=active_run_id,
+        stage=AgentStage.EXECUTION,
+        status=(
+            StageStatus.SUCCEEDED
+            if execution.success
+            else StageStatus.FAILED
+        ),
+        error_code=(
+            None
+            if execution.success
+            else AgentErrorCode.TOOL_FAILED
+        ),
+        summary=(
+            "固定 Workflow 执行完成"
+            if execution.success
+            else "固定 Workflow 存在失败或阻断"
+        ),
+    ))
+    await emit_v2_stage(AgentStageEventV2(
+        run_id=active_run_id,
+        stage=AgentStage.RESULT_VALIDATION,
+        status=StageStatus.STARTED,
+        summary="正在校验结果 Envelope、覆盖和资源投影",
+    ))
+    raw_outcomes_v2 = execution_outcomes_v2(execution)
+    outcomes_v2 = tuple(
+        capability_for(compiled_task.capability).result_model.model_validate(
+            outcome
         )
-        state["agent_context"] = semantic_context.append(turn_reference).model_dump()
-
+        for compiled_task, outcome in zip(
+            compiled_v2.tasks,
+            raw_outcomes_v2,
+            strict=True,
+        )
+    )
+    artifacts_v2, turn_v2 = build_execution_artifacts_v2(
+        compiled_v2,
+        outcomes_v2,
+        conversation_id=conversation_id or "ephemeral",
+        request=latest_user_text,
+        request_message_id=_last_user_message_id(messages),
+    )
+    outcomes_v2 = attach_artifact_refs_v2(
+        outcomes_v2,
+        artifacts_v2,
+    )
+    failed_outcomes = [
+        outcome
+        for outcome in outcomes_v2
+        if outcome.status.value in {"failed", "blocked", "cancelled"}
+    ]
+    non_succeeded_outcomes = [
+        outcome
+        for outcome in outcomes_v2
+        if outcome.status.value != "succeeded"
+    ]
+    if state is not None and non_succeeded_outcomes and not failed_outcomes:
+        state["_run_status"] = "partial"
+        state["_run_error_code"] = (
+            non_succeeded_outcomes[0].errors[0].code.value
+            if non_succeeded_outcomes[0].errors
+            else AgentErrorCode.COVERAGE_INCOMPLETE.value
+        )
+    if db_manager is not None and conversation_id and artifacts_v2:
+        await asyncio.to_thread(
+            db_manager.save_agent_artifacts,
+            artifacts_v2,
+        )
+    if db_manager is not None and conversation_id:
+        await asyncio.to_thread(
+            db_manager.upsert_agent_run_trace,
+            run_id=active_run_id,
+            conversation_id=conversation_id,
+            orchestrator_mode="unified",
+            status=(
+                "completed"
+                if not non_succeeded_outcomes
+                else "partial"
+            ),
+            error_code=(
+                non_succeeded_outcomes[0].errors[0].code.value
+                if (
+                    non_succeeded_outcomes
+                    and non_succeeded_outcomes[0].errors
+                )
+                else None
+            ),
+            stage_durations={
+                **dict(graph_v2.trace.stage_durations_ms),
+                **v2_stage_durations_ms,
+            },
+            outcomes=[
+                outcome.model_dump(mode="json")
+                for outcome in outcomes_v2
+            ],
+            coverage={
+                outcome.task_id: outcome.coverage.model_dump(mode="json")
+                for outcome in outcomes_v2
+            },
+        )
+    context_v2 = context_v2.append(turn_v2)
+    if state is not None:
+        state["agent_context"] = context_v2.model_dump(mode="json")
+    await emit_v2_stage(AgentStageEventV2(
+        run_id=active_run_id,
+        stage=AgentStage.RESULT_VALIDATION,
+        status=(
+            StageStatus.FAILED
+            if failed_outcomes
+            else StageStatus.SUCCEEDED
+        ),
+        error_code=(
+            failed_outcomes[0].errors[0].code
+            if failed_outcomes and failed_outcomes[0].errors
+            else None
+        ),
+        summary=(
+            f"{len(outcomes_v2) - len(failed_outcomes)}/"
+            f"{len(outcomes_v2)} 个任务形成强类型终态"
+        ),
+    ))
+    if db_manager is not None and conversation_id:
+        await asyncio.to_thread(
+            db_manager.upsert_agent_run_trace,
+            run_id=active_run_id,
+            conversation_id=conversation_id,
+            orchestrator_mode="unified",
+            status=(
+                "completed"
+                if not non_succeeded_outcomes
+                else "partial"
+            ),
+            error_code=(
+                non_succeeded_outcomes[0].errors[0].code.value
+                if (
+                    non_succeeded_outcomes
+                    and non_succeeded_outcomes[0].errors
+                )
+                else None
+            ),
+            stage_durations={
+                **dict(graph_v2.trace.stage_durations_ms),
+                **v2_stage_durations_ms,
+            },
+        )
     blocked_answer = _blocked_task_answer(execution)
     if blocked_answer:
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.COMPLETED,
+            status=StageStatus.BLOCKED,
+            error_code=AgentErrorCode.POLICY_BLOCKED,
+            summary="任务被 Policy 或前置失败阻断",
+        ))
         controller.append_text(blocked_answer)
         if state is not None:
             state["assistant_text"] = blocked_answer
+            state["_run_status"] = "blocked"
+            state["_run_error_code"] = AgentErrorCode.POLICY_BLOCKED.value
             controller.assistant_text_snapshot = blocked_answer
         return blocked_answer
 
     exact_answer = _exact_result_contract_answer(plan, execution)
+    if failed_outcomes:
+        failure_code = (
+            failed_outcomes[0].errors[0].code
+            if failed_outcomes[0].errors
+            else AgentErrorCode.TOOL_FAILED
+        )
+        failure_text = exact_answer or (
+            "固定 Workflow 没有形成完整的强类型结果，本轮已按失败终止。"
+        )
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.COMPLETED,
+            status=StageStatus.FAILED,
+            error_code=failure_code,
+            summary="任务未形成成功终态",
+        ))
+        if db_manager is not None and conversation_id:
+            await asyncio.to_thread(
+                db_manager.upsert_agent_run_trace,
+                run_id=active_run_id,
+                conversation_id=conversation_id,
+                orchestrator_mode="unified",
+                status="failed",
+                error_code=failure_code.value,
+            )
+        controller.append_text(failure_text)
+        if state is not None:
+            state["assistant_text"] = failure_text
+            state["_run_status"] = "failed"
+            state["_run_error_code"] = failure_code.value
+            controller.assistant_text_snapshot = failure_text
+        return failure_text
     if exact_answer:
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.COMPLETED,
+            status=StageStatus.SUCCEEDED,
+            summary="确定性 Renderer 已生成最终结果",
+        ))
         controller.append_text(exact_answer)
         if state is not None:
             state["assistant_text"] = exact_answer
             controller.assistant_text_snapshot = exact_answer
         return exact_answer
 
-    controller.append_text("正在汇总标准任务结果...\n\n")
+    requires_deterministic_renderer = any(
+        capability_for(item.capability).renderer
+        == RendererMode.DETERMINISTIC
+        for item in compiled_v2.tasks
+    )
+    if requires_deterministic_renderer:
+        failure_text = (
+            "已验证的结构化结果未能通过确定性 Renderer 生成最终答案；"
+            "为避免写作模型改写集合、覆盖状态或布尔结论，本轮已失败关闭。"
+        )
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.COMPLETED,
+            status=StageStatus.FAILED,
+            error_code=AgentErrorCode.SYNTHESIS_FAILED,
+            summary="确定性 Renderer 未形成合格终态",
+        ))
+        if db_manager is not None and conversation_id:
+            await asyncio.to_thread(
+                db_manager.upsert_agent_run_trace,
+                run_id=active_run_id,
+                conversation_id=conversation_id,
+                orchestrator_mode="unified",
+                status="failed",
+                error_code=AgentErrorCode.SYNTHESIS_FAILED.value,
+            )
+        controller.append_text(failure_text)
+        if state is not None:
+            state["assistant_text"] = failure_text
+            state["_run_status"] = "failed"
+            state["_run_error_code"] = AgentErrorCode.SYNTHESIS_FAILED.value
+            controller.assistant_text_snapshot = failure_text
+        return failure_text
+
+    await emit_v2_stage(AgentStageEventV2(
+        run_id=active_run_id,
+        stage=AgentStage.SYNTHESIS,
+        status=StageStatus.STARTED,
+        summary="正在进行证据受限综合",
+    ))
     active_prompt = (system_prompt or "").strip()
     synthesis_prompt = SYSTEM_PROMPT
     if active_prompt and active_prompt != SYSTEM_PROMPT.strip():
@@ -2969,6 +4871,11 @@ async def _run_standard_task_pipeline(
                         "kind": task.kind.value,
                         "objective": task.objective,
                         "depends_on": task.depends_on,
+                        "result_selection": (
+                            task.result_selection.model_dump(mode="json")
+                            if task.result_selection is not None
+                            else None
+                        ),
                         "output_requirements": task.output_requirements,
                     }
                     for task in plan.tasks
@@ -2984,7 +4891,7 @@ async def _run_standard_task_pipeline(
         and plan.tasks[0].kind == StandardTaskKind.INDUSTRY_RESEARCH
         else None
     )
-    return await _stream_final_answer_without_tools(
+    synthesized = await _stream_final_answer_without_tools(
         controller,
         full_messages,
         llm_cfg,
@@ -2993,6 +4900,88 @@ async def _run_standard_task_pipeline(
         playbook=playbook,
         answer_validator=_standard_task_answer_issues,
     )
+    synthesis_failed = bool(
+        state is not None and state.get("_synthesis_failed")
+    )
+    if synthesis_failed:
+        if state is not None:
+            state["_run_status"] = "failed"
+            state["_run_error_code"] = AgentErrorCode.SYNTHESIS_FAILED.value
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.SYNTHESIS,
+            status=StageStatus.FAILED,
+            error_code=AgentErrorCode.SYNTHESIS_FAILED,
+            summary="写作模型未形成合格答案，已返回确定性证据回退",
+        ))
+        if db_manager is not None and conversation_id:
+            await asyncio.to_thread(
+                db_manager.upsert_agent_run_trace,
+                run_id=active_run_id,
+                conversation_id=conversation_id,
+                orchestrator_mode="unified",
+                status="partial",
+                error_code=AgentErrorCode.SYNTHESIS_FAILED.value,
+            )
+    else:
+        await emit_v2_stage(AgentStageEventV2(
+            run_id=active_run_id,
+            stage=AgentStage.SYNTHESIS,
+            status=StageStatus.SUCCEEDED,
+            summary="证据受限综合完成",
+        ))
+    await emit_v2_stage(AgentStageEventV2(
+        run_id=active_run_id,
+        stage=AgentStage.COMPLETED,
+        status=(
+            StageStatus.FAILED
+            if synthesis_failed
+            else StageStatus.SUCCEEDED
+        ),
+        error_code=(
+            AgentErrorCode.SYNTHESIS_FAILED
+            if synthesis_failed
+            else None
+        ),
+        summary=(
+            "已用确定性证据回退生成最终结果"
+            if synthesis_failed
+            else "证据受限综合完成"
+        ),
+    ))
+    if db_manager is not None and conversation_id and graph_v2 is not None:
+        await asyncio.to_thread(
+            db_manager.upsert_agent_run_trace,
+            run_id=active_run_id,
+            conversation_id=conversation_id,
+            orchestrator_mode="unified",
+            status=(
+                "partial"
+                if synthesis_failed or non_succeeded_outcomes
+                else "completed"
+            ),
+            error_code=(
+                AgentErrorCode.SYNTHESIS_FAILED.value
+                if synthesis_failed
+                else (
+                    non_succeeded_outcomes[0].errors[0].code.value
+                    if (
+                        non_succeeded_outcomes
+                        and non_succeeded_outcomes[0].errors
+                    )
+                    else (
+                        AgentErrorCode.COVERAGE_INCOMPLETE.value
+                        if non_succeeded_outcomes
+                        else None
+                    )
+                )
+            ),
+            stage_durations={
+                **dict(graph_v2.trace.stage_durations_ms),
+                **v2_stage_durations_ms,
+            },
+        )
+    return synthesized
 
 
 @router.post("/agent/chat")
@@ -3094,6 +5083,12 @@ async def agent_chat(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     conversation = session_service.ensure_conversation(conversation_id)
     conv_id = conversation["id"]
+    if body.get("history_mode") == "server":
+        messages = session_service.compose_request_with_server_history(
+            conv_id,
+            list(messages),
+            parent_message_id=body.get("history_parent_id"),
+        )
     agent_context = session_service.get_agent_context(conv_id)
 
     # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
@@ -3181,13 +5176,19 @@ async def agent_chat(
                 controller, messages, llm_cfg, system_prompt,
                 on_progress=on_progress, state=state,
                 conversation_context=agent_context,
+                conversation_id=conv_id,
+                run_id=run.run_id,
+                db_manager=db_manager,
             )
 
             persisted_messages = list(messages)
             if final_response_text.strip():
                 persisted_messages.append(
                     {
-                        "id": f"assistant-{uuid.uuid4().hex}",
+                        "id": str(
+                            body.get("unstable_assistantMessageId")
+                            or f"assistant-{uuid.uuid4().hex}"
+                        ),
                         "role": "assistant",
                         "content": final_response_text,
                         "created_at": datetime.now().isoformat(),
@@ -3208,11 +5209,29 @@ async def agent_chat(
                 **snapshot_kwargs,
             )
             await active_run_registry.mark_done(
-                conv_id, "completed", final_text=final_response_text
+                conv_id,
+                _terminal_run_status(state),
+                final_text=final_response_text,
+                error=(
+                    str(state.get("_run_error_code") or "")
+                    if state.get("_run_status") in {
+                        "failed",
+                        "blocked",
+                        "partial",
+                    }
+                    else None
+                ),
             )
         except asyncio.CancelledError:
             # 后台 task 不被 HTTP 断连取消,仅进程关闭/显式 cancel 会到这。
             # 把已生成文本落定,避免残留 {conv_id}-assistant-pending 半截消息。
+            cancelled_stage = AgentStageEventV2(
+                run_id=run.run_id,
+                stage=AgentStage.COMPLETED,
+                status=StageStatus.CANCELLED,
+                summary="用户已停止本轮分析",
+            )
+            controller.add_data(cancelled_stage.model_dump(mode="json"))
             partial = state.get("assistant_text", "")
             partial = (
                 partial.rstrip() + "\n\n[已停止]"
@@ -3230,11 +5249,41 @@ async def agent_chat(
                     logger.warning("[Agent] cancel-time partial save failed", exc_info=True)
             except Exception:
                 logger.warning("[Agent] cancel-time partial save failed", exc_info=True)
+            try:
+                await asyncio.shield(asyncio.to_thread(
+                    db_manager.upsert_agent_run_trace,
+                    run_id=run.run_id,
+                    conversation_id=conv_id,
+                    orchestrator_mode="unified",
+                    status="cancelled",
+                    latest_stage=cancelled_stage.model_dump(mode="json"),
+                ))
+            except asyncio.CancelledError:
+                db_manager.upsert_agent_run_trace(
+                    run_id=run.run_id,
+                    conversation_id=conv_id,
+                    orchestrator_mode="unified",
+                    status="cancelled",
+                    latest_stage=cancelled_stage.model_dump(mode="json"),
+                )
+            except Exception:
+                logger.warning(
+                    "[Agent] cancel-time terminal stage save failed",
+                    exc_info=True,
+                )
             await active_run_registry.mark_done(conv_id, "cancelled", final_text=partial)
             raise
         except Exception as exc:
             logger.exception("[Agent] background run failed")
             controller.add_error(str(exc))
+            failed_stage = AgentStageEventV2(
+                run_id=run.run_id,
+                stage=AgentStage.COMPLETED,
+                status=StageStatus.FAILED,
+                error_code=AgentErrorCode.TOOL_FAILED,
+                summary="本轮分析发生未处理的内部异常",
+            )
+            controller.add_data(failed_stage.model_dump(mode="json"))
             partial = state.get("assistant_text", "")
             if partial.strip():
                 try:
@@ -3243,6 +5292,21 @@ async def agent_chat(
                     )
                 except Exception:
                     logger.debug("[Agent] failed-run partial save failed", exc_info=True)
+            try:
+                await asyncio.to_thread(
+                    db_manager.upsert_agent_run_trace,
+                    run_id=run.run_id,
+                    conversation_id=conv_id,
+                    orchestrator_mode="unified",
+                    status="failed",
+                    error_code=AgentErrorCode.TOOL_FAILED.value,
+                    latest_stage=failed_stage.model_dump(mode="json"),
+                )
+            except Exception:
+                logger.warning(
+                    "[Agent] failed-run terminal stage save failed",
+                    exc_info=True,
+                )
             await active_run_registry.mark_done(conv_id, "failed", error=str(exc))
 
     async def factory(broadcaster: RunBroadcaster) -> "asyncio.Task":

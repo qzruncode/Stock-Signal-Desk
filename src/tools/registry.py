@@ -11,9 +11,10 @@ from __future__ import annotations
 import importlib
 import re
 from collections import OrderedDict
-from typing import Any
+from typing import Any, get_args
 
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel, TypeAdapter
 
 from src.tools.base import ToolSpec, enforce_result_contract
 
@@ -39,13 +40,6 @@ def _coerce_schema_scalar(value: Any, schema: dict[str, Any]) -> Any:
             value = float(value)
         except ValueError:
             pass
-    if expected in {"integer", "number"} and isinstance(value, (int, float)) and not isinstance(value, bool):
-        if schema.get("minimum") is not None:
-            value = max(value, schema["minimum"])
-        if schema.get("maximum") is not None:
-            value = min(value, schema["maximum"])
-        if expected == "integer":
-            value = int(value)
     if expected == "string" and isinstance(value, str) and schema.get("enum"):
         by_lower = {str(item).lower(): item for item in schema["enum"]}
         value = by_lower.get(value.strip().lower(), value)
@@ -74,6 +68,16 @@ def normalize_tool_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[
         normalized[key] = value
     return normalized
 
+
+def _bound_model_type(annotation: Any) -> type[BaseModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for candidate in get_args(annotation):
+        model = _bound_model_type(candidate)
+        if model is not None:
+            return model
+    return None
+
 TOOL_MODULES: tuple[str, ...] = (
     # Local universe and user portfolio operations
     "search_stocks",
@@ -101,13 +105,17 @@ TOOL_MODULES: tuple[str, ...] = (
     "get_multi_stock_snapshot",
     "get_multi_stock_financials",
     "get_multi_stock_decision_evidence",
+    "prepare_market_mainline_snapshot",
+    "evaluate_market_mainline_gate",
     "evaluate_multi_stock_buy_criteria",
     "analyze_stock_catalysts",
     "get_domain_stock_candidates",
+    "get_company_theme_evidence",
     "screen_atr_volatility_stocks",
     # Market and sector state
     "get_market_status",
     "get_market_breadth",
+    "get_domain_board_catalog",
     "get_sector_list",
     "get_sector_flow",
     "get_stock_capital_flow",
@@ -190,6 +198,11 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             raise TypeError("tool arguments must be an object")
         normalized = normalize_tool_arguments(tool, arguments)
+        if tool.args_model is not None:
+            return tool.args_model.model_validate(normalized).model_dump(
+                mode="python",
+                exclude_unset=True,
+            )
         errors = sorted(
             Draft202012Validator(tool.parameters).iter_errors(normalized),
             key=lambda error: list(error.absolute_path),
@@ -202,6 +215,45 @@ class ToolRegistry:
             raise ValueError(f"invalid arguments for {name}: {details}")
         return normalized
 
+    def project_bound_argument(
+        self,
+        name: str,
+        parameter: str,
+        value: Any,
+    ) -> Any:
+        """Project a predecessor result into the consumer's typed field.
+
+        Tool cards may add presentation metadata and producer result models may
+        contain fields that the consuming resource intentionally does not
+        accept. Only fields declared by the consumer model cross a Workflow
+        binding boundary.
+        """
+        tool = self._tools.get(name)
+        if tool is None or tool.args_model is None:
+            raise KeyError(f"Tool not found: {name}")
+        field = tool.args_model.model_fields.get(parameter)
+        if field is None:
+            raise ValueError(
+                f"{name} has no bindable parameter {parameter}"
+            )
+        projected = value
+        model_type = _bound_model_type(field.annotation)
+        if isinstance(value, dict) and parameter in value:
+            projected = value[parameter]
+        elif model_type is not None and isinstance(value, dict):
+            projected = {
+                key: value[key]
+                for key in model_type.model_fields
+                if key in value
+            }
+        validated = TypeAdapter(field.annotation).validate_python(projected)
+        if isinstance(validated, BaseModel):
+            return validated.model_dump(
+                mode="python",
+                exclude_unset=True,
+            )
+        return validated
+
     def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         tool = self._tools.get(name)
         if tool is None:
@@ -212,8 +264,37 @@ class ToolRegistry:
         # UI exposes a tool call.
         if not isinstance(arguments, dict):
             raise TypeError("tool arguments must be an object")
-        normalized = self.normalize_arguments(name, arguments)
-        return enforce_result_contract(name, tool.executor(**normalized))
+        normalized = (
+            self.validate_arguments(name, arguments)
+            if tool.args_model is not None
+            else self.normalize_arguments(name, arguments)
+        )
+        payload = enforce_result_contract(name, tool.executor(**normalized))
+        if tool.result_model is not None:
+            return tool.result_model.model_validate(payload).model_dump(mode="python")
+        return payload
+
+    def project_guard_blocked_result(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build a typed terminal result without launching the tool runner."""
+        tool = self._tools.get(name)
+        if tool is None:
+            raise KeyError(f"Tool not found: {name}")
+        if tool.guard_blocked_result is None:
+            raise ValueError(
+                f"{name} has no result projector for a blocked execution guard"
+            )
+        normalized = self.validate_arguments(name, arguments)
+        payload = enforce_result_contract(
+            name,
+            tool.guard_blocked_result(normalized),
+        )
+        if tool.result_model is not None:
+            return tool.result_model.model_validate(payload).model_dump(mode="python")
+        return payload
 
 
 __all__ = ["TOOL_MODULES", "ToolDef", "ToolRegistry", "normalize_tool_arguments"]

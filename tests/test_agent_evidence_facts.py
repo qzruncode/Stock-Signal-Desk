@@ -40,6 +40,7 @@ def test_semantic_evidence_binding_keeps_grounded_topic_fact_and_drops_unrelated
         return _response([
             {
                 "company_name": "全志科技",
+                "company_mention": "全志科技",
                 "symbol": "300458",
                 "stage": "L3",
                 "theme_relevance": "direct",
@@ -53,6 +54,7 @@ def test_semantic_evidence_binding_keeps_grounded_topic_fact_and_drops_unrelated
             },
             {
                 "company_name": "盟固利",
+                "company_mention": "盟固利",
                 "symbol": "301487",
                 "stage": "L3",
                 "theme_relevance": "unrelated",
@@ -100,6 +102,7 @@ def test_semantic_evidence_binding_rejects_quote_not_present_in_source() -> None
     async def completion(**_kwargs):
         return _response([{
             "company_name": "寒武纪",
+            "company_mention": "寒武纪",
             "symbol": "688256",
             "stage": "L3",
             "theme_relevance": "direct",
@@ -134,10 +137,112 @@ def test_semantic_evidence_binding_rejects_quote_not_present_in_source() -> None
     assert facts == []
 
 
+def test_semantic_evidence_binding_rejects_security_name_inside_another_company_name() -> None:
+    captured_request = {}
+
+    async def completion(**kwargs):
+        captured_request.update(json.loads(kwargs["messages"][1]["content"]))
+        return _response([{
+            "company_name": "机器人",
+            "company_mention": "机器人",
+            "symbol": "300024",
+            "stage": "L2",
+            "theme_relevance": "direct",
+            "thesis_fit": "exact",
+            "commercialization_signal": "customer_validation",
+            "relationship": "灵巧手供应商",
+            "fact": "灵巧手供应商之一，是因时机器人",
+            "support_quote": "灵巧手供应商之一，是因时机器人",
+            "source_id": "s1",
+            "confidence": 0.96,
+        }])
+
+    facts = asyncio.run(bind_company_evidence(
+        [{
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "retrieved_at": "2026-07-25T12:00:00",
+                "items": [{
+                    "title": "灵巧手供应商进展",
+                    "summary": "灵巧手供应商之一，是因时机器人",
+                    "link": "https://example.com/dexterous-hand",
+                    "source": "测试财经",
+                    "published": "2026-07-25",
+                }],
+            },
+        }],
+        MappingSelectionContext(
+            topic="灵巧手",
+            objective="核验灵巧手领域的 A 股公司",
+            selection_mode="ranked_shortlist",
+        ),
+        {"model": "test-model"},
+        completion=completion,
+    ))
+
+    assert facts == []
+    assert captured_request["sources"][0]["candidate_securities"] == []
+
+
+def test_semantic_evidence_binding_retries_uncovered_source_candidate() -> None:
+    requests = []
+
+    async def completion(**kwargs):
+        request = json.loads(kwargs["messages"][1]["content"])
+        requests.append(request)
+        if "candidate_to_evaluate" not in request:
+            return _response([])
+        return _response([{
+            "company_name": "全志科技",
+            "company_mention": "全志科技",
+            "symbol": "300458",
+            "stage": "L1",
+            "theme_relevance": "direct",
+            "thesis_fit": "exact",
+            "commercialization_signal": "product_layout",
+            "relationship": "AI 芯片产品布局",
+            "fact": "全志科技布局 AI 芯片产品",
+            "support_quote": "全志科技布局AI芯片产品",
+            "source_id": "s1",
+            "confidence": 0.94,
+        }])
+
+    facts = asyncio.run(bind_company_evidence(
+        [{
+            "tool": "search_financial_news",
+            "result": {
+                "success": True,
+                "retrieved_at": "2026-07-25T12:00:00",
+                "items": [{
+                    "title": "全志科技AI芯片业务进展",
+                    "summary": "全志科技布局AI芯片产品",
+                    "link": "https://example.com/allwinner-ai",
+                    "source": "测试财经",
+                    "published": "2026-07-25",
+                }],
+            },
+        }],
+        _intent(),
+        {"model": "test-model"},
+        completion=completion,
+    ))
+
+    assert len(requests) == 2
+    assert requests[1]["candidate_to_evaluate"] == {
+        "name": "全志科技",
+        "symbol": "300458",
+    }
+    assert [(fact.company_name, fact.symbol) for fact in facts] == [
+        ("全志科技", "300458"),
+    ]
+
+
 def test_commercial_application_without_delivery_is_not_l3() -> None:
     async def completion(**_kwargs):
         return _response([{
             "company_name": "云天励飞",
+            "company_mention": "云天励飞",
             "symbol": "688343",
             "stage": "L3",
             "theme_relevance": "supporting",
@@ -178,6 +283,7 @@ def test_semantic_facts_choose_strongest_company_fact_without_keyword_reordering
         return _response([
             {
                 "company_name": "安凯微",
+                "company_mention": "安凯微",
                 "symbol": "688620",
                 "stage": "L2",
                 "theme_relevance": "direct",
@@ -191,6 +297,7 @@ def test_semantic_facts_choose_strongest_company_fact_without_keyword_reordering
             },
             {
                 "company_name": "安凯微",
+                "company_mention": "安凯微",
                 "symbol": "688620",
                 "stage": "L3",
                 "theme_relevance": "direct",

@@ -6,8 +6,9 @@ import json
 import logging
 import sys
 import threading
+import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.storage import DatabaseManager
 
@@ -31,19 +32,50 @@ from .market_theme._llm import (
 )
 from .market_theme._streaming import (
     build_llm_model_report_streaming,
+    generate_model_report_inline,
     generate_model_report_stream,
 )
 from .market_theme._utils import cache_get, cache_put
 
 logger = logging.getLogger(__name__)
 
-_report_generation_lock = threading.Lock()
-_report_generation_triggered = False
+_report_generation_lock = threading.RLock()
 
 
 def _cache_is_usable(payload: Optional[dict[str, Any]]) -> bool:
     """A degraded fallback must never suppress the next recovery attempt."""
     return bool(payload) and not bool(payload.get("degraded_reason"))
+
+
+def _model_report_is_ready(payload: Optional[dict[str, Any]]) -> bool:
+    """A shared batch snapshot exists only when it has usable mainline rows."""
+    return bool(
+        payload
+        and not payload.get("report_pending")
+        and payload.get("as_of_date")
+        and (
+            payload.get("current_mainlines")
+            or payload.get("candidate_mainlines")
+            or payload.get("future_mainlines")
+        )
+    )
+
+
+def _task_snapshot(task: Any) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    status = getattr(task, "status", None)
+    status_value = getattr(status, "value", status)
+    return {
+        "task_id": str(getattr(task, "task_id", "") or ""),
+        "status": str(status_value or ""),
+        "progress": int(getattr(task, "progress", 0) or 0),
+        "message": str(getattr(task, "message", "") or ""),
+        "error": (
+            str(getattr(task, "error", "") or "")
+            or None
+        ),
+    }
 
 
 class MarketThemeService:
@@ -86,32 +118,144 @@ class MarketThemeService:
         force: bool = False,
         trigger_generation: bool = False,
     ) -> dict[str, Any]:
-        del force
-        latest = get_latest_report(self.REPORT_KEY)
-        if latest:
+        latest = None if force else get_latest_report(self.REPORT_KEY)
+        if _model_report_is_ready(latest):
             latest["_cached"] = True
             latest["report_pending"] = False
             latest["llm_used"] = bool(latest.get("llm_used"))
             latest.setdefault("model_used", None)
             return latest
 
-        global _report_generation_triggered
-        if trigger_generation and not _report_generation_triggered:
+        generation_task = None
+        if trigger_generation:
             with _report_generation_lock:
-                if not _report_generation_triggered:
-                    try:
-                        self.submit_model_report_task(force=True)
-                        _report_generation_triggered = True
-                        logger.info("[MarketTheme] Auto-triggered market mainline report generation")
-                    except Exception:
-                        logger.exception("[MarketTheme] Failed to auto-trigger report generation")
+                latest = None if force else get_latest_report(self.REPORT_KEY)
+                if _model_report_is_ready(latest):
+                    latest["_cached"] = True
+                    latest["report_pending"] = False
+                    latest["llm_used"] = bool(latest.get("llm_used"))
+                    latest.setdefault("model_used", None)
+                    return latest
+                try:
+                    generation_task = self.submit_model_report_task(force=True)
+                    logger.info(
+                        "[MarketTheme] Ensured market mainline report generation task=%s",
+                        getattr(generation_task, "task_id", None),
+                    )
+                except Exception:
+                    logger.exception(
+                        "[MarketTheme] Failed to ensure report generation"
+                    )
 
         payload = build_minimal_model_report()
         payload["_cached"] = False
         payload["llm_used"] = False
         payload["model_used"] = None
         payload["report_pending"] = True
+        task_payload = _task_snapshot(generation_task)
+        if task_payload:
+            payload["generation_task"] = task_payload
         return payload
+
+    def ensure_model_report(
+        self,
+        *,
+        force: bool = False,
+        poll_interval_seconds: float = 0.5,
+    ) -> dict[str, Any]:
+        """Wait for one current report so a portfolio uses one frozen baseline."""
+        initial = self.get_model_report(
+            force=force,
+            trigger_generation=True,
+        )
+        if _model_report_is_ready(initial):
+            return initial
+
+        task_payload = (
+            initial.get("generation_task")
+            if isinstance(initial.get("generation_task"), dict)
+            else {}
+        )
+        task_id = str(task_payload.get("task_id") or "")
+        latest_task_payload = dict(task_payload)
+
+        from src.services.task_queue import TaskStatus, get_task_queue
+
+        task_queue = get_task_queue()
+        while True:
+            latest = get_latest_report(self.REPORT_KEY)
+            if _model_report_is_ready(latest):
+                latest["_cached"] = True
+                latest["report_pending"] = False
+                latest["llm_used"] = bool(latest.get("llm_used"))
+                latest.setdefault("model_used", None)
+                if latest_task_payload:
+                    latest["generation_task"] = latest_task_payload
+                return latest
+
+            task = task_queue.get_task(task_id) if task_id else None
+            snapshot = _task_snapshot(task)
+            if snapshot:
+                latest_task_payload = snapshot
+            if task is not None and task.status == TaskStatus.FAILED:
+                return {
+                    **build_minimal_model_report(),
+                    "_cached": False,
+                    "llm_used": False,
+                    "model_used": None,
+                    "report_pending": True,
+                    "generation_task": latest_task_payload,
+                    "generation_failed": True,
+                }
+            if task is not None and task.status == TaskStatus.COMPLETED:
+                return {
+                    **build_minimal_model_report(),
+                    "_cached": False,
+                    "llm_used": False,
+                    "model_used": None,
+                    "report_pending": True,
+                    "generation_task": latest_task_payload,
+                    "generation_failed": True,
+                    "generation_error": (
+                        "市场主线生成任务已结束，但未持久化可用报告"
+                    ),
+                }
+            time.sleep(max(0.05, float(poll_interval_seconds)))
+
+    def ensure_model_report_inline(
+        self,
+        *,
+        force: bool = False,
+        on_progress: Callable[[int, str, str | None], None] | None = None,
+    ) -> dict[str, Any]:
+        """Return one frozen report without escaping into the global task queue."""
+        latest = None if force else get_latest_report(self.REPORT_KEY)
+        if _model_report_is_ready(latest):
+            latest["_cached"] = True
+            latest["report_pending"] = False
+            latest["llm_used"] = bool(latest.get("llm_used"))
+            latest.setdefault("model_used", None)
+            if on_progress:
+                on_progress(100, "已复用当日市场主线快照", None)
+            return latest
+
+        with _report_generation_lock:
+            latest = None if force else get_latest_report(self.REPORT_KEY)
+            if _model_report_is_ready(latest):
+                latest["_cached"] = True
+                latest["report_pending"] = False
+                latest["llm_used"] = bool(latest.get("llm_used"))
+                latest.setdefault("model_used", None)
+                if on_progress:
+                    on_progress(100, "已复用当日市场主线快照", None)
+                return latest
+            result = generate_model_report_inline(
+                force=force,
+                on_progress=on_progress,
+            )
+            result["_cached"] = False
+            result["report_pending"] = False
+            return result
 
     def get_cached_evidence(self) -> dict[str, Any] | None:
         """Return the current evidence cache without starting a slow fetch."""
@@ -131,22 +275,34 @@ class MarketThemeService:
         from src.services.task_queue import get_task_queue
 
         task_queue = get_task_queue()
-        task_id = __import__("uuid").uuid4().hex
-
-        def _run_task() -> dict[str, Any]:
-            return generate_model_report_stream(
-                force=force, task_queue=task_queue, task_id=task_id,
+        with _report_generation_lock:
+            active = next(
+                (
+                    task
+                    for task in task_queue.list_pending_tasks()
+                    if task.stock_code == "MARKET_MAINLINE"
+                    and task.report_type == "market_mainline_report"
+                ),
+                None,
             )
+            if active is not None:
+                return active
 
-        task_info = task_queue.submit_background_task(
-            _run_task,
-            stock_code="MARKET_MAINLINE",
-            stock_name="市场主线",
-            report_type="market_mainline_report",
-            message="市场主线模型研判任务已加入队列",
-            task_id=task_id,
-        )
-        return task_info
+            task_id = __import__("uuid").uuid4().hex
+
+            def _run_task() -> dict[str, Any]:
+                return generate_model_report_stream(
+                    force=force, task_queue=task_queue, task_id=task_id,
+                )
+
+            return task_queue.submit_background_task(
+                _run_task,
+                stock_code="MARKET_MAINLINE",
+                stock_name="市场主线",
+                report_type="market_mainline_report",
+                message="市场主线模型研判任务已加入队列",
+                task_id=task_id,
+            )
 
     def _generate_model_report_isolated_task(
         self,
@@ -167,7 +323,7 @@ class MarketThemeService:
             message="市场主线模型研判已切换到隔离进程执行",
         )
 
-        payload = run_isolated(layer="report_llm", force=force, timeout=180)
+        payload = run_isolated(layer="report_llm", force=force)
         if payload is None:
             raise RuntimeError("独立研判进程异常退出，未生成报告")
 

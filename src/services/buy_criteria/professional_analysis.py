@@ -11,9 +11,9 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Callable, Iterable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.services.buy_criteria.base import CriterionEvidence, _parse_verdict_json
 from src.services.buy_criteria.evaluators.competition_landscape import (
@@ -35,6 +35,15 @@ from src.services.buy_criteria.evaluators.mainline_position import (
 from src.services.buy_criteria.evaluators.prosperity_cycle import (
     ProsperityCycleEvaluator,
 )
+from src.services.buy_criteria.mainline_policy import (
+    MainlineDirectionRelation,
+    MainlineGateClassification,
+    MainlineLifecycle,
+    MainlineStrategyProfile,
+    MainlineTriggerProgress,
+    mainline_strategy_label,
+    normalize_mainline_strategy,
+)
 from src.services.buy_criteria.research_enrichment import (
     collect_public_research,
     derive_research_scope,
@@ -44,11 +53,11 @@ from src.services.buy_criteria.research_enrichment import (
 logger = logging.getLogger(__name__)
 
 
-PROFESSIONAL_BUY_CONTRACT_VERSION = "professional_eight_dimension_gate_v5"
+PROFESSIONAL_BUY_CONTRACT_VERSION = "professional_eight_dimension_gate_v10"
 PROFESSIONAL_BUY_ANALYSIS_MODE = "professional_eight_dimension_boolean_gate"
 
 DIMENSION_DEFINITIONS: tuple[tuple[str, str], ...] = (
-    ("market_mainline", "业务属于当前市场主线"),
+    ("market_mainline", "本轮产业方向通过所选主线策略"),
     ("industrial_competitiveness", "公司在产业链中有竞争力"),
     ("industry_cycle", "行业处于上升周期，不是存量博弈"),
     ("competition_quality", "公司业务没有严重价格战或内卷"),
@@ -84,27 +93,105 @@ DimensionId = Literal[
     "major_risks",
 ]
 DimensionStatus = Literal["pass", "fail", "insufficient", "not_evaluated"]
+ModelDimensionStatus = Literal["pass", "fail"]
 RecommendationCode = Literal[
     "conditional_buy",
     "watchlist",
     "wait",
     "avoid",
+    "analysis_unavailable",
     "evidence_insufficient",
 ]
 
 
 class DimensionAssessment(BaseModel):
-    """One evidence-grounded checklist judgment."""
+    """Program-owned gate state.
+
+    ``insufficient`` is reserved for a critical source or execution outage.
+    The analyst model cannot emit it: when usable sources do not affirmatively
+    demonstrate a positive buy criterion, the company simply fails that
+    criterion for this screening run.
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     dimension_id: DimensionId
     status: DimensionStatus
+    evaluated_subjects: list[str] = Field(max_length=12)
     headline: str = Field(min_length=2, max_length=120)
     analysis: str = Field(min_length=8, max_length=2400)
     key_evidence: list[str] = Field(default_factory=list, max_length=5)
     counter_evidence: list[str] = Field(default_factory=list, max_length=4)
     monitoring_points: list[str] = Field(default_factory=list, max_length=4)
+    mainline_classification: MainlineGateClassification | None = None
+
+
+class ModelDimensionAssessment(BaseModel):
+    """Exact model-visible schema for one semantic gate judgment."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    dimension_id: DimensionId
+    status: ModelDimensionStatus
+    evaluated_subjects: list[str] = Field(max_length=12)
+    headline: str = Field(min_length=2, max_length=120)
+    analysis: str = Field(min_length=8, max_length=2400)
+    key_evidence: list[str] = Field(default_factory=list, max_length=5)
+    counter_evidence: list[str] = Field(default_factory=list, max_length=4)
+    monitoring_points: list[str] = Field(default_factory=list, max_length=4)
+    mainline_classification: MainlineGateClassification | None = None
+
+
+class ForcedSchemaResponseError(ValueError):
+    """Retain the exact invalid provider payload for one targeted repair."""
+
+    def __init__(
+        self,
+        message: str,
+        payload: dict[str, Any],
+        *,
+        issues: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.payload = payload
+        self.issues = issues or [{
+            "pointer": "/choices/0/message/tool_calls",
+            "code": "forced_schema_missing",
+            "expected": (
+                "exactly one forced tool call whose arguments match the "
+                "supplied schema"
+            ),
+            "allowed": [],
+        }]
+
+
+def _structured_thesis_labels(
+    thesis_context: dict[str, Any] | None,
+) -> list[str]:
+    context = thesis_context if isinstance(thesis_context, dict) else {}
+    labels: list[str] = []
+    for domain in context.get("domains") or []:
+        if not isinstance(domain, dict):
+            continue
+        label = str(domain.get("label") or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def resolve_investment_thesis(
+    thesis: str,
+    thesis_context: dict[str, Any] | None,
+) -> str:
+    """Return a concise thesis label without reparsing conversational prose."""
+    explicit = str(thesis or "").strip()
+    if explicit:
+        return explicit
+    labels = _structured_thesis_labels(thesis_context)
+    if labels:
+        return "、".join(labels)
+    context = thesis_context if isinstance(thesis_context, dict) else {}
+    return str(context.get("summary") or "").strip()
 
 
 class ProfessionalAssessment(BaseModel):
@@ -156,7 +243,7 @@ ANALYST_SYSTEM_PROMPT = """\
 你必须把公司、产业、市场、估值和风险放进同一套逻辑中，像正式投委会材料一样同时列出支持证据与反证。
 
 程序按以下八个维度依次调用你。你每次只判断当前维度；当前维度不通过时，程序不会再调用后续维度：
-1. 业务属于当前市场主线；
+1. 本轮产业方向通过所选主线策略；
 2. 公司在产业链中有竞争力；
 3. 行业处于上升周期，不是存量博弈；
 4. 公司业务没有严重价格战或内卷；
@@ -167,11 +254,18 @@ ANALYST_SYSTEM_PROMPT = """\
 
 状态口径：
 - pass：证据链充分，主要反证不足以推翻；
-- fail：证据明确不满足，或存在足以否决该项的风险；
-- insufficient：关键来源失败或证据太少，不能把“没查到”写成通过或事实性否定。
+- fail：未达到本次买入筛选的正向证明，或存在足以否决该项的风险。理由必须区分
+  “有效反证明确定不符合”和“可用来源未形成准入证明”，不得把后者写成公司事实性不存在；
+- 关键来源或分析服务失败由程序生成“分析未完成”，模型不得返回第三种语义状态。
 
 分析纪律：
-- 市场主线必须分三层：1—3年结构性产业趋势、1—6个月A股主导叙事、1—10日板块交易确认。三层必须分别陈述并综合，任何单日板块排名都不得单独决定结论；个股涨跌、均线和资金流不能否定业务的主线归属；
+- 市场主线专指未来1—6个月A股主导产业叙事，必须由机构策略、政策落地、
+  产业供需、技术路线、资本开支或连续景气证据建立；1—3年结构性趋势只能作为背景。
+  第一维必须先区分产业归属和主线生命周期，再按确认型或前瞻布局型策略判断；
+  候选主线在确认型策略下不通过，在前瞻布局型策略下也必须满足结构化分支、
+  1—6个月窗口、多类独立证据和已启动的产业触发条件，不能仅凭名称通过。
+  资金流、涨跌幅、成交排名、均线、技术指标和个股走势完全不属于第一维证据；
+  公司真实受益由第二维判断，公司事件与未来催化由第六维判断；
 - 竞争力必须落到产品、份额、技术、客户、盈利能力、成本或正式经营证据，概念关系不算；
 - 周期必须检查订单、装机、出货、价格、库存、产能利用率、资本开支或连续财务趋势；
 - 内卷必须检查同一细分行业的价格、供给、毛利率、客户议价和产能，不能靠关键词或股价下跌判断；
@@ -180,7 +274,8 @@ ANALYST_SYSTEM_PROMPT = """\
 - 估值不能只报一个PE。至少结合历史/同行/增长，并做保守下行锚与合理上行锚的赔率分析；
 - 风险要检查现金流、应收、存货、客户集中、负债、商誉、质押、减持、解禁、再融资、监管和诉讼；
 - 历史事件必须按“事项+年份”建立公告时间线。detected 只证明曾出现过，不代表当前仍在进行；后续正式公告覆盖早期程序阶段。交易所审核通过、证监会注册、发行完成是不同状态，不得互相替代；
-- 不能笼统写“证据不足”。检索调用失败应写“本轮取证未完成，不代表事实不存在”；已检查有效来源但未披露精确指标，应写明“公开披露边界”和已使用的替代证据，不能自动降级；
+- 不能笼统写“证据不足”。已检查有效来源但未形成正向证明时，应写明公开披露边界、
+  已使用的替代证据及“不符合本次筛选条件”，不能声称公司事实性没有该能力；
 - 数字、日期、产品、客户、订单、产能和行业判断只能来自本轮证据。允许根据证据做明确算术，但必须说明口径；
 - 证据有冲突时主动写冲突。不得用模型记忆补全本轮没有的事实，不得编造来源链接。
 
@@ -323,20 +418,46 @@ def _redact_unsupported_numeric_claims(
     assessment: BaseModel,
     unsupported: list[str],
 ) -> BaseModel:
-    """Remove untraceable figures without discarding the analyst judgment."""
+    """Remove whole unsupported statements without leaving broken prose."""
+    redacted_item_text = "该项包含未核验数值，原陈述已删除。"
 
     def clean(value: Any) -> Any:
         if isinstance(value, str):
-            for claim in unsupported:
-                value = value.replace(claim, "未核验数值")
-            return value
+            segments = re.split(r"(?<=[。！？；\n])", value)
+            return "".join(
+                segment
+                for segment in segments
+                if not any(claim in segment for claim in unsupported)
+            ).strip()
         if isinstance(value, list):
-            return [clean(item) for item in value]
+            cleaned_items = [clean(item) for item in value]
+            return [
+                (
+                    redacted_item_text
+                    if isinstance(item, str) and not item.strip()
+                    else item
+                )
+                for item in cleaned_items
+            ]
         if isinstance(value, dict):
             return {key: clean(item) for key, item in value.items()}
         return value
 
     payload = clean(assessment.model_dump())
+    fallback_text = "相关时间或数值陈述未通过本轮证据追溯，已从展示中删除。"
+    for field_name in (
+        "headline",
+        "analysis",
+        "investment_profile",
+        "overall_summary",
+        "core_thesis",
+        "biggest_issue",
+        "recommendation_reason",
+        "bull_case_chain",
+        "risk_chain",
+    ):
+        if field_name in payload and not str(payload.get(field_name) or "").strip():
+            payload[field_name] = fallback_text
     notice = "模型生成的部分数字未通过本轮证据追溯，已从展示中删除。"
     if "counter_evidence" in payload:
         counter = list(payload.get("counter_evidence") or [])
@@ -395,6 +516,122 @@ def _stock_info(symbol: str) -> dict[str, Any]:
         return {"symbol": symbol, "name": symbol, "industry": ""}
 
 
+def _evidence_collector(section: str) -> Any:
+    factories: dict[str, Callable[[], Any]] = {
+        "market_mainline": MainlinePositionEvaluator,
+        "industrial_competitiveness": IndustrialCompetitivenessEvaluator,
+        "industry_cycle": ProsperityCycleEvaluator,
+        "competition_quality": CompetitionLandscapeEvaluator,
+        "growth_drivers": GrowthDriversEvaluator,
+        "forward_catalysts": CatalystEventsEvaluator,
+        "major_risks": FatalRisksEvaluator,
+    }
+    factory = factories.get(section)
+    if factory is None:
+        raise KeyError(f"unknown professional evidence section: {section}")
+    return factory()
+
+
+def _target_dimension_context(
+    section: str,
+    raw_data: Any,
+) -> dict[str, Any]:
+    """Keep decision-bearing thesis facts outside truncatable prose."""
+    raw = raw_data if isinstance(raw_data, dict) else {}
+    membership = raw.get("thesis_membership")
+    membership = membership if isinstance(membership, dict) else {}
+    context: dict[str, Any] = {}
+    if membership:
+        context["thesis_membership"] = {
+            key: membership.get(key)
+            for key in (
+                "requested_domains",
+                "company_matched",
+                "matched_domains",
+                "lookup_themes",
+                "boards",
+                "coverage_complete",
+                "decision_boundary",
+                "warnings",
+            )
+            if membership.get(key) is not None
+        }
+    if section == "market_mainline":
+        report = raw.get("market_mainline_report")
+        report = report if isinstance(report, dict) else {}
+        context["market_report"] = {
+            key: report.get(key)
+            for key in (
+                "report_pending",
+                "as_of_date",
+                "overview",
+                "market_stage",
+                "current_mainlines",
+                "future_mainlines",
+            )
+            if report.get(key) is not None
+        }
+        context["snapshot_source"] = raw.get(
+            "market_mainline_snapshot_source"
+        )
+        context["snapshot_id"] = raw.get("market_mainline_snapshot_id")
+        board_catalog = raw.get("board_catalog")
+        board_catalog = (
+            board_catalog if isinstance(board_catalog, dict) else {}
+        )
+        context["direction_board_mapping"] = {
+            sector_type: [{
+                key: item.get(key)
+                for key in ("name", "code", "data_source")
+                if item.get(key) is not None
+            }
+                for item in (
+                    (board_catalog.get(sector_type) or {}).get(
+                        "matched_items"
+                    )
+                    or []
+                )
+                if isinstance(item, dict)
+            ][:12]
+            for sector_type in ("industry", "concept")
+        }
+    elif section == "industrial_competitiveness":
+        formal = raw.get("formal_business_evidence")
+        formal = formal if isinstance(formal, dict) else {}
+        segments = raw.get("business_segments")
+        segments = segments if isinstance(segments, dict) else {}
+        context["formal_business_evidence"] = {
+            "items": [
+                {
+                    **{
+                        key: item.get(key)
+                        for key in (
+                            "source",
+                            "date",
+                            "title",
+                            "url",
+                            "report_date",
+                        )
+                        if item.get(key) is not None
+                    },
+                    "excerpt": _bounded_text(item.get("excerpt"), 700),
+                }
+                for item in formal.get("items") or []
+                if isinstance(item, dict)
+            ][:8],
+            "documents": [
+                item for item in formal.get("documents") or []
+                if isinstance(item, dict)
+            ][:3],
+        }
+        context["business_segments"] = [
+            item for item in segments.get("items") or []
+            if isinstance(item, dict)
+            and str(item.get("category") or "").lower() in {"product", "industry"}
+        ][:16]
+    return context
+
+
 def _run_evidence_collector(
     section: str,
     evaluator: Any,
@@ -408,11 +645,16 @@ def _run_evidence_collector(
             stock_info,
             pre_fetched_data,
         )
+        evidence_gap = evaluator.evidence_failure_reason(evidence)
         return section, {
-            "success": True,
-            "evidence_gap": None,
+            "success": evidence_gap is None,
+            "evidence_gap": evidence_gap,
             "summary": _bounded_text(evidence.data_summary),
             "raw_data": evidence.raw_data,
+            "structured_context": _target_dimension_context(
+                section,
+                evidence.raw_data,
+            ),
         }
     except Exception as exc:
         logger.warning(
@@ -487,92 +729,290 @@ def _collect_source_links(value: Any, *, limit: int = 24) -> list[dict[str, str]
     return found
 
 
-def collect_professional_evidence(
-    symbol: str,
-    *,
-    thesis: str = "",
-    thesis_context: dict[str, Any] | None = None,
-    pre_fetched_data: dict[str, Any] | None = None,
+def _empty_public_research(scope: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scope": scope,
+        "attempts": [],
+        "items": [],
+        "lens_status": {},
+        "retrieved_source_count": 0,
+        "retrieval_complete": True,
+        "errors": [],
+    }
+
+
+def _merge_public_research(
+    current: dict[str, Any],
+    incoming: dict[str, Any],
 ) -> dict[str, Any]:
-    """Collect every checklist dimension without making a judgment."""
-    from src.tools.get_multi_stock_decision_evidence import (
-        get_multi_stock_decision_evidence,
-    )
-
-    stock_info = _stock_info(symbol)
-    stock_info["_investment_thesis"] = str(thesis or "").strip()
-    stock_info["_investment_thesis_context"] = thesis_context
-
-    base_packet = get_multi_stock_decision_evidence(symbol, thesis)
-    base_item = next(
-        (
-            item
-            for item in base_packet.get("items") or []
-            if isinstance(item, dict)
+    attempts_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for attempt in [*(current.get("attempts") or []), *(incoming.get("attempts") or [])]:
+        if not isinstance(attempt, dict):
+            continue
+        key = (
+            str(attempt.get("lens") or ""),
+            str(attempt.get("subject") or ""),
+            str(attempt.get("query") or ""),
+        )
+        attempts_by_key[key] = attempt
+    items_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in [*(current.get("items") or []), *(incoming.get("items") or [])]:
+        if not isinstance(item, dict):
+            continue
+        key = (
+            str(item.get("lens") or ""),
+            str(item.get("subject") or ""),
+            str(item.get("url") or item.get("title") or ""),
+        )
+        items_by_key[key] = item
+    lens_status = {
+        **(current.get("lens_status") or {}),
+        **(incoming.get("lens_status") or {}),
+    }
+    items = list(items_by_key.values())
+    return {
+        "scope": incoming.get("scope") or current.get("scope") or {},
+        "attempts": list(attempts_by_key.values()),
+        "items": items,
+        "lens_status": lens_status,
+        "retrieved_source_count": len({
+            str(item.get("url") or "")
+            for item in items
+            if item.get("url")
+        }),
+        "retrieval_complete": all(
+            status != "retrieval_failed"
+            for status in lens_status.values()
         ),
-        {},
-    )
-    research_scope = derive_research_scope(stock_info, base_item)
-    stock_info["_derived_research_scope"] = research_scope
-    collectors: tuple[tuple[str, Any], ...] = (
-        ("market_mainline", MainlinePositionEvaluator()),
-        ("industrial_competitiveness", IndustrialCompetitivenessEvaluator()),
-        ("industry_cycle", ProsperityCycleEvaluator()),
-        ("competition_quality", CompetitionLandscapeEvaluator()),
-        ("growth_drivers", GrowthDriversEvaluator()),
-        ("forward_catalysts", CatalystEventsEvaluator()),
-        ("major_risks", FatalRisksEvaluator()),
-    )
-    sections: dict[str, dict[str, Any]] = {}
-    enrichment: dict[str, Any]
-    with ThreadPoolExecutor(max_workers=7) as pool:
-        enrichment_future = pool.submit(collect_public_research, stock_info)
-        futures = [
-            pool.submit(
-                _run_evidence_collector,
-                section,
-                evaluator,
-                symbol,
-                stock_info,
-                pre_fetched_data,
-            )
-            for section, evaluator in collectors
-        ]
-        for future in as_completed(futures):
-            section, result = future.result()
-            sections[section] = result
-        try:
-            enrichment = enrichment_future.result()
-        except Exception as exc:
-            logger.warning(
-                "professional buy public research %s failed: %s",
-                symbol,
-                exc,
-            )
-            enrichment = {
-                "scope": research_scope,
-                "attempts": [],
-                "items": [],
-                "lens_status": {
-                    lens: "retrieval_failed"
-                    for lens in (
-                        "market_consensus",
-                        "structural_trend",
-                        "cycle_supply_demand",
-                        "competition_structure",
-                        "company_position",
-                    )
-                },
-                "retrieved_source_count": 0,
-                "retrieval_complete": False,
-                "errors": [f"{type(exc).__name__}: {str(exc)[:240]}"],
-            }
+        "errors": list(dict.fromkeys([
+            *[str(value) for value in current.get("errors") or []],
+            *[str(value) for value in incoming.get("errors") or []],
+        ])),
+    }
 
-    for section, lenses in PUBLIC_RESEARCH_LENSES_BY_DIMENSION.items():
+
+def _source_failure_code(value: Any) -> str:
+    text = str(value or "").lower()
+    if any(marker in text for marker in ("timeout", "timed out", "超时", "504")):
+        return "timeout"
+    if any(marker in text for marker in (
+        "connection",
+        "connecterror",
+        "remoteprotocolerror",
+        "connection reset",
+        "connection aborted",
+        "broken pipe",
+        "ssl",
+        "连接",
+    )):
+        return "connection"
+    return "unavailable"
+
+
+def _source_failure_summary(
+    *,
+    section: str,
+    source: str,
+    error: Any,
+) -> dict[str, str]:
+    code = _source_failure_code(error)
+    label = {
+        "timeout": "取证超时",
+        "connection": "连接失败",
+        "unavailable": "来源不可用",
+    }[code]
+    return {
+        "section": section,
+        "source": source,
+        "error_code": code,
+        "summary": f"{section}/{source}：{label}",
+    }
+
+
+def _collect_source_failures(
+    sections: dict[str, Any],
+    enrichment: dict[str, Any],
+    base_meta: dict[str, Any],
+) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def append(section: str, source: str, error: Any) -> None:
+        item = _source_failure_summary(
+            section=section,
+            source=source,
+            error=error,
+        )
+        key = (item["section"], item["source"], item["error_code"])
+        if key not in seen:
+            seen.add(key)
+            failures.append(item)
+
+    for section, payload in sections.items():
+        if not isinstance(payload, dict):
+            continue
+        raw_data = payload.get("raw_data")
+        raw_data = raw_data if isinstance(raw_data, dict) else {}
+        for key, error in raw_data.items():
+            if str(key).endswith("_error") and error:
+                append(str(section), str(key)[:-6], error)
+            elif (
+                isinstance(error, dict)
+                and error.get("success") is False
+            ):
+                append(
+                    str(section),
+                    str(key),
+                    "；".join(
+                        str(value)
+                        for value in error.get("errors") or []
+                    ) or "unavailable",
+                )
+
+    lens_status = enrichment.get("lens_status")
+    lens_status = lens_status if isinstance(lens_status, dict) else {}
+    for lens, status in lens_status.items():
+        if status == "retrieval_failed":
+            append("public_research", str(lens), "retrieval_failed")
+
+    if base_meta.get("errors"):
+        append("base_company_packet", "structured_sources", "unavailable")
+    return failures
+
+
+def _refresh_professional_evidence_metadata(evidence: dict[str, Any]) -> None:
+    sections = evidence.get("dimension_evidence")
+    sections = sections if isinstance(sections, dict) else {}
+    enrichment = evidence.get("public_research")
+    enrichment = enrichment if isinstance(enrichment, dict) else {}
+    base_meta = evidence.get("base_packet_meta")
+    base_meta = base_meta if isinstance(base_meta, dict) else {}
+    evidence["capability_gaps"] = [
+        f"{section}: {payload.get('evidence_gap')}"
+        for section, payload in sections.items()
+        if isinstance(payload, dict) and payload.get("evidence_gap")
+    ]
+    evidence["source_failures"] = _collect_source_failures(
+        sections,
+        enrichment,
+        base_meta,
+    )
+    evidence["public_disclosure_limits"] = [
+        f"{attempt.get('lens')}/{attempt.get('subject') or '全市场'}: "
+        "已完成检索，但公开来源未返回匹配材料"
+        for attempt in enrichment.get("attempts") or []
+        if isinstance(attempt, dict)
+        and attempt.get("status") == "no_matching_public_material"
+    ]
+    evidence["evidence_gaps"] = [
+        *evidence["capability_gaps"],
+        *[
+            item["summary"]
+            for item in evidence["source_failures"]
+        ],
+        *evidence["public_disclosure_limits"],
+    ]
+    evidence["source_links"] = _collect_source_links(evidence)
+
+
+def _collect_professional_sections(
+    evidence: dict[str, Any],
+    requested_sections: Iterable[str],
+    *,
+    pre_fetched_data: dict[str, Any] | None = None,
+) -> None:
+    sections = evidence.setdefault("dimension_evidence", {})
+    requested = [
+        section for section in dict.fromkeys(requested_sections)
+        if section in DIMENSION_IDS and section not in sections
+    ]
+    if not requested:
+        return
+    symbol = str(evidence.get("symbol") or "")
+    stock_info = evidence.get("stock_info")
+    stock_info = stock_info if isinstance(stock_info, dict) else {}
+    collector_sections = [
+        section for section in requested
+        if section != "valuation_odds"
+    ]
+    required_lenses = set().union(*(
+        PUBLIC_RESEARCH_LENSES_BY_DIMENSION.get(section, set())
+        for section in requested
+    ))
+    existing_lenses = set(
+        (evidence.get("public_research") or {}).get("lens_status") or {}
+    )
+    lenses = required_lenses - existing_lenses
+    enrichment: dict[str, Any] = _empty_public_research(
+        evidence.get("research_scope") or {}
+    )
+    worker_count = len(collector_sections) + bool(lenses)
+    if worker_count:
+        with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
+            enrichment_future = (
+                pool.submit(
+                    collect_public_research,
+                    stock_info,
+                    requested_lenses=lenses,
+                )
+                if lenses
+                else None
+            )
+            futures = [
+                pool.submit(
+                    _run_evidence_collector,
+                    section,
+                    _evidence_collector(section),
+                    symbol,
+                    stock_info,
+                    pre_fetched_data,
+                )
+                for section in collector_sections
+            ]
+            for future in as_completed(futures):
+                section, result = future.result()
+                sections[section] = result
+            if enrichment_future is not None:
+                try:
+                    enrichment = enrichment_future.result()
+                except Exception as exc:
+                    logger.warning(
+                        "professional buy public research %s failed: %s",
+                        symbol,
+                        exc,
+                    )
+                    enrichment = {
+                        **_empty_public_research(
+                            evidence.get("research_scope") or {}
+                        ),
+                        "lens_status": {
+                            lens: "retrieval_failed" for lens in lenses
+                        },
+                        "retrieval_complete": False,
+                        "errors": [
+                            f"{type(exc).__name__}: {str(exc)[:240]}"
+                        ],
+                    }
+
+    evidence["public_research"] = _merge_public_research(
+        evidence.get("public_research") or {},
+        enrichment,
+    )
+    combined_research = evidence["public_research"]
+    for section in collector_sections:
         payload = sections.get(section)
         if not isinstance(payload, dict):
             continue
-        supplement = research_summary_for_lenses(enrichment, lenses)
+        section_lenses = PUBLIC_RESEARCH_LENSES_BY_DIMENSION.get(
+            section,
+            set(),
+        )
+        if not section_lenses:
+            continue
+        supplement = research_summary_for_lenses(
+            combined_research,
+            section_lenses,
+        )
         payload["summary"] = _bounded_text(
             f"{payload.get('summary') or ''}\n\n{supplement}",
             12_000,
@@ -583,57 +1023,100 @@ def collect_professional_evidence(
             **raw_data,
             "public_research": {
                 "lens_status": {
-                    lens: (enrichment.get("lens_status") or {}).get(lens)
-                    for lens in lenses
+                    lens: (
+                        combined_research.get("lens_status") or {}
+                    ).get(lens)
+                    for lens in section_lenses
                 },
                 "items": [
                     item
-                    for item in enrichment.get("items") or []
+                    for item in combined_research.get("items") or []
                     if isinstance(item, dict)
-                    and item.get("lens") in lenses
+                    and item.get("lens") in section_lenses
                 ],
             },
         }
 
-    valuation_packet = {
-        "quote": (base_item.get("snapshot") or {}).get("quote") or {},
-        "valuation": base_item.get("valuation") or {},
-        "consensus": base_item.get("consensus") or {},
-        "peer_comparison": base_item.get("peer_comparison") or {},
-        "financials": base_item.get("financials") or {},
-    }
-    valuation_sources_ok = any(
-        isinstance(value, dict) and value.get("success") is not False
-        for value in valuation_packet.values()
-    )
-    sections["valuation_odds"] = {
-        "success": valuation_sources_ok,
-        "evidence_gap": (
-            None
-            if valuation_sources_ok
-            else "本轮估值、预期、同行与行情来源均未取得有效数据"
-        ),
-        "summary": _bounded_text(
-            json.dumps(
-                valuation_packet,
-                ensure_ascii=False,
-                default=str,
+    if "valuation_odds" in requested:
+        base_item = evidence.get("base_company_packet")
+        base_item = base_item if isinstance(base_item, dict) else {}
+        valuation_packet = {
+            "quote": (base_item.get("snapshot") or {}).get("quote") or {},
+            "valuation": base_item.get("valuation") or {},
+            "consensus": base_item.get("consensus") or {},
+            "peer_comparison": base_item.get("peer_comparison") or {},
+            "financials": base_item.get("financials") or {},
+        }
+        valuation_sources_ok = any(
+            isinstance(value, dict) and value.get("success") is not False
+            for value in valuation_packet.values()
+        )
+        sections["valuation_odds"] = {
+            "success": valuation_sources_ok,
+            "evidence_gap": (
+                None
+                if valuation_sources_ok
+                else "本轮估值、预期、同行与行情来源均未取得有效数据"
             ),
-            6_000,
-        ),
-        "raw_data": valuation_packet,
-        "semantic_status": "model_required",
-    }
+            "summary": _bounded_text(
+                json.dumps(
+                    valuation_packet,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                6_000,
+            ),
+            "raw_data": valuation_packet,
+            "structured_context": {},
+            "semantic_status": "model_required",
+        }
+    _refresh_professional_evidence_metadata(evidence)
 
+
+def collect_professional_evidence(
+    symbol: str,
+    *,
+    thesis: str = "",
+    thesis_context: dict[str, Any] | None = None,
+    mainline_strategy: MainlineStrategyProfile | str = (
+        MainlineStrategyProfile.CONFIRMED_MAINLINE
+    ),
+    pre_fetched_data: dict[str, Any] | None = None,
+    requested_sections: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Collect requested gate evidence; later gates can be loaded on demand."""
+    from src.tools.get_multi_stock_decision_evidence import (
+        get_multi_stock_decision_evidence,
+    )
+
+    effective_thesis = resolve_investment_thesis(thesis, thesis_context)
+    strategy_profile = normalize_mainline_strategy(mainline_strategy)
+    stock_info = _stock_info(symbol)
+    stock_info["_investment_thesis"] = effective_thesis
+    stock_info["_investment_thesis_context"] = thesis_context
+    stock_info["_mainline_strategy"] = strategy_profile.value
+
+    base_packet = get_multi_stock_decision_evidence(symbol, effective_thesis)
+    base_item = next(
+        (
+            item
+            for item in base_packet.get("items") or []
+            if isinstance(item, dict)
+        ),
+        {},
+    )
+    research_scope = derive_research_scope(stock_info, base_item)
+    stock_info["_derived_research_scope"] = research_scope
     evidence = {
         "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
         "requested_at": datetime.now().astimezone().isoformat(),
         "symbol": symbol,
         "stock_info": stock_info,
-        "investment_thesis": str(thesis or "").strip() or None,
+        "investment_thesis": effective_thesis or None,
         "thesis_context": thesis_context,
+        "mainline_strategy": strategy_profile.value,
         "research_scope": research_scope,
-        "public_research": enrichment,
+        "public_research": _empty_public_research(research_scope),
         "base_company_packet": base_item,
         "base_packet_meta": {
             "success": base_packet.get("success"),
@@ -645,28 +1128,64 @@ def collect_professional_evidence(
             "errors": base_packet.get("errors") or [],
             "warnings": base_packet.get("warnings") or [],
         },
-        "dimension_evidence": sections,
+        "dimension_evidence": {},
     }
-    evidence["source_links"] = _collect_source_links(evidence)
-    evidence["capability_gaps"] = [
-        f"{section}: {payload.get('evidence_gap')}"
-        for section, payload in sections.items()
-        if payload.get("evidence_gap")
-    ] + [str(error) for error in base_packet.get("errors") or []]
-    evidence["public_disclosure_limits"] = [
-        f"{attempt.get('lens')}/{attempt.get('subject') or '全市场'}: "
-        "已完成检索，但公开来源未返回匹配材料"
-        for attempt in enrichment.get("attempts") or []
-        if isinstance(attempt, dict)
-        and attempt.get("status") == "no_matching_public_material"
-    ]
-    # Compatibility field for existing result contracts.  Its entries now
-    # preserve the crucial distinction between retrieval failure and a valid
-    # search that found no matching public disclosure.
-    evidence["evidence_gaps"] = [
-        *evidence["capability_gaps"],
-        *evidence["public_disclosure_limits"],
-    ]
+    _collect_professional_sections(
+        evidence,
+        DIMENSION_IDS if requested_sections is None else requested_sections,
+        pre_fetched_data=pre_fetched_data,
+    )
+    return evidence
+
+
+def collect_market_mainline_evidence(
+    *,
+    thesis: str,
+    thesis_context: dict[str, Any] | None,
+    mainline_strategy: MainlineStrategyProfile | str,
+    market_mainline_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Collect gate-one evidence once for the structured batch thesis."""
+    effective_thesis = resolve_investment_thesis(thesis, thesis_context)
+    strategy_profile = normalize_mainline_strategy(mainline_strategy)
+    stock_info = {
+        "symbol": "MARKET_MAINLINE",
+        "name": "本批次结构化产业方向",
+        "industry": "",
+        "_scope_only": True,
+        "_investment_thesis": effective_thesis,
+        "_investment_thesis_context": thesis_context,
+        "_mainline_strategy": strategy_profile.value,
+    }
+    research_scope = derive_research_scope(stock_info, {})
+    stock_info["_derived_research_scope"] = research_scope
+    evidence = {
+        "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+        "requested_at": datetime.now().astimezone().isoformat(),
+        "symbol": "MARKET_MAINLINE",
+        "stock_info": stock_info,
+        "investment_thesis": effective_thesis or None,
+        "thesis_context": thesis_context,
+        "mainline_strategy": strategy_profile.value,
+        "research_scope": research_scope,
+        "public_research": _empty_public_research(research_scope),
+        "base_company_packet": {},
+        "base_packet_meta": {
+            "success": True,
+            "partial": False,
+            "data_time": market_mainline_snapshot.get("data_time"),
+            "errors": [],
+            "warnings": [],
+        },
+        "dimension_evidence": {},
+    }
+    _collect_professional_sections(
+        evidence,
+        ("market_mainline",),
+        pre_fetched_data={
+            "market_mainline_snapshot": market_mainline_snapshot,
+        },
+    )
     return evidence
 
 
@@ -693,6 +1212,7 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
                 payload.get("summary"),
                 section_limits.get(section, 2_500),
             ),
+            "structured_context": payload.get("structured_context") or {},
             "deterministic_entry_context": payload.get(
                 "deterministic_entry_context"
             ),
@@ -704,6 +1224,7 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
         "stock_info": evidence.get("stock_info"),
         "investment_thesis": evidence.get("investment_thesis"),
         "thesis_context": evidence.get("thesis_context"),
+        "mainline_strategy": evidence.get("mainline_strategy"),
         "research_scope": evidence.get("research_scope"),
         "public_research_coverage": {
             "lens_status": (
@@ -741,6 +1262,7 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
         "dimension_evidence": sections,
         "evidence_gaps": evidence.get("evidence_gaps") or [],
         "capability_gaps": evidence.get("capability_gaps") or [],
+        "source_failures": evidence.get("source_failures") or [],
         "public_disclosure_limits": (
             evidence.get("public_disclosure_limits") or []
         ),
@@ -1136,8 +1658,363 @@ def _dimension_company_context(
     return base
 
 
+def _mainline_report_from_evidence(
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    section = (
+        evidence.get("dimension_evidence")
+        if isinstance(evidence.get("dimension_evidence"), dict)
+        else {}
+    ).get("market_mainline")
+    section = section if isinstance(section, dict) else {}
+    raw = section.get("raw_data")
+    raw = raw if isinstance(raw, dict) else {}
+    report = raw.get("market_mainline_report")
+    if isinstance(report, dict):
+        return report
+    snapshot = evidence.get("market_mainline_snapshot")
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+def _mainline_row_by_name(
+    rows: Any,
+    name: str | None,
+) -> dict[str, Any] | None:
+    target = str(name or "").strip()
+    if not target or not isinstance(rows, list):
+        return None
+    return next((
+        item
+        for item in rows
+        if isinstance(item, dict)
+        and str(item.get("name") or "").strip() == target
+    ), None)
+
+
+def _early_candidate_eligibility(
+    row: dict[str, Any],
+    classification: MainlineGateClassification,
+) -> tuple[bool, list[str]]:
+    """Apply only program-verifiable constraints for an emerging direction."""
+
+    missing: list[str] = []
+    branches = {
+        str(value).strip()
+        for value in row.get("branches") or []
+        if str(value).strip()
+    }
+    relation = MainlineDirectionRelation(
+        classification.direction_relation
+    )
+    if relation == MainlineDirectionRelation.EMERGING_BRANCH:
+        branch = str(classification.matched_branch or "").strip()
+        if not branch or branch not in branches:
+            missing.append("结构化候选分支关系")
+    elif relation != MainlineDirectionRelation.CORE:
+        missing.append("候选主线核心或分支关系")
+
+    if str(row.get("expected_horizon") or "") != "one_to_six_months":
+        missing.append("未来1—6个月窗口")
+    evidence_axes = {
+        str(value.get("axis") or "").strip()
+        for value in row.get("evidence_axes") or []
+        if isinstance(value, dict)
+        and str(value.get("axis") or "").strip()
+        and bool(value.get("evidence_refs"))
+    }
+    axis_evidence_refs = {
+        str(ref).strip()
+        for value in row.get("evidence_axes") or []
+        if isinstance(value, dict)
+        for ref in value.get("evidence_refs") or []
+        if str(ref).strip()
+    }
+    if len(evidence_axes) < 2 or len(axis_evidence_refs) < 2:
+        missing.append("至少两类独立中期证据")
+    trigger_assessments = [
+        item
+        for item in row.get("trigger_assessments") or []
+        if isinstance(item, dict)
+    ]
+    if not any(
+        str(item.get("status") or "") in {"met", "partial"}
+        for item in trigger_assessments
+    ):
+        missing.append("至少一个已满足或部分满足的触发条件")
+    if MainlineTriggerProgress(
+        classification.trigger_progress
+    ) not in {
+        MainlineTriggerProgress.MET,
+        MainlineTriggerProgress.PARTIAL,
+    }:
+        missing.append("可核验的触发进度")
+    classified_lifecycle = MainlineLifecycle(
+        classification.lifecycle
+    )
+    if classified_lifecycle not in {
+        MainlineLifecycle.EMERGING,
+        MainlineLifecycle.VALIDATING,
+    }:
+        missing.append("候选主线生命周期")
+    if str(row.get("lifecycle") or "") != classified_lifecycle.value:
+        missing.append("与候选报告一致的生命周期")
+    return not missing, missing
+
+
+def _enforce_mainline_gate_policy(
+    result: DimensionAssessment,
+    evidence: dict[str, Any],
+) -> DimensionAssessment:
+    """Enforce strategy boundaries without replacing the semantic judgment."""
+
+    profile = normalize_mainline_strategy(
+        evidence.get("mainline_strategy")
+    )
+    classification = result.mainline_classification
+    if classification is None:
+        raise ForcedSchemaResponseError(
+            "market_mainline requires mainline_classification",
+            result.model_dump(mode="json"),
+            issues=[{
+                "pointer": "/mainline_classification",
+                "code": "mainline_classification_required",
+                "expected": (
+                    "one typed classification for the requested mainline "
+                    "strategy"
+                ),
+                "allowed": [],
+            }],
+        )
+    if normalize_mainline_strategy(
+        classification.strategy_profile
+    ) != profile:
+        raise ForcedSchemaResponseError(
+            "mainline_classification.strategy_profile does not match request",
+            result.model_dump(mode="json"),
+            issues=[{
+                "pointer": (
+                    "/mainline_classification/strategy_profile"
+                ),
+                "code": "mainline_strategy_mismatch",
+                "expected": profile.value,
+                "allowed": [profile.value],
+            }],
+        )
+
+    report = _mainline_report_from_evidence(evidence)
+    current_rows = report.get("current_mainlines") or []
+    candidate_rows = (
+        report.get("candidate_mainlines")
+        or report.get("future_mainlines")
+        or []
+    )
+    relation = MainlineDirectionRelation(
+        classification.direction_relation
+    )
+    matched_current = _mainline_row_by_name(
+        current_rows,
+        classification.matched_mainline,
+    )
+    matched_candidate = _mainline_row_by_name(
+        candidate_rows,
+        classification.matched_mainline,
+    )
+
+    binding_issues: list[dict[str, Any]] = []
+    if relation in {
+        MainlineDirectionRelation.ACTIVE_BRANCH,
+        MainlineDirectionRelation.EMERGING_BRANCH,
+    }:
+        expected_rows = (
+            current_rows
+            if relation == MainlineDirectionRelation.ACTIVE_BRANCH
+            else candidate_rows
+        )
+        matched_row = (
+            matched_current
+            if relation == MainlineDirectionRelation.ACTIVE_BRANCH
+            else matched_candidate
+        )
+        expected_names = [
+            str(item.get("name") or "").strip()
+            for item in expected_rows
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+        ]
+        if matched_row is None:
+            binding_issues.append({
+                "pointer": "/mainline_classification/matched_mainline",
+                "code": "mainline_resource_binding_invalid",
+                "expected": (
+                    "one exact mainline name copied from the corresponding "
+                    "structured report section"
+                ),
+                "allowed": expected_names,
+            })
+        else:
+            expected_branches = [
+                str(value).strip()
+                for value in matched_row.get("branches") or []
+                if str(value).strip()
+            ]
+            if (
+                str(classification.matched_branch or "").strip()
+                not in expected_branches
+            ):
+                binding_issues.append({
+                    "pointer": "/mainline_classification/matched_branch",
+                    "code": "mainline_branch_binding_invalid",
+                    "expected": (
+                        "one exact branch name copied from the matched "
+                        "structured mainline"
+                    ),
+                    "allowed": expected_branches,
+                })
+            expected_lifecycle = str(
+                matched_row.get("lifecycle") or ""
+            ).strip()
+            if (
+                str(classification.lifecycle or "").strip()
+                != expected_lifecycle
+            ):
+                binding_issues.append({
+                    "pointer": "/mainline_classification/lifecycle",
+                    "code": "mainline_lifecycle_binding_invalid",
+                    "expected": expected_lifecycle,
+                    "allowed": [expected_lifecycle],
+                })
+    elif relation == MainlineDirectionRelation.CORE:
+        matched_row = matched_current or matched_candidate
+        if matched_row is None:
+            binding_issues.append({
+                "pointer": "/mainline_classification/matched_mainline",
+                "code": "mainline_resource_binding_invalid",
+                "expected": (
+                    "one exact mainline name copied from the structured report"
+                ),
+                "allowed": [
+                    str(item.get("name") or "").strip()
+                    for item in [*current_rows, *candidate_rows]
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip()
+                ],
+            })
+        else:
+            expected_lifecycle = str(
+                matched_row.get("lifecycle") or ""
+            ).strip()
+            if (
+                str(classification.lifecycle or "").strip()
+                != expected_lifecycle
+            ):
+                binding_issues.append({
+                    "pointer": "/mainline_classification/lifecycle",
+                    "code": "mainline_lifecycle_binding_invalid",
+                    "expected": expected_lifecycle,
+                    "allowed": [expected_lifecycle],
+                })
+    if binding_issues:
+        raise ForcedSchemaResponseError(
+            "mainline classification failed structured resource binding",
+            result.model_dump(mode="json"),
+            issues=binding_issues,
+        )
+
+    if result.status == "pass":
+        current_branches = {
+            str(value).strip()
+            for value in (matched_current or {}).get("branches") or []
+            if str(value).strip()
+        }
+        current_lifecycle = str(
+            (matched_current or {}).get("lifecycle") or ""
+        )
+        classified_lifecycle = str(
+            classification.lifecycle or ""
+        )
+        current_relation_bound = (
+            relation == MainlineDirectionRelation.CORE
+            or (
+                relation == MainlineDirectionRelation.ACTIVE_BRANCH
+                and str(
+                    classification.matched_branch or ""
+                ).strip() in current_branches
+            )
+        )
+        current_eligible = (
+            matched_current is not None
+            and current_relation_bound
+            and MainlineLifecycle(classification.lifecycle)
+            in {
+                MainlineLifecycle.CONFIRMED,
+                MainlineLifecycle.EXPANDING,
+            }
+            and current_lifecycle == classified_lifecycle
+        )
+        missing: list[str] = []
+        early_eligible = False
+        if (
+            profile == MainlineStrategyProfile.EARLY_POSITIONING
+            and matched_candidate is not None
+        ):
+            early_eligible, missing = _early_candidate_eligibility(
+                matched_candidate,
+                classification,
+            )
+        if not current_eligible and not early_eligible:
+            candidate_name = str(
+                classification.matched_mainline or "该方向"
+            )
+            conditions = "、".join(missing) or "所选策略的结构化准入条件"
+            return result.model_copy(update={
+                "status": "fail",
+                "headline": (
+                    f"{candidate_name}未达到"
+                    f"{mainline_strategy_label(profile)}准入条件"
+                )[:120],
+                "analysis": (
+                    f"产业归属或候选关系可以成立，但程序复核发现尚未满足：{conditions}。"
+                    "本次只否定所选买入策略下的准入资格，不否定该产业方向本身。"
+                ),
+                "counter_evidence": list(dict.fromkeys([
+                    *result.counter_evidence,
+                    *missing,
+                ]))[:4],
+            })
+
+    if (
+        result.status == "fail"
+        and relation == MainlineDirectionRelation.EMERGING_BRANCH
+        and matched_candidate is not None
+    ):
+        candidate_name = str(
+            classification.matched_mainline or "候选主线"
+        )
+        branch_name = str(
+            classification.matched_branch or "本轮产业方向"
+        )
+        if profile == MainlineStrategyProfile.CONFIRMED_MAINLINE:
+            return result.model_copy(update={
+                "headline": (
+                    f"{branch_name}属于{candidate_name}候选分支，"
+                    "但未通过确认型主线门槛"
+                )[:120],
+                "analysis": (
+                    f"{branch_name}与{candidate_name}的产业归属成立。"
+                    "当前失败只表示该候选方向尚未升级为未来1—6个月已确认主导叙事，"
+                    "不表示该产业不存在或与上位主题无关。"
+                ),
+            })
+    return result
+
+
 def _call_professional_model(
     evidence: dict[str, Any],
+    *,
+    dimension_loader: Callable[[str], None] | None = None,
+    precomputed_dimensions: Iterable[DimensionAssessment | dict[str, Any]] = (),
+    evaluation_limit: int | None = None,
+    on_reasoning: Callable[[str], None] | None = None,
 ) -> tuple[ProfessionalAssessment | None, str]:
     from src.llm.anthropic_gateway import completion_gateway
     from src.storage import persist_llm_usage
@@ -1145,10 +2022,41 @@ def _call_professional_model(
     def field(value: Any, name: str) -> Any:
         return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
 
+    def response_failure_payload(response: Any) -> dict[str, Any]:
+        choices = field(response, "choices") or []
+        if not choices:
+            return {
+                "choices": [],
+                "model": field(response, "model"),
+                "usage": normalized_usage(response),
+            }
+        choice = choices[0]
+        message = field(choice, "message")
+        return {
+            "finish_reason": field(choice, "finish_reason"),
+            "content": field(message, "content"),
+            "reasoning_content": field(message, "reasoning_content"),
+            "tool_calls": field(message, "tool_calls") or [],
+            "model": field(response, "model"),
+            "usage": normalized_usage(response),
+        }
+
     def payload_from_response(response: Any, tool_name: str) -> dict[str, Any]:
         choices = field(response, "choices") or []
         if not choices:
-            raise ValueError("professional analysis response has no choices")
+            payload = response_failure_payload(response)
+            raise ForcedSchemaResponseError(
+                "professional analysis response has no choices",
+                payload,
+                issues=[{
+                    "pointer": "/choices",
+                    "code": "choices_missing",
+                    "expected": (
+                        "one response choice containing the forced tool call"
+                    ),
+                    "allowed": [tool_name],
+                }],
+            )
         choice = choices[0]
         message = field(choice, "message")
         tool_calls = field(message, "tool_calls") or []
@@ -1157,13 +2065,40 @@ def _call_professional_model(
             if field(function, "name") != tool_name:
                 continue
             arguments = field(function, "arguments")
-            payload = (
-                json.loads(arguments)
-                if isinstance(arguments, str)
-                else arguments
-            )
+            try:
+                payload = (
+                    json.loads(arguments)
+                    if isinstance(arguments, str)
+                    else arguments
+                )
+            except json.JSONDecodeError as exc:
+                raise ForcedSchemaResponseError(
+                    "professional analysis tool arguments are not valid JSON",
+                    {
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                    },
+                    issues=[{
+                        "pointer": "/arguments",
+                        "code": "json_invalid",
+                        "expected": "one valid JSON object matching the schema",
+                        "allowed": [],
+                    }],
+                ) from exc
             if not isinstance(payload, dict):
-                raise ValueError("professional analysis tool arguments are not an object")
+                raise ForcedSchemaResponseError(
+                    "professional analysis tool arguments are not an object",
+                    {
+                        "tool_name": tool_name,
+                        "arguments": payload,
+                    },
+                    issues=[{
+                        "pointer": "/arguments",
+                        "code": "object_type_required",
+                        "expected": "JSON object",
+                        "allowed": [],
+                    }],
+                )
             return payload
         # Compatibility fallback for gateways that return forced JSON as text.
         content = field(message, "content")
@@ -1172,18 +2107,132 @@ def _call_professional_model(
             if isinstance(parsed, dict):
                 return parsed
         reasoning = field(message, "reasoning_content")
-        raise ValueError(
-            "professional analysis response did not call the forced schema"
-            f" (finish={field(choice, 'finish_reason')},"
-            f" content_chars={len(content) if isinstance(content, str) else 0},"
-            f" reasoning_chars={len(reasoning) if isinstance(reasoning, str) else 0})"
+        failure_payload = response_failure_payload(response)
+        raise ForcedSchemaResponseError(
+            (
+                "professional analysis response did not call the forced schema"
+                f" (finish={field(choice, 'finish_reason')},"
+                f" content_chars={len(content) if isinstance(content, str) else 0},"
+                f" reasoning_chars={len(reasoning) if isinstance(reasoning, str) else 0})"
+            ),
+            failure_payload,
+            issues=[{
+                "pointer": "/choices/0/message/tool_calls",
+                "code": "forced_schema_missing",
+                "expected": (
+                    f"exactly one {tool_name} tool call whose arguments "
+                    "match the supplied schema"
+                ),
+                "allowed": [tool_name],
+            }],
         )
+
+    def validation_issues(exc: ValidationError) -> list[dict[str, Any]]:
+        issues: list[dict[str, Any]] = []
+        for error in exc.errors(include_url=False):
+            location = error.get("loc") or ()
+            pointer = "/" + "/".join(
+                str(value).replace("~", "~0").replace("/", "~1")
+                for value in location
+            )
+            issues.append({
+                "pointer": pointer or "/",
+                "code": str(error.get("type") or "schema_invalid"),
+                "expected": str(error.get("msg") or "value matching schema"),
+                "allowed": (
+                    error.get("ctx")
+                    if isinstance(error.get("ctx"), dict)
+                    else []
+                ),
+            })
+        return issues
 
     def normalized_usage(response: Any) -> dict[str, int]:
         usage = field(response, "usage")
         return {
             key: int(field(usage, key) or 0)
             for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+        }
+
+    def collect_streamed_response(response_stream: Any) -> dict[str, Any]:
+        tool_arguments: dict[int, list[str]] = {}
+        tool_names: dict[int, str] = {}
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        model_used = "anthropic-gateway"
+        usage: dict[str, int] = {}
+        finish_reason: Any = None
+        for chunk in response_stream:
+            model_used = str(field(chunk, "model") or model_used)
+            chunk_usage = normalized_usage(chunk)
+            if any(chunk_usage.values()):
+                usage = chunk_usage
+            choices = field(chunk, "choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            finish_reason = field(choice, "finish_reason") or finish_reason
+            delta = field(choice, "delta")
+            content = field(delta, "content")
+            if isinstance(content, str) and content:
+                content_parts.append(content)
+            reasoning_values: list[str] = []
+            for name in ("reasoning_content", "reasoning"):
+                value = field(delta, name)
+                if isinstance(value, str) and value:
+                    reasoning_values.append(value)
+            model_extra = field(delta, "model_extra")
+            if isinstance(model_extra, dict):
+                for name in ("reasoning_content", "reasoning"):
+                    value = model_extra.get(name)
+                    if (
+                        isinstance(value, str)
+                        and value
+                        and value not in reasoning_values
+                    ):
+                        reasoning_values.append(value)
+            reasoning_delta = "".join(reasoning_values)
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+                if on_reasoning:
+                    on_reasoning(reasoning_delta)
+            for tool_call in field(delta, "tool_calls") or []:
+                raw_index = field(tool_call, "index")
+                try:
+                    index = int(raw_index or 0)
+                except (TypeError, ValueError):
+                    index = 0
+                function = field(tool_call, "function")
+                name = field(function, "name")
+                if isinstance(name, str) and name:
+                    current_name = tool_names.get(index, "")
+                    tool_names[index] = (
+                        name
+                        if not current_name or current_name == name
+                        else current_name + name
+                    )
+                arguments = field(function, "arguments")
+                if isinstance(arguments, str) and arguments:
+                    tool_arguments.setdefault(index, []).append(arguments)
+        return {
+            "model": model_used,
+            "choices": [{
+                "finish_reason": finish_reason,
+                "message": {
+                    "content": "".join(content_parts),
+                    "reasoning_content": "".join(reasoning_parts),
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": tool_names.get(index),
+                                "arguments": "".join(parts),
+                            },
+                        }
+                        for index, parts in sorted(tool_arguments.items())
+                    ],
+                },
+            }],
+            "usage": usage,
         }
 
     def forced_call(
@@ -1194,7 +2243,6 @@ def _call_professional_model(
         user_prompt: str,
         response_model: type[BaseModel],
         max_tokens: int,
-        timeout: int,
         call_type: str,
     ) -> BaseModel:
         schema = _inline_json_schema(response_model.model_json_schema())
@@ -1206,37 +2254,52 @@ def _call_professional_model(
                 "parameters": schema,
             },
         }
-        response = completion_gateway(
-            messages=[
+        request = {
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            tools=[tool],
-            tool_choice={"type": "function", "function": {"name": tool_name}},
-            temperature=0.1,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            # llmops currently serves GLM-5.2 through an Anthropic-compatible
-            # gateway.  GLM-5.2 defaults to max reasoning, and the gateway does
-            # not reliably honour ``thinking.type=disabled`` on its own.  The
-            # provider-compatible ``reasoning_effort=none`` is therefore sent
-            # alongside it so forced-schema calls reach the actual tool result
-            # instead of exhausting the output budget on reasoning_content.
-            extra_body={
-                "thinking": {"type": "disabled"},
-                "reasoning_effort": "none",
+            "tools": [tool],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": tool_name},
             },
-        )
-        payload = payload_from_response(response, tool_name)
-        parsed = response_model.model_validate(payload)
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+        }
+        if on_reasoning:
+            response = collect_streamed_response(
+                completion_gateway(
+                    **request,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+            )
+        else:
+            response = completion_gateway(
+                **request,
+            )
         persist_llm_usage(
             normalized_usage(response),
             str(field(response, "model") or "anthropic-gateway"),
             call_type,
+            stock_code=str(evidence.get("symbol") or "").strip() or None,
         )
+        payload = payload_from_response(response, tool_name)
+        try:
+            parsed = response_model.model_validate(payload)
+        except ValidationError as exc:
+            raise ForcedSchemaResponseError(
+                "professional analysis payload failed exact schema validation",
+                payload,
+                issues=validation_issues(exc),
+            ) from exc
         return parsed
 
     evidence_view = _prompt_evidence_view(evidence)
+    strategy_profile = normalize_mainline_strategy(
+        evidence_view.get("mainline_strategy")
+    )
     stock_info = evidence_view.get("stock_info")
     stock_info = stock_info if isinstance(stock_info, dict) else {}
     compact_stock_info = {
@@ -1253,29 +2316,28 @@ def _call_professional_model(
     }
 
     adjacent_evidence = {
-        "market_mainline": {"industry_cycle", "growth_drivers"},
-        "industrial_competitiveness": {"competition_quality"},
-        "industry_cycle": set(),
-        "competition_quality": {"industrial_competitiveness"},
-        "growth_drivers": {"industry_cycle"},
-        "forward_catalysts": {"growth_drivers", "major_risks"},
-        "valuation_odds": {"industry_cycle"},
-        "major_risks": {"forward_catalysts"},
+        dimension_id: set() for dimension_id in DIMENSION_IDS
     }
     dimension_instructions = {
         "market_mainline": (
-            "按三个时间层分别判断：1—3年结构性产业趋势、1—6个月A股主导叙事、"
-            "1—10日板块交易确认。先识别当前市场占主导的叙事，再说明公司细分业务"
-            "处于主线核心、活跃分支、轮动支线还是仅有长期趋势。不得因某一天未进入Top N、"
-            "单日回撤或单日资金流出直接否决；也不得用长期产业前景冒充当前交易主线。必须"
-            "实际核验 public_research 的 market_consensus 与原始板块数据，明确写出当前全市场"
-            "占主导的中期叙事，再判断公司方向与它的关系；主线报告不可用不等于其他证据不可用。"
-            "1—6个月主导叙事只能由机构策略、连续市场证据或主线报告判断，绝不能由某一天的"
-            "涨幅榜改写。单日领涨板块只能进入1—10日交易确认。最终headline必须同时点明中期"
-            "主导叙事和公司方向的层级关系。个股累计涨跌、均线、个股资金净流入和当前收入占比"
-            "都不能否定业务的主线归属：前者属于交易时点，后者的兑现与竞争力属于后续维度。"
-            "只要正式公司资料证明存在对应产品、项目或合作，且市场证据确认该方向是当前主线或"
-            "活跃分支，本维度可以通过；不得仅凭分部名称把产品写成“传统”或“非AI”。"
+            "先识别未来1—6个月A股占主导的产业叙事，再说明本轮结构化产业方向"
+            "处于主线核心、活跃分支、候选分支、仅有长期趋势还是无关。必须实际核验"
+            " public_research 的 market_consensus、structural_trend 与市场主线报告；"
+            "主线报告不可用不等于其他证据不可用。中期主线只能由机构策略、政策落地、"
+            "产业供需、技术路线、资本开支或连续景气证据建立。1—3年长期趋势不能冒充"
+            "当前主线；资金流、涨跌幅、成交排名、均线、技术指标和个股走势完全不得进入"
+            "本维度判断。板块目录只用于名称映射，目录存在不是主线证据。最终 headline"
+            " 必须同时点明中期主导叙事和本轮产业方向的层级关系。本轮提供结构化产业方向时，"
+            "不得因某家公司尚未证明真实业务暴露而把产业方向判为非主线；公司是否真实受益"
+            "留给第二维，公司事件与未来催化留给第六维。"
+            f"本轮主线投资口径为 {strategy_profile.value}"
+            f"（{mainline_strategy_label(strategy_profile)}）。"
+            "必须填写 mainline_classification，matched_mainline 必须逐字复制报告中的"
+            "当前或候选主线名称，matched_branch 必须逐字复制其结构化 branches；"
+            "若判断核心主线可不填 matched_branch。确认型口径只接受已确认/扩散期的当前"
+            "主线核心或活跃分支。前瞻布局型还可以接受候选核心或分支，但必须核验"
+            "one_to_six_months 窗口、至少两类 evidence_axes 以及至少一个 met/partial"
+            " trigger_assessment。"
         ),
         "industrial_competitiveness": (
             "精确市场份额、客户名称或专利数量不是唯一合格证据。若正式分部收入占比、"
@@ -1292,7 +2354,11 @@ def _call_professional_model(
             "经营数据验证兑现。法定大行业统计不能替代真实细分产品供需。public_research"
             "已经返回的装机、订单和供需材料必须实际核验，不能再声称本轮没有取得。若行业"
             "装机、订单、价格等直接证据明确处于上行，公司一个季度增速转负或现金流偏弱只能"
-            "作为兑现节奏监控，不能单独把行业周期降级。"
+            "作为兑现节奏监控，不能单独把行业周期降级。若上一维已经确认公司的真实相关业务，"
+            "则该相关业务连续多个可比期的收入、订单、出货、利润或毛利率改善，本身可以作为"
+            "公司兑现路径证明景气；产业供需没有明确反向时，不得仅因缺少行业总量统计就机械"
+            "判定不符合本次准入条件。公司兑现和产业供需是两条可替代的主证据链，"
+            "不要求两者同时齐全。"
         ),
         "competition_quality": (
             "应收账款、存货或经营现金流反映回款与营运资金压力，不能单独证明价格战或客户"
@@ -1322,15 +2388,19 @@ def _call_professional_model(
     }
     dimension_system_prompt = (
         "你是管理A股组合的资深买方分析师。只核验程序指定的一个买入维度，"
-        "同时写支持证据、主要反证和后续验证。状态只能是 pass、fail、insufficient；"
-        "只有当前维度的核心条件被证据充分支持时才可 pass，重要保留必须 fail，关键取证失败"
-        "必须 insufficient。"
-        "主线按结构性产业趋势、中期市场叙事、短期板块确认三层分析；当前资金热度不强但"
-        "产业趋势成立并不自动通过当前交易主线闸门；"
-        "第一维判断业务的主线归属，不判断个股买点。个股累计涨跌、均线、个股资金流以及"
-        "当前收入占比不得作为第一维 fail 的依据；订单、收入兑现和竞争优势留给第二维；"
+        "同时写支持证据、主要反证和后续验证。状态只能是 pass 或 fail；"
+        "只有当前维度的核心条件被证据充分支持时才可 pass。未形成正向准入证明或存在"
+        "足以否决该项的风险时必须 fail。fail 表示不符合本次买入筛选条件，不必然表示"
+        "公司事实性没有相关业务、能力或事件；analysis 必须明确区分有效反证与公开资料"
+        "未形成正向证明。关键来源整体失败由程序中止分析，模型不得猜测或返回系统状态。"
+        "市场主线专指未来1—6个月A股主导产业叙事；长期趋势只能作为背景，"
+        "资金流、涨跌幅、成交排名、均线、技术指标和个股走势完全不得进入第一维。"
+        "第一维只判断本轮结构化产业方向的市场属性，不判断个股买点或公司真实受益；"
+        "公司业务连接、订单、收入兑现和竞争优势留给第二维；"
         "不得仅凭分部名称把现有终端或零部件写成“传统”或“非AI”；"
-        "主线报告不可用时不能把缺失本身写成事实性 fail，应根据其余证据判断或返回 insufficient。"
+        "主线报告不可用时不能把缺失本身写成方向事实性不存在，应根据其余可用证据判断"
+        "是否达到本次主线准入证明。市场主线维度必须填写 mainline_classification，"
+        "其他七个维度必须将该字段留空。"
         "概念关系不能证明竞争力；周期看供需和连续经营数据；内卷看同一细分行业的价格、"
         "供给、毛利率和客户议价。催化只接受证据中明确披露的事件与时间窗，"
         "不得自行预测审批月份、投产日期、订单或业绩。估值必须用基本面估值锚、历史或同行、"
@@ -1348,16 +2418,18 @@ def _call_professional_model(
         "所有进展日期必须逐字复制正式公告日期，禁止把方案年度嫁接到公告月份。"
         "仅有补充质押公告而没有累计质押比例时，不得推断高比例或伴随减持；"
         "再融资问询及回复不等于监管处罚，也不能仅凭关键词判断当前生命周期。"
-        "主线报告缺失但原始板块与产业证据仍可用时，"
-        "应基于现有证据判断 pass/fail，只有关键市场证据整体缺失才用 insufficient。"
+        "主线报告缺失但机构策略、政策与产业证据仍可用时，"
+        "应基于现有证据判断 pass/fail；关键中期叙事来源整体失败由程序中止本维度。"
         "只使用本轮证据，禁止补造数字、同行区间、客户、原因解释、行业数据或未来日期；"
         "所有数字必须原样复制证据，不做格式转换、舍入或自设阈值；"
         "public_research 中 source_quality=ugc_lead_only 的材料只能作为线索，必须有正式披露、"
         "专业来源或结构化市场数据交叉验证后才能写入关键证据；不得把自媒体标题当事实。"
-        "禁止笼统写“证据不足”：若来源调用失败，写“本轮某来源取证未完成，不代表事实不存在”；"
-        "若来源有效但没有披露精确指标，写“已核对的公开披露未提供某精确指标”，并说明替代证据。"
-        "非关键可选指标未披露不得自动判 insufficient；只有会阻断该维度结论的关键来源失败才用"
-        " insufficient。analysis应凝练、避免重复证据列表并以完整句结束；"
+        "禁止笼统写“证据不足”：若来源有效但没有披露精确指标，写“已核对的公开披露未提供"
+        "某精确指标”，说明替代证据，并判断是否达到本次准入证明。"
+        "非关键可选指标未披露不得机械判 fail。evaluated_subjects始终返回数组："
+        "存在required_scope_confirmation.subjects"
+        "时逐字复制实际判断的结构化方向，否则填写实际采用的投资逻辑或公司业务方向。"
+        "analysis应凝练、避免重复证据列表并以完整句结束；"
         "三个证据字段始终使用数组。"
     )
 
@@ -1365,6 +2437,7 @@ def _call_professional_model(
         definition: tuple[str, str],
         *,
         retry: bool = False,
+        repair_error: Exception | None = None,
     ) -> DimensionAssessment:
         dimension_id, title = definition
         section_names = {dimension_id, *adjacent_evidence.get(dimension_id, set())}
@@ -1381,6 +2454,7 @@ def _call_professional_model(
                     ),
                     850 if retry else 1_250,
                 ),
+                "structured_context": value.get("structured_context") or {},
                 "deterministic_entry_context": None,
             }
             for key, value in evidence_view["dimension_evidence"].items()
@@ -1394,23 +2468,7 @@ def _call_professional_model(
             ),
             dimension_id,
         )
-        if retry and dimension_id == "market_mainline":
-            quote = company_context.get("quote")
-            quote = quote if isinstance(quote, dict) else {}
-            company_context = {
-                "profile": company_context.get("profile") or {},
-                "quote": {
-                    key: quote.get(key)
-                    for key in (
-                        "change_pct",
-                        "turnover_rate",
-                        "data_time",
-                        "is_stale",
-                    )
-                    if quote.get(key) is not None
-                },
-            }
-        elif retry and dimension_id == "major_risks":
+        if retry and dimension_id == "major_risks":
             financial = company_context.get("financials")
             financial = financial if isinstance(financial, dict) else {}
             company_context = {
@@ -1426,6 +2484,17 @@ def _call_professional_model(
             "stock_info": compact_stock_info,
             "requested_at": evidence_view.get("requested_at"),
             "investment_thesis": evidence_view.get("investment_thesis"),
+            "thesis_context": evidence_view.get("thesis_context"),
+            "mainline_strategy": strategy_profile.value,
+            "required_scope_confirmation": {
+                "subjects": _structured_thesis_labels(
+                    evidence_view.get("thesis_context")
+                ),
+                "instruction": (
+                    "evaluated_subjects 必须逐字复制本轮实际判断的结构化产业方向；"
+                    "不得用公司法定行业或公开搜索自行替换。"
+                ),
+            },
             "research_scope": evidence_view.get("research_scope"),
             "public_research_coverage": evidence_view.get(
                 "public_research_coverage"
@@ -1449,24 +2518,77 @@ def _call_professional_model(
                     "使用本轮证据完成本维度的支持、反证与边界分析。",
                 ),
             },
+            "prior_dimensions": [
+                item.model_dump(mode="json")
+                for item in dimensions
+                if item.status != "not_evaluated"
+            ],
             "dimension_evidence": sections,
             "capability_gaps": [
                 gap
                 for gap in evidence_view.get("capability_gaps") or []
                 if any(section in str(gap) for section in section_names)
             ][:6],
+            "source_failures": [
+                failure
+                for failure in evidence_view.get("source_failures") or []
+                if isinstance(failure, dict)
+                and (
+                    failure.get("section") in section_names
+                    or failure.get("section") == "base_company_packet"
+                    or (
+                        failure.get("section") == "public_research"
+                        and failure.get("source")
+                        in PUBLIC_RESEARCH_LENSES_BY_DIMENSION.get(
+                            dimension_id,
+                            set(),
+                        )
+                    )
+                )
+            ][:8],
             "public_disclosure_limits": [
                 gap
                 for gap in evidence_view.get("public_disclosure_limits") or []
             ][:6],
         }
+        if retry and repair_error is not None:
+            invalid_payload = (
+                repair_error.payload
+                if isinstance(repair_error, ForcedSchemaResponseError)
+                else {"error": f"{type(repair_error).__name__}: {repair_error}"}
+            )
+            request["targeted_repair"] = {
+                "invalid_payload": invalid_payload,
+                "issues": (
+                    repair_error.issues
+                    if isinstance(repair_error, ForcedSchemaResponseError)
+                    else [{
+                        "pointer": "/choices/0/message/tool_calls",
+                        "code": "forced_schema_missing",
+                        "expected": (
+                            "exactly one submit_dimension_assessment tool call "
+                            "whose arguments match the supplied schema"
+                        ),
+                        "allowed": ["submit_dimension_assessment"],
+                    }]
+                ),
+                "instruction": (
+                    "只修复上述结构化输出错误；保持同一维度、同一证据和同一 JSON Schema，"
+                    "不得重做任务图或改判其他维度。"
+                ),
+            }
         user_prompt = json.dumps(request, ensure_ascii=False, default=str)
         raw_sections = evidence.get("dimension_evidence")
         raw_sections = raw_sections if isinstance(raw_sections, dict) else {}
         validation_evidence = {
             "requested_at": evidence.get("requested_at"),
+            "thesis_context": evidence.get("thesis_context"),
             "base_company_packet": evidence.get("base_company_packet"),
             "public_research": request.get("public_research") or [],
+            "structured_context": {
+                key: sections[key].get("structured_context") or {}
+                for key in sections
+            },
             "dimension_evidence": {
                 key: raw_sections.get(key)
                 for key in section_names
@@ -1474,7 +2596,8 @@ def _call_professional_model(
             },
         }
         active_system_prompt = dimension_system_prompt + (
-            "这是失败维度的恢复调用：只返回最小但完整的合规判断，"
+            "这是同一失败维度的定点恢复调用。上一次完整非法 payload 和字段错误已附在"
+            " targeted_repair；只返回最小但完整的合规判断，"
             "优先使用company_context中的结构化字段，删除任何无法逐字或等值追溯的数字。"
             if retry
             else ""
@@ -1484,17 +2607,15 @@ def _call_professional_model(
             description="提交程序指定的一个买入分析维度",
             system_prompt=active_system_prompt,
             user_prompt=user_prompt,
-            response_model=DimensionAssessment,
-            # llmops may count provider-side reasoning in the completion
-            # budget even when disabled. Keep enough room for the typed
-            # assessment without allowing one gate to consume an open-ended
-            # reasoning trace.
-            max_tokens=3_000 if retry else 4_000,
-            timeout=360,
+            response_model=ModelDimensionAssessment,
+            # Provider-side reasoning counts against this budget. Leave enough
+            # room for the reasoning plus the required typed tool call.
+            max_tokens=16_000 if retry else 20_000,
             call_type="professional_buy_dimensions",
         )
-        if not isinstance(result, DimensionAssessment):
+        if not isinstance(result, ModelDimensionAssessment):
             raise ValueError("dimension response has unexpected type")
+        result = DimensionAssessment.model_validate(result.model_dump())
         if result.dimension_id != dimension_id:
             raise ValueError(
                 f"模型返回维度 {result.dimension_id}，预期 {dimension_id}"
@@ -1502,6 +2623,32 @@ def _call_professional_model(
         if result.status == "not_evaluated":
             raise ValueError(
                 "模型不得把当前已执行维度标记为 not_evaluated"
+            )
+        if dimension_id == "market_mainline":
+            result = _enforce_mainline_gate_policy(result, evidence)
+        elif result.mainline_classification is not None:
+            raise ForcedSchemaResponseError(
+                "mainline_classification is only valid for market_mainline",
+                result.model_dump(mode="json"),
+                issues=[{
+                    "pointer": "/mainline_classification",
+                    "code": "field_not_allowed_for_dimension",
+                    "expected": "null",
+                    "allowed": [None],
+                }],
+            )
+        required_subjects = _structured_thesis_labels(
+            evidence_view.get("thesis_context")
+        )
+        confirmed_subjects = {
+            str(value).strip() for value in result.evaluated_subjects
+            if str(value).strip()
+        }
+        if required_subjects and not set(required_subjects).intersection(
+            confirmed_subjects
+        ):
+            raise ValueError(
+                "模型没有确认本轮结构化产业方向，拒绝接受脱离主题的维度判断"
             )
         unsupported_claims = _unsupported_numeric_claims(
             result,
@@ -1520,20 +2667,112 @@ def _call_professional_model(
             )
         return _repair_incomplete_dimension_headline(result)
 
-    dimensions: list[DimensionAssessment] = []
+    dimensions = [
+        (
+            item
+            if isinstance(item, DimensionAssessment)
+            else DimensionAssessment.model_validate(item)
+        )
+        for item in precomputed_dimensions
+    ]
+    if len(dimensions) > len(DIMENSION_IDS):
+        raise ValueError("precomputed dimensions exceed the eight-gate contract")
+    if tuple(item.dimension_id for item in dimensions) != DIMENSION_IDS[
+        :len(dimensions)
+    ]:
+        raise ValueError(
+            "precomputed dimensions must be an exact prefix of the eight gates"
+        )
     model_errors: list[str] = []
-    blocked = False
-    for dimension_id, title in DIMENSION_DEFINITIONS:
+    blocked = bool(dimensions and dimensions[-1].status != "pass")
+    evaluated_in_call = 0
+    for dimension_id, title in DIMENSION_DEFINITIONS[len(dimensions):]:
         if blocked:
             dimensions.append(DimensionAssessment(
                 dimension_id=dimension_id,
                 status="not_evaluated",
+                evaluated_subjects=_structured_thesis_labels(
+                    evidence_view.get("thesis_context")
+                ),
                 headline="前序布尔闸门已关闭",
                 analysis="前一维度未通过，本维度按固定状态机不再执行，不能用于抵消首个阻断项。",
                 key_evidence=[],
                 counter_evidence=[],
                 monitoring_points=[],
             ))
+            continue
+        if (
+            evaluation_limit is not None
+            and evaluated_in_call >= evaluation_limit
+        ):
+            dimensions.append(DimensionAssessment(
+                dimension_id=dimension_id,
+                status="not_evaluated",
+                evaluated_subjects=_structured_thesis_labels(
+                    evidence_view.get("thesis_context")
+                ),
+                headline="当前共享评估范围不包含本维度",
+                analysis=(
+                    "本次只生成批次共享的市场主线结论；公司级维度将在逐股流程中继续执行。"
+                ),
+                key_evidence=[],
+                counter_evidence=[],
+                monitoring_points=[],
+            ))
+            continue
+
+        if (
+            dimension_id not in evidence.get("dimension_evidence", {})
+            and dimension_loader is not None
+        ):
+            try:
+                dimension_loader(dimension_id)
+            except Exception as exc:
+                logger.warning(
+                    "professional buy lazy evidence %s failed for %s: %s",
+                    dimension_id,
+                    evidence.get("symbol"),
+                    exc,
+                )
+                evidence.setdefault("dimension_evidence", {})[dimension_id] = {
+                    "success": False,
+                    "evidence_gap": (
+                        f"{type(exc).__name__}: {str(exc)[:240]}"
+                    ),
+                    "summary": "该证据维度按需获取失败。",
+                    "raw_data": {},
+                    "structured_context": {},
+                }
+            evidence_view = _prompt_evidence_view(evidence)
+
+        current_section = (
+            evidence_view.get("dimension_evidence") or {}
+        ).get(dimension_id)
+        if (
+            not isinstance(current_section, dict)
+            or current_section.get("success") is False
+        ):
+            gap = str(
+                (current_section or {}).get("evidence_gap")
+                or "当前维度关键证据未取得"
+            )
+            result = DimensionAssessment(
+                dimension_id=dimension_id,
+                status="insufficient",
+                evaluated_subjects=_structured_thesis_labels(
+                    evidence_view.get("thesis_context")
+                ),
+                headline=f"{title}的关键取证未完成",
+                analysis=(
+                    f"{gap}。程序将本轮标记为分析未完成并关闭后续闸门，"
+                    "不会把取证失败写成公司的事实性结论。"
+                ),
+                key_evidence=[],
+                counter_evidence=[],
+                monitoring_points=[f"重新取得“{title}”的关键证据"],
+            )
+            dimensions.append(result)
+            blocked = True
             continue
 
         try:
@@ -1543,6 +2782,7 @@ def _call_professional_model(
                 result = dimension_request(
                     (dimension_id, title),
                     retry=True,
+                    repair_error=first_error,
                 )
             except Exception as retry_error:
                 error = (
@@ -1559,20 +2799,26 @@ def _call_professional_model(
                 result = DimensionAssessment(
                     dimension_id=dimension_id,
                     status="insufficient",
+                    evaluated_subjects=_structured_thesis_labels(
+                        evidence_view.get("thesis_context")
+                    ),
                     headline="当前维度的专业复核未完成",
                     analysis=(
                         f"模型没有返回“{title}”的有效结构化判断，"
-                        "程序按证据不足关闭后续闸门。"
+                        "程序将本轮标记为分析未完成并关闭后续闸门。"
                     ),
                     key_evidence=[],
                     counter_evidence=[],
                     monitoring_points=[f"重新核验“{title}”"],
                 )
         dimensions.append(result)
+        evaluated_in_call += 1
         if result.status != "pass":
             blocked = True
 
-    if blocked:
+    if blocked or any(
+        item.status == "not_evaluated" for item in dimensions
+    ):
         error = "；".join(model_errors)
         return _derive_overall_from_dimensions(
             dimensions,
@@ -1613,8 +2859,7 @@ def _call_professional_model(
             system_prompt=overall_system_prompt,
             user_prompt=json.dumps(overall_request, ensure_ascii=False, default=str),
             response_model=OverallAssessment,
-            max_tokens=3_500,
-            timeout=300,
+            max_tokens=16_000,
             call_type="professional_buy_overall",
         )
         if not isinstance(overall, OverallAssessment):
@@ -1689,18 +2934,48 @@ def _derive_overall_from_dimensions(
         ),
         None,
     )
-    biggest = blocking or executed[-1]
+    incomplete_scope = len(executed) < len(DIMENSION_IDS)
+    biggest = blocking or (
+        executed[-1]
+        if executed
+        else DimensionAssessment(
+            dimension_id="market_mainline",
+            status="not_evaluated",
+            evaluated_subjects=[],
+            headline="本次没有执行公司级维度",
+            analysis="当前调用只负责共享资源准备。",
+        )
+    )
     if blocking and blocking.status == "insufficient":
-        recommendation_code: RecommendationCode = "evidence_insufficient"
+        recommendation_code: RecommendationCode = "analysis_unavailable"
         recommendation_reason = (
-            f"“{DIMENSION_TITLES[blocking.dimension_id]}”关键取证未完成，"
-            "布尔闸门已关闭。"
+            f"“{DIMENSION_TITLES[blocking.dimension_id]}”的关键来源或分析服务未完成，"
+            "本轮不对公司形成买入结论。"
+        )
+    elif (
+        blocking
+        and blocking.dimension_id == "market_mainline"
+        and blocking.mainline_classification is not None
+        and MainlineDirectionRelation(
+            blocking.mainline_classification.direction_relation
+        ) == MainlineDirectionRelation.EMERGING_BRANCH
+    ):
+        recommendation_code = "watchlist"
+        recommendation_reason = (
+            "产业归属已经确认，但候选主线尚未满足本轮所选策略的第一关准入条件；"
+            "后续七维不执行，当前进入主线触发跟踪而不是买入名单。"
         )
     elif blocking:
         recommendation_code = "wait"
         recommendation_reason = (
             f"“{DIMENSION_TITLES[blocking.dimension_id]}”未通过，"
             "后续维度不再执行，当前不可进入买入计划。"
+        )
+    elif incomplete_scope:
+        recommendation_code = "watchlist"
+        recommendation_reason = (
+            f"本次只完成前{len(executed)}个共享维度，"
+            "其余公司级维度将在逐股流程中继续执行。"
         )
     else:
         recommendation_code = "conditional_buy"
@@ -1759,13 +3034,14 @@ def _fallback_assessment(error: str) -> ProfessionalAssessment:
                 if index == 0
                 else "not_evaluated"
             ),
+            evaluated_subjects=[],
             headline=(
                 "首个维度的专业复核未完成"
                 if index == 0
                 else "前序布尔闸门已关闭"
             ),
             analysis=(
-                "本轮未能取得首个维度的有效结构化判断，程序按证据不足关闭后续闸门。"
+                "本轮未能取得首个维度的有效结构化判断，程序按分析未完成关闭后续闸门。"
                 if index == 0
                 else "前一维度未通过，本维度未执行，也不能用于抵消首个阻断项。"
             ),
@@ -1784,8 +3060,8 @@ def _fallback_assessment(error: str) -> ProfessionalAssessment:
         overall_summary="本轮首个维度未形成可验证判断，后续七维按状态机未执行。",
         core_thesis="待专业分析服务恢复后重新核验",
         biggest_issue=error or "专业分析服务不可用",
-        recommendation_code="evidence_insufficient",
-        recommendation_reason="首个维度证据不足，程序已关闭买入闸门。",
+        recommendation_code="analysis_unavailable",
+        recommendation_reason="首个维度分析未完成，程序已关闭买入闸门且不形成公司结论。",
         dimensions=dimensions,
         bull_case_chain="本轮专业复核未完成，暂不构造看多链条",
         risk_chain="分析服务失败 → 八维结论不可验证 → 暂停买入判断",
@@ -1841,8 +3117,34 @@ def _recommendation_label(code: str) -> str:
         "watchlist": "进入中期跟踪池",
         "wait": "等待更好的价格或验证信号",
         "avoid": "当前回避",
+        "analysis_unavailable": "本轮分析未完成，等待系统恢复",
         "evidence_insufficient": "关键取证未完成，暂停判断",
     }.get(code, "关键取证未完成，暂停判断")
+
+
+def evaluate_shared_market_mainline(
+    *,
+    thesis: str,
+    thesis_context: dict[str, Any] | None,
+    mainline_strategy: MainlineStrategyProfile | str,
+    market_mainline_snapshot: dict[str, Any],
+    on_reasoning: Callable[[str], None] | None = None,
+) -> tuple[DimensionAssessment, str]:
+    """Evaluate the market-level first gate exactly once for a stock batch."""
+    evidence = collect_market_mainline_evidence(
+        thesis=thesis,
+        thesis_context=thesis_context,
+        mainline_strategy=mainline_strategy,
+        market_mainline_snapshot=market_mainline_snapshot,
+    )
+    assessment, model_error = _call_professional_model(
+        evidence,
+        evaluation_limit=1,
+        on_reasoning=on_reasoning,
+    )
+    if assessment is None:
+        assessment = _fallback_assessment(model_error)
+    return assessment.dimensions[0], model_error
 
 
 def analyze_professional_buy(
@@ -1850,16 +3152,99 @@ def analyze_professional_buy(
     *,
     thesis: str = "",
     thesis_context: dict[str, Any] | None = None,
+    mainline_strategy: MainlineStrategyProfile | str = (
+        MainlineStrategyProfile.CONFIRMED_MAINLINE
+    ),
     pre_fetched_data: dict[str, Any] | None = None,
+    on_reasoning: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Collect evidence, evaluate the eight gates in order and normalize them."""
-    evidence = collect_professional_evidence(
-        symbol,
-        thesis=thesis,
-        thesis_context=thesis_context,
-        pre_fetched_data=pre_fetched_data,
+    effective_thesis = resolve_investment_thesis(thesis, thesis_context)
+    strategy_profile = normalize_mainline_strategy(mainline_strategy)
+    prefetched = (
+        pre_fetched_data
+        if isinstance(pre_fetched_data, dict)
+        else {}
     )
-    assessment, model_error = _call_professional_model(evidence)
+    raw_shared_gate = prefetched.get("market_mainline_assessment")
+    shared_gate = (
+        DimensionAssessment.model_validate(raw_shared_gate)
+        if raw_shared_gate is not None
+        else None
+    )
+    shared_model_error = str(
+        prefetched.get("market_mainline_model_error") or ""
+    ).strip()
+    if shared_gate is not None and shared_gate.dimension_id != "market_mainline":
+        raise ValueError(
+            "shared market mainline assessment must be the first dimension"
+        )
+    if shared_gate is not None and shared_gate.status != "pass":
+        evidence = {
+            "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
+            "requested_at": datetime.now().astimezone().isoformat(),
+            "symbol": symbol,
+            "stock_info": {"symbol": symbol, "name": symbol},
+            "investment_thesis": effective_thesis or None,
+            "thesis_context": thesis_context,
+            "mainline_strategy": strategy_profile.value,
+            "research_scope": {},
+            "public_research": _empty_public_research({}),
+            "base_company_packet": {},
+            "base_packet_meta": {
+                "success": True,
+                "partial": False,
+                "data_time": (
+                    (
+                        prefetched.get("market_mainline_snapshot")
+                        if isinstance(
+                            prefetched.get("market_mainline_snapshot"),
+                            dict,
+                        )
+                        else {}
+                    ).get("data_time")
+                ),
+                "errors": [],
+                "warnings": [],
+            },
+            "dimension_evidence": {},
+        }
+    else:
+        evidence = collect_professional_evidence(
+            symbol,
+            thesis=effective_thesis,
+            thesis_context=thesis_context,
+            mainline_strategy=strategy_profile,
+            pre_fetched_data=pre_fetched_data,
+            requested_sections=(
+                ()
+                if shared_gate is not None
+                else ("market_mainline",)
+            ),
+        )
+
+    def load_dimension(dimension_id: str) -> None:
+        _collect_professional_sections(
+            evidence,
+            (dimension_id,),
+            pre_fetched_data=pre_fetched_data,
+        )
+
+    assessment, model_error = _call_professional_model(
+        evidence,
+        dimension_loader=load_dimension,
+        precomputed_dimensions=(
+            (shared_gate,)
+            if shared_gate is not None
+            else ()
+        ),
+        on_reasoning=on_reasoning,
+    )
+    model_error = "；".join(
+        value
+        for value in (shared_model_error, model_error)
+        if value
+    )
     if assessment is None:
         assessment = _fallback_assessment(model_error)
 
@@ -1880,9 +3265,29 @@ def analyze_professional_buy(
     if all_passed:
         recommendation = "conditional_buy"
     elif blocking and blocking["status"] == "insufficient":
-        recommendation = "evidence_insufficient"
+        recommendation = "analysis_unavailable"
     else:
-        recommendation = "wait"
+        recommendation = (
+            assessment.recommendation_code
+            if assessment.recommendation_code in {
+                "watchlist",
+                "wait",
+                "avoid",
+            }
+            else "wait"
+        )
+    if model_error and blocking and blocking["status"] == "insufficient":
+        analysis_status = "execution_failed"
+        final_decision = "分析失败"
+    elif blocking and blocking["status"] == "insufficient":
+        analysis_status = "source_unavailable"
+        final_decision = "分析未完成"
+    elif all_passed:
+        analysis_status = "completed"
+        final_decision = "可买入"
+    else:
+        analysis_status = "completed"
+        final_decision = "不可买入"
     recommendation_reason = assessment.recommendation_reason
     overall_summary = assessment.overall_summary
 
@@ -1897,7 +3302,9 @@ def analyze_professional_buy(
             or stock_info.get("short_name")
             or symbol
         ),
-        "thesis": str(thesis or "").strip() or None,
+        "thesis": effective_thesis or None,
+        "thesis_context": thesis_context,
+        "mainline_strategy": strategy_profile.value,
         "investment_profile": assessment.investment_profile,
         "overall_summary": overall_summary,
         "core_thesis": assessment.core_thesis,
@@ -1905,6 +3312,8 @@ def analyze_professional_buy(
         "recommendation_code": recommendation,
         "recommendation": _recommendation_label(recommendation),
         "recommendation_reason": recommendation_reason,
+        "analysis_status": analysis_status,
+        "final_decision": final_decision,
         "counts": counts,
         "dimensions": dimensions,
         "executed_count": len(DIMENSION_IDS) - counts["not_evaluated"],
@@ -1931,7 +3340,7 @@ def analyze_professional_buy(
         "data_time": base_meta.get("data_time") or evidence.get("requested_at"),
         "quote_basis": base_meta.get("quote_basis"),
         "quote_is_intraday": base_meta.get("quote_is_intraday"),
-        "coverage_complete": all_passed,
+        "coverage_complete": analysis_status == "completed",
         "model_error": model_error or None,
     }
 
@@ -1939,9 +3348,13 @@ def analyze_professional_buy(
 __all__ = [
     "DIMENSION_DEFINITIONS",
     "DIMENSION_IDS",
+    "DimensionAssessment",
+    "ModelDimensionAssessment",
     "PROFESSIONAL_BUY_ANALYSIS_MODE",
     "PROFESSIONAL_BUY_CONTRACT_VERSION",
     "ProfessionalAssessment",
     "analyze_professional_buy",
+    "collect_market_mainline_evidence",
     "collect_professional_evidence",
+    "evaluate_shared_market_mainline",
 ]

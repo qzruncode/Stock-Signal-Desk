@@ -60,7 +60,8 @@ THEME_COMPANY_MAPPING = AnalysisPlaybook(
     id="theme_company_mapping",
     title="产业主题到 A 股公司的证据化映射",
     evidence_standard=(
-        "候选身份必须来自结构化板块和本地证券库，概念成员只能作为 L1 候选证据。",
+        "候选身份可来自结构化板块或公开来源中的公司事实，但证券身份必须通过本地证券库核验。",
+        "没有同名概念板块不代表没有相关公司；板块成员只能作为 L1 候选证据。",
         "订单、客户、量产和收入必须逐家公司绑定到可回查原文。",
         "证券代码必须通过本地证券库核验，不能依靠模型记忆。",
     ),
@@ -85,7 +86,8 @@ INVESTMENT_DECISION = AnalysisPlaybook(
     ),
     output_contract=(
         "结论先行，给出已通过数、首个阻断维度和未执行维度数。",
-        "八个维度按契约顺序执行；首个不通过或证据不足立即停止该股后续维度。",
+        "八个维度按契约顺序执行；首个未达到正向准入条件立即停止该股后续维度。",
+        "关键来源、模型或执行故障必须标记分析未完成，不得改写成公司结论。",
         "每个已执行维度写明布尔状态、理由、关键证据和反证。",
         "只有八维全部通过才允许输出可买入，任何维度不得跨项抵消。",
         "多股任务必须证明完整集合覆盖，不能把分批缺失当作完整答案。",
@@ -110,7 +112,7 @@ STOCK_DEEP_RESEARCH = AnalysisPlaybook(
 )
 
 
-class CollectionFinancialFilterSpec(BaseModel):
+class FinancialFilterCondition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     metric: Literal["debt_ratio", "revenue", "net_profit", "deducted_net_profit"]
@@ -124,7 +126,7 @@ class CollectionFinancialFilterSpec(BaseModel):
     action: Literal["exclude_matching", "keep_matching"]
 
     @model_validator(mode="after")
-    def _validate_metric_period_and_unit(self) -> "CollectionFinancialFilterSpec":
+    def _validate_metric_period_and_unit(self) -> "FinancialFilterCondition":
         if self.metric == "debt_ratio":
             if self.threshold_unit != "percent":
                 raise ValueError("debt_ratio threshold_unit must be percent")
@@ -164,6 +166,58 @@ class CollectionFinancialFilterSpec(BaseModel):
             "deducted_net_profit": "扣非净利润",
         }[self.metric]
 
+    def matches(self, value: float) -> bool:
+        threshold = self.normalized_threshold
+        return {
+            "gt": value > threshold,
+            "gte": value >= threshold,
+            "lt": value < threshold,
+            "lte": value <= threshold,
+            "eq": value == threshold,
+        }[self.operator]
+
+    def keeps(self, value: float) -> bool:
+        matched = self.matches(value)
+        return not matched if self.action == "exclude_matching" else matched
+
+    @property
+    def identity(self) -> tuple[str, str, int | None]:
+        return self.metric, self.period_basis, self.fiscal_year
+
+
+class CollectionFinancialFilterSpec(BaseModel):
+    """One collection transform containing all requested financial predicates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conditions: list[FinancialFilterCondition] = Field(min_length=1, max_length=8)
+
+
+def _financial_filter_spec_for_projection(
+    parameters: Mapping[str, Any],
+) -> CollectionFinancialFilterSpec:
+    """Read current contracts and migrate persisted v1 single-condition state."""
+    try:
+        return CollectionFinancialFilterSpec.model_validate(parameters)
+    except Exception:
+        legacy_keys = {
+            "metric",
+            "period_basis",
+            "fiscal_year",
+            "operator",
+            "threshold",
+            "threshold_unit",
+            "action",
+        }
+        legacy = {
+            key: value
+            for key, value in parameters.items()
+            if key in legacy_keys
+        }
+        return CollectionFinancialFilterSpec(
+            conditions=[FinancialFilterCondition.model_validate(legacy)]
+        )
+
 
 def project_collection_financial_filter_entities(
     input_entities: Iterable[Mapping[str, Any]],
@@ -176,7 +230,7 @@ def project_collection_financial_filter_entities(
     as "这些里面哪些能买" must inherit the program-computed output set, not
     the input set and not a sample copied by the planning model.
     """
-    spec = CollectionFinancialFilterSpec.model_validate(parameters)
+    spec = _financial_filter_spec_for_projection(parameters)
     ordered = [
         {
             "symbol": str(item.get("symbol") or "").strip(),
@@ -185,37 +239,73 @@ def project_collection_financial_filter_entities(
         for item in input_entities
         if str(item.get("symbol") or "").strip()
     ]
-    rows: dict[str, Mapping[str, Any]] = {}
-    for result in result_context:
+    rows_by_condition: dict[
+        tuple[str, str, int | None],
+        dict[str, Mapping[str, Any]],
+    ] = {
+        condition.identity: {}
+        for condition in spec.conditions
+    }
+    for packet in result_context:
+        if not isinstance(packet, Mapping):
+            continue
+        arguments = (
+            packet.get("arguments")
+            if isinstance(packet.get("arguments"), Mapping)
+            else {}
+        )
+        result = (
+            packet.get("result")
+            if isinstance(packet.get("result"), Mapping)
+            else packet
+        )
         if not isinstance(result, Mapping) or result.get("success") is False:
             continue
-        for item in result.get("items") or []:
-            if not isinstance(item, Mapping):
+        for condition in spec.conditions:
+            if arguments and any((
+                arguments.get("metric") != condition.metric,
+                arguments.get("period_basis") != condition.period_basis,
+                arguments.get("fiscal_year") != condition.fiscal_year,
+            )):
                 continue
-            symbol = str(item.get("symbol") or "").strip()
-            if symbol and isinstance(item.get("financial_value"), (int, float)):
-                rows[symbol] = item
+            rows = rows_by_condition[condition.identity]
+            for item in result.get("items") or []:
+                if not isinstance(item, Mapping):
+                    continue
+                if item.get("metric") not in (None, condition.metric):
+                    continue
+                if item.get("period_basis") not in (None, condition.period_basis):
+                    continue
+                symbol = str(item.get("symbol") or "").strip()
+                if symbol and isinstance(item.get("financial_value"), (int, float)):
+                    rows[symbol] = item
 
     # An incomplete transform has no authoritative output collection.  Failing
     # closed here prevents a partial batch from silently becoming the next
     # conversational universe.
-    if any(item["symbol"] not in rows for item in ordered):
+    if any(
+        entity["symbol"] not in rows_by_condition[condition.identity]
+        for condition in spec.conditions
+        for entity in ordered
+    ):
         return []
 
-    threshold = spec.normalized_threshold
-    comparator = {
-        "gt": lambda value: value > threshold,
-        "gte": lambda value: value >= threshold,
-        "lt": lambda value: value < threshold,
-        "lte": lambda value: value <= threshold,
-        "eq": lambda value: value == threshold,
-    }[spec.operator]
     retained: list[dict[str, str]] = []
     for entity in ordered:
-        matched = comparator(float(rows[entity["symbol"]]["financial_value"]))
-        keep = not matched if spec.action == "exclude_matching" else matched
-        if keep:
-            retained.append(entity)
+        if not all(
+            condition.keeps(float(
+                rows_by_condition[condition.identity][entity["symbol"]][
+                    "financial_value"
+                ]
+            ))
+            for condition in spec.conditions
+        ):
+            continue
+        first_row = rows_by_condition[spec.conditions[0].identity][entity["symbol"]]
+        retained.append({
+            "symbol": entity["symbol"],
+            "name": str(first_row.get("name") or entity["name"]).strip(),
+        })
     return retained
 
 
@@ -287,6 +377,14 @@ class DomainBoardQuerySpec(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     label: str = Field(min_length=1, max_length=64)
+    catalog_snapshot_id: str | None = Field(default=None, min_length=1, max_length=64)
+    board_id: str | None = Field(default=None, min_length=1, max_length=64)
+    board_name: str | None = Field(default=None, min_length=1, max_length=64)
+    role_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-z0-9][a-z0-9_]{0,31}$",
+    )
+    role_label: str | None = Field(default=None, min_length=1, max_length=64)
     board_queries: list[str] = Field(default_factory=list, max_length=4)
     mapping_type: Literal["catalog_binding", "unresolved"]
     rationale: str = Field(default="", max_length=240)
@@ -301,13 +399,180 @@ class DomainBoardQuerySpec(BaseModel):
             value.strip() for value in self.unresolved_parts if value.strip()
         ))
         if self.mapping_type == "unresolved":
-            if self.board_queries:
-                raise ValueError("unresolved domains cannot contain board_queries")
+            if self.board_queries or self.board_id or self.board_name:
+                raise ValueError(
+                    "unresolved domains cannot contain bound board identity"
+                )
             if not self.unresolved_parts:
                 self.unresolved_parts = [self.label]
         elif not self.board_queries:
             raise ValueError("resolved domains require at least one board_query")
+        if bool(self.board_id) != bool(self.board_name):
+            raise ValueError(
+                "board_id and board_name must be supplied together"
+            )
         return self
+
+
+class IndustryBenefitRoleV2(BaseModel):
+    """One user-relevant value-chain role before it is bound to a board."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    role_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{0,31}$")
+    label: str = Field(min_length=1, max_length=64)
+    benefit_mechanism: str = Field(min_length=1, max_length=240)
+    tier: int = Field(ge=1, le=4)
+
+
+class IndustryBenefitOutlineV2(BaseModel):
+    """Compact semantic decomposition produced before catalog binding."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    topic: str = Field(min_length=1, max_length=160)
+    roles: tuple[IndustryBenefitRoleV2, ...] = Field(
+        min_length=1,
+        max_length=16,
+    )
+    selection_objective: str = Field(min_length=1, max_length=500)
+
+
+class DomainCatalogSelectionItemV2(BaseModel):
+    """One compact binding selected from the supplied finite catalog."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    board_id: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._:-]+$",
+    )
+    role_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{0,31}$")
+    tier: int = Field(ge=1, le=4)
+
+
+class DomainCatalogSelectionV2(BaseModel):
+    """The complete output of finite-set board selection."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    items: tuple[DomainCatalogSelectionItemV2, ...] = Field(
+        min_length=1,
+        max_length=512,
+    )
+
+
+class DomainResultSelectionV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["best_one", "top_k", "all_relevant"]
+    max_items: int | None = Field(default=None, ge=1, le=512)
+
+    @model_validator(mode="after")
+    def _valid_cardinality(self) -> "DomainResultSelectionV2":
+        if self.mode == "best_one" and self.max_items != 1:
+            raise ValueError("best_one requires max_items=1")
+        if self.mode == "top_k" and self.max_items is None:
+            raise ValueError("top_k requires max_items")
+        if self.mode == "all_relevant" and self.max_items is not None:
+            raise ValueError("all_relevant requires max_items=null")
+        return self
+
+
+class DomainSelectionAssumptionV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    field_path: str
+    value: Any
+    reason: str = Field(min_length=1, max_length=300)
+    source: Literal["program_default"] = "program_default"
+
+
+class DomainCollectionCoverageV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    catalog_total: int = Field(ge=0)
+    catalog_supplied: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    binding_complete: bool
+
+    @model_validator(mode="after")
+    def _consistent_coverage(self) -> "DomainCollectionCoverageV2":
+        if self.catalog_supplied > self.catalog_total:
+            raise ValueError("catalog_supplied cannot exceed catalog_total")
+        expected = (
+            self.catalog_total > 0
+            and self.catalog_supplied == self.catalog_total
+            and self.selected_count > 0
+        )
+        if self.binding_complete != expected:
+            raise ValueError(
+                "binding_complete must reflect complete catalog supply and "
+                "a non-empty validated selection"
+            )
+        return self
+
+
+class DomainBoardBindingV2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    board_id: str = Field(min_length=1, max_length=64)
+    board_name: str = Field(min_length=1, max_length=64)
+    role_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{0,31}$")
+    role_label: str = Field(min_length=1, max_length=64)
+    tier: int = Field(ge=1, le=4)
+    rationale: str = Field(min_length=1, max_length=360)
+    main_flow_rank: int | None = None
+    main_net_inflow: float | None = None
+    main_net_inflow_pct: float | None = None
+    pct_chg: float | None = None
+
+
+class DomainCollectionV2(BaseModel):
+    """Versioned terminal resource published after complete catalog binding."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+    )
+
+    type: Literal["domain_collection_v2"] = "domain_collection_v2"
+    schema_version: Literal["2.0"] = "2.0"
+    catalog_snapshot_id: str = Field(min_length=1, max_length=64)
+    requested_topic: str = Field(min_length=1, max_length=500)
+    benefit_outline: IndustryBenefitOutlineV2
+    boards: tuple[DomainBoardBindingV2, ...] = Field(
+        min_length=1,
+        max_length=512,
+    )
+    result_selection: DomainResultSelectionV2
+    assumptions: tuple[DomainSelectionAssumptionV2, ...] = ()
+    coverage: DomainCollectionCoverageV2
+    source_name: str = Field(min_length=1, max_length=200)
+    source_date: str = Field(default="", max_length=80)
+    lineage: tuple[str, ...] = Field(min_length=1, max_length=16)
 
 
 class InvestmentThesisContext(BaseModel):
@@ -316,7 +581,49 @@ class InvestmentThesisContext(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     summary: str = Field(default="", max_length=400)
-    domains: list[DomainBoardQuerySpec] = Field(default_factory=list, max_length=12)
+    domains: list[DomainBoardQuerySpec] = Field(default_factory=list, max_length=512)
+
+
+class ThemeDomainThesis(BaseModel):
+    """Why one project board is relevant to the parent investment theme."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    label: str = Field(min_length=1, max_length=64)
+    rationale: str = Field(default="", max_length=300)
+    tier: int | None = Field(default=None, ge=1, le=4)
+
+
+class ThemeEvidenceContext(BaseModel):
+    """Parent thesis retained while company facts are checked per sub-domain."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    target_topics: list[str] = Field(min_length=1, max_length=8)
+    domain_theses: list[ThemeDomainThesis] = Field(
+        default_factory=list,
+        max_length=512,
+    )
+
+    @model_validator(mode="after")
+    def _dedupe_context(self) -> "ThemeEvidenceContext":
+        self.target_topics = list(dict.fromkeys(
+            value.strip() for value in self.target_topics if value.strip()
+        ))
+        if not self.target_topics:
+            raise ValueError("target_topics must contain at least one topic")
+        by_label: dict[str, ThemeDomainThesis] = {}
+        for thesis in self.domain_theses:
+            by_label.setdefault(thesis.label, thesis)
+        self.domain_theses = list(by_label.values())
+        return self
+
+    def thesis_for(self, label: str) -> ThemeDomainThesis | None:
+        return next((
+            thesis
+            for thesis in self.domain_theses
+            if thesis.label == label
+        ), None)
 
 
 class MappingSelectionContext(BaseModel):
@@ -339,10 +646,13 @@ __all__ = [
     "AnalysisPlaybook",
     "CollectionFinancialFilterSpec",
     "DomainBoardQuerySpec",
+    "FinancialFilterCondition",
     "InvestmentThesisContext",
     "INDUSTRY_CHAIN",
     "INVESTMENT_DECISION",
     "MappingSelectionContext",
     "STOCK_DEEP_RESEARCH",
+    "ThemeDomainThesis",
+    "ThemeEvidenceContext",
     "THEME_COMPANY_MAPPING",
 ]

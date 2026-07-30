@@ -45,6 +45,15 @@ class ToolMeta(BaseModel):
     category: ToolCategory = Field(..., description="工具分类")
     description: str = Field(..., description="工具描述（原文，超过 500 字截断）")
     parameters: List[ToolParameterSpec] = Field(default_factory=list, description="参数列表")
+    typed: bool = Field(False, description="参数和结果是否都由同源运行时模型校验")
+    args_schema: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="运行时参数模型生成的完整 JSON Schema",
+    )
+    result_schema: Optional[Dict[str, Any]] = Field(
+        None,
+        description="运行时结果模型生成的完整 JSON Schema",
+    )
 
 
 class ToolRegistryResponse(BaseModel):

@@ -11,7 +11,12 @@ from api.v1.endpoints.agent.chat import (
     _build_catalyst_analysis_answer,
     _run_standard_task_pipeline,
 )
-from src.agent.task_planner import resolve_task_plan
+from src.agent.orchestrator_v2.contracts import Capability
+from src.agent.orchestrator_v2.registry import capability_for
+from src.agent.orchestrator_v2.runtime import (
+    CompiledIntentGraphV2,
+    CompiledTaskV2,
+)
 from src.agent.task_workflows import (
     ConfirmationState,
     EntityScope,
@@ -103,34 +108,6 @@ def _payload() -> dict:
         "data_time": "2026-07-21T10:00:00+08:00",
         "is_stale": None,
     }
-
-
-def test_explicit_company_catalyst_request_uses_semantic_planner() -> None:
-    payload = {
-        "tasks": [_task().model_dump(mode="json")],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }
-    plan_response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name="submit_standard_task_plan",
-            arguments=json.dumps(payload, ensure_ascii=False),
-        ))],
-        content=None,
-    ))])
-    completion = AsyncMock(return_value=plan_response)
-
-    plan = asyncio.run(resolve_task_plan(
-        [{"role": "user", "content": "看下鸣志电器未来 6—12 个月的催化事件"}],
-        {"model": "test", "api_base": ""},
-        completion=completion,
-        current_entities=[{"name": "鸣志电器", "symbol": "603728"}],
-        previous_answer_entities=[],
-    ))
-
-    assert completion.await_count == 1
-    assert plan.tasks[0].kind == StandardTaskKind.CATALYST_ANALYSIS
-    assert plan.tasks[0].entity_scope == EntityScope.CURRENT_MESSAGE
 
 
 def test_catalyst_workflow_uses_only_the_internal_catalyst_tool() -> None:
@@ -418,10 +395,28 @@ def test_production_catalyst_request_calls_fixed_tool_then_semantic_synthesis() 
     controller = _Controller()
     candidate = _task()
     resolved = [ResolvedTask(candidate=candidate, symbols=("603728",))]
+    capability = Capability.CATALYST_ANALYSIS
+    compiled = CompiledIntentGraphV2(
+        run_id="test-run",
+        plan=chat_mod.TaskPlan(tasks=[candidate]),
+        tasks=(CompiledTaskV2(
+            task=resolved[0],
+            capability=capability,
+            capability_version="3.0.0",
+            intent_schema_version=capability_for(capability).schema_version,
+            execution_policy=capability_for(capability).execution_policy,
+            resource_fingerprint="test-catalyst",
+        ),),
+        assumptions=(),
+    )
+    graph = MagicMock()
+    graph.run_id = "test-run"
+    graph.trace.schema_version = "orchestrator-3.0"
+    graph.trace.stage_durations_ms = {}
     with patch.object(
-        chat_mod, "resolve_task_plan", new=AsyncMock(return_value=chat_mod.TaskPlan(tasks=[candidate]))
+        chat_mod, "plan_intent_graph_v2", new=AsyncMock(return_value=graph)
     ), patch.object(
-        chat_mod, "resolve_plan_entities", return_value=resolved
+        chat_mod, "compile_intent_graph_v2", new=AsyncMock(return_value=compiled)
     ), patch.object(
         chat_mod,
         "execute_tool_isolated",

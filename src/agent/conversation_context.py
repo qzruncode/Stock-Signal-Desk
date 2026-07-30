@@ -18,14 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.agent.task_executor import PlanExecutionResult, action_fingerprint
 from src.agent.result_contracts import project_task_output_entities
 from src.agent.task_workflows import WORKFLOW_REGISTRY, ResolvedTask, TaskPlan
-from src.tools.symbols import resolve_securities_csv
-
-
 CONVERSATION_CONTEXT_VERSION = "1"
 MAX_REFERENCE_TURNS = 4
 MAX_RESULT_CONTEXT_CHARS = 8_000
 MAX_PLANNER_CONTEXT_CHARS = 6_000
-MAX_TASK_SELECTION_CONTEXT_CHARS = 3_000
+MAX_TASK_SELECTION_CONTEXT_CHARS = 8_000
 _TOOL_IDENTITY_KEYS = frozenset({"tool", "toolname", "tool_name"})
 
 
@@ -45,12 +42,14 @@ class TaskReference(BaseModel):
     kind: str
     objective: str
     parameters: dict[str, Any] = Field(default_factory=dict)
+    result_selection: dict[str, Any] | None = None
     depends_on: list[str] = Field(default_factory=list)
     entities: list[SecurityReference] = Field(default_factory=list)
     status: str
     blocked_reason: str | None = None
     action_fingerprint: str = ""
     result_context: Any = Field(default_factory=list)
+    semantic_artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TurnReference(BaseModel):
@@ -58,9 +57,10 @@ class TurnReference(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    request_message_id: str | None = Field(default=None, max_length=128)
     request: str = Field(max_length=12_000)
     tasks: list[TaskReference] = Field(default_factory=list, max_length=12)
-    entities: list[SecurityReference] = Field(default_factory=list, max_length=300)
+    entities: list[SecurityReference] = Field(default_factory=list, max_length=6000)
 
 
 class ConversationContext(BaseModel):
@@ -163,6 +163,50 @@ class ConversationContext(BaseModel):
             return self.model_copy(update={"turns": self.turns[:-1]})
         return self
 
+    def retain_for_messages(
+        self,
+        messages: Iterable[Mapping[str, Any]],
+    ) -> "ConversationContext":
+        """Keep only turns whose user request still exists after transcript edits.
+
+        New turns use the stable user-message id.  Older persisted turns did not
+        store that id, so they are matched once, in order, against exact user
+        request text.  Assistant prose is never inspected.
+        """
+        remaining: list[tuple[str, str]] = []
+        for message in messages:
+            if not isinstance(message, Mapping):
+                continue
+            if str(message.get("role") or "") != "user":
+                continue
+            request = _message_text_from_structured_state(message)
+            if not request:
+                request = str(message.get("content") or "").strip()
+            if not request:
+                continue
+            remaining.append((
+                str(message.get("id") or "").strip(),
+                request[:12_000],
+            ))
+
+        ids = {message_id for message_id, _ in remaining if message_id}
+        search_start = 0
+        retained: list[TurnReference] = []
+        for turn in self.turns:
+            if turn.request_message_id:
+                if turn.request_message_id in ids:
+                    retained.append(turn)
+                continue
+            for index in range(search_start, len(remaining)):
+                if remaining[index][1] != turn.request.strip():
+                    continue
+                retained.append(turn.model_copy(update={
+                    "request_message_id": remaining[index][0] or None,
+                }))
+                search_start = index + 1
+                break
+        return self.model_copy(update={"turns": retained})
+
     def latest_entities(self) -> list[dict[str, str]]:
         if not self.turns:
             return []
@@ -188,6 +232,20 @@ class ConversationContext(BaseModel):
             for task in self.turns[-1].tasks
             if task.blocked_reason == "confirmation_required" and task.action_fingerprint
         }
+
+    def latest_semantic_artifact(
+        self,
+        artifact_type: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest completed typed artifact without parsing answer prose."""
+        for turn in reversed(self.turns):
+            for task in reversed(turn.tasks):
+                if task.status != "completed":
+                    continue
+                for artifact in reversed(task.semantic_artifacts):
+                    if str(artifact.get("type") or "") == artifact_type:
+                        return dict(artifact)
+        return None
 
     def planner_payload(self) -> dict[str, Any]:
         """Return only semantic tasks, verified entities and bounded results."""
@@ -219,7 +277,12 @@ class ConversationContext(BaseModel):
                         "parameters": _bounded_json_value(
                             task.parameters, max_chars=1_200,
                         ),
+                        "result_selection": task.result_selection,
                         "status": task.status,
+                        "semantic_artifacts": _bounded_json_value(
+                            task.semantic_artifacts,
+                            max_chars=5_000,
+                        ),
                     }
                     for task in turn.tasks
                 ],
@@ -251,11 +314,15 @@ def _without_tool_identity(value: Any) -> Any:
 
 def _bounded_json_value(value: Any, *, max_chars: int = MAX_RESULT_CONTEXT_CHARS) -> Any:
     """Bound arbitrary result data without interpreting domain language."""
+    # Convert read-only Mapping views and tuples at the migration boundary
+    # before JSON encoding.  ``default=str`` must never turn structured state
+    # into an opaque repr such as ``mappingproxy({...})``.
+    structured = _without_tool_identity(value)
     try:
-        serialized = json.dumps(value, ensure_ascii=False, default=str)
+        serialized = json.dumps(structured, ensure_ascii=False, default=str)
     except Exception:
         return str(value)[:max_chars]
-    normalized = _without_tool_identity(json.loads(serialized))
+    normalized = json.loads(serialized)
     serialized = json.dumps(normalized, ensure_ascii=False, default=str)
     if len(serialized) <= max_chars:
         return normalized
@@ -420,64 +487,79 @@ def build_turn_reference(
     plan: TaskPlan,
     resolved_tasks: list[ResolvedTask],
     execution: PlanExecutionResult,
+    *,
+    request_message_id: str | None = None,
 ) -> TurnReference:
     """Build reference state from typed execution objects, never answer prose."""
     resolved_by_id = {task.task_id: task for task in resolved_tasks}
     result_by_id = {result.task.task_id: result for result in execution.tasks}
-    all_entities: list[dict[str, str]] = []
-    transform_outputs: list[list[dict[str, str]]] = []
     task_references: list[TaskReference] = []
 
     for candidate in plan.tasks:
         resolved = resolved_by_id.get(candidate.task_id)
         result = result_by_id.get(candidate.task_id)
-        result_context = [call.result for call in result.calls] if result else []
-        input_entities, _ = resolve_securities_csv(
-            ",".join(resolved.symbols if resolved else ()),
+        derived_context = (
+            [
+                packet.get("result")
+                for packet in result.derived_results
+                if isinstance(packet.get("result"), Mapping)
+            ]
+            if result
+            else []
         )
-        projected = project_task_output_entities(
-            candidate.kind.value,
-            input_entities,
-            result_context,
-            candidate.parameters,
+        result_context = (
+            [
+                *(
+                    []
+                    if derived_context and len(result.calls) > 100
+                    else [call.result for call in result.calls]
+                ),
+                *derived_context,
+            ]
+            if result
+            else []
         )
+        semantic_artifacts = [
+            artifact
+            for packet in (result.derived_results if result else [])
+            if isinstance(packet.get("result"), Mapping)
+            for artifact in packet["result"].get("semantic_artifacts") or []
+            if isinstance(artifact, Mapping)
+        ]
+        projected = [
+            {"symbol": entity.symbol, "name": entity.name}
+            for entity in (result.output_entities if result else ())
+        ]
         task_entities = _security_references(projected)
-        if candidate.kind.value == "collection_financial_filter":
-            transform_outputs.append([item.model_dump() for item in task_entities])
-        all_entities.extend(item.model_dump() for item in task_entities)
         task_references.append(TaskReference(
             task_id=candidate.task_id,
             kind=candidate.kind.value,
             objective=candidate.objective,
             parameters=_bounded_json_value(candidate.parameters, max_chars=8_000),
+            result_selection=(
+                candidate.result_selection.model_dump(mode="json")
+                if candidate.result_selection is not None
+                else None
+            ),
             depends_on=list(candidate.depends_on),
             entities=task_entities,
             status=result.status if result else "not_executed",
             blocked_reason=result.blocked_reason if result else None,
             action_fingerprint=action_fingerprint(resolved) if resolved else "",
             result_context=_bounded_json_value(result_context),
+            semantic_artifacts=[
+                _bounded_json_value(artifact, max_chars=4_000)
+                for artifact in semantic_artifacts
+            ],
         ))
 
-    if transform_outputs:
-        # Multiple filters in one turn are independent predicates over the same
-        # input collection.  Their user-visible output is the ordered
-        # intersection, so that exact set becomes the next turn's scope.
-        allowed = set.intersection(*(
-            {item["symbol"] for item in output}
-            for output in transform_outputs
-        )) if transform_outputs else set()
-        base_order = [
-            item
-            for output in transform_outputs
-            for item in output
-        ]
-        turn_entities = _security_references(
-            item for item in base_order if item["symbol"] in allowed
-        )
-    else:
-        turn_entities = _security_references(all_entities)
+    turn_entities = _security_references(
+        {"symbol": entity.symbol, "name": entity.name}
+        for entity in execution.final_entities
+    )
 
     return TurnReference(
+        request_message_id=(str(request_message_id or "").strip() or None),
         request=str(request or "")[:12_000],
         tasks=task_references,
         entities=turn_entities,

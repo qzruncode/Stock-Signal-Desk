@@ -14,6 +14,8 @@ from src.storage.mixins.watchlist import WatchlistMixin
 from src.storage.mixins.agent_prompt import AgentPromptMixin
 from src.storage.mixins.rss_cache import RssCacheMixin
 from src.storage.mixins.tool_cache import ToolCacheMixin
+from src.storage.mixins.agent_artifact import AgentArtifactMixin
+from src.storage.mixins.agent_run_trace import AgentRunTraceMixin
 
 __all__ = [
     "DailyDataMixin",
@@ -29,4 +31,6 @@ __all__ = [
     "AgentPromptMixin",
     "RssCacheMixin",
     "ToolCacheMixin",
+    "AgentArtifactMixin",
+    "AgentRunTraceMixin",
 ]

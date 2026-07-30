@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import patch
 
 from src.tools.get_theme_stock_candidates import (
@@ -148,3 +149,46 @@ def test_free_form_phrase_does_not_expand_to_a_catalog_alias() -> None:
 
     assert result["success"] is False
     assert result["items"] == []
+
+
+def test_theme_candidates_reuse_last_complete_cache_when_live_sources_fail() -> None:
+    cached_items = [{
+        "symbol": "000001",
+        "source_name": "公司一",
+        "board": "实际主题板块",
+        "primary_theme": True,
+        "source": "东方财富概念板块",
+        "source_url": "https://example.test/board",
+    }]
+    cached_boards = [{
+        "name": "实际主题板块",
+        "coverage": "full",
+        "primary_theme": True,
+    }]
+    with patch(
+        "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
+        return_value=([], [], ["实时源失败"]),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
+        return_value=([], [], []),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
+        return_value=([], [], []),
+    ), patch(
+        "src.tools.get_theme_stock_candidates._load_complete_constituent_cache",
+        return_value=(cached_items, cached_boards, datetime(2026, 7, 24, 10, 0)),
+    ):
+        result = get_theme_stock_candidates(
+            "实际主题板块",
+            board_code="BK0001",
+            local_universe={
+                "000001": {"symbol": "000001", "name": "公司一"},
+            },
+            maintenance_result={"total": 1},
+        )
+
+    assert result["success"] is True
+    assert result["coverage_complete"] is True
+    assert result["cache_fallback_used"] is True
+    assert result["is_stale"] is True
+    assert [item["symbol"] for item in result["items"]] == ["000001"]

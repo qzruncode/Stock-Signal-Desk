@@ -25,7 +25,11 @@ def _model_report_view(report: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict)
     ]
     future = [
-        item for item in report.get("future_mainlines") or []
+        item for item in (
+            report.get("candidate_mainlines")
+            or report.get("future_mainlines")
+            or []
+        )
         if isinstance(item, dict)
     ]
     return {
@@ -45,6 +49,7 @@ def _model_report_view(report: dict[str, Any]) -> dict[str, Any]:
         "current_themes": current,
         "next_themes": future,
         "current_mainlines": current,
+        "candidate_mainlines": future,
         "future_mainlines": future,
         "llm_used": bool(report.get("llm_used")),
         "model_used": report.get("model_used"),
@@ -58,11 +63,15 @@ def build_summary_response(
     model_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot = context["source_snapshot"]
-    if model_report and model_report.get("current_mainlines"):
+    if model_report and (
+        model_report.get("current_mainlines")
+        or model_report.get("candidate_mainlines")
+        or model_report.get("future_mainlines")
+    ):
         view = _model_report_view(model_report)
         view["source_snapshot"] = {
             "market_status": snapshot.get("market_status") or {},
-            "market_breadth": snapshot.get("market_breadth") or {},
+            "board_catalog_status": snapshot.get("board_catalog_status") or {},
         }
         return view
     return {
@@ -75,7 +84,7 @@ def build_summary_response(
         "investment_takeaway": "模型完成基于证据的动态归纳前，不输出主线名称或阶段。",
         "source_snapshot": {
             "market_status": snapshot.get("market_status") or {},
-            "market_breadth": snapshot.get("market_breadth") or {},
+            "board_catalog_status": snapshot.get("board_catalog_status") or {},
         },
         "llm_used": False,
         "model_used": None,
@@ -89,12 +98,16 @@ def build_response(
     model_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     snapshot = context["source_snapshot"]
-    if model_report and model_report.get("current_mainlines"):
+    if model_report and (
+        model_report.get("current_mainlines")
+        or model_report.get("candidate_mainlines")
+        or model_report.get("future_mainlines")
+    ):
         result = _model_report_view(model_report)
     else:
         result = {
             "generated_at": context["generated_at"],
-            "headline": "已收集市场、板块、资金和公开信息，动态主线研判暂不可用。",
+            "headline": "已收集政策、产业和机构策略证据，动态主线研判暂不可用。",
             "market_regime": "未研判",
             "market_stage": empty_market_stage(),
             "primary_judgement": (
@@ -106,6 +119,7 @@ def build_response(
             "current_themes": [],
             "next_themes": [],
             "current_mainlines": [],
+            "candidate_mainlines": [],
             "future_mainlines": [],
             "llm_used": False,
             "model_used": None,
@@ -113,7 +127,8 @@ def build_response(
         }
     result.update({
         "source_notes": [
-            "公开市场状态、市场宽度、行业与概念板块、板块资金流",
+            "政策方向、产业供需、技术路线、资本开支和机构策略共识",
+            "行业与概念板块目录仅用于标准名称映射，不作为主线证据",
             "交易所与官方公开信息",
             "公共资讯与公开研究资料",
         ],
@@ -151,7 +166,10 @@ def build_insight_response(evidence: dict[str, Any]) -> dict[str, Any]:
     ]
     future = [
         item for item in (
-            evidence.get("future_mainlines") or evidence.get("next_themes") or []
+            evidence.get("candidate_mainlines")
+            or evidence.get("future_mainlines")
+            or evidence.get("next_themes")
+            or []
         )
         if isinstance(item, dict)
     ]
@@ -196,7 +214,7 @@ def build_insight_response(evidence: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_isolated(*, force: bool, layer: str, timeout: int = 35) -> Optional[dict]:
+def run_isolated(*, force: bool, layer: str) -> Optional[dict]:
     cmd = [sys.executable, "-m", "src.services.market_theme_service"]
     if force:
         cmd.append("--force")
@@ -207,12 +225,8 @@ def run_isolated(*, force: bool, layer: str, timeout: int = 35) -> Optional[dict
             cwd=str(__import__("pathlib").Path(__file__).resolve().parents[3]),
             capture_output=True,
             text=True,
-            timeout=timeout,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        logger.error("market theme isolated runner timed out: layer=%s timeout=%ss", layer, timeout)
-        return None
     except Exception:
         logger.exception("market theme isolated runner failed to start")
         return None

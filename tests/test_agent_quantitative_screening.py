@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from api.v1.endpoints.agent import exports
 from api.v1.endpoints.agent.chat import _build_quantitative_screen_answer
 from api.v1.endpoints.agent import tool_registry_meta
+from src.agent.task_workflows import StandardTaskKind, workflow_for
 
 
 def _successful_result() -> dict:
@@ -133,7 +134,7 @@ def test_export_endpoint_serves_only_generated_file_ids(tmp_path, monkeypatch) -
     assert exc.value.status_code == 404
 
 
-def test_tool_registry_uses_long_timeout_for_full_market_screen() -> None:
-    assert tool_registry_meta._execution_timeout(
-        "screen_atr_volatility_stocks", {"screen_spec": {}, "refresh_if_stale": True},
-    ) == tool_registry_meta._QUANTITATIVE_SCREEN_TIMEOUT_SECONDS
+def test_full_market_screen_has_no_application_deadline() -> None:
+    workflow = workflow_for(StandardTaskKind.STOCK_SCREENING)
+    assert not hasattr(workflow, "timeout_seconds")
+    assert not hasattr(tool_registry_meta, "_execution_timeout")

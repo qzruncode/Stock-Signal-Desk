@@ -6,7 +6,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import select, and_, desc, func, delete, or_
 from sqlalchemy.orm import Session
 
-from src.storage.models import ChatConversation, ChatMessage, ConversationMessage, LLMUsage
+from src.storage.models import (
+    AgentArtifact,
+    AgentRunTrace,
+    ChatConversation,
+    ChatMessage,
+    ConversationMessage,
+    LLMUsage,
+)
 
 
 class ChatMixin:
@@ -98,6 +105,16 @@ class ChatMixin:
         """删除对话会话及其消息。"""
         with self.session_scope() as session:
             session.execute(
+                delete(AgentArtifact).where(
+                    AgentArtifact.conversation_id == conversation_id
+                )
+            )
+            session.execute(
+                delete(AgentRunTrace).where(
+                    AgentRunTrace.conversation_id == conversation_id
+                )
+            )
+            session.execute(
                 delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
             )
             result = session.execute(
@@ -124,6 +141,7 @@ class ChatMixin:
         *,
         preview_text: Optional[str] = None,
         thread_state_json: Optional[str] = None,
+        agent_context_json: Optional[str] = None,
         updated_at: Optional[datetime] = None,
     ) -> None:
         """用完整消息快照覆盖对话消息。"""
@@ -166,12 +184,47 @@ class ChatMixin:
                 select(ChatConversation).where(ChatConversation.id == conversation_id)
             ).scalars().first()
             if record:
-                record.preview_text = (preview_text or record.preview_text or None)
-                if record.preview_text:
-                    record.preview_text = record.preview_text[:200]
+                record.preview_text = preview_text[:200] if preview_text else None
                 if thread_state_json is not None:
                     record.thread_state_json = thread_state_json
+                if agent_context_json is not None:
+                    record.agent_context_json = agent_context_json
                 record.updated_at = timestamp
+
+    def update_chat_thread_state(
+        self,
+        conversation_id: str,
+        thread_state_json: str,
+        *,
+        agent_context_json: Optional[str] = None,
+        updated_at: Optional[datetime] = None,
+    ) -> None:
+        """Update presentation and optional server context without replacing messages."""
+        with self.session_scope() as session:
+            record = session.execute(
+                select(ChatConversation).where(ChatConversation.id == conversation_id)
+            ).scalars().first()
+            if record:
+                record.thread_state_json = thread_state_json
+                if agent_context_json is not None:
+                    record.agent_context_json = agent_context_json
+                record.updated_at = updated_at or datetime.now()
+
+    def update_chat_agent_context(
+        self,
+        conversation_id: str,
+        agent_context_json: str,
+        *,
+        updated_at: Optional[datetime] = None,
+    ) -> None:
+        """Update only server-owned semantic context."""
+        with self.session_scope() as session:
+            record = session.execute(
+                select(ChatConversation).where(ChatConversation.id == conversation_id)
+            ).scalars().first()
+            if record:
+                record.agent_context_json = agent_context_json
+                record.updated_at = updated_at or datetime.now()
 
     def upsert_partial_assistant_message(
         self,

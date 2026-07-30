@@ -9,17 +9,27 @@ ordering, call budgets and side-effect policy.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from src.agent.result_contracts import (
     CollectionFinancialFilterSpec,
     DomainBoardQuerySpec,
     InvestmentThesisContext,
+    ThemeEvidenceContext,
+    project_collection_financial_filter_entities,
 )
 
 
@@ -92,8 +102,49 @@ class EffectClass(str, Enum):
     TRADE = "trade"
 
 
+class TaskResource(str, Enum):
+    SECURITY_COLLECTION = "security_collection"
+    DOMAIN_COLLECTION = "domain_collection"
+
+
+class CollectionBehavior(str, Enum):
+    NONE = "none"
+    SOURCE = "source"
+    PASSTHROUGH = "passthrough"
+    FILTER = "filter"
+
+
+class ResultSelectionMode(str, Enum):
+    BEST_ONE = "best_one"
+    TOP_K = "top_k"
+    ALL_RELEVANT = "all_relevant"
+
+
+class ResultSelectionSpec(BaseModel):
+    """Typed cardinality contract for ranked collection results."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ResultSelectionMode
+    max_items: int | None = Field(default=None, ge=1, le=512)
+
+    @model_validator(mode="after")
+    def _validate_cardinality(self) -> "ResultSelectionSpec":
+        if self.mode == ResultSelectionMode.BEST_ONE and self.max_items != 1:
+            raise ValueError("best_one requires max_items=1")
+        if self.mode == ResultSelectionMode.TOP_K:
+            if self.max_items is None or self.max_items < 2:
+                raise ValueError("top_k requires max_items between 2 and 512")
+        if (
+            self.mode == ResultSelectionMode.ALL_RELEVANT
+            and self.max_items is not None
+        ):
+            raise ValueError("all_relevant requires max_items=null")
+        return self
+
+
 class StandardTask(BaseModel):
-    """One model-proposed task before the program compiles any tool call."""
+    """Internal immutable-workflow input produced only by typed compilers."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -102,11 +153,20 @@ class StandardTask(BaseModel):
     objective: str = Field(min_length=1, max_length=400)
     entity_scope: EntityScope = EntityScope.NONE
     entities: list[str] = Field(default_factory=list, max_length=100)
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    execution_parameters: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("execution_parameters", "parameters"),
+    )
     depends_on: list[str] = Field(default_factory=list, max_length=12)
+    result_selection: ResultSelectionSpec | None = None
     output_requirements: list[str] = Field(default_factory=list, max_length=20)
     confirmation: ConfirmationState = ConfirmationState.NOT_REQUIRED
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    @property
+    def parameters(self) -> Mapping[str, Any]:
+        """Read-only compatibility view for fixed workflow compilers."""
+        return MappingProxyType(self.execution_parameters)
 
     @field_validator("entities", "depends_on", "output_requirements", mode="before")
     @classmethod
@@ -120,9 +180,8 @@ class StandardTask(BaseModel):
                 result.append(text)
         return result
 
-
 class TaskPlan(BaseModel):
-    """A validated candidate DAG emitted by the semantic planner."""
+    """Internal executable DAG projected from the frozen typed intent graph."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -130,6 +189,20 @@ class TaskPlan(BaseModel):
     needs_clarification: bool = False
     clarification_question: str | None = None
     source: str = "semantic"
+
+    @field_validator("tasks", mode="before")
+    @classmethod
+    def _decode_provider_encoded_tasks(cls, value: Any) -> Any:
+        """Accept only a complete JSON array when a Provider encodes it twice."""
+        if not isinstance(value, str):
+            return value
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("tasks string must be a complete JSON array") from exc
+        if not isinstance(decoded, list):
+            raise ValueError("tasks string must decode to a JSON array")
+        return decoded
 
     @model_validator(mode="after")
     def _validate_graph(self) -> "TaskPlan":
@@ -168,9 +241,16 @@ class TaskPlan(BaseModel):
 
 
 @dataclass(frozen=True)
+class SecurityEntity:
+    symbol: str
+    name: str
+
+
+@dataclass(frozen=True)
 class ResolvedTask:
     candidate: StandardTask
     symbols: tuple[str, ...] = ()
+    entity_names: tuple[tuple[str, str], ...] = ()
 
     @property
     def task_id(self) -> str:
@@ -184,6 +264,28 @@ class ResolvedTask:
     def parameters(self) -> Mapping[str, Any]:
         return self.candidate.parameters
 
+    @property
+    def result_selection(self) -> ResultSelectionSpec | None:
+        return self.candidate.result_selection
+
+    @property
+    def entities(self) -> tuple[SecurityEntity, ...]:
+        names = dict(self.entity_names)
+        return tuple(
+            SecurityEntity(symbol=symbol, name=names.get(symbol, symbol))
+            for symbol in self.symbols
+        )
+
+
+@dataclass(frozen=True)
+class WorkflowExecutionGuard:
+    """Program-owned condition that may project a result without tool execution."""
+
+    source_step: str
+    result_path: tuple[str, ...]
+    allowed_values: frozenset[Any]
+    blocked_reason: str
+
 
 @dataclass(frozen=True)
 class WorkflowCall:
@@ -192,6 +294,9 @@ class WorkflowCall:
     tool_name: str
     arguments: dict[str, Any]
     depends_on_steps: tuple[str, ...] = ()
+    after_steps: tuple[str, ...] = ()
+    result_bindings: tuple[tuple[str, str], ...] = ()
+    execution_guard: WorkflowExecutionGuard | None = None
 
 
 class WorkflowCompileError(ValueError):
@@ -203,33 +308,14 @@ Compiler = Callable[[ResolvedTask], list[WorkflowCall]]
 
 @dataclass(frozen=True)
 class ParameterRequirement:
-    """Declarative conditional contract enforced before a Tool is exposed.
-
-    ``when`` is an AND of parameter predicates; each predicate accepts one of
-    the configured values.  ``required_all`` checks presence/non-empty values,
-    while ``required_any`` requires at least one meaningful (non-empty and, for
-    booleans, true) value.  This keeps action-specific validation in the fixed
-    Workflow Registry instead of scattering it through prompt keywords or Tool
-    implementations.
-    """
+    """Program-owned entity and confirmation policy for one action shape."""
 
     when: tuple[tuple[str, frozenset[Any]], ...] = ()
-    required_all: frozenset[str] = field(default_factory=frozenset)
-    required_any: frozenset[str] = field(default_factory=frozenset)
     requires_entities: bool = False
     confirmation_required: bool = False
 
     def applies(self, parameters: Mapping[str, Any]) -> bool:
         return all(parameters.get(key) in values for key, values in self.when)
-
-    def planner_contract(self) -> dict[str, Any]:
-        return {
-            "when": {key: sorted(values) for key, values in self.when},
-            "required_parameters": sorted(self.required_all),
-            "one_of_parameters": sorted(self.required_any),
-            "requires_entities": self.requires_entities,
-            "confirmation_required": self.confirmation_required,
-        }
 
 
 @dataclass(frozen=True)
@@ -239,59 +325,26 @@ class WorkflowSpec:
     description: str
     tool_whitelist: frozenset[str]
     compiler: Compiler
-    required_parameters: frozenset[str] = field(default_factory=frozenset)
-    allowed_parameters: frozenset[str] = field(default_factory=frozenset)
     requires_entities: bool = False
     max_tool_calls: int = 8
     max_parallel_steps: int = 8
-    max_attempts: int = 1
+    allow_partial_tool_failures: bool = False
     effect: EffectClass = EffectClass.READ
     confirmation_actions: frozenset[str] = field(default_factory=frozenset)
     enabled: bool = True
     state_machine: tuple[str, ...] = ()
-    parameter_notes: tuple[str, ...] = ()
-    parameter_enums: Mapping[str, frozenset[Any]] = field(default_factory=dict)
     parameter_requirements: tuple[ParameterRequirement, ...] = ()
     resource_bindings: frozenset[str] = field(default_factory=frozenset)
-
-    def planner_contract(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind.value,
-            "description": self.description,
-            "requires_entities": self.requires_entities,
-            "required_parameters": sorted(self.required_parameters),
-            "allowed_parameters": sorted(self.allowed_parameters),
-            "effect": self.effect.value,
-            "enabled": self.enabled,
-            "parameter_notes": list(self.parameter_notes),
-            "parameter_enums": {
-                key: sorted(values)
-                for key, values in self.parameter_enums.items()
-            },
-            "conditional_requirements": [
-                requirement.planner_contract()
-                for requirement in self.parameter_requirements
-            ],
-            "semantic_resources": sorted(self.resource_bindings),
-        }
-
-
-def _parameter_is_present(parameters: Mapping[str, Any], key: str) -> bool:
-    if key not in parameters or parameters[key] is None:
-        return False
-    value = parameters[key]
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, frozenset, dict)):
-        return bool(value)
-    return True
-
-
-def _parameter_is_meaningful(parameters: Mapping[str, Any], key: str) -> bool:
-    if not _parameter_is_present(parameters, key):
-        return False
-    value = parameters[key]
-    return value is not False
+    input_resources: frozenset[TaskResource] = field(default_factory=frozenset)
+    input_resource_parameters: Mapping[str, TaskResource] = field(default_factory=dict)
+    parameter_output_resources: Mapping[str, TaskResource] = field(default_factory=dict)
+    output_resources: frozenset[TaskResource] = field(default_factory=frozenset)
+    collection_behavior: CollectionBehavior = CollectionBehavior.NONE
+    result_processor: str | None = None
+    result_contract: str | None = None
+    supports_result_selection: bool = False
+    max_input_entities: int | None = None
+    max_output_entities: int | None = None
 
 
 def parameter_requirement_issues(
@@ -306,20 +359,6 @@ def parameter_requirement_issues(
     for requirement in spec.parameter_requirements:
         if not requirement.applies(task.parameters):
             continue
-        missing = sorted(
-            key
-            for key in requirement.required_all
-            if not _parameter_is_present(task.parameters, key)
-        )
-        if missing:
-            issues.append(f"missing conditional parameters {missing}")
-        if requirement.required_any and not any(
-            _parameter_is_meaningful(task.parameters, key)
-            for key in requirement.required_any
-        ):
-            issues.append(
-                "requires at least one of " + str(sorted(requirement.required_any))
-            )
         if requirement.requires_entities and symbols is not None and not symbols:
             issues.append("requires resolved entities for the selected operation")
         if (
@@ -338,6 +377,9 @@ def _call(
     arguments: Mapping[str, Any] | None = None,
     *,
     depends_on: Sequence[str] = (),
+    after: Sequence[str] = (),
+    bind_results: Mapping[str, str] | None = None,
+    execute_when: WorkflowExecutionGuard | None = None,
 ) -> WorkflowCall:
     return WorkflowCall(
         task_id=task.task_id,
@@ -345,6 +387,9 @@ def _call(
         tool_name=tool_name,
         arguments=dict(arguments or {}),
         depends_on_steps=tuple(depends_on),
+        after_steps=tuple(after),
+        result_bindings=tuple((bind_results or {}).items()),
+        execution_guard=execute_when,
     )
 
 
@@ -575,6 +620,10 @@ def _compile_catalyst_analysis(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def _compile_professional_buy_analysis(task: ResolvedTask) -> list[WorkflowCall]:
+    from src.services.buy_criteria.mainline_policy import (
+        normalize_mainline_strategy,
+    )
+
     symbols = list(task.symbols)
     if not symbols:
         raise WorkflowCompileError("investment_decision requires at least one resolved entity")
@@ -589,19 +638,60 @@ def _compile_professional_buy_analysis(task: ResolvedTask) -> list[WorkflowCall]
         if raw_thesis_context is not None
         else None
     )
-    # This is one logical portfolio review. The tool owns bounded per-company
-    # fan-out; each company independently runs the ordered eight-dimension
-    # Boolean state machine and stops at its first non-pass result.
-    return [_call(
-        task,
-        "professional_buy_collection_review",
-        "evaluate_multi_stock_buy_criteria",
-        {
-            "symbols": ",".join(symbols),
-            "thesis": thesis,
-            **({"thesis_context": thesis_context} if thesis_context is not None else {}),
-        },
-    )]
+    common_arguments = {
+        "thesis": thesis,
+        "mainline_strategy": normalize_mainline_strategy(
+            task.parameters.get("mainline_strategy")
+        ).value,
+        **({"thesis_context": thesis_context} if thesis_context is not None else {}),
+    }
+    snapshot_step = "market_mainline_snapshot"
+    mainline_gate_step = "market_mainline_gate"
+    return [
+        _call(
+            task,
+            snapshot_step,
+            "prepare_market_mainline_snapshot",
+            {},
+        ),
+        _call(
+            task,
+            mainline_gate_step,
+            "evaluate_market_mainline_gate",
+            common_arguments,
+            depends_on=(snapshot_step,),
+            bind_results={
+                "market_mainline_snapshot": snapshot_step,
+            },
+        ),
+        *[
+            _call(
+                task,
+                f"professional_buy_{index:03d}",
+                "evaluate_multi_stock_buy_criteria",
+                {
+                    "symbols": symbol,
+                    **common_arguments,
+                },
+                depends_on=(snapshot_step, mainline_gate_step),
+                bind_results={
+                    "market_mainline_snapshot": snapshot_step,
+                    "market_mainline_assessment": mainline_gate_step,
+                    "market_mainline_model_error": mainline_gate_step,
+                },
+                execute_when=WorkflowExecutionGuard(
+                    source_step=mainline_gate_step,
+                    result_path=("market_mainline_assessment", "status"),
+                    allowed_values=frozenset({"pass"}),
+                    blocked_reason=(
+                        "共享市场主线第一关未通过，程序已按八维顺序"
+                        "直接形成逐股终态，后续七维不得执行。"
+                    ),
+                ),
+            )
+            for index, symbol in enumerate(symbols, 1)
+        ],
+    ]
 
 
 def _compile_market(task: ResolvedTask) -> list[WorkflowCall]:
@@ -676,20 +766,27 @@ def _compile_macro(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def _compile_industry(task: ResolvedTask) -> list[WorkflowCall]:
-    query = str(task.parameters.get("query") or task.candidate.objective).strip()
-    subjects = task.parameters.get("subjects")
-    if not isinstance(subjects, list) or not subjects:
+    domains = task.parameters.get("domains")
+    if not isinstance(domains, list) or not domains:
         raise WorkflowCompileError(
-            "industry_research requires Planner-supplied semantic subjects"
+            "industry_research requires a non-empty domains array"
         )
-    common = _params(task, {"days", "limit", "include_content", "fallback_to_web"})
+    labels = [
+        str(
+            domain
+            if isinstance(domain, str)
+            else domain.get("label")
+            if isinstance(domain, Mapping)
+            else ""
+        ).strip()
+        for domain in domains
+    ]
+    if not all(labels):
+        raise WorkflowCompileError(
+            "industry_research domains must contain semantic topic labels"
+        )
     return [
-        _call(task, "industry_news", "search_financial_news", {
-            "query": query, "topic": "industry", "subjects": subjects, **common,
-        }),
-        _call(task, "industry_research", "search_research_library", {
-            "query": query, "category": "industry", "subjects": subjects, **common,
-        }),
+        _call(task, "domain_board_catalog", "get_domain_board_catalog", {}),
     ]
 
 
@@ -699,7 +796,9 @@ def _compile_theme_discovery(task: ResolvedTask) -> list[WorkflowCall]:
         raise WorkflowCompileError("theme_stock_discovery requires a non-empty domains array")
     try:
         domain_specs = [
-            DomainBoardQuerySpec.model_validate(domain).model_dump()
+            DomainBoardQuerySpec.model_validate(domain).model_dump(
+                exclude_none=True
+            )
             for domain in domains
         ]
     except Exception as exc:
@@ -712,32 +811,86 @@ def _compile_theme_discovery(task: ResolvedTask) -> list[WorkflowCall]:
 
 def _compile_theme_evidence(task: ResolvedTask) -> list[WorkflowCall]:
     domains = task.parameters.get("domains")
+    candidate_scope = str(task.parameters.get("candidate_scope") or "").strip()
     query = str(task.parameters.get("query") or task.candidate.objective).strip()
     if not isinstance(domains, list) or not domains:
         raise WorkflowCompileError("theme_business_evidence requires resolved domains")
+    if candidate_scope == "candidate_collection" and not task.symbols:
+        raise WorkflowCompileError(
+            "theme_business_evidence requires the upstream candidate collection"
+        )
+    subjects: list[str] = []
+    for domain in domains:
+        label = (
+            domain
+            if isinstance(domain, str)
+            else domain.get("label")
+            if isinstance(domain, Mapping)
+            else ""
+        )
+        text = str(label or "").strip()
+        if text and text not in subjects:
+            subjects.append(text)
+    if not subjects:
+        raise WorkflowCompileError(
+            "theme_business_evidence requires semantic domain labels"
+        )
     try:
-        domain_specs = [
-            DomainBoardQuerySpec.model_validate(domain)
-            for domain in domains
-        ]
+        evidence_context = ThemeEvidenceContext.model_validate(
+            task.parameters.get("evidence_context")
+        )
     except Exception as exc:
         raise WorkflowCompileError(
-            f"theme_business_evidence requires resolved domain-board objects: {exc}"
+            f"theme_business_evidence requires a parent-theme evidence context: {exc}"
         ) from exc
-    subjects = [domain.label for domain in domain_specs]
+    if candidate_scope == "candidate_collection":
+        names = dict(task.entity_names)
+        days = max(30, min(int(task.parameters.get("days") or 365), 730))
+        return [
+            _call(
+                task,
+                f"company_{index:04d}_{symbol}",
+                "get_company_theme_evidence",
+                {
+                    "symbol": symbol,
+                    "company_name": names.get(symbol, symbol),
+                    "target_topics": evidence_context.target_topics,
+                    "domains": subjects,
+                    "objective": task.candidate.objective,
+                    "days": days,
+                },
+            )
+            for index, symbol in enumerate(task.symbols, 1)
+        ]
+
     common = _params(task, {"days", "limit", "include_content", "fallback_to_web"})
-    candidate_args: dict[str, Any] = {
-        "domains": [domain.model_dump() for domain in domain_specs],
-    }
-    return [
-        _call(task, "domain_candidates", "get_domain_stock_candidates", candidate_args),
-        _call(task, "business_news", "search_financial_news", {
-            "query": query, "topic": "industry", "subjects": subjects, **common,
-        }),
-        _call(task, "business_research", "search_research_library", {
-            "query": query, "category": "industry", "subjects": subjects, **common,
-        }),
-    ]
+    common.setdefault("days", 365)
+    common.setdefault("limit", 12)
+    common["include_content"] = True
+    common["fallback_to_web"] = True
+    calls: list[WorkflowCall] = []
+    for index, subject in enumerate(subjects, 1):
+        retrieval_subjects = list(dict.fromkeys([
+            *evidence_context.target_topics,
+            subject,
+        ]))
+        parent_topic = "、".join(evidence_context.target_topics)
+        subject_query = f"{parent_topic}中的{subject}：{query}"
+        calls.extend([
+            _call(task, f"business_news_{index}", "search_financial_news", {
+                "query": subject_query,
+                "topic": "industry",
+                "subjects": retrieval_subjects,
+                **common,
+            }),
+            _call(task, f"business_research_{index}", "search_research_library", {
+                "query": subject_query,
+                "category": "industry",
+                "subjects": retrieval_subjects,
+                **common,
+            }),
+        ])
+    return calls
 
 
 def _compile_screening(task: ResolvedTask) -> list[WorkflowCall]:
@@ -763,21 +916,30 @@ def _compile_collection_filter(task: ResolvedTask) -> list[WorkflowCall]:
         raise WorkflowCompileError(
             f"collection_financial_filter has an invalid semantic contract: {exc}"
         ) from exc
-    common_arguments: dict[str, Any] = {
-        "metric": filter_spec.metric,
-        "period_basis": filter_spec.period_basis,
-    }
-    if filter_spec.fiscal_year is not None:
-        common_arguments["fiscal_year"] = filter_spec.fiscal_year
-    calls = [
-        _call(task, f"financial_batch_{index // 12 + 1}", "get_multi_stock_financials", {
-            "symbols": ",".join(symbols[index:index + 12]),
-            **common_arguments,
-        })
-        for index in range(0, len(symbols), 12)
-    ]
-    if len(calls) > 8:
-        raise WorkflowCompileError("collection_financial_filter supports at most 96 companies per turn")
+    calls: list[WorkflowCall] = []
+    for condition_index, condition in enumerate(filter_spec.conditions, 1):
+        common_arguments: dict[str, Any] = {
+            "metric": condition.metric,
+            "period_basis": condition.period_basis,
+        }
+        if condition.fiscal_year is not None:
+            common_arguments["fiscal_year"] = condition.fiscal_year
+        calls.extend(
+            _call(
+                task,
+                f"condition_{condition_index}_batch_{index // 24 + 1}",
+                "get_multi_stock_financials",
+                {
+                    "symbols": ",".join(symbols[index:index + 24]),
+                    **common_arguments,
+                },
+            )
+            for index in range(0, len(symbols), 24)
+        )
+    if len(symbols) > 300 or len(calls) > 104:
+        raise WorkflowCompileError(
+            "collection_financial_filter supports at most 300 companies per turn"
+        )
     return calls
 
 
@@ -917,7 +1079,7 @@ def _compile_web(task: ResolvedTask) -> list[WorkflowCall]:
     if url:
         return [_call(task, "fetch_public_page", "webfetch", {
             "url": url,
-            **_params(task, {"format", "timeout"}),
+            **_params(task, {"format"}),
         })]
     return [_call(task, "search_public_web", "websearch", {
         "query": query,
@@ -925,11 +1087,105 @@ def _compile_web(task: ResolvedTask) -> list[WorkflowCall]:
     })]
 
 
+def _dedupe_security_entities(
+    values: Iterable[Mapping[str, Any] | SecurityEntity],
+) -> tuple[SecurityEntity, ...]:
+    entities: list[SecurityEntity] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, SecurityEntity):
+            symbol = value.symbol
+            name = value.name
+        else:
+            symbol = str(value.get("symbol") or "").strip()
+            name = str(value.get("name") or symbol).strip()
+        if len(symbol) != 6 or not symbol.isdigit() or symbol in seen:
+            continue
+        seen.add(symbol)
+        entities.append(SecurityEntity(symbol=symbol, name=name or symbol))
+    return tuple(entities)
+
+
+def _entities_from_result_context(
+    result_context: Iterable[Mapping[str, Any]],
+) -> tuple[SecurityEntity, ...]:
+    found: list[dict[str, str]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            symbol = str(
+                value.get("symbol")
+                or value.get("code")
+                or value.get("stock_code")
+                or ""
+            ).strip()
+            if len(symbol) == 6 and symbol.isdigit():
+                found.append({
+                    "symbol": symbol,
+                    "name": str(
+                        value.get("name")
+                        or value.get("stock_name")
+                        or symbol
+                    ).strip(),
+                })
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for packet in result_context:
+        result = (
+            packet.get("result")
+            if isinstance(packet, Mapping)
+            and isinstance(packet.get("result"), Mapping)
+            else packet
+        )
+        if isinstance(result, Mapping) and result.get("success") is False:
+            continue
+        visit(result)
+    return _dedupe_security_entities(found)
+
+
+def project_task_collection(
+    task: ResolvedTask,
+    result_context: Iterable[Mapping[str, Any]],
+) -> tuple[SecurityEntity, ...]:
+    """Project a task's declared collection output from typed execution data."""
+    spec = workflow_for(task.kind)
+    if TaskResource.SECURITY_COLLECTION not in spec.output_resources:
+        return ()
+    packets = list(result_context)
+    if spec.collection_behavior == CollectionBehavior.SOURCE:
+        return _entities_from_result_context(packets)
+    if spec.collection_behavior == CollectionBehavior.PASSTHROUGH:
+        discovered = {
+            entity.symbol: entity.name
+            for entity in _entities_from_result_context(packets)
+        }
+        return tuple(
+            SecurityEntity(
+                symbol=entity.symbol,
+                name=discovered.get(entity.symbol, entity.name),
+            )
+            for entity in task.entities
+        )
+    if spec.collection_behavior == CollectionBehavior.FILTER:
+        projected = project_collection_financial_filter_entities(
+            (
+                {"symbol": entity.symbol, "name": entity.name}
+                for entity in task.entities
+            ),
+            packets,
+            task.parameters,
+        )
+        return _dedupe_security_entities(projected)
+    return ()
+
+
 def _require(
     *,
     when: Mapping[str, Iterable[Any]] | None = None,
-    all_of: Iterable[str] = (),
-    one_of: Iterable[str] = (),
     entities: bool = False,
     confirmation: bool = False,
 ) -> ParameterRequirement:
@@ -938,8 +1194,6 @@ def _require(
             (key, frozenset(values))
             for key, values in (when or {}).items()
         ),
-        required_all=frozenset(all_of),
-        required_any=frozenset(one_of),
         requires_entities=entities,
         confirmation_required=confirmation,
     )
@@ -952,61 +1206,113 @@ def _spec(
     tools: Iterable[str],
     compiler: Compiler,
     *,
-    required: Iterable[str] = (),
-    allowed: Iterable[str] = (),
     entities: bool = False,
     effect: EffectClass = EffectClass.READ,
     confirmation_actions: Iterable[str] = (),
     max_tool_calls: int = 8,
     max_parallel_steps: int = 8,
-    max_attempts: int = 1,
+    allow_partial_tool_failures: bool = False,
     enabled: bool = True,
     state_machine: Sequence[str] = (),
-    notes: Sequence[str] = (),
-    enums: Mapping[str, Iterable[Any]] | None = None,
     requirements: Sequence[ParameterRequirement] = (),
     resources: Iterable[str] = (),
+    input_resources: Iterable[TaskResource] = (),
+    input_resource_parameters: Mapping[str, TaskResource] | None = None,
+    parameter_output_resources: Mapping[str, TaskResource] | None = None,
+    output_resources: Iterable[TaskResource] = (),
+    collection: CollectionBehavior | None = None,
+    result_processor: str | None = None,
+    result_contract: str | None = None,
+    supports_result_selection: bool = False,
+    max_input_entities: int | None = None,
+    max_output_entities: int | None = None,
 ) -> WorkflowSpec:
+    explicit_input_resources = frozenset(input_resources)
+    collection_behavior = (
+        collection
+        if collection is not None
+        else CollectionBehavior.PASSTHROUGH
+        if entities
+        else CollectionBehavior.NONE
+    )
     return WorkflowSpec(
         kind=kind,
         title=title,
         description=description,
         tool_whitelist=frozenset(tools),
         compiler=compiler,
-        required_parameters=frozenset(required),
-        allowed_parameters=frozenset(allowed),
         requires_entities=entities,
         effect=effect,
         confirmation_actions=frozenset(confirmation_actions),
-        max_tool_calls=max(1, min(int(max_tool_calls), 160)),
+        max_tool_calls=max(1, min(int(max_tool_calls), 6000)),
         max_parallel_steps=max(1, min(int(max_parallel_steps), 8)),
-        max_attempts=max(1, min(int(max_attempts), 2)),
+        allow_partial_tool_failures=allow_partial_tool_failures,
         enabled=enabled,
         state_machine=tuple(state_machine),
-        parameter_notes=tuple(notes),
-        parameter_enums=MappingProxyType({
-            key: frozenset(values)
-            for key, values in (enums or {}).items()
-        }),
         parameter_requirements=tuple(requirements),
         resource_bindings=frozenset(resources),
+        input_resources=frozenset({
+            *explicit_input_resources,
+            *(
+                {TaskResource.SECURITY_COLLECTION}
+                if entities
+                else set()
+            ),
+            *(input_resource_parameters or {}).values(),
+        }),
+        input_resource_parameters=MappingProxyType(
+            dict(input_resource_parameters or {})
+        ),
+        parameter_output_resources=MappingProxyType(
+            dict(parameter_output_resources or {})
+        ),
+        output_resources=frozenset({
+            *(
+                {TaskResource.SECURITY_COLLECTION}
+                if collection_behavior != CollectionBehavior.NONE
+                else set()
+            ),
+            *(parameter_output_resources or {}).values(),
+            *output_resources,
+        }),
+        collection_behavior=collection_behavior,
+        result_processor=result_processor,
+        result_contract=result_contract,
+        supports_result_selection=supports_result_selection,
+        max_input_entities=(
+            max_input_entities
+            if max_input_entities is not None
+            else 300
+            if (
+                entities
+                or TaskResource.SECURITY_COLLECTION in explicit_input_resources
+            )
+            else None
+        ),
+        max_output_entities=(
+            max_output_entities
+            if max_output_entities is not None
+            else 300
+            if collection_behavior != CollectionBehavior.NONE
+            else None
+        ),
     )
 
 
 _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
     StandardTaskKind.GENERAL_RESPONSE: _spec(StandardTaskKind.GENERAL_RESPONSE, "通用回答", "无需外部或实时数据的日常知识、解释、写作或计算。", (), _compile_no_tools),
-    StandardTaskKind.SECURITY_LOOKUP: _spec(StandardTaskKind.SECURITY_LOOKUP, "证券识别", "按名称、代码、市场或行业查询证券身份。", {"search_stocks"}, _compile_security_lookup, allowed={"query", "market", "sector", "limit"}),
+    StandardTaskKind.SECURITY_LOOKUP: _spec(StandardTaskKind.SECURITY_LOOKUP, "证券识别", "按名称、代码、市场或行业查询证券身份。", {"search_stocks"}, _compile_security_lookup,  collection=CollectionBehavior.SOURCE),
     StandardTaskKind.REALTIME_QUOTE: _spec(StandardTaskKind.REALTIME_QUOTE, "实时行情", "查询一只或多只证券的当前行情。", {"get_realtime_quotes"}, _compile_realtime_quote, entities=True),
-    StandardTaskKind.PRICE_HISTORY: _spec(StandardTaskKind.PRICE_HISTORY, "历史行情", "查询近期或指定日期区间的历史行情。", {"get_kline", "get_history_data"}, _compile_price_history, allowed={"start_date", "end_date", "count", "use_cache"}, entities=True, notes=("指定区间时 start_date 和 end_date 必须同时为 YYYYMMDD；否则用 count。",)),
-    StandardTaskKind.TECHNICAL_ANALYSIS: _spec(StandardTaskKind.TECHNICAL_ANALYSIS, "技术分析", "计算趋势、动量、波动和量价技术指标。", {"get_technical_indicators"}, _compile_technical, allowed={"count"}, entities=True),
-    StandardTaskKind.FUNDAMENTAL_ANALYSIS: _spec(StandardTaskKind.FUNDAMENTAL_ANALYSIS, "基本面分析", "分析公司资料、核心财务、主营构成和股东结构。", {"get_stock_info", "get_financials", "get_business_segments", "get_shareholder_structure", "get_multi_stock_snapshot"}, _compile_fundamental, allowed={"periods", "category"}, entities=True),
-    StandardTaskKind.VALUATION_ANALYSIS: _spec(StandardTaskKind.VALUATION_ANALYSIS, "估值分析", "分析当前、历史、预期和同行相对估值。", {"get_valuation_ratios", "get_consensus_estimates", "get_peer_comparison", "get_multi_stock_snapshot"}, _compile_valuation, allowed={"with_history", "metric", "dimension"}, entities=True),
-    StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS: _spec(StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS, "财报分析", "分析资产负债表、利润表和现金流量表。", {"get_balance_sheet", "get_income_statement", "get_cashflow"}, _compile_statements, allowed={"periods"}, entities=True),
-    StandardTaskKind.NEWS_ANALYSIS: _spec(StandardTaskKind.NEWS_ANALYSIS, "新闻分析", "查询公司或主题新闻并分析影响。", {"search_news", "get_announcements", "search_financial_news"}, _compile_news, allowed={"query", "topic", "subjects", "days", "limit", "use_cache", "include_content", "fallback_to_web"}, notes=("主题或多公司资讯必须给出 topic 和语义 subjects；具体公司新闻使用 entities。",), enums={"topic": {"market", "company", "announcement", "research", "macro", "industry", "social"}}),
-    StandardTaskKind.ANNOUNCEMENT_ANALYSIS: _spec(StandardTaskKind.ANNOUNCEMENT_ANALYSIS, "公告分析", "查询并分析正式公司公告。", {"get_announcements"}, _compile_announcements, allowed={"days", "limit"}, entities=True),
-    StandardTaskKind.RISK_ANALYSIS: _spec(StandardTaskKind.RISK_ANALYSIS, "风险分析", "获取公告与新闻证据并由模型研判风险。", {"get_announcements", "get_risk_events"}, _compile_risk, allowed={"days", "limit"}, entities=True),
-    StandardTaskKind.REGULATORY_ANALYSIS: _spec(StandardTaskKind.REGULATORY_ANALYSIS, "监管信息", "查询交易所披露、问询、项目和上市监管动态。", {"get_regulatory_updates"}, _compile_regulatory, allowed={"keyword", "event_type", "market", "days", "limit", "include_content", "fallback_to_web", "project_type", "project_stage", "project_status"}),
-    StandardTaskKind.RESEARCH_REPORT_ANALYSIS: _spec(StandardTaskKind.RESEARCH_REPORT_ANALYSIS, "个股研报", "查询单只证券的券商研报和一致预期证据。", {"get_research_report"}, _compile_reports, allowed={"days", "limit"}, entities=True),
+    StandardTaskKind.PRICE_HISTORY: _spec(StandardTaskKind.PRICE_HISTORY, "历史行情", "查询近期或指定日期区间的历史行情。", {"get_kline", "get_history_data"}, _compile_price_history, entities=True),
+    StandardTaskKind.TECHNICAL_ANALYSIS: _spec(StandardTaskKind.TECHNICAL_ANALYSIS, "技术分析", "计算趋势、动量、波动和量价技术指标。", {"get_technical_indicators"}, _compile_technical,  entities=True),
+    StandardTaskKind.FUNDAMENTAL_ANALYSIS: _spec(StandardTaskKind.FUNDAMENTAL_ANALYSIS, "基本面分析", "分析公司资料、核心财务、主营构成和股东结构。", {"get_stock_info", "get_financials", "get_business_segments", "get_shareholder_structure", "get_multi_stock_snapshot"}, _compile_fundamental,  entities=True),
+    StandardTaskKind.VALUATION_ANALYSIS: _spec(StandardTaskKind.VALUATION_ANALYSIS, "估值分析", "分析当前、历史、预期和同行相对估值。", {"get_valuation_ratios", "get_consensus_estimates", "get_peer_comparison", "get_multi_stock_snapshot"}, _compile_valuation,  entities=True),
+    StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS: _spec(StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS, "财报分析", "分析资产负债表、利润表和现金流量表。", {"get_balance_sheet", "get_income_statement", "get_cashflow"}, _compile_statements,  entities=True),
+    StandardTaskKind.NEWS_ANALYSIS: _spec(StandardTaskKind.NEWS_ANALYSIS, "新闻分析", "查询公司或主题新闻并分析影响。", {"search_news", "get_announcements", "search_financial_news"}, _compile_news),
+    StandardTaskKind.ANNOUNCEMENT_ANALYSIS: _spec(StandardTaskKind.ANNOUNCEMENT_ANALYSIS, "公告分析", "查询并分析正式公司公告。", {"get_announcements"}, _compile_announcements,  entities=True),
+    StandardTaskKind.RISK_ANALYSIS: _spec(StandardTaskKind.RISK_ANALYSIS, "风险分析", "获取公告与新闻证据并由模型研判风险。", {"get_announcements", "get_risk_events"}, _compile_risk,  entities=True),
+    StandardTaskKind.REGULATORY_ANALYSIS: _spec(StandardTaskKind.REGULATORY_ANALYSIS, "监管信息", "查询交易所披露、问询、项目和上市监管动态。", {"get_regulatory_updates"}, _compile_regulatory),
+    StandardTaskKind.RESEARCH_REPORT_ANALYSIS: _spec(StandardTaskKind.RESEARCH_REPORT_ANALYSIS, "个股研报", "查询单只证券的券商研报和一致预期证据。", {"get_research_report"}, _compile_reports,  entities=True),
     StandardTaskKind.CATALYST_ANALYSIS: _spec(
         StandardTaskKind.CATALYST_ANALYSIS,
         "未来催化事件",
@@ -1016,89 +1322,108 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
         entities=True,
         max_tool_calls=8,
         max_parallel_steps=2,
-        max_attempts=1,
-        notes=("只研究催化事件；不替代完整八维专业买入分析，也不使用网络搜索。",),
     ),
-    StandardTaskKind.SOCIAL_SENTIMENT_ANALYSIS: _spec(StandardTaskKind.SOCIAL_SENTIMENT_ANALYSIS, "舆情分析", "采样并分析个股公开讨论情绪。", {"get_social_sentiment"}, _compile_sentiment, allowed={"days", "limit", "max_pages"}, entities=True),
-    StandardTaskKind.STOCK_COMPARISON: _spec(StandardTaskKind.STOCK_COMPARISON, "股票对比", "横向比较多只证券的行情、估值、技术与财务。", {"get_multi_stock_snapshot", "get_peer_comparison"}, _compile_comparison, allowed={"include_peers", "dimension"}, entities=True),
-    StandardTaskKind.STOCK_DEEP_RESEARCH: _spec(StandardTaskKind.STOCK_DEEP_RESEARCH, "个股深度研究", "收集完整业务、财务、估值、交易状态和风险证据。", {"get_multi_stock_decision_evidence"}, _compile_decision_packet, allowed={"thesis"}, entities=True),
+    StandardTaskKind.SOCIAL_SENTIMENT_ANALYSIS: _spec(StandardTaskKind.SOCIAL_SENTIMENT_ANALYSIS, "舆情分析", "采样并分析个股公开讨论情绪。", {"get_social_sentiment"}, _compile_sentiment,  entities=True),
+    StandardTaskKind.STOCK_COMPARISON: _spec(StandardTaskKind.STOCK_COMPARISON, "股票对比", "横向比较多只证券的行情、估值、技术与财务。", {"get_multi_stock_snapshot", "get_peer_comparison"}, _compile_comparison,  entities=True),
+    StandardTaskKind.STOCK_DEEP_RESEARCH: _spec(StandardTaskKind.STOCK_DEEP_RESEARCH, "个股深度研究", "收集完整业务、财务、估值、交易状态和风险证据。", {"get_multi_stock_decision_evidence"}, _compile_decision_packet, entities=True),
     StandardTaskKind.INVESTMENT_DECISION: _spec(
         StandardTaskKind.INVESTMENT_DECISION,
         "专业买入分析",
-        "对完整股票集合逐只执行资深分析师八维布尔闸门；首个不通过或证据不足立即停止，八维全部通过才可买入。",
-        {"evaluate_multi_stock_buy_criteria"},
+        "对完整股票集合逐只执行资深分析师八维布尔闸门；首个未达到准入条件立即停止，"
+        "关键来源或执行故障单独标记分析未完成，八维全部通过才可买入。",
+        {
+            "prepare_market_mainline_snapshot",
+            "evaluate_market_mainline_gate",
+            "evaluate_multi_stock_buy_criteria",
+        },
         _compile_professional_buy_analysis,
-        allowed={"thesis", "thesis_context"},
+
         entities=True,
-        max_tool_calls=1,
-        max_parallel_steps=1,
-        max_attempts=1,
-        notes=(
-            "八维契约顺序：当前市场主线、产业竞争力、行业周期、非内卷、四类增长驱动、6—12个月催化、估值赔率、重大风险。",
-            "已执行维度只允许通过、不通过或证据不足；首个非通过结果关闭该股后续维度。",
-            "Agent 传递完整集合；底层执行器内部按公司并发、汇总并校验覆盖，不得静默截断。",
-            "引用既有产业领域时，thesis_context 使用 summary 和已绑定 domains 的结构化对象，禁止把展示文本重新解析为板块。",
-        ),
+        max_tool_calls=302,
+        max_parallel_steps=4,
+        allow_partial_tool_failures=True,
+        result_contract="investment_decision",
+
     ),
-    StandardTaskKind.MARKET_OVERVIEW: _spec(StandardTaskKind.MARKET_OVERVIEW, "市场概览", "分析指数、市场宽度与整体交易状态。", {"get_market_status", "get_market_breadth", "get_index_data"}, _compile_market, allowed={"include_index", "index_code", "days"}),
-    StandardTaskKind.SECTOR_ANALYSIS: _spec(StandardTaskKind.SECTOR_ANALYSIS, "板块分析", "比较行业或概念板块强弱、资金和近期信息。", {"get_sector_list", "get_sector_flow", "search_financial_news"}, _compile_sector, allowed={"type", "period", "top_n", "query", "subjects", "days", "limit", "include_content"}, notes=("type 只能是 industry 或 concept；period 只能是 today、5d、10d。",), enums={"type": {"industry", "concept"}, "period": {"today", "5d", "10d"}}),
-    StandardTaskKind.CAPITAL_FLOW_ANALYSIS: _spec(StandardTaskKind.CAPITAL_FLOW_ANALYSIS, "资金流分析", "分析个股多周期资金流持续性。", {"get_stock_capital_flow"}, _compile_capital_flow, allowed={"days"}, entities=True),
-    StandardTaskKind.MACRO_ANALYSIS: _spec(StandardTaskKind.MACRO_ANALYSIS, "宏观分析", "分析宏观指标、利率或货币政策操作。", {"get_macro_indicator", "get_bond_yield", "get_monetary_policy_operations", "search_research_library"}, _compile_macro, allowed={"indicators", "periods", "include_bond_yield", "country", "term", "days", "include_monetary_operations", "instrument", "limit", "include_content", "fallback_to_web", "query", "subjects"}, notes=("indicators 只可选 PMI、CPI、PPI、GDP、M2、社融、LPR。", "国债 country 为 cn/us，term 为 2y/5y/10y/30y。", "需要研究资料时同时提供 query 和语义 subjects。")),
-    StandardTaskKind.INDUSTRY_RESEARCH: _spec(StandardTaskKind.INDUSTRY_RESEARCH, "产业研究", "研究产业链、价值量、竞争格局和受益环节。", {"search_financial_news", "search_research_library"}, _compile_industry, required={"query", "subjects"}, allowed={"query", "subjects", "days", "limit", "include_content", "fallback_to_web"}, notes=("subjects 是 Planner 提取的核心产业主题，不是从 query 关键词二次猜测。",)),
+    StandardTaskKind.MARKET_OVERVIEW: _spec(StandardTaskKind.MARKET_OVERVIEW, "市场概览", "分析指数、市场宽度与整体交易状态。", {"get_market_status", "get_market_breadth", "get_index_data"}, _compile_market),
+    StandardTaskKind.SECTOR_ANALYSIS: _spec(StandardTaskKind.SECTOR_ANALYSIS, "板块分析", "比较行业或概念板块强弱、资金和近期信息。", {"get_sector_list", "get_sector_flow", "search_financial_news"}, _compile_sector),
+    StandardTaskKind.CAPITAL_FLOW_ANALYSIS: _spec(StandardTaskKind.CAPITAL_FLOW_ANALYSIS, "资金流分析", "分析个股多周期资金流持续性。", {"get_stock_capital_flow"}, _compile_capital_flow,  entities=True),
+    StandardTaskKind.MACRO_ANALYSIS: _spec(StandardTaskKind.MACRO_ANALYSIS, "宏观分析", "分析宏观指标、利率或货币政策操作。", {"get_macro_indicator", "get_bond_yield", "get_monetary_policy_operations", "search_research_library"}, _compile_macro),
+    StandardTaskKind.INDUSTRY_RESEARCH: _spec(
+        StandardTaskKind.INDUSTRY_RESEARCH,
+        "产业研究",
+        "拆解产业受益链，从项目完整实时板块目录中选择实际存在的受益板块，并产出可供后续找股复用的结构化板块集合。",
+        {"get_domain_board_catalog"},
+        _compile_industry,
+
+
+
+        output_resources={TaskResource.DOMAIN_COLLECTION},
+        result_processor="ranked_domain_selection",
+        result_contract="industry_ranked_domains",
+        supports_result_selection=True,
+    ),
     StandardTaskKind.THEME_STOCK_DISCOVERY: _spec(
         StandardTaskKind.THEME_STOCK_DISCOVERY,
         "领域找股",
         "按语义产业领域从内部结构化板块和完整股票池找候选。",
         {"get_domain_stock_candidates"},
         _compile_theme_discovery,
-        required={"domains"},
-        allowed={"domains"},
-        notes=(
-            "Planner 只提取用户要求的语义领域，domains 使用包含 label 的对象数组；"
-            "程序会在规划后根据实时板块目录绑定可验证的结构化板块。",
-        ),
+
+
+
         resources={"concept_board_catalog"},
+        input_resource_parameters={"domains": TaskResource.DOMAIN_COLLECTION},
+        parameter_output_resources={"domains": TaskResource.DOMAIN_COLLECTION},
+        collection=CollectionBehavior.SOURCE,
+        result_contract="theme_stock_discovery",
+        max_output_entities=6000,
     ),
     StandardTaskKind.THEME_BUSINESS_EVIDENCE: _spec(
         StandardTaskKind.THEME_BUSINESS_EVIDENCE,
-        "主题公司举证",
-        "用户明确要求订单、收入、量产或客户等业务事实时核验公司。",
-        {"get_domain_stock_candidates", "search_financial_news", "search_research_library"},
+        "逐股主题业务分析",
+        "对结构化候选集合中的每一只股票分别建立公司资料、主营、公告、个股新闻和个股研报证据档案，再逐股判断主题匹配和发展强度；不得用行业新闻命中代替逐股分析。",
+        {
+            "get_company_theme_evidence",
+            "search_financial_news",
+            "search_research_library",
+        },
         _compile_theme_evidence,
-        required={"domains"},
-        allowed={"domains", "query", "days", "limit", "include_content", "fallback_to_web"},
-        notes=("domains 只保留用户表达的语义领域；程序在执行前绑定实时板块目录。",),
-        resources={"concept_board_catalog"},
+
+
+
+
+        requirements=(
+            _require(
+                when={"candidate_scope": {"candidate_collection"}},
+                entities=True,
+            ),
+        ),
+        input_resources={TaskResource.SECURITY_COLLECTION},
+        input_resource_parameters={"domains": TaskResource.DOMAIN_COLLECTION},
+        collection=CollectionBehavior.SOURCE,
+        result_processor="company_evidence_binding",
+        result_contract="theme_business_evidence",
+        max_tool_calls=6000,
+        max_parallel_steps=4,
+        allow_partial_tool_failures=True,
+        max_input_entities=6000,
+        max_output_entities=6000,
     ),
-    StandardTaskKind.STOCK_SCREENING: _spec(StandardTaskKind.STOCK_SCREENING, "股票筛选", "按完整强类型筛选规格执行全市场量化筛选。", {"screen_atr_volatility_stocks"}, _compile_screening, required={"screen_spec"}, allowed={"screen_spec", "refresh_if_stale", "save_group_name"}),
+    StandardTaskKind.STOCK_SCREENING: _spec(StandardTaskKind.STOCK_SCREENING, "股票筛选", "按完整强类型筛选规格执行全市场量化筛选。", {"screen_atr_volatility_stocks"}, _compile_screening,   collection=CollectionBehavior.SOURCE, result_contract="stock_screening"),
     StandardTaskKind.COLLECTION_FINANCIAL_FILTER: _spec(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
         "集合财务筛选",
-        "按指标、报告期、单位和阈值分批筛选上一回答中的完整公司集合。",
+        "用一组强类型财务条件筛选完整公司集合；所有条件共同决定最终保留集合。",
         {"get_multi_stock_financials"},
         _compile_collection_filter,
-        required={"metric", "period_basis", "operator", "threshold", "threshold_unit", "action"},
-        allowed={"metric", "period_basis", "fiscal_year", "operator", "threshold", "threshold_unit", "action"},
+
+
         entities=True,
-        max_parallel_steps=1,
-        max_attempts=2,
-        notes=(
-            "metric 支持 debt_ratio、revenue、net_profit、deducted_net_profit；"
-            "净利润与扣非净利润是不同口径，不得互相替代。",
-            "period_basis 支持 latest_report、ttm、previous_fiscal_year、fiscal_year；明确年度时 fiscal_year 必填。",
-            "threshold_unit：比率用 percent，金额用 cny、wan_cny 或 yi_cny。",
-            "operator 为 gt/gte/lt/lte/eq；action 为 exclude_matching/keep_matching。",
-        ),
-        enums={
-            "metric": {"debt_ratio", "revenue", "net_profit", "deducted_net_profit"},
-            "period_basis": {"latest_report", "ttm", "previous_fiscal_year", "fiscal_year"},
-            "threshold_unit": {"percent", "cny", "wan_cny", "yi_cny"},
-            "operator": {"gt", "gte", "lt", "lte", "eq"},
-            "action": {"exclude_matching", "keep_matching"},
-        },
-        requirements=(
-            _require(when={"period_basis": {"fiscal_year"}}, all_of={"fiscal_year"}),
-        ),
+        max_tool_calls=104,
+        max_parallel_steps=4,
+        collection=CollectionBehavior.FILTER,
+        result_contract="collection_financial_filter",
     ),
     StandardTaskKind.WATCHLIST_QUERY: _spec(
         StandardTaskKind.WATCHLIST_QUERY,
@@ -1106,54 +1431,34 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
         "查看自选或在指定自选集合内按语义领域筛选。",
         {"manage_watchlist", "filter_watchlist_by_theme"},
         _compile_watchlist_query,
-        allowed={"domains", "group"},
+
         resources={"concept_board_catalog"},
-        notes=("仅在需要按产业或概念筛选时提供 domains；普通自选列表不提供。",),
+
     ),
-    StandardTaskKind.WATCHLIST_MUTATION: _spec(StandardTaskKind.WATCHLIST_MUTATION, "自选修改", "按用户明确要求添加或移除自选股。", {"manage_watchlist"}, _compile_watchlist_mutation, required={"action"}, allowed={"action"}, entities=True, effect=EffectClass.MUTATION, notes=("action 只能是 add 或 remove。",), enums={"action": {"add", "remove"}}),
-    StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: _spec(StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT, "自选分组管理", "查看、创建、重命名、删除或修改自选分组成员。", {"manage_watchlist_groups"}, _compile_group, required={"action"}, allowed={"action", "group", "new_name"}, effect=EffectClass.MUTATION, confirmation_actions={"delete"}, notes=("action 为 list/create/rename/delete/add/remove；delete 需要 explicit confirmation。",), enums={"action": {"list", "create", "rename", "delete", "add", "remove"}}, requirements=(
-        _require(when={"action": {"create", "delete", "add", "remove"}}, all_of={"group"}),
-        _require(when={"action": {"rename"}}, all_of={"group", "new_name"}),
+    StandardTaskKind.WATCHLIST_MUTATION: _spec(StandardTaskKind.WATCHLIST_MUTATION, "自选修改", "按用户明确要求添加或移除自选股。", {"manage_watchlist"}, _compile_watchlist_mutation, entities=True, effect=EffectClass.MUTATION),
+    StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: _spec(StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT, "自选分组管理", "查看、创建、重命名、删除或修改自选分组成员。", {"manage_watchlist_groups"}, _compile_group,   effect=EffectClass.MUTATION, confirmation_actions={"delete"},   requirements=(
         _require(when={"action": {"add", "remove"}}, entities=True),
     )),
     StandardTaskKind.DATA_HEALTH: _spec(StandardTaskKind.DATA_HEALTH, "数据健康", "查看股票池、行情和财务数据覆盖与维护状态。", {"get_data_health"}, _compile_data_health),
-    StandardTaskKind.FORMAL_ANALYSIS: _spec(StandardTaskKind.FORMAL_ANALYSIS, "正式分析", "启动持久化单股报告，或查询其运行状态。", {"run_stock_analysis", "get_analysis_status"}, _compile_formal_analysis, required={"action"}, allowed={"action", "task_id", "status", "limit", "force_refresh", "notify_on_complete", "prompt_template_id"}, effect=EffectClass.MUTATION, notes=("action 为 start 或 status；start 需要一个实体，status 可用 task_id。",), enums={"action": {"start", "status"}}, requirements=(
+    StandardTaskKind.FORMAL_ANALYSIS: _spec(StandardTaskKind.FORMAL_ANALYSIS, "正式分析", "启动持久化单股报告，或查询其运行状态。", {"run_stock_analysis", "get_analysis_status"}, _compile_formal_analysis,   effect=EffectClass.MUTATION,   requirements=(
         _require(when={"action": {"start"}}, entities=True),
     )),
-    StandardTaskKind.ANALYSIS_HISTORY: _spec(StandardTaskKind.ANALYSIS_HISTORY, "分析历史", "搜索、读取或删除已保存的正式分析报告。", {"search_analysis_history", "read_analysis_report", "delete_analysis_history"}, _compile_history, required={"action"}, allowed={"action", "record_id", "record_ids", "include_markdown", "include_news", "start_date", "end_date", "page", "limit"}, effect=EffectClass.MUTATION, confirmation_actions={"delete"}, notes=("action 为 search/read/delete；read 需要 record_id，delete 需要 record_ids 和 explicit confirmation。",), enums={"action": {"search", "read", "delete"}}, requirements=(
-        _require(when={"action": {"read"}}, all_of={"record_id"}),
-        _require(when={"action": {"delete"}}, all_of={"record_ids"}),
-    )),
-    StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT, "分析模板", "查看或管理正式分析模板。", {"manage_analysis_templates"}, _compile_template, required={"action"}, allowed={"action", "template_id", "name", "content", "set_default"}, effect=EffectClass.MUTATION, confirmation_actions={"delete"}, notes=("action 为 list/get/create/update/set_default/delete；delete 需要 explicit confirmation。",), enums={"action": {"list", "get", "create", "update", "set_default", "delete"}}, requirements=(
-        _require(when={"action": {"get", "update", "set_default", "delete"}}, all_of={"template_id"}),
-        _require(when={"action": {"create"}}, all_of={"name", "content"}),
-        _require(when={"action": {"update"}}, one_of={"name", "content", "set_default"}),
-    )),
-    StandardTaskKind.BATCH_ANALYSIS: _spec(StandardTaskKind.BATCH_ANALYSIS, "批量分析", "按明确范围启动正式批量分析。", {"run_batch_analysis"}, _compile_batch_analysis, required={"scope", "analysis_mode"}, allowed={"scope", "group_name", "analysis_mode", "prompt_template_id", "force_refresh"}, effect=EffectClass.MUTATION, notes=("scope 为 symbols/watchlist/configured/group；超过10只或使用保存范围时需要 explicit confirmation。",), enums={"scope": {"symbols", "watchlist", "configured", "group"}, "analysis_mode": {"template", "buy_criteria"}}, requirements=(
+    StandardTaskKind.ANALYSIS_HISTORY: _spec(StandardTaskKind.ANALYSIS_HISTORY, "分析历史", "搜索、读取或删除已保存的正式分析报告。", {"search_analysis_history", "read_analysis_report", "delete_analysis_history"}, _compile_history, effect=EffectClass.MUTATION, confirmation_actions={"delete"}),
+    StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT, "分析模板", "查看或管理正式分析模板。", {"manage_analysis_templates"}, _compile_template, effect=EffectClass.MUTATION, confirmation_actions={"delete"}),
+    StandardTaskKind.BATCH_ANALYSIS: _spec(StandardTaskKind.BATCH_ANALYSIS, "批量分析", "按明确范围启动正式批量分析。", {"run_batch_analysis"}, _compile_batch_analysis,   effect=EffectClass.MUTATION,   requirements=(
         _require(when={"scope": {"symbols"}}, entities=True),
-        _require(when={"scope": {"group"}}, all_of={"group_name"}, confirmation=True),
+        _require(when={"scope": {"group"}}, confirmation=True),
         _require(when={"scope": {"watchlist", "configured"}}, confirmation=True),
-        _require(when={"analysis_mode": {"template"}}, all_of={"prompt_template_id"}),
     )),
-    StandardTaskKind.BATCH_RUN_MANAGEMENT: _spec(StandardTaskKind.BATCH_RUN_MANAGEMENT, "批量任务管理", "查看或控制批量分析任务。", {"manage_batch_run"}, _compile_batch_management, required={"action"}, allowed={"action", "run_id", "symbols", "limit"}, effect=EffectClass.MUTATION, confirmation_actions={"notify", "stop", "delete"}, notes=("action 为 list/status/detail/report/pause/continue/resume_failed/regenerate_report/notify/stop/delete；后三个高影响动作需要 explicit confirmation。",), enums={"action": {"list", "status", "detail", "report", "pause", "continue", "resume_failed", "regenerate_report", "notify", "stop", "delete"}}, requirements=(
-        _require(when={"action": {"detail", "report", "resume_failed", "regenerate_report", "notify", "delete"}}, all_of={"run_id"}),
-    )),
-    StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT, "定时分析", "查看或修改自动分析计划。", {"manage_analysis_schedule"}, _compile_schedule, required={"action"}, allowed={"action", "enabled", "times", "prompt_template_id"}, effect=EffectClass.MUTATION, confirmation_actions={"update"}, notes=("action 为 get/update；update 必须明确启停状态并获得确认；启用时必须给出时间和模板。",), enums={"action": {"get", "update"}}, requirements=(
-        _require(when={"action": {"update"}}, all_of={"enabled"}),
-        _require(when={"action": {"update"}, "enabled": {True}}, all_of={"times", "prompt_template_id"}),
-    )),
-    StandardTaskKind.NOTIFICATION: _spec(StandardTaskKind.NOTIFICATION, "通知", "检查通知配置或发送用户明确指定的内容。", {"get_notification_status", "send_notification"}, _compile_notification, required={"action"}, allowed={"action", "content_type", "message", "record_id", "batch_run_id", "title"}, effect=EffectClass.EXTERNAL, confirmation_actions={"send"}, notes=("action 为 status/send；send 需要 explicit confirmation。",), enums={"action": {"status", "send"}, "content_type": {"analysis_report", "batch_report", "custom"}}, requirements=(
-        _require(when={"action": {"send"}}, all_of={"content_type"}),
-        _require(when={"action": {"send"}, "content_type": {"analysis_report"}}, all_of={"record_id"}),
-        _require(when={"action": {"send"}, "content_type": {"batch_report"}}, all_of={"batch_run_id"}),
-        _require(when={"action": {"send"}, "content_type": {"custom"}}, all_of={"message"}),
-    )),
-    StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY: _spec(StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY, "资讯源查询", "列出或检查指定财经资讯源。", {"list_financial_sources", "inspect_financial_source"}, _compile_source_discovery, allowed={"route_path", "keyword", "namespace", "capability", "force", "limit"}),
-    StandardTaskKind.FINANCIAL_FEED_READ: _spec(StandardTaskKind.FINANCIAL_FEED_READ, "Feed读取", "按已知路由读取一个财经 Feed。", {"read_financial_feed"}, _compile_feed_read, required={"route_path"}, allowed={"route_path", "params", "options", "namespace", "limit", "force"}),
-    StandardTaskKind.FINANCIAL_ARTICLE_READ: _spec(StandardTaskKind.FINANCIAL_ARTICLE_READ, "文章读取", "读取用户指定的一篇财经资讯正文。", {"read_financial_article"}, _compile_article, required={"route_path", "title"}, allowed={"route_path", "title", "params", "options", "namespace", "item_id", "link", "list_summary", "list_content_html", "list_image", "published", "author", "tags", "attachments", "offset", "max_chars", "force"}),
-    StandardTaskKind.WEBPAGE_FEED_TRANSFORM: _spec(StandardTaskKind.WEBPAGE_FEED_TRANSFORM, "网页转Feed", "按用户提供的网页和选择器生成 Feed 预览。", {"transform_webpage_to_feed"}, _compile_transform, required={"url"}, allowed={"url", "item", "title", "item_title", "item_title_attr", "item_link", "item_link_attr", "item_desc", "item_desc_attr", "item_pubdate", "item_pubdate_attr", "item_content", "encoding", "limit", "options"}),
-    StandardTaskKind.FINANCIAL_FEED_EXPORT: _spec(StandardTaskKind.FINANCIAL_FEED_EXPORT, "Feed导出", "导出用户明确指定的财经 Feed。", {"export_financial_feed"}, _compile_export, required={"route_path"}, allowed={"route_path", "params", "options", "namespace", "format", "limit"}, effect=EffectClass.EXTERNAL),
-    StandardTaskKind.PUBLIC_WEB_RESEARCH: _spec(StandardTaskKind.PUBLIC_WEB_RESEARCH, "公开网页研究", "仅在用户明确要求联网搜索或读取公开网页时使用。", {"websearch", "webfetch"}, _compile_web, allowed={"query", "url", "numResults", "livecrawl", "type", "contextMaxCharacters", "includeContent", "format", "timeout"}),
+    StandardTaskKind.BATCH_RUN_MANAGEMENT: _spec(StandardTaskKind.BATCH_RUN_MANAGEMENT, "批量任务管理", "查看或控制批量分析任务。", {"manage_batch_run"}, _compile_batch_management, effect=EffectClass.MUTATION, confirmation_actions={"notify", "stop", "delete"}),
+    StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT, "定时分析", "查看或修改自动分析计划。", {"manage_analysis_schedule"}, _compile_schedule, effect=EffectClass.MUTATION, confirmation_actions={"update"}),
+    StandardTaskKind.NOTIFICATION: _spec(StandardTaskKind.NOTIFICATION, "通知", "检查通知配置或发送用户明确指定的内容。", {"get_notification_status", "send_notification"}, _compile_notification, effect=EffectClass.EXTERNAL, confirmation_actions={"send"}),
+    StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY: _spec(StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY, "资讯源查询", "列出或检查指定财经资讯源。", {"list_financial_sources", "inspect_financial_source"}, _compile_source_discovery),
+    StandardTaskKind.FINANCIAL_FEED_READ: _spec(StandardTaskKind.FINANCIAL_FEED_READ, "Feed读取", "按已知路由读取一个财经 Feed。", {"read_financial_feed"}, _compile_feed_read),
+    StandardTaskKind.FINANCIAL_ARTICLE_READ: _spec(StandardTaskKind.FINANCIAL_ARTICLE_READ, "文章读取", "读取用户指定的一篇财经资讯正文。", {"read_financial_article"}, _compile_article),
+    StandardTaskKind.WEBPAGE_FEED_TRANSFORM: _spec(StandardTaskKind.WEBPAGE_FEED_TRANSFORM, "网页转Feed", "按用户提供的网页和选择器生成 Feed 预览。", {"transform_webpage_to_feed"}, _compile_transform),
+    StandardTaskKind.FINANCIAL_FEED_EXPORT: _spec(StandardTaskKind.FINANCIAL_FEED_EXPORT, "Feed导出", "导出用户明确指定的财经 Feed。", {"export_financial_feed"}, _compile_export,   effect=EffectClass.EXTERNAL),
+    StandardTaskKind.PUBLIC_WEB_RESEARCH: _spec(StandardTaskKind.PUBLIC_WEB_RESEARCH, "公开网页研究", "仅在用户明确要求联网搜索或读取公开网页时使用。", {"websearch", "webfetch"}, _compile_web),
     StandardTaskKind.TRADE_EXECUTION: _spec(StandardTaskKind.TRADE_EXECUTION, "交易执行", "交易类请求只能进入独立状态机；当前系统未接入账户、风控和下单工具。", (), _compile_no_tools, effect=EffectClass.TRADE, enabled=False, state_machine=("参数校验", "账户检查", "风控检查", "用户确认", "下单", "订单状态")),
 }
 
@@ -1168,36 +1473,17 @@ def workflow_for(kind: StandardTaskKind) -> WorkflowSpec:
     return WORKFLOW_REGISTRY[kind]
 
 
-def planner_task_catalog() -> list[dict[str, Any]]:
-    """Return semantic task contracts without exposing any tool name."""
-    return [WORKFLOW_REGISTRY[kind].planner_contract() for kind in StandardTaskKind]
-
-
-def planner_task_index() -> list[dict[str, Any]]:
-    """Return the compact semantic index used before loading full contracts."""
-    return [
-        {
-            "kind": kind.value,
-            "title": WORKFLOW_REGISTRY[kind].title,
-            "description": WORKFLOW_REGISTRY[kind].description,
-        }
-        for kind in StandardTaskKind
-    ]
-
-
 def compile_task(task: ResolvedTask) -> list[WorkflowCall]:
     spec = workflow_for(task.kind)
     if not spec.enabled:
         raise WorkflowCompileError(f"{spec.title}当前不可执行")
-    unknown = set(task.parameters) - spec.allowed_parameters
-    if unknown:
+    if spec.supports_result_selection and task.result_selection is None:
         raise WorkflowCompileError(
-            f"{task.kind.value} contains unsupported parameters: {sorted(unknown)}"
+            f"{task.kind.value} requires a typed result_selection"
         )
-    missing = spec.required_parameters - set(task.parameters)
-    if missing:
+    if not spec.supports_result_selection and task.result_selection is not None:
         raise WorkflowCompileError(
-            f"{task.kind.value} is missing required parameters: {sorted(missing)}"
+            f"{task.kind.value} does not support result_selection"
         )
     if spec.requires_entities and not task.symbols:
         raise WorkflowCompileError(f"{task.kind.value} requires resolved entities")
@@ -1222,13 +1508,6 @@ def compile_task(task: ResolvedTask) -> list[WorkflowCall]:
             raise WorkflowCompileError(
                 f"{call.tool_name} is outside the {task.kind.value} whitelist"
             )
-    for parameter, allowed_values in spec.parameter_enums.items():
-        if parameter not in task.parameters:
-            continue
-        if task.parameters[parameter] not in allowed_values:
-            raise WorkflowCompileError(
-                f"{task.kind.value}.{parameter} must be one of {sorted(allowed_values)}"
-            )
     return calls
 
 
@@ -1241,22 +1520,27 @@ def registered_workflow_tools() -> frozenset[str]:
 
 
 __all__ = [
+    "CollectionBehavior",
     "ConfirmationState",
     "EffectClass",
     "EntityScope",
     "ParameterRequirement",
+    "ResultSelectionMode",
+    "ResultSelectionSpec",
     "ResolvedTask",
+    "SecurityEntity",
     "StandardTask",
     "StandardTaskKind",
     "TaskPlan",
+    "TaskResource",
     "WorkflowCall",
+    "WorkflowExecutionGuard",
     "WorkflowCompileError",
     "WorkflowSpec",
     "WORKFLOW_REGISTRY",
     "compile_task",
-    "planner_task_catalog",
-    "planner_task_index",
     "parameter_requirement_issues",
+    "project_task_collection",
     "registered_workflow_tools",
     "workflow_for",
 ]

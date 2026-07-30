@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from api.v1.endpoints.agent import tool_registry_meta
 from api.v1.schemas.tools_meta import ToolExecuteRequest
+from src.agent.task_workflows import WORKFLOW_REGISTRY
 import src.auth as auth
 
 
@@ -81,13 +82,12 @@ def test_tool_probe_preserves_normalized_arguments_and_payload_failure():
     assert response.error == "upstream unavailable"
 
 
-def test_tool_probe_timeout_is_reported_as_failure():
-    registry = SimpleNamespace(normalize_arguments=lambda _name, args: args)
+def test_tool_probe_does_not_install_an_application_deadline():
+    registry = SimpleNamespace(
+        normalize_arguments=lambda _name, args: args,
+        execute=lambda _name, _args: {"success": True},
+    )
     request = ToolExecuteRequest(tool_name="slow_tool", arguments={})
-
-    async def timeout_wait_for(awaitable, timeout):
-        awaitable.close()
-        raise asyncio.TimeoutError
 
     async def run():
         with patch.object(tool_registry_meta, "_registry", registry), \
@@ -96,30 +96,22 @@ def test_tool_probe_timeout_is_reported_as_failure():
                  "execute_tool_isolated",
                  side_effect=lambda name, arguments, **_kwargs: registry.execute(name, arguments),
              ), \
-             patch.object(tool_registry_meta.asyncio, "wait_for", side_effect=timeout_wait_for):
+             patch.object(
+                 tool_registry_meta.asyncio,
+                 "wait_for",
+                 side_effect=AssertionError("tool probe must not use wait_for"),
+             ):
             return await tool_registry_meta.execute_tool(request)
 
     response = asyncio.run(run())
-    assert response.success is False
-    assert response.error == "工具执行超时"
+    assert response.success is True
+    assert response.error is None
 
 
-def test_tool_probe_uses_professional_timeout_for_crawled_websearch():
-    assert tool_registry_meta._execution_timeout(
-        "get_multi_stock_snapshot", {},
-    ) == tool_registry_meta._PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    assert tool_registry_meta._execution_timeout(
-        "websearch", {"includeContent": True},
-    ) == tool_registry_meta._PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    assert tool_registry_meta._execution_timeout(
-        "websearch", {"includeContent": False},
-    ) == tool_registry_meta._TOOL_EXECUTION_TIMEOUT_SECONDS
-    assert tool_registry_meta._execution_timeout(
-        "get_monetary_policy_operations", {"include_content": True},
-    ) == tool_registry_meta._PROFESSIONAL_TOOL_TIMEOUT_SECONDS
-    assert tool_registry_meta._execution_timeout(
-        "get_regulatory_updates", {"include_content": True},
-    ) == tool_registry_meta._PROFESSIONAL_TOOL_TIMEOUT_SECONDS
+def test_workflow_contract_has_no_timeout_or_retry_fields():
+    for workflow in WORKFLOW_REGISTRY.values():
+        assert not hasattr(workflow, "timeout_seconds")
+        assert not hasattr(workflow, "max_attempts")
 
 
 def test_tool_registry_keeps_specialized_categories():

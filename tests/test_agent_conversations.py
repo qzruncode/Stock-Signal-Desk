@@ -88,6 +88,70 @@ def test_get_conversation_returns_payload(client, mock_service):
     assert resp.json()["id"] == "c1"
 
 
+def test_get_conversation_returns_persisted_terminal_agent_stage(
+    client,
+    mock_service,
+):
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    with patch(
+        "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+        return_value={
+            "run_id": "run-1",
+            "status": "failed",
+            "error_code": "planner_schema_invalid",
+            "latest_stage": {
+                "event": "agent_stage_v2",
+                "run_id": "run-1",
+                "stage": "completed",
+                "status": "failed",
+                "error_code": "planner_schema_invalid",
+                "summary": "板块 ID 绑定未通过校验",
+            },
+        },
+    ):
+        resp = client.get("/api/v1/agent/conversations/c1")
+
+    assert resp.status_code == 200
+    resume = resp.json()["resume_state"]
+    assert resume["status"] == "failed"
+    assert resume["latest_stage"]["stage"] == "completed"
+    assert resume["latest_stage"]["status"] == "failed"
+
+
+def test_get_conversation_reconciles_orphan_running_trace_to_failed(
+    client,
+    mock_service,
+):
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    with patch(
+        "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+        return_value={
+            "run_id": "run-orphan",
+            "status": "running",
+            "error_code": None,
+            "latest_stage": {
+                "event": "agent_stage_v2",
+                "run_id": "run-orphan",
+                "stage": "catalog_mapping",
+                "status": "succeeded",
+                "summary": "旧进度",
+            },
+        },
+    ):
+        resp = client.get("/api/v1/agent/conversations/c1")
+
+    resume = resp.json()["resume_state"]
+    assert resume["status"] == "failed"
+    assert resume["latest_stage"] == {
+        "event": "agent_stage_v2",
+        "run_id": "run-orphan",
+        "stage": "completed",
+        "status": "failed",
+        "error_code": "tool_failed",
+        "summary": "后台运行已经中断，没有仍在执行的任务",
+    }
+
+
 def test_get_conversation_404_when_missing(client, mock_service):
     mock_service.get_conversation.return_value = None
     resp = client.get("/api/v1/agent/conversations/missing")
@@ -211,6 +275,38 @@ def test_snapshot_coerces_non_list_messages_to_empty(client, mock_service):
     args, kwargs = mock_service.save_conversation_snapshot.call_args
     assert args[1] == []
     assert kwargs["thread_state"] is None
+
+
+def test_snapshot_without_messages_preserves_canonical_transcript(client, mock_service):
+    mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
+    resp = client.put(
+        "/api/v1/agent/conversations/c1/snapshot",
+        json={"thread_state": {"messages": []}},
+    )
+    assert resp.status_code == 200
+    args, kwargs = mock_service.save_conversation_snapshot.call_args
+    assert args[1] is None
+    assert kwargs["thread_state"] == {"messages": []}
+
+
+def test_snapshot_forwards_structured_context_pruning_request(client, mock_service):
+    mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
+    resp = client.put(
+        "/api/v1/agent/conversations/c1/snapshot",
+        json={
+            "messages": [{"id": "u1", "role": "user", "content": "保留"}],
+            "thread_state": {"messages": []},
+            "prune_agent_context_to_messages": True,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert (
+        mock_service.save_conversation_snapshot.call_args.kwargs[
+            "prune_agent_context_to_messages"
+        ]
+        is True
+    )
 
 
 def test_assistant_progress_copy_is_not_persisted():

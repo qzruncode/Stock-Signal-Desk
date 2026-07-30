@@ -7,7 +7,7 @@ import json
 import logging
 import threading
 from datetime import date as date_type
-from typing import Any
+from typing import Any, Callable
 
 from src.services.buy_criteria.base import CriterionEvidence, CriterionResult
 from src.services.buy_criteria.professional_analysis import (
@@ -15,6 +15,11 @@ from src.services.buy_criteria.professional_analysis import (
     PROFESSIONAL_BUY_ANALYSIS_MODE,
     PROFESSIONAL_BUY_CONTRACT_VERSION,
     analyze_professional_buy,
+    resolve_investment_thesis,
+)
+from src.services.buy_criteria.mainline_policy import (
+    MainlineStrategyProfile,
+    normalize_mainline_strategy,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,9 +113,13 @@ def _analysis_to_results(analysis: dict[str, Any]) -> list[CriterionResult]:
             ),
             details={
                 "headline": item.get("headline"),
+                "evaluated_subjects": item.get("evaluated_subjects") or [],
                 "key_evidence": item.get("key_evidence") or [],
                 "counter_evidence": item.get("counter_evidence") or [],
                 "monitoring_points": item.get("monitoring_points") or [],
+                "mainline_classification": item.get(
+                    "mainline_classification"
+                ),
             },
         ))
         if status != "pass":
@@ -122,6 +131,8 @@ def _build_summary(
     result_dicts: list[dict[str, Any]],
     *,
     from_cache: bool,
+    analysis_status: str | None = None,
+    model_error: str | None = None,
 ) -> dict[str, Any]:
     criteria = [
         {
@@ -159,10 +170,27 @@ def _build_summary(
         None,
     )
     all_passed = len(criteria) == total and passed_count == total
+    resolved_analysis_status = analysis_status or (
+        "execution_failed"
+        if model_error
+        else "source_unavailable"
+        if insufficient_count
+        else "completed"
+    )
+    final_decision = (
+        "分析失败"
+        if resolved_analysis_status == "execution_failed"
+        else "分析未完成"
+        if resolved_analysis_status == "source_unavailable"
+        else "可买入"
+        if all_passed
+        else "不可买入"
+    )
     return {
         "contract_version": BUY_GATE_CONTRACT_VERSION,
         "analysis_mode": PROFESSIONAL_BUY_ANALYSIS_MODE,
-        "final_decision": "可买入" if all_passed else "不可买入",
+        "analysis_status": resolved_analysis_status,
+        "final_decision": final_decision,
         "passed_count": passed_count,
         "failed_count": failed_count,
         "insufficient_count": insufficient_count,
@@ -175,7 +203,8 @@ def _build_summary(
         "criteria": criteria,
         "analysis_complete": bool(criteria),
         "coverage_complete": (
-            bool(criteria)
+            resolved_analysis_status == "completed"
+            and bool(criteria)
             and (
                 all_passed
                 or (stopped is not None and stopped["status"] == "fail")
@@ -197,11 +226,15 @@ class CriterionOrchestrator:
         save_to_db: bool = True,
         thesis: str = "",
         thesis_context: dict[str, Any] | None = None,
+        mainline_strategy: MainlineStrategyProfile | str = (
+            MainlineStrategyProfile.CONFIRMED_MAINLINE
+        ),
     ) -> list[CriterionResult]:
         analysis = analyze_professional_buy(
             symbol,
             thesis=thesis,
             thesis_context=thesis_context,
+            mainline_strategy=mainline_strategy,
             pre_fetched_data=pre_fetched_data,
         )
         results = _analysis_to_results(analysis)
@@ -215,23 +248,39 @@ class CriterionOrchestrator:
         *,
         thesis: str = "",
         thesis_context: dict[str, Any] | None = None,
+        mainline_strategy: MainlineStrategyProfile | str = (
+            MainlineStrategyProfile.CONFIRMED_MAINLINE
+        ),
+        pre_fetched_data: dict[str, Any] | None = None,
+        on_reasoning: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         analysis = analyze_professional_buy(
             symbol,
             thesis=thesis,
             thesis_context=thesis_context,
+            mainline_strategy=mainline_strategy,
+            pre_fetched_data=pre_fetched_data,
+            on_reasoning=on_reasoning,
         )
         results = _analysis_to_results(analysis)
         summary = _build_summary(
             [result.to_dict() for result in results],
             from_cache=False,
+            analysis_status=str(analysis.get("analysis_status") or ""),
+            model_error=str(analysis.get("model_error") or ""),
         )
         return {
             **analysis,
             **summary,
             "symbol": symbol,
-            "thesis": str(thesis or "").strip() or None,
+            "thesis": resolve_investment_thesis(
+                thesis,
+                thesis_context,
+            ) or None,
             "thesis_context": thesis_context,
+            "mainline_strategy": normalize_mainline_strategy(
+                mainline_strategy
+            ).value,
         }
 
     def analyze_for_batch(

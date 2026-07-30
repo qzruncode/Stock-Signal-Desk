@@ -1,4 +1,4 @@
-"""Gate ①: verify that the referenced direction is currently tradable."""
+"""Gate ①: verify that the requested industry direction is a current mainline."""
 from __future__ import annotations
 
 import logging
@@ -7,6 +7,11 @@ from typing import Any
 
 from src.services.buy_criteria.base import BaseCriterionEvaluator, CriterionEvidence
 from src.services.buy_criteria.data_service import DataService
+from src.services.buy_criteria.mainline_policy import (
+    MainlineStrategyProfile,
+    mainline_strategy_label,
+    normalize_mainline_strategy,
+)
 from src.services.buy_criteria.prompts.rubrics import MAINLINE_POSITION
 
 logger = logging.getLogger(__name__)
@@ -25,119 +30,215 @@ def _list_of_dicts(value: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)]
 
 
-def _compact_mainline(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": item.get("name"),
-        "rank": item.get("rank"),
-        "stage": item.get("stage") or item.get("stage_hint"),
-        "branches": item.get("branches") or [],
-        "reason": item.get("reason"),
-        "focus": item.get("focus"),
-        "evidence": item.get("evidence") or [],
-        "triggers": item.get("triggers") or [],
-    }
-
-
 def _bare_symbol(value: Any) -> str:
     match = re.search(r"(?<!\d)(\d{6})(?!\d)", str(value or ""))
     return match.group(1) if match else str(value or "").strip()
 
 
-def _compact_sector_rows(payload: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for index, item in enumerate(payload.get("items") or [], start=1):
-        if not isinstance(item, dict) or not item.get("name"):
-            continue
-        rows.append({
-            "name": item.get("name"),
-            "rank": item.get("rank") or index,
-            "flow_rank": item.get("flow_rank"),
-            "change_pct": item.get("change_pct") if item.get("change_pct") is not None else item.get("pct_chg"),
-            "net_flow": item.get("net_flow") if item.get("net_flow") is not None else item.get("main_net_inflow"),
-            "total_amount": item.get("total_amount"),
-        })
-        if len(rows) >= limit:
-            break
-    return rows
+def _compact_mainline(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": item.get("name"),
+        "rank": item.get("rank"),
+        "lifecycle": item.get("lifecycle"),
+        "stage": item.get("stage") or item.get("stage_hint"),
+        "branches": item.get("branches") or [],
+        "expected_horizon": item.get("expected_horizon"),
+        "evidence_axes": item.get("evidence_axes") or [],
+        "reason": item.get("reason"),
+        "focus": item.get("focus"),
+        "evidence": item.get("evidence") or [],
+        "triggers": item.get("triggers") or [],
+        "trigger_assessments": item.get("trigger_assessments") or [],
+    }
 
 
-def _format_mainline_rows(title: str, rows: list[dict[str, Any]], *, candidate: bool = False) -> list[str]:
+def _format_mainline_rows(
+    title: str,
+    rows: list[dict[str, Any]],
+    *,
+    candidate: bool = False,
+) -> list[str]:
     lines = [f"### {title}"]
     if not rows:
-        lines.append("- 缺失")
-        return lines
+        return [*lines, "- 缺失"]
     for index, item in enumerate(rows, start=1):
         prefix = "候选" if candidate else "当前"
         lines.append(
             f"{index}. {prefix}主线：{_text(item.get('name'))}"
-            f"；排名：{_text(item.get('rank'), '-')}"
             f"；阶段：{_text(item.get('stage'), '-')}"
         )
         branches = item.get("branches") or []
         if branches:
-            lines.append(f"   - 分支：{'、'.join(str(branch) for branch in branches[:6])}")
+            lines.append(
+                f"   - 标准板块映射："
+                f"{'、'.join(str(branch) for branch in branches[:8])}"
+            )
         reason = _text(item.get("reason"), "")
         if reason:
-            lines.append(f"   - 主线理由：{reason[:260]}")
-        focus = _text(item.get("focus"), "")
-        if focus:
-            lines.append(f"   - 观察重点：{focus[:180]}")
+            lines.append(f"   - 中期叙事依据：{reason[:320]}")
+        expected_horizon = _text(item.get("expected_horizon"), "")
+        if expected_horizon:
+            lines.append(f"   - 预期窗口：{expected_horizon}")
+        evidence_axes = _list_of_dicts(item.get("evidence_axes"))
+        if evidence_axes:
+            lines.append(
+                "   - 已绑定证据维度："
+                + "、".join(
+                    str(axis.get("axis") or "")
+                    for axis in evidence_axes
+                    if str(axis.get("axis") or "").strip()
+                )
+            )
         evidence = item.get("evidence") or []
         if evidence:
-            lines.append(f"   - 主线证据：{'；'.join(str(piece) for piece in evidence[:4])[:360]}")
+            lines.append(
+                f"   - 可回查证据："
+                f"{'；'.join(str(piece) for piece in evidence[:5])[:480]}"
+            )
         triggers = item.get("triggers") or []
         if triggers:
-            lines.append(f"   - 升级触发：{'；'.join(str(trigger) for trigger in triggers[:4])[:240]}")
+            lines.append(
+                f"   - 后续触发："
+                f"{'；'.join(str(trigger) for trigger in triggers[:4])[:280]}"
+            )
+        trigger_assessments = _list_of_dicts(
+            item.get("trigger_assessments")
+        )
+        if trigger_assessments:
+            lines.append(
+                "   - 触发进度："
+                + "；".join(
+                    (
+                        f"{_text(trigger.get('description'))}"
+                        f"[{_text(trigger.get('status'), 'unknown')}]"
+                    )
+                    for trigger in trigger_assessments[:4]
+                )[:420]
+            )
     return lines
 
 
 class MainlinePositionEvaluator(BaseCriterionEvaluator):
     criterion_id = "mainline_position"
-    criterion_name = "市场环境与主线强度"
+    criterion_name = "当前市场主线"
     index = 0
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
+    def collect_data(
+        self,
+        symbol: str,
+        stock_info: dict[str, Any],
+        pre_fetched_data: dict[str, Any] | None = None,
+    ) -> CriterionEvidence:
         ds = DataService()
-        raw: dict[str, Any] = {}
-
-        raw["market_subject"] = {
-            "symbol": stock_info.get("symbol") or symbol,
-            "name": stock_info.get("name") or stock_info.get("short_name"),
-            "short_name": stock_info.get("short_name"),
-            "fallback_industry_direction": stock_info.get("industry"),
-            "investment_thesis": stock_info.get("_investment_thesis"),
+        scope_only = bool(stock_info.get("_scope_only"))
+        strategy_profile = normalize_mainline_strategy(
+            stock_info.get("_mainline_strategy")
+        )
+        raw: dict[str, Any] = {
+            "market_subject": {
+                "scope_only": scope_only,
+                "symbol": (
+                    None
+                    if scope_only
+                    else stock_info.get("symbol") or symbol
+                ),
+                "name": (
+                    "本轮结构化产业方向"
+                    if scope_only
+                    else stock_info.get("name") or stock_info.get("short_name")
+                ),
+                "investment_thesis": stock_info.get("_investment_thesis"),
+                "fallback_industry_direction": (
+                    None if scope_only else stock_info.get("industry")
+                ),
+                "mainline_strategy": strategy_profile.value,
+            },
         }
 
-        thesis = str(stock_info.get("_investment_thesis") or "").strip()
         thesis_context = stock_info.get("_investment_thesis_context")
         if thesis_context:
-            try:
-                candidates = ds.get_investment_thesis_candidates(thesis_context)
-                target = _bare_symbol(stock_info.get("symbol") or symbol)
-                matched = next(
-                    (
-                        item for item in candidates.get("items") or []
-                        if isinstance(item, dict) and _bare_symbol(item.get("symbol")) == target
-                    ),
-                    None,
-                )
+            if scope_only:
+                domains = [
+                    item
+                    for item in thesis_context.get("domains") or []
+                    if isinstance(item, dict)
+                ]
                 raw["thesis_membership"] = {
-                    "requested_domains": candidates.get("requested_domains") or [],
-                    "company_matched": bool(matched),
-                    "matched_domains": (matched or {}).get("matched_domains") or [],
-                    "lookup_themes": (matched or {}).get("lookup_themes") or [],
-                    "boards": (matched or {}).get("boards") or [],
-                    "sources": (matched or {}).get("sources") or [],
-                    "coverage_complete": not bool(candidates.get("partial")),
-                    "decision_boundary": candidates.get("decision_boundary"),
-                    "warnings": candidates.get("warnings") or [],
+                    "requested_domains": [
+                        str(item.get("label") or "").strip()
+                        for item in domains
+                        if str(item.get("label") or "").strip()
+                    ],
+                    "matched_domains": [],
+                    "lookup_themes": list(dict.fromkeys(
+                        str(query).strip()
+                        for item in domains
+                        for query in item.get("board_queries") or []
+                        if str(query).strip()
+                    )),
+                    "boards": list(dict.fromkeys(
+                        str(query).strip()
+                        for item in domains
+                        for query in item.get("board_queries") or []
+                        if str(query).strip()
+                    )),
+                    "sources": ["typed_investment_thesis_context"],
+                    "coverage_complete": all(
+                        item.get("mapping_type") == "catalog_binding"
+                        and bool(item.get("board_queries"))
+                        for item in domains
+                    ),
+                    "decision_boundary": (
+                        "仅判断结构化产业方向，不判断任何候选公司。"
+                    ),
+                    "warnings": [],
                 }
-            except Exception as exc:
-                logger.warning("[mainline] thesis membership failed: %s", exc)
-                raw["thesis_membership_error"] = str(exc)
+            else:
+                try:
+                    candidates = ds.get_investment_thesis_candidates(thesis_context)
+                    target = _bare_symbol(stock_info.get("symbol") or symbol)
+                    matched = next(
+                        (
+                            item
+                            for item in candidates.get("items") or []
+                            if isinstance(item, dict)
+                            and _bare_symbol(item.get("symbol")) == target
+                        ),
+                        None,
+                    )
+                    raw["thesis_membership"] = {
+                        "requested_domains": candidates.get("requested_domains") or [],
+                        "matched_domains": (matched or {}).get("matched_domains") or [],
+                        "lookup_themes": (matched or {}).get("lookup_themes") or [],
+                        "boards": (matched or {}).get("boards") or [],
+                        "sources": (matched or {}).get("sources") or [],
+                        "coverage_complete": not bool(candidates.get("partial")),
+                        "decision_boundary": candidates.get("decision_boundary"),
+                        "warnings": candidates.get("warnings") or [],
+                    }
+                except Exception as exc:
+                    logger.warning("[mainline] thesis mapping failed: %s", exc)
+                    raw["thesis_membership_error"] = str(exc)
 
         try:
-            market_report = ds.get_market_mainline_report()
+            frozen_snapshot = (
+                pre_fetched_data.get("market_mainline_snapshot")
+                if isinstance(pre_fetched_data, dict)
+                else None
+            )
+            if frozen_snapshot is not None:
+                if not isinstance(frozen_snapshot, dict):
+                    raise TypeError("冻结市场主线快照必须是对象")
+                market_report = frozen_snapshot
+                raw["market_mainline_snapshot_source"] = (
+                    "frozen_batch_snapshot"
+                )
+                raw["market_mainline_snapshot_id"] = (
+                    frozen_snapshot.get("snapshot_id")
+                )
+            else:
+                market_report = ds.get_market_mainline_report()
+                raw["market_mainline_snapshot_source"] = "database_read"
             raw["market_mainline_report"] = {
                 "report_pending": bool(market_report.get("report_pending")),
                 "as_of_date": market_report.get("as_of_date"),
@@ -145,311 +246,208 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                 "market_stage": market_report.get("market_stage"),
                 "current_mainlines": [
                     _compact_mainline(item)
-                    for item in _list_of_dicts(market_report.get("current_mainlines"))[:5]
+                    for item in _list_of_dicts(
+                        market_report.get("current_mainlines")
+                    )[:5]
                 ],
                 "future_mainlines": [
                     _compact_mainline(item)
-                    for item in _list_of_dicts(market_report.get("future_mainlines"))[:5]
+                    for item in _list_of_dicts(
+                        market_report.get("candidate_mainlines")
+                        or market_report.get("future_mainlines")
+                    )[:5]
                 ],
             }
         except Exception as exc:
-            logger.warning("[mainline] market_mainline_report failed: %s", exc)
+            logger.warning("[mainline] market report failed: %s", exc)
             raw["market_mainline_report_error"] = str(exc)
 
-        # Market leadership is a multi-horizon judgement. Keep current/five/
-        # ten-day board evidence separate from any one headline or one rank.
-        for period in ("today", "5d", "10d"):
-            try:
-                payload = ds.get_sector_flow("concept", period)
-                all_records = [
-                    item for item in payload.get("records") or []
-                    if isinstance(item, dict)
-                ]
-                membership = raw.get("thesis_membership") or {}
-                exact_names = {
-                    str(value).strip().lower()
-                    for key in ("requested_domains", "lookup_themes", "boards")
-                    for value in membership.get(key) or []
-                    if str(value).strip()
-                }
-                retained_records = all_records[:30]
-                retained_names = {
-                    str(item.get("name") or "").strip().lower()
-                    for item in retained_records
-                }
-                retained_records.extend(
-                    item for item in all_records
-                    if str(item.get("name") or "").strip().lower() in exact_names
-                    and str(item.get("name") or "").strip().lower() not in retained_names
-                )
-                raw[f"concept_flow_{period}"] = {
-                    "records": [
-                        {
-                            "name": item.get("name"),
-                            "pct_chg": item.get("pct_chg"),
-                            "main_net_inflow": item.get("main_net_inflow"),
-                            "main_net_inflow_pct": item.get("main_net_inflow_pct"),
-                            "main_flow_rank": item.get("main_flow_rank"),
-                        }
-                        for item in retained_records
-                    ],
-                    "sector_count": payload.get("sector_count"),
-                    "data_time": payload.get("data_time"),
-                    "is_stale": payload.get("is_stale"),
-                }
-            except Exception as exc:
-                raw[f"concept_flow_{period}_error"] = str(exc)
-        try:
-            news = ds.search_news(symbol, days=30)
-            raw["recent_company_news"] = {
-                "items": [
-                    {
-                        "publish_time": item.get("publish_time") or item.get("date"),
-                        "source": item.get("source"),
-                        "title": item.get("title"),
-                        "summary": str(item.get("summary") or "")[:360],
-                        "url": item.get("url") or item.get("link"),
-                    }
-                    for item in _list_of_dicts(news.get("items"))[:12]
-                ],
-                "data_time": news.get("data_time"),
-                "is_stale": news.get("is_stale"),
-            }
-        except Exception as exc:
-            raw["recent_company_news_error"] = str(exc)
-
-        # Preserve the uncompressed current board layer.  The market report is
-        # an executive summary and cannot enumerate every valid branch.
-        for sector_type, limit in (("concept", 20), ("industry", 15)):
-            try:
-                sectors = ds.get_sector_list(sector_type)
-                full_items = [
-                    item for item in sectors.get("items") or [] if isinstance(item, dict)
-                ]
-                flow_names = [
-                    str(item.get("name") or "").strip()
-                    for item in sorted(
-                        full_items,
-                        key=lambda row: (
-                            row.get("net_flow") if row.get("net_flow") is not None else row.get("main_net_inflow")
-                        ) or float("-inf"),
-                        reverse=True,
-                    )
-                    if item.get("name") and (
-                        item.get("net_flow") is not None or item.get("main_net_inflow") is not None
-                    )
-                ]
-                flow_rank_by_name = {
-                    name: index for index, name in enumerate(dict.fromkeys(flow_names), start=1)
-                }
-                full_items = [
-                    {
-                        **item,
-                        "rank": item.get("rank") or index,
-                        "flow_rank": flow_rank_by_name.get(str(item.get("name") or "").strip()),
-                    }
-                    for index, item in enumerate(full_items, start=1)
-                ]
-                raw[f"{sector_type}_sectors"] = {
-                    "items": _compact_sector_rows({"items": full_items}, limit=limit),
-                    "data_time": sectors.get("data_time"),
-                    "universe_count": len(full_items),
-                }
-                if sector_type == "concept":
-                    membership = raw.get("thesis_membership") or {}
-                    exact_names = {
-                        str(value).strip().lower()
-                        for key in ("requested_domains", "lookup_themes", "boards")
-                        for value in membership.get(key) or []
-                        if str(value).strip()
-                    }
-                    related: list[dict[str, Any]] = []
-                    for index, item in enumerate(full_items, start=1):
-                        if str(item.get("name") or "").strip().lower() not in exact_names:
-                            continue
-                        related.extend(_compact_sector_rows({"items": [{**item, "rank": item.get("rank") or index}]}, limit=1))
-                    raw["concept_sectors"]["thesis_related_items"] = related
-                if sector_type == "industry":
-                    industry = stock_info.get("industry", "")
-                    for index, item in enumerate(full_items, start=1):
-                        if industry and isinstance(item, dict) and item.get("name") == industry:
-                            raw["target_industry_rank"] = {
-                                "name": item.get("name"),
-                                "rank": item.get("rank") or index,
-                                "change_pct": item.get("change_pct"),
-                                "net_flow": item.get("net_flow") if item.get("net_flow") is not None else item.get("main_net_inflow"),
-                                "total_amount": item.get("total_amount"),
-                            }
-                            break
-            except Exception as exc:
-                logger.warning("[mainline] %s sector_list failed: %s", sector_type, exc)
-                raw[f"{sector_type}_sectors_error"] = str(exc)
-
-        # Build summary
-        subject = raw["market_subject"]
-        report = raw.get("market_mainline_report") or {}
-        market_stage = report.get("market_stage") or {}
-        current_mainlines = _list_of_dicts(report.get("current_mainlines"))
-        future_mainlines = _list_of_dicts(report.get("future_mainlines"))
-        lines = [
-            "## 本关判断对象",
-            f"- 观察标的：{_text(subject.get('name'))} ({_text(subject.get('symbol') or symbol)})",
-            f"- 本轮产业方向：{_text(subject.get('investment_thesis'), '未指定；使用所属行业作为退化方向')}",
-            f"- 退化行业方向：{_text(subject.get('fallback_industry_direction'))}",
-            "- 本关只判断该方向当前是否具有主线、活跃分支或事件驱动交易条件；不判断公司主营、订单、收入和竞争力。",
-            "",
-            "## 最新市场主线报告",
-            f"- 报告日期：{_text(report.get('as_of_date'))}",
-            f"- 报告状态：{'获取失败' if raw.get('market_mainline_report_error') else ('生成中/不可用' if report.get('report_pending') else '可用')}",
-            f"- 市场阶段：{_text(market_stage.get('label'))}",
-            f"- 总览：{_text(report.get('overview'))}",
-            "",
-            *_format_mainline_rows("当前主线/分支主线", current_mainlines),
-            "",
-            *_format_mainline_rows("候选主线（仅作观察，不等同于当前主线）", future_mainlines, candidate=True),
-            "",
-            "## 未压缩的当前板块证据",
-        ]
-        for title, key in (("概念板块", "concept_sectors"), ("行业板块", "industry_sectors")):
-            payload = raw.get(key) or {}
-            rows = _list_of_dicts(payload.get("items"))
-            lines.append(f"### {title}（{_text(payload.get('data_time'))}）")
-            related_rows = _list_of_dicts(payload.get("thesis_related_items"))
-            if related_rows:
-                lines.append("- 本轮产业方向对应的当前板块（从全量列表精确定位，不受Top N截断）：")
-                for item in related_rows:
-                    lines.append(
-                        f"  - {item.get('name')}：涨幅排名{_text(item.get('rank'), '?')}/{_text(payload.get('universe_count'), '?')}，"
-                        f"涨跌幅{_text(item.get('change_pct'), '?')}%；"
-                        "资金金额统一以下方板块资金流接口为准"
-                    )
-            if not rows:
-                lines.append("- 缺失")
-                continue
-            for item in rows:
-                lines.append(
-                    f"- 第{_text(item.get('rank'), '?')}名 {item.get('name')}："
-                    f"涨跌幅{_text(item.get('change_pct'), '?')}%"
-                )
-
         membership = raw.get("thesis_membership") or {}
-        lines.extend(["", "## 结构化产业方向成员关系（仅证明映射，不证明业绩）"])
-        if membership:
-            lines.append(f"- 请求方向：{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}")
-            lines.append(f"- 公司是否命中对应板块成分：{'是' if membership.get('company_matched') else '否'}")
-            lines.append(f"- 候选召回覆盖方向：{'、'.join(str(item) for item in membership.get('matched_domains') or []) or '无'}（不可据此声称公司拥有对应产品）")
-            lines.append(f"- 查询板块：{'、'.join(str(item) for item in membership.get('lookup_themes') or []) or '无'}")
-            lines.append(f"- 实际成分板块：{'、'.join(str(item) for item in membership.get('boards') or []) or '无'}")
-            for source in _list_of_dicts(membership.get("sources"))[:6]:
-                lines.append(
-                    f"- 来源：{_text(source.get('name'))} / {_text(source.get('board'))} / "
-                    f"{_text(source.get('date'))} / {_text(source.get('url'))}"
-                )
-        elif raw.get("thesis_membership_error"):
-            lines.append(f"- 获取失败：{raw['thesis_membership_error']}")
-        else:
-            lines.append("- 本轮未指定产业方向")
-
         exact_names = {
-            str(value).strip().lower()
+            str(value).strip().casefold()
             for key in ("requested_domains", "lookup_themes", "boards")
             for value in membership.get(key) or []
             if str(value).strip()
         }
-        lines.extend(["", "## 本轮方向的当日/5日/10日资金与涨幅确认"])
-        for period in ("today", "5d", "10d"):
-            payload = raw.get(f"concept_flow_{period}") or {}
-            matched = [
-                item
-                for item in payload.get("records") or []
-                if str(item.get("name") or "").strip().lower() in exact_names
-            ]
-            if not matched:
-                lines.append(
-                    f"- {period}：未取得与结构化方向同名的板块记录"
-                )
-                continue
-            for item in matched:
-                lines.append(
-                    f"- {period} {item.get('name')}：涨跌幅{_text(item.get('pct_chg'), '?')}%，"
-                    f"主力净流入{_text(item.get('main_net_inflow'), '?')}，"
-                    f"资金排名{_text(item.get('main_flow_rank'), '?')}/"
-                    f"{_text(payload.get('sector_count'), '?')}"
-                )
+        fallback_industry = (
+            ""
+            if scope_only
+            else str(stock_info.get("industry") or "").strip()
+        )
+        if fallback_industry:
+            exact_names.add(fallback_industry.casefold())
 
-        lines.extend([
+        board_catalog: dict[str, Any] = {}
+        for sector_type in ("industry", "concept"):
+            try:
+                payload = ds.get_sector_list(sector_type)
+                all_items = [
+                    item
+                    for item in payload.get("items") or []
+                    if isinstance(item, dict) and item.get("name")
+                ]
+                board_catalog[sector_type] = {
+                    "data_time": payload.get("data_time"),
+                    "universe_count": len(all_items),
+                    "matched_items": [
+                        {
+                            "name": item.get("name"),
+                            "code": item.get("code"),
+                            "data_source": item.get("data_source"),
+                        }
+                        for item in all_items
+                        if str(item.get("name") or "").strip().casefold()
+                        in exact_names
+                    ],
+                }
+            except Exception as exc:
+                logger.warning(
+                    "[mainline] %s board catalog failed: %s",
+                    sector_type,
+                    exc,
+                )
+                board_catalog[sector_type] = {
+                    "data_time": None,
+                    "universe_count": 0,
+                    "matched_items": [],
+                    "errors": [str(exc)],
+                }
+        raw["board_catalog"] = board_catalog
+
+        subject = raw["market_subject"]
+        report = raw.get("market_mainline_report") or {}
+        market_stage = report.get("market_stage") or {}
+        lines = [
+            "## 本关判断对象",
+            *(
+                ["- 判断层级：本批次共享的结构化产业方向；不含任何公司。"]
+                if scope_only
+                else [
+                    f"- 观察标的：{_text(subject.get('name'))} "
+                    f"({_text(subject.get('symbol') or symbol)})"
+                ]
+            ),
+            f"- 本轮产业方向："
+            f"{_text(subject.get('investment_thesis'), '未指定；使用所属行业作为退化方向')}",
+            f"- 主线投资口径：{mainline_strategy_label(strategy_profile)}"
+            f"（{strategy_profile.value}）",
+            *(
+                []
+                if scope_only
+                else [
+                    f"- 退化行业方向："
+                    f"{_text(subject.get('fallback_industry_direction'))}"
+                ]
+            ),
+            "- 本关只判断该产业方向是否属于未来1—6个月A股主导叙事；"
+            "不判断公司真实受益、短期交易热度、买点或催化。",
             "",
-            "## 公司与当前主线的正式业务连接",
-            "- 以下公司级资料只用于确认公司确有相关产品、项目或合作，不在本关判断收入兑现、竞争力或买点。",
-        ])
-        recent_news = _list_of_dicts((raw.get("recent_company_news") or {}).get("items"))
-        if recent_news:
-            for item in recent_news[:8]:
-                lines.append(
-                    f"- {item.get('publish_time') or item.get('date') or '未知日期'} "
-                    f"{item.get('source') or '公开资讯'}：{item.get('title') or '无标题'}；"
-                    f"{str(item.get('summary') or '')[:240]}"
-                )
-        else:
-            lines.append("- 近30日公司级催化/相对强度资讯缺失")
+            "## 最新中期市场主线报告",
+            f"- 报告日期：{_text(report.get('as_of_date'))}",
+            f"- 报告状态："
+            f"{'获取失败' if raw.get('market_mainline_report_error') else ('生成中/不可用' if report.get('report_pending') else '可用')}",
+            f"- 市场阶段：{_text(market_stage.get('label'))}",
+            f"- 总览：{_text(report.get('overview'))}",
+            "",
+            *_format_mainline_rows(
+                "当前主线",
+                _list_of_dicts(report.get("current_mainlines")),
+            ),
+            "",
+            *_format_mainline_rows(
+                (
+                    "候选主线（需满足前瞻准入条件）"
+                    if strategy_profile
+                    == MainlineStrategyProfile.EARLY_POSITIONING
+                    else "候选主线（确认型口径不按当前主线通过）"
+                ),
+                _list_of_dicts(report.get("future_mainlines")),
+                candidate=True,
+            ),
+            "",
+            "## 结构化方向与标准板块映射",
+            "- 板块目录只用于名称映射，不是主线证据；"
+            "目录中的涨跌、排名和资金字段均未进入本关。",
+        ]
 
-        lines.extend(["", "## 其他辅助数据（不能单独作为通过依据）"])
-        auxiliary_added = False
-        if "target_industry_rank" in raw:
-            r = raw["target_industry_rank"]
-            lines.append(f"- 行业[{r['name']}]板块排名第{r.get('rank', '?')}名，涨跌幅{r.get('change_pct', '?')}%")
-            auxiliary_added = True
-        if not auxiliary_added:
-            lines.append("- 缺失")
+        if membership:
+            lines.extend([
+                f"- 请求方向："
+                f"{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}",
+                f"- 查询板块："
+                f"{'、'.join(str(item) for item in membership.get('lookup_themes') or []) or '无'}",
+                f"- 标准板块："
+                f"{'、'.join(str(item) for item in membership.get('boards') or []) or '无'}",
+            ])
+        elif raw.get("thesis_membership_error"):
+            lines.append(f"- 方向映射失败：{raw['thesis_membership_error']}")
+
+        for sector_type, title in (
+            ("industry", "行业目录"),
+            ("concept", "概念目录"),
+        ):
+            payload = board_catalog.get(sector_type) or {}
+            matched_items = _list_of_dicts(payload.get("matched_items"))
+            lines.append(
+                f"- {title}命中："
+                + (
+                    "、".join(str(item.get("name")) for item in matched_items)
+                    if matched_items
+                    else "无精确同名项"
+                )
+            )
+
         lines.extend([
             "",
             "## 判断约束",
-            "- 严禁用公司旧主营简介来否定或证明市场主线；公司是否真实受益由第二关用正式披露独立判断。",
-            "- 最新市场主线报告是高层摘要，不是封闭白名单；没有逐字列出的细分分支，仍可由未压缩板块证据和结构化产业方向证据证明属于当前主线。",
-            "- 单日板块涨跌、资金流排名或概念板块成员关系都不能单独判为通过或不通过；至少核对多周期板块、资金、上位主题和正式公司级业务连接。",
-            "- 概念板块池包含数百个行业、风格和重复口径，不能用某一分支的绝对涨幅序号直接否定其主线属性；还必须检查净流入排名、上位主题共振及公司产业位置。",
-            "- 本项只判断公司业务是否属于当前主线、活跃分支或正式事件驱动分支；订单、收入兑现和竞争优势由第二维独立核验。",
-            "- 单日板块或个股回撤、均线、累计涨跌和个股资金流都不能否定业务的主线归属；它们属于交易时点问题，不是本维度的布尔条件。",
-            "- 若上位主题仍是中期主线，且正式公司资料证明存在对应产品、项目或合作，可按活跃分支判断；无需在第一维提前要求收入或订单已经兑现。",
-            "- 产品分类不能靠标签猜测。例如现有终端或零部件是否受益于AI升级，必须结合公司正式资料和本轮市场证据研判，不能仅凭分部名称写成“传统”或“非AI”。",
-            "- 公司级新闻只用于确认正式业务连接和市场交易逻辑，不能单独证明收入或竞争优势。",
-            "- 请求方向、候选召回覆盖方向和板块别名只是市场方向映射；verdict 不得把它们改写成公司主营或收入。",
-            "- 候选主线只能作为观察方向，不能判为通过。",
-            "- 高层报告暂不可用时，使用未压缩板块、5日/10日资金、上位主题和正式公司级资料交叉核验；关键数据整体缺失时必须标为证据不足，不能写成方向明确不成立。",
+            "- 当前市场主线专指未来1—6个月的主导产业叙事，"
+            "必须由机构策略、政策落地、产业供需、技术路线、资本开支或"
+            "持续景气证据建立。",
+            "- 1—3年结构性趋势只能作为背景，不能单独证明它是当前主线。",
+            "- 资金流、涨跌幅、成交排名、均线、技术指标和个股走势"
+            "完全不属于本关证据，既不能建立主线，也不能否定主线。",
+            "- 板块目录和候选成员关系只用于方向映射，不能证明公司真实受益；"
+            "公司产品、订单、收入和竞争力由第二维独立核验。",
+            "- 公司事件与未来催化由第六维判断，不能把单家公司事件包装成市场主线。",
+            "- 主线报告不可用时，只能用本轮取得的机构策略、政策与产业证据"
+            "独立判断；这些来源也不足时必须返回 insufficient。",
+            *(
+                [
+                    "- 当前使用确认型主线口径：候选主线不能按当前主线通过；"
+                    "结论应写成“未通过确认型主线门槛”，不得写成产业方向不存在。"
+                ]
+                if strategy_profile
+                == MainlineStrategyProfile.CONFIRMED_MAINLINE
+                else [
+                    "- 当前使用前瞻布局型口径：候选方向只有同时满足结构化分支关系、"
+                    "未来1—6个月窗口、至少两类独立中期证据以及至少一个已满足或部分满足"
+                    "的触发条件，才具备第一关通过资格；仅有长期趋势或主题名称仍须失败。"
+                ]
+            ),
         ])
-
-        summary = "\n".join(lines)
-        return CriterionEvidence(raw_data=raw, data_summary=summary)
+        return CriterionEvidence(
+            raw_data=raw,
+            data_summary="\n".join(lines),
+        )
 
     def get_rubric(self) -> str:
         return MAINLINE_POSITION
 
-    def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
+    def evidence_failure_reason(
+        self,
+        evidence: CriterionEvidence,
+    ) -> str | None:
         raw = evidence.raw_data
-        report = raw.get("market_mainline_report") or {}
-        has_report = bool(
-            not report.get("report_pending")
-            and report.get("as_of_date")
-            and report.get("current_mainlines")
-        )
-        concept = raw.get("concept_sectors") or {}
-        industry = raw.get("industry_sectors") or {}
+        subject = raw.get("market_subject") or {}
         membership = raw.get("thesis_membership") or {}
-        has_direct_branch_evidence = bool(
-            concept.get("data_time")
-            and concept.get("items")
-            and membership.get("company_matched")
-            and membership.get("requested_domains")
+        has_direction = bool(
+            subject.get("investment_thesis")
+            or membership.get("requested_domains")
+            or subject.get("fallback_industry_direction")
         )
-        has_market_context = bool(
-            industry.get("data_time")
-            and industry.get("items")
-            and (raw.get("market_subject") or {}).get("fallback_industry_direction")
-        )
-        has_multi_period_flow = any(
-            (raw.get(f"concept_flow_{period}") or {}).get("records")
-            for period in ("today", "5d", "10d")
-        )
-        if not has_report and not has_direct_branch_evidence and not has_market_context and not has_multi_period_flow:
-            return "主线报告、板块、资金和正式业务连接数据均获取失败或不可用，当前市场主线维度无法判断"
+        if not has_direction:
+            return (
+                "本轮没有结构化产业方向，且公司所属行业也不可用，"
+                "无法确定市场主线判断对象"
+            )
         return None

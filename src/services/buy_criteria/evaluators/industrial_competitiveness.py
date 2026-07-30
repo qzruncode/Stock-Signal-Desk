@@ -253,6 +253,11 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
             or profile.get("company_profile")
             or profile.get("product_name")
         )
-        if not has_formal_profile and not any(isinstance(raw.get(key), dict) for key in formal_sources):
+        has_available_formal_source = any(
+            isinstance(raw.get(key), dict)
+            and raw[key].get("success") is not False
+            for key in formal_sources
+        )
+        if not has_formal_profile and not has_available_formal_source:
             return "公司正式资料、主营构成、财务和公告均获取失败，无法验证真实受益和产业竞争力"
         return None

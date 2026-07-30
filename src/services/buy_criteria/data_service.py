@@ -175,68 +175,13 @@ class DataService:
             from src.services.market_theme_service import MarketThemeService
 
             service = MarketThemeService()
-            # A strict per-stock worker must never launch the global daily
-            # report background job: the worker is intentionally short-lived,
-            # so that task would either be abandoned or delay every stock.
-            report = service.get_model_report(force=False, trigger_generation=False)
-            if (
-                not report.get("report_pending")
-                and report.get("as_of_date")
-                and report.get("current_mainlines")
-            ):
-                return report
-
-            # Reuse a warm multi-source evidence cache when available, but do
-            # not start a second 35-second global aggregation inside every
-            # isolated stock worker.  The evaluator separately fetches the
-            # uncompressed current concept/industry layer.
-            evidence = service.get_cached_evidence() or {}
-            current_themes = [
-                item for item in (evidence.get("current_themes") or [])
-                if isinstance(item, dict) and item.get("name")
-            ]
-            if not current_themes:
-                return report
-
-            future_themes = [
-                item for item in (evidence.get("next_themes") or [])
-                if isinstance(item, dict) and item.get("name")
-            ]
-            generated_at = str(evidence.get("generated_at") or evidence.get("data_time") or "")
-            as_of_date = str(evidence.get("data_time") or generated_at)[:10]
-            names = "、".join(str(item.get("name")) for item in current_themes[:3])
-            return {
-                "report_pending": False,
-                "report_source": "current_evidence_fallback",
-                "as_of_date": as_of_date,
-                "overview": f"当前多源市场证据识别出的主线包括：{names}。",
-                "market_stage": evidence.get("market_stage") or {},
-                "current_mainlines": [
-                    {
-                        "name": item.get("name"),
-                        "rank": item.get("rank_label"),
-                        "stage": item.get("stage"),
-                        "branches": item.get("components") or [],
-                        "reason": item.get("thesis") or item.get("stage_reason"),
-                        "focus": item.get("expectation_view"),
-                        "evidence": item.get("evidence") or [],
-                        "triggers": [],
-                    }
-                    for item in current_themes[:5]
-                ],
-                "future_mainlines": [
-                    {
-                        "name": item.get("name"),
-                        "stage": item.get("stage_hint") or "候选观察期",
-                        "branches": [],
-                        "reason": item.get("why_now"),
-                        "evidence": [],
-                        "triggers": [item.get("trigger")] if item.get("trigger") else [],
-                    }
-                    for item in future_themes[:5]
-                ],
-                "source_summary": evidence.get("source_summary") or {},
-            }
+            # Per-stock workers only read the independently produced daily
+            # report.  Legacy evidence caches may contain price/flow-derived
+            # themes and must never be promoted into a market-mainline report.
+            return service.get_model_report(
+                force=False,
+                trigger_generation=False,
+            )
 
         return self._cached_call("market_mainline_report", _fetch)
 

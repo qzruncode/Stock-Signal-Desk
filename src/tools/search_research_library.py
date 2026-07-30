@@ -155,7 +155,10 @@ def search_research_library(
                 })
 
     candidates.sort(
-        key=lambda row: str(row.get("published") or ""),
+        key=lambda row: (
+            len(row.get("exact_subject_mentions") or []),
+            str(row.get("published") or ""),
+        ),
         reverse=True,
     )
     deduped: list[dict[str, Any]] = []

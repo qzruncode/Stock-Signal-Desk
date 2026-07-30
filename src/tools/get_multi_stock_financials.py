@@ -8,14 +8,16 @@ import math
 import re
 import threading
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
-from src.tools.base import ToolSpec, object_schema
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from src.tools.base import ToolSpec, TypedToolResult
 from src.tools.symbols import resolve_securities_csv
 
 
 DESCRIPTION = (
-    "从内部已同步财务库或指定年度财务快照读取多只 A 股的同口径财务指标，最多 12 只。"
+    "从内部已同步财务库或指定年度财务快照读取多只 A 股的同口径财务指标，最多 24 只。"
     "支持资产负债率、营业收入、归母净利润和扣非净利润，可按最新报告期、TTM、去年年报或明确年度分批查询；"
     "不拉取实时行情、K线或技术指标。"
 )
@@ -50,6 +52,44 @@ _PERIOD_CACHE_TTL = timedelta(hours=24)
 _PERIOD_CACHE_VERSION = "v2"
 _PERIOD_CACHE_LOCK = threading.RLock()
 _PERIOD_MEMORY_CACHE: dict[str, tuple[datetime, dict[str, dict[str, Any]]]] = {}
+
+
+class GetMultiStockFinancialsArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    symbols: str = Field(min_length=1)
+    metric: Literal[
+        "debt_ratio",
+        "revenue",
+        "net_profit",
+        "deducted_net_profit",
+    ]
+    period_basis: Literal[
+        "latest_report",
+        "ttm",
+        "previous_fiscal_year",
+        "fiscal_year",
+    ]
+    fiscal_year: int | None = Field(default=None, ge=1990, le=2100)
+
+    @model_validator(mode="after")
+    def _validate_period(self) -> "GetMultiStockFinancialsArgs":
+        _validate_request(self.metric, self.period_basis, self.fiscal_year)
+        return self
+
+
+class GetMultiStockFinancialsResult(TypedToolResult):
+    items: list[dict[str, Any]]
+    resolved_entities: list[dict[str, Any]]
+    unresolved_entities: list[str]
+    requested_count: int = Field(ge=0)
+    covered_count: int = Field(ge=0)
+    missing_financial_symbols: list[str]
+    requested_metric: str | None = None
+    requested_period_basis: str | None = None
+    requested_fiscal_year: int | None = None
+    source: str | None = None
+    field_basis: dict[str, str] = Field(default_factory=dict)
 
 
 def _safe_float(value: Any) -> float | None:
@@ -134,7 +174,7 @@ def get_multi_stock_financials(
 ) -> dict[str, Any]:
     _validate_request(metric, period_basis, fiscal_year)
     resolved, unresolved = resolve_securities_csv(symbols)
-    resolved = resolved[:12]
+    resolved = resolved[:24]
     codes = [item["symbol"] for item in resolved]
     if not codes:
         return {
@@ -262,32 +302,17 @@ def get_multi_stock_financials(
 TOOL = ToolSpec(
     name="get_multi_stock_financials",
     description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbols": {
-                "type": "string",
-                "description": "股票代码或公司名称，多个用逗号分隔，最多 12 只",
-            },
-            "metric": {
-                "type": "string",
-                "enum": ["debt_ratio", "revenue", "net_profit", "deducted_net_profit"],
-                "description": "本批次需要覆盖的财务指标",
-            },
-            "period_basis": {
-                "type": "string",
-                "enum": ["latest_report", "ttm", "previous_fiscal_year", "fiscal_year"],
-                "description": "财务指标的报告期口径",
-            },
-            "fiscal_year": {
-                "type": "integer",
-                "description": "period_basis=fiscal_year 时的四位年度",
-            },
-        },
-        ["symbols", "metric", "period_basis"],
-    ),
+    parameters=None,
     executor=get_multi_stock_financials,
     category="financials",
+    args_model=GetMultiStockFinancialsArgs,
+    result_model=GetMultiStockFinancialsResult,
 )
 
 
-__all__ = ["TOOL", "get_multi_stock_financials"]
+__all__ = [
+    "GetMultiStockFinancialsArgs",
+    "GetMultiStockFinancialsResult",
+    "TOOL",
+    "get_multi_stock_financials",
+]

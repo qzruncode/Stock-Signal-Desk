@@ -75,6 +75,8 @@ class ChatSessionService:
         if getattr(conversation, "thread_state_json", None):
             try:
                 thread_state = json.loads(conversation.thread_state_json)
+                if isinstance(thread_state, dict):
+                    thread_state.pop(self.AGENT_CONTEXT_KEY, None)
             except (TypeError, ValueError):
                 thread_state = None
         return {
@@ -86,7 +88,18 @@ class ChatSessionService:
     def get_agent_context(self, conversation_id: str) -> Dict[str, Any]:
         """Read server-owned semantic context without inspecting rendered answers."""
         conversation = self.db.get_chat_conversation(conversation_id)
-        raw = getattr(conversation, "thread_state_json", None) if conversation else None
+        if not conversation:
+            return {}
+        raw_context = getattr(conversation, "agent_context_json", None)
+        if raw_context:
+            try:
+                value = json.loads(raw_context)
+            except (TypeError, ValueError):
+                value = None
+            if isinstance(value, dict):
+                return value
+
+        raw = getattr(conversation, "thread_state_json", None)
         if not raw:
             return {}
         try:
@@ -121,6 +134,58 @@ class ChatSessionService:
                 return existing.to_dict()
         return self.create_conversation()
 
+    def compose_request_with_server_history(
+        self,
+        conversation_id: str,
+        incoming_messages: List[Dict[str, Any]],
+        *,
+        parent_message_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Attach a fresh client turn to the canonical server transcript."""
+        detail = self.get_conversation(conversation_id) or {}
+        historical = [
+            {
+                "id": str(message.get("id") or ""),
+                "role": str(message.get("role") or ""),
+                "content": str(message.get("content") or ""),
+                "created_at": message.get("created_at"),
+            }
+            for message in detail.get("messages") or []
+            if (
+                isinstance(message, dict)
+                and not str(message.get("id") or "").endswith(
+                    "-assistant-pending"
+                )
+            )
+        ]
+        clean_parent = str(parent_message_id or "").strip()
+        if clean_parent:
+            parent_index = next(
+                (
+                    index
+                    for index, message in enumerate(historical)
+                    if message["id"] == clean_parent
+                ),
+                None,
+            )
+            if parent_index is not None:
+                historical = historical[:parent_index + 1]
+        elif parent_message_id is not None:
+            historical = []
+
+        incoming_ids = {
+            str(message.get("id") or message.get("unstable_id") or "").strip()
+            for message in incoming_messages
+            if isinstance(message, dict)
+        }
+        if incoming_ids:
+            historical = [
+                message
+                for message in historical
+                if message["id"] not in incoming_ids
+            ]
+        return [*historical, *incoming_messages]
+
     def save_partial_assistant_text(self, conversation_id: str, assistant_text: str) -> None:
         """增量保存"进行中"的 assistant 文本(刷新后可恢复已生成部分)。
 
@@ -136,10 +201,11 @@ class ChatSessionService:
     def save_conversation_snapshot(
         self,
         conversation_id: str,
-        messages: List[Dict[str, Any]],
+        messages: Optional[List[Dict[str, Any]]],
         *,
         thread_state: Optional[Dict[str, Any]] = None,
         agent_context: Optional[Dict[str, Any]] = None,
+        prune_agent_context_to_messages: bool = False,
         skip_title: bool = False,
     ) -> Optional[Dict[str, Any]]:
         conversation = self.db.get_chat_conversation(conversation_id)
@@ -155,24 +221,19 @@ class ChatSessionService:
             except (TypeError, ValueError):
                 existing_thread_state = {}
 
+        normalized_messages = (
+            self._normalize_messages(messages)
+            if messages is not None
+            else None
+        )
         effective_thread_state: Optional[Dict[str, Any]] = None
         if thread_state is not None:
             effective_thread_state = dict(thread_state)
-            previous_agent_context = existing_thread_state.get(self.AGENT_CONTEXT_KEY)
-            if self.AGENT_CONTEXT_KEY not in effective_thread_state and isinstance(
-                previous_agent_context, dict
-            ):
-                effective_thread_state[self.AGENT_CONTEXT_KEY] = previous_agent_context
-        elif agent_context is not None:
-            effective_thread_state = dict(existing_thread_state)
-        if effective_thread_state is not None and agent_context is not None:
-            effective_thread_state[self.AGENT_CONTEXT_KEY] = agent_context
-
-        normalized_messages: List[Dict[str, Any]] = []
-        if thread_state is not None and effective_thread_state:
-            normalized_messages = self._normalize_thread_state_messages(effective_thread_state)
-        if not normalized_messages:
-            normalized_messages = self._normalize_messages(messages)
+            legacy_context_value = effective_thread_state.pop(
+                self.AGENT_CONTEXT_KEY, ...
+            )
+            if legacy_context_value is None:
+                prune_agent_context_to_messages = True
 
         thread_state_json = None
         if effective_thread_state is not None:
@@ -180,6 +241,92 @@ class ChatSessionService:
                 thread_state_json = json.dumps(effective_thread_state, ensure_ascii=False)
             except (TypeError, ValueError):
                 thread_state_json = None
+
+        next_agent_context = agent_context
+        artifact_ids_to_keep: set[str] | None = None
+        run_ids_to_keep: set[str] | None = None
+        if next_agent_context is None and prune_agent_context_to_messages:
+            existing_context = self.get_agent_context(conversation_id)
+            if (
+                isinstance(existing_context, dict)
+                and str(existing_context.get("version") or "") == "3"
+            ):
+                from src.agent.orchestrator_v2.state import ConversationContextV2
+
+                parsed_context = ConversationContextV2.from_value(existing_context)
+                next_agent_context = parsed_context.retain_for_messages(
+                    normalized_messages or []
+                ).model_dump(mode="json")
+                artifact_ids_to_keep = {
+                    artifact_id
+                    for turn in next_agent_context.get("turns") or []
+                    for task in turn.get("tasks") or []
+                    for artifact_id in task.get("artifact_refs") or []
+                } | {
+                    str(reference.get("artifact_id") or "")
+                    for turn in next_agent_context.get("turns") or []
+                    for reference in turn.get("terminal_artifacts") or []
+                    if str(reference.get("artifact_id") or "")
+                }
+                run_ids_to_keep = {
+                    str(turn.get("run_id") or "")
+                    for turn in next_agent_context.get("turns") or []
+                    if str(turn.get("run_id") or "")
+                }
+            else:
+                from src.agent.conversation_context import (
+                    ConversationContext,
+                    recover_context_from_thread_state,
+                )
+
+                if existing_context:
+                    parsed_context = ConversationContext.from_value(existing_context)
+                else:
+                    parsed_context = recover_context_from_thread_state(
+                        thread_state or existing_thread_state
+                    )
+                next_agent_context = parsed_context.retain_for_messages(
+                    normalized_messages or []
+                ).model_dump()
+
+        agent_context_json = None
+        if next_agent_context is not None:
+            try:
+                agent_context_json = json.dumps(
+                    next_agent_context, ensure_ascii=False,
+                )
+            except (TypeError, ValueError):
+                agent_context_json = None
+
+        # Thread state is a presentation snapshot. When the caller does not
+        # explicitly provide messages, it must never replace the canonical
+        # backend transcript produced by the Agent run.
+        if messages is None:
+            if thread_state_json is not None:
+                self.db.update_chat_thread_state(
+                    conversation_id,
+                    thread_state_json,
+                    agent_context_json=agent_context_json,
+                    updated_at=datetime.now(),
+                )
+            elif agent_context_json is not None:
+                self.db.update_chat_agent_context(
+                    conversation_id,
+                    agent_context_json,
+                    updated_at=datetime.now(),
+                )
+            if artifact_ids_to_keep is not None:
+                self.db.prune_agent_artifacts(
+                    conversation_id,
+                    artifact_ids_to_keep,
+                )
+                self.db.prune_agent_run_traces(
+                    conversation_id,
+                    tuple(run_ids_to_keep or ()),
+                )
+            return self.get_conversation(conversation_id)
+
+        assert normalized_messages is not None
 
         first_user_text = ""
         latest_preview = ""
@@ -195,13 +342,23 @@ class ChatSessionService:
             normalized_messages,
             preview_text=(latest_preview[:200] if latest_preview else None),
             thread_state_json=thread_state_json,
+            agent_context_json=agent_context_json,
             updated_at=datetime.now(),
         )
+        if artifact_ids_to_keep is not None:
+            self.db.prune_agent_artifacts(
+                conversation_id,
+                artifact_ids_to_keep,
+            )
+            self.db.prune_agent_run_traces(
+                conversation_id,
+                tuple(run_ids_to_keep or ()),
+            )
 
-        if not skip_title and getattr(conversation, "title_source", None) != "manual" and first_user_text:
+        if not skip_title and getattr(conversation, "title_source", None) != "manual":
             self.db.update_chat_conversation(
                 conversation_id,
-                title=self.generate_title(first_user_text),
+                title=self.generate_title(first_user_text) if first_user_text else self.DEFAULT_TITLE,
                 title_source="auto",
                 preview_text=(latest_preview[:200] if latest_preview else None),
                 updated_at=datetime.now(),
@@ -222,7 +379,11 @@ class ChatSessionService:
                 continue
             normalized_messages.append(
                 {
-                    "id": str(raw.get("id") or uuid.uuid4().hex),
+                    "id": str(
+                        raw.get("id")
+                        or raw.get("unstable_id")
+                        or uuid.uuid4().hex
+                    ),
                     "role": role,
                     "content": content,
                     "created_at": raw.get("created_at") or datetime.now().isoformat(),

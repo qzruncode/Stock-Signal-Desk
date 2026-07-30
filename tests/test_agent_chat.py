@@ -33,29 +33,8 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    default_plan = chat_mod.TaskPlan.model_validate({
-        "tasks": [{
-            "task_id": "answer",
-            "kind": "general_response",
-            "objective": "处理当前测试请求",
-            "entity_scope": "none",
-            "entities": [],
-            "parameters": {},
-            "depends_on": [],
-            "output_requirements": [],
-            "confirmation": "not_required",
-            "confidence": 1.0,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    })
     with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
          patch("src.auth.is_auth_enabled", return_value=False), \
-         patch.object(
-             chat_mod,
-             "resolve_task_plan",
-             new=AsyncMock(return_value=default_plan),
-         ), \
          patch.object(
              chat_mod,
              "execute_tool_isolated",
@@ -116,6 +95,7 @@ class _FakeController:
     def __init__(self):
         self.texts = []
         self.reasoning = []
+        self.data = []
         self._stream_tasks = []
         self.tool_calls = []
 
@@ -125,12 +105,197 @@ class _FakeController:
     def append_reasoning(self, text):
         self.reasoning.append(text)
 
+    def add_data(self, value):
+        self.data.append(value)
+
     async def add_tool_call(self, name, tool_call_id=None):
         self.tool_calls.append((name, tool_call_id))
         tool = MagicMock()
         tool.append_args_text = MagicMock()
         tool.set_response = MagicMock()
         return tool
+
+
+def test_pipeline_contract_failure_marks_the_run_failed() -> None:
+    controller = _FakeController()
+    state = {}
+    error = chat_mod.OrchestratorV2Error(
+        chat_mod.AgentErrorCode.PLANNER_SCHEMA_INVALID,
+        "capability contract rejected result_selection",
+        task_id="discover",
+    )
+
+    with patch.object(
+        chat_mod,
+        "plan_intent_graph_v2",
+        new=AsyncMock(side_effect=error),
+    ):
+        result = asyncio.run(chat_mod._run_standard_task_pipeline(
+            controller,
+            [{"role": "user", "content": "人形机器人哪些领域最受益？"}],
+            {"model": "test-model"},
+            "",
+            state=state,
+            run_id="run-contract-failed",
+        ))
+
+    assert "内部规划契约错误" in result
+    assert state["_run_status"] == "failed"
+    assert state["_run_error_code"] == "planner_schema_invalid"
+    assert chat_mod._terminal_run_status(state) == "failed"
+    assert chat_mod._terminal_run_status({"_run_status": "partial"}) == "partial"
+    assert chat_mod._terminal_run_status({}) == "completed"
+
+
+def test_agent_execution_has_no_retry_classifier() -> None:
+    assert not hasattr(chat_mod, "_structured_tool_failure_code")
+
+
+def test_structured_completion_streams_provider_reasoning_and_rebuilds_tool_call():
+    controller = _FakeController()
+    received_kwargs = {}
+
+    async def completion(**kwargs):
+        received_kwargs.update(kwargs)
+        return _AsyncChunkStream([
+            _mock_llm_chunk(reasoning_content="先识别用户要比较的产业领域。"),
+            _mock_llm_chunk(tool_calls=[
+                _mock_tool_call_delta(
+                    name="submit_industry_research_intent_v2",
+                    arguments='{"themes":',
+                ),
+            ]),
+            _mock_llm_chunk(tool_calls=[
+                _mock_tool_call_delta(
+                    name="",
+                    arguments='["人形机器人"]}',
+                    tc_id="",
+                ),
+            ]),
+        ])
+
+    response = asyncio.run(chat_mod._stream_structured_model_completion(
+        controller,
+        completion,
+        stream=False,
+        tool_choice={
+            "type": "function",
+            "function": {"name": "submit_industry_research_intent_v2"},
+        },
+    ))
+
+    assert received_kwargs["stream"] is True
+    assert "分析过程都必须使用简体中文" in received_kwargs["messages"][0]["content"]
+    tool_call = response["choices"][0]["message"]["tool_calls"][0]
+    assert tool_call["function"] == {
+        "name": "submit_industry_research_intent_v2",
+        "arguments": '{"themes":["人形机器人"]}',
+    }
+    reasoning = "".join(controller.reasoning)
+    assert "模型可见分析 · submit_industry_research_intent_v2" in reasoning
+    assert "先识别用户要比较的产业领域。" in reasoning
+
+
+def test_structured_completion_coalesces_small_reasoning_deltas():
+    controller = _FakeController()
+
+    async def completion(**_kwargs):
+        return _AsyncChunkStream([
+            *[
+                _mock_llm_chunk(reasoning_content="分析")
+                for _ in range(300)
+            ],
+            _mock_llm_chunk(content="{}"),
+        ])
+
+    asyncio.run(chat_mod._stream_structured_model_completion(
+        controller,
+        completion,
+        messages=[],
+    ))
+
+    reasoning = "".join(controller.reasoning)
+    assert reasoning.endswith("分析" * 300 + "\n")
+    assert len(controller.reasoning) < 10
+
+
+def test_visible_reasoning_language_contract_preserves_existing_system_prompt():
+    original_messages = [
+        {"role": "system", "content": "保持结构化输出。"},
+        {"role": "user", "content": "分析人形机器人。"},
+    ]
+
+    normalized = chat_mod._with_chinese_visible_reasoning(original_messages)
+
+    assert normalized is not original_messages
+    assert normalized[0]["content"].startswith("保持结构化输出。")
+    assert "分析过程都必须使用简体中文" in normalized[0]["content"]
+    assert normalized[1] == original_messages[1]
+    assert original_messages[0]["content"] == "保持结构化输出。"
+
+
+def test_structured_completion_rebuilds_json_content_without_a_tool_choice():
+    controller = _FakeController()
+
+    async def completion(**kwargs):
+        assert kwargs["stream"] is True
+        assert "tool_choice" not in kwargs
+        assert "tools" not in kwargs
+        return _AsyncChunkStream([
+            _mock_llm_chunk(reasoning_content="只修复结构化传输。"),
+            _mock_llm_chunk(content='{"items":['),
+            _mock_llm_chunk(content=(
+                '{"board_id":"BK1100","role_id":"reducer","tier":1}]}'
+            )),
+        ])
+
+    response = asyncio.run(chat_mod._stream_structured_model_completion(
+        controller,
+        completion,
+        stream=False,
+        messages=[],
+    ))
+
+    message = response["choices"][0]["message"]
+    assert message["tool_calls"] == []
+    assert message["content"] == (
+        '{"items":[{"board_id":"BK1100",'
+        '"role_id":"reducer","tier":1}]}'
+    )
+    assert message["reasoning_content"] == "只修复结构化传输。"
+
+
+def test_structured_completion_emits_heartbeat_while_model_has_no_delta():
+    controller = _FakeController()
+
+    class DelayedStream:
+        def __init__(self):
+            self._sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._sent:
+                raise StopAsyncIteration
+            self._sent = True
+            await asyncio.sleep(0.03)
+            return _mock_llm_chunk(content="{}")
+
+    async def completion(**_kwargs):
+        return DelayedStream()
+
+    with patch.object(chat_mod, "MODEL_STREAM_HEARTBEAT_SECONDS", 0.005):
+        asyncio.run(chat_mod._stream_structured_model_completion(
+            controller,
+            completion,
+            tool_choice={
+                "type": "function",
+                "function": {"name": "submit_intent_outline_v2"},
+            },
+        ))
+
+    assert "已等待" in "".join(controller.reasoning)
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +313,11 @@ def test_collection_financial_filter_renderer_fails_closed_on_missing_batch() ->
         [
             {
                 "tool": "get_multi_stock_financials",
-                "arguments": {"symbols": "000001,000002"},
+                "arguments": {
+                    "symbols": "000001,000002",
+                    "metric": "debt_ratio",
+                    "period_basis": "latest_report",
+                },
                 "result": {
                     "success": True,
                     "items": [{
@@ -162,14 +331,20 @@ def test_collection_financial_filter_renderer_fails_closed_on_missing_batch() ->
             },
             {
                 "tool": "get_multi_stock_financials",
-                "arguments": {"symbols": "000003"},
+                "arguments": {
+                    "symbols": "000003",
+                    "metric": "debt_ratio",
+                    "period_basis": "latest_report",
+                },
                 "result": {"success": False, "error": "timeout"},
             },
         ],
         chat_mod.CollectionFinancialFilterSpec(
-            metric="debt_ratio", period_basis="latest_report",
-            operator="gt", threshold=70, threshold_unit="percent",
-            action="exclude_matching",
+            conditions=[{
+                "metric": "debt_ratio", "period_basis": "latest_report",
+                "operator": "gt", "threshold": 70,
+                "threshold_unit": "percent", "action": "exclude_matching",
+            }],
         ),
     )
 
@@ -208,9 +383,11 @@ def test_collection_financial_filter_renderer_uses_annual_revenue_and_yi_thresho
             },
         }],
         chat_mod.CollectionFinancialFilterSpec(
-            metric="revenue", period_basis="previous_fiscal_year",
-            operator="lt", threshold=5, threshold_unit="yi_cny",
-            action="exclude_matching",
+            conditions=[{
+                "metric": "revenue", "period_basis": "previous_fiscal_year",
+                "operator": "lt", "threshold": 5,
+                "threshold_unit": "yi_cny", "action": "exclude_matching",
+            }],
         ),
     )
 
@@ -219,6 +396,301 @@ def test_collection_financial_filter_renderer_uses_annual_revenue_and_yi_thresho
     assert "筛除 **1 只**，筛选后保留 **1 只**" in answer
     assert "甲公司 (000001)" in answer
     assert "乙公司 (000002)" in answer
+
+
+def test_collection_financial_filter_renderer_formats_large_cny_threshold() -> None:
+    answer = chat_mod._build_collection_financial_filter_answer(
+        [{
+            "tool": "get_multi_stock_financials",
+            "arguments": {
+                "symbols": "000001",
+                "metric": "revenue",
+                "period_basis": "fiscal_year",
+                "fiscal_year": 2025,
+            },
+            "result": {
+                "success": True,
+                "items": [{
+                    "symbol": "000001", "name": "甲公司",
+                    "metric": "revenue", "period_basis": "fiscal_year",
+                    "financial_value": 800_000_000.0, "value_unit": "cny",
+                    "report_date": "2025-12-31",
+                }],
+                "source": "local",
+                "data_time": "2026-07-25T15:00:00",
+            },
+        }],
+        chat_mod.CollectionFinancialFilterSpec(
+            conditions=[{
+                "metric": "revenue", "period_basis": "fiscal_year",
+                "fiscal_year": 2025, "operator": "lt",
+                "threshold": 500_000_000, "threshold_unit": "cny",
+                "action": "exclude_matching",
+            }],
+        ),
+    )
+
+    assert "低于 5 亿元" in answer
+    assert "5e+08" not in answer
+
+
+def test_ranked_domain_renderer_uses_the_same_structured_artifact_as_followups() -> None:
+    answer = chat_mod._build_ranked_domain_answer([{
+        "processor": "ranked_domain_selection",
+        "result": {
+            "success": True,
+            "items": [{
+                "label": "灵巧手",
+                "tier": 1,
+                "rationale": "直接决定末端操作能力",
+                "support_quote": "灵巧手是精细操作核心部件",
+                "source_name": "测试财经",
+                "source_url": "https://example.com/domain",
+                "source_date": "2026-07-24",
+            }],
+        },
+    }])
+
+    assert "第1梯队" in answer
+    assert "**灵巧手**" in answer
+    assert "Planner 读取的是本轮保存的结构化领域集合" in answer
+
+
+def test_ranked_domain_renderer_does_not_show_partial_failed_tiers() -> None:
+    answer = chat_mod._build_ranked_domain_answer([{
+        "processor": "ranked_domain_selection",
+        "result": {
+            "success": False,
+            "partial": True,
+            "source_scope": "project_live_board_catalog",
+            "catalog_count": 495,
+            "batch_total": 5,
+            "batch_completed": 3,
+            "coverage_complete": False,
+            "ranking_complete": False,
+            "errors": ["实时板块语义筛选只完成 3/5 个批次。"],
+            "items": [{
+                "label": "减速器",
+                "tier": 1,
+                "rationale": "这只是已完成批次中的局部候选",
+            }],
+            "resource_outputs": {},
+        },
+    }])
+
+    assert "产业受益领域排序未完成" in answer
+    assert "3/5" in answer
+    assert "没有展示部分梯队" in answer
+    assert "减速器" not in answer
+    assert "公开来源兜底" not in answer
+
+
+def test_ranked_domain_renderer_hides_internal_provider_payload_errors() -> None:
+    answer = chat_mod._build_ranked_domain_answer([{
+        "processor": "ranked_domain_selection",
+        "result": {
+            "success": False,
+            "partial": False,
+            "catalog_total": 504,
+            "catalog_supplied": 504,
+            "coverage_complete": False,
+            "ranking_complete": False,
+            "error_code": "planner_schema_invalid",
+            "errors": [
+                "submit_domain_catalog_selection_v2 remained invalid: "
+                "Unterminated string at line 1 column 664"
+            ],
+            "items": [],
+        },
+    }])
+
+    assert "错误代码：`planner_schema_invalid`" in answer
+    assert "单次定点修复仍未通过" in answer
+    assert "submit_domain_catalog_selection_v2" not in answer
+    assert "Unterminated string" not in answer
+
+
+def test_ranked_domain_renderer_shows_only_one_direction_without_tiers() -> None:
+    answer = chat_mod._build_ranked_domain_answer([{
+        "processor": "ranked_domain_selection",
+        "result": {
+            "success": True,
+            "source_scope": "project_live_board_catalog",
+            "catalog_count": 495,
+            "result_selection": {
+                "mode": "best_one",
+                "max_items": 1,
+            },
+            "items": [
+                {
+                    "label": "机器人执行器",
+                    "board_code": "BK1145",
+                    "tier": 1,
+                    "rationale": "直接承接关节驱动价值量",
+                },
+                {
+                    "label": "减速器",
+                    "board_code": "BK1100",
+                    "tier": 1,
+                    "rationale": "关节传动核心部件",
+                },
+            ],
+        },
+    }])
+
+    assert "项目实时板块最受益方向" in answer
+    assert "**机器人执行器**" in answer
+    assert "减速器" not in answer
+    assert "第1梯队" not in answer
+    assert "这个方向" in answer
+
+
+def test_ranked_domain_renderer_shows_top_k_as_flat_ranking() -> None:
+    answer = chat_mod._build_ranked_domain_answer([{
+        "processor": "ranked_domain_selection",
+        "result": {
+            "success": True,
+            "source_scope": "project_live_board_catalog",
+            "catalog_count": 495,
+            "result_selection": {
+                "mode": "top_k",
+                "max_items": 2,
+            },
+            "items": [
+                {
+                    "label": "机器人执行器",
+                    "board_code": "BK1145",
+                    "tier": 1,
+                    "rationale": "直接承接关节驱动价值量",
+                },
+                {
+                    "label": "减速器",
+                    "board_code": "BK1100",
+                    "tier": 1,
+                    "rationale": "关节传动核心部件",
+                },
+            ],
+        },
+    }])
+
+    assert "前 **2 个**方向" in answer
+    assert "1. **机器人执行器**" in answer
+    assert "2. **减速器**" in answer
+    assert "第1梯队" not in answer
+
+
+def test_theme_business_renderer_explains_project_candidate_boundary() -> None:
+    answer = chat_mod._build_theme_business_evidence_answer([{
+        "processor": "company_evidence_binding",
+        "result": {
+            "success": True,
+            "candidate_scope": "candidate_collection",
+            "candidate_count": 42,
+            "analyzed_candidate_count": 42,
+            "candidate_coverage_complete": True,
+            "screening_mode": "per_security_full_analysis",
+            "verdict_counts": {
+                "pass": 1,
+                "fail": 36,
+                "insufficient": 4,
+                "error": 1,
+            },
+            "items": [{
+                "company_name": "汉威科技",
+                "symbol": "300007",
+                "matched_domains": ["六维力传感器"],
+                "development_level": "mass_production",
+                "reason": "目标产品已进入批量供货",
+                "evidence": [{
+                    "support_quote": "汉威科技六维力传感器已向头部厂商批量供货",
+                    "source_name": "测试财经",
+                    "source_url": "https://example.com/company",
+                    "source_date": "2026-07-24",
+                }],
+            }],
+        },
+    }])
+
+    assert "候选池共有 **42 家**" in answer
+    assert "**42 家**分别建立" in answer
+    assert "通过：**1 家**" in answer
+    assert "不符合：**36 家**" in answer
+    assert "证据不足：**4 家**" in answer
+    assert "分析错误：**1 家**" in answer
+    assert "本轮逐股覆盖完整" in answer
+    assert "汉威科技 (300007)" in answer
+    assert "量产/批量交付" in answer
+    assert "逐股兜底" in answer
+
+
+def test_collection_financial_filter_renderer_preserves_upstream_domain_boundary() -> None:
+    answer = chat_mod._build_collection_financial_filter_answer(
+        [
+            {
+                "tool": "get_domain_stock_candidates",
+                "arguments": {},
+                "result": {
+                    "success": True,
+                    "domain_results": [
+                        {
+                            "domain": "灵巧手",
+                            "mapping_type": "unresolved",
+                            "lookup_themes": [],
+                            "candidate_count": 0,
+                            "mapping_rationale": "没有严格窄板块",
+                        },
+                        {
+                            "domain": "减速器",
+                            "mapping_type": "catalog_binding",
+                            "lookup_themes": ["减速器"],
+                            "candidate_count": 2,
+                        },
+                    ],
+                },
+            },
+            {
+                "tool": "get_multi_stock_financials",
+                "arguments": {
+                    "symbols": "000001,000002",
+                    "metric": "debt_ratio",
+                    "period_basis": "latest_report",
+                },
+                "result": {
+                    "success": True,
+                    "items": [
+                        {
+                            "symbol": "000001", "name": "甲公司",
+                            "metric": "debt_ratio", "period_basis": "latest_report",
+                            "financial_value": 50.0, "value_unit": "percent",
+                            "report_date": "2026-03-31",
+                        },
+                        {
+                            "symbol": "000002", "name": "乙公司",
+                            "metric": "debt_ratio", "period_basis": "latest_report",
+                            "financial_value": 80.0, "value_unit": "percent",
+                            "report_date": "2026-03-31",
+                        },
+                    ],
+                    "source": "local",
+                    "data_time": "2026-07-25T15:00:00",
+                },
+            },
+        ],
+        chat_mod.CollectionFinancialFilterSpec(
+            conditions=[{
+                "metric": "debt_ratio", "period_basis": "latest_report",
+                "operator": "gt", "threshold": 70,
+                "threshold_unit": "percent", "action": "exclude_matching",
+            }],
+        ),
+    )
+
+    assert "候选集合来源" in answer
+    assert "灵巧手" in answer
+    assert "当前目录未解析" in answer
+    assert "减速器" in answer
+    assert "仅覆盖已解析领域" in answer
+    assert "不证明公司正在大力发展该业务" in answer
 
 
 def test_watchlist_theme_filter_renders_complete_intersection_without_model_rewrite():
@@ -438,7 +910,15 @@ def test_slim_tool_content_idempotent_and_safe_on_non_json():
 
 def test_stream_final_answer_normal_output():
     controller = _FakeController()
-    fake_acompletion = _async_completion([_mock_llm_chunk(content="总结"), _mock_llm_chunk(content="内容")])
+    received_kwargs = {}
+
+    async def fake_acompletion(**kwargs):
+        received_kwargs.update(kwargs)
+        return _AsyncChunkStream([
+            _mock_llm_chunk(reasoning_content="先核对证据。"),
+            _mock_llm_chunk(content="总结"),
+            _mock_llm_chunk(content="内容"),
+        ])
 
     fake_cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
 
@@ -451,8 +931,11 @@ def test_stream_final_answer_normal_output():
 
     result = asyncio.run(run())
     assert result == "总结内容"
-    # Final synthesis is buffered until completion so a length/timeout failure
-    # can be atomically replaced with a complete evidence-backed fallback.
+    assert "分析过程都必须使用简体中文" in received_kwargs["messages"][0]["content"]
+    assert "模型可见分析 · 最终答案综合" in "".join(controller.reasoning)
+    assert "先核对证据。" in "".join(controller.reasoning)
+    # Final synthesis is buffered until completion so a contract failure can
+    # be atomically replaced with a complete evidence-backed fallback.
     assert controller.texts == ["总结内容"]
 
 
@@ -576,7 +1059,7 @@ def test_industry_contract_does_not_discard_safe_answer_for_link_format_only():
     ) == []
 
 
-def test_playbook_timeout_keeps_buffered_text_only_when_contract_is_complete():
+def test_final_synthesis_does_not_install_a_local_timeout():
     controller = _FakeController()
     complete = (
         "优先级和最受益排序。上游、中游、下游产业链。"
@@ -585,24 +1068,19 @@ def test_playbook_timeout_keeps_buffered_text_only_when_contract_is_complete():
         "[来源一](https://example.com/a) [来源二](https://example.org/b)"
     )
 
-    class _TimeoutAfterContent:
-        def __aiter__(self):
-            self.done = False
-            return self
-
-        async def __anext__(self):
-            if not self.done:
-                self.done = True
-                return _mock_llm_chunk(content=complete)
-            raise TimeoutError("terminal frame missing")
-
     async def fake_acompletion(**kwargs):
-        return _TimeoutAfterContent()
+        await asyncio.sleep(0.01)
+        return _AsyncChunkStream([
+            _mock_llm_chunk(content=complete, finish_reason="stop"),
+        ])
 
     cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
 
     async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, patch(
+            "api.v1.endpoints.agent.chat.asyncio.timeout",
+            side_effect=AssertionError("final synthesis must not install a local timeout"),
+        ):
             llm_mod.acompletion = fake_acompletion
             return await chat_mod._stream_final_answer_without_tools(
                 controller,
@@ -616,44 +1094,43 @@ def test_playbook_timeout_keeps_buffered_text_only_when_contract_is_complete():
     assert controller.texts == [complete]
 
 
-def test_playbook_timeout_retries_once_when_buffer_is_incomplete():
+def test_final_synthesis_emits_heartbeat_while_waiting_for_a_delta():
     controller = _FakeController()
-    calls = {"value": 0}
-    repaired = (
-        "优先级和最受益排序。上游、中游、下游产业链。"
-        "受益机制看价值量，兑现指标看订单产能。反证与风险是不及预期。"
-        "后续跟踪量化指标，来源截至2026-07-17，置信度中等，证据缺口明确。"
-        "[来源一](https://example.com/a) [来源二](https://example.org/b)"
-    )
 
-    class _ImmediateTimeout:
+    class _DelayedAnswer:
+        def __init__(self):
+            self.sent = False
+
         def __aiter__(self):
             return self
 
         async def __anext__(self):
-            raise TimeoutError("provider stalled")
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            await asyncio.sleep(0.03)
+            return _mock_llm_chunk(content="完成", finish_reason="stop")
 
     async def fake_acompletion(**kwargs):
-        calls["value"] += 1
-        if calls["value"] == 1:
-            return _ImmediateTimeout()
-        return _AsyncChunkStream([_mock_llm_chunk(content=repaired, finish_reason="stop")])
+        return _DelayedAnswer()
 
     cfg = {"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}
 
     async def run():
-        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod:
+        with patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, patch.object(
+            chat_mod,
+            "MODEL_STREAM_HEARTBEAT_SECONDS",
+            0.005,
+        ):
             llm_mod.acompletion = fake_acompletion
             return await chat_mod._stream_final_answer_without_tools(
                 controller,
-                [{"role": "user", "content": "分析产业链"}],
+                [{"role": "user", "content": "解释一下"}],
                 cfg,
-                evidence=[],
-                playbook=chat_mod.INDUSTRY_CHAIN,
             )
 
-    assert asyncio.run(run()) == repaired
-    assert calls["value"] == 2
+    assert asyncio.run(run()) == "完成"
+    assert "模型仍在处理「最终答案综合」" in "".join(controller.reasoning)
 
 
 def test_playbook_empty_completion_retries_once_before_failing_closed():
@@ -1265,29 +1742,45 @@ def test_agent_chat_sse_normal_stream(client):
 
     DataStreamResponse JSON-encodes text, so CJK appears as \\uXXXX escapes.
     """
-    fake_acompletion = _async_completion([_mock_llm_chunk(content="你好")])
-    plan = chat_mod.TaskPlan.model_validate({
-        "tasks": [{
-            "task_id": "answer",
-            "kind": "general_response",
-            "objective": "回应问候",
-            "entity_scope": "none",
-            "entities": [],
-            "parameters": {},
-            "depends_on": [],
-            "output_requirements": [],
-            "confirmation": "not_required",
-            "confidence": 1.0,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    })
+    async def fake_acompletion(**kwargs):
+        function_name = (
+            kwargs.get("tool_choice", {})
+            .get("function", {})
+            .get("name")
+        )
+        if function_name == "submit_intent_outline_v2":
+            payload = {
+                "nodes": [{
+                    "node_id": "answer",
+                    "capability": "general_response",
+                    "objective": "回应问候",
+                    "input_refs": [],
+                    "result_selection": None,
+                }],
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        elif function_name == "submit_general_response_intent_v2":
+            payload = {}
+        else:
+            return _AsyncChunkStream([_mock_llm_chunk(content="你好")])
+        return {
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": function_name,
+                            "arguments": json.dumps(payload),
+                        },
+                    }],
+                },
+            }],
+        }
 
     marker = "你好".encode("unicode_escape")
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-         patch("api.v1.endpoints.agent.chat.resolve_task_plan", new=AsyncMock(return_value=plan)), \
          patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
         llm_mod.acompletion = fake_acompletion
         with client.stream("POST", "/api/v1/agent/chat",
@@ -1307,14 +1800,12 @@ def test_agent_chat_sse_llm_failure_still_returns_stream(client):
     async def fake_acompletion(**kwargs):
         raise RuntimeError("LLM down")
 
-    marker = "标准任务计划未通过程序校验".encode("unicode_escape")
+    marker = "规划模型请求被上游连接终止".encode(
+        "unicode_escape"
+    )
     with patch("api.v1.endpoints.agent.chat._get_llm_config",
                return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
          patch("api.v1.endpoints.agent.chat.litellm") as llm_mod, \
-         patch(
-             "api.v1.endpoints.agent.chat.resolve_task_plan",
-             new=AsyncMock(side_effect=chat_mod.TaskPlanValidationError("invalid plan")),
-         ), \
          patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()):
         llm_mod.acompletion = fake_acompletion
         with client.stream("POST", "/api/v1/agent/chat",
