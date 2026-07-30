@@ -84,6 +84,41 @@ def test_unsubscribe_stops_receiving():
     asyncio.new_event_loop().run_until_complete(run())
 
 
+def test_durable_broadcaster_batches_before_publishing():
+    """Durable subscribers never observe an event before its batch commits."""
+    async def run():
+        persisted: list[tuple[str, int, list[str]]] = []
+
+        def sink(run_id, start_sequence, chunks):
+            persisted.append((
+                run_id,
+                start_sequence,
+                [chunk.text_delta for chunk in chunks],
+            ))
+
+        broadcaster = RunBroadcaster(
+            run_id="run-batch",
+            event_batch_sink=sink,
+        )
+        queue = broadcaster.subscribe()
+        for value in ("a", "b", "c"):
+            broadcaster.append_text(value)
+        assert queue.empty()
+
+        await broadcaster.drain()
+        assert persisted == [("run-batch", 0, ["a", "b", "c"])]
+        assert [
+            queue.get_nowait().text_delta
+            for _ in range(3)
+        ] == ["a", "b", "c"]
+
+        broadcaster.mark_finished()
+        await broadcaster.drain()
+        assert queue.get_nowait() is None
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
 def test_slow_subscriber_is_disconnected_instead_of_losing_events():
     """Queue 溢出必须断开订阅，不能静默拼接一个缺少中间事件的流。"""
     async def run():

@@ -450,7 +450,7 @@ def test_v2_repairs_raw_prose_through_exact_json_content_transport() -> None:
     assert [item["board_code"] for item in result["items"]] == ["BK0566"]
 
 
-def test_v2_provider_timeout_uses_transport_retry_not_schema_repair() -> None:
+def test_v2_provider_timeout_does_not_stack_transport_and_schema_retries() -> None:
     calls = 0
 
     async def completion(**_kwargs):
@@ -466,7 +466,7 @@ def test_v2_provider_timeout_uses_transport_retry_not_schema_repair() -> None:
         completion=completion,
     ))
 
-    assert calls == 2
+    assert calls == 1
     assert result["success"] is False
     assert result["error_code"] == "synthesis_failed"
     assert result["coverage"] == {

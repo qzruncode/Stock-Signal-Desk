@@ -71,6 +71,29 @@ class AgentArtifactMixin:
                 return None
             return _to_contract(record)
 
+    def get_agent_artifacts(
+        self,
+        artifact_ids: Iterable[str],
+    ) -> list[AgentArtifactV2]:
+        """Load a reference set in one query while preserving caller order."""
+        ordered_ids = tuple(dict.fromkeys(
+            str(value).strip()
+            for value in artifact_ids
+            if str(value).strip()
+        ))
+        if not ordered_ids:
+            return []
+        with self.get_session() as session:
+            records = session.execute(
+                select(AgentArtifact).where(AgentArtifact.id.in_(ordered_ids))
+            ).scalars().all()
+            by_id = {record.id: record for record in records}
+            return [
+                _to_contract(by_id[artifact_id])
+                for artifact_id in ordered_ids
+                if artifact_id in by_id
+            ]
+
     def list_agent_artifacts(
         self,
         conversation_id: str,

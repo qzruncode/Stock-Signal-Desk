@@ -39,8 +39,13 @@ from src.agent.run_registry import (
     RunBroadcaster,
     RunCapacityExceeded,
     active_run_registry,
-    deserialize_assistant_chunk,
 )
+from src.agent.run_streaming import (
+    durable_subscriber_stream,
+    subscriber_stream,
+)
+from src.agent.terminal_publisher import AgentTerminalPublisher
+from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchRequest
 from src.agent.resource_scheduler import (
     ResourceCapacityExceeded,
     agent_resource_lease,
@@ -71,6 +76,7 @@ from src.agent.orchestrator_v2.contracts import (
     AgentStageEventV2,
     EffectLevel,
     OrchestratorV2Error,
+    PlanningTraceV2,
     RendererMode,
     StageStatus,
     stable_fingerprint,
@@ -85,6 +91,8 @@ from src.agent.orchestrator_v2.runtime import (
     CompiledIntentGraphV2,
     compile_intent_graph_v2,
     compile_workflow_call_v2,
+    restore_compiled_intent_graph_v2,
+    serialize_compiled_intent_graph_v2,
 )
 from src.agent.orchestrator_v2.state import (
     ConversationContextV2,
@@ -113,12 +121,8 @@ from src.agent.task_workflows import (
 from src.tools.registry import ToolRegistry
 from src.tools.base import (
     ToolProgressUpdate,
-    tool_idempotency_context,
-    tool_progress_observer,
 )
 from src.tools.process_runner import (
-    ISOLATED_TOOL_NAMES,
-    STATEFUL_TOOL_NAMES,
     execute_tool_isolated,
 )
 from src.llm.anthropic_gateway import (
@@ -3869,6 +3873,8 @@ async def _run_standard_task_pipeline(
     conversation_context: Optional[Dict[str, Any]] = None,
     conversation_id: str | None = None,
     run_id: str | None = None,
+    run_attempt: int = 1,
+    recovery_checkpoint: Mapping[str, Any] | None = None,
     db_manager: DatabaseManager | None = None,
 ) -> str:
     """Planner → fixed Workflow → policy validator → executor → aggregator."""
@@ -3877,10 +3883,15 @@ async def _run_standard_task_pipeline(
     context_v2: ConversationContextV2
     compiled_v2: CompiledIntentGraphV2
     graph_v2: PlannedIntentGraphV2 | None = None
+    planning_trace: PlanningTraceV2 | None = None
     artifact_map: Dict[str, Any] = {}
     v2_stage_started: Dict[tuple[str, str], float] = {}
     v2_stage_durations_ms: Dict[str, int] = {}
     current_entities = find_securities_in_text(latest_user_text, limit=300)
+    request_fingerprint = stable_fingerprint({
+        "messages": messages,
+        "conversation_context": conversation_context or {},
+    })
 
     async def emit_v2_stage(event: AgentStageEventV2) -> None:
         stage_key = (
@@ -3996,59 +4007,99 @@ async def _run_standard_task_pipeline(
         for artifact in migrated_artifacts
     })
     if db_manager is not None and conversation_id:
-        for turn in context_v2.turns:
-            for reference in turn.terminal_artifacts:
-                if reference.artifact_id in artifact_map:
-                    continue
-                artifact = await asyncio.to_thread(
-                    db_manager.get_agent_artifact,
-                    reference.artifact_id,
-                )
-                if artifact is not None:
-                    artifact_map[reference.artifact_id] = artifact
+        referenced_artifact_ids = [
+            reference.artifact_id
+            for turn in context_v2.turns
+            for reference in turn.terminal_artifacts
+            if reference.artifact_id not in artifact_map
+        ]
+        loaded_artifacts = await asyncio.to_thread(
+            db_manager.get_agent_artifacts,
+            referenced_artifact_ids,
+        )
+        artifact_map.update({
+            artifact.artifact_id: artifact
+            for artifact in loaded_artifacts
+        })
 
     try:
-        graph_v2 = await plan_intent_graph_v2(
-            messages,
-            llm_cfg,
-            completion=stream_structured_completion,
-            semantic_context=context_v2.planner_payload(
-                current_request=latest_user_text,
-            ),
-            stage_observer=emit_v2_stage,
-            run_id=active_run_id,
-            current_entities=current_entities,
+        restored_checkpoint = (
+            restore_compiled_intent_graph_v2(
+                recovery_checkpoint,
+                expected_run_id=active_run_id,
+                request_fingerprint=request_fingerprint,
+            )
+            if isinstance(recovery_checkpoint, Mapping)
+            else None
         )
-        compiled_v2 = await compile_intent_graph_v2(
-            graph_v2,
-            llm_cfg,
-            completion=stream_structured_completion,
-            current_entities=current_entities,
-            artifacts=artifact_map,
-            stage_observer=emit_v2_stage,
-            registry=_registry,
-        )
+        if restored_checkpoint is not None:
+            compiled_v2, planning_trace = restored_checkpoint
+            await emit_v2_stage(AgentStageEventV2(
+                run_id=active_run_id,
+                stage=AgentStage.COMPILATION,
+                status=StageStatus.SUCCEEDED,
+                summary="已从持久检查点恢复编译结果",
+            ))
+        else:
+            graph_v2 = await plan_intent_graph_v2(
+                messages,
+                llm_cfg,
+                completion=stream_structured_completion,
+                semantic_context=context_v2.planner_payload(
+                    current_request=latest_user_text,
+                ),
+                stage_observer=emit_v2_stage,
+                run_id=active_run_id,
+                current_entities=current_entities,
+            )
+            planning_trace = graph_v2.trace
+            compiled_v2 = await compile_intent_graph_v2(
+                graph_v2,
+                llm_cfg,
+                completion=stream_structured_completion,
+                current_entities=current_entities,
+                artifacts=artifact_map,
+                stage_observer=emit_v2_stage,
+                registry=_registry,
+            )
+            if db_manager is not None and conversation_id:
+                checkpoint_saved = await asyncio.to_thread(
+                    db_manager.save_agent_run_checkpoint,
+                    active_run_id,
+                    worker_id=active_run_registry.worker_id,
+                    attempt=run_attempt,
+                    checkpoint=serialize_compiled_intent_graph_v2(
+                        compiled_v2,
+                        planning_trace=planning_trace,
+                        request_fingerprint=request_fingerprint,
+                    ),
+                )
+                if not checkpoint_saved:
+                    raise RuntimeError(
+                        "compiled checkpoint rejected because run ownership changed"
+                    )
         plan = compiled_v2.plan
         resolved_tasks = compiled_v2.resolved_tasks
         if db_manager is not None and conversation_id:
+            assert planning_trace is not None
             await asyncio.to_thread(
                 db_manager.upsert_agent_run_trace,
                 run_id=active_run_id,
                 conversation_id=conversation_id,
                 orchestrator_mode="unified",
                 status="compiled",
-                schema_version=graph_v2.trace.schema_version,
+                schema_version=planning_trace.schema_version,
                 model_config=llm_cfg,
-                stage_durations=dict(graph_v2.trace.stage_durations_ms),
-                raw_outline=graph_v2.trace.raw_outline,
-                normalized_outline=graph_v2.trace.normalized_outline,
-                raw_intents=dict(graph_v2.trace.raw_intents),
-                normalized_intents=dict(graph_v2.trace.normalized_intents),
+                stage_durations=dict(planning_trace.stage_durations_ms),
+                raw_outline=planning_trace.raw_outline,
+                normalized_outline=planning_trace.normalized_outline,
+                raw_intents=dict(planning_trace.raw_intents),
+                normalized_intents=dict(planning_trace.normalized_intents),
                 repairs=[
                     item.model_dump(mode="json")
-                    for item in graph_v2.trace.repairs
+                    for item in planning_trace.repairs
                 ],
-                verification=graph_v2.trace.verification,
+                verification=planning_trace.verification,
                 compiled_plan={
                     "assumptions": [
                         assumption.model_dump(mode="json")
@@ -4101,37 +4152,37 @@ async def _run_standard_task_pipeline(
                 status=failure_status,
                 error_code=exc.code.value,
                 schema_version=(
-                    graph_v2.trace.schema_version
-                    if graph_v2 is not None
+                    planning_trace.schema_version
+                    if planning_trace is not None
                     else "orchestrator-3.0"
                 ),
                 model_config=llm_cfg,
                 stage_durations=(
                     {
-                        **dict(graph_v2.trace.stage_durations_ms),
+                        **dict(planning_trace.stage_durations_ms),
                         **v2_stage_durations_ms,
                     }
-                    if graph_v2 is not None
+                    if planning_trace is not None
                     else v2_stage_durations_ms
                 ),
                 raw_outline=(
-                    graph_v2.trace.raw_outline
-                    if graph_v2 is not None
+                    planning_trace.raw_outline
+                    if planning_trace is not None
                     else None
                 ),
                 normalized_outline=(
-                    graph_v2.trace.normalized_outline
-                    if graph_v2 is not None
+                    planning_trace.normalized_outline
+                    if planning_trace is not None
                     else None
                 ),
                 raw_intents=(
-                    dict(graph_v2.trace.raw_intents)
-                    if graph_v2 is not None
+                    dict(planning_trace.raw_intents)
+                    if planning_trace is not None
                     else None
                 ),
                 normalized_intents=(
-                    dict(graph_v2.trace.normalized_intents)
-                    if graph_v2 is not None
+                    dict(planning_trace.normalized_intents)
+                    if planning_trace is not None
                     else None
                 ),
                 repairs=(
@@ -4191,45 +4242,45 @@ async def _run_standard_task_pipeline(
                 status="failed",
                 error_code=AgentErrorCode.PLANNER_SCHEMA_INVALID.value,
                 schema_version=(
-                    graph_v2.trace.schema_version
-                    if graph_v2 is not None
+                    planning_trace.schema_version
+                    if planning_trace is not None
                     else "orchestrator-3.0"
                 ),
                 model_config=llm_cfg,
                 stage_durations=(
                     {
-                        **dict(graph_v2.trace.stage_durations_ms),
+                        **dict(planning_trace.stage_durations_ms),
                         **v2_stage_durations_ms,
                     }
-                    if graph_v2 is not None
+                    if planning_trace is not None
                     else v2_stage_durations_ms
                 ),
                 raw_outline=(
-                    graph_v2.trace.raw_outline
-                    if graph_v2 is not None
+                    planning_trace.raw_outline
+                    if planning_trace is not None
                     else None
                 ),
                 normalized_outline=(
-                    graph_v2.trace.normalized_outline
-                    if graph_v2 is not None
+                    planning_trace.normalized_outline
+                    if planning_trace is not None
                     else None
                 ),
                 raw_intents=(
-                    dict(graph_v2.trace.raw_intents)
-                    if graph_v2 is not None
+                    dict(planning_trace.raw_intents)
+                    if planning_trace is not None
                     else None
                 ),
                 normalized_intents=(
-                    dict(graph_v2.trace.normalized_intents)
-                    if graph_v2 is not None
+                    dict(planning_trace.normalized_intents)
+                    if planning_trace is not None
                     else None
                 ),
                 repairs=(
                     [
                         item.model_dump(mode="json")
-                        for item in graph_v2.trace.repairs
+                        for item in planning_trace.repairs
                     ]
-                    if graph_v2 is not None
+                    if planning_trace is not None
                     else []
                 ),
             )
@@ -4257,6 +4308,7 @@ async def _run_standard_task_pipeline(
             controller.assistant_text_snapshot = failure_text
         return failure_text
 
+    assert planning_trace is not None
     if plan.needs_clarification:
         clarification = plan.clarification_question or "请补充本轮要执行的对象或条件。"
         controller.append_text(clarification)
@@ -4330,23 +4382,25 @@ async def _run_standard_task_pipeline(
         if (
             cache_key is not None
             and db_manager is not None
-            and compiled_task.execution_policy.cache_ttl_seconds is not None
+            and compiled_task.freshness_policy.max_age_seconds is not None
         ):
             cached_result = await asyncio.to_thread(
                 load_execution_cache_v2,
                 db_manager,
                 cache_key,
                 ttl_seconds=(
-                    compiled_task.execution_policy.cache_ttl_seconds
+                    compiled_task.freshness_policy.max_age_seconds
                 ),
             )
             if cached_result is not None:
+                active_run_registry.record_execution_cache_result(hit=True)
                 result = {**cached_result, "runtime_cache_hit": True}
                 tool.set_response(
                     result,
                     is_error=result.get("success") is False,
                 )
                 return result
+            active_run_registry.record_execution_cache_result(hit=False)
         if db_manager is not None:
             if execution_policy.effect != EffectLevel.READ:
                 outbox = await asyncio.to_thread(
@@ -4440,52 +4494,38 @@ async def _run_standard_task_pipeline(
 
         def execute_sync() -> Dict[str, Any]:
             try:
-                with (
-                    tool_progress_observer(report_tool_update),
-                    tool_idempotency_context(step_idempotency_key),
-                ):
-                    if call.tool_name in STATEFUL_TOOL_NAMES:
-                        raw_result = _registry.execute(
-                            call.tool_name,
-                            typed_arguments,
-                        )
-                    elif (
-                        call.tool_name in ISOLATED_TOOL_NAMES
-                        or is_production_environment()
-                        or str(
-                            os.getenv("AGENT_ISOLATE_ALL_STATELESS") or ""
-                        ).strip().lower() in {"1", "true", "yes", "on"}
-                    ):
-                        # Production isolates every stateless tool in a process
-                        # boundary so a deadline can terminate native/network
-                        # code. Development keeps registry injection available
-                        # for deterministic unit tests and local extensions.
-                        raw_result = execute_tool_isolated(
-                            call.tool_name,
-                            typed_arguments,
-                            cancel_event=isolated_cancel_event,
-                            deadline_seconds=execution_policy.timeout_seconds,
-                            idempotency_key=step_idempotency_key,
-                        )
-                    else:
-                        raw_result = _registry.execute(
-                            call.tool_name,
-                            typed_arguments,
-                        )
+                dispatcher = ToolDispatcher(
+                    _registry,
+                    isolated_executor=execute_tool_isolated,
+                    compact_result=_compact_tool_result,
+                    attach_fallback=_maybe_attach_search_fallback,
+                )
+                return dispatcher.execute(
+                    ToolDispatchRequest(
+                        tool_name=call.tool_name,
+                        arguments=typed_arguments,
+                        idempotency_key=step_idempotency_key,
+                        timeout_seconds=execution_policy.timeout_seconds,
+                        force_isolation=(
+                            is_production_environment()
+                            or str(
+                                os.getenv(
+                                    "AGENT_ISOLATE_ALL_STATELESS"
+                                )
+                                or ""
+                            ).strip().lower() in {
+                                "1",
+                                "true",
+                                "yes",
+                                "on",
+                            }
+                        ),
+                    ),
+                    cancel_event=isolated_cancel_event,
+                    progress_observer=report_tool_update,
+                )
             finally:
                 flush_tool_reasoning()
-            compacted = _compact_tool_result(call.tool_name, raw_result)
-            result = _maybe_attach_search_fallback(
-                call.tool_name,
-                typed_arguments,
-                compacted,
-            )
-            return result if isinstance(result, dict) else {
-                "success": True,
-                "result": result,
-                "errors": [],
-                "partial": False,
-            }
 
         async def execute_with_heartbeat() -> Dict[str, Any]:
             worker = asyncio.create_task(asyncio.to_thread(execute_sync))
@@ -4675,6 +4715,7 @@ async def _run_standard_task_pipeline(
                         db_manager,
                         cache_key,
                         result,
+                        freshness_policy=compiled_task.freshness_policy,
                     )
                 return result
             except asyncio.CancelledError:
@@ -5018,7 +5059,7 @@ async def _run_standard_task_pipeline(
             else None
         ),
         "stage_durations": {
-            **dict(graph_v2.trace.stage_durations_ms),
+            **dict(planning_trace.stage_durations_ms),
             **v2_stage_durations_ms,
         },
         "outcomes": [
@@ -5087,7 +5128,7 @@ async def _run_standard_task_pipeline(
                 else None
             ),
             stage_durations={
-                **dict(graph_v2.trace.stage_durations_ms),
+                **dict(planning_trace.stage_durations_ms),
                 **v2_stage_durations_ms,
             },
         )
@@ -5321,7 +5362,7 @@ async def _run_standard_task_pipeline(
             )
         ),
         "stage_durations": {
-            **dict(graph_v2.trace.stage_durations_ms),
+            **dict(planning_trace.stage_durations_ms),
             **v2_stage_durations_ms,
         },
         "latest_stage": completed_stage.model_dump(mode="json"),
@@ -5335,7 +5376,7 @@ async def _run_standard_task_pipeline(
             ),
             **final_trace_update,
         }
-    elif db_manager is not None and conversation_id and graph_v2 is not None:
+    elif db_manager is not None and conversation_id:
         await asyncio.to_thread(
             db_manager.upsert_agent_run_trace,
             run_id=active_run_id,
@@ -5357,6 +5398,7 @@ async def _execute_background_agent_run(
     conversation_id: str,
     db_manager: DatabaseManager,
     session_service: ChatSessionService,
+    recovery_checkpoint: Mapping[str, Any] | None = None,
 ) -> None:
     """Execute one durable run; safe to call for both first-run and recovery."""
     from src.services.agent_prompt_service import AgentPromptService
@@ -5369,94 +5411,18 @@ async def _execute_background_agent_run(
 
     last_save_ts = 0.0
     state: Dict[str, Any] = {"assistant_text": ""}
-
-    async def commit_terminal_state(
-        *,
-        status: str,
-        final_text: str,
-        error_code: str | None = None,
-        error_detail: str | None = None,
-        latest_stage: AgentStageEventV2 | None = None,
-    ) -> None:
-        """Publish every terminal projection through one retried transaction."""
-        terminal_messages = list(messages)
-        if final_text.strip():
-            terminal_messages.append({
-                "id": str(
-                    body.get("unstable_assistantMessageId")
-                    or f"assistant-{uuid.uuid4().hex}"
-                ),
-                "role": "assistant",
-                "content": final_text,
-                "created_at": datetime.now().isoformat(),
-            })
-        normalized_messages = session_service.normalize_messages(
-            terminal_messages
-        )
-        next_context = (
-            state.get("agent_context")
-            if isinstance(state.get("agent_context"), dict)
-            else agent_context
-        )
-        first_user_text = next(
-            (
-                str(message.get("content") or "")
-                for message in normalized_messages
-                if message.get("role") == "user"
-            ),
-            "",
-        )
-        trace_payload = dict(
-            state.get("_terminal_trace")
-            if isinstance(state.get("_terminal_trace"), Mapping)
-            else {}
-        )
-        trace_payload["status"] = status
-        if error_code:
-            trace_payload["error_code"] = error_code
-        if latest_stage is not None:
-            trace_payload["latest_stage"] = latest_stage.model_dump(
-                mode="json"
-            )
-
-        last_error: Exception | None = None
-        for attempt in range(3):
-            try:
-                committed = await asyncio.shield(asyncio.to_thread(
-                    db_manager.commit_agent_run_terminal,
-                    run_id=run.run_id,
-                    conversation_id=conversation_id,
-                    status=status,
-                    messages=normalized_messages,
-                    final_text=final_text,
-                    agent_context=(
-                        next_context
-                        if isinstance(next_context, Mapping)
-                        else None
-                    ),
-                    artifacts=tuple(state.get("_terminal_artifacts") or ()),
-                    trace=trace_payload,
-                    generated_title=(
-                        session_service.generate_title(first_user_text)
-                        if first_user_text
-                        else None
-                    ),
-                    error_code=error_code,
-                    error_detail=error_detail,
-                    worker_id=active_run_registry.worker_id,
-                    attempt=run.attempt,
-                ))
-                if not committed:
-                    raise RuntimeError(
-                        "atomic Agent terminal commit did not find its run"
-                    )
-                return
-            except Exception as exc:
-                last_error = exc
-                if attempt < 2:
-                    await asyncio.sleep(0.1 * (2 ** attempt))
-        assert last_error is not None
-        raise last_error
+    terminal_publisher = AgentTerminalPublisher(
+        controller=controller,
+        run=run,
+        messages=messages,
+        request_body=body,
+        initial_agent_context=agent_context,
+        conversation_id=conversation_id,
+        database=db_manager,
+        session_service=session_service,
+        state=state,
+        worker_id=active_run_registry.worker_id,
+    )
 
     async def on_progress(assistant_text_so_far: str) -> None:
         nonlocal last_save_ts
@@ -5486,6 +5452,8 @@ async def _execute_background_agent_run(
                 conversation_context=agent_context,
                 conversation_id=conversation_id,
                 run_id=run.run_id,
+                run_attempt=run.attempt,
+                recovery_checkpoint=recovery_checkpoint,
                 db_manager=db_manager,
             )
 
@@ -5499,7 +5467,7 @@ async def _execute_background_agent_run(
             }
             else None
         )
-        await commit_terminal_state(
+        await terminal_publisher.commit(
             status=terminal_status,
             final_text=final_response_text,
             error_code=terminal_error,
@@ -5514,7 +5482,10 @@ async def _execute_background_agent_run(
         )
     except asyncio.CancelledError:
         partial = str(state.get("assistant_text") or "")
-        if active_run_registry.shutting_down:
+        if (
+            active_run_registry.shutting_down
+            or run.cancel_reason in {"restart", "lease_lost"}
+        ):
             # A planned process restart is not a user cancellation.  Preserve
             # the partial snapshot and leave the durable run active with a
             # released lease; the next worker will reclaim the same run_id.
@@ -5545,7 +5516,7 @@ async def _execute_background_agent_run(
             else "[已停止]"
         )
         try:
-            await commit_terminal_state(
+            await terminal_publisher.commit(
                 status="cancelled",
                 final_text=partial,
                 error_code="cancelled",
@@ -5582,7 +5553,7 @@ async def _execute_background_agent_run(
         controller.add_error("Agent run deadline exceeded")
         partial = str(state.get("assistant_text") or "")
         try:
-            await commit_terminal_state(
+            await terminal_publisher.commit(
                 status="failed",
                 final_text=partial,
                 error_code=AgentErrorCode.DEADLINE_EXCEEDED.value,
@@ -5614,7 +5585,7 @@ async def _execute_background_agent_run(
         controller.add_data(failed_stage.model_dump(mode="json"))
         partial = str(state.get("assistant_text") or "")
         try:
-            await commit_terminal_state(
+            await terminal_publisher.commit(
                 status="failed",
                 error_code=AgentErrorCode.TOOL_FAILED.value,
                 error_detail=str(exc),
@@ -5695,6 +5666,14 @@ async def recover_interrupted_agent_runs(
                 _context: Mapping[str, Any] | None = (
                     agent_context if isinstance(agent_context, Mapping) else None
                 ),
+                _checkpoint: Mapping[str, Any] | None = (
+                    reclaimed.get("context_snapshot")
+                    if isinstance(
+                        reclaimed.get("context_snapshot"),
+                        Mapping,
+                    )
+                    else None
+                ),
             ) -> "asyncio.Task":
                 return asyncio.create_task(_execute_background_agent_run(
                     controller=broadcaster,
@@ -5706,6 +5685,7 @@ async def recover_interrupted_agent_runs(
                     conversation_id=conversation_id,
                     db_manager=db_manager,
                     session_service=session_service,
+                    recovery_checkpoint=_checkpoint,
                 ))
 
             await run.start(factory)
@@ -5982,92 +5962,6 @@ async def agent_chat(
         logger.exception("[Agent] failed to start run_id=%s", run.run_id)
         raise HTTPException(status_code=500, detail="AI 助手任务启动失败，请重试") from exc
     return DataStreamResponse(subscriber_stream(run, first_queue))
-
-
-async def subscriber_stream(
-    run: ActiveRun,
-    queue: "asyncio.Queue | None" = None,
-    *,
-    replay_from: int | None = None,
-):
-    """首连/续流共用的订阅流:从指定 chunk 游标继续发送 data-stream。
-
-    queue: 首连传入预先 subscribe 的 queue (确保在后台 task 启动前已订阅);
-           续流留空,内部 subscribe。
-
-    刷新恢复时,历史消息由 conversations detail 的 messages/resume_state 恢复;
-    resume 只负责从 after_chunk_index 之后继续推增量。生成结束
-    broadcaster.mark_finished 向 queue 投 None 哨兵,本 generator 自然结束。
-    """
-    broadcaster = run.broadcaster
-    if queue is None:
-        queue = broadcaster.subscribe(replay_from=replay_from)
-    try:
-        # 先消费游标之后的历史 chunk,再接后续实时 chunk,直到 None 哨兵。
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            yield chunk
-    finally:
-        broadcaster.unsubscribe(queue)
-
-
-async def durable_subscriber_stream(
-    db_manager: DatabaseManager,
-    run_record: Mapping[str, Any],
-    *,
-    replay_from: int = 0,
-):
-    """Poll durable ordered events so resume works across API workers/restarts."""
-    run_id = str(run_record.get("run_id") or "")
-    cursor = max(0, int(replay_from or 0))
-    if not run_id:
-        return
-    terminal_statuses = {
-        "completed",
-        "partial",
-        "failed",
-        "cancelled",
-        "blocked",
-    }
-    while True:
-        events = await asyncio.to_thread(
-            db_manager.list_agent_run_events,
-            run_id,
-            after_sequence=cursor,
-            limit=1000,
-        )
-        for event in events:
-            sequence = int(event.get("sequence") or 0)
-            if sequence < cursor:
-                continue
-            cursor = sequence + 1
-            try:
-                yield deserialize_assistant_chunk(
-                    str(event.get("event_type") or ""),
-                    event.get("payload") or {},
-                )
-            except (TypeError, ValueError):
-                logger.warning(
-                    "[Agent] skipped invalid persisted event run_id=%s sequence=%s",
-                    run_id,
-                    sequence,
-                    exc_info=True,
-                )
-
-        latest = await asyncio.to_thread(
-            db_manager.get_agent_run,
-            run_id=run_id,
-        )
-        if latest is None:
-            break
-        event_cursor = int(latest.get("event_cursor") or 0)
-        if latest.get("status") in terminal_statuses and cursor >= event_cursor:
-            break
-        # Database polling is only a cross-worker/restart fallback; the owning
-        # worker still uses zero-latency in-memory queues for the initial stream.
-        await asyncio.sleep(0.25)
 
 
 @router.post("/agent/chat/resume")

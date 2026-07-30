@@ -14,6 +14,7 @@ from src.agent.orchestrator_v2.contracts import (
     AgentArtifactV2,
     AgentErrorCode,
     AgentStageEventV2,
+    CacheReuseScope,
     Capability,
     CoverageV2,
     InputReferenceV2,
@@ -21,6 +22,10 @@ from src.agent.orchestrator_v2.contracts import (
     OrchestratorV2Error,
     PlanningTraceV2,
     ResourceType,
+)
+from src.agent.orchestrator_v2.cache import (
+    execution_cache_key_v2,
+    save_execution_cache_v2,
 )
 from src.agent.orchestrator_v2.intents import CollectionFinancialFilterIntent
 from src.agent.orchestrator_v2.outcomes import task_outcome_v2
@@ -33,12 +38,17 @@ from src.agent.orchestrator_v2.planner import (
 from src.agent.orchestrator_v2.registry import (
     CAPABILITY_REGISTRY,
     capability_catalog,
+    capability_for,
     migration_coverage,
     normalize_capability_intent,
 )
 from src.agent.orchestrator_v2.runtime import (
+    CompiledIntentGraphV2,
+    CompiledTaskV2,
     _project_artifact_domain_subset,
     compile_intent_graph_v2,
+    restore_compiled_intent_graph_v2,
+    serialize_compiled_intent_graph_v2,
     task_plan_from_v2,
 )
 from src.agent.orchestrator_v2.state import (
@@ -55,6 +65,8 @@ from src.agent.task_workflows import (
     SecurityEntity,
     StandardTask,
     StandardTaskKind,
+    TaskPlan,
+    WorkflowCall,
     compile_task,
     workflow_for,
 )
@@ -177,6 +189,147 @@ def test_unified_registry_covers_every_standard_capability_once() -> None:
         assert "retryable_error_codes" in policy_fields
         assert spec.execution_policy.timeout_seconds > 0
         assert spec.execution_policy.max_attempts >= 1
+
+
+def test_capability_freshness_is_explicit_and_realtime_never_crosses_runs():
+    assert set(CAPABILITY_REGISTRY) == set(Capability)
+    realtime = CAPABILITY_REGISTRY[Capability.REALTIME_QUOTE].freshness_policy
+    overview = CAPABILITY_REGISTRY[Capability.MARKET_OVERVIEW].freshness_policy
+    fundamentals = CAPABILITY_REGISTRY[
+        Capability.FUNDAMENTAL_ANALYSIS
+    ].freshness_policy
+    assert realtime.reuse_scope == CacheReuseScope.RUN_ONLY
+    assert realtime.max_age_seconds is None
+    assert overview.reuse_scope == CacheReuseScope.CROSS_RUN
+    assert overview.max_age_seconds == 15
+    assert overview.require_observed_at is True
+    assert fundamentals.reuse_scope == CacheReuseScope.CROSS_RUN
+    assert fundamentals.max_age_seconds == 1800
+
+
+def test_cross_run_cache_requires_policy_and_authoritative_observation_time():
+    def compiled_for(capability: Capability) -> CompiledTaskV2:
+        spec = capability_for(capability)
+        candidate = StandardTask(
+            task_id="cache",
+            kind=StandardTaskKind(capability.value),
+            objective="cache contract",
+        )
+        return CompiledTaskV2(
+            task=ResolvedTask(candidate=candidate),
+            capability=capability,
+            capability_version=spec.version,
+            intent_schema_version=spec.schema_version,
+            execution_policy=spec.execution_policy,
+            freshness_policy=spec.freshness_policy,
+            resource_fingerprint="resource",
+        )
+
+    call = WorkflowCall(
+        task_id="cache",
+        step_id="read",
+        tool_name="get_realtime_quotes",
+        arguments={},
+    )
+    assert execution_cache_key_v2(
+        compiled_for(Capability.REALTIME_QUOTE),
+        call,
+        {"symbol": "600519"},
+        model_config={"model": "test"},
+    ) is None
+    overview = compiled_for(Capability.MARKET_OVERVIEW)
+    cache_key = execution_cache_key_v2(
+        overview,
+        call,
+        {},
+        model_config={"model": "test"},
+    )
+    assert cache_key is not None
+
+    class Database:
+        saved = 0
+
+        def save_tool_cache(self, _key, _payload):
+            self.saved += 1
+
+    database = Database()
+    save_execution_cache_v2(
+        database,
+        cache_key,
+        {"success": True, "partial": False},
+        freshness_policy=overview.freshness_policy,
+    )
+    assert database.saved == 0
+    save_execution_cache_v2(
+        database,
+        cache_key,
+        {
+            "success": True,
+            "partial": False,
+            "observed_at": "2026-07-30T10:00:00+08:00",
+        },
+        freshness_policy=overview.freshness_policy,
+    )
+    assert database.saved == 1
+
+
+def test_compiled_graph_checkpoint_round_trips_and_rejects_contract_drift():
+    spec = capability_for(Capability.GENERAL_RESPONSE)
+    candidate = StandardTask(
+        task_id="answer",
+        kind=StandardTaskKind.GENERAL_RESPONSE,
+        objective="解释市盈率",
+    )
+    compiled = CompiledIntentGraphV2(
+        run_id="checkpoint-run",
+        plan=TaskPlan(tasks=[candidate]),
+        tasks=(CompiledTaskV2(
+            task=ResolvedTask(candidate=candidate),
+            capability=Capability.GENERAL_RESPONSE,
+            capability_version=spec.version,
+            intent_schema_version=spec.schema_version,
+            execution_policy=spec.execution_policy,
+            freshness_policy=spec.freshness_policy,
+            resource_fingerprint="resource-fingerprint",
+        ),),
+        assumptions=(),
+    )
+    trace = PlanningTraceV2(
+        run_id="checkpoint-run",
+        schema_version="orchestrator-3.0",
+    )
+    checkpoint = serialize_compiled_intent_graph_v2(
+        compiled,
+        planning_trace=trace,
+        request_fingerprint="request-fingerprint",
+    )
+
+    restored = restore_compiled_intent_graph_v2(
+        checkpoint,
+        expected_run_id="checkpoint-run",
+        request_fingerprint="request-fingerprint",
+    )
+    assert restored is not None
+    restored_graph, restored_trace = restored
+    assert restored_graph.plan == compiled.plan
+    assert restored_graph.tasks[0].freshness_policy == spec.freshness_policy
+    assert restored_trace == trace
+
+    drifted = {
+        **checkpoint,
+        "compiled_graph": {
+            **checkpoint["compiled_graph"],
+            "tasks": [{
+                **checkpoint["compiled_graph"]["tasks"][0],
+                "capability_version": "stale",
+            }],
+        },
+    }
+    assert restore_compiled_intent_graph_v2(
+        drifted,
+        expected_run_id="checkpoint-run",
+        request_fingerprint="request-fingerprint",
+    ) is None
 
 
 def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> None:

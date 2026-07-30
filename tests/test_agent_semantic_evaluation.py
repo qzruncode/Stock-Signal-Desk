@@ -1,10 +1,30 @@
 # -*- coding: utf-8 -*-
 
+import json
+from pathlib import Path
+
+from src.agent.orchestrator_v2.contracts import Capability
 from src.agent.semantic_evaluation import (
     SemanticGoldenCase,
     score_semantic_case,
     summarize_semantic_scores,
 )
+
+_GOLDEN_PATH = (
+    Path(__file__).parent / "fixtures" / "agent_planner_golden.json"
+)
+
+
+def test_semantic_golden_gate_covers_every_capability():
+    values = json.loads(_GOLDEN_PATH.read_text(encoding="utf-8"))
+    cases = [SemanticGoldenCase.from_value(value) for value in values]
+    assert len({case.case_id for case in cases}) == len(cases)
+    covered = {
+        capability
+        for case in cases
+        for capability in case.required_capabilities
+    }
+    assert covered == {capability.value for capability in Capability}
 
 
 def test_semantic_score_fails_missing_forbidden_duplicate_and_oversize():

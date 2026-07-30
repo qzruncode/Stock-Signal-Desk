@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+"""Typed boundary between Workflow runtime policy and concrete tool execution."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping
+import threading
+
+from src.tools.base import (
+    ToolProgressUpdate,
+    tool_idempotency_context,
+    tool_progress_observer,
+)
+from src.tools.process_runner import (
+    ISOLATED_TOOL_NAMES,
+    STATEFUL_TOOL_NAMES,
+)
+from src.tools.registry import ToolRegistry
+
+
+@dataclass(frozen=True)
+class ToolDispatchRequest:
+    tool_name: str
+    arguments: Mapping[str, Any]
+    idempotency_key: str
+    timeout_seconds: float
+    force_isolation: bool = False
+
+
+class ToolDispatcher:
+    """Execute one already policy-approved call and normalize its result."""
+
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        *,
+        isolated_executor: Callable[..., Any],
+        compact_result: Callable[[str, Any], Any],
+        attach_fallback: Callable[[str, dict[str, Any], Any], Any],
+    ) -> None:
+        self._registry = registry
+        self._isolated_executor = isolated_executor
+        self._compact_result = compact_result
+        self._attach_fallback = attach_fallback
+
+    def execute(
+        self,
+        request: ToolDispatchRequest,
+        *,
+        cancel_event: threading.Event,
+        progress_observer: Callable[[ToolProgressUpdate], None],
+    ) -> dict[str, Any]:
+        arguments = dict(request.arguments)
+        with (
+            tool_progress_observer(progress_observer),
+            tool_idempotency_context(request.idempotency_key),
+        ):
+            if request.tool_name in STATEFUL_TOOL_NAMES:
+                raw_result = self._registry.execute(
+                    request.tool_name,
+                    arguments,
+                )
+            elif (
+                request.tool_name in ISOLATED_TOOL_NAMES
+                or request.force_isolation
+            ):
+                raw_result = self._isolated_executor(
+                    request.tool_name,
+                    arguments,
+                    cancel_event=cancel_event,
+                    deadline_seconds=request.timeout_seconds,
+                    idempotency_key=request.idempotency_key,
+                )
+            else:
+                raw_result = self._registry.execute(
+                    request.tool_name,
+                    arguments,
+                )
+        compacted = self._compact_result(request.tool_name, raw_result)
+        result = self._attach_fallback(
+            request.tool_name,
+            arguments,
+            compacted,
+        )
+        return result if isinstance(result, dict) else {
+            "success": True,
+            "result": result,
+            "errors": [],
+            "partial": False,
+        }
+
+
+__all__ = [
+    "ToolDispatcher",
+    "ToolDispatchRequest",
+]

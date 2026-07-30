@@ -10,12 +10,15 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from src.agent.orchestrator_v2.contracts import (
     AgentArtifactV2,
+    AssumptionRecord,
     CompiledCallV2,
     AgentErrorCode,
     AgentStage,
     AgentStageEventV2,
     ExecutionPolicy,
+    FreshnessPolicy,
     Capability,
+    PlanningTraceV2,
     OrchestratorV2Error,
     ResourceType,
     StageObserver,
@@ -59,6 +62,7 @@ class CompiledTaskV2:
     intent_schema_version: str
     execution_policy: ExecutionPolicy
     resource_fingerprint: str
+    freshness_policy: FreshnessPolicy = FreshnessPolicy()
     input_artifact_ids: tuple[str, ...] = ()
 
 
@@ -79,6 +83,172 @@ class CompiledIntentGraphV2:
             item.task.task_id: item.execution_policy
             for item in self.tasks
         }
+
+
+def serialize_compiled_intent_graph_v2(
+    graph: CompiledIntentGraphV2,
+    *,
+    planning_trace: PlanningTraceV2,
+    request_fingerprint: str,
+) -> dict[str, Any]:
+    """Create a versioned, JSON-safe recovery checkpoint after compilation."""
+    return {
+        "checkpoint_version": "compiled-v1",
+        "stage": "compiled",
+        "request_fingerprint": request_fingerprint,
+        "planning_trace": planning_trace.model_dump(mode="json"),
+        "compiled_graph": {
+            "run_id": graph.run_id,
+            "plan": graph.plan.model_dump(mode="json"),
+            "assumptions": [
+                (
+                    item.model_dump(mode="json")
+                    if hasattr(item, "model_dump")
+                    else item
+                )
+                for item in graph.assumptions
+            ],
+            "tasks": [
+                {
+                    "task_id": item.task.task_id,
+                    "symbols": list(item.task.symbols),
+                    "entity_names": [
+                        list(value)
+                        for value in item.task.entity_names
+                    ],
+                    "capability": item.capability.value,
+                    "capability_version": item.capability_version,
+                    "intent_schema_version": item.intent_schema_version,
+                    "execution_policy": item.execution_policy.model_dump(
+                        mode="json"
+                    ),
+                    "freshness_policy": item.freshness_policy.model_dump(
+                        mode="json"
+                    ),
+                    "resource_fingerprint": item.resource_fingerprint,
+                    "input_artifact_ids": list(item.input_artifact_ids),
+                }
+                for item in graph.tasks
+            ],
+        },
+    }
+
+
+def restore_compiled_intent_graph_v2(
+    checkpoint: Mapping[str, Any],
+    *,
+    expected_run_id: str,
+    request_fingerprint: str,
+) -> tuple[CompiledIntentGraphV2, PlanningTraceV2] | None:
+    """Restore only a checkpoint matching this request and current contracts."""
+    if (
+        checkpoint.get("checkpoint_version") != "compiled-v1"
+        or checkpoint.get("stage") != "compiled"
+        or checkpoint.get("request_fingerprint") != request_fingerprint
+    ):
+        return None
+    raw_graph = checkpoint.get("compiled_graph")
+    raw_trace = checkpoint.get("planning_trace")
+    if not isinstance(raw_graph, Mapping) or not isinstance(raw_trace, Mapping):
+        return None
+    if str(raw_graph.get("run_id") or "") != expected_run_id:
+        return None
+    try:
+        plan = TaskPlan.model_validate(raw_graph.get("plan"))
+        candidates = {task.task_id: task for task in plan.tasks}
+        compiled_tasks: list[CompiledTaskV2] = []
+        for raw in raw_graph.get("tasks") or ():
+            if not isinstance(raw, Mapping):
+                return None
+            task_id = str(raw.get("task_id") or "")
+            candidate = candidates.get(task_id)
+            if candidate is None:
+                return None
+            capability = Capability(str(raw.get("capability") or ""))
+            spec = capability_for(capability)
+            if (
+                candidate.kind.value != capability.value
+                or raw.get("capability_version") != spec.version
+                or raw.get("intent_schema_version") != spec.schema_version
+            ):
+                return None
+            symbols = tuple(
+                str(value)
+                for value in raw.get("symbols") or ()
+            )
+            execution_policy = ExecutionPolicy.model_validate(
+                raw.get("execution_policy")
+            )
+            freshness_policy = FreshnessPolicy.model_validate(
+                raw.get("freshness_policy")
+            )
+            confirmation_required = (
+                candidate.confirmation != ConfirmationState.NOT_REQUIRED
+                or (
+                    candidate.kind == StandardTaskKind.BATCH_ANALYSIS
+                    and len(symbols) > 10
+                )
+            )
+            if (
+                execution_policy
+                != spec.execution_policy.model_copy(update={
+                    "confirmation_required": confirmation_required,
+                })
+                or freshness_policy != spec.freshness_policy
+            ):
+                return None
+            resource_fingerprint = str(
+                raw.get("resource_fingerprint") or ""
+            )
+            if not resource_fingerprint:
+                return None
+            compiled_tasks.append(CompiledTaskV2(
+                task=ResolvedTask(
+                    candidate=candidate,
+                    symbols=symbols,
+                    entity_names=tuple(
+                        (str(value[0]), str(value[1]))
+                        for value in raw.get("entity_names") or ()
+                        if isinstance(value, (list, tuple))
+                        and len(value) == 2
+                    ),
+                ),
+                capability=capability,
+                capability_version=spec.version,
+                intent_schema_version=spec.schema_version,
+                execution_policy=execution_policy,
+                freshness_policy=freshness_policy,
+                resource_fingerprint=resource_fingerprint,
+                input_artifact_ids=tuple(
+                    str(value)
+                    for value in raw.get("input_artifact_ids") or ()
+                ),
+            ))
+        if (
+            len(compiled_tasks) != len(candidates)
+            or set(candidates) != {
+                item.task.task_id for item in compiled_tasks
+            }
+        ):
+            return None
+        assumptions = tuple(
+            AssumptionRecord.model_validate(item)
+            for item in raw_graph.get("assumptions") or ()
+        )
+        trace = PlanningTraceV2.model_validate(raw_trace)
+    except (TypeError, ValueError):
+        return None
+    if trace.run_id != expected_run_id:
+        return None
+    return (
+        CompiledIntentGraphV2(
+            run_id=expected_run_id,
+            plan=plan,
+            tasks=tuple(compiled_tasks),
+            assumptions=assumptions,
+        ),
+        trace,
+    )
 
 
 async def _emit(
@@ -575,15 +745,7 @@ def task_plan_from_v2(
                 )
                 parameters["thesis"] = "、".join(domain_labels)
                 parameters["thesis_context"] = context.model_dump()
-        action = str(parameters.get("action") or "")
-        confirmation_required = (
-            action in workflow.confirmation_actions
-            or any(
-                requirement.confirmation_required
-                and requirement.applies(parameters)
-                for requirement in workflow.parameter_requirements
-            )
-        )
+        confirmation_required = workflow.requires_confirmation(parameters)
         confirmation = (
             ConfirmationState.EXPLICIT
             if confirmation_required
@@ -851,6 +1013,7 @@ async def compile_intent_graph_v2(
                 "symbols": list(task.symbols),
                 "parameters": dict(task.parameters),
             }),
+            freshness_policy=spec.freshness_policy,
             input_artifact_ids=tuple(
                 ref.artifact_id
                 for ref in node.outline.input_refs
@@ -928,5 +1091,7 @@ __all__ = [
     "CompiledTaskV2",
     "compile_intent_graph_v2",
     "compile_workflow_call_v2",
+    "restore_compiled_intent_graph_v2",
+    "serialize_compiled_intent_graph_v2",
     "task_plan_from_v2",
 ]

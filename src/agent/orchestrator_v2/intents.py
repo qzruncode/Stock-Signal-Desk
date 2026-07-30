@@ -375,7 +375,7 @@ class WatchlistQueryIntent(StrictModel):
     group: str | None = Field(default=None, min_length=1, max_length=80)
 
 
-class WatchlistMutationIntent(StrictModel):
+class WatchlistMutationIntent(ConfirmationSignal):
     action: Literal["add", "remove"]
 
 
@@ -393,7 +393,7 @@ class WatchlistGroupManagementIntent(ConfirmationSignal):
         return self
 
 
-class FormalAnalysisIntent(StrictModel):
+class FormalAnalysisIntent(ConfirmationSignal):
     action: Literal["start", "status"]
     task_id: str | None = Field(default=None, min_length=1, max_length=80)
     status: str | None = Field(default=None, min_length=1, max_length=40)
@@ -561,7 +561,7 @@ class WebpageFeedTransformIntent(StrictModel):
     limit: int | None = Field(default=None, ge=1, le=100)
 
 
-class FinancialFeedExportIntent(StrictModel):
+class FinancialFeedExportIntent(ConfirmationSignal):
     route_path: str = Field(min_length=1, max_length=500)
     inputs: tuple[NamedScalarInput, ...] = Field(default_factory=tuple, max_length=20)
     namespace: str | None = Field(default=None, min_length=1, max_length=80)

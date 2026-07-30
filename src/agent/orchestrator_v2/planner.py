@@ -73,27 +73,6 @@ def _runtime_int(
         return default
 
 
-def _provider_error_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    status_code = getattr(exc, "status_code", None)
-    if status_code == 429 or (
-        isinstance(status_code, int) and 500 <= status_code <= 599
-    ):
-        return True
-    name = type(exc).__name__.lower()
-    return any(
-        token in name
-        for token in (
-            "timeout",
-            "connection",
-            "ratelimit",
-            "serviceunavailable",
-            "internalserver",
-        )
-    )
-
-
 class RawProviderPayloadError(ValueError):
     def __init__(self, payload: str, cause: BaseException) -> None:
         super().__init__(str(cause))
@@ -441,7 +420,6 @@ async def call_model_exact_v2(
     max_tokens: int = 4_000,
     contract_transport: Literal["function", "json_content"] = "function",
     timeout_seconds: float | None = None,
-    provider_max_attempts: int | None = None,
 ) -> tuple[BaseModel, Any, RepairRecordV2 | None]:
     request_timeout = (
         float(timeout_seconds)
@@ -450,16 +428,6 @@ async def call_model_exact_v2(
             "AGENT_PLANNER_REQUEST_TIMEOUT_SECONDS",
             90.0,
             minimum=1.0,
-        )
-    )
-    provider_attempt_limit = (
-        int(provider_max_attempts)
-        if provider_max_attempts is not None
-        else _runtime_int(
-            "AGENT_PLANNER_PROVIDER_MAX_ATTEMPTS",
-            2,
-            minimum=1,
-            maximum=4,
         )
     )
     tool = _function_tool(function_name, description, model)
@@ -521,68 +489,58 @@ async def call_model_exact_v2(
         )
         raw_payload: Any = None
         response: Any = None
-        provider_error: BaseException | None = None
-        for provider_attempt in range(provider_attempt_limit):
-            completion_task: asyncio.Task | None = None
-            try:
-                completion_task = asyncio.create_task(completion(**kwargs))
-                wait_started = time.monotonic()
-                deadline = wait_started + request_timeout
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError(
-                            f"{function_name} exceeded {request_timeout:.1f}s"
-                        )
-                    done, _ = await asyncio.wait(
-                        {completion_task},
-                        timeout=min(
-                            MODEL_PROGRESS_HEARTBEAT_SECONDS,
-                            remaining,
-                        ),
+        completion_task: asyncio.Task | None = None
+        try:
+            # GuardedModelRuntime is the sole transport-retry owner. This
+            # contract layer performs one request plus, when needed, one
+            # schema-repair request with a different semantic purpose.
+            completion_task = asyncio.create_task(completion(**kwargs))
+            wait_started = time.monotonic()
+            deadline = wait_started + request_timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"{function_name} exceeded {request_timeout:.1f}s"
                     )
-                    if done:
-                        response = completion_task.result()
-                        break
-                    if progress_observer is not None:
-                        progress_result = progress_observer(
-                            max(1, int(time.monotonic() - wait_started))
-                        )
-                        if inspect.isawaitable(progress_result):
-                            await progress_result
-                provider_error = None
-                break
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                provider_error = exc
-                if (
-                    provider_attempt + 1 >= provider_attempt_limit
-                    or not _provider_error_retryable(exc)
-                ):
+                done, _ = await asyncio.wait(
+                    {completion_task},
+                    timeout=min(
+                        MODEL_PROGRESS_HEARTBEAT_SECONDS,
+                        remaining,
+                    ),
+                )
+                if done:
+                    response = completion_task.result()
                     break
-                await asyncio.sleep(min(4.0, 0.5 * (2 ** provider_attempt)))
-            finally:
-                if completion_task is not None and not completion_task.done():
-                    completion_task.cancel()
-                    await asyncio.gather(
-                        completion_task,
-                        return_exceptions=True,
+                if progress_observer is not None:
+                    progress_result = progress_observer(
+                        max(1, int(time.monotonic() - wait_started))
                     )
-        if provider_error is not None:
+                    if inspect.isawaitable(progress_result):
+                        await progress_result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
             raise OrchestratorV2Error(
                 provider_error_code,
                 (
-                    f"{function_name} provider request failed after "
-                    f"{provider_attempt_limit} attempt(s): "
-                    f"{type(provider_error).__name__}: {provider_error}"
+                    f"{function_name} provider request failed: "
+                    f"{type(exc).__name__}: {exc}"
                 ),
                 task_id=node_id,
                 metadata={
-                    "provider_attempts": provider_attempt_limit,
+                    "provider_attempts": 1,
                     "timeout_seconds": request_timeout,
                 },
-            ) from provider_error
+            ) from exc
+        finally:
+            if completion_task is not None and not completion_task.done():
+                completion_task.cancel()
+                await asyncio.gather(
+                    completion_task,
+                    return_exceptions=True,
+                )
 
         try:
             raw_payload = _payload_from_response(response, function_name)

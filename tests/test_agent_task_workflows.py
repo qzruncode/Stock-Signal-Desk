@@ -1223,7 +1223,15 @@ def test_executor_parallelizes_independent_reads_and_serializes_mutations() -> N
             active -= 1
             return {"success": True, "errors": [], "partial": False}
 
-        result = await WorkflowExecutor(ToolRegistry(), runner).execute(tasks)
+        result = await WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            approved_actions={
+                action_fingerprint(task)
+                for task in tasks
+                if task.candidate.confirmation == ConfirmationState.EXPLICIT
+            },
+        ).execute(tasks)
         assert result.success is True
         return max_active
 

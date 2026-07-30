@@ -211,25 +211,14 @@ class WorkflowPolicyValidator:
 
         action = str(task.parameters.get("action") or "")
         fingerprint = action_fingerprint(task)
-        if action in spec.confirmation_actions and (
+        if spec.requires_confirmation(task.parameters) and (
             task.candidate.confirmation != ConfirmationState.EXPLICIT
             or fingerprint not in self.approved_actions
         ):
-            raise ConfirmationRequired(task.task_id, action)
-        for requirement in spec.parameter_requirements:
-            if (
-                requirement.applies(task.parameters)
-                and requirement.confirmation_required
-                and (
-                    task.candidate.confirmation != ConfirmationState.EXPLICIT
-                    or fingerprint not in self.approved_actions
-                )
-            ):
-                discriminator = ",".join(
-                    f"{key}={task.parameters.get(key)}"
-                    for key, _values in requirement.when
-                ) or task.kind.value
-                raise ConfirmationRequired(task.task_id, discriminator)
+            raise ConfirmationRequired(
+                task.task_id,
+                action or task.kind.value,
+            )
         if (
             task.kind.value == "batch_analysis"
             and len(task.symbols) > 10

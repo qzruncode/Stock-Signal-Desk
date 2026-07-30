@@ -7,7 +7,11 @@ from datetime import datetime
 import json
 from typing import Any, Mapping
 
-from src.agent.orchestrator_v2.contracts import CachePolicy, stable_fingerprint
+from src.agent.orchestrator_v2.contracts import (
+    CacheReuseScope,
+    FreshnessPolicy,
+    stable_fingerprint,
+)
 from src.agent.orchestrator_v2.runtime import CompiledTaskV2
 from src.agent.task_workflows import WorkflowCall
 
@@ -51,10 +55,10 @@ def execution_cache_key_v2(
     *,
     model_config: Mapping[str, Any],
 ) -> str | None:
-    policy = task.execution_policy
+    policy = task.freshness_policy
     if (
-        policy.cache_policy != CachePolicy.READ_ONLY
-        or policy.cache_ttl_seconds is None
+        policy.reuse_scope != CacheReuseScope.CROSS_RUN
+        or policy.max_age_seconds is None
     ):
         return None
     fingerprint = stable_fingerprint({
@@ -68,7 +72,7 @@ def execution_cache_key_v2(
         "model_config_fingerprint": stable_fingerprint(
             _cache_safe_model_config(model_config)
         ),
-        "freshness_requirement_seconds": policy.cache_ttl_seconds,
+        "freshness_policy": policy.model_dump(mode="json"),
     })
     return f"agent_v2:{fingerprint}"
 
@@ -99,10 +103,25 @@ def save_execution_cache_v2(
     db_manager: Any,
     cache_key: str,
     result: Mapping[str, Any],
+    *,
+    freshness_policy: FreshnessPolicy,
 ) -> None:
     if result.get("success") is not True or result.get("partial") is True:
         return
     if result.get("coverage_complete") is False:
+        return
+    if freshness_policy.require_observed_at and not any(
+        result.get(key)
+        for key in (
+            "observed_at",
+            "data_time",
+            "as_of",
+            "timestamp",
+            "trade_time",
+        )
+    ):
+        # A volatile capability without an authoritative observation time
+        # cannot safely cross a run boundary.
         return
     db_manager.save_tool_cache(
         cache_key,

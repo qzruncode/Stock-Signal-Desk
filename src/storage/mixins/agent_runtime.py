@@ -205,6 +205,37 @@ class AgentRuntimeMixin:
             record = session.execute(statement).scalars().first()
             return _run_dict(record) if record is not None else None
 
+    def save_agent_run_checkpoint(
+        self,
+        run_id: str,
+        *,
+        worker_id: str,
+        attempt: int,
+        checkpoint: Mapping[str, Any],
+    ) -> bool:
+        """Persist a recoverable stage boundary for the current run owner."""
+        now = datetime.now()
+
+        def _save(session):
+            statement = select(AgentRun).where(AgentRun.id == run_id)
+            if not self._is_sqlite_engine:
+                statement = statement.with_for_update()
+            record = session.execute(statement).scalars().first()
+            if (
+                record is None
+                or record.status not in _ACTIVE_RUN_STATUSES
+                or record.worker_id != worker_id
+                or int(record.attempt or 0) != int(attempt)
+            ):
+                return False
+            record.context_snapshot_json = _json(dict(checkpoint))
+            record.updated_at = now
+            return True
+
+        return bool(
+            self._run_write_transaction("save_agent_run_checkpoint", _save)
+        )
+
     def heartbeat_agent_run(
         self,
         run_id: str,
@@ -289,6 +320,7 @@ class AgentRuntimeMixin:
             record.error_code = error_code
             record.error_detail = error_detail
             record.result_json = _json(result) if result is not None else None
+            record.context_snapshot_json = None
             record.cancel_requested = status == "cancelled"
             record.lease_expires_at = None
             record.finished_at = now
@@ -506,6 +538,7 @@ class AgentRuntimeMixin:
                 "artifact_count": len(artifacts),
                 "trace_status": trace_record.status,
             })
+            run.context_snapshot_json = None
             run.cancel_requested = status == "cancelled"
             run.lease_expires_at = None
             run.finished_at = now
@@ -522,8 +555,34 @@ class AgentRuntimeMixin:
         event_type: str,
         payload: Mapping[str, Any],
     ) -> bool:
-        if sequence < 0:
+        return self.append_agent_run_events(
+            run_id=run_id,
+            start_sequence=sequence,
+            events=[{
+                "event_type": event_type,
+                "payload": dict(payload),
+            }],
+        )
+
+    def append_agent_run_events(
+        self,
+        *,
+        run_id: str,
+        start_sequence: int,
+        events: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        """Atomically append one ordered event batch and advance its cursor."""
+        if start_sequence < 0:
             raise ValueError("event sequence must be non-negative")
+        normalized_events = [
+            {
+                "event_type": str(event.get("event_type") or "")[:32],
+                "payload": dict(event.get("payload") or {}),
+            }
+            for event in events
+        ]
+        if not normalized_events:
+            return True
         now = datetime.now()
 
         def _append(session):
@@ -533,33 +592,42 @@ class AgentRuntimeMixin:
             record = session.execute(statement).scalars().first()
             if record is None:
                 return False
-            event_id = f"{run_id}:{sequence}"
-            if session.get(AgentRunEvent, event_id) is not None:
-                return True
             expected_sequence = int(record.event_cursor or 0)
-            if sequence != expected_sequence:
+            if start_sequence < expected_sequence:
+                end_sequence = start_sequence + len(normalized_events)
+                if end_sequence <= expected_sequence:
+                    return True
+            if start_sequence != expected_sequence:
                 raise RuntimeError(
                     "durable Agent event sequence gap: "
-                    f"expected {expected_sequence}, received {sequence}"
+                    f"expected {expected_sequence}, received {start_sequence}"
                 )
-            session.add(AgentRunEvent(
-                id=event_id,
-                run_id=run_id,
-                sequence=sequence,
-                event_type=event_type[:32],
-                payload_json=_json(dict(payload)),
-                created_at=now,
-            ))
-            record.event_cursor = max(int(record.event_cursor or 0), sequence + 1)
+            for offset, event in enumerate(normalized_events):
+                sequence = start_sequence + offset
+                session.add(AgentRunEvent(
+                    id=f"{run_id}:{sequence}",
+                    run_id=run_id,
+                    sequence=sequence,
+                    event_type=event["event_type"],
+                    payload_json=_json(event["payload"]),
+                    created_at=now,
+                ))
+            record.event_cursor = start_sequence + len(normalized_events)
             record.updated_at = now
             return True
 
         try:
-            return bool(self._run_write_transaction("append_agent_run_event", _append))
+            return bool(self._run_write_transaction("append_agent_run_events", _append))
         except IntegrityError:
-            # Event identity is deterministic, so a duplicate insert is the
-            # successful replay of the same emission.
-            return True
+            # Event identities are deterministic. Recheck whether the whole
+            # batch was already committed before treating the conflict as a
+            # successful idempotent replay.
+            latest = self.get_agent_run(run_id=run_id)
+            return bool(
+                latest
+                and int(latest.get("event_cursor") or 0)
+                >= start_sequence + len(normalized_events)
+            )
 
     def list_agent_run_events(
         self,
@@ -588,6 +656,42 @@ class AgentRuntimeMixin:
                 }
                 for record in records
             ]
+
+    def read_agent_run_event_batch(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> dict[str, Any] | None:
+        """Read run state and its next ordered event page in one DB session."""
+        safe_limit = max(1, min(int(limit), 10_000))
+        cursor = max(0, int(after_sequence))
+        with self.get_session() as session:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                return None
+            records = session.execute(
+                select(AgentRunEvent)
+                .where(
+                    AgentRunEvent.run_id == run_id,
+                    AgentRunEvent.sequence >= cursor,
+                )
+                .order_by(AgentRunEvent.sequence.asc())
+                .limit(safe_limit)
+            ).scalars().all()
+            return {
+                "run": _run_dict(run),
+                "events": [
+                    {
+                        "sequence": int(record.sequence),
+                        "event_type": record.event_type,
+                        "payload": _load_json(record.payload_json, {}),
+                        "created_at": record.created_at,
+                    }
+                    for record in records
+                ],
+            }
 
     def agent_run_has_tool_events(self, run_id: str) -> bool:
         with self.get_session() as session:
@@ -1291,6 +1395,11 @@ class AgentRuntimeMixin:
                     AgentRun.created_at >= now - timedelta(hours=24)
                 ).order_by(AgentRun.created_at.desc()).limit(10_000)
             ).scalars().all()
+            recent_traces = session.execute(
+                select(AgentRunTrace).where(
+                    AgentRunTrace.created_at >= now - timedelta(hours=24)
+                ).order_by(AgentRunTrace.created_at.desc()).limit(10_000)
+            ).scalars().all()
             terminal_recent = [
                 record
                 for record in recent_runs
@@ -1304,6 +1413,30 @@ class AgentRuntimeMixin:
                 for record in terminal_recent
                 if record.started_at is not None
                 and record.finished_at is not None
+            )
+            planning_stages = {
+                "outline",
+                "parameterization",
+                "normalization",
+                "resource_binding",
+                "compilation",
+                "policy",
+            }
+            planning_durations_ms = sorted(
+                sum(
+                    max(0, int(value))
+                    for key, value in durations.items()
+                    if str(key).split(":", 1)[0] in planning_stages
+                )
+                for record in recent_traces
+                if isinstance(
+                    durations := _load_json(
+                        record.stage_durations_json,
+                        {},
+                    ),
+                    Mapping,
+                )
+                and durations
             )
 
             def percentile(values: list[int], ratio: float) -> int | None:
@@ -1337,6 +1470,35 @@ class AgentRuntimeMixin:
                 max(0, int(record.attempt or 1) - 1)
                 for record in recent_runs
             )
+            recovered_terminal = [
+                record
+                for record in terminal_recent
+                if int(record.attempt or 1) > 1
+            ]
+            recovered_successes = sum(
+                record.status == "completed"
+                for record in recovered_terminal
+            )
+            event_count = sum(
+                int(record.event_cursor or 0)
+                for record in recent_runs
+            )
+            provider_calls = sum(
+                int(record.provider_call_count or 0)
+                for record in recent_runs
+            )
+            tool_calls = sum(
+                int(record.tool_call_count or 0)
+                for record in recent_runs
+            )
+            estimated_tokens = sum(
+                int(record.estimated_token_count or 0)
+                for record in recent_runs
+            )
+            estimated_cost_micros = sum(
+                int(record.estimated_cost_micros or 0)
+                for record in recent_runs
+            )
             return {
                 "runs": {status: int(count) for status, count in status_rows},
                 "steps": [
@@ -1352,6 +1514,30 @@ class AgentRuntimeMixin:
                 "open_circuits": int(open_circuits),
                 "step_idempotency_reuses": int(step_reuses),
                 "recovery_attempts_24h": int(recovery_attempts),
+                "recovery_24h": {
+                    "terminal_runs": len(recovered_terminal),
+                    "successful_runs": recovered_successes,
+                    "success_rate": (
+                        round(
+                            recovered_successes / len(recovered_terminal),
+                            6,
+                        )
+                        if recovered_terminal
+                        else None
+                    ),
+                },
+                "workload_24h": {
+                    "events": event_count,
+                    "events_per_run": (
+                        round(event_count / len(recent_runs), 3)
+                        if recent_runs
+                        else 0.0
+                    ),
+                    "provider_calls": provider_calls,
+                    "tool_calls": tool_calls,
+                    "estimated_tokens": estimated_tokens,
+                    "estimated_cost_micros": estimated_cost_micros,
+                },
                 "slo_24h": {
                     "terminal_runs": len(terminal_recent),
                     "successful_runs": successes,
@@ -1362,6 +1548,14 @@ class AgentRuntimeMixin:
                     ),
                     "duration_ms_p50": percentile(durations_ms, 0.50),
                     "duration_ms_p95": percentile(durations_ms, 0.95),
+                    "planning_ms_p50": percentile(
+                        planning_durations_ms,
+                        0.50,
+                    ),
+                    "planning_ms_p95": percentile(
+                        planning_durations_ms,
+                        0.95,
+                    ),
                 },
             }
 

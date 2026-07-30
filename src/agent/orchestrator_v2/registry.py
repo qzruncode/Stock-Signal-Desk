@@ -12,12 +12,13 @@ from src.agent.orchestrator_v2 import intents as intent_models
 from src.agent.orchestrator_v2.contracts import (
     AgentErrorCode,
     AssumptionRecord,
-    CachePolicy,
+    CacheReuseScope,
     Capability,
     CapabilitySpec,
     CoverageV2,
     EffectLevel,
     ExecutionPolicy,
+    FreshnessPolicy,
     InputReferenceV2,
     NormalizedIntent,
     OrchestratorV2Error,
@@ -765,6 +766,121 @@ _SUBSUMED_CAPABILITIES: Mapping[
 })
 
 
+_RUN_ONLY_FRESHNESS = FreshnessPolicy(
+    reuse_scope=CacheReuseScope.RUN_ONLY,
+)
+
+
+def _cross_run_freshness(
+    seconds: int,
+    *,
+    market_session_sensitive: bool = False,
+    require_observed_at: bool = False,
+) -> FreshnessPolicy:
+    return FreshnessPolicy(
+        reuse_scope=CacheReuseScope.CROSS_RUN,
+        max_age_seconds=seconds,
+        market_session_sensitive=market_session_sensitive,
+        require_observed_at=require_observed_at,
+    )
+
+
+# Freshness is a capability contract, not an executor/tool-name special case.
+# Highly volatile snapshots stay run-local; slow-changing or versioned reads
+# may cross runs for a bounded interval.
+_FRESHNESS_BY_CAPABILITY: Mapping[
+    Capability,
+    FreshnessPolicy,
+] = MappingProxyType({
+    Capability.REALTIME_QUOTE: _RUN_ONLY_FRESHNESS,
+    Capability.MARKET_OVERVIEW: _cross_run_freshness(
+        15,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.CAPITAL_FLOW_ANALYSIS: _cross_run_freshness(
+        30,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.PRICE_HISTORY: _cross_run_freshness(
+        60,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.TECHNICAL_ANALYSIS: _cross_run_freshness(
+        60,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.SECTOR_ANALYSIS: _cross_run_freshness(
+        60,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.STOCK_COMPARISON: _cross_run_freshness(
+        60,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.STOCK_DEEP_RESEARCH: _cross_run_freshness(
+        120,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.INVESTMENT_DECISION: _cross_run_freshness(
+        120,
+        market_session_sensitive=True,
+        require_observed_at=True,
+    ),
+    Capability.NEWS_ANALYSIS: _cross_run_freshness(300),
+    Capability.ANNOUNCEMENT_ANALYSIS: _cross_run_freshness(300),
+    Capability.RISK_ANALYSIS: _cross_run_freshness(300),
+    Capability.REGULATORY_ANALYSIS: _cross_run_freshness(300),
+    Capability.RESEARCH_REPORT_ANALYSIS: _cross_run_freshness(300),
+    Capability.CATALYST_ANALYSIS: _cross_run_freshness(300),
+    Capability.SOCIAL_SENTIMENT_ANALYSIS: _cross_run_freshness(300),
+    Capability.MACRO_ANALYSIS: _cross_run_freshness(300),
+    Capability.PUBLIC_WEB_RESEARCH: _cross_run_freshness(300),
+    Capability.FUNDAMENTAL_ANALYSIS: _cross_run_freshness(1_800),
+    Capability.VALUATION_ANALYSIS: _cross_run_freshness(300),
+    Capability.FINANCIAL_STATEMENT_ANALYSIS: _cross_run_freshness(1_800),
+    Capability.THEME_BUSINESS_EVIDENCE: _cross_run_freshness(1_800),
+    Capability.COLLECTION_FINANCIAL_FILTER: _cross_run_freshness(1_800),
+    Capability.SECURITY_LOOKUP: _cross_run_freshness(3_600),
+    Capability.INDUSTRY_RESEARCH: _cross_run_freshness(3_600),
+    Capability.THEME_STOCK_DISCOVERY: _cross_run_freshness(600),
+    Capability.STOCK_SCREENING: _cross_run_freshness(300),
+    Capability.WATCHLIST_QUERY: _RUN_ONLY_FRESHNESS,
+    Capability.DATA_HEALTH: _RUN_ONLY_FRESHNESS,
+    Capability.FINANCIAL_SOURCE_DISCOVERY: _cross_run_freshness(3_600),
+    Capability.FINANCIAL_FEED_READ: _cross_run_freshness(300),
+    Capability.FINANCIAL_ARTICLE_READ: _cross_run_freshness(3_600),
+    Capability.WEBPAGE_FEED_TRANSFORM: _RUN_ONLY_FRESHNESS,
+    Capability.GENERAL_RESPONSE: _RUN_ONLY_FRESHNESS,
+})
+_READ_CAPABILITIES = {
+    capability
+    for capability in Capability
+    if workflow_for(
+        StandardTaskKind(capability.value)
+    ).effect == EffectClass.READ
+}
+if set(_FRESHNESS_BY_CAPABILITY) != _READ_CAPABILITIES:
+    missing = sorted(
+        capability.value
+        for capability in _READ_CAPABILITIES - set(_FRESHNESS_BY_CAPABILITY)
+    )
+    unexpected = sorted(
+        capability.value
+        for capability in set(_FRESHNESS_BY_CAPABILITY) - _READ_CAPABILITIES
+    )
+    raise RuntimeError(
+        "freshness registry must cover every read capability exactly; "
+        f"missing={missing}, unexpected={unexpected}"
+    )
+
+
 def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
     workflow = workflow_for(StandardTaskKind(capability.value))
     input_resources = _resources(workflow.input_resources)
@@ -796,14 +912,6 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
             "provider_unavailable",
             "tool_process_crashed",
         ),
-        cache_policy=(
-            CachePolicy.READ_ONLY
-            if workflow.effect == EffectClass.READ
-            else CachePolicy.DISABLED
-        ),
-        cache_ttl_seconds=(
-            1800 if workflow.effect == EffectClass.READ else None
-        ),
     )
     compiler = _COMPILERS.get(capability, _simple_compiler())
     capability_version = (
@@ -822,6 +930,11 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
         output_resources=output_resources,
         compiler=compiler,
         execution_policy=policy,
+        freshness_policy=(
+            _FRESHNESS_BY_CAPABILITY[capability]
+            if workflow.effect == EffectClass.READ
+            else _RUN_ONLY_FRESHNESS
+        ),
         projector=_project_outcome_resource,
         renderer=(
             RendererMode.DETERMINISTIC

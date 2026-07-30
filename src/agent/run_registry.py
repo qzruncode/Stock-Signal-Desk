@@ -51,6 +51,8 @@ _RUN_RETENTION_SECONDS = 300.0
 _RUN_LEASE_SECONDS = 45.0
 _RUN_HEARTBEAT_SECONDS = 15.0
 _RUN_CANCEL_POLL_SECONDS = 1.0
+_EVENT_BATCH_MAX_CHUNKS = 64
+_EVENT_BATCH_FLUSH_SECONDS = 0.05
 
 
 def runtime_worker_id() -> str:
@@ -167,6 +169,9 @@ class RunBroadcaster:
         *,
         run_id: str | None = None,
         event_sink: Callable[[str, int, AssistantStreamChunk], None] | None = None,
+        event_batch_sink: (
+            Callable[[str, int, List[AssistantStreamChunk]], None] | None
+        ) = None,
         initial_sequence: int = 0,
     ) -> None:
         self._subscribers: Set[asyncio.Queue] = set()
@@ -177,6 +182,13 @@ class RunBroadcaster:
         self._has_tool_events = False
         self._run_id = run_id
         self._event_sink = event_sink
+        self._event_batch_sink = event_batch_sink
+        self._pending_events: List[AssistantStreamChunk] = []
+        self._flush_handle: asyncio.TimerHandle | None = None
+        self._flush_task: asyncio.Task | None = None
+        self._flush_lock = asyncio.Lock()
+        self._persistence_error: BaseException | None = None
+        self._finish_requested = False
         # 生成逻辑会把已累积的 assistant 文本写到这里,供续流端点补齐用。
         # (与 chat.py 的 state["assistant_text"] 同源,由 run_callback 实时镜像。)
         self.assistant_text_snapshot: str = ""
@@ -255,6 +267,32 @@ class RunBroadcaster:
 
     def mark_finished(self) -> None:
         """生成结束:向所有订阅者投递 None 哨兵,让续流 generator 自然结束。"""
+        self._finish_requested = True
+        if self._pending_events or self._flush_task is not None:
+            self._schedule_flush(immediate=True)
+            return
+        self._finish_now()
+
+    async def drain(self) -> None:
+        """Persist and publish every buffered event before terminal state."""
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        running = self._flush_task
+        if running is not None:
+            await running
+        if self._pending_events:
+            await self._flush_pending()
+        if self._persistence_error is not None:
+            raise RuntimeError(
+                "durable Agent event persistence failed"
+            ) from self._persistence_error
+        if self._finish_requested:
+            self._finish_now()
+
+    def _finish_now(self) -> None:
+        if self.finished.is_set():
+            return
         self.finished.set()
         for queue in list(self._subscribers):
             if not self._safe_put(queue, None):
@@ -263,11 +301,116 @@ class RunBroadcaster:
     # ── 内部 ───────────────────────────────────────────────────────────
 
     def _emit(self, chunk: AssistantStreamChunk) -> None:
-        sequence = self._history_next_index
-        if self._event_sink is not None and self._run_id is not None:
-            # Persist before publishing.  A client can therefore never observe
-            # an event whose resume cursor has no durable representation.
-            self._event_sink(self._run_id, sequence, chunk)
+        if self._persistence_error is not None:
+            raise RuntimeError(
+                "durable Agent event persistence is unavailable"
+            ) from self._persistence_error
+        if self._run_id is not None and (
+            self._event_batch_sink is not None
+            or self._event_sink is not None
+        ):
+            self._pending_events.append(chunk)
+            self._schedule_flush(
+                immediate=len(self._pending_events) >= _EVENT_BATCH_MAX_CHUNKS
+            )
+            return
+        self._publish_committed_batch([chunk])
+
+    def _schedule_flush(self, *, immediate: bool) -> None:
+        if self._flush_task is not None and not self._flush_task.done():
+            return
+        if self._flush_handle is not None:
+            if not immediate:
+                return
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        loop = asyncio.get_running_loop()
+
+        def launch() -> None:
+            self._flush_handle = None
+            self._flush_task = asyncio.create_task(
+                self._flush_pending(),
+                name=f"agent-event-flush-{self._run_id or 'memory'}",
+            )
+
+            def completed(task: asyncio.Task) -> None:
+                if self._flush_task is task:
+                    self._flush_task = None
+                try:
+                    task.result()
+                except BaseException as exc:
+                    self._persistence_error = exc
+                    logger.error(
+                        "[RunBroadcaster] durable event batch failed run_id=%s",
+                        self._run_id,
+                        exc_info=(type(exc), exc, exc.__traceback__),
+                    )
+                    self._finish_requested = True
+                    self._finish_now()
+                    return
+                if self._pending_events:
+                    self._schedule_flush(immediate=self._finish_requested)
+                elif self._finish_requested:
+                    self._finish_now()
+
+            self._flush_task.add_done_callback(completed)
+
+        if immediate:
+            launch()
+        else:
+            self._flush_handle = loop.call_later(
+                _EVENT_BATCH_FLUSH_SECONDS,
+                launch,
+            )
+
+    async def _flush_pending(self) -> None:
+        async with self._flush_lock:
+            while self._pending_events:
+                batch = self._pending_events[:_EVENT_BATCH_MAX_CHUNKS]
+                del self._pending_events[:len(batch)]
+                start_sequence = self._history_next_index
+                if (
+                    self._event_batch_sink is not None
+                    and self._run_id is not None
+                ):
+                    await asyncio.to_thread(
+                        self._event_batch_sink,
+                        self._run_id,
+                        start_sequence,
+                        batch,
+                    )
+                elif self._event_sink is not None and self._run_id is not None:
+                    await asyncio.to_thread(
+                        self._persist_legacy_batch,
+                        start_sequence,
+                        batch,
+                    )
+                self._publish_committed_batch(batch)
+
+    def _persist_legacy_batch(
+        self,
+        start_sequence: int,
+        batch: List[AssistantStreamChunk],
+    ) -> None:
+        assert self._event_sink is not None
+        assert self._run_id is not None
+        for offset, chunk in enumerate(batch):
+            self._event_sink(
+                self._run_id,
+                start_sequence + offset,
+                chunk,
+            )
+
+    def _publish_committed_batch(
+        self,
+        chunks: List[AssistantStreamChunk],
+    ) -> None:
+        # Persisted batches are published in the same order. A client can never
+        # observe a cursor that has no durable representation.
+        for chunk in chunks:
+            self._publish_committed(chunk)
+
+    def _publish_committed(self, chunk: AssistantStreamChunk) -> None:
         self._history.append(chunk)
         self._history_next_index += 1
         if isinstance(
@@ -346,6 +489,7 @@ class ActiveRun:
     lease_task: Optional["asyncio.Task"] = None
     lease_callback: Optional[Callable[[], Awaitable[bool]]] = None
     cancel_callback: Optional[Callable[[], Awaitable[bool]]] = None
+    cancel_reason: Optional[str] = None
 
     @property
     def is_running(self) -> bool:
@@ -391,9 +535,11 @@ class ActiveRun:
                 # recover the same run.  Stop local execution instead of
                 # permitting split-brain effects.
                 logger.exception("[AgentRun] lease heartbeat failed run_id=%s", self.run_id)
+                self.cancel_reason = "lease_lost"
                 self.task.cancel()
                 break
             if cancel_requested:
+                self.cancel_reason = "user_cancelled"
                 self.task.cancel()
                 break
 
@@ -423,6 +569,12 @@ class ActiveRunRegistry:
             "failed": 0,
             "cancelled": 0,
         }
+        self._event_batches = 0
+        self._event_chunks = 0
+        self._event_batch_failures = 0
+        self._event_write_ms_total = 0.0
+        self._cache_hits = 0
+        self._cache_misses = 0
         self._database = database
         self._worker_id = worker_id or runtime_worker_id()
         self._shutting_down = False
@@ -443,6 +595,12 @@ class ActiveRunRegistry:
     def shutting_down(self) -> bool:
         return self._shutting_down
 
+    def record_execution_cache_result(self, *, hit: bool) -> None:
+        if hit:
+            self._cache_hits += 1
+        else:
+            self._cache_misses += 1
+
     def _persist_event(
         self,
         run_id: str,
@@ -458,6 +616,46 @@ class ActiveRunRegistry:
             event_type=str(payload.get("type") or type(chunk).__name__),
             payload=payload,
         )
+
+    def _persist_events(
+        self,
+        run_id: str,
+        start_sequence: int,
+        chunks: List[AssistantStreamChunk],
+    ) -> None:
+        if self._database is None:
+            return
+        started_at = datetime.now()
+        try:
+            persisted = self._database.append_agent_run_events(
+                run_id=run_id,
+                start_sequence=start_sequence,
+                events=[
+                    {
+                        "event_type": str(
+                            (payload := serialize_assistant_chunk(chunk)).get(
+                                "type"
+                            )
+                            or type(chunk).__name__
+                        ),
+                        "payload": payload,
+                    }
+                    for chunk in chunks
+                ],
+            )
+            if not persisted:
+                raise RuntimeError(
+                    f"durable Agent run disappeared while writing events: {run_id}"
+                )
+        except Exception:
+            self._event_batch_failures += 1
+            raise
+        finally:
+            self._event_write_ms_total += (
+                datetime.now() - started_at
+            ).total_seconds() * 1000
+        self._event_batches += 1
+        self._event_chunks += len(chunks)
 
     async def _heartbeat(self, run_id: str) -> bool:
         if self._database is None:
@@ -567,7 +765,11 @@ class ActiveRunRegistry:
 
             broadcaster = RunBroadcaster(
                 run_id=claimed_run_id if self._database is not None else None,
-                event_sink=self._persist_event if self._database is not None else None,
+                event_batch_sink=(
+                    self._persist_events
+                    if self._database is not None
+                    else None
+                ),
             )
             run = ActiveRun(
                 conversation_id=conversation_id,
@@ -616,7 +818,7 @@ class ActiveRunRegistry:
                 return existing
             broadcaster = RunBroadcaster(
                 run_id=run_id,
-                event_sink=self._persist_event,
+                event_batch_sink=self._persist_events,
                 initial_sequence=event_cursor,
             )
             run = ActiveRun(
@@ -656,18 +858,25 @@ class ActiveRunRegistry:
             run.status = status
             run.final_text = final_text
             run.error = error
-            run.broadcaster.mark_finished()
             if run.lease_task is not None and not run.lease_task.done():
                 run.lease_task.cancel()
-            if self._database is not None and persist:
-                await asyncio.to_thread(
-                    self._database.finish_agent_run,
-                    run.run_id,
-                    status=status,
-                    final_text=final_text,
-                    error_code=error,
-                    error_detail=error,
-                )
+
+        # Event I/O may be slow and must not hold the registry lock. The
+        # broadcaster publishes only committed events and closes subscribers
+        # after its final batch becomes durable.
+        run.broadcaster.mark_finished()
+        await run.broadcaster.drain()
+        if self._database is not None and persist:
+            await asyncio.to_thread(
+                self._database.finish_agent_run,
+                run.run_id,
+                status=status,
+                final_text=final_text,
+                error_code=error,
+                error_detail=error,
+            )
+
+        async with self._lock:
             if not run.terminal_recorded:
                 self._terminal_counts[status] = self._terminal_counts.get(status, 0) + 1
                 run.terminal_recorded = True
@@ -724,16 +933,7 @@ class ActiveRunRegistry:
             if run is None or not run.is_running:
                 return durable_cancelled
             task = run.task
-            run.status = "cancelled"
-            run.error = "cancelled"
-            run.broadcaster.mark_finished()
-            if not run.terminal_recorded:
-                self._terminal_counts["cancelled"] += 1
-                run.terminal_recorded = True
-            if remove:
-                self._runs.pop(conversation_id, None)
-            if run.lease_task is not None and not run.lease_task.done():
-                run.lease_task.cancel()
+            run.cancel_reason = "user_cancelled"
 
         if task is not None and not task.done():
             task.cancel()
@@ -743,6 +943,22 @@ class ActiveRunRegistry:
                 await task
             except asyncio.CancelledError:
                 pass
+        current = self._runs.get(conversation_id)
+        if current is run and run.is_running:
+            # A run that never entered its callback still needs a terminal
+            # state. Normal running callbacks commit their transcript first
+            # and call mark_done themselves.
+            await self.mark_done(
+                conversation_id,
+                "cancelled",
+                final_text=run.final_text,
+                error="cancelled",
+            )
+        if remove:
+            async with self._lock:
+                current = self._runs.get(conversation_id)
+                if current is run:
+                    self._runs.pop(conversation_id, None)
         logger.info(
             "[AgentRun] cancelled run_id=%s conversation_id=%s remove=%s",
             run.run_id,
@@ -765,6 +981,28 @@ class ActiveRunRegistry:
             "oldest_active_seconds": round(max(0.0, oldest_seconds), 3),
             "total_started": self._total_started,
             "terminal": dict(self._terminal_counts),
+            "event_persistence": {
+                "batches": self._event_batches,
+                "chunks": self._event_chunks,
+                "batch_failures": self._event_batch_failures,
+                "average_batch_size": round(
+                    self._event_chunks / self._event_batches,
+                    3,
+                ) if self._event_batches else 0.0,
+                "average_write_ms": round(
+                    self._event_write_ms_total / self._event_batches,
+                    3,
+                ) if self._event_batches else 0.0,
+            },
+            "execution_cache": {
+                "hits": self._cache_hits,
+                "misses": self._cache_misses,
+                "hit_rate": round(
+                    self._cache_hits
+                    / (self._cache_hits + self._cache_misses),
+                    6,
+                ) if self._cache_hits + self._cache_misses else None,
+            },
         }
         if self._database is not None:
             try:
@@ -799,6 +1037,7 @@ class ActiveRunRegistry:
                         )
         for run in runs:
             if run.task is not None and not run.task.done():
+                run.cancel_reason = "restart"
                 run.task.cancel()
             if run.lease_task is not None and not run.lease_task.done():
                 run.lease_task.cancel()

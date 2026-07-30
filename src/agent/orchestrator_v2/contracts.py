@@ -90,9 +90,9 @@ class EffectLevel(str, Enum):
     TRADE = "trade"
 
 
-class CachePolicy(str, Enum):
-    DISABLED = "disabled"
-    READ_ONLY = "read_only"
+class CacheReuseScope(str, Enum):
+    RUN_ONLY = "run_only"
+    CROSS_RUN = "cross_run"
 
 
 class RendererMode(str, Enum):
@@ -272,6 +272,34 @@ class AssumptionRecord(StrictModel):
     source: str = "program_default"
 
 
+class FreshnessPolicy(StrictModel):
+    """Capability-owned cross-run freshness contract.
+
+    Same-run exact-call reuse is always controlled by the Workflow executor.
+    This policy only decides whether a successful read may cross a run
+    boundary, and for how long.
+    """
+
+    reuse_scope: CacheReuseScope = CacheReuseScope.RUN_ONLY
+    max_age_seconds: int | None = Field(default=None, ge=1, le=604_800)
+    market_session_sensitive: bool = False
+    require_observed_at: bool = False
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "FreshnessPolicy":
+        if (
+            self.reuse_scope == CacheReuseScope.CROSS_RUN
+            and self.max_age_seconds is None
+        ):
+            raise ValueError("cross-run reuse requires max_age_seconds")
+        if (
+            self.reuse_scope == CacheReuseScope.RUN_ONLY
+            and self.max_age_seconds is not None
+        ):
+            raise ValueError("run-only reuse cannot declare max_age_seconds")
+        return self
+
+
 class ExecutionPolicy(StrictModel):
     effect: EffectLevel = EffectLevel.READ
     confirmation_required: bool = False
@@ -288,13 +316,9 @@ class ExecutionPolicy(StrictModel):
         "provider_unavailable",
         "tool_process_crashed",
     )
-    cache_policy: CachePolicy = CachePolicy.READ_ONLY
-    cache_ttl_seconds: int | None = Field(default=None, ge=1, le=604_800)
 
     @model_validator(mode="after")
     def _validate_effect_policy(self) -> "ExecutionPolicy":
-        if self.effect != EffectLevel.READ and self.cache_policy != CachePolicy.DISABLED:
-            raise ValueError("only read-only capabilities may be cached")
         if self.effect != EffectLevel.READ and self.max_attempts != 1:
             raise ValueError(
                 "non-read capabilities require max_attempts=1; retries must be "
@@ -490,6 +514,7 @@ class CapabilitySpec(Generic[IntentT, ResultT]):
     output_resources: frozenset[ResourceType]
     compiler: Compiler[IntentT]
     execution_policy: ExecutionPolicy
+    freshness_policy: FreshnessPolicy
     projector: Callable[
         [ResultT, ResourceType],
         ProjectedResourceV2 | None,
@@ -541,13 +566,14 @@ __all__ = [
     "AgentStage",
     "AgentStageEventV2",
     "AssumptionRecord",
-    "CachePolicy",
+    "CacheReuseScope",
     "CapabilitySpec",
     "CompiledCallV2",
     "CoverageV2",
     "EffectLevel",
     "ErrorDetailV2",
     "ExecutionPolicy",
+    "FreshnessPolicy",
     "InputReferenceV2",
     "IntentOutlineNodeV2",
     "IntentOutlineV2",

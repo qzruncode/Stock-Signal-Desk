@@ -7,11 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.services.chat_session_service import ChatSessionService
 from src.agent.model_runtime import GuardedModelRuntime
+from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.storage import DatabaseManager
 from src.storage.models import AgentRun
 
@@ -167,6 +169,135 @@ def test_run_events_are_ordered_durable_and_idempotent(database):
     assert [event["sequence"] for event in events] == [0, 1]
     assert events[1]["payload"]["delta"] == "好"
     assert database.get_agent_run(run_id="run-events")["event_cursor"] == 2
+
+
+def test_run_event_batches_commit_cursor_and_state_together(database):
+    conversation_id = _conversation(database, "event-batch")
+    assert _claim(
+        database,
+        conversation_id,
+        run_id="run-event-batch",
+    )["claimed"]
+
+    events = [
+        {
+            "event_type": "text-delta",
+            "payload": {"type": "text-delta", "text_delta": value},
+        }
+        for value in ("a", "b", "c")
+    ]
+    assert database.append_agent_run_events(
+        run_id="run-event-batch",
+        start_sequence=0,
+        events=events,
+    )
+    # A complete replay is idempotent; a gap is still rejected.
+    assert database.append_agent_run_events(
+        run_id="run-event-batch",
+        start_sequence=0,
+        events=events,
+    )
+    with pytest.raises(RuntimeError, match="event sequence gap"):
+        database.append_agent_run_events(
+            run_id="run-event-batch",
+            start_sequence=4,
+            events=events[:1],
+        )
+
+    batch = database.read_agent_run_event_batch(
+        "run-event-batch",
+        after_sequence=1,
+    )
+    assert batch is not None
+    assert batch["run"]["event_cursor"] == 3
+    assert [
+        event["payload"]["text_delta"]
+        for event in batch["events"]
+    ] == ["b", "c"]
+
+
+def test_compiled_checkpoint_is_fenced_by_owner_and_attempt(database):
+    conversation_id = _conversation(database, "checkpoint")
+    assert _claim(
+        database,
+        conversation_id,
+        run_id="run-checkpoint",
+    )["claimed"]
+    checkpoint = {
+        "checkpoint_version": "compiled-v1",
+        "stage": "compiled",
+    }
+
+    assert database.save_agent_run_checkpoint(
+        "run-checkpoint",
+        worker_id="worker-a",
+        attempt=1,
+        checkpoint=checkpoint,
+    )
+    assert database.get_agent_run(
+        run_id="run-checkpoint"
+    )["context_snapshot"] == checkpoint
+    assert not database.save_agent_run_checkpoint(
+        "run-checkpoint",
+        worker_id="worker-b",
+        attempt=1,
+        checkpoint={"stage": "stale-owner"},
+    )
+    assert not database.save_agent_run_checkpoint(
+        "run-checkpoint",
+        worker_id="worker-a",
+        attempt=2,
+        checkpoint={"stage": "stale-attempt"},
+    )
+    assert database.finish_agent_run(
+        "run-checkpoint",
+        status="failed",
+        error_code="test",
+    )
+    assert database.get_agent_run(
+        run_id="run-checkpoint"
+    )["context_snapshot"] is None
+
+
+def test_terminal_publisher_flushes_events_before_terminal_commit():
+    order: list[str] = []
+
+    class Controller:
+        async def drain(self):
+            order.append("events")
+
+    class Database:
+        def commit_agent_run_terminal(self, **_kwargs):
+            order.append("terminal")
+            return True
+
+    class Sessions:
+        @staticmethod
+        def normalize_messages(messages):
+            return messages
+
+        @staticmethod
+        def generate_title(_text):
+            return "title"
+
+    publisher = AgentTerminalPublisher(
+        controller=Controller(),
+        run=SimpleNamespace(run_id="run", attempt=1),
+        messages=[{"role": "user", "content": "hello"}],
+        request_body={},
+        initial_agent_context=None,
+        conversation_id="conversation",
+        database=Database(),
+        session_service=Sessions(),
+        state={},
+        worker_id="worker",
+    )
+    asyncio.run(publisher.commit(
+        status="completed",
+        final_text="done",
+    ))
+
+    assert order == ["events", "terminal"]
 
 
 def test_expired_run_lease_can_be_reclaimed_without_losing_cursor(database):

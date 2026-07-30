@@ -102,6 +102,12 @@ class EffectClass(str, Enum):
     TRADE = "trade"
 
 
+class ConfirmationPolicy(str, Enum):
+    NEVER = "never"
+    CONDITIONAL = "conditional"
+    ALWAYS = "always"
+
+
 class TaskResource(str, Enum):
     SECURITY_COLLECTION = "security_collection"
     DOMAIN_COLLECTION = "domain_collection"
@@ -330,6 +336,7 @@ class WorkflowSpec:
     max_parallel_steps: int = 8
     allow_partial_tool_failures: bool = False
     effect: EffectClass = EffectClass.READ
+    confirmation_policy: ConfirmationPolicy = ConfirmationPolicy.NEVER
     confirmation_actions: frozenset[str] = field(default_factory=frozenset)
     enabled: bool = True
     state_machine: tuple[str, ...] = ()
@@ -346,6 +353,21 @@ class WorkflowSpec:
     max_input_entities: int | None = None
     max_output_entities: int | None = None
 
+    def requires_confirmation(self, parameters: Mapping[str, Any]) -> bool:
+        if self.confirmation_policy == ConfirmationPolicy.ALWAYS:
+            return True
+        if self.confirmation_policy == ConfirmationPolicy.NEVER:
+            return False
+        action = str(parameters.get("action") or "")
+        return (
+            action in self.confirmation_actions
+            or any(
+                requirement.confirmation_required
+                and requirement.applies(parameters)
+                for requirement in self.parameter_requirements
+            )
+        )
+
 
 def parameter_requirement_issues(
     task: StandardTask,
@@ -361,12 +383,12 @@ def parameter_requirement_issues(
             continue
         if requirement.requires_entities and symbols is not None and not symbols:
             issues.append("requires resolved entities for the selected operation")
-        if (
-            check_confirmation
-            and requirement.confirmation_required
-            and task.confirmation == ConfirmationState.NOT_REQUIRED
-        ):
-            issues.append("selected operation must declare confirmation state")
+    if (
+        check_confirmation
+        and spec.requires_confirmation(task.parameters)
+        and task.confirmation == ConfirmationState.NOT_REQUIRED
+    ):
+        issues.append("selected operation must declare confirmation state")
     return issues
 
 
@@ -1208,6 +1230,7 @@ def _spec(
     *,
     entities: bool = False,
     effect: EffectClass = EffectClass.READ,
+    confirmation_policy: ConfirmationPolicy | None = None,
     confirmation_actions: Iterable[str] = (),
     max_tool_calls: int = 8,
     max_parallel_steps: int = 8,
@@ -1243,6 +1266,19 @@ def _spec(
         compiler=compiler,
         requires_entities=entities,
         effect=effect,
+        confirmation_policy=(
+            confirmation_policy
+            if confirmation_policy is not None
+            else ConfirmationPolicy.NEVER
+            if effect == EffectClass.READ
+            else ConfirmationPolicy.ALWAYS
+            if effect in {
+                EffectClass.DESTRUCTIVE,
+                EffectClass.EXTERNAL,
+                EffectClass.TRADE,
+            }
+            else ConfirmationPolicy.CONDITIONAL
+        ),
         confirmation_actions=frozenset(confirmation_actions),
         max_tool_calls=max(1, min(int(max_tool_calls), 6000)),
         max_parallel_steps=max(1, min(int(max_parallel_steps), 8)),
@@ -1435,31 +1471,31 @@ _WORKFLOW_REGISTRY: dict[StandardTaskKind, WorkflowSpec] = {
         resources={"concept_board_catalog"},
 
     ),
-    StandardTaskKind.WATCHLIST_MUTATION: _spec(StandardTaskKind.WATCHLIST_MUTATION, "自选修改", "按用户明确要求添加或移除自选股。", {"manage_watchlist"}, _compile_watchlist_mutation, entities=True, effect=EffectClass.MUTATION),
-    StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: _spec(StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT, "自选分组管理", "查看、创建、重命名、删除或修改自选分组成员。", {"manage_watchlist_groups"}, _compile_group,   effect=EffectClass.MUTATION, confirmation_actions={"delete"},   requirements=(
+    StandardTaskKind.WATCHLIST_MUTATION: _spec(StandardTaskKind.WATCHLIST_MUTATION, "自选修改", "按用户明确要求添加或移除自选股。", {"manage_watchlist"}, _compile_watchlist_mutation, entities=True, effect=EffectClass.MUTATION, confirmation_actions={"add", "remove"}),
+    StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: _spec(StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT, "自选分组管理", "查看、创建、重命名、删除或修改自选分组成员。", {"manage_watchlist_groups"}, _compile_group,   effect=EffectClass.MUTATION, confirmation_actions={"create", "rename", "delete", "add", "remove"},   requirements=(
         _require(when={"action": {"add", "remove"}}, entities=True),
     )),
     StandardTaskKind.DATA_HEALTH: _spec(StandardTaskKind.DATA_HEALTH, "数据健康", "查看股票池、行情和财务数据覆盖与维护状态。", {"get_data_health"}, _compile_data_health),
-    StandardTaskKind.FORMAL_ANALYSIS: _spec(StandardTaskKind.FORMAL_ANALYSIS, "正式分析", "启动持久化单股报告，或查询其运行状态。", {"run_stock_analysis", "get_analysis_status"}, _compile_formal_analysis,   effect=EffectClass.MUTATION,   requirements=(
+    StandardTaskKind.FORMAL_ANALYSIS: _spec(StandardTaskKind.FORMAL_ANALYSIS, "正式分析", "启动持久化单股报告，或查询其运行状态。", {"run_stock_analysis", "get_analysis_status"}, _compile_formal_analysis,   effect=EffectClass.MUTATION, confirmation_actions={"start"}, requirements=(
         _require(when={"action": {"start"}}, entities=True),
     )),
     StandardTaskKind.ANALYSIS_HISTORY: _spec(StandardTaskKind.ANALYSIS_HISTORY, "分析历史", "搜索、读取或删除已保存的正式分析报告。", {"search_analysis_history", "read_analysis_report", "delete_analysis_history"}, _compile_history, effect=EffectClass.MUTATION, confirmation_actions={"delete"}),
-    StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT, "分析模板", "查看或管理正式分析模板。", {"manage_analysis_templates"}, _compile_template, effect=EffectClass.MUTATION, confirmation_actions={"delete"}),
-    StandardTaskKind.BATCH_ANALYSIS: _spec(StandardTaskKind.BATCH_ANALYSIS, "批量分析", "按明确范围启动正式批量分析。", {"run_batch_analysis"}, _compile_batch_analysis,   effect=EffectClass.MUTATION,   requirements=(
+    StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT, "分析模板", "查看或管理正式分析模板。", {"manage_analysis_templates"}, _compile_template, effect=EffectClass.MUTATION, confirmation_actions={"create", "update", "set_default", "delete"}),
+    StandardTaskKind.BATCH_ANALYSIS: _spec(StandardTaskKind.BATCH_ANALYSIS, "批量分析", "按明确范围启动正式批量分析。", {"run_batch_analysis"}, _compile_batch_analysis,   effect=EffectClass.MUTATION, confirmation_policy=ConfirmationPolicy.ALWAYS, requirements=(
         _require(when={"scope": {"symbols"}}, entities=True),
         _require(when={"scope": {"group"}}, confirmation=True),
         _require(when={"scope": {"watchlist", "configured"}}, confirmation=True),
     )),
-    StandardTaskKind.BATCH_RUN_MANAGEMENT: _spec(StandardTaskKind.BATCH_RUN_MANAGEMENT, "批量任务管理", "查看或控制批量分析任务。", {"manage_batch_run"}, _compile_batch_management, effect=EffectClass.MUTATION, confirmation_actions={"notify", "stop", "delete"}),
+    StandardTaskKind.BATCH_RUN_MANAGEMENT: _spec(StandardTaskKind.BATCH_RUN_MANAGEMENT, "批量任务管理", "查看或控制批量分析任务。", {"manage_batch_run"}, _compile_batch_management, effect=EffectClass.MUTATION, confirmation_actions={"pause", "continue", "resume_failed", "regenerate_report", "notify", "stop", "delete"}),
     StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT: _spec(StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT, "定时分析", "查看或修改自动分析计划。", {"manage_analysis_schedule"}, _compile_schedule, effect=EffectClass.MUTATION, confirmation_actions={"update"}),
-    StandardTaskKind.NOTIFICATION: _spec(StandardTaskKind.NOTIFICATION, "通知", "检查通知配置或发送用户明确指定的内容。", {"get_notification_status", "send_notification"}, _compile_notification, effect=EffectClass.EXTERNAL, confirmation_actions={"send"}),
+    StandardTaskKind.NOTIFICATION: _spec(StandardTaskKind.NOTIFICATION, "通知", "检查通知配置或发送用户明确指定的内容。", {"get_notification_status", "send_notification"}, _compile_notification, effect=EffectClass.EXTERNAL, confirmation_policy=ConfirmationPolicy.CONDITIONAL, confirmation_actions={"send"}),
     StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY: _spec(StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY, "资讯源查询", "列出或检查指定财经资讯源。", {"list_financial_sources", "inspect_financial_source"}, _compile_source_discovery),
     StandardTaskKind.FINANCIAL_FEED_READ: _spec(StandardTaskKind.FINANCIAL_FEED_READ, "Feed读取", "按已知路由读取一个财经 Feed。", {"read_financial_feed"}, _compile_feed_read),
     StandardTaskKind.FINANCIAL_ARTICLE_READ: _spec(StandardTaskKind.FINANCIAL_ARTICLE_READ, "文章读取", "读取用户指定的一篇财经资讯正文。", {"read_financial_article"}, _compile_article),
     StandardTaskKind.WEBPAGE_FEED_TRANSFORM: _spec(StandardTaskKind.WEBPAGE_FEED_TRANSFORM, "网页转Feed", "按用户提供的网页和选择器生成 Feed 预览。", {"transform_webpage_to_feed"}, _compile_transform),
-    StandardTaskKind.FINANCIAL_FEED_EXPORT: _spec(StandardTaskKind.FINANCIAL_FEED_EXPORT, "Feed导出", "导出用户明确指定的财经 Feed。", {"export_financial_feed"}, _compile_export,   effect=EffectClass.EXTERNAL),
+    StandardTaskKind.FINANCIAL_FEED_EXPORT: _spec(StandardTaskKind.FINANCIAL_FEED_EXPORT, "Feed导出", "导出用户明确指定的财经 Feed。", {"export_financial_feed"}, _compile_export,   effect=EffectClass.EXTERNAL, confirmation_policy=ConfirmationPolicy.ALWAYS),
     StandardTaskKind.PUBLIC_WEB_RESEARCH: _spec(StandardTaskKind.PUBLIC_WEB_RESEARCH, "公开网页研究", "仅在用户明确要求联网搜索或读取公开网页时使用。", {"websearch", "webfetch"}, _compile_web),
-    StandardTaskKind.TRADE_EXECUTION: _spec(StandardTaskKind.TRADE_EXECUTION, "交易执行", "交易类请求只能进入独立状态机；当前系统未接入账户、风控和下单工具。", (), _compile_no_tools, effect=EffectClass.TRADE, enabled=False, state_machine=("参数校验", "账户检查", "风控检查", "用户确认", "下单", "订单状态")),
+    StandardTaskKind.TRADE_EXECUTION: _spec(StandardTaskKind.TRADE_EXECUTION, "交易执行", "交易类请求只能进入独立状态机；当前系统未接入账户、风控和下单工具。", (), _compile_no_tools, effect=EffectClass.TRADE, confirmation_policy=ConfirmationPolicy.ALWAYS, enabled=False, state_machine=("参数校验", "账户检查", "风控检查", "用户确认", "下单", "订单状态")),
 }
 
 # Neither the planner nor request-local code can mutate the production
@@ -1521,6 +1557,7 @@ def registered_workflow_tools() -> frozenset[str]:
 
 __all__ = [
     "CollectionBehavior",
+    "ConfirmationPolicy",
     "ConfirmationState",
     "EffectClass",
     "EntityScope",
