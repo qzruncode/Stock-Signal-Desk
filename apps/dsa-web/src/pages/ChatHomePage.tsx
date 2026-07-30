@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import {
   AssistantRuntimeProvider,
   useThreadRuntime,
@@ -24,10 +24,20 @@ import {
 } from '../utils/chatStreamError';
 import { currentUserRequest } from '../utils/agentRequestTransport';
 
+type ConversationLoadState = {
+  conversationId: string;
+  status: 'loading' | 'error';
+  message?: string;
+} | null;
+
+const MAX_CACHED_CONVERSATIONS = 12;
+
 const ChatHomePage: React.FC = () => {
   const [conversations, setConversations] = useState<ChatConversationItem[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [selectedConversationDetail, setSelectedConversationDetail] = useState<ChatConversationDetail | null>(null);
+  const [conversationLoadState, setConversationLoadState] = useState<ConversationLoadState>(null);
+  const [conversationLoadAttempt, setConversationLoadAttempt] = useState(0);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [streamError, setStreamError] = useState<string | null>(null);
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
@@ -40,6 +50,7 @@ const ChatHomePage: React.FC = () => {
     conversationId: string;
     resumeExisting: boolean;
   } | null>(null);
+  const conversationDetailCacheRef = useRef(new Map<string, ChatConversationDetail>());
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
@@ -51,23 +62,71 @@ const ChatHomePage: React.FC = () => {
     return response.items;
   }, []);
 
+  const rememberConversationDetail = useCallback((detail: ChatConversationDetail) => {
+    const cache = conversationDetailCacheRef.current;
+    if (detail.isGenerating) {
+      cache.delete(detail.id);
+      return;
+    }
+    cache.delete(detail.id);
+    cache.set(detail.id, detail);
+    if (cache.size > MAX_CACHED_CONVERSATIONS) {
+      const oldestConversationId = cache.keys().next().value;
+      if (oldestConversationId) {
+        cache.delete(oldestConversationId);
+      }
+    }
+  }, []);
+
   const loadConversationDetail = useCallback(async (conversationId: string) => {
     const detail = await agentApi.getConversation(conversationId);
+    rememberConversationDetail(detail);
     // A slower previous request must never overwrite the conversation the
     // user has selected in the meantime.
     if (selectedConversationIdRef.current === conversationId) {
-      setSelectedConversationDetail(detail);
+      startTransition(() => {
+        setSelectedConversationDetail(detail);
+      });
     }
     return detail;
+  }, [rememberConversationDetail]);
+
+  const beginConversationSelection = useCallback((conversationId: string) => {
+    resumeExistingRef.current = null;
+    if (selectedConversationIdRef.current === conversationId) {
+      return false;
+    }
+
+    const cachedDetail = conversationDetailCacheRef.current.get(conversationId) ?? null;
+    selectedConversationIdRef.current = conversationId;
+    setSelectedConversationId(conversationId);
+    setConversationLoadState(cachedDetail ? null : {
+      conversationId,
+      status: 'loading',
+    });
+    setStreamError(null);
+
+    if (cachedDetail) {
+      // Keep the sidebar selection urgent. Restoring a large message tree can
+      // happen in a transition without delaying the click feedback.
+      startTransition(() => {
+        setSelectedConversationDetail(cachedDetail);
+      });
+    }
+    return true;
   }, []);
 
   const createConversation = useCallback(async () => {
     const created = await agentApi.createConversation();
     await refreshConversations();
+    selectedConversationIdRef.current = created.id;
     setSelectedConversationId(created.id);
-    setSelectedConversationDetail({ ...created, messages: [] });
+    const detail = { ...created, messages: [] };
+    rememberConversationDetail(detail);
+    setSelectedConversationDetail(detail);
+    setConversationLoadState(null);
     return created;
-  }, [refreshConversations]);
+  }, [refreshConversations, rememberConversationDetail]);
 
   const ensureInitialConversation = useCallback(async () => {
     setIsLoadingConversations(true);
@@ -77,16 +136,17 @@ const ChatHomePage: React.FC = () => {
         await createConversation();
         return;
       }
-      setSelectedConversationId((current) => current || items[0]?.id || null);
+      if (!selectedConversationIdRef.current && items[0]?.id) {
+        beginConversationSelection(items[0].id);
+      }
     } catch (error) {
       setStreamError(toApiErrorMessage(error, '会话列表加载失败，请检查服务后重试'));
     } finally {
       setIsLoadingConversations(false);
     }
-  }, [createConversation, refreshConversations]);
+  }, [beginConversationSelection, createConversation, refreshConversations]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial conversation hydration is an API synchronization
     void ensureInitialConversation();
   }, [ensureInitialConversation]);
 
@@ -94,12 +154,23 @@ const ChatHomePage: React.FC = () => {
     if (!selectedConversationId) {
       return;
     }
-    void loadConversationDetail(selectedConversationId).catch((error) => {
-      if (selectedConversationIdRef.current === selectedConversationId) {
-        setStreamError(toApiErrorMessage(error, '会话内容加载失败，请稍后重试'));
-      }
-    });
-  }, [loadConversationDetail, selectedConversationId]);
+    void loadConversationDetail(selectedConversationId)
+      .then(() => {
+        if (selectedConversationIdRef.current === selectedConversationId) {
+          setConversationLoadState(null);
+        }
+      })
+      .catch((error) => {
+        if (selectedConversationIdRef.current !== selectedConversationId) {
+          return;
+        }
+        setConversationLoadState({
+          conversationId: selectedConversationId,
+          status: 'error',
+          message: toApiErrorMessage(error, '会话内容加载失败，请稍后重试'),
+        });
+      });
+  }, [conversationLoadAttempt, loadConversationDetail, selectedConversationId]);
 
   const prepareResumeExisting = useCallback((conversationId: string, afterChunkIndex: number | null) => {
     if (afterChunkIndex == null) {
@@ -202,6 +273,7 @@ const ChatHomePage: React.FC = () => {
         conversationId: selectedConversationId,
         resumeExisting: false,
       };
+      conversationDetailCacheRef.current.delete(selectedConversationId);
       const request = currentUserRequest(threadRuntimeRef.current?.export());
       if (!request) {
         return { conversation_id: selectedConversationId };
@@ -308,12 +380,19 @@ const ChatHomePage: React.FC = () => {
   }, [createConversation]);
 
   const handleSelectConversation = useCallback((conversationId: string) => {
-    resumeExistingRef.current = null;
-    if (selectedConversationIdRef.current === conversationId) {
+    beginConversationSelection(conversationId);
+  }, [beginConversationSelection]);
+
+  const handleRetryConversation = useCallback(() => {
+    const conversationId = selectedConversationIdRef.current;
+    if (!conversationId) {
       return;
     }
-    setSelectedConversationDetail(null);
-    setSelectedConversationId(conversationId);
+    setConversationLoadState({
+      conversationId,
+      status: 'loading',
+    });
+    setConversationLoadAttempt((current) => current + 1);
   }, []);
 
   const handleRenameConversation = useCallback((conversation: ChatConversationItem) => {
@@ -342,21 +421,35 @@ const ChatHomePage: React.FC = () => {
     void (async () => {
       try {
         await agentApi.deleteConversation(conversation.id);
+        conversationDetailCacheRef.current.delete(conversation.id);
         const items = await refreshConversations();
         if (conversation.id !== selectedConversationId) {
           return;
         }
-        setSelectedConversationDetail(null);
         if (items.length === 0) {
           await createConversation();
           return;
         }
-        setSelectedConversationId(items[0]?.id || null);
+        if (items[0]?.id) {
+          beginConversationSelection(items[0].id);
+        }
       } catch (error) {
         setStreamError(toApiErrorMessage(error, '删除会话失败，请稍后重试'));
       }
     })();
-  }, [createConversation, refreshConversations, selectedConversationId]);
+  }, [beginConversationSelection, createConversation, refreshConversations, selectedConversationId]);
+
+  const isConversationSwitching = Boolean(
+    selectedConversationId
+    && selectedConversationDetail?.id !== selectedConversationId,
+  );
+  const conversationSwitchError = (
+    isConversationSwitching
+    && conversationLoadState?.conversationId === selectedConversationId
+    && conversationLoadState.status === 'error'
+  )
+    ? conversationLoadState.message || '会话内容加载失败，请稍后重试'
+    : null;
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -373,6 +466,9 @@ const ChatHomePage: React.FC = () => {
         conversations={conversations}
         selectedConversationId={selectedConversationId}
         isLoadingConversations={isLoadingConversations}
+        isConversationSwitching={isConversationSwitching}
+        conversationSwitchError={conversationSwitchError}
+        onRetryConversation={handleRetryConversation}
         onCreateConversation={handleCreateConversation}
         onSelectConversation={handleSelectConversation}
         onRenameConversation={handleRenameConversation}
@@ -392,14 +488,18 @@ const ChatHomePage: React.FC = () => {
 
           try {
             await Promise.all(conversationIds.map((conversationId) => agentApi.deleteConversation(conversationId)));
+            conversationIds.forEach((conversationId) => {
+              conversationDetailCacheRef.current.delete(conversationId);
+            });
             const items = await refreshConversations();
             if (selectedConversationId && conversationIds.includes(selectedConversationId)) {
-              setSelectedConversationDetail(null);
               if (items.length === 0) {
                 await createConversation();
                 return;
               }
-              setSelectedConversationId(items[0]?.id || null);
+              if (items[0]?.id) {
+                beginConversationSelection(items[0].id);
+              }
             }
           } catch (error) {
             setStreamError(toApiErrorMessage(error, '批量删除会话失败，请稍后重试'));

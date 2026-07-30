@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   EllipsisIcon,
   ListChecksIcon,
+  Loader2Icon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   PanelLeftCloseIcon,
@@ -23,6 +24,7 @@ export interface ThreadListSidebarProps {
   conversations: ChatConversationItem[];
   selectedConversationId: string | null;
   isLoading?: boolean;
+  loadingConversationId?: string | null;
   onCreate: () => void;
   onSelect: (conversationId: string) => void;
   onRename: (conversation: ChatConversationItem) => void;
@@ -37,6 +39,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   conversations,
   selectedConversationId,
   isLoading = false,
+  loadingConversationId = null,
   onCreate,
   onSelect,
   onRename,
@@ -274,6 +277,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
 
         {visibleConversations.map((conversation) => {
           const isActive = conversation.id === selectedConversationId;
+          const isLoadingConversation = conversation.id === loadingConversationId;
           return (
             <div
               key={conversation.id}
@@ -318,9 +322,15 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
                 onTouchEnd={clearLongPressTimer}
                 onTouchCancel={clearLongPressTimer}
                 onTouchMove={clearLongPressTimer}
+                aria-busy={isLoadingConversation || undefined}
+                aria-current={isActive ? 'true' : undefined}
                 className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-[12px] leading-5"
               >
-                <MessageSquareIcon className={cn('size-3.5 shrink-0', isActive ? 'text-emerald-600' : 'text-muted-foreground/70')} />
+                {isLoadingConversation ? (
+                  <Loader2Icon className="size-3.5 shrink-0 animate-spin text-emerald-600 motion-reduce:animate-none" />
+                ) : (
+                  <MessageSquareIcon className={cn('size-3.5 shrink-0', isActive ? 'text-emerald-600' : 'text-muted-foreground/70')} />
+                )}
                 <span className={cn('truncate text-foreground/72', isActive && 'font-medium text-emerald-800')}>
                   {conversation.title || '新对话'}
                 </span>

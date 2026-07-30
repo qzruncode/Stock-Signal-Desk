@@ -260,6 +260,45 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
+  it('detaches a running local stream when a different conversation is ready', async () => {
+    vi.mocked(useThread).mockReturnValue(true);
+    const firstDetail = makeDetail(false);
+    const view = render(
+      <ChatRuntimeBridge
+        conversationDetail={firstDetail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.cancelRun).not.toHaveBeenCalled();
+      expect(runtime.reset).not.toHaveBeenCalled();
+    });
+
+    const nextDetail = makeDetail(false);
+    nextDetail.id = 'conversation-2';
+    nextDetail.messages = nextDetail.messages.map((message) => ({
+      ...message,
+      conversationId: nextDetail.id,
+    }));
+
+    view.rerender(
+      <ChatRuntimeBridge
+        conversationDetail={nextDetail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.cancelRun).toHaveBeenCalledOnce();
+      expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
+        expect.objectContaining({ id: 'assistant-1' }),
+      ]));
+    });
+  });
+
   it('resumes a long active run from the server cursor instead of replaying from zero', async () => {
     const detail = makeDetail(false);
     detail.messages.push({

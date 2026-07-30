@@ -150,6 +150,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
   const threadRuntime = useThreadRuntime();
   const isThreadRunning = useThread((state) => state.isRunning);
   const appliedHydrationKeyRef = useRef<string | null>(null);
+  const appliedConversationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     onThreadRuntime(threadRuntime);
@@ -158,6 +159,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
   useEffect(() => {
     if (!conversationDetail) {
       appliedHydrationKeyRef.current = null;
+      appliedConversationIdRef.current = null;
       onPrepareResumeExisting('', null);
       threadRuntime.cancelRun();
       threadRuntime.reset([]);
@@ -166,10 +168,18 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
 
     // A delayed detail request can resolve after the user has already sent a
     // message.  Hydrating that stale snapshot would call cancelRun/reset and
-    // erase the live assistant turn.  Keep the local run authoritative until
-    // it finishes; switching conversations passes through the null branch
-    // above first, so the next conversation still hydrates normally.
-    if (isThreadRunning) {
+    // erase the live assistant turn. Keep the local run authoritative for the
+    // same conversation. A genuine conversation change is allowed to detach
+    // the old local stream once the new detail is ready.
+    const isConversationChange = (
+      appliedConversationIdRef.current !== null
+      && appliedConversationIdRef.current !== conversationDetail.id
+    );
+    if (isThreadRunning && !isConversationChange) {
+      // Record which conversation owns the live runtime even when its stale
+      // server snapshot must not be applied. A later id change can then detach
+      // this stream safely.
+      appliedConversationIdRef.current = conversationDetail.id;
       return;
     }
 
@@ -178,6 +188,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       return;
     }
     appliedHydrationKeyRef.current = hydrationKey;
+    appliedConversationIdRef.current = conversationDetail.id;
 
     onPrepareResumeExisting(conversationDetail.id, null);
     threadRuntime.cancelRun();

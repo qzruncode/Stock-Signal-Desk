@@ -7,6 +7,7 @@ import {
   Loader2Icon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
+  RefreshCcwIcon,
   XIcon,
 } from 'lucide-react';
 import type { ChatConversationItem } from '../../api/agent';
@@ -25,6 +26,9 @@ export type ChatLayoutProps = {
   conversations: ChatConversationItem[];
   selectedConversationId: string | null;
   isLoadingConversations: boolean;
+  isConversationSwitching: boolean;
+  conversationSwitchError: string | null;
+  onRetryConversation: () => void;
   onCreateConversation: () => void;
   onSelectConversation: (conversationId: string) => void;
   onRenameConversation: (conversation: ChatConversationItem) => void;
@@ -40,6 +44,9 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   conversations,
   selectedConversationId,
   isLoadingConversations,
+  isConversationSwitching,
+  conversationSwitchError,
+  onRetryConversation,
   onCreateConversation,
   onSelectConversation,
   onRenameConversation,
@@ -106,6 +113,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               conversations={conversations}
               selectedConversationId={selectedConversationId}
               isLoading={isLoadingConversations}
+              loadingConversationId={isConversationSwitching ? selectedConversationId : null}
               onCreate={onCreateConversation}
               onSelect={onSelectConversation}
               onRename={onRenameConversation}
@@ -153,8 +161,17 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               conversations={conversations}
               selectedConversationId={selectedConversationId}
               isLoading={isLoadingConversations}
-              onCreate={onCreateConversation}
-              onSelect={onSelectConversation}
+              loadingConversationId={isConversationSwitching ? selectedConversationId : null}
+              onCreate={() => {
+                setMobileSidebarState('closing');
+                onCreateConversation();
+              }}
+              onSelect={(conversationId) => {
+                // Start the drawer transition immediately; loading the detail
+                // continues behind the composited closing animation.
+                setMobileSidebarState('closing');
+                onSelectConversation(conversationId);
+              }}
               onRename={onRenameConversation}
               onDelete={onDeleteConversation}
               onBatchDelete={onBatchDeleteConversations}
@@ -200,10 +217,16 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1">
+        <div className="relative min-h-0 flex-1">
           <Suspense fallback={<ChatLoadingFallback />}>
             <Thread onUserCancel={onCancelRun} onDeleteUserTurn={onDeleteUserTurn} />
           </Suspense>
+          {isConversationSwitching ? (
+            <ConversationSwitchOverlay
+              error={conversationSwitchError}
+              onRetry={onRetryConversation}
+            />
+          ) : null}
         </div>
       </div>
     </div>
@@ -277,6 +300,57 @@ function ChatLoadingFallback() {
       <div className="flex flex-col items-center gap-3">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         <p className="text-sm text-muted-foreground">正在加载 AI 投研助手...</p>
+      </div>
+    </div>
+  );
+}
+
+function ConversationSwitchOverlay({
+  error,
+  onRetry,
+}: {
+  error: string | null;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      className="absolute inset-0 z-10 flex min-h-0 flex-col bg-background animate-in fade-in duration-200"
+      aria-busy={error ? undefined : true}
+      aria-live="polite"
+    >
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center px-6 pb-24">
+        <div className="mx-auto flex max-w-sm flex-col items-center text-center">
+          {error ? (
+            <>
+              <div className="flex size-10 items-center justify-center rounded-2xl bg-amber-50 text-amber-600">
+                <AlertTriangleIcon className="size-5" />
+              </div>
+              <p className="mt-4 text-sm font-medium text-foreground">会话暂时没加载出来</p>
+              <p className="mt-1.5 text-xs leading-5 text-muted-foreground">{error}</p>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="mt-4 inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-foreground shadow-sm transition hover:bg-muted"
+              >
+                <RefreshCcwIcon className="size-3.5" />
+                重新加载
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="flex size-10 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
+                <Loader2Icon className="size-5 animate-spin motion-reduce:animate-none" />
+              </div>
+              <p className="mt-4 text-sm font-medium text-foreground">正在切换会话</p>
+              <p className="mt-1.5 text-xs text-muted-foreground">已响应，正在同步会话内容...</p>
+              <div className="mt-6 w-full space-y-2.5" aria-hidden="true">
+                <div className="h-2.5 w-3/4 animate-pulse rounded-full bg-muted motion-reduce:animate-none" />
+                <div className="h-2.5 w-full animate-pulse rounded-full bg-muted motion-reduce:animate-none" />
+                <div className="h-2.5 w-5/6 animate-pulse rounded-full bg-muted motion-reduce:animate-none" />
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
