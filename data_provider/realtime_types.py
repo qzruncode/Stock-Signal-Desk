@@ -17,6 +17,7 @@ from typing import Any, Optional
 # 通用类型转换工具函数
 # ============================================
 
+
 def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
     """安全转换为浮点数，处理 None/NaN/空字符串。"""
     try:
@@ -27,6 +28,7 @@ def safe_float(val: Any, default: Optional[float] = None) -> Optional[float]:
             if val in ("", "-", "--"):
                 return default
         import math
+
         try:
             if math.isnan(float(val)):
                 return default
@@ -47,16 +49,18 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
 
 class RealtimeSource(Enum):
     """实时行情数据源"""
-    AKSHARE_EM = "akshare_em"       # 东方财富（akshare库，全量拉取）
+
+    AKSHARE_EM = "akshare_em"  # 东方财富（akshare库，全量拉取）
     EASTMONEY_PUSH = "eastmoney_push"  # 东方财富 push API（单股查询，快）
-    XUEQIU = "xueqiu"               # 雪球
-    AKSHARE_SINA = "akshare_sina"   # 新浪财经
+    XUEQIU = "xueqiu"  # 雪球
+    AKSHARE_SINA = "akshare_sina"  # 新浪财经
     AKSHARE_TENCENT = "akshare_tencent"  # 腾讯财经
 
 
 @dataclass
 class UnifiedRealtimeQuote:
     """统一实时行情数据结构"""
+
     code: str
     name: str = ""
     source: RealtimeSource = RealtimeSource.AKSHARE_EM
@@ -94,20 +98,34 @@ class UnifiedRealtimeQuote:
     def to_dict(self) -> dict[str, Any]:
         """转换为字典（过滤 None 值）"""
         result = {
-            'code': self.code,
-            'name': self.name,
-            'source': self.source.value,
-            'volume_unit': '股',
-            'amount_unit': '元',
-            'market_value_unit': '元',
+            "code": self.code,
+            "name": self.name,
+            "source": self.source.value,
+            "volume_unit": "股",
+            "amount_unit": "元",
+            "market_value_unit": "元",
         }
         for f in [
-            'trade_time',
-            'price', 'change_pct', 'change_amount', 'volume', 'amount',
-            'volume_ratio', 'turnover_rate', 'amplitude',
-            'open_price', 'high', 'low', 'pre_close',
-            'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
-            'change_60d', 'high_52w', 'low_52w',
+            "trade_time",
+            "price",
+            "change_pct",
+            "change_amount",
+            "volume",
+            "amount",
+            "volume_ratio",
+            "turnover_rate",
+            "amplitude",
+            "open_price",
+            "high",
+            "low",
+            "pre_close",
+            "pe_ratio",
+            "pb_ratio",
+            "total_mv",
+            "circ_mv",
+            "change_60d",
+            "high_52w",
+            "low_52w",
         ]:
             val = getattr(self, f, None)
             if val is not None:
@@ -126,6 +144,7 @@ class UnifiedRealtimeQuote:
 @dataclass
 class ChipDistribution:
     """筹码分布数据"""
+
     code: str
     date: str = ""
     source: str = "akshare"
@@ -141,13 +160,13 @@ class ChipDistribution:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            'code': self.code,
-            'date': self.date,
-            'source': self.source,
-            'profit_ratio': self.profit_ratio,
-            'avg_cost': self.avg_cost,
-            'cost_90_low': self.cost_90_low,
-            'cost_90_high': self.cost_90_high,
-            'concentration_90': self.concentration_90,
-            'concentration_70': self.concentration_70,
+            "code": self.code,
+            "date": self.date,
+            "source": self.source,
+            "profit_ratio": self.profit_ratio,
+            "avg_cost": self.avg_cost,
+            "cost_90_low": self.cost_90_low,
+            "cost_90_high": self.cost_90_high,
+            "concentration_90": self.concentration_90,
+            "concentration_70": self.concentration_70,
         }

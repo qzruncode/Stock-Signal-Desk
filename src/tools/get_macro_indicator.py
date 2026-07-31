@@ -52,13 +52,31 @@ def _normalize(frame: Any, indicator: str) -> list[dict[str, Any]]:
                 },
             }
         elif indicator == "CPI":
-            record = {"period": str(row.get("月份") or "").strip(), "value": number(row.get("全国-当月")), "yoy_pct": number(row.get("全国-同比增长")), "mom_pct": number(row.get("全国-环比增长"))}
+            record = {
+                "period": str(row.get("月份") or "").strip(),
+                "value": number(row.get("全国-当月")),
+                "yoy_pct": number(row.get("全国-同比增长")),
+                "mom_pct": number(row.get("全国-环比增长")),
+            }
         elif indicator == "PPI":
-            record = {"period": str(row.get("月份") or "").strip(), "value": number(row.get("当月")), "yoy_pct": number(row.get("当月同比增长"))}
+            record = {
+                "period": str(row.get("月份") or "").strip(),
+                "value": number(row.get("当月")),
+                "yoy_pct": number(row.get("当月同比增长")),
+            }
         elif indicator == "GDP":
-            record = {"period": str(row.get("季度") or "").strip(), "value": number(row.get("国内生产总值-绝对值")), "yoy_pct": number(row.get("国内生产总值-同比增长"))}
+            record = {
+                "period": str(row.get("季度") or "").strip(),
+                "value": number(row.get("国内生产总值-绝对值")),
+                "yoy_pct": number(row.get("国内生产总值-同比增长")),
+            }
         elif indicator == "M2":
-            record = {"period": str(row.get("月份") or "").strip(), "value": number(row.get("货币和准货币(M2)-数量(亿元)")), "yoy_pct": number(row.get("货币和准货币(M2)-同比增长")), "mom_pct": number(row.get("货币和准货币(M2)-环比增长"))}
+            record = {
+                "period": str(row.get("月份") or "").strip(),
+                "value": number(row.get("货币和准货币(M2)-数量(亿元)")),
+                "yoy_pct": number(row.get("货币和准货币(M2)-同比增长")),
+                "mom_pct": number(row.get("货币和准货币(M2)-环比增长")),
+            }
         elif indicator == "社融":
             record = {
                 "period": str(row.get("月份") or "").strip(),
@@ -72,7 +90,11 @@ def _normalize(frame: Any, indicator: str) -> list[dict[str, Any]]:
                 },
             }
         else:
-            record = {"period": str(row.get("TRADE_DATE") or "").strip(), "value": number(row.get("LPR1Y")), "extra": {"lpr_5y_pct": number(row.get("LPR5Y"))}}
+            record = {
+                "period": str(row.get("TRADE_DATE") or "").strip(),
+                "value": number(row.get("LPR1Y")),
+                "extra": {"lpr_5y_pct": number(row.get("LPR5Y"))},
+            }
         if record.get("period") and record.get("value") is not None:
             # Storage compatibility while preserving explicit percent names.
             record["yoy"] = record.get("yoy_pct")
@@ -86,10 +108,7 @@ def fetch_indicator_records(indicator: str) -> list[dict[str, Any]]:
     return _normalize(_fetcher(indicator)(), indicator)
 
 
-INDICATOR_FETCHERS = {
-    indicator: partial(fetch_indicator_records, indicator)
-    for indicator in INDICATORS
-}
+INDICATOR_FETCHERS = {indicator: partial(fetch_indicator_records, indicator) for indicator in INDICATORS}
 
 
 def _trend(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -197,10 +216,19 @@ TOOL = ToolSpec(
         "获取中国 PMI、CPI、PPI、GDP、M2、社融或 LPR 的结构化历史。按指标分别标注频率、单位、"
         "同比/环比含义和正常发布日历；上游落后时明确标为 stale，不把缓存命中误报为降级。"
     ),
-    parameters=object_schema({
-        "indicator": {"type": "string", "enum": list(INDICATORS)},
-        "periods": {"type": "integer", "minimum": 3, "maximum": 120, "default": 12, "description": "返回最近发布期数；GDP 为季度，其余通常为月度"},
-    }, ["indicator"]),
+    parameters=object_schema(
+        {
+            "indicator": {"type": "string", "enum": list(INDICATORS)},
+            "periods": {
+                "type": "integer",
+                "minimum": 3,
+                "maximum": 120,
+                "default": 12,
+                "description": "返回最近发布期数；GDP 为季度，其余通常为月度",
+            },
+        },
+        ["indicator"],
+    ),
     executor=get_macro_indicator,
     category="macro",
 )

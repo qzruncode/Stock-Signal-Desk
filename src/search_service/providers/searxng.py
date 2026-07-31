@@ -178,19 +178,14 @@ class SearXNGSearchProvider(BaseSearchProvider):
                 logger.warning("[SearXNG] 拉取公共实例列表失败: %s", exc)
 
             if stale_urls:
-                cls._public_instances_stale_retry_after = (
-                    now + cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS
-                )
+                cls._public_instances_stale_retry_after = now + cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS
                 logger.warning(
-                    "[SearXNG] 公共实例刷新失败，继续使用过期缓存，共 %s 个候选实例；"
-                    "%.0fs 内不再刷新",
+                    "[SearXNG] 公共实例刷新失败，继续使用过期缓存，共 %s 个候选实例；" "%.0fs 内不再刷新",
                     len(stale_urls),
                     cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS,
                 )
                 return stale_urls
-            cls._public_instances_stale_retry_after = (
-                now + cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS
-            )
+            cls._public_instances_stale_retry_after = now + cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS
             logger.warning(
                 "[SearXNG] 公共实例冷启动刷新失败，%.0fs 内不再刷新",
                 cls.PUBLIC_INSTANCES_STALE_REFRESH_BACKOFF_SECONDS,
@@ -401,5 +396,3 @@ class SearXNGSearchProvider(BaseSearchProvider):
             error_message="；".join(errors[:3]) if errors else empty_error,
             search_time=elapsed,
         )
-
-

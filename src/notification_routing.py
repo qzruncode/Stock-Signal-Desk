@@ -10,9 +10,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional, Tuple
 
-ROUTABLE_NOTIFICATION_CHANNELS: Tuple[str, ...] = (
-    "wechat",
-)
+ROUTABLE_NOTIFICATION_CHANNELS: Tuple[str, ...] = ("wechat",)
 ROUTABLE_NOTIFICATION_CHANNEL_SET = frozenset(ROUTABLE_NOTIFICATION_CHANNELS)
 
 NOTIFICATION_ROUTE_CONFIGS: Dict[str, Dict[str, str]] = {

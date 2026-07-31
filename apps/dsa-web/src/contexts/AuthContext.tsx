@@ -69,7 +69,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial auth status is loaded from the API after mount
     void fetchStatus();
   }, [fetchStatus]);
 

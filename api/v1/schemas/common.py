@@ -17,12 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field
 class RootResponse(BaseModel):
     """API 根路由响应"""
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "message": "Daily Stock Analysis API is running",
-            "version": "1.0.0",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "message": "Daily Stock Analysis API is running",
+                "version": "1.0.0",
+            }
         }
-    })
+    )
 
     message: str = Field(..., description="API 运行状态消息")
     version: Optional[str] = Field(None, description="API 版本")
@@ -31,12 +33,14 @@ class RootResponse(BaseModel):
 class HealthResponse(BaseModel):
     """健康检查响应"""
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "status": "ok",
-            "timestamp": "2024-01-01T12:00:00",
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "status": "ok",
+                "timestamp": "2024-01-01T12:00:00",
+            }
         }
-    })
+    )
 
     status: str = Field(..., description="服务状态")
     timestamp: Optional[str] = Field(None, description="时间戳")
@@ -45,13 +49,15 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """错误响应"""
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "error": "not_found",
-            "message": "资源不存在",
-            "detail": None,
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "error": "not_found",
+                "message": "资源不存在",
+                "detail": None,
+            }
         }
-    })
+    )
 
     error: str = Field(..., description="错误类型")
     message: str = Field(..., description="错误详情")
@@ -61,13 +67,15 @@ class ErrorResponse(BaseModel):
 class SuccessResponse(BaseModel):
     """通用成功响应"""
 
-    model_config = ConfigDict(json_schema_extra={
-        "example": {
-            "success": True,
-            "message": "操作成功",
-            "data": None,
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "message": "操作成功",
+                "data": None,
+            }
         }
-    })
+    )
 
     success: bool = Field(True, description="是否成功")
     message: Optional[str] = Field(None, description="成功消息")

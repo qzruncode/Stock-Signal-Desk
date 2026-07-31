@@ -24,12 +24,15 @@ def _daily_rows(count: int = 80) -> list[dict]:
 
 def test_technical_indicators_use_sufficient_local_history_without_network():
     rows = _daily_rows()
-    with patch(
-        "src.tools.get_technical_indicators._get_kline_from_stock_daily",
-        return_value=rows,
-    ), patch(
-        "src.tools.get_technical_indicators.get_kline",
-        side_effect=AssertionError("external K-line must not run"),
+    with (
+        patch(
+            "src.tools.get_technical_indicators._get_kline_from_stock_daily",
+            return_value=rows,
+        ),
+        patch(
+            "src.tools.get_technical_indicators.get_kline",
+            side_effect=AssertionError("external K-line must not run"),
+        ),
     ):
         result = get_technical_indicators("300508")
 
@@ -42,22 +45,25 @@ def test_technical_indicators_refresh_stale_local_history_before_calculating():
     stale_rows = _daily_rows()
     stale_rows[-1]["date"] = (date.today() - timedelta(days=5)).isoformat()
     refreshed_rows = _daily_rows()
-    with patch(
-        "src.tools.get_technical_indicators._get_kline_from_stock_daily",
-        return_value=stale_rows,
-    ), patch(
-        "src.tools.get_technical_indicators.get_kline",
-        return_value={
-            "success": True,
-            "data": refreshed_rows,
-            "source": "fresh-test-source",
-            "data_time": refreshed_rows[-1]["date"],
-            "is_stale": False,
-            "fallback_used": False,
-            "_cached": False,
-            "bar_complete": True,
-        },
-    ) as refresh:
+    with (
+        patch(
+            "src.tools.get_technical_indicators._get_kline_from_stock_daily",
+            return_value=stale_rows,
+        ),
+        patch(
+            "src.tools.get_technical_indicators.get_kline",
+            return_value={
+                "success": True,
+                "data": refreshed_rows,
+                "source": "fresh-test-source",
+                "data_time": refreshed_rows[-1]["date"],
+                "is_stale": False,
+                "fallback_used": False,
+                "_cached": False,
+                "bar_complete": True,
+            },
+        ) as refresh,
+    ):
         result = get_technical_indicators("300508")
 
     refresh.assert_called_once()
@@ -97,21 +103,27 @@ def test_multi_stock_snapshot_keeps_verified_mapping_and_financial_period():
             "errors": [],
         }
 
-    with patch(
-        "src.tools.get_multi_stock_snapshot.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.get_multi_stock_snapshot.get_realtime_quotes",
-        return_value=quotes,
-    ), patch(
-        "src.tools.get_multi_stock_snapshot.get_technical_indicators",
-        side_effect=technical,
-    ), patch(
-        "src.tools.get_multi_stock_snapshot._financial_snapshots",
-        return_value=financials,
-    ), patch(
-        "src.tools.get_multi_stock_snapshot.is_trading_time",
-        return_value=True,
+    with (
+        patch(
+            "src.tools.get_multi_stock_snapshot.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.get_multi_stock_snapshot.get_realtime_quotes",
+            return_value=quotes,
+        ),
+        patch(
+            "src.tools.get_multi_stock_snapshot.get_technical_indicators",
+            side_effect=technical,
+        ),
+        patch(
+            "src.tools.get_multi_stock_snapshot._financial_snapshots",
+            return_value=financials,
+        ),
+        patch(
+            "src.tools.get_multi_stock_snapshot.is_trading_time",
+            return_value=True,
+        ),
     ):
         result = get_multi_stock_snapshot("维宏股份,兆威机电")
 
@@ -120,8 +132,6 @@ def test_multi_stock_snapshot_keeps_verified_mapping_and_financial_period():
         ("兆威机电", "003021"),
     ]
     assert result["items"][0]["financial"]["report_date"] == "2026-03-31"
-    assert result["warnings"] == [
-        "维宏股份(300508) 技术指标截至 2026-06-25，不是最新交易日"
-    ]
+    assert result["warnings"] == ["维宏股份(300508) 技术指标截至 2026-06-25，不是最新交易日"]
     assert result["quote_is_intraday"] is True
     assert "不是收盘价" in result["quote_basis"]

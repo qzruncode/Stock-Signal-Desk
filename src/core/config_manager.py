@@ -84,11 +84,7 @@ class ConfigManager:
             return {}
 
         values = dotenv_values(self._env_path)
-        return {
-            str(key): "" if value is None else str(value)
-            for key, value in values.items()
-            if key is not None
-        }
+        return {str(key): "" if value is None else str(value) for key, value in values.items() if key is not None}
 
     def get_config_version(self) -> str:
         """Return deterministic version string based on file state."""
@@ -190,10 +186,7 @@ class ConfigManager:
     def _read_entries(self) -> List[ConfigLineEntry]:
         if not self._env_path.exists():
             return []
-        return [
-            ConfigLineEntry.parse(raw_line)
-            for raw_line in self._env_path.read_text(encoding="utf-8").splitlines()
-        ]
+        return [ConfigLineEntry.parse(raw_line) for raw_line in self._env_path.read_text(encoding="utf-8").splitlines()]
 
     @staticmethod
     def _find_last_key_indexes(entries: List[ConfigLineEntry]) -> Dict[str, int]:

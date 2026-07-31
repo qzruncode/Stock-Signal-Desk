@@ -48,6 +48,7 @@ _fins_lock = threading.Lock()
 # /financials
 # ---------------------------------------------------------------------------
 
+
 @router.get("/financials", summary="获取核心财务指标")
 def get_financials(
     symbol: str = Query(..., description="股票代码，如 600519"),
@@ -72,6 +73,7 @@ def get_financials(
 # /valuation-ratios
 # ---------------------------------------------------------------------------
 
+
 @router.get("/valuation-ratios", summary="获取估值指标")
 def get_valuation_ratios(
     symbol: str = Query(..., description="股票代码，如 600519"),
@@ -84,13 +86,16 @@ def get_valuation_ratios(
     history_value = with_history if isinstance(with_history, bool) else True
     force_value = force if isinstance(force, bool) else False
     return tool_get_valuation_ratios(
-        _normalize_symbol(symbol), with_history=history_value, use_cache=not force_value,
+        _normalize_symbol(symbol),
+        with_history=history_value,
+        use_cache=not force_value,
     )
 
 
 # ---------------------------------------------------------------------------
 # /price-overdraft-signal
 # ---------------------------------------------------------------------------
+
 
 @router.get("/price-overdraft-signal", summary="获取股价透支判定信号")
 def get_price_overdraft_signal(
@@ -114,6 +119,7 @@ def get_price_overdraft_signal(
 # /shareholder-structure
 # ---------------------------------------------------------------------------
 
+
 @router.get("/shareholder-structure", summary="获取股东结构")
 def get_shareholder_structure(
     symbol: str = Query(..., description="股票代码，如 600519"),
@@ -129,6 +135,7 @@ def get_shareholder_structure(
 # ---------------------------------------------------------------------------
 # /financials/statements
 # ---------------------------------------------------------------------------
+
 
 @router.get("/financials/statements", summary="获取三大财务报表")
 def get_financial_statements(
@@ -153,13 +160,16 @@ def get_financial_statements(
     force_value = force if isinstance(force, bool) else False
     period_value = periods if isinstance(periods, int) else 6
     return tool_get_financial_statements(
-        _normalize_symbol(symbol), periods=period_value, use_cache=not force_value,
+        _normalize_symbol(symbol),
+        periods=period_value,
+        use_cache=not force_value,
     )
 
 
 # ---------------------------------------------------------------------------
 # /news
 # ---------------------------------------------------------------------------
+
 
 @router.get("/news", summary="搜索相关新闻")
 def search_news(
@@ -199,6 +209,7 @@ def search_news(
 # /announcements
 # ---------------------------------------------------------------------------
 
+
 @router.get("/announcements", summary="获取公司公告")
 def get_announcements(
     symbol: str = Query(..., description="股票代码"),
@@ -232,6 +243,7 @@ def get_announcements(
 # /risk-events
 # ---------------------------------------------------------------------------
 
+
 @router.get("/risk-events", summary="获取风险事件")
 def get_risk_events(
     symbol: str = Query(..., description="股票代码"),
@@ -248,6 +260,7 @@ def get_risk_events(
 # ---------------------------------------------------------------------------
 # /sentiment
 # ---------------------------------------------------------------------------
+
 
 @router.get("/sentiment", summary="获取舆情分析证据")
 def get_sentiment(
@@ -271,6 +284,7 @@ def get_sentiment(
 # ---------------------------------------------------------------------------
 # /research-report
 # ---------------------------------------------------------------------------
+
 
 @router.get("/research-report", summary="获取券商研报")
 def get_research_report(
@@ -301,6 +315,7 @@ def get_research_report(
 # ---------------------------------------------------------------------------
 # /social-sentiment
 # ---------------------------------------------------------------------------
+
 
 @router.get("/social-sentiment", summary="获取社交媒体分析证据")
 def get_social_sentiment(

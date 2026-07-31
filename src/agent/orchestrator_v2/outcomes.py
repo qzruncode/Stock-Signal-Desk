@@ -38,7 +38,8 @@ def _coverage_from_packets(
             "catalog_supplied",
             "selected_count",
             "binding_complete",
-        } <= set(packet["coverage"])
+        }
+        <= set(packet["coverage"])
     ]
     if domain_coverages:
         coverage = domain_coverages[-1]
@@ -62,15 +63,10 @@ def _coverage_from_packets(
             terminal_symbols = {
                 str(item.get("symbol") or "").strip()
                 for item in company_packets[-1]["company_results"]
-                if isinstance(item, Mapping)
-                and str(item.get("symbol") or "").strip()
+                if isinstance(item, Mapping) and str(item.get("symbol") or "").strip()
             }
             requested_symbols = tuple(dict.fromkeys(task.task.symbols))
-            missing = tuple(
-                symbol
-                for symbol in requested_symbols
-                if symbol not in terminal_symbols
-            )
+            missing = tuple(symbol for symbol in requested_symbols if symbol not in terminal_symbols)
             covered = len(requested_symbols) - len(missing)
             return CoverageV2(
                 requested=len(requested_symbols),
@@ -80,14 +76,10 @@ def _coverage_from_packets(
             )
 
     requested_values = [
-        int(packet.get("requested_count"))
-        for packet in packets
-        if isinstance(packet.get("requested_count"), int)
+        int(packet.get("requested_count")) for packet in packets if isinstance(packet.get("requested_count"), int)
     ]
     covered_values = [
-        int(packet.get("covered_count"))
-        for packet in packets
-        if isinstance(packet.get("covered_count"), int)
+        int(packet.get("covered_count")) for packet in packets if isinstance(packet.get("covered_count"), int)
     ]
     if task.task.kind.value == "collection_financial_filter" and task.task.symbols:
         groups: dict[tuple[Any, ...], list[int]] = {}
@@ -111,17 +103,11 @@ def _coverage_from_packets(
         requested = sum(requested_values)
         covered = min(requested, sum(covered_values))
     else:
-        domain_packets = [
-            packet
-            for packet in packets
-            if isinstance(packet.get("requested_domains"), list)
-        ]
+        domain_packets = [packet for packet in packets if isinstance(packet.get("requested_domains"), list)]
         requested = (
             len(domain_packets[-1]["requested_domains"])
             if domain_packets
-            else len(task.output_entities)
-            if task.output_entities and not task.task.symbols
-            else len(task.task.symbols)
+            else len(task.output_entities) if task.output_entities and not task.task.symbols else len(task.task.symbols)
         )
         covered = (
             sum(
@@ -130,9 +116,7 @@ def _coverage_from_packets(
                 if isinstance(item, Mapping) and item.get("success") is True
             )
             if domain_packets
-            else len(task.output_entities)
-            if task.output_entities
-            else requested if task.status == "completed" else 0
+            else len(task.output_entities) if task.output_entities else requested if task.status == "completed" else 0
         )
     missing: list[str] = []
     for packet in packets:
@@ -164,26 +148,15 @@ def _coverage_from_packets(
 
 def task_outcome_v2(task: TaskExecutionResult) -> TaskOutcomeV2:
     coverage = _coverage_from_packets(task)
-    call_packets = [
-        call.result
-        for call in task.calls
-        if isinstance(call.result, Mapping)
-    ]
+    call_packets = [call.result for call in task.calls if isinstance(call.result, Mapping)]
     derived_packets = [
-        derived["result"]
-        for derived in task.derived_results
-        if isinstance(derived.get("result"), Mapping)
+        derived["result"] for derived in task.derived_results if isinstance(derived.get("result"), Mapping)
     ]
     packets = [*call_packets, *derived_packets]
-    has_partial_packet = any(
-        packet.get("partial") is True
-        for packet in packets
-    )
+    has_partial_packet = any(packet.get("partial") is True for packet in packets)
     status = {
         "completed": (
-            OutcomeStatus.SUCCEEDED
-            if coverage.complete and not has_partial_packet
-            else OutcomeStatus.PARTIAL
+            OutcomeStatus.SUCCEEDED if coverage.complete and not has_partial_packet else OutcomeStatus.PARTIAL
         ),
         "failed": OutcomeStatus.FAILED,
         "blocked": OutcomeStatus.BLOCKED,
@@ -202,18 +175,16 @@ def task_outcome_v2(task: TaskExecutionResult) -> TaskOutcomeV2:
             message = str(error).strip()
             if not message:
                 continue
-            packet_errors.append(ErrorDetailV2(
-                code=error_code,
-                message=message,
-            ))
+            packet_errors.append(
+                ErrorDetailV2(
+                    code=error_code,
+                    message=message,
+                )
+            )
             packet_error_messages.add(message)
     task_errors = tuple(
         ErrorDetailV2(
-            code=(
-                AgentErrorCode.POLICY_BLOCKED
-                if status == OutcomeStatus.BLOCKED
-                else AgentErrorCode.TOOL_FAILED
-            ),
+            code=(AgentErrorCode.POLICY_BLOCKED if status == OutcomeStatus.BLOCKED else AgentErrorCode.TOOL_FAILED),
             message=str(error),
         )
         for error in task.errors
@@ -225,18 +196,14 @@ def task_outcome_v2(task: TaskExecutionResult) -> TaskOutcomeV2:
             *errors,
             ErrorDetailV2(
                 code=AgentErrorCode.COVERAGE_INCOMPLETE,
-                message=(
-                    f"coverage incomplete: {coverage.covered}/"
-                    f"{coverage.requested}"
-                ),
+                message=(f"coverage incomplete: {coverage.covered}/" f"{coverage.requested}"),
             ),
         )
-    warnings = tuple(dict.fromkeys(
-        str(warning)
-        for packet in packets
-        for warning in packet.get("warnings") or []
-        if str(warning).strip()
-    ))
+    warnings = tuple(
+        dict.fromkeys(
+            str(warning) for packet in packets for warning in packet.get("warnings") or [] if str(warning).strip()
+        )
+    )
     evidence: list[EvidenceV2] = []
     for call in task.calls:
         result = call.result if isinstance(call.result, Mapping) else {}
@@ -244,39 +211,31 @@ def task_outcome_v2(task: TaskExecutionResult) -> TaskOutcomeV2:
         raw_time = result.get("data_time")
         if isinstance(raw_time, str) and raw_time.strip():
             try:
-                observed_at = datetime.fromisoformat(
-                    raw_time.strip().replace("Z", "+00:00")
-                )
+                observed_at = datetime.fromisoformat(raw_time.strip().replace("Z", "+00:00"))
             except ValueError:
                 observed_at = None
-        evidence.append(EvidenceV2(
-            source=str(result.get("source") or call.tool_name),
-            locator=f"{task.task.task_id}/{call.step_id}",
-            observed_at=observed_at,
-            summary=(
-                f"{call.tool_name}: "
-                + (
-                    "succeeded"
-                    if call.success
-                    else "failed"
-                )
-            ),
-        ))
+        evidence.append(
+            EvidenceV2(
+                source=str(result.get("source") or call.tool_name),
+                locator=f"{task.task.task_id}/{call.step_id}",
+                observed_at=observed_at,
+                summary=(f"{call.tool_name}: " + ("succeeded" if call.success else "failed")),
+            )
+        )
     for derived in task.derived_results:
         processor = str(derived.get("processor") or "").strip()
         if processor:
-            evidence.append(EvidenceV2(
-                source=processor,
-                locator=f"{task.task.task_id}/{derived.get('step_id')}",
-                summary="deterministic result processor",
-            ))
+            evidence.append(
+                EvidenceV2(
+                    source=processor,
+                    locator=f"{task.task.task_id}/{derived.get('step_id')}",
+                    summary="deterministic result processor",
+                )
+            )
     result_payload = {
         "calls": [call.evidence() for call in task.calls],
         "derived_results": list(task.derived_results),
-        "output_entities": [
-            {"symbol": item.symbol, "name": item.name}
-            for item in task.output_entities
-        ],
+        "output_entities": [{"symbol": item.symbol, "name": item.name} for item in task.output_entities],
         "resource_outputs": dict(task.resource_outputs),
     }
     return TaskOutcomeV2(

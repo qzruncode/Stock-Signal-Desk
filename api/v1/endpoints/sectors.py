@@ -28,6 +28,7 @@ CACHE_KEY = "sectors:v4"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _cache_key(sector_type: str) -> str:
     return f"{CACHE_KEY}:{sector_type}:{datetime.now().strftime('%Y%m%d')}"
 
@@ -41,27 +42,33 @@ def _cache_get(sector_type: str) -> tuple[list[dict], str, bool] | tuple[None, N
     """
     try:
         from src.storage import DatabaseManager
+
         db = DatabaseManager.get_instance()
         today_key = _cache_key(sector_type)
 
         # Try today's cache first
         raw = db.get_kline_snapshot(today_key)
-        if raw and isinstance(raw, dict) and 'items' in raw and raw.get('items'):
-            ts = raw.get('ts', '')
+        if raw and isinstance(raw, dict) and "items" in raw and raw.get("items"):
+            ts = raw.get("ts", "")
             logger.info(f"[Sectors] cache HIT {today_key}: {len(raw['items'])} items")
-            return raw['items'], ts, False
+            return raw["items"], ts, False
 
         # Today's cache miss or empty — find most recent non-empty entry
         try:
             from sqlalchemy import select, desc
             from src.storage import KlineSnapshot
+
             prefix = f"{CACHE_KEY}:{sector_type}:"
             with db.get_session() as session:
-                rows = session.execute(
-                    select(KlineSnapshot)
-                    .where(KlineSnapshot.code.like(prefix + "%"))
-                    .order_by(desc(KlineSnapshot.code))
-                ).scalars().all()
+                rows = (
+                    session.execute(
+                        select(KlineSnapshot)
+                        .where(KlineSnapshot.code.like(prefix + "%"))
+                        .order_by(desc(KlineSnapshot.code))
+                    )
+                    .scalars()
+                    .all()
+                )
                 for row in rows:
                     try:
                         data = json.loads(row.data or "{}")
@@ -70,8 +77,7 @@ def _cache_get(sector_type: str) -> tuple[list[dict], str, bool] | tuple[None, N
                     items = data.get("items") if isinstance(data, dict) else None
                     if items and isinstance(items, list) and len(items) > 0:
                         ts = data.get("ts", "")
-                        logger.info(
-                            f"[Sectors] cache FALLBACK {row.code}: {len(items)} items (today key={today_key})")
+                        logger.info(f"[Sectors] cache FALLBACK {row.code}: {len(items)} items (today key={today_key})")
                         return items, ts, True
         except Exception as e:
             logger.debug(f"[Sectors] fallback query failed: {e}")
@@ -85,9 +91,11 @@ def _cache_get(sector_type: str) -> tuple[list[dict], str, bool] | tuple[None, N
 def _cache_put(sector_type: str, data: list[dict], fetched_at: str) -> None:
     try:
         from src.storage import DatabaseManager
+
         key = _cache_key(sector_type)
         DatabaseManager.get_instance().save_kline_snapshot(
-            key, json.dumps({"items": data, "ts": fetched_at}, ensure_ascii=False))
+            key, json.dumps({"items": data, "ts": fetched_at}, ensure_ascii=False)
+        )
         logger.info(f"[Sectors] cache SAVED {key}: {len(data)} items, ts={fetched_at}")
     except Exception as e:
         logger.warning(f"[Sectors] cache write error: {e}")
@@ -124,6 +132,7 @@ def _normalize_name(name: str) -> str:
 # Fetch
 # ---------------------------------------------------------------------------
 
+
 def _fetch_sector_sina(indicator: str) -> list[dict]:
     """Fetch industry/concept boards from Sina as an independent fallback."""
     import time as _time
@@ -139,21 +148,23 @@ def _fetch_sector_sina(indicator: str) -> list[dict]:
             name = str(row.get("板块", "")).strip()
             if not name:
                 continue
-            result.append({
-                "name": name,
-                "code": str(row.get("label", "")).strip(),
-                "change_pct": _safe_float(row.get("涨跌幅")),
-                "lead_stock": str(row.get("股票名称", "")).strip(),
-                "lead_stock_price": _safe_float(row.get("个股-当前价")),
-                "lead_stock_change_pct": _safe_float(row.get("个股-涨跌幅")),
-                "up_count": None,
-                "down_count": None,
-                "company_count": _safe_int(row.get("公司家数")),
-                "total_volume": _safe_float(row.get("总成交量")),
-                "total_amount": _safe_float(row.get("总成交额")),
-                "net_flow": None,
-                "data_source": "新浪",
-            })
+            result.append(
+                {
+                    "name": name,
+                    "code": str(row.get("label", "")).strip(),
+                    "change_pct": _safe_float(row.get("涨跌幅")),
+                    "lead_stock": str(row.get("股票名称", "")).strip(),
+                    "lead_stock_price": _safe_float(row.get("个股-当前价")),
+                    "lead_stock_change_pct": _safe_float(row.get("个股-涨跌幅")),
+                    "up_count": None,
+                    "down_count": None,
+                    "company_count": _safe_int(row.get("公司家数")),
+                    "total_volume": _safe_float(row.get("总成交量")),
+                    "total_amount": _safe_float(row.get("总成交额")),
+                    "net_flow": None,
+                    "data_source": "新浪",
+                }
+            )
         result.sort(
             key=lambda item: (
                 item.get("change_pct") is not None,
@@ -165,6 +176,7 @@ def _fetch_sector_sina(indicator: str) -> list[dict]:
     except Exception as exc:
         logger.warning("[Sectors] sina %s 获取失败: %s", indicator, exc)
     return result
+
 
 def _fetch_industry() -> list[dict]:
     """Fetch industry boards from Eastmoney, then Sina when EM is unavailable."""
@@ -179,17 +191,17 @@ def _fetch_industry() -> list[dict]:
         if df is not None and not df.empty:
             for _, row in df.iterrows():
                 item = {
-                    'name': str(row.get('板块名称', '')),
-                    'code': str(row.get('板块代码', '')),
-                    'change_pct': _safe_float(row.get('涨跌幅')),
-                    'lead_stock': str(row.get('领涨股票', '')),
-                    'lead_stock_price': None,
-                    'lead_stock_change_pct': _safe_float(row.get('领涨股票-涨跌幅')),
-                    'up_count': _safe_int(row.get('上涨家数')),
-                    'down_count': _safe_int(row.get('下跌家数')),
-                    'total_amount': None,
-                    'net_flow': None,
-                    'data_source': '东方财富',
+                    "name": str(row.get("板块名称", "")),
+                    "code": str(row.get("板块代码", "")),
+                    "change_pct": _safe_float(row.get("涨跌幅")),
+                    "lead_stock": str(row.get("领涨股票", "")),
+                    "lead_stock_price": None,
+                    "lead_stock_change_pct": _safe_float(row.get("领涨股票-涨跌幅")),
+                    "up_count": _safe_int(row.get("上涨家数")),
+                    "down_count": _safe_int(row.get("下跌家数")),
+                    "total_amount": None,
+                    "net_flow": None,
+                    "data_source": "东方财富",
                 }
                 result.append(item)
         logger.info(f"[Sectors] industry: {len(result)} 条, {_time.time() - t0:.1f}s")
@@ -218,13 +230,9 @@ def _fetch_concept() -> list[dict]:
             change_df = ak.stock_board_change_em()
             if change_df is not None and not change_df.empty:
                 for _, change_row in change_df.iterrows():
-                    change_name = str(
-                        change_row.get("板块名称") or ""
-                    ).strip()
+                    change_name = str(change_row.get("板块名称") or "").strip()
                     if change_name:
-                        change_by_name[_normalize_name(change_name)] = (
-                            change_row.to_dict()
-                        )
+                        change_by_name[_normalize_name(change_name)] = change_row.to_dict()
         except Exception as exc:
             logger.warning(
                 "[Sectors] concept quote enrichment failed: %s",
@@ -241,27 +249,29 @@ def _fetch_concept() -> list[dict]:
                 "涨跌幅",
                 catalog_row.get("涨跌幅"),
             )
-            if change_pct == '-' or change_pct is None:
+            if change_pct == "-" or change_pct is None:
                 change_pct = None
             else:
                 change_pct = _safe_float(change_pct)
-            result.append({
-                'name': name,
-                'code': code,
-                'change_pct': change_pct,
-                'net_flow': _safe_float(
-                    quote_row.get(
-                        "主力净流入",
-                        catalog_row.get("主力净流入"),
-                    )
-                ),
-                'lead_stock': '',
-                'up_count': None,
-                'down_count': None,
-                'data_source': '东方财富',
-            })
+            result.append(
+                {
+                    "name": name,
+                    "code": code,
+                    "change_pct": change_pct,
+                    "net_flow": _safe_float(
+                        quote_row.get(
+                            "主力净流入",
+                            catalog_row.get("主力净流入"),
+                        )
+                    ),
+                    "lead_stock": "",
+                    "up_count": None,
+                    "down_count": None,
+                    "data_source": "东方财富",
+                }
+            )
 
-        result.sort(key=lambda x: (x['change_pct'] is not None, x['change_pct'] or 0), reverse=True)
+        result.sort(key=lambda x: (x["change_pct"] is not None, x["change_pct"] or 0), reverse=True)
 
         logger.info(f"[Sectors] concept: {len(result)} 条, {_time.time() - t0:.1f}s")
     except Exception as e:
@@ -310,10 +320,11 @@ def get_sector_list(
         cached_items, cached_ts, is_fallback = _cache_get(sector_type)
         if cached_items is not None:
             for item in cached_items:
-                item['_cached'] = True
+                item["_cached"] = True
 
             # Background refresh (same pattern as market_status)
             if _lock.acquire(blocking=False):
+
                 def _bg_refresh():
                     try:
                         if sector_type == "industry":
@@ -326,12 +337,20 @@ def get_sector_list(
                             _cache_put(sector_type, fresh, datetime.now().isoformat())
                     finally:
                         _lock.release()
+
                 threading.Thread(target=_bg_refresh, daemon=True).start()
 
-            return {"type": sector_type, "items": cached_items,
-                    "_fetched_at": cached_ts or fetched_at, "_cached": True,
-                    "data_time": (cached_ts or fetched_at)[:10], "is_stale": is_fallback,
-                    "fallback_used": is_fallback, "source": _sector_source(cached_items), "errors": []}
+            return {
+                "type": sector_type,
+                "items": cached_items,
+                "_fetched_at": cached_ts or fetched_at,
+                "_cached": True,
+                "data_time": (cached_ts or fetched_at)[:10],
+                "is_stale": is_fallback,
+                "fallback_used": is_fallback,
+                "source": _sector_source(cached_items),
+                "errors": [],
+            }
 
     if sector_type == "industry":
         items = _fetch_industry()
@@ -344,9 +363,14 @@ def get_sector_list(
     if items:
         _cache_put(sector_type, items, fetched_at)
 
-    return {"type": sector_type, "items": items,
-            "_fetched_at": fetched_at, "_cached": False,
-            "data_time": _sector_data_time(), "is_stale": False,
-            "fallback_used": _sector_source(items) == "新浪",
-            "source": _sector_source(items),
-            "errors": [] if items else [f"未获取到 {sector_type} 板块数据"]}
+    return {
+        "type": sector_type,
+        "items": items,
+        "_fetched_at": fetched_at,
+        "_cached": False,
+        "data_time": _sector_data_time(),
+        "is_stale": False,
+        "fallback_used": _sector_source(items) == "新浪",
+        "source": _sector_source(items),
+        "errors": [] if items else [f"未获取到 {sector_type} 板块数据"],
+    }

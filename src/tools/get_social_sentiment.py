@@ -77,18 +77,20 @@ def _fetch_guba_page(code: str, page_number: int) -> dict[str, Any]:
         ).strip()
         raw_time = str(row.css(".update::text").get() or "").strip()
         published = _post_time(raw_time)
-        items.append({
-            "title": title,
-            "source": "东方财富股吧",
-            "author": author or None,
-            "post_kind": "public_discussion",
-            "url": row.urljoin(href),
-            "read_count": _parse_count(row.css(".read::text").get()),
-            "reply_count": _parse_count(row.css(".reply::text").get()),
-            "publish_time": published.isoformat() if published else None,
-            "semantic_status": "model_required",
-            "page_number": page_number,
-        })
+        items.append(
+            {
+                "title": title,
+                "source": "东方财富股吧",
+                "author": author or None,
+                "post_kind": "public_discussion",
+                "url": row.urljoin(href),
+                "read_count": _parse_count(row.css(".read::text").get()),
+                "reply_count": _parse_count(row.css(".reply::text").get()),
+                "publish_time": published.isoformat() if published else None,
+                "semantic_status": "model_required",
+                "page_number": page_number,
+            }
+        )
     return {"items": items, "url": url, "status": int(page.status)}
 
 
@@ -124,19 +126,14 @@ def _fetch_guba_sample(
     pages.sort(key=lambda page: min((item.get("page_number", 0) for item in page.get("items") or []), default=0))
     cutoff = datetime.now().astimezone() - timedelta(days=days)
     raw_items = [item for page in pages for item in page.get("items") or []]
-    raw_times = [
-        datetime.fromisoformat(str(item["publish_time"]))
-        for item in raw_items
-        if item.get("publish_time")
-    ]
+    raw_times = [datetime.fromisoformat(str(item["publish_time"])) for item in raw_items if item.get("publish_time")]
     reached_cutoff = bool(raw_times) and min(raw_times) <= cutoff
     if pages and any(len(page.get("items") or []) < 80 for page in pages):
         reached_cutoff = True
     items = [
         item
         for item in raw_items
-        if not item.get("publish_time")
-        or datetime.fromisoformat(str(item["publish_time"])) >= cutoff
+        if not item.get("publish_time") or datetime.fromisoformat(str(item["publish_time"])) >= cutoff
     ]
     return items, bool(pages), errors, any_cached if pages else False, reached_cutoff
 
@@ -186,19 +183,21 @@ def _fetch_stock_news_fallback(
                 published = _post_time(raw_time)
         if published and published < cutoff:
             continue
-        items.append({
-            "title": title,
-            "summary": summary,
-            "source": str(row.get("文章来源") or "东方财富公司新闻").strip(),
-            "author": None,
-            "post_kind": "syndicated_info",
-            "url": str(row.get("新闻链接") or "").strip(),
-            "read_count": None,
-            "reply_count": None,
-            "publish_time": published.isoformat() if published else None,
-            "semantic_status": "not_social_evidence",
-            "page_number": None,
-        })
+        items.append(
+            {
+                "title": title,
+                "summary": summary,
+                "source": str(row.get("文章来源") or "东方财富公司新闻").strip(),
+                "author": None,
+                "post_kind": "syndicated_info",
+                "url": str(row.get("新闻链接") or "").strip(),
+                "read_count": None,
+                "reply_count": None,
+                "publish_time": published.isoformat() if published else None,
+                "semantic_status": "not_social_evidence",
+                "page_number": None,
+            }
+        )
     items.sort(key=lambda item: item.get("publish_time") or "", reverse=True)
     return items[:limit], cached
 
@@ -224,18 +223,20 @@ def _fetch_xueqiu_mentions(code: str, name: str | None, *, days: int) -> tuple[l
             published = published.astimezone()
         if published and published < cutoff:
             continue
-        items.append({
-            "title": title,
-            "source": "雪球热榜/RSSHub",
-            "author": str(raw.get("author") or "").strip() or None,
-            "post_kind": "public_discussion",
-            "url": str(raw.get("link") or "").strip(),
-            "read_count": None,
-            "reply_count": None,
-            "publish_time": published.isoformat() if published else None,
-            "semantic_status": "model_required",
-            "page_number": None,
-        })
+        items.append(
+            {
+                "title": title,
+                "source": "雪球热榜/RSSHub",
+                "author": str(raw.get("author") or "").strip() or None,
+                "post_kind": "public_discussion",
+                "url": str(raw.get("link") or "").strip(),
+                "read_count": None,
+                "reply_count": None,
+                "publish_time": published.isoformat() if published else None,
+                "semantic_status": "model_required",
+                "page_number": None,
+            }
+        )
     return items, [str(error) for error in result.get("errors") or []]
 
 
@@ -258,7 +259,7 @@ def _fetch_diagnose_score(code: str, *, days: int) -> tuple[list[dict[str, Any]]
             timeout=15,
         )
         response.raise_for_status()
-        rows = ((response.json().get("result") or {}).get("data") or [])
+        rows = (response.json().get("result") or {}).get("data") or []
     except Exception as exc:
         return [], None, [f"东方财富千股千评: {exc}"]
     cutoff = datetime.now() - timedelta(days=days)
@@ -345,18 +346,12 @@ def get_social_sentiment(
             continue
         seen.add(key)
         deduped.append(item)
-    discussion_items = [
-        item for item in deduped if item.get("post_kind") == "public_discussion"
-    ]
+    discussion_items = [item for item in deduped if item.get("post_kind") == "public_discussion"]
     syndicated_sample = [item for item in deduped if item.get("post_kind") == "syndicated_info"]
     items = [*discussion_items, *syndicated_sample][:limit]
     total_read = sum(int(item.get("read_count") or 0) for item in deduped)
     total_reply = sum(int(item.get("reply_count") or 0) for item in deduped)
-    known_times = [
-        datetime.fromisoformat(str(item["publish_time"]))
-        for item in deduped
-        if item.get("publish_time")
-    ]
+    known_times = [datetime.fromisoformat(str(item["publish_time"])) for item in deduped if item.get("publish_time")]
     earliest_time = min(known_times) if known_times else None
     latest_time = max(known_times) if known_times else None
     earliest = earliest_time.isoformat() if earliest_time else None
@@ -364,8 +359,7 @@ def get_social_sentiment(
     cutoff = datetime.now().astimezone() - timedelta(days=days)
     if guba_available and not coverage_complete:
         coverage_warning = (
-            f"股吧仅采样最近 {max_pages} 页，实际最早帖子为 {earliest or '未知'}，"
-            f"未覆盖完整的最近 {days} 天"
+            f"股吧仅采样最近 {max_pages} 页，实际最早帖子为 {earliest or '未知'}，" f"未覆盖完整的最近 {days} 天"
         )
     else:
         coverage_warning = None
@@ -386,9 +380,14 @@ def get_social_sentiment(
         date_key = str(item.get("publish_time") or "")[:10]
         if not date_key:
             continue
-        row = daily.setdefault(date_key, {
-            "total": 0, "read_total": 0, "reply_total": 0,
-        })
+        row = daily.setdefault(
+            date_key,
+            {
+                "total": 0,
+                "read_total": 0,
+                "reply_total": 0,
+            },
+        )
         row["total"] += 1
         row["read_total"] += int(item.get("read_count") or 0)
         row["reply_total"] += int(item.get("reply_count") or 0)
@@ -409,9 +408,7 @@ def get_social_sentiment(
         "total_discussion": len(deduped),
         "user_post_count": len(discussion_items),
         "syndicated_info_count": len(syndicated_sample),
-        "xueqiu_hot_count": sum(
-            1 for item in discussion_items if item.get("source") == "雪球热榜/RSSHub"
-        ),
+        "xueqiu_hot_count": sum(1 for item in discussion_items if item.get("source") == "雪球热榜/RSSHub"),
         "returned_item_order": "public_discussion_then_syndicated_information_each_newest_first",
         "sentiment_sample_scope": "bounded_public_discussion_for_model_synthesis",
         "sentiment_score": None,
@@ -439,12 +436,14 @@ def get_social_sentiment(
         "coverage_start": earliest,
         "coverage_end": latest,
         "coverage_complete": coverage_complete,
-        "source": " + ".join([
-            *(["东方财富股吧/Scrapling"] if guba_available else []),
-            *(["AKShare/东方财富公司新闻摘要"] if fallback_used else []),
-            "RSSHub:/xueqiu/hots",
-            "东方财富千股千评",
-        ]),
+        "source": " + ".join(
+            [
+                *(["东方财富股吧/Scrapling"] if guba_available else []),
+                *(["AKShare/东方财富公司新闻摘要"] if fallback_used else []),
+                "RSSHub:/xueqiu/hots",
+                "东方财富千股千评",
+            ]
+        ),
         "sources": [
             *(["东方财富股吧/Scrapling"] if guba_available else []),
             *(["AKShare/东方财富公司新闻摘要"] if fallback_used else []),
@@ -474,12 +473,21 @@ TOOL = ToolSpec(
         "返回公开讨论与资讯来源拆分、阅读回复热度、实际时间覆盖和东方财富千股千评趋势。"
         "工具不使用词典判断情绪；语义极性由最终模型结合上下文分析。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "A 股代码或名称"},
-        "days": {"type": "integer", "minimum": 1, "maximum": 180, "default": 30},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
-        "max_pages": {"type": "integer", "minimum": 1, "maximum": 10, "default": 3, "description": "最多采样股吧列表页数"},
-    }, ["symbol"]),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "A 股代码或名称"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 180, "default": 30},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            "max_pages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 3,
+                "description": "最多采样股吧列表页数",
+            },
+        },
+        ["symbol"],
+    ),
     executor=get_social_sentiment,
     category="sentiment",
 )

@@ -226,13 +226,10 @@ class GuardedModelRuntime:
     async def _reserve_budget(self, kwargs: dict[str, Any]) -> None:
         if self.database is None:
             return
-        estimated_tokens = (
-            self.token_estimator(
-                list(kwargs.get("messages") or []),
-                self.model,
-            )
-            + max(0, int(kwargs.get("max_tokens") or 0))
-        )
+        estimated_tokens = self.token_estimator(
+            list(kwargs.get("messages") or []),
+            self.model,
+        ) + max(0, int(kwargs.get("max_tokens") or 0))
         micros_per_1k = _env_int(
             "AGENT_ESTIMATED_MICROS_PER_1K_TOKENS",
             5_000,
@@ -245,18 +242,13 @@ class GuardedModelRuntime:
             self.run_id,
             provider_calls=1,
             estimated_tokens=estimated_tokens,
-            estimated_cost_micros=int(
-                estimated_tokens / 1000.0 * micros_per_1k
-            ),
+            estimated_cost_micros=int(estimated_tokens / 1000.0 * micros_per_1k),
             max_provider_calls=limits.max_provider_calls,
             max_estimated_tokens=limits.max_estimated_tokens,
             max_estimated_cost_micros=limits.max_estimated_cost_micros,
         )
         if not budget.get("allowed") and budget.get("reason") != "run_not_found":
-            raise RuntimeError(
-                "Agent provider budget exceeded: "
-                f"{budget.get('reason')}"
-            )
+            raise RuntimeError("Agent provider budget exceeded: " f"{budget.get('reason')}")
 
 
 __all__ = [

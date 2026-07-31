@@ -56,14 +56,17 @@ TOOL = ToolSpec(
         "读取任意财经 RSS 路由，支持路由参数、limit、正则过滤/排除、繁简转换、排序、全文模式和强制刷新。"
         "route_path 与参数应先通过 list_financial_sources/inspect_financial_source 确认。"
     ),
-    parameters=object_schema({
-        "route_path": {"type": "string"},
-        "params": {"type": "object", "description": "路由路径参数对象", "additionalProperties": True},
-        "options": rss_options_schema(),
-        "namespace": {"type": "string", "description": "来源命名空间，可留空"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
-        "force": {"type": "boolean", "default": False, "description": "跳过缓存强制刷新"},
-    }, required=("route_path",)),
+    parameters=object_schema(
+        {
+            "route_path": {"type": "string"},
+            "params": {"type": "object", "description": "路由路径参数对象", "additionalProperties": True},
+            "options": rss_options_schema(),
+            "namespace": {"type": "string", "description": "来源命名空间，可留空"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
+            "force": {"type": "boolean", "default": False, "description": "跳过缓存强制刷新"},
+        },
+        required=("route_path",),
+    ),
     executor=read_financial_feed,
     category="sentiment",
 )

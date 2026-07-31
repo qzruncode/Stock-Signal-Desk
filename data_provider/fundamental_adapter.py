@@ -198,7 +198,9 @@ def _extract_cash_dividend_per_share(row: pd.Series) -> Optional[float]:
 def _filter_rows_by_code(df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
-    code_cols = [c for c in df.columns if any(k in str(c) for k in ("代码", "股票代码", "证券代码", "symbol", "ts_code"))]
+    code_cols = [
+        c for c in df.columns if any(k in str(c) for k in ("代码", "股票代码", "证券代码", "symbol", "ts_code"))
+    ]
     if not code_cols:
         return df
 
@@ -280,11 +282,12 @@ def _build_dividend_payload(
             ttm_events.append(item)
 
     return {
-        "events": events[:max(1, max_events)],
+        "events": events[: max(1, max_events)],
         "ttm_event_count": len(ttm_events),
         "ttm_cash_dividend_per_share": (
             round(sum(float(item.get("cash_dividend_per_share") or 0.0) for item in ttm_events), 6)
-            if ttm_events else None
+            if ttm_events
+            else None
         ),
         "coverage": "cash_dividend_pre_tax",
         "as_of": now_date.isoformat(),
@@ -298,7 +301,9 @@ def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series
     if df is None or df.empty:
         return None
 
-    code_cols = [c for c in df.columns if any(k in str(c) for k in ("代码", "股票代码", "证券代码", "ts_code", "symbol"))]
+    code_cols = [
+        c for c in df.columns if any(k in str(c) for k in ("代码", "股票代码", "证券代码", "ts_code", "symbol"))
+    ]
     target = _normalize_code(stock_code)
     if code_cols:
         for col in code_cols:
@@ -357,11 +362,13 @@ class AkshareFundamentalAdapter:
         }
 
         # Financial indicators
-        fin_df, fin_source, fin_errors = self._call_df_candidates([
-            ("stock_financial_abstract", {"symbol": stock_code}),
-            ("stock_financial_analysis_indicator", {"symbol": stock_code}),
-            ("stock_financial_analysis_indicator", {}),
-        ])
+        fin_df, fin_source, fin_errors = self._call_df_candidates(
+            [
+                ("stock_financial_abstract", {"symbol": stock_code}),
+                ("stock_financial_analysis_indicator", {"symbol": stock_code}),
+                ("stock_financial_analysis_indicator", {}),
+            ]
+        )
         result["errors"].extend(fin_errors)
         if fin_df is not None:
             row = _extract_latest_row(fin_df, stock_code)
@@ -421,11 +428,13 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"earnings_quick:{quick_source}")
 
         # Dividend details (cash dividend, pre-tax)
-        dividend_df, dividend_source, dividend_errors = self._call_df_candidates([
-            ("stock_fhps_detail_em", {"symbol": stock_code}),
-            ("stock_history_dividend_detail", {"symbol": stock_code, "indicator": "分红", "date": ""}),
-            ("stock_dividend_cninfo", {"symbol": stock_code}),
-        ])
+        dividend_df, dividend_source, dividend_errors = self._call_df_candidates(
+            [
+                ("stock_fhps_detail_em", {"symbol": stock_code}),
+                ("stock_history_dividend_detail", {"symbol": stock_code, "indicator": "分红", "date": ""}),
+                ("stock_dividend_cninfo", {"symbol": stock_code}),
+            ]
+        )
         result["errors"].extend(dividend_errors)
         if dividend_df is not None:
             dividend_payload = _build_dividend_payload(dividend_df, stock_code, max_events=5)
@@ -436,9 +445,7 @@ class AkshareFundamentalAdapter:
         # Institution / top shareholders
         # stock_institute_hold(symbol=) 的 symbol 是"年份+季度"报告期选择串（如 20241），
         # stock_institute_recommend(symbol=) 是评级类别；两者均为全市场接口，按代码过滤。
-        _recent_hold_periods = [
-            f"{d[:4]}{d[4:6].lstrip('0') or '0'}" for d in _recent_report_periods(4)
-        ]
+        _recent_hold_periods = [f"{d[:4]}{d[4:6].lstrip('0') or '0'}" for d in _recent_report_periods(4)]
         inst_candidates = [("stock_institute_hold", {"symbol": p}) for p in _recent_hold_periods]
         inst_candidates.append(("stock_institute_recommend", {"symbol": "机构关注度"}))
         inst_df, inst_source, inst_errors = self._call_df_candidates(inst_candidates)
@@ -486,10 +493,12 @@ class AkshareFundamentalAdapter:
         # 是全市场主力净流入排名（symbol 为板块选择串），按代码过滤。
         _mkt = _market_prefix(stock_code)
         _code = _normalize_code(stock_code)
-        stock_df, stock_source, stock_errors = self._call_df_candidates([
-            ("stock_individual_fund_flow", {"stock": _code, "market": _mkt}),
-            ("stock_main_fund_flow", {"symbol": "全部股票"}),
-        ])
+        stock_df, stock_source, stock_errors = self._call_df_candidates(
+            [
+                ("stock_individual_fund_flow", {"stock": _code, "market": _mkt}),
+                ("stock_main_fund_flow", {"symbol": "全部股票"}),
+            ]
+        )
         result["errors"].extend(stock_errors)
         if stock_df is not None:
             row = _extract_latest_row(stock_df, stock_code)
@@ -505,13 +514,19 @@ class AkshareFundamentalAdapter:
                 result["source_chain"].append(f"capital_stock:{stock_source}")
 
         # 板块资金流排名（无 symbol 参数，indicator+sector_type 走默认今日/行业资金流）
-        sector_df, sector_source, sector_errors = self._call_df_candidates([
-            ("stock_sector_fund_flow_rank", {"indicator": "今日", "sector_type": "行业资金流"}),
-        ])
+        sector_df, sector_source, sector_errors = self._call_df_candidates(
+            [
+                ("stock_sector_fund_flow_rank", {"indicator": "今日", "sector_type": "行业资金流"}),
+            ]
+        )
         result["errors"].extend(sector_errors)
         if sector_df is not None:
-            name_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("板块", "行业", "名称", "name"))), None)
-            flow_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("净流入", "主力", "flow", "净额"))), None)
+            name_col = next(
+                (c for c in sector_df.columns if any(k in str(c) for k in ("板块", "行业", "名称", "name"))), None
+            )
+            flow_col = next(
+                (c for c in sector_df.columns if any(k in str(c) for k in ("净流入", "主力", "flow", "净额"))), None
+            )
             if name_col and flow_col:
                 work_df = sector_df[[name_col, flow_col]].copy()
                 work_df[flow_col] = pd.to_numeric(work_df[flow_col], errors="coerce")
@@ -519,12 +534,19 @@ class AkshareFundamentalAdapter:
                 top_df = work_df.nlargest(top_n, flow_col)
                 bottom_df = work_df.nsmallest(top_n, flow_col)
                 result["sector_rankings"] = {
-                    "top": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in top_df.iterrows()],
-                    "bottom": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in bottom_df.iterrows()],
+                    "top": [
+                        {"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in top_df.iterrows()
+                    ],
+                    "bottom": [
+                        {"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])}
+                        for _, r in bottom_df.iterrows()
+                    ],
                 }
                 result["source_chain"].append(f"capital_sector:{sector_source}")
 
-        has_content = bool(result["stock_flow"] or result["sector_rankings"]["top"] or result["sector_rankings"]["bottom"])
+        has_content = bool(
+            result["stock_flow"] or result["sector_rankings"]["top"] or result["sector_rankings"]["bottom"]
+        )
         result["status"] = "partial" if has_content else "not_supported"
         return result
 
@@ -545,11 +567,13 @@ class AkshareFundamentalAdapter:
         # stock_lhb_detail_em / stock_lhb_jgmmtj_em 需 start_date+end_date（无 symbol）。
         _end = datetime.now().strftime("%Y%m%d")
         _start = (datetime.now() - timedelta(days=max(1, lookback_days))).strftime("%Y%m%d")
-        df, source, errors = self._call_df_candidates([
-            ("stock_lhb_stock_statistic_em", {"symbol": "近一月"}),
-            ("stock_lhb_detail_em", {"start_date": _start, "end_date": _end}),
-            ("stock_lhb_jgmmtj_em", {"start_date": _start, "end_date": _end}),
-        ])
+        df, source, errors = self._call_df_candidates(
+            [
+                ("stock_lhb_stock_statistic_em", {"symbol": "近一月"}),
+                ("stock_lhb_detail_em", {"start_date": _start, "end_date": _end}),
+                ("stock_lhb_jgmmtj_em", {"start_date": _start, "end_date": _end}),
+            ]
+        )
         result["errors"].extend(errors)
         if df is None:
             return result
@@ -572,7 +596,9 @@ class AkshareFundamentalAdapter:
             result["status"] = "ok" if code_cols else "partial"
             return result
 
-        date_col = next((c for c in matched.columns if any(k in str(c) for k in ("日期", "上榜", "交易日", "time"))), None)
+        date_col = next(
+            (c for c in matched.columns if any(k in str(c) for k in ("日期", "上榜", "交易日", "time"))), None
+        )
         parsed_dates: List[datetime] = []
         if date_col is not None:
             for val in matched[date_col].astype(str).tolist():
@@ -586,8 +612,10 @@ class AkshareFundamentalAdapter:
 
         result["is_on_list"] = bool(recent_dates)
         result["recent_count"] = len(recent_dates) if recent_dates else int(len(matched))
-        result["latest_date"] = max(recent_dates).date().isoformat() if recent_dates else (
-            max(parsed_dates).date().isoformat() if parsed_dates else None
+        result["latest_date"] = (
+            max(recent_dates).date().isoformat()
+            if recent_dates
+            else (max(parsed_dates).date().isoformat() if parsed_dates else None)
         )
         result["status"] = "ok"
         result["source_chain"].append(f"dragon_tiger:{source}")

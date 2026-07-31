@@ -28,9 +28,7 @@ def test_send_returns_false_when_webhook_is_not_configured() -> None:
 @mock.patch("src.notification_sender.wechat_sender.requests.post")
 def test_send_success_uses_configured_webhook(mock_post: mock.MagicMock) -> None:
     mock_post.return_value = _response(200, {"errcode": 0})
-    sender = WechatSender(
-        _config(wechat_webhook_url="https://wechat.example/hook")
-    )
+    sender = WechatSender(_config(wechat_webhook_url="https://wechat.example/hook"))
 
     assert sender.send_to_wechat("hello") is True
     mock_post.assert_called_once()
@@ -40,17 +38,13 @@ def test_send_success_uses_configured_webhook(mock_post: mock.MagicMock) -> None
 @mock.patch("src.notification_sender.wechat_sender.requests.post")
 def test_send_returns_false_for_wechat_error(mock_post: mock.MagicMock) -> None:
     mock_post.return_value = _response(200, {"errcode": 40013})
-    sender = WechatSender(
-        _config(wechat_webhook_url="https://wechat.example/hook")
-    )
+    sender = WechatSender(_config(wechat_webhook_url="https://wechat.example/hook"))
 
     assert sender.send_to_wechat("hello") is False
 
 
 def test_markdown_payload() -> None:
-    sender = WechatSender(
-        _config(wechat_webhook_url="unused", wechat_msg_type="markdown")
-    )
+    sender = WechatSender(_config(wechat_webhook_url="unused", wechat_msg_type="markdown"))
 
     assert sender._gen_wechat_payload("## title\nbody") == {
         "msgtype": "markdown",
@@ -59,9 +53,7 @@ def test_markdown_payload() -> None:
 
 
 def test_text_payload() -> None:
-    sender = WechatSender(
-        _config(wechat_webhook_url="unused", wechat_msg_type="text")
-    )
+    sender = WechatSender(_config(wechat_webhook_url="unused", wechat_msg_type="text"))
 
     assert sender._gen_wechat_payload("plain") == {
         "msgtype": "text",
@@ -73,9 +65,7 @@ def test_text_payload() -> None:
 def test_image_over_limit_is_rejected_without_request(
     mock_post: mock.MagicMock,
 ) -> None:
-    sender = WechatSender(
-        _config(wechat_webhook_url="https://wechat.example/hook")
-    )
+    sender = WechatSender(_config(wechat_webhook_url="https://wechat.example/hook"))
 
     assert sender._send_wechat_image(b"x" * (WECHAT_IMAGE_MAX_BYTES + 1)) is False
     mock_post.assert_not_called()

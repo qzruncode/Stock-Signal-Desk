@@ -36,6 +36,7 @@ def yiyuan_to_yuan(val) -> Optional[float]:
 
 def get_db():
     from src.storage import DatabaseManager
+
     return DatabaseManager.get_instance()
 
 

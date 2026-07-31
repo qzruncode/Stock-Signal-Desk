@@ -64,43 +64,51 @@ def _payload() -> dict:
     return {
         "success": True,
         "partial": False,
-        "items": [{
-            "symbol": "603728",
-            "name": "鸣志电器",
-            "horizon": "未来6—12个月",
-            "passed": True,
-            "verdict": "2027年一季度存在有明确来源的产品量产窗口。",
-            "catalysts": [{
-                "event": "新一代产品进入量产验证",
-                "time_window": "2027-Q1",
-                "why_it_matters": "若按期量产，将验证新增订单与收入兑现。",
-                "confidence": "中",
-                "verification_status": "多源印证",
-                "evidence_ids": ["A1", "R1"],
-                "sources": [{
-                    "evidence_id": "A1",
-                    "title": "关于新产品项目进展的公告",
-                    "date": "2026-07-10",
-                    "source": "公司公告",
-                    "url": "https://example.com/a1",
-                }],
-            }],
-            "missing_evidence": ["量产后的实际出货仍需后续公告确认"],
-            "source_coverage": {
-                "available_count": 3,
-                "required_count": 3,
-                "complete": True,
-            },
-            "retrieved_evidence": {
-                "report_schedule": [{
-                    "evidence_id": "S1",
-                    "title": "2026年半年报预约披露",
-                    "time_window": "2026-08-26",
-                    "url": "https://example.com/schedule",
-                }],
-            },
-            "analyzed_at": "2026-07-21T10:00:00+08:00",
-        }],
+        "items": [
+            {
+                "symbol": "603728",
+                "name": "鸣志电器",
+                "horizon": "未来6—12个月",
+                "passed": True,
+                "verdict": "2027年一季度存在有明确来源的产品量产窗口。",
+                "catalysts": [
+                    {
+                        "event": "新一代产品进入量产验证",
+                        "time_window": "2027-Q1",
+                        "why_it_matters": "若按期量产，将验证新增订单与收入兑现。",
+                        "confidence": "中",
+                        "verification_status": "多源印证",
+                        "evidence_ids": ["A1", "R1"],
+                        "sources": [
+                            {
+                                "evidence_id": "A1",
+                                "title": "关于新产品项目进展的公告",
+                                "date": "2026-07-10",
+                                "source": "公司公告",
+                                "url": "https://example.com/a1",
+                            }
+                        ],
+                    }
+                ],
+                "missing_evidence": ["量产后的实际出货仍需后续公告确认"],
+                "source_coverage": {
+                    "available_count": 3,
+                    "required_count": 3,
+                    "complete": True,
+                },
+                "retrieved_evidence": {
+                    "report_schedule": [
+                        {
+                            "evidence_id": "S1",
+                            "title": "2026年半年报预约披露",
+                            "time_window": "2026-08-26",
+                            "url": "https://example.com/schedule",
+                        }
+                    ],
+                },
+                "analyzed_at": "2026-07-21T10:00:00+08:00",
+            }
+        ],
         "resolved_entities": [{"symbol": "603728", "name": "鸣志电器"}],
         "unresolved_entities": [],
         "requested_count": 1,
@@ -125,36 +133,41 @@ def test_catalyst_workflow_uses_only_the_internal_catalyst_tool() -> None:
 
 def test_catalyst_details_must_bind_to_real_ids_and_calendar_windows() -> None:
     raw = {
-        "announcement_events": [{
-            "evidence_id": "A1",
-            "title": "量产项目公告",
-            "date": "2026-07-01",
-            "label": "项目进展",
-            "url": "https://example.com/a1",
-        }],
+        "announcement_events": [
+            {
+                "evidence_id": "A1",
+                "title": "量产项目公告",
+                "date": "2026-07-01",
+                "label": "项目进展",
+                "url": "https://example.com/a1",
+            }
+        ],
         "news_events": [],
         "research_events": [],
     }
-    normalized = normalize_catalyst_details({
-        "catalysts": [
-            {
-                "event": "项目量产",
-                "time_window": "2027-Q1",
-                "evidence_ids": ["A1"],
-                "why_it_matters": "贡献收入",
-            },
-            {
-                "event": "模型虚构事件",
-                "time_window": "2027-Q2",
-                "evidence_ids": ["N99"],
-            },
-            {
-                "event": "模糊时间事件",
-                "time_window": "未来半年",
-                "evidence_ids": ["A1"],
-            },
-        ],
-    }, raw)
+    normalized = normalize_catalyst_details(
+        {
+            "catalysts": [
+                {
+                    "event": "项目量产",
+                    "time_window": "2027-Q1",
+                    "evidence_ids": ["A1"],
+                    "why_it_matters": "贡献收入",
+                },
+                {
+                    "event": "模型虚构事件",
+                    "time_window": "2027-Q2",
+                    "evidence_ids": ["N99"],
+                },
+                {
+                    "event": "模糊时间事件",
+                    "time_window": "未来半年",
+                    "evidence_ids": ["A1"],
+                },
+            ],
+        },
+        raw,
+    )
 
     assert len(normalized) == 1
     assert normalized[0]["event"] == "项目量产"
@@ -171,11 +184,13 @@ def test_formal_report_selection_finds_annual_report_beyond_recent_titles() -> N
         }
         for index in range(10)
     ]
-    announcements.append({
-        "title": "鸣志电器:鸣志电器2025年年度报告",
-        "publish_date": "2026-04-25",
-        "url": "https://data.eastmoney.com/notices/detail/603728/AN202604241821560106.html",
-    })
+    announcements.append(
+        {
+            "title": "鸣志电器:鸣志电器2025年年度报告",
+            "publish_date": "2026-04-25",
+            "url": "https://data.eastmoney.com/notices/detail/603728/AN202604241821560106.html",
+        }
+    )
 
     selected = select_formal_documents(announcements)
 
@@ -207,10 +222,14 @@ def test_business_report_passages_use_uniform_document_coverage() -> None:
     passages = extract_business_passages(
         content,
         thesis="人形机器人上游核心零部件",
-        thesis_context={"domains": [{
-            "label": "灵巧手及力控部件",
-            "board_queries": ["人形机器人", "机器人执行器"],
-        }]},
+        thesis_context={
+            "domains": [
+                {
+                    "label": "灵巧手及力控部件",
+                    "board_queries": ["人形机器人", "机器人执行器"],
+                }
+            ]
+        },
     )
 
     assert passages
@@ -220,23 +239,28 @@ def test_business_report_passages_use_uniform_document_coverage() -> None:
 
 def test_formal_document_uses_primary_pdf_when_metadata_body_is_empty() -> None:
     primary_pdf = "https://static.cninfo.com.cn/finalpage/2026-03-31/report.pdf"
-    with patch(
-        "src.services.catalyst_evidence._fetch_content_page",
-        return_value={
-            "notice_title": "测试公司2025年年度报告",
-            "notice_date": "2026-03-31",
-            "notice_content": "",
-            "page_size": 1,
-            "attach_url_web": "https://secondary.example/report.pdf",
-        },
-    ), patch(
-        "src.services.catalyst_evidence._extract_pdf_text",
-        return_value=("机器人核心部件已经规模化交付。", 88),
-    ) as extract_pdf:
-        document = fetch_formal_document({
-            "url": "https://data.example/AN20260331000001.html",
-            "preferred_document_url": primary_pdf,
-        })
+    with (
+        patch(
+            "src.services.catalyst_evidence._fetch_content_page",
+            return_value={
+                "notice_title": "测试公司2025年年度报告",
+                "notice_date": "2026-03-31",
+                "notice_content": "",
+                "page_size": 1,
+                "attach_url_web": "https://secondary.example/report.pdf",
+            },
+        ),
+        patch(
+            "src.services.catalyst_evidence._extract_pdf_text",
+            return_value=("机器人核心部件已经规模化交付。", 88),
+        ) as extract_pdf,
+    ):
+        document = fetch_formal_document(
+            {
+                "url": "https://data.example/AN20260331000001.html",
+                "preferred_document_url": primary_pdf,
+            }
+        )
 
     extract_pdf.assert_called_once_with(primary_pdf, max_pages=120)
     assert document["content"] == "机器人核心部件已经规模化交付。"
@@ -247,20 +271,25 @@ def test_catalyst_gate_fails_closed_when_model_does_not_return_bound_events() ->
     evaluator = CatalystEventsEvaluator()
     evidence = CriterionEvidence(
         raw_data={
-            "announcement_events": [{
-                "evidence_id": "A1",
-                "title": "项目进展",
-                "date": "2026-07-01",
-            }],
+            "announcement_events": [
+                {
+                    "evidence_id": "A1",
+                    "title": "项目进展",
+                    "date": "2026-07-01",
+                }
+            ],
             "news_events": [],
             "research_events": [],
         },
         data_summary="evidence",
     )
-    with patch.object(evaluator, "collect_data", return_value=evidence), patch.object(
-        evaluator,
-        "_call_llm",
-        return_value=({"passed": True, "verdict": "存在催化"}, ""),
+    with (
+        patch.object(evaluator, "collect_data", return_value=evidence),
+        patch.object(
+            evaluator,
+            "_call_llm",
+            return_value=({"passed": True, "verdict": "存在催化"}, ""),
+        ),
     ):
         result = evaluator.evaluate("603728", {"symbol": "603728", "name": "鸣志电器"})
 
@@ -285,15 +314,19 @@ def test_catalyst_tool_preserves_normalized_sources_and_coverage() -> None:
         details={"catalysts": _payload()["items"][0]["catalysts"], "missing_evidence": []},
         analyzed_at="2026-07-21T10:00:00+08:00",
     )
-    with patch(
-        "src.tools.analyze_stock_catalysts.resolve_securities_csv",
-        return_value=([{"symbol": "603728", "name": "鸣志电器"}], []),
-    ), patch(
-        "src.tools.analyze_stock_catalysts.DataService.get_stock_info",
-        return_value={"symbol": "603728", "name": "鸣志电器"},
-    ), patch(
-        "src.tools.analyze_stock_catalysts.CatalystEventsEvaluator.evaluate",
-        return_value=criterion,
+    with (
+        patch(
+            "src.tools.analyze_stock_catalysts.resolve_securities_csv",
+            return_value=([{"symbol": "603728", "name": "鸣志电器"}], []),
+        ),
+        patch(
+            "src.tools.analyze_stock_catalysts.DataService.get_stock_info",
+            return_value={"symbol": "603728", "name": "鸣志电器"},
+        ),
+        patch(
+            "src.tools.analyze_stock_catalysts.CatalystEventsEvaluator.evaluate",
+            return_value=criterion,
+        ),
     ):
         result = analyze_stock_catalysts("鸣志电器")
 
@@ -303,11 +336,15 @@ def test_catalyst_tool_preserves_normalized_sources_and_coverage() -> None:
 
 
 def test_deterministic_catalyst_answer_contains_window_source_and_boundary() -> None:
-    answer = _build_catalyst_analysis_answer([{
-        "tool": "analyze_stock_catalysts",
-        "arguments": {"symbols": "603728"},
-        "result": _payload(),
-    }])
+    answer = _build_catalyst_analysis_answer(
+        [
+            {
+                "tool": "analyze_stock_catalysts",
+                "arguments": {"symbols": "603728"},
+                "result": _payload(),
+            }
+        ]
+    )
     assert answer is not None
     assert "2027-Q1" in answer
     assert "关于新产品项目进展的公告" in answer
@@ -323,21 +360,27 @@ def test_deterministic_catalyst_answer_shows_raw_clues_when_no_event_passes() ->
     item["passed"] = False
     item["catalysts"] = []
     item["retrieved_evidence"] = {
-        "research": [{
-            "evidence_id": "R1",
-            "title": "先发布局灵巧手电机",
-            "org": "华源证券",
-            "date": "2026-06-01",
-            "url": "https://example.com/r1.pdf",
-        }],
+        "research": [
+            {
+                "evidence_id": "R1",
+                "title": "先发布局灵巧手电机",
+                "org": "华源证券",
+                "date": "2026-06-01",
+                "url": "https://example.com/r1.pdf",
+            }
+        ],
         "news": [],
         "announcements": [],
     }
-    answer = _build_catalyst_analysis_answer([{
-        "tool": "analyze_stock_catalysts",
-        "arguments": {"symbols": "603728"},
-        "result": payload,
-    }])
+    answer = _build_catalyst_analysis_answer(
+        [
+            {
+                "tool": "analyze_stock_catalysts",
+                "arguments": {"symbols": "603728"},
+                "result": payload,
+            }
+        ]
+    )
 
     assert answer is not None
     assert "尚缺明确时间窗的原始线索" in answer
@@ -352,21 +395,27 @@ def test_deterministic_catalyst_answer_preserves_formal_windows_when_model_fails
     item["verdict"] = "催化事件评估失败：模型暂时不可用"
     item["catalysts"] = []
     item["retrieved_evidence"] = {
-        "formal_documents": [{
-            "evidence_id": "D1",
-            "title": "2025年年度报告",
-            "time_window": "2026年下半年",
-            "excerpt": "冷却系统核心部件预计于2026年下半年启动交付。",
-            "url": "https://example.com/annual-report.pdf",
-        }],
+        "formal_documents": [
+            {
+                "evidence_id": "D1",
+                "title": "2025年年度报告",
+                "time_window": "2026年下半年",
+                "excerpt": "冷却系统核心部件预计于2026年下半年启动交付。",
+                "url": "https://example.com/annual-report.pdf",
+            }
+        ],
         "report_schedule": [],
     }
 
-    answer = _build_catalyst_analysis_answer([{
-        "tool": "analyze_stock_catalysts",
-        "arguments": {"symbols": "603728"},
-        "result": payload,
-    }])
+    answer = _build_catalyst_analysis_answer(
+        [
+            {
+                "tool": "analyze_stock_catalysts",
+                "arguments": {"symbols": "603728"},
+                "result": payload,
+            }
+        ]
+    )
 
     assert answer is not None
     assert "已从正式报告正文核验到 1 项未来经营节点" in answer
@@ -405,14 +454,16 @@ def test_production_catalyst_request_calls_fixed_tool_then_semantic_synthesis() 
     compiled = CompiledIntentGraphV2(
         run_id="test-run",
         plan=chat_mod.TaskPlan(tasks=[candidate]),
-        tasks=(CompiledTaskV2(
-            task=resolved[0],
-            capability=capability,
-            capability_version="3.0.0",
-            intent_schema_version=capability_for(capability).schema_version,
-            execution_policy=capability_for(capability).execution_policy,
-            resource_fingerprint="test-catalyst",
-        ),),
+        tasks=(
+            CompiledTaskV2(
+                task=resolved[0],
+                capability=capability,
+                capability_version="3.0.0",
+                intent_schema_version=capability_for(capability).schema_version,
+                execution_policy=capability_for(capability).execution_policy,
+                resource_fingerprint="test-catalyst",
+            ),
+        ),
         assumptions=(),
     )
     graph = MagicMock()
@@ -423,37 +474,43 @@ def test_production_catalyst_request_calls_fixed_tool_then_semantic_synthesis() 
         uncertainty_mode=UncertaintyMode.BOUNDED,
         time_horizon="未来六至十二个月",
         deliverables=("催化事件与反向风险",),
-        claims=(ClaimRequirementV2(
-            claim_id="catalysts",
-            question="有哪些可核验的未来催化与反向事件",
-            required_dimensions=tuple(sorted(
-                capability_for(capability).evidence_dimensions,
-                key=lambda item: item.value,
-            )),
-        ),),
+        claims=(
+            ClaimRequirementV2(
+                claim_id="catalysts",
+                question="有哪些可核验的未来催化与反向事件",
+                required_dimensions=tuple(
+                    sorted(
+                        capability_for(capability).evidence_dimensions,
+                        key=lambda item: item.value,
+                    )
+                ),
+            ),
+        ),
     )
     graph.trace.schema_version = "orchestrator-4.0"
     graph.trace.stage_durations_ms = {}
-    with patch.object(
-        chat_mod, "plan_intent_graph_v2", new=AsyncMock(return_value=graph)
-    ), patch.object(
-        chat_mod, "compile_intent_graph_v2", new=AsyncMock(return_value=compiled)
-    ), patch.object(
-        chat_mod,
-        "execute_tool_isolated",
-        return_value=_payload(),
-    ), patch.object(
-        chat_mod,
-        "_stream_final_answer_without_tools",
-        new=AsyncMock(return_value="鸣志电器的已核验催化窗口为 2027-Q1。"),
-    ), patch.object(
-        chat_mod, "_flush_substreams", new=AsyncMock()
+    with (
+        patch.object(chat_mod, "plan_intent_graph_v2", new=AsyncMock(return_value=graph)),
+        patch.object(chat_mod, "compile_intent_graph_v2", new=AsyncMock(return_value=compiled)),
+        patch.object(
+            chat_mod,
+            "execute_tool_isolated",
+            return_value=_payload(),
+        ),
+        patch.object(
+            chat_mod,
+            "_stream_final_answer_without_tools",
+            new=AsyncMock(return_value="鸣志电器的已核验催化窗口为 2027-Q1。"),
+        ),
+        patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
     ):
-        answer = asyncio.run(_run_standard_task_pipeline(
-            controller,
-            [{"role": "user", "content": "看下鸣志电器未来 6—12 个月的催化事件"}],
-            {"model": "test", "api_base": ""},
-        ))
+        answer = asyncio.run(
+            _run_standard_task_pipeline(
+                controller,
+                [{"role": "user", "content": "看下鸣志电器未来 6—12 个月的催化事件"}],
+                {"model": "test", "api_base": ""},
+            )
+        )
 
     assert controller.tool_calls == ["analyze_stock_catalysts"]
     assert "2027-Q1" in answer

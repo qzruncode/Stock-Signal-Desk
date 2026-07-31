@@ -47,22 +47,29 @@ class FallbackChainTestCase(unittest.TestCase):
         def fake_retry(label, call):
             called_sources.append(label)
             if label == "新浪":
-                return pd.DataFrame({
-                    "date": ["20260105"], "open": [10.0], "close": [10.5],
-                    "high": [10.6], "low": [9.9], "volume": [1000],
-                    "amount": [10000.0], "turnover": [0.01],
-                })
+                return pd.DataFrame(
+                    {
+                        "date": ["20260105"],
+                        "open": [10.0],
+                        "close": [10.5],
+                        "high": [10.6],
+                        "low": [9.9],
+                        "volume": [1000],
+                        "amount": [10000.0],
+                        "turnover": [0.01],
+                    }
+                )
             return None
 
-        with patch.object(kline, "akshare_rate_limiter"), \
-             patch.object(kline, "_fetch_with_single_source_retry", side_effect=fake_retry), \
-             patch.object(kline, "_kline_source_circuit_breaker") as cb:
+        with (
+            patch.object(kline, "akshare_rate_limiter"),
+            patch.object(kline, "_fetch_with_single_source_retry", side_effect=fake_retry),
+            patch.object(kline, "_kline_source_circuit_breaker") as cb,
+        ):
             cb.is_available.return_value = True
             cb.record_success = lambda *a, **k: None
             cb.record_failure = lambda *a, **k: None
-            records, source = kline._fetch_kline_with_fallback(
-                "830799", "20260105", "20260105"
-            )
+            records, source = kline._fetch_kline_with_fallback("830799", "20260105", "20260105")
         self.assertEqual(source, kline.KLINE_SOURCE_SINA)
         self.assertNotIn("东财", called_sources)  # 北交所不碰东财
         self.assertIn("新浪", called_sources)
@@ -74,22 +81,30 @@ class FallbackChainTestCase(unittest.TestCase):
         def fake_retry(label, call):
             called_sources.append(label)
             if label == "东财":
-                return pd.DataFrame({
-                    "日期": ["20260105"], "开盘": [10.0], "收盘": [10.5],
-                    "最高": [10.6], "最低": [9.9], "成交量": [100],
-                    "成交额": [1000.0], "涨跌幅": [5.0], "换手率": [0.5],
-                })
+                return pd.DataFrame(
+                    {
+                        "日期": ["20260105"],
+                        "开盘": [10.0],
+                        "收盘": [10.5],
+                        "最高": [10.6],
+                        "最低": [9.9],
+                        "成交量": [100],
+                        "成交额": [1000.0],
+                        "涨跌幅": [5.0],
+                        "换手率": [0.5],
+                    }
+                )
             return None
 
-        with patch.object(kline, "akshare_rate_limiter"), \
-             patch.object(kline, "_fetch_with_single_source_retry", side_effect=fake_retry), \
-             patch.object(kline, "_kline_source_circuit_breaker") as cb:
+        with (
+            patch.object(kline, "akshare_rate_limiter"),
+            patch.object(kline, "_fetch_with_single_source_retry", side_effect=fake_retry),
+            patch.object(kline, "_kline_source_circuit_breaker") as cb,
+        ):
             cb.is_available.return_value = True
             cb.record_success = lambda *a, **k: None
             cb.record_failure = lambda *a, **k: None
-            records, source = kline._fetch_kline_with_fallback(
-                "600519", "20260105", "20260105"
-            )
+            records, source = kline._fetch_kline_with_fallback("600519", "20260105", "20260105")
         self.assertEqual(source, kline.KLINE_SOURCE_EM)
         self.assertEqual(called_sources, ["东财"])  # 东财命中即止，不试新浪
 
@@ -117,14 +132,22 @@ class FallbackUsedSemanticsTestCase(unittest.TestCase):
 class SinaTurnoverMappingTestCase(unittest.TestCase):
     def test_sina_maps_turnover_and_pct_chg_first_row_none(self) -> None:
         """新浪 turnover 应映射到换手率；首行涨跌幅为 None 而非 0。"""
-        sina_df = pd.DataFrame({
-            "date": ["20260105", "20260106"],
-            "open": [10.0, 10.5], "high": [10.6, 10.7], "low": [9.9, 10.4],
-            "close": [10.5, 10.4], "volume": [1000, 1200],
-            "amount": [10000.0, 12000.0], "turnover": [0.01, 0.012],
-        })
-        with patch.object(kline, "akshare_rate_limiter"), \
-             patch.object(kline, "_fetch_with_single_source_retry", return_value=sina_df):
+        sina_df = pd.DataFrame(
+            {
+                "date": ["20260105", "20260106"],
+                "open": [10.0, 10.5],
+                "high": [10.6, 10.7],
+                "low": [9.9, 10.4],
+                "close": [10.5, 10.4],
+                "volume": [1000, 1200],
+                "amount": [10000.0, 12000.0],
+                "turnover": [0.01, 0.012],
+            }
+        )
+        with (
+            patch.object(kline, "akshare_rate_limiter"),
+            patch.object(kline, "_fetch_with_single_source_retry", return_value=sina_df),
+        ):
             df = kline._fetch_kline_sina("sz000001", "20260105", "20260106")
         self.assertIn("换手率", df.columns)  # turnover 已映射
         self.assertEqual(df.iloc[0]["换手率"], 0.01)
@@ -143,13 +166,20 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
         会以百万级手数冒充亿元级成交额回写 StockDaily，污染下游。故映射到成交量，
         成交额列缺失（留 None）。
         """
-        tx_df = pd.DataFrame({
-            "date": ["20260105", "20260106"],
-            "open": [10.0, 10.5], "close": [10.5, 10.4],
-            "high": [10.6, 10.7], "low": [9.9, 10.4], "amount": [1000.0, 1200.0],
-        })
-        with patch.object(kline, "akshare_rate_limiter"), \
-             patch.object(kline, "_fetch_with_single_source_retry", return_value=tx_df):
+        tx_df = pd.DataFrame(
+            {
+                "date": ["20260105", "20260106"],
+                "open": [10.0, 10.5],
+                "close": [10.5, 10.4],
+                "high": [10.6, 10.7],
+                "low": [9.9, 10.4],
+                "amount": [1000.0, 1200.0],
+            }
+        )
+        with (
+            patch.object(kline, "akshare_rate_limiter"),
+            patch.object(kline, "_fetch_with_single_source_retry", return_value=tx_df),
+        ):
             df = kline._fetch_kline_tencent("sz000001", "20260105", "20260106")
         # amount（手）映射到成交量
         self.assertIn("成交量", df.columns)
@@ -162,12 +192,20 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
     def test_tencent_normalize_drops_amount_field(self) -> None:
         """腾讯源经 normalize 后统一为股，无虚假的成交额。"""
         # 用 date 对象模拟 akshare 真实输出（akshare 内部 .dt.date）
-        tx_df = pd.DataFrame({
-            "date": [date(2026, 1, 5)], "open": [10.0], "close": [10.5],
-            "high": [10.6], "low": [9.9], "amount": [1000.0],
-        })
-        with patch.object(kline, "akshare_rate_limiter"), \
-             patch.object(kline, "_fetch_with_single_source_retry", return_value=tx_df):
+        tx_df = pd.DataFrame(
+            {
+                "date": [date(2026, 1, 5)],
+                "open": [10.0],
+                "close": [10.5],
+                "high": [10.6],
+                "low": [9.9],
+                "amount": [1000.0],
+            }
+        )
+        with (
+            patch.object(kline, "akshare_rate_limiter"),
+            patch.object(kline, "_fetch_with_single_source_retry", return_value=tx_df),
+        ):
             df = kline._fetch_kline_tencent("sz000001", "20260105", "20260105")
         records = kline._normalize_kline_df(df, "000001", kline.KLINE_SOURCE_TENCENT)
         self.assertEqual(len(records), 1)
@@ -192,25 +230,45 @@ class TencentAmountIsVolumeTestCase(unittest.TestCase):
             db = DatabaseManager(db_url="sqlite:///:memory:")
             # 先写入东财口径的真实成交额
             db.save_daily_data(
-                pd.DataFrame([{
-                    "date": date(2026, 1, 5), "open": 10.0, "close": 10.5,
-                    "high": 10.6, "low": 9.9, "volume": 1e6, "amount": 1e8,
-                    "pct_chg": 5.0,
-                }]),
-                "000001", data_source="eastmoney",
+                pd.DataFrame(
+                    [
+                        {
+                            "date": date(2026, 1, 5),
+                            "open": 10.0,
+                            "close": 10.5,
+                            "high": 10.6,
+                            "low": 9.9,
+                            "volume": 1e6,
+                            "amount": 1e8,
+                            "pct_chg": 5.0,
+                        }
+                    ]
+                ),
+                "000001",
+                data_source="eastmoney",
             )
             # 腾讯统一层已经把 1000 手换算为 100000 股；成交额仍缺失。
-            kline._save_to_stock_daily("000001", [{
-                "date": "2026-01-05", "open": 10.0, "close": 10.5,
-                "high": 10.6, "low": 9.9, "volume": 100000.0,
-                "volume_unit": "股",
-                "pct_chg": None, "_source": kline.KLINE_SOURCE_TENCENT,
-            }], source=kline.KLINE_SOURCE_TENCENT)
+            kline._save_to_stock_daily(
+                "000001",
+                [
+                    {
+                        "date": "2026-01-05",
+                        "open": 10.0,
+                        "close": 10.5,
+                        "high": 10.6,
+                        "low": 9.9,
+                        "volume": 100000.0,
+                        "volume_unit": "股",
+                        "pct_chg": None,
+                        "_source": kline.KLINE_SOURCE_TENCENT,
+                    }
+                ],
+                source=kline.KLINE_SOURCE_TENCENT,
+            )
             from sqlalchemy import select
+
             with db.get_session() as session:
-                row = session.execute(
-                    select(StockDaily).where(StockDaily.code == "000001")
-                ).scalars().one()
+                row = session.execute(select(StockDaily).where(StockDaily.code == "000001")).scalars().one()
             # amount 不被 None 覆盖，保持东财真实值
             self.assertEqual(row.amount, 1e8)
             # volume 被腾讯兜底更新，数据库统一保存为股。
@@ -237,17 +295,24 @@ class PersistStockDailyTestCase(unittest.TestCase):
     def test_em_source_persists_amount_and_volume(self) -> None:
         """东财源 records（含 amount）回写：amount/volume 正确落库。"""
         db = DatabaseManager(db_url="sqlite:///:memory:")
-        records = [{
-            "date": "2026-01-05", "open": 10.0, "close": 10.5,
-            "high": 10.6, "low": 9.9, "volume": 1e6, "amount": 1e8,
-            "pct_chg": 5.0, "_source": kline.KLINE_SOURCE_EM,
-        }]
+        records = [
+            {
+                "date": "2026-01-05",
+                "open": 10.0,
+                "close": 10.5,
+                "high": 10.6,
+                "low": 9.9,
+                "volume": 1e6,
+                "amount": 1e8,
+                "pct_chg": 5.0,
+                "_source": kline.KLINE_SOURCE_EM,
+            }
+        ]
         kline._save_to_stock_daily("000001", records, source=kline.KLINE_SOURCE_EM)
         from sqlalchemy import select
+
         with db.get_session() as session:
-            row = session.execute(
-                select(StockDaily).where(StockDaily.code == "000001")
-            ).scalars().one()
+            row = session.execute(select(StockDaily).where(StockDaily.code == "000001")).scalars().one()
         self.assertEqual(row.amount, 1e8)
         self.assertEqual(row.volume, 1e6)
         self.assertEqual(row.data_source, f"{kline.KLINE_SOURCE_EM}_shares")
@@ -256,17 +321,22 @@ class PersistStockDailyTestCase(unittest.TestCase):
         """_normalize_kline_df 产出的字符串日期（YYYY-MM-DD）应能正常回写。"""
         db = DatabaseManager(db_url="sqlite:///:memory:")
         # 模拟 normalize 后的 records：date 为字符串
-        records = [{
-            "date": "2026-01-05", "open": 10.0, "close": 10.5,
-            "volume": 1000.0, "pct_chg": None, "_source": kline.KLINE_SOURCE_SINA,
-        }]
+        records = [
+            {
+                "date": "2026-01-05",
+                "open": 10.0,
+                "close": 10.5,
+                "volume": 1000.0,
+                "pct_chg": None,
+                "_source": kline.KLINE_SOURCE_SINA,
+            }
+        ]
         # 不应抛异常（曾经因 SQLite Date 列拒字符串而失败）
         kline._save_to_stock_daily("000001", records, source=kline.KLINE_SOURCE_SINA)
         from sqlalchemy import select
+
         with db.get_session() as session:
-            rows = session.execute(
-                select(StockDaily).where(StockDaily.code == "000001")
-            ).scalars().all()
+            rows = session.execute(select(StockDaily).where(StockDaily.code == "000001")).scalars().all()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].date, date(2026, 1, 5))
 

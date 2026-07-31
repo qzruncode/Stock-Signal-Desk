@@ -61,15 +61,19 @@ def test_turn_reference_uses_execution_objects_not_rendered_answer() -> None:
         executed=True,
         reused=False,
     )
-    execution = PlanExecutionResult(tasks=[TaskExecutionResult(
-        task=resolved,
-        status="completed",
-        calls=[call],
-        output_entities=(
-            SecurityEntity(symbol="600519", name="贵州茅台"),
-            SecurityEntity(symbol="000858", name="五粮液"),
-        ),
-    )])
+    execution = PlanExecutionResult(
+        tasks=[
+            TaskExecutionResult(
+                task=resolved,
+                status="completed",
+                calls=[call],
+                output_entities=(
+                    SecurityEntity(symbol="600519", name="贵州茅台"),
+                    SecurityEntity(symbol="000858", name="五粮液"),
+                ),
+            )
+        ]
+    )
 
     turn = build_turn_reference(
         "换一种完全不同的问法也要稳定",
@@ -91,28 +95,33 @@ def test_turn_reference_preserves_large_terminal_candidate_collection() -> None:
         objective="取得完整板块候选集合",
         entity_scope=EntityScope.NONE,
         entities=[],
-        parameters={"domains": [{
-            "label": "机器人执行器",
-            "board_queries": ["机器人执行器"],
-            "mapping_type": "catalog_binding",
-            "rationale": "实时板块精确对应",
-            "unresolved_parts": [],
-        }]},
+        parameters={
+            "domains": [
+                {
+                    "label": "机器人执行器",
+                    "board_queries": ["机器人执行器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "实时板块精确对应",
+                    "unresolved_parts": [],
+                }
+            ]
+        },
         depends_on=[],
         output_requirements=[],
         confirmation=ConfirmationState.NOT_REQUIRED,
         confidence=0.98,
     )
-    securities = tuple(
-        SecurityEntity(symbol=f"{index:06d}", name=f"公司{index}")
-        for index in range(1, 870)
-    )
+    securities = tuple(SecurityEntity(symbol=f"{index:06d}", name=f"公司{index}") for index in range(1, 870))
     resolved = ResolvedTask(candidate=candidate)
-    execution = PlanExecutionResult(tasks=[TaskExecutionResult(
-        task=resolved,
-        status="completed",
-        output_entities=securities,
-    )])
+    execution = PlanExecutionResult(
+        tasks=[
+            TaskExecutionResult(
+                task=resolved,
+                status="completed",
+                output_entities=securities,
+            )
+        ]
+    )
 
     turn = build_turn_reference(
         "找板块全部股票",
@@ -132,13 +141,17 @@ def test_failed_terminal_filter_does_not_promote_upstream_candidates() -> None:
         objective="取得板块候选集合",
         entity_scope=EntityScope.NONE,
         entities=[],
-        parameters={"domains": [{
-            "label": "减速器",
-            "board_queries": ["减速器"],
-            "mapping_type": "catalog_binding",
-            "rationale": "实时板块精确对应",
-            "unresolved_parts": [],
-        }]},
+        parameters={
+            "domains": [
+                {
+                    "label": "减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "实时板块精确对应",
+                    "unresolved_parts": [],
+                }
+            ]
+        },
         depends_on=[],
         output_requirements=[],
         confirmation=ConfirmationState.NOT_REQUIRED,
@@ -161,21 +174,22 @@ def test_failed_terminal_filter_does_not_promote_upstream_candidates() -> None:
     )
     discovery_resolved = ResolvedTask(candidate=discovery)
     evidence_resolved = ResolvedTask(candidate=evidence)
-    execution = PlanExecutionResult(tasks=[
-        TaskExecutionResult(
-            task=discovery_resolved,
-            status="completed",
-            output_entities=tuple(
-                SecurityEntity(symbol=f"{index:06d}", name=f"公司{index}")
-                for index in range(1, 870)
+    execution = PlanExecutionResult(
+        tasks=[
+            TaskExecutionResult(
+                task=discovery_resolved,
+                status="completed",
+                output_entities=tuple(
+                    SecurityEntity(symbol=f"{index:06d}", name=f"公司{index}") for index in range(1, 870)
+                ),
             ),
-        ),
-        TaskExecutionResult(
-            task=evidence_resolved,
-            status="failed",
-            errors=["公开来源暂不可用"],
-        ),
-    ])
+            TaskExecutionResult(
+                task=evidence_resolved,
+                status="failed",
+                errors=["公开来源暂不可用"],
+            ),
+        ]
+    )
 
     turn = build_turn_reference(
         "找板块中正在大力发展的股票",
@@ -197,13 +211,15 @@ def test_ranked_domain_artifact_is_saved_for_followup_planning() -> None:
         entities=[],
         parameters={
             "query": "人形机器人最受益领域",
-            "domains": [{
-                "label": "人形机器人",
-                "board_queries": ["人形机器人"],
-                "mapping_type": "catalog_binding",
-                "rationale": "精确对应",
-                "unresolved_parts": [],
-            }],
+            "domains": [
+                {
+                    "label": "人形机器人",
+                    "board_queries": ["人形机器人"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "精确对应",
+                    "unresolved_parts": [],
+                }
+            ],
         },
         depends_on=[],
         result_selection=ResultSelectionSpec(
@@ -222,57 +238,65 @@ def test_ranked_domain_artifact_is_saved_for_followup_planning() -> None:
             "mode": "all_relevant",
             "max_items": None,
         },
-        "groups": [{
-            "tier": 1,
-            "domains": [
-                {
-                    "label": "机器人执行器",
-                    "tier": 1,
-                    "board_queries": ["机器人执行器"],
-                    "mapping_type": "catalog_binding",
-                },
-                {
-                    "label": "减速器",
-                    "tier": 1,
-                    "board_queries": ["减速器"],
-                    "mapping_type": "catalog_binding",
-                },
-                {
-                    "label": "传感器",
-                    "tier": 1,
-                    "board_queries": ["传感器"],
-                    "mapping_type": "catalog_binding",
-                },
-            ],
-        }],
+        "groups": [
+            {
+                "tier": 1,
+                "domains": [
+                    {
+                        "label": "机器人执行器",
+                        "tier": 1,
+                        "board_queries": ["机器人执行器"],
+                        "mapping_type": "catalog_binding",
+                    },
+                    {
+                        "label": "减速器",
+                        "tier": 1,
+                        "board_queries": ["减速器"],
+                        "mapping_type": "catalog_binding",
+                    },
+                    {
+                        "label": "传感器",
+                        "tier": 1,
+                        "board_queries": ["传感器"],
+                        "mapping_type": "catalog_binding",
+                    },
+                ],
+            }
+        ],
     }
-    execution = PlanExecutionResult(tasks=[TaskExecutionResult(
-        task=resolved,
-        status="completed",
-        derived_results=[{
-            "task_id": "industry",
-            "step_id": "result_ranked_domain_selection",
-            "processor": "ranked_domain_selection",
-            "result": {
-                "success": True,
-                "semantic_artifacts": [artifact],
-                "resource_outputs": {
+    execution = PlanExecutionResult(
+        tasks=[
+            TaskExecutionResult(
+                task=resolved,
+                status="completed",
+                derived_results=[
+                    {
+                        "task_id": "industry",
+                        "step_id": "result_ranked_domain_selection",
+                        "processor": "ranked_domain_selection",
+                        "result": {
+                            "success": True,
+                            "semantic_artifacts": [artifact],
+                            "resource_outputs": {
+                                "domain_collection": [
+                                    {"label": "机器人执行器", "tier": 1},
+                                    {"label": "减速器", "tier": 1},
+                                    {"label": "传感器", "tier": 1},
+                                ],
+                            },
+                        },
+                    }
+                ],
+                resource_outputs={
                     "domain_collection": [
                         {"label": "机器人执行器", "tier": 1},
                         {"label": "减速器", "tier": 1},
                         {"label": "传感器", "tier": 1},
                     ],
                 },
-            },
-        }],
-        resource_outputs={
-            "domain_collection": [
-                {"label": "机器人执行器", "tier": 1},
-                {"label": "减速器", "tier": 1},
-                {"label": "传感器", "tier": 1},
-            ],
-        },
-    )])
+            )
+        ]
+    )
 
     turn = build_turn_reference(
         "人形机器人哪些领域最受益？",
@@ -285,14 +309,8 @@ def test_ranked_domain_artifact_is_saved_for_followup_planning() -> None:
 
     saved = planner_payload["turns"][0]["tasks"][0]["semantic_artifacts"]
     assert saved[0]["type"] == "ranked_domains"
-    assert (
-        planner_payload["turns"][0]["tasks"][0]["result_selection"]
-        == {"mode": "all_relevant", "max_items": None}
-    )
-    assert [
-        item["label"]
-        for item in saved[0]["groups"][0]["domains"]
-    ] == ["机器人执行器", "减速器", "传感器"]
+    assert planner_payload["turns"][0]["tasks"][0]["result_selection"] == {"mode": "all_relevant", "max_items": None}
+    assert [item["label"] for item in saved[0]["groups"][0]["domains"]] == ["机器人执行器", "减速器", "传感器"]
     assert "markdown" not in json.dumps(planner_payload, ensure_ascii=False).lower()
 
 
@@ -303,14 +321,18 @@ def test_financial_filter_turn_exposes_retained_collection_not_input_collection(
         objective="剔除负债率高于70%的公司",
         entity_scope=EntityScope.PREVIOUS_ANSWER,
         entities=[],
-        parameters={"conditions": [{
-            "metric": "debt_ratio",
-            "period_basis": "latest_report",
-            "operator": "gt",
-            "threshold": 70,
-            "threshold_unit": "percent",
-            "action": "exclude_matching",
-        }]},
+        parameters={
+            "conditions": [
+                {
+                    "metric": "debt_ratio",
+                    "period_basis": "latest_report",
+                    "operator": "gt",
+                    "threshold": 70,
+                    "threshold_unit": "percent",
+                    "action": "exclude_matching",
+                }
+            ]
+        },
         depends_on=[],
         output_requirements=[],
         confirmation=ConfirmationState.NOT_REQUIRED,
@@ -336,15 +358,19 @@ def test_financial_filter_turn_exposes_retained_collection_not_input_collection(
         executed=True,
         reused=False,
     )
-    execution = PlanExecutionResult(tasks=[TaskExecutionResult(
-        task=resolved,
-        status="completed",
-        calls=[call],
-        output_entities=(
-            SecurityEntity(symbol="600519", name="贵州茅台"),
-            SecurityEntity(symbol="300750", name="宁德时代"),
-        ),
-    )])
+    execution = PlanExecutionResult(
+        tasks=[
+            TaskExecutionResult(
+                task=resolved,
+                status="completed",
+                calls=[call],
+                output_entities=(
+                    SecurityEntity(symbol="600519", name="贵州茅台"),
+                    SecurityEntity(symbol="300750", name="宁德时代"),
+                ),
+            )
+        ]
+    )
 
     turn = build_turn_reference(
         "剔除负债率高于70%的公司",
@@ -357,10 +383,7 @@ def test_financial_filter_turn_exposes_retained_collection_not_input_collection(
 
 
 def test_previous_scope_uses_complete_program_collection_not_planner_sample() -> None:
-    previous = [
-        {"symbol": f"{index:06d}", "name": f"公司{index}"}
-        for index in range(10, 20)
-    ]
+    previous = [{"symbol": f"{index:06d}", "name": f"公司{index}"} for index in range(10, 20)]
     candidate = StandardTask(
         task_id="buy",
         kind=StandardTaskKind.INVESTMENT_DECISION,
@@ -385,43 +408,50 @@ def test_previous_scope_uses_complete_program_collection_not_planner_sample() ->
 
 
 def test_conversation_context_keeps_recent_verified_scopes() -> None:
-    context = ConversationContext.from_value({
-        "version": "1",
-        "turns": [
-            {
-                "request": f"request-{index}",
-                "tasks": [],
-                "entities": [{"symbol": f"{index:06d}", "name": f"公司{index}"}],
-            }
-            for index in range(6)
-        ],
-    })
+    context = ConversationContext.from_value(
+        {
+            "version": "1",
+            "turns": [
+                {
+                    "request": f"request-{index}",
+                    "tasks": [],
+                    "entities": [{"symbol": f"{index:06d}", "name": f"公司{index}"}],
+                }
+                for index in range(6)
+            ],
+        }
+    )
 
     assert [turn.request for turn in context.turns] == [
-        "request-2", "request-3", "request-4", "request-5",
+        "request-2",
+        "request-3",
+        "request-4",
+        "request-5",
     ]
     assert context.latest_entities() == [{"symbol": "000005", "name": "公司5"}]
 
 
 def test_regeneration_uses_context_before_the_same_completed_request() -> None:
-    context = ConversationContext.from_value({
-        "version": "1",
-        "turns": [
-            {
-                "request": "筛选后保留这些公司",
-                "tasks": [],
-                "entities": [
-                    {"symbol": "600519", "name": "贵州茅台"},
-                    {"symbol": "000858", "name": "五粮液"},
-                ],
-            },
-            {
-                "request": "他们中哪些能买入？",
-                "tasks": [],
-                "entities": [{"symbol": "600519", "name": "贵州茅台"}],
-            },
-        ],
-    })
+    context = ConversationContext.from_value(
+        {
+            "version": "1",
+            "turns": [
+                {
+                    "request": "筛选后保留这些公司",
+                    "tasks": [],
+                    "entities": [
+                        {"symbol": "600519", "name": "贵州茅台"},
+                        {"symbol": "000858", "name": "五粮液"},
+                    ],
+                },
+                {
+                    "request": "他们中哪些能买入？",
+                    "tasks": [],
+                    "entities": [{"symbol": "600519", "name": "贵州茅台"}],
+                },
+            ],
+        }
+    )
 
     prior = context.before_request("他们中哪些能买入？")
 
@@ -432,36 +462,44 @@ def test_regeneration_uses_context_before_the_same_completed_request() -> None:
 
 
 def test_context_pruning_keeps_only_surviving_user_turns() -> None:
-    context = ConversationContext.from_value({
-        "version": "1",
-        "turns": [
-            {"request_message_id": "u1", "request": "问题一"},
-            {"request_message_id": "u2", "request": "问题二"},
-            {"request_message_id": "u3", "request": "问题三"},
-        ],
-    })
+    context = ConversationContext.from_value(
+        {
+            "version": "1",
+            "turns": [
+                {"request_message_id": "u1", "request": "问题一"},
+                {"request_message_id": "u2", "request": "问题二"},
+                {"request_message_id": "u3", "request": "问题三"},
+            ],
+        }
+    )
 
-    retained = context.retain_for_messages([
-        {"id": "u1", "role": "user", "content": "问题一"},
-        {"id": "a1", "role": "assistant", "content": "回答一"},
-        {"id": "u3", "role": "user", "content": "问题三"},
-    ])
+    retained = context.retain_for_messages(
+        [
+            {"id": "u1", "role": "user", "content": "问题一"},
+            {"id": "a1", "role": "assistant", "content": "回答一"},
+            {"id": "u3", "role": "user", "content": "问题三"},
+        ]
+    )
 
     assert [turn.request_message_id for turn in retained.turns] == ["u1", "u3"]
 
 
 def test_context_pruning_matches_legacy_turns_by_exact_request_order() -> None:
-    context = ConversationContext.from_value({
-        "version": "1",
-        "turns": [
-            {"request": "问题一"},
-            {"request": "问题二"},
-        ],
-    })
+    context = ConversationContext.from_value(
+        {
+            "version": "1",
+            "turns": [
+                {"request": "问题一"},
+                {"request": "问题二"},
+            ],
+        }
+    )
 
-    retained = context.retain_for_messages([
-        {"id": "u1", "role": "user", "content": "问题一"},
-    ])
+    retained = context.retain_for_messages(
+        [
+            {"id": "u1", "role": "user", "content": "问题一"},
+        ]
+    )
 
     assert len(retained.turns) == 1
     assert retained.turns[0].request_message_id == "u1"
@@ -470,34 +508,38 @@ def test_context_pruning_matches_legacy_turns_by_exact_request_order() -> None:
 def test_schema_migration_backfills_server_context_from_legacy_thread_state() -> None:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
-        connection.execute(text("""
+        connection.execute(
+            text(
+                """
             CREATE TABLE chat_conversations (
                 id VARCHAR(64) PRIMARY KEY,
                 thread_state_json TEXT
             )
-        """))
+        """
+            )
+        )
         connection.execute(
-            text(
-                "INSERT INTO chat_conversations (id, thread_state_json) "
-                "VALUES (:id, :thread_state_json)"
-            ),
+            text("INSERT INTO chat_conversations (id, thread_state_json) " "VALUES (:id, :thread_state_json)"),
             {
                 "id": "legacy",
-                "thread_state_json": json.dumps({
-                    "agent_context": {
-                        "version": "1",
-                        "turns": [{"request": "旧问题"}],
+                "thread_state_json": json.dumps(
+                    {
+                        "agent_context": {
+                            "version": "1",
+                            "turns": [{"request": "旧问题"}],
+                        },
                     },
-                }, ensure_ascii=False),
+                    ensure_ascii=False,
+                ),
             },
         )
 
     ensure_compatible_schema(engine, is_sqlite_engine=True)
 
     with engine.connect() as connection:
-        raw = connection.execute(text(
-            "SELECT agent_context_json FROM chat_conversations WHERE id='legacy'"
-        )).scalar_one()
+        raw = connection.execute(
+            text("SELECT agent_context_json FROM chat_conversations WHERE id='legacy'")
+        ).scalar_one()
     assert json.loads(raw)["turns"][0]["request"] == "旧问题"
 
 
@@ -507,7 +549,8 @@ def test_frontend_snapshot_does_not_write_server_agent_context() -> None:
     service.db.get_chat_conversation.return_value = SimpleNamespace(
         thread_state_json=json.dumps({"messages": []}, ensure_ascii=False),
         agent_context_json=json.dumps(
-            {"version": "1", "turns": []}, ensure_ascii=False,
+            {"version": "1", "turns": []},
+            ensure_ascii=False,
         ),
         title_source="manual",
     )
@@ -518,23 +561,22 @@ def test_frontend_snapshot_does_not_write_server_agent_context() -> None:
         "c1",
         [],
         thread_state={
-            "messages": [{
-                "message": {
-                    "id": "u1",
-                    "role": "user",
-                    "content": [{"type": "text", "text": "继续"}],
-                },
-            }],
+            "messages": [
+                {
+                    "message": {
+                        "id": "u1",
+                        "role": "user",
+                        "content": [{"type": "text", "text": "继续"}],
+                    },
+                }
+            ],
         },
     )
 
     serialized = service.db.replace_chat_messages.call_args.kwargs["thread_state_json"]
     saved_state = json.loads(serialized)
     assert "agent_context" not in saved_state
-    assert (
-        service.db.replace_chat_messages.call_args.kwargs["agent_context_json"]
-        is None
-    )
+    assert service.db.replace_chat_messages.call_args.kwargs["agent_context_json"] is None
 
 
 def test_frontend_deletion_prunes_server_agent_context_to_remaining_messages() -> None:
@@ -542,13 +584,16 @@ def test_frontend_deletion_prunes_server_agent_context_to_remaining_messages() -
     service.db = MagicMock()
     service.db.get_chat_conversation.return_value = SimpleNamespace(
         thread_state_json=json.dumps({"messages": []}, ensure_ascii=False),
-        agent_context_json=json.dumps({
-            "version": "1",
-            "turns": [
-                {"request_message_id": "u1", "request": "保留问题"},
-                {"request_message_id": "u2", "request": "删除问题"},
-            ],
-        }, ensure_ascii=False),
+        agent_context_json=json.dumps(
+            {
+                "version": "1",
+                "turns": [
+                    {"request_message_id": "u1", "request": "保留问题"},
+                    {"request_message_id": "u2", "request": "删除问题"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
         title_source="manual",
     )
     service.db.replace_chat_messages.return_value = None
@@ -564,9 +609,7 @@ def test_frontend_deletion_prunes_server_agent_context_to_remaining_messages() -
         prune_agent_context_to_messages=True,
     )
 
-    serialized = service.db.replace_chat_messages.call_args.kwargs[
-        "agent_context_json"
-    ]
+    serialized = service.db.replace_chat_messages.call_args.kwargs["agent_context_json"]
     saved_context = json.loads(serialized)
     assert [turn["request_message_id"] for turn in saved_context["turns"]] == ["u1"]
 
@@ -605,13 +648,15 @@ def test_thread_only_snapshot_does_not_replace_canonical_messages() -> None:
         "c1",
         None,
         thread_state={
-            "messages": [{
-                "message": {
-                    "id": "blank",
-                    "role": "assistant",
-                    "content": [],
-                },
-            }],
+            "messages": [
+                {
+                    "message": {
+                        "id": "blank",
+                        "role": "assistant",
+                        "content": [],
+                    },
+                }
+            ],
         },
     )
 
@@ -621,34 +666,36 @@ def test_thread_only_snapshot_does_not_replace_canonical_messages() -> None:
 
 def test_server_history_transport_keeps_canonical_history_and_prunes_a_branch() -> None:
     service = object.__new__(ChatSessionService)
-    service.get_conversation = MagicMock(return_value={
-        "messages": [
-            {
-                "id": "u1",
-                "role": "user",
-                "content": "第一问",
-                "created_at": "2026-07-29T10:00:00",
-            },
-            {
-                "id": "a1",
-                "role": "assistant",
-                "content": "第一答",
-                "created_at": "2026-07-29T10:01:00",
-            },
-            {
-                "id": "u-old-branch",
-                "role": "user",
-                "content": "旧分支",
-                "created_at": "2026-07-29T10:02:00",
-            },
-            {
-                "id": "c1-assistant-pending",
-                "role": "assistant",
-                "content": "执行中",
-                "created_at": "2026-07-29T10:03:00",
-            },
-        ],
-    })
+    service.get_conversation = MagicMock(
+        return_value={
+            "messages": [
+                {
+                    "id": "u1",
+                    "role": "user",
+                    "content": "第一问",
+                    "created_at": "2026-07-29T10:00:00",
+                },
+                {
+                    "id": "a1",
+                    "role": "assistant",
+                    "content": "第一答",
+                    "created_at": "2026-07-29T10:01:00",
+                },
+                {
+                    "id": "u-old-branch",
+                    "role": "user",
+                    "content": "旧分支",
+                    "created_at": "2026-07-29T10:02:00",
+                },
+                {
+                    "id": "c1-assistant-pending",
+                    "role": "assistant",
+                    "content": "执行中",
+                    "created_at": "2026-07-29T10:03:00",
+                },
+            ],
+        }
+    )
 
     result = service.compose_request_with_server_history(
         "c1",
@@ -664,15 +711,20 @@ def test_server_context_update_does_not_replace_fresh_messages_with_stale_thread
     service = object.__new__(ChatSessionService)
     service.db = MagicMock()
     service.db.get_chat_conversation.return_value = SimpleNamespace(
-        thread_state_json=json.dumps({
-            "messages": [{
-                "message": {
-                    "id": "old",
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "旧回复"}],
-                },
-            }],
-        }, ensure_ascii=False),
+        thread_state_json=json.dumps(
+            {
+                "messages": [
+                    {
+                        "message": {
+                            "id": "old",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "旧回复"}],
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
         title_source="manual",
     )
     service.db.replace_chat_messages.return_value = None
@@ -802,11 +854,15 @@ def test_turn_reference_never_extracts_securities_from_prose_fields() -> None:
         executed=True,
         reused=False,
     )
-    execution = PlanExecutionResult(tasks=[TaskExecutionResult(
-        task=resolved,
-        status="completed",
-        calls=[call],
-    )])
+    execution = PlanExecutionResult(
+        tasks=[
+            TaskExecutionResult(
+                task=resolved,
+                status="completed",
+                calls=[call],
+            )
+        ]
+    )
 
     turn = build_turn_reference(
         "解释一下",

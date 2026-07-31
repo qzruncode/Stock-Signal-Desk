@@ -20,11 +20,13 @@ def statement_view(result: dict[str, Any], section: str) -> dict[str, Any]:
         "amount_unit": result.get("amount_unit"),
         "ratio_unit": result.get("ratio_unit"),
         "currency": result.get("currency"),
-        "basis": result.get({
-            "balance_sheet": "balance_sheet_basis",
-            "income_statement": "income_statement_basis",
-            "cashflow": "cashflow_basis",
-        }[section]),
+        "basis": result.get(
+            {
+                "balance_sheet": "balance_sheet_basis",
+                "income_statement": "income_statement_basis",
+                "cashflow": "cashflow_basis",
+            }[section]
+        ),
         "source": result.get("source"),
         "source_url": result.get("source_url"),
         "success": bool(result.get(section)),

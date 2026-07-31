@@ -10,11 +10,18 @@ from datetime import datetime
 from typing import Optional
 
 from api.v1.endpoints.financials._symbol import (
-    _normalize_symbol, _to_em_symbol, _safe_float, _safe_str,
-    _pick_col, _row_pick, _parse_date,
+    _normalize_symbol,
+    _to_em_symbol,
+    _safe_float,
+    _safe_str,
+    _pick_col,
+    _row_pick,
+    _parse_date,
 )
 from api.v1.endpoints.financials._calc import (
-    _calc_pe_percentiles, _calc_pe_percentiles_from_em, _calc_dividend_yield,
+    _calc_pe_percentiles,
+    _calc_pe_percentiles_from_em,
+    _calc_dividend_yield,
 )
 from api.v1.endpoints.financials._signal import _build_price_overdraft_signal
 
@@ -131,7 +138,9 @@ def _fill_valuation_comparison(symbol: str, payload: dict) -> tuple[dict, Option
             current_year_col = f"市盈率-{str(datetime.now().year)[-2:]}E"
             forecast_pe = _safe_float(stock_row.get(current_year_col))
             if forecast_pe is None:
-                forecast_col = next((col for col in stock_row.index if str(col).startswith("市盈率-") and str(col).endswith("E")), None)
+                forecast_col = next(
+                    (col for col in stock_row.index if str(col).startswith("市盈率-") and str(col).endswith("E")), None
+                )
                 forecast_pe = _safe_float(stock_row.get(forecast_col)) if forecast_col else None
             payload["pe_dynamic"] = payload.get("pe_dynamic") or forecast_pe
             payload["pb"] = payload.get("pb") or _safe_float(stock_row.get("市净率-MRQ"))
@@ -167,8 +176,12 @@ def _fill_industry_average(payload: dict) -> tuple[dict, Optional[str]]:
             return payload, None
         pe_col = _pick_col(df.columns, ["市盈率-动态", "动态市盈率", "市盈率", "pe"])
         pb_col = _pick_col(df.columns, ["市净率", "pb"])
-        pe_values = pd.to_numeric(df[pe_col], errors="coerce").dropna() if pe_col is not None else pd.Series(dtype=float)
-        pb_values = pd.to_numeric(df[pb_col], errors="coerce").dropna() if pb_col is not None else pd.Series(dtype=float)
+        pe_values = (
+            pd.to_numeric(df[pe_col], errors="coerce").dropna() if pe_col is not None else pd.Series(dtype=float)
+        )
+        pb_values = (
+            pd.to_numeric(df[pb_col], errors="coerce").dropna() if pb_col is not None else pd.Series(dtype=float)
+        )
         payload["industry_average"] = {
             "industry": industry,
             "pe": round(float(pe_values.mean()), 2) if not pe_values.empty else None,

@@ -61,11 +61,7 @@ RSS_ROUTE_CAPABILITIES: dict[str, frozenset[str]] = {
 
 
 def routes_for_capability(capability: str) -> frozenset[str]:
-    return frozenset(
-        path
-        for path, capabilities in RSS_ROUTE_CAPABILITIES.items()
-        if capability in capabilities
-    )
+    return frozenset(path for path, capabilities in RSS_ROUTE_CAPABILITIES.items() if capability in capabilities)
 
 
 TOPIC_ROUTE_PATHS: dict[str, frozenset[str]] = {

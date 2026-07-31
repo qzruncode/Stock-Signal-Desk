@@ -10,20 +10,14 @@ from src.agent.semantic_evaluation import (
     summarize_semantic_scores,
 )
 
-_GOLDEN_PATH = (
-    Path(__file__).parent / "fixtures" / "agent_planner_golden.json"
-)
+_GOLDEN_PATH = Path(__file__).parent / "fixtures" / "agent_planner_golden.json"
 
 
 def test_semantic_golden_gate_covers_every_capability():
     values = json.loads(_GOLDEN_PATH.read_text(encoding="utf-8"))
     cases = [SemanticGoldenCase.from_value(value) for value in values]
     assert len({case.case_id for case in cases}) == len(cases)
-    covered = {
-        capability
-        for case in cases
-        for capability in case.required_capabilities
-    }
+    covered = {capability for case in cases for capability in case.required_capabilities}
     assert covered == {capability.value for capability in Capability}
 
 
@@ -34,9 +28,11 @@ def test_semantic_score_fails_missing_forbidden_duplicate_and_oversize():
         required_capabilities=frozenset({"news_analysis"}),
         forbidden_capabilities=frozenset({"notification"}),
         maximum_nodes=2,
-        required_dependencies=frozenset({
-            ("security_lookup", "news_analysis"),
-        }),
+        required_dependencies=frozenset(
+            {
+                ("security_lookup", "news_analysis"),
+            }
+        ),
         expected_effects=(("news_analysis", "read"),),
         required_scope_terms=frozenset({"600519"}),
     )
@@ -62,10 +58,12 @@ def test_semantic_score_fails_missing_forbidden_duplicate_and_oversize():
 
 
 def test_semantic_release_gate_requires_every_case_to_pass():
-    summary = summarize_semantic_scores([
-        {"passed": True},
-        {"passed": False},
-    ])
+    summary = summarize_semantic_scores(
+        [
+            {"passed": True},
+            {"passed": False},
+        ]
+    )
 
     assert summary == {
         "total": 2,
@@ -83,13 +81,17 @@ def test_semantic_score_enforces_goal_and_safe_recovery_trajectory():
         required_capabilities=frozenset({"market_mainline_research"}),
         forbidden_capabilities=frozenset({"market_overview"}),
         required_question_type="forecast",
-        required_evidence_dimensions=frozenset({
-            "market_mainline",
-            "macro_policy",
-        }),
-        required_artifact_resources=frozenset({
-            "security_collection",
-        }),
+        required_evidence_dimensions=frozenset(
+            {
+                "market_mainline",
+                "macro_policy",
+            }
+        ),
+        required_artifact_resources=frozenset(
+            {
+                "security_collection",
+            }
+        ),
         maximum_plan_revisions=2,
     )
 

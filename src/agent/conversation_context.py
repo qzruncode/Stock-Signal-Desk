@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.agent.task_executor import PlanExecutionResult, action_fingerprint
 from src.agent.result_contracts import project_task_output_entities
 from src.agent.task_workflows import WORKFLOW_REGISTRY, ResolvedTask, TaskPlan
+
 CONVERSATION_CONTEXT_VERSION = "1"
 MAX_REFERENCE_TURNS = 4
 MAX_RESULT_CONTEXT_CHARS = 8_000
@@ -105,9 +106,7 @@ class ConversationContext(BaseModel):
                 result_context = (
                     raw_context
                     if isinstance(raw_context, list)
-                    else [raw_context]
-                    if isinstance(raw_context, Mapping)
-                    else []
+                    else [raw_context] if isinstance(raw_context, Mapping) else []
                 )
                 projected = project_task_output_entities(
                     task.kind,
@@ -122,32 +121,28 @@ class ConversationContext(BaseModel):
                     migrated_tasks.append(task)
                     continue
                 projected_by_task.append(projected)
-                migrated_tasks.append(task.model_copy(update={
-                    "entities": _security_references(projected),
-                }))
+                migrated_tasks.append(
+                    task.model_copy(
+                        update={
+                            "entities": _security_references(projected),
+                        }
+                    )
+                )
                 changed = True
             if projected_by_task:
-                allowed = set.intersection(*(
-                    {item["symbol"] for item in output}
-                    for output in projected_by_task
-                ))
-                ordered = [
-                    item
-                    for output in projected_by_task
-                    for item in output
-                    if item["symbol"] in allowed
-                ]
-                migrated_turns.append(turn.model_copy(update={
-                    "tasks": migrated_tasks,
-                    "entities": _security_references(ordered),
-                }))
+                allowed = set.intersection(*({item["symbol"] for item in output} for output in projected_by_task))
+                ordered = [item for output in projected_by_task for item in output if item["symbol"] in allowed]
+                migrated_turns.append(
+                    turn.model_copy(
+                        update={
+                            "tasks": migrated_tasks,
+                            "entities": _security_references(ordered),
+                        }
+                    )
+                )
             else:
                 migrated_turns.append(turn)
-        return (
-            self.model_copy(update={"turns": migrated_turns})
-            if changed
-            else self
-        )
+        return self.model_copy(update={"turns": migrated_turns}) if changed else self
 
     def append(self, turn: TurnReference) -> "ConversationContext":
         return self.model_copy(update={"turns": [*self.turns, turn][-MAX_REFERENCE_TURNS:]})
@@ -155,11 +150,7 @@ class ConversationContext(BaseModel):
     def before_request(self, request: str) -> "ConversationContext":
         """Exclude the last completed run when regenerating the same request."""
         normalized = str(request or "").strip()
-        if (
-            normalized
-            and self.turns
-            and self.turns[-1].request.strip() == normalized
-        ):
+        if normalized and self.turns and self.turns[-1].request.strip() == normalized:
             return self.model_copy(update={"turns": self.turns[:-1]})
         return self
 
@@ -184,10 +175,12 @@ class ConversationContext(BaseModel):
                 request = str(message.get("content") or "").strip()
             if not request:
                 continue
-            remaining.append((
-                str(message.get("id") or "").strip(),
-                request[:12_000],
-            ))
+            remaining.append(
+                (
+                    str(message.get("id") or "").strip(),
+                    request[:12_000],
+                )
+            )
 
         ids = {message_id for message_id, _ in remaining if message_id}
         search_start = 0
@@ -200,9 +193,13 @@ class ConversationContext(BaseModel):
             for index in range(search_start, len(remaining)):
                 if remaining[index][1] != turn.request.strip():
                     continue
-                retained.append(turn.model_copy(update={
-                    "request_message_id": remaining[index][0] or None,
-                }))
+                retained.append(
+                    turn.model_copy(
+                        update={
+                            "request_message_id": remaining[index][0] or None,
+                        }
+                    )
+                )
                 search_start = index + 1
                 break
         return self.model_copy(update={"turns": retained})
@@ -258,9 +255,7 @@ class ConversationContext(BaseModel):
                 task["result_context"] = {"truncated": True}
                 if len(json.dumps(payload, ensure_ascii=False, default=str)) <= MAX_PLANNER_CONTEXT_CHARS:
                     return payload
-        while len(turns) > 1 and len(
-            json.dumps(payload, ensure_ascii=False, default=str)
-        ) > MAX_PLANNER_CONTEXT_CHARS:
+        while len(turns) > 1 and len(json.dumps(payload, ensure_ascii=False, default=str)) > MAX_PLANNER_CONTEXT_CHARS:
             turns.pop(0)
         return payload
 
@@ -268,30 +263,34 @@ class ConversationContext(BaseModel):
         """Return semantic history only; entity rows and result bodies are separate inputs."""
         turns: list[dict[str, Any]] = []
         for turn in self.turns:
-            turns.append({
-                "request": turn.request[:2_000],
-                "tasks": [
-                    {
-                        "kind": task.kind,
-                        "objective": task.objective[:500],
-                        "parameters": _bounded_json_value(
-                            task.parameters, max_chars=1_200,
-                        ),
-                        "result_selection": task.result_selection,
-                        "status": task.status,
-                        "semantic_artifacts": _bounded_json_value(
-                            task.semantic_artifacts,
-                            max_chars=5_000,
-                        ),
-                    }
-                    for task in turn.tasks
-                ],
-                "verified_entity_count": len(turn.entities),
-            })
+            turns.append(
+                {
+                    "request": turn.request[:2_000],
+                    "tasks": [
+                        {
+                            "kind": task.kind,
+                            "objective": task.objective[:500],
+                            "parameters": _bounded_json_value(
+                                task.parameters,
+                                max_chars=1_200,
+                            ),
+                            "result_selection": task.result_selection,
+                            "status": task.status,
+                            "semantic_artifacts": _bounded_json_value(
+                                task.semantic_artifacts,
+                                max_chars=5_000,
+                            ),
+                        }
+                        for task in turn.tasks
+                    ],
+                    "verified_entity_count": len(turn.entities),
+                }
+            )
         payload = {"version": self.version, "turns": turns}
-        while len(turns) > 1 and len(
-            json.dumps(payload, ensure_ascii=False, default=str)
-        ) > MAX_TASK_SELECTION_CONTEXT_CHARS:
+        while (
+            len(turns) > 1
+            and len(json.dumps(payload, ensure_ascii=False, default=str)) > MAX_TASK_SELECTION_CONTEXT_CHARS
+        ):
             turns.pop(0)
         return payload
 
@@ -353,18 +352,12 @@ def _message_text_from_structured_state(message: Mapping[str, Any]) -> str:
     if not isinstance(content, list):
         return ""
     return "\n".join(
-        str(part.get("text") or "")
-        for part in content
-        if isinstance(part, Mapping) and part.get("type") == "text"
+        str(part.get("text") or "") for part in content if isinstance(part, Mapping) and part.get("type") == "text"
     ).strip()
 
 
 def _semantic_kind_for_legacy_tool(tool_name: str) -> str:
-    matches = [
-        kind.value
-        for kind, spec in WORKFLOW_REGISTRY.items()
-        if tool_name in spec.tool_whitelist
-    ]
+    matches = [kind.value for kind, spec in WORKFLOW_REGISTRY.items() if tool_name in spec.tool_whitelist]
     return matches[0] if len(matches) == 1 else "legacy_structured_execution"
 
 
@@ -418,22 +411,26 @@ def recover_context_from_thread_state(thread_state: Any) -> ConversationContext:
             entities = _security_references(discovered)
             all_entities.extend(item.model_dump() for item in entities)
             raw_args = part.get("args") if isinstance(part.get("args"), Mapping) else {}
-            tasks.append(TaskReference(
-                task_id=f"legacy_{message_index}_{part_index}",
-                kind=_semantic_kind_for_legacy_tool(tool_name),
-                objective=latest_user_request or "历史结构化执行",
-                parameters=_bounded_json_value(raw_args),
-                depends_on=[],
-                entities=entities,
-                status="completed",
-                result_context=_bounded_json_value(sanitized_result),
-            ))
+            tasks.append(
+                TaskReference(
+                    task_id=f"legacy_{message_index}_{part_index}",
+                    kind=_semantic_kind_for_legacy_tool(tool_name),
+                    objective=latest_user_request or "历史结构化执行",
+                    parameters=_bounded_json_value(raw_args),
+                    depends_on=[],
+                    entities=entities,
+                    status="completed",
+                    result_context=_bounded_json_value(sanitized_result),
+                )
+            )
         if tasks:
-            turns.append(TurnReference(
-                request=(latest_user_request or "历史结构化执行")[:12_000],
-                tasks=tasks[:12],
-                entities=_security_references(all_entities),
-            ))
+            turns.append(
+                TurnReference(
+                    request=(latest_user_request or "历史结构化执行")[:12_000],
+                    tasks=tasks[:12],
+                    entities=_security_references(all_entities),
+                )
+            )
     return ConversationContext(turns=turns[-MAX_REFERENCE_TURNS:])
 
 
@@ -460,16 +457,22 @@ def _structured_security_values(value: Any) -> list[dict[str, str]]:
 
     def visit(item: Any) -> None:
         if isinstance(item, Mapping):
-            symbol = next((
-                str(item.get(key) or "").strip()
-                for key in ("symbol", "code", "stock_code", "stockCode")
-                if item.get(key) is not None
-            ), "")
-            name = next((
-                str(item.get(key) or "").strip()
-                for key in ("name", "stock_name", "stockName")
-                if item.get(key) is not None
-            ), "")
+            symbol = next(
+                (
+                    str(item.get(key) or "").strip()
+                    for key in ("symbol", "code", "stock_code", "stockCode")
+                    if item.get(key) is not None
+                ),
+                "",
+            )
+            name = next(
+                (
+                    str(item.get(key) or "").strip()
+                    for key in ("name", "stock_name", "stockName")
+                    if item.get(key) is not None
+                ),
+                "",
+            )
             if len(symbol) == 6 and symbol.isdigit():
                 found.append({"symbol": symbol, "name": name or symbol})
             for child in item.values():
@@ -499,21 +502,13 @@ def build_turn_reference(
         resolved = resolved_by_id.get(candidate.task_id)
         result = result_by_id.get(candidate.task_id)
         derived_context = (
-            [
-                packet.get("result")
-                for packet in result.derived_results
-                if isinstance(packet.get("result"), Mapping)
-            ]
+            [packet.get("result") for packet in result.derived_results if isinstance(packet.get("result"), Mapping)]
             if result
             else []
         )
         result_context = (
             [
-                *(
-                    []
-                    if derived_context and len(result.calls) > 100
-                    else [call.result for call in result.calls]
-                ),
+                *([] if derived_context and len(result.calls) > 100 else [call.result for call in result.calls]),
                 *derived_context,
             ]
             if result
@@ -527,35 +522,32 @@ def build_turn_reference(
             if isinstance(artifact, Mapping)
         ]
         projected = [
-            {"symbol": entity.symbol, "name": entity.name}
-            for entity in (result.output_entities if result else ())
+            {"symbol": entity.symbol, "name": entity.name} for entity in (result.output_entities if result else ())
         ]
         task_entities = _security_references(projected)
-        task_references.append(TaskReference(
-            task_id=candidate.task_id,
-            kind=candidate.kind.value,
-            objective=candidate.objective,
-            parameters=_bounded_json_value(candidate.parameters, max_chars=8_000),
-            result_selection=(
-                candidate.result_selection.model_dump(mode="json")
-                if candidate.result_selection is not None
-                else None
-            ),
-            depends_on=list(candidate.depends_on),
-            entities=task_entities,
-            status=result.status if result else "not_executed",
-            blocked_reason=result.blocked_reason if result else None,
-            action_fingerprint=action_fingerprint(resolved) if resolved else "",
-            result_context=_bounded_json_value(result_context),
-            semantic_artifacts=[
-                _bounded_json_value(artifact, max_chars=4_000)
-                for artifact in semantic_artifacts
-            ],
-        ))
+        task_references.append(
+            TaskReference(
+                task_id=candidate.task_id,
+                kind=candidate.kind.value,
+                objective=candidate.objective,
+                parameters=_bounded_json_value(candidate.parameters, max_chars=8_000),
+                result_selection=(
+                    candidate.result_selection.model_dump(mode="json")
+                    if candidate.result_selection is not None
+                    else None
+                ),
+                depends_on=list(candidate.depends_on),
+                entities=task_entities,
+                status=result.status if result else "not_executed",
+                blocked_reason=result.blocked_reason if result else None,
+                action_fingerprint=action_fingerprint(resolved) if resolved else "",
+                result_context=_bounded_json_value(result_context),
+                semantic_artifacts=[_bounded_json_value(artifact, max_chars=4_000) for artifact in semantic_artifacts],
+            )
+        )
 
     turn_entities = _security_references(
-        {"symbol": entity.symbol, "name": entity.name}
-        for entity in execution.final_entities
+        {"symbol": entity.symbol, "name": entity.name} for entity in execution.final_entities
     )
 
     return TurnReference(

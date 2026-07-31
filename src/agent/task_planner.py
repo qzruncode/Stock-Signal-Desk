@@ -39,6 +39,7 @@ from src.tools.symbols import resolve_securities_csv
 
 logger = logging.getLogger(__name__)
 
+
 class SemanticResourceBindingUnavailableError(RuntimeError):
     """The live catalog or its semantic binding could not be completed."""
 
@@ -130,9 +131,7 @@ def _message_text(message: Mapping[str, Any]) -> str:
         return content.strip()
     if isinstance(content, list):
         return "\n".join(
-            str(part.get("text") or "")
-            for part in content
-            if isinstance(part, Mapping) and part.get("type") == "text"
+            str(part.get("text") or "") for part in content if isinstance(part, Mapping) and part.get("type") == "text"
         ).strip()
     return ""
 
@@ -162,7 +161,7 @@ def _json_object(value: str) -> dict[str, Any]:
     if stripped.startswith("```"):
         first_newline = stripped.find("\n")
         if first_newline >= 0:
-            stripped = stripped[first_newline + 1:]
+            stripped = stripped[first_newline + 1 :]
         if stripped.endswith("```"):
             stripped = stripped[:-3].rstrip()
     parsed = json.loads(stripped)
@@ -205,9 +204,7 @@ def _semantic_domain_labels(task: StandardTask) -> list[str]:
         return []
     labels: list[str] = []
     for value in values:
-        label = value if isinstance(value, str) else (
-            value.get("label") if isinstance(value, Mapping) else None
-        )
+        label = value if isinstance(value, str) else (value.get("label") if isinstance(value, Mapping) else None)
         text = str(label or "").strip()
         if text and text not in labels:
             labels.append(text)
@@ -230,29 +227,21 @@ def validate_candidate_plan(
             for dependency_id in task.depends_on
             for resource in workflow_for(tasks_by_id[dependency_id].kind).output_resources
         )
-        has_declared_entity_source = bool(task.entities) or (
-            task.entity_scope != EntityScope.NONE
-        )
+        has_declared_entity_source = bool(task.entities) or (task.entity_scope != EntityScope.NONE)
         if spec.supports_result_selection and task.result_selection is None:
-            issues.append(
-                f"{task.task_id}: requires a typed result_selection"
-            )
+            issues.append(f"{task.task_id}: requires a typed result_selection")
         if not spec.supports_result_selection and task.result_selection is not None:
-            issues.append(
-                f"{task.task_id}: result_selection is not supported"
-            )
+            issues.append(f"{task.task_id}: result_selection is not supported")
         if (
             spec.requires_entities
             and not has_declared_entity_source
             and TaskResource.SECURITY_COLLECTION not in dependency_outputs
         ):
             issues.append(
-                f"{task.task_id}: requires an entity scope or a dependency that "
-                "produces security_collection"
+                f"{task.task_id}: requires an entity scope or a dependency that " "produces security_collection"
             )
         conditional_entity_required = any(
-            requirement.requires_entities
-            and requirement.applies(task.parameters)
+            requirement.requires_entities and requirement.applies(task.parameters)
             for requirement in spec.parameter_requirements
         )
         if (
@@ -270,8 +259,7 @@ def validate_candidate_plan(
             and task.parameters.get("candidate_scope") == "public_fallback"
         ):
             issues.append(
-                f"{task.task_id}: public_fallback is program-owned and cannot be "
-                "selected by the semantic planner"
+                f"{task.task_id}: public_fallback is program-owned and cannot be " "selected by the semantic planner"
             )
         if "subjects" in task.parameters:
             subjects = task.parameters["subjects"]
@@ -281,9 +269,7 @@ def validate_candidate_plan(
                 or len(subjects) > 12
                 or any(not isinstance(subject, str) or not subject.strip() for subject in subjects)
             ):
-                issues.append(
-                    f"{task.task_id}: subjects must be a non-empty list of at most 12 strings"
-                )
+                issues.append(f"{task.task_id}: subjects must be a non-empty list of at most 12 strings")
         action = str(task.parameters.get("action") or "")
         if action in spec.confirmation_actions and task.confirmation == ConfirmationState.NOT_REQUIRED:
             issues.append(f"{task.task_id}: high-impact action must declare confirmation state")
@@ -303,8 +289,7 @@ def validate_candidate_plan(
                 QuantitativeScreenSpec.model_validate(task.parameters.get("screen_spec"))
             except ValidationError as exc:
                 issues.append(
-                    f"{task.task_id}: invalid screen_spec: "
-                    + "; ".join(error["msg"] for error in exc.errors())
+                    f"{task.task_id}: invalid screen_spec: " + "; ".join(error["msg"] for error in exc.errors())
                 )
         elif task.kind == StandardTaskKind.INVESTMENT_DECISION:
             from src.services.buy_criteria.mainline_policy import (
@@ -312,21 +297,16 @@ def validate_candidate_plan(
             )
 
             try:
-                normalize_mainline_strategy(
-                    task.parameters.get("mainline_strategy")
-                )
+                normalize_mainline_strategy(task.parameters.get("mainline_strategy"))
             except (TypeError, ValueError) as exc:
-                issues.append(
-                    f"{task.task_id}: invalid mainline_strategy: {exc}"
-                )
+                issues.append(f"{task.task_id}: invalid mainline_strategy: {exc}")
             thesis_context = task.parameters.get("thesis_context")
             if thesis_context is not None:
                 try:
                     InvestmentThesisContext.model_validate(thesis_context)
                 except ValidationError as exc:
                     issues.append(
-                        f"{task.task_id}: invalid thesis_context: "
-                        + "; ".join(error["msg"] for error in exc.errors())
+                        f"{task.task_id}: invalid thesis_context: " + "; ".join(error["msg"] for error in exc.errors())
                     )
         elif task.kind == StandardTaskKind.THEME_BUSINESS_EVIDENCE:
             evidence_context = task.parameters.get("evidence_context")
@@ -334,19 +314,16 @@ def validate_candidate_plan(
                 ThemeEvidenceContext.model_validate(evidence_context)
             except ValidationError as exc:
                 issues.append(
-                    f"{task.task_id}: invalid evidence_context: "
-                    + "; ".join(error["msg"] for error in exc.errors())
+                    f"{task.task_id}: invalid evidence_context: " + "; ".join(error["msg"] for error in exc.errors())
                 )
 
         if "concept_board_catalog" in spec.resource_bindings:
             labels = _semantic_domain_labels(task)
             if not labels:
-                domains_from_dependency = (
-                    spec.input_resource_parameters.get("domains")
-                    in dependency_outputs
-                )
+                domains_from_dependency = spec.input_resource_parameters.get("domains") in dependency_outputs
                 if (
-                    task.kind in {
+                    task.kind
+                    in {
                         StandardTaskKind.INDUSTRY_RESEARCH,
                         StandardTaskKind.THEME_STOCK_DISCOVERY,
                     }
@@ -367,10 +344,7 @@ def validate_candidate_plan(
                     )
                     continue
                 if concept_board_names is not None:
-                    unknown_boards = [
-                        board for board in domain.board_queries
-                        if board not in concept_board_names
-                    ]
+                    unknown_boards = [board for board in domain.board_queries if board not in concept_board_names]
                     if unknown_boards:
                         issues.append(
                             f"{task.task_id}: domains[{index}] selects values absent from "
@@ -383,20 +357,19 @@ def validate_candidate_plan(
 def _exact_catalog_resource_bindings(
     target_tasks: Iterable[StandardTask],
     board_names: Iterable[str],
-    trusted_domain_inputs: Mapping[
-        str,
-        list[dict[str, Any]],
-    ] | None = None,
+    trusted_domain_inputs: (
+        Mapping[
+            str,
+            list[dict[str, Any]],
+        ]
+        | None
+    ) = None,
 ) -> tuple[
     dict[str, dict[str, dict[str, Any]]],
     dict[str, list[str]],
 ]:
     """Bind literal catalog identities and leave semantic equivalence to the model."""
-    names_by_identity = {
-        name.strip().casefold(): name.strip()
-        for name in board_names
-        if name.strip()
-    }
+    names_by_identity = {name.strip().casefold(): name.strip() for name in board_names if name.strip()}
     exact: dict[str, dict[str, dict[str, Any]]] = {}
     unresolved: dict[str, list[str]] = {}
     for task in target_tasks:
@@ -419,9 +392,8 @@ def _exact_catalog_resource_bindings(
                 domain = DomainBoardQuerySpec.model_validate(value)
             except ValidationError:
                 continue
-            if (
-                domain.mapping_type == "catalog_binding"
-                and set(domain.board_queries) <= set(names_by_identity.values())
+            if domain.mapping_type == "catalog_binding" and set(domain.board_queries) <= set(
+                names_by_identity.values()
             ):
                 trusted_by_label[domain.label] = domain.model_dump()
         for label in _semantic_domain_labels(task):
@@ -457,19 +429,24 @@ def _merge_resource_bindings(
             continue
         domains: list[dict[str, Any]] = []
         for label in _semantic_domain_labels(task):
-            resolved = exact[task.task_id].get(label) or semantic.get(
-                task.task_id, {}
-            ).get(label)
-            domains.append(resolved or {
-                "label": label,
-                "board_queries": [],
-                "mapping_type": "unresolved",
-                "rationale": unresolved_reason[:240],
-                "unresolved_parts": [label],
-            })
-        tasks.append(task.model_copy(update={
-            "execution_parameters": {**task.parameters, "domains": domains},
-        }))
+            resolved = exact[task.task_id].get(label) or semantic.get(task.task_id, {}).get(label)
+            domains.append(
+                resolved
+                or {
+                    "label": label,
+                    "board_queries": [],
+                    "mapping_type": "unresolved",
+                    "rationale": unresolved_reason[:240],
+                    "unresolved_parts": [label],
+                }
+            )
+        tasks.append(
+            task.model_copy(
+                update={
+                    "execution_parameters": {**task.parameters, "domains": domains},
+                }
+            )
+        )
     return plan.model_copy(update={"tasks": tasks})
 
 
@@ -478,17 +455,10 @@ def _has_complete_catalog_bindings(task: StandardTask) -> bool:
     if not isinstance(values, list) or not values:
         return False
     try:
-        domains = [
-            DomainBoardQuerySpec.model_validate(value)
-            for value in values
-        ]
+        domains = [DomainBoardQuerySpec.model_validate(value) for value in values]
     except ValidationError:
         return False
-    return all(
-        domain.mapping_type == "catalog_binding"
-        and bool(domain.board_queries)
-        for domain in domains
-    )
+    return all(domain.mapping_type == "catalog_binding" and bool(domain.board_queries) for domain in domains)
 
 
 async def _bind_concept_board_catalog(
@@ -496,25 +466,24 @@ async def _bind_concept_board_catalog(
     llm_cfg: Mapping[str, Any],
     completion: Callable[..., Awaitable[Any]],
     *,
-    trusted_domain_inputs: Mapping[
-        str,
-        list[dict[str, Any]],
-    ] | None = None,
+    trusted_domain_inputs: (
+        Mapping[
+            str,
+            list[dict[str, Any]],
+        ]
+        | None
+    ) = None,
 ) -> tuple[TaskPlan, set[str]]:
     target_tasks = [
-        task for task in plan.tasks
+        task
+        for task in plan.tasks
         if "concept_board_catalog" in workflow_for(task.kind).resource_bindings
         # Industry research consumes the complete catalog in its fixed
         # workflow and selects board IDs in the result processor. Pre-mapping
         # its semantic topic here would be a duplicate model binding pass.
-        and task.kind != StandardTaskKind.INDUSTRY_RESEARCH
-        and _semantic_domain_labels(task)
+        and task.kind != StandardTaskKind.INDUSTRY_RESEARCH and _semantic_domain_labels(task)
     ]
-    target_tasks = [
-        task
-        for task in target_tasks
-        if not _has_complete_catalog_bindings(task)
-    ]
+    target_tasks = [task for task in target_tasks if not _has_complete_catalog_bindings(task)]
     if not target_tasks:
         return plan, set()
 
@@ -528,33 +497,28 @@ async def _bind_concept_board_catalog(
             f"live concept-board catalog unavailable: {type(exc).__name__}"
         ) from exc
 
-    board_names = [
-        str(value).strip() for value in catalog.get("board_names") or []
-        if str(value).strip()
-    ]
+    board_names = [str(value).strip() for value in catalog.get("board_names") or [] if str(value).strip()]
     board_name_set = set(board_names)
     if not board_names:
         errors = "；".join(str(value) for value in catalog.get("errors") or [])
-        raise SemanticResourceBindingUnavailableError(
-            errors or "live concept-board catalog is empty"
-        )
+        raise SemanticResourceBindingUnavailableError(errors or "live concept-board catalog is empty")
 
     exact_bindings, unresolved_labels = _exact_catalog_resource_bindings(
         target_tasks,
         board_names,
         trusted_domain_inputs,
     )
-    semantic_tasks = [
-        task for task in target_tasks
-        if unresolved_labels[task.task_id]
-    ]
+    semantic_tasks = [task for task in target_tasks if unresolved_labels[task.task_id]]
     if not semantic_tasks:
-        return _merge_resource_bindings(
-            plan,
-            exact=exact_bindings,
-            semantic={},
-            unresolved_reason="",
-        ), board_name_set
+        return (
+            _merge_resource_bindings(
+                plan,
+                exact=exact_bindings,
+                semantic={},
+                unresolved_reason="",
+            ),
+            board_name_set,
+        )
 
     context = {
         "tasks": [
@@ -613,10 +577,7 @@ async def _bind_concept_board_catalog(
                     raise ValueError(f"{task_id} domains must be an array")
                 validated = [DomainBoardQuerySpec.model_validate(item) for item in domains]
                 unknown = [
-                    board
-                    for domain in validated
-                    for board in domain.board_queries
-                    if board not in board_name_set
+                    board for domain in validated for board in domain.board_queries if board not in board_name_set
                 ]
                 if unknown:
                     raise ValueError(f"{task_id} selected catalog-absent boards {unknown}")
@@ -625,24 +586,20 @@ async def _bind_concept_board_catalog(
                     raise ValueError(f"unexpected binding task id {task_id}")
                 returned_labels = [domain.label for domain in validated]
                 if returned_labels != expected_labels:
-                    raise ValueError(
-                        f"{task_id} must preserve domain labels and order: {expected_labels}"
-                    )
-                by_task[task_id] = {
-                    domain.label: domain.model_dump()
-                    for domain in validated
-                }
+                    raise ValueError(f"{task_id} must preserve domain labels and order: {expected_labels}")
+                by_task[task_id] = {domain.label: domain.model_dump() for domain in validated}
             expected_ids = {task.task_id for task in semantic_tasks}
             if set(by_task) != expected_ids:
-                raise ValueError(
-                    f"binding task ids must equal {sorted(expected_ids)}, got {sorted(by_task)}"
-                )
-            return _merge_resource_bindings(
-                plan,
-                exact=exact_bindings,
-                semantic=by_task,
-                unresolved_reason="",
-            ), board_name_set
+                raise ValueError(f"binding task ids must equal {sorted(expected_ids)}, got {sorted(by_task)}")
+            return (
+                _merge_resource_bindings(
+                    plan,
+                    exact=exact_bindings,
+                    semantic=by_task,
+                    unresolved_reason="",
+                ),
+                board_name_set,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -658,10 +615,7 @@ async def _bind_concept_board_catalog(
         validation_error[:300],
     )
     raise SemanticResourceBindingUnavailableError(
-        (
-            "live semantic resource binding did not complete: "
-            f"{type(last_error).__name__}"
-        )
+        ("live semantic resource binding did not complete: " f"{type(last_error).__name__}")
         if last_error is not None
         else "live semantic resource binding did not complete"
     ) from last_error
@@ -721,20 +675,20 @@ def resolve_plan_entities(
     """Resolve model-selected scopes only through verified local securities."""
     current = _dedupe_entities(current_entities)
     previous = _dedupe_entities(previous_answer_entities)
-    conversation = _dedupe_entities([
-        *(conversation_entities or []),
-        *previous,
-        *current,
-    ])
+    conversation = _dedupe_entities(
+        [
+            *(conversation_entities or []),
+            *previous,
+            *current,
+        ]
+    )
     tasks_by_id = {task.task_id: task for task in plan.tasks}
     resolved_tasks: list[ResolvedTask] = []
     for task in plan.tasks:
         explicit, unresolved = _resolve_task_entities(task.entities)
         spec = workflow_for(task.kind)
         if unresolved and spec.requires_entities:
-            raise TaskPlanValidationError(
-                f"{task.task_id} contains unresolved securities: {unresolved}"
-            )
+            raise TaskPlanValidationError(f"{task.task_id} contains unresolved securities: {unresolved}")
 
         if task.entity_scope == EntityScope.CURRENT_MESSAGE:
             selected = explicit or current
@@ -743,9 +697,7 @@ def resolve_plan_entities(
                 allowed = {item["symbol"] for item in previous}
                 selected = [item for item in current if item["symbol"] in allowed]
                 if len(selected) != len(current):
-                    raise TaskPlanValidationError(
-                        f"{task.task_id} names entities outside previous-turn scope"
-                    )
+                    raise TaskPlanValidationError(f"{task.task_id} names entities outside previous-turn scope")
             else:
                 selected = previous
         elif task.entity_scope == EntityScope.CONVERSATION:
@@ -753,9 +705,7 @@ def resolve_plan_entities(
                 allowed = {item["symbol"] for item in conversation}
                 selected = [item for item in current if item["symbol"] in allowed]
                 if len(selected) != len(current):
-                    raise TaskPlanValidationError(
-                        f"{task.task_id} names entities outside conversation scope"
-                    )
+                    raise TaskPlanValidationError(f"{task.task_id} names entities outside conversation scope")
             else:
                 selected = conversation
         else:
@@ -767,22 +717,15 @@ def resolve_plan_entities(
             for dependency_id in task.depends_on
             for resource in workflow_for(tasks_by_id[dependency_id].kind).output_resources
         )
-        if (
-            spec.requires_entities
-            and not symbols
-            and TaskResource.SECURITY_COLLECTION not in dependency_outputs
-        ):
-            raise TaskPlanValidationError(
-                f"{task.task_id} requires a locally verified A-share entity"
+        if spec.requires_entities and not symbols and TaskResource.SECURITY_COLLECTION not in dependency_outputs:
+            raise TaskPlanValidationError(f"{task.task_id} requires a locally verified A-share entity")
+        resolved_tasks.append(
+            ResolvedTask(
+                candidate=task,
+                symbols=symbols,
+                entity_names=tuple((item["symbol"], item["name"]) for item in _dedupe_entities(selected)),
             )
-        resolved_tasks.append(ResolvedTask(
-            candidate=task,
-            symbols=symbols,
-            entity_names=tuple(
-                (item["symbol"], item["name"])
-                for item in _dedupe_entities(selected)
-            ),
-        ))
+        )
     return resolved_tasks
 
 

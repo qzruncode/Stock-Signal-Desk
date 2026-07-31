@@ -8,17 +8,17 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _DOMESTIC_DOMAINS = [
-    'eastmoney.com',
-    'sina.com.cn',
-    '163.com',
-    'tushare.pro',
-    'baostock.com',
-    'sse.com.cn',
-    'szse.cn',
-    'csindex.com.cn',
-    'cninfo.com.cn',
-    'localhost',
-    '127.0.0.1',
+    "eastmoney.com",
+    "sina.com.cn",
+    "163.com",
+    "tushare.pro",
+    "baostock.com",
+    "sse.com.cn",
+    "szse.cn",
+    "csindex.com.cn",
+    "cninfo.com.cn",
+    "localhost",
+    "127.0.0.1",
 ]
 
 
@@ -34,18 +34,18 @@ def resolve_proxy_and_configure_no_proxy(
     if not http_proxy:
         return
 
-    current_no_proxy = os.getenv('NO_PROXY') or os.getenv('no_proxy') or ''
-    existing_domains = current_no_proxy.split(',') if current_no_proxy else []
+    current_no_proxy = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
+    existing_domains = current_no_proxy.split(",") if current_no_proxy else []
 
     final_domains = list(set(existing_domains + _DOMESTIC_DOMAINS))
-    final_no_proxy = ','.join(filter(None, final_domains))
+    final_no_proxy = ",".join(filter(None, final_domains))
 
-    os.environ['NO_PROXY'] = final_no_proxy
-    os.environ['no_proxy'] = final_no_proxy
+    os.environ["NO_PROXY"] = final_no_proxy
+    os.environ["no_proxy"] = final_no_proxy
 
-    os.environ['HTTP_PROXY'] = http_proxy
-    os.environ['http_proxy'] = http_proxy
+    os.environ["HTTP_PROXY"] = http_proxy
+    os.environ["http_proxy"] = http_proxy
 
     if https_proxy:
-        os.environ['HTTPS_PROXY'] = https_proxy
-        os.environ['https_proxy'] = https_proxy
+        os.environ["HTTPS_PROXY"] = https_proxy
+        os.environ["https_proxy"] = https_proxy

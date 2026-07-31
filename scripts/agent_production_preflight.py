@@ -33,7 +33,7 @@ from src.agent.task_workflows import (  # noqa: E402
 from src.tools.registry import ToolRegistry  # noqa: E402
 
 
-_ASSET_REF_PATTERN = re.compile(r'''(?:src|href)\s*=\s*["'](/assets/[^"']+)["']''', re.I)
+_ASSET_REF_PATTERN = re.compile(r"""(?:src|href)\s*=\s*["'](/assets/[^"']+)["']""", re.I)
 
 
 def _missing_frontend_assets(static_dir: Path) -> list[str]:
@@ -41,13 +41,7 @@ def _missing_frontend_assets(static_dir: Path) -> list[str]:
     if not index_path.is_file():
         return []
     html = index_path.read_text(encoding="utf-8", errors="replace")
-    return sorted(
-        {
-            ref
-            for ref in _ASSET_REF_PATTERN.findall(html)
-            if not (static_dir / ref.lstrip("/")).is_file()
-        }
-    )
+    return sorted({ref for ref in _ASSET_REF_PATTERN.findall(html) if not (static_dir / ref.lstrip("/")).is_file()})
 
 
 def main() -> int:
@@ -74,33 +68,19 @@ def main() -> int:
         missing_workflow_tools = sorted(tool_names - workflow_tools)
         stale_workflow_tools = sorted(workflow_tools - tool_names)
         if missing_workflow_tools:
-            issues.append(
-                "registered tools missing from fixed workflows: "
-                + ", ".join(missing_workflow_tools)
-            )
+            issues.append("registered tools missing from fixed workflows: " + ", ".join(missing_workflow_tools))
         if stale_workflow_tools:
-            issues.append(
-                "fixed workflows reference unregistered tools: "
-                + ", ".join(stale_workflow_tools)
-            )
-        missing_task_kinds = sorted(
-            kind.value for kind in set(StandardTaskKind) - set(WORKFLOW_REGISTRY)
-        )
+            issues.append("fixed workflows reference unregistered tools: " + ", ".join(stale_workflow_tools))
+        missing_task_kinds = sorted(kind.value for kind in set(StandardTaskKind) - set(WORKFLOW_REGISTRY))
         if missing_task_kinds:
-            issues.append(
-                "standard task kinds missing from workflow registry: "
-                + ", ".join(missing_task_kinds)
-            )
+            issues.append("standard task kinds missing from workflow registry: " + ", ".join(missing_task_kinds))
         oversized_workflows = sorted(
             kind.value
             for kind, spec in WORKFLOW_REGISTRY.items()
             if len(spec.tool_whitelist) > 8 or spec.max_tool_calls > 8
         )
         if oversized_workflows:
-            issues.append(
-                "fixed workflows exceed the 8-tool/call policy: "
-                + ", ".join(oversized_workflows)
-            )
+            issues.append("fixed workflows exceed the 8-tool/call policy: " + ", ".join(oversized_workflows))
     except Exception as exc:  # noqa: BLE001
         registered_tools = 0
         issues.append(f"tool registry initialization failed: {type(exc).__name__}: {exc}")

@@ -24,7 +24,7 @@ class AnalysisMixin:
         report_type: str,
         news_content: Optional[str],
         context_snapshot: Optional[Dict[str, Any]] = None,
-        save_snapshot: bool = True
+        save_snapshot: bool = True,
     ) -> int:
         """
         保存分析结果历史记录
@@ -39,6 +39,7 @@ class AnalysisMixin:
             context_text = self._safe_json_dumps(context_snapshot)
 
         try:
+
             def _write(session: Session) -> int:
                 session.add(
                     AnalysisHistory(
@@ -61,6 +62,7 @@ class AnalysisMixin:
                     )
                 )
                 return 1
+
             return self._run_write_transaction(
                 f"save_analysis_history[{result.code}]",
                 _write,
@@ -102,12 +104,16 @@ class AnalysisMixin:
             if exclude_query_id and not query_id:
                 conditions.append(AnalysisHistory.query_id != exclude_query_id)
 
-            results = session.execute(
-                select(AnalysisHistory)
-                .where(and_(*conditions))
-                .order_by(desc(AnalysisHistory.created_at))
-                .limit(limit)
-            ).scalars().all()
+            results = (
+                session.execute(
+                    select(AnalysisHistory)
+                    .where(and_(*conditions))
+                    .order_by(desc(AnalysisHistory.created_at))
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
 
             return list(results)
 
@@ -117,7 +123,7 @@ class AnalysisMixin:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
     ) -> Tuple[List[AnalysisHistory], int]:
         """
         分页查询分析历史记录（带总数）
@@ -140,7 +146,9 @@ class AnalysisMixin:
             if start_date:
                 conditions.append(AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time()))
             if end_date:
-                conditions.append(AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time()))
+                conditions.append(
+                    AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+                )
 
             where_clause = and_(*conditions) if conditions else True
 
@@ -172,9 +180,7 @@ class AnalysisMixin:
             AnalysisHistory 对象，不存在返回 None
         """
         with self.get_session() as session:
-            result = session.execute(
-                select(AnalysisHistory).where(AnalysisHistory.id == record_id)
-            ).scalars().first()
+            result = session.execute(select(AnalysisHistory).where(AnalysisHistory.id == record_id)).scalars().first()
             return result
 
     def delete_analysis_history_records(self, record_ids: List[int]) -> int:
@@ -194,12 +200,8 @@ class AnalysisMixin:
             return 0
 
         with self.session_scope() as session:
-            session.execute(
-                delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(ids))
-            )
-            result = session.execute(
-                delete(AnalysisHistory).where(AnalysisHistory.id.in_(ids))
-            )
+            session.execute(delete(BacktestResult).where(BacktestResult.analysis_history_id.in_(ids)))
+            result = session.execute(delete(AnalysisHistory).where(AnalysisHistory.id.in_(ids)))
             return result.rowcount or 0
 
     def get_latest_analysis_by_query_id(self, query_id: str) -> Optional[AnalysisHistory]:
@@ -215,12 +217,16 @@ class AnalysisMixin:
             AnalysisHistory 对象，不存在返回 None
         """
         with self.get_session() as session:
-            result = session.execute(
-                select(AnalysisHistory)
-                .where(AnalysisHistory.query_id == query_id)
-                .order_by(desc(AnalysisHistory.created_at))
-                .limit(1)
-            ).scalars().first()
+            result = (
+                session.execute(
+                    select(AnalysisHistory)
+                    .where(AnalysisHistory.query_id == query_id)
+                    .order_by(desc(AnalysisHistory.created_at))
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
             return result
 
     # ── Buy Criteria Records ──────────────────────────────────────────────
@@ -255,25 +261,33 @@ class AnalysisMixin:
         }
 
         with self.session_scope() as session:
-            existing = session.execute(
-                select(BuyCriteriaRecord).where(
-                    BuyCriteriaRecord.symbol == symbol,
-                    BuyCriteriaRecord.trade_date == trade_date,
+            existing = (
+                session.execute(
+                    select(BuyCriteriaRecord).where(
+                        BuyCriteriaRecord.symbol == symbol,
+                        BuyCriteriaRecord.trade_date == trade_date,
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
 
             if existing:
                 for key, value in record_data.items():
                     setattr(existing, key, value)
                 existing.created_at = now
                 logger.info(
-                    "[storage] updated buy_criteria_record: %s @ %s", symbol, trade_date,
+                    "[storage] updated buy_criteria_record: %s @ %s",
+                    symbol,
+                    trade_date,
                 )
             else:
                 record = BuyCriteriaRecord(**record_data)
                 session.add(record)
                 logger.info(
-                    "[storage] inserted buy_criteria_record: %s @ %s", symbol, trade_date,
+                    "[storage] inserted buy_criteria_record: %s @ %s",
+                    symbol,
+                    trade_date,
                 )
 
     def get_buy_criteria_record(
@@ -283,12 +297,16 @@ class AnalysisMixin:
     ) -> dict[str, Any] | None:
         """按股票代码+交易日查询记录，返回 dict 或 None。"""
         with self.get_session() as session:
-            record = session.execute(
-                select(BuyCriteriaRecord).where(
-                    BuyCriteriaRecord.symbol == symbol,
-                    BuyCriteriaRecord.trade_date == trade_date,
+            record = (
+                session.execute(
+                    select(BuyCriteriaRecord).where(
+                        BuyCriteriaRecord.symbol == symbol,
+                        BuyCriteriaRecord.trade_date == trade_date,
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if record:
                 session.expunge(record)
                 return record.to_dict()
@@ -312,10 +330,12 @@ class AnalysisMixin:
         生成完整分析结果字典
         """
         data = result.to_dict() if hasattr(result, "to_dict") else {}
-        data.update({
-            'data_sources': getattr(result, 'data_sources', ''),
-            'raw_response': getattr(result, 'raw_response', None),
-        })
+        data.update(
+            {
+                "data_sources": getattr(result, "data_sources", ""),
+                "raw_response": getattr(result, "raw_response", None),
+            }
+        )
         return data
 
     @staticmethod
@@ -333,8 +353,8 @@ class AnalysisMixin:
             v = float(value)
             return v if v > 0 else None
 
-        text = str(value).replace(',', '').replace('，', '').strip()
-        if not text or text == '-' or text == '—' or text == 'N/A':
+        text = str(value).replace(",", "").replace("，", "").strip()
+        if not text or text == "-" or text == "—" or text == "N/A":
             return None
 
         # 尝试直接解析纯数字字符串
@@ -355,7 +375,7 @@ class AnalysisMixin:
             for m in matches:
                 start_idx = m.start()
                 if start_idx >= 2:
-                    prefix = segment[start_idx-2:start_idx].upper()
+                    prefix = segment[start_idx - 2 : start_idx].upper()
                     if prefix == "MA":
                         continue
                 valid_numbers.append(m.group())
@@ -368,7 +388,7 @@ class AnalysisMixin:
 
         # 兜底：无"元"字时，先截去第一个括号后的内容
         paren_pos = len(text)
-        for paren_char in ('(', '（'):
+        for paren_char in ("(", "（"):
             pos = text.find(paren_char)
             if pos != -1:
                 paren_pos = min(paren_pos, pos)
@@ -377,7 +397,7 @@ class AnalysisMixin:
         valid_numbers = []
         for m in re.finditer(r"\d+(?:\.\d+)?", search_text):
             start_idx = m.start()
-            if start_idx >= 2 and search_text[start_idx-2:start_idx].upper() == "MA":
+            if start_idx >= 2 and search_text[start_idx - 2 : start_idx].upper() == "MA":
                 continue
             valid_numbers.append(m.group())
         if valid_numbers:

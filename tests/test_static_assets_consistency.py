@@ -27,7 +27,7 @@ def _vite_index(js_name: str, css_name: str) -> str:
         "<!doctype html><html><head>"
         f'<script type="module" crossorigin src="/assets/{js_name}"></script>'
         f'<link rel="stylesheet" crossorigin href="/assets/{css_name}">'
-        "</head><body><div id=\"root\"></div></body></html>"
+        '</head><body><div id="root"></div></body></html>'
     )
 
 
@@ -45,10 +45,7 @@ def test_backend_startup_check_logs_when_bundle_inconsistent(
         missing = app_module._check_frontend_assets_consistency(static_dir)
 
     assert sorted(missing) == ["/assets/index-NEW.css", "/assets/index-NEW.js"]
-    assert any(
-        "Frontend bundle is inconsistent" in record.getMessage()
-        for record in caplog.records
-    )
+    assert any("Frontend bundle is inconsistent" in record.getMessage() for record in caplog.records)
 
 
 def test_backend_startup_check_silent_when_bundle_consistent(
@@ -68,10 +65,7 @@ def test_backend_startup_check_silent_when_bundle_consistent(
         missing = app_module._check_frontend_assets_consistency(static_dir)
 
     assert missing == []
-    assert not any(
-        "Frontend bundle is inconsistent" in record.getMessage()
-        for record in caplog.records
-    )
+    assert not any("Frontend bundle is inconsistent" in record.getMessage() for record in caplog.records)
 
 
 def test_missing_asset_returns_safe_404_content_types(tmp_path: Path) -> None:
@@ -182,9 +176,7 @@ def test_frontend_index_responses_are_not_cacheable(tmp_path: Path) -> None:
     assert direct_index_response.status_code == 200
     assert fallback_response.status_code == 200
     for response in (root_response, direct_index_response, fallback_response):
-        assert response.headers["cache-control"] == (
-            "no-store, no-cache, must-revalidate, max-age=0"
-        )
+        assert response.headers["cache-control"] == ("no-store, no-cache, must-revalidate, max-age=0")
         assert response.headers["pragma"] == "no-cache"
         assert response.headers["expires"] == "0"
 

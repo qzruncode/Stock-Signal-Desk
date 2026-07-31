@@ -188,18 +188,13 @@ def _payload_from_response(response: Any, function_name: str) -> dict[str, Any]:
         # Keep the original invalid function payload for the targeted repair
         # record while still accepting a valid provider JSON fallback.
         raise parse_errors[0]
-    raise MissingProviderPayloadError(
-        f"model returned no {function_name} payload"
-    )
+    raise MissingProviderPayloadError(f"model returned no {function_name} payload")
 
 
 def _pointer(location: tuple[Any, ...]) -> str:
     if not location:
         return "/"
-    escaped = [
-        str(item).replace("~", "~0").replace("/", "~1")
-        for item in location
-    ]
+    escaped = [str(item).replace("~", "~0").replace("/", "~1") for item in location]
     return "/" + "/".join(escaped)
 
 
@@ -228,25 +223,19 @@ def _schema_at_location(
         current = _deref_schema(current, root)
         branches = current.get("anyOf") or current.get("oneOf")
         if isinstance(branches, list):
-            resolved = [
-                _deref_schema(branch, root)
-                for branch in branches
-                if isinstance(branch, Mapping)
-            ]
-            titled = next((
-                branch
-                for branch in resolved
-                if branch.get("title") == str(part)
-            ), None)
+            resolved = [_deref_schema(branch, root) for branch in branches if isinstance(branch, Mapping)]
+            titled = next((branch for branch in resolved if branch.get("title") == str(part)), None)
             if titled is not None:
                 current = titled
                 continue
-            property_branch = next((
-                branch
-                for branch in resolved
-                if isinstance(branch.get("properties"), Mapping)
-                and str(part) in branch["properties"]
-            ), None)
+            property_branch = next(
+                (
+                    branch
+                    for branch in resolved
+                    if isinstance(branch.get("properties"), Mapping) and str(part) in branch["properties"]
+                ),
+                None,
+            )
             if property_branch is not None:
                 current = property_branch
         properties = current.get("properties")
@@ -280,25 +269,20 @@ def _normalize_json_encoded_contract_fields(
         alternatives = resolved.get("anyOf") or resolved.get("oneOf")
         if not isinstance(alternatives, list):
             return (resolved,)
-        return tuple(
-            _deref_schema(item, root)
-            for item in alternatives
-            if isinstance(item, Mapping)
-        )
+        return tuple(_deref_schema(item, root) for item in alternatives if isinstance(item, Mapping))
 
     def structured_branch(
         schema: Mapping[str, Any],
         kind: str,
     ) -> Mapping[str, Any] | None:
-        return next((
-            item
-            for item in branches(schema)
-            if item.get("type") == kind
-            or (
-                kind == "object"
-                and isinstance(item.get("properties"), Mapping)
-            )
-        ), None)
+        return next(
+            (
+                item
+                for item in branches(schema)
+                if item.get("type") == kind or (kind == "object" and isinstance(item.get("properties"), Mapping))
+            ),
+            None,
+        )
 
     def normalize(
         value: Any,
@@ -309,10 +293,7 @@ def _normalize_json_encoded_contract_fields(
         if depth > 24:
             return value
         candidates = branches(schema)
-        string_allowed = any(
-            item.get("type") == "string"
-            for item in candidates
-        )
+        string_allowed = any(item.get("type") == "string" for item in candidates)
         object_schema = structured_branch(schema, "object")
         array_schema = structured_branch(schema, "array")
         if isinstance(value, str) and not string_allowed:
@@ -320,58 +301,45 @@ def _normalize_json_encoded_contract_fields(
             expected_container = (
                 object_schema
                 if stripped.startswith("{") and stripped.endswith("}")
-                else (
-                    array_schema
-                    if stripped.startswith("[") and stripped.endswith("]")
-                    else None
-                )
+                else (array_schema if stripped.startswith("[") and stripped.endswith("]") else None)
             )
             if expected_container is not None and len(stripped) <= 250_000:
                 try:
                     decoded = json.loads(stripped)
                 except (TypeError, ValueError):
                     decoded = value
-                if (
-                    expected_container is object_schema
-                    and isinstance(decoded, dict)
-                ) or (
-                    expected_container is array_schema
-                    and isinstance(decoded, list)
+                if (expected_container is object_schema and isinstance(decoded, dict)) or (
+                    expected_container is array_schema and isinstance(decoded, list)
                 ):
                     value = decoded
         if isinstance(value, Mapping) and object_schema is not None:
             properties = object_schema.get("properties")
             additional = object_schema.get("additionalProperties")
             return {
-                key: normalize(
-                    item,
-                    (
-                        properties[key]
-                        if isinstance(properties, Mapping)
-                        and key in properties
-                        and isinstance(properties[key], Mapping)
-                        else additional
-                    ),
-                    depth=depth + 1,
-                )
-                if (
-                    (
-                        isinstance(properties, Mapping)
-                        and key in properties
-                        and isinstance(properties[key], Mapping)
+                key: (
+                    normalize(
+                        item,
+                        (
+                            properties[key]
+                            if isinstance(properties, Mapping)
+                            and key in properties
+                            and isinstance(properties[key], Mapping)
+                            else additional
+                        ),
+                        depth=depth + 1,
                     )
-                    or isinstance(additional, Mapping)
+                    if (
+                        (isinstance(properties, Mapping) and key in properties and isinstance(properties[key], Mapping))
+                        or isinstance(additional, Mapping)
+                    )
+                    else item
                 )
-                else item
                 for key, item in value.items()
             }
         if isinstance(value, (list, tuple)) and array_schema is not None:
             items = array_schema.get("items")
             if isinstance(items, Mapping):
-                return [
-                    normalize(item, items, depth=depth + 1)
-                    for item in value
-                ]
+                return [normalize(item, items, depth=depth + 1) for item in value]
         return value
 
     normalized = normalize(payload, root, depth=0)
@@ -407,22 +375,17 @@ def _repair_issues(
         for error in exc.errors(include_url=False):
             context = error.get("ctx") or {}
             location = tuple(error.get("loc") or ())
-            schema_expected, schema_allowed = _schema_expectation(
-                _schema_at_location(model, location)
+            schema_expected, schema_allowed = _schema_expectation(_schema_at_location(model, location))
+            expected = str(context.get("expected") or context.get("class_name") or schema_expected or error.get("type"))
+            issues.append(
+                RepairIssueV2(
+                    pointer=_pointer(location),
+                    code=str(error.get("type") or "validation_error"),
+                    expected=expected,
+                    allowed=schema_allowed,
+                    message=str(error.get("msg") or "invalid value"),
+                )
             )
-            expected = str(
-                context.get("expected")
-                or context.get("class_name")
-                or schema_expected
-                or error.get("type")
-            )
-            issues.append(RepairIssueV2(
-                pointer=_pointer(location),
-                code=str(error.get("type") or "validation_error"),
-                expected=expected,
-                allowed=schema_allowed,
-                message=str(error.get("msg") or "invalid value"),
-            ))
         return tuple(issues)
     return (
         RepairIssueV2(
@@ -467,15 +430,13 @@ def _exact_contract_messages(
         context["output_transport"] = {
             "type": "json_content",
             "instruction": (
-                "最终回答只能是一个完整 JSON 对象，不得包含解释、Markdown、"
-                "代码围栏或 JSON 之外的文字。"
+                "最终回答只能是一个完整 JSON 对象，不得包含解释、Markdown、" "代码围栏或 JSON 之外的文字。"
             ),
         }
         prompt = (
             system_prompt
             + (
-                "\n\n当前严格函数参数通道未返回可解析 JSON，现改用 JSON 内容"
-                "通道完成同一次定点修复。"
+                "\n\n当前严格函数参数通道未返回可解析 JSON，现改用 JSON 内容" "通道完成同一次定点修复。"
                 if is_targeted_repair
                 else "\n\n本能力按程序策略使用 JSON 内容通道提交精确契约。"
             )
@@ -507,14 +468,16 @@ async def _emit(
 ) -> None:
     if observer is None:
         return
-    result = observer(AgentStageEventV2(
-        run_id=run_id,
-        stage=stage,
-        status=status,
-        task_id=task_id,
-        error_code=error_code,
-        summary=summary,
-    ))
+    result = observer(
+        AgentStageEventV2(
+            run_id=run_id,
+            stage=stage,
+            status=status,
+            task_id=task_id,
+            error_code=error_code,
+            summary=summary,
+        )
+    )
     if inspect.isawaitable(result):
         await result
 
@@ -530,9 +493,7 @@ async def call_model_exact_v2(
     semantic_context: Mapping[str, Any],
     node_id: str | None,
     value_validator: Callable[[BaseModel], None] | None = None,
-    payload_normalizer: (
-        Callable[[dict[str, Any]], dict[str, Any]] | None
-    ) = None,
+    payload_normalizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     progress_observer: Callable[[int], Awaitable[None] | None] | None = None,
     provider_error_code: AgentErrorCode = AgentErrorCode.PLANNER_TIMEOUT,
     schema_error_code: AgentErrorCode = AgentErrorCode.PLANNER_SCHEMA_INVALID,
@@ -554,17 +515,14 @@ async def call_model_exact_v2(
     first_error: BaseException | None = None
     for attempt in range(2):
         request_context = dict(semantic_context)
-        json_content_transport = (
-            contract_transport == "json_content"
-            or (
-                attempt == 1
-                and isinstance(
-                    first_error,
-                    (
-                        RawProviderPayloadError,
-                        MissingProviderPayloadError,
-                    ),
-                )
+        json_content_transport = contract_transport == "json_content" or (
+            attempt == 1
+            and isinstance(
+                first_error,
+                (
+                    RawProviderPayloadError,
+                    MissingProviderPayloadError,
+                ),
             )
         )
         if attempt == 1:
@@ -594,13 +552,15 @@ async def call_model_exact_v2(
             "max_tokens": max_tokens,
         }
         if not json_content_transport:
-            structured_kwargs.update({
-                "tools": [tool],
-                "tool_choice": {
-                    "type": "function",
-                    "function": {"name": function_name},
-                },
-            })
+            structured_kwargs.update(
+                {
+                    "tools": [tool],
+                    "tool_choice": {
+                        "type": "function",
+                        "function": {"name": function_name},
+                    },
+                }
+            )
         kwargs = build_litellm_kwargs(
             dict(llm_cfg),
             stream=False,
@@ -619,9 +579,7 @@ async def call_model_exact_v2(
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError(
-                        f"{function_name} exceeded {request_timeout:.1f}s"
-                    )
+                    raise TimeoutError(f"{function_name} exceeded {request_timeout:.1f}s")
                 done, _ = await asyncio.wait(
                     {completion_task},
                     timeout=min(
@@ -633,9 +591,7 @@ async def call_model_exact_v2(
                     response = completion_task.result()
                     break
                 if progress_observer is not None:
-                    progress_result = progress_observer(
-                        max(1, int(time.monotonic() - wait_started))
-                    )
+                    progress_result = progress_observer(max(1, int(time.monotonic() - wait_started)))
                     if inspect.isawaitable(progress_result):
                         await progress_result
         except asyncio.CancelledError:
@@ -643,10 +599,7 @@ async def call_model_exact_v2(
         except Exception as exc:
             raise OrchestratorV2Error(
                 provider_error_code,
-                (
-                    f"{function_name} provider request failed: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                (f"{function_name} provider request failed: " f"{type(exc).__name__}: {exc}"),
                 task_id=node_id,
                 metadata={
                     "provider_attempts": 1,
@@ -667,11 +620,7 @@ async def call_model_exact_v2(
                 raw_payload,
                 model,
             )
-            payload = (
-                payload_normalizer(normalized_payload)
-                if payload_normalizer is not None
-                else normalized_payload
-            )
+            payload = payload_normalizer(normalized_payload) if payload_normalizer is not None else normalized_payload
             validated = model.model_validate(payload)
             if value_validator is not None:
                 value_validator(validated)
@@ -693,19 +642,12 @@ async def call_model_exact_v2(
             raise
         except Exception as exc:
             if attempt == 0:
-                first_payload = (
-                    exc.payload
-                    if isinstance(exc, RawProviderPayloadError)
-                    else raw_payload
-                )
+                first_payload = exc.payload if isinstance(exc, RawProviderPayloadError) else raw_payload
                 first_error = exc
                 continue
             raise OrchestratorV2Error(
                 schema_error_code,
-                (
-                    f"{function_name} remained invalid after one targeted repair: "
-                    f"{exc}"
-                ),
+                (f"{function_name} remained invalid after one targeted repair: " f"{exc}"),
                 task_id=node_id,
                 metadata={
                     "repair": RepairRecordV2(
@@ -723,81 +665,64 @@ async def call_model_exact_v2(
 def _validate_outline_capability_contracts(value: BaseModel) -> None:
     outline = IntentOutlineV2.model_validate(value)
     issues: list[RepairIssueV2] = []
-    selected_specs = [
-        capability_for(node.capability)
-        for node in outline.nodes
-    ]
-    covered_dimensions = frozenset(
-        dimension
-        for spec in selected_specs
-        for dimension in spec.evidence_dimensions
-    )
+    selected_specs = [capability_for(node.capability) for node in outline.nodes]
+    covered_dimensions = frozenset(dimension for spec in selected_specs for dimension in spec.evidence_dimensions)
     required_dimensions = frozenset(
-        dimension
-        for claim in outline.goal.claims
-        if claim.mandatory
-        for dimension in claim.required_dimensions
+        dimension for claim in outline.goal.claims if claim.mandatory for dimension in claim.required_dimensions
     )
-    missing_dimensions = tuple(sorted(
-        required_dimensions - covered_dimensions,
-        key=lambda item: item.value,
-    ))
-    if missing_dimensions and not outline.needs_clarification:
-        issues.append(RepairIssueV2(
-            pointer="/goal/claims",
-            code="goal_evidence_coverage_incomplete",
-            expected=(
-                "selected capabilities must jointly cover every required "
-                "evidence dimension of every mandatory claim"
-            ),
-            allowed=tuple(item.value for item in covered_dimensions),
-            message=(
-                "capability graph does not cover required evidence dimensions: "
-                + ", ".join(item.value for item in missing_dimensions)
-            ),
-        ))
-    if (
-        not outline.needs_clarification
-        and not any(
-            outline.goal.question_type in spec.supported_question_types
-            for spec in selected_specs
+    missing_dimensions = tuple(
+        sorted(
+            required_dimensions - covered_dimensions,
+            key=lambda item: item.value,
         )
+    )
+    if missing_dimensions and not outline.needs_clarification:
+        issues.append(
+            RepairIssueV2(
+                pointer="/goal/claims",
+                code="goal_evidence_coverage_incomplete",
+                expected=(
+                    "selected capabilities must jointly cover every required "
+                    "evidence dimension of every mandatory claim"
+                ),
+                allowed=tuple(item.value for item in covered_dimensions),
+                message=(
+                    "capability graph does not cover required evidence dimensions: "
+                    + ", ".join(item.value for item in missing_dimensions)
+                ),
+            )
+        )
+    if not outline.needs_clarification and not any(
+        outline.goal.question_type in spec.supported_question_types for spec in selected_specs
     ):
-        issues.append(RepairIssueV2(
-            pointer="/goal/question_type",
-            code="goal_question_type_unsupported",
-            expected=(
-                "at least one selected terminal capability must support "
-                f"{outline.goal.question_type.value}"
-            ),
-            allowed=tuple(sorted({
-                item.value
-                for spec in selected_specs
-                for item in spec.supported_question_types
-            })),
-            message=(
-                "selected capabilities cannot produce the requested answer "
-                f"mode: {outline.goal.question_type.value}"
-            ),
-        ))
+        issues.append(
+            RepairIssueV2(
+                pointer="/goal/question_type",
+                code="goal_question_type_unsupported",
+                expected=(
+                    "at least one selected terminal capability must support " f"{outline.goal.question_type.value}"
+                ),
+                allowed=tuple(
+                    sorted({item.value for spec in selected_specs for item in spec.supported_question_types})
+                ),
+                message=(
+                    "selected capabilities cannot produce the requested answer "
+                    f"mode: {outline.goal.question_type.value}"
+                ),
+            )
+        )
     for index, node in enumerate(outline.nodes):
         spec = capability_for(node.capability)
-        if (
-            node.result_selection is not None
-            and not spec.supports_result_selection
-        ):
-            issues.append(RepairIssueV2(
-                pointer=f"/nodes/{index}/result_selection",
-                code="capability_result_selection_forbidden",
-                expected=(
-                    "null because capability "
-                    f"{node.capability.value} does not support result selection"
-                ),
-                allowed=(None,),
-                message=(
-                    f"{node.capability.value} does not support result_selection"
-                ),
-            ))
+        if node.result_selection is not None and not spec.supports_result_selection:
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/nodes/{index}/result_selection",
+                    code="capability_result_selection_forbidden",
+                    expected=("null because capability " f"{node.capability.value} does not support result selection"),
+                    allowed=(None,),
+                    message=(f"{node.capability.value} does not support result_selection"),
+                )
+            )
     if issues:
         raise ExactContractValidationError(tuple(issues))
 
@@ -815,65 +740,51 @@ def _validate_recovery_outline_contracts(
     issues: list[RepairIssueV2] = []
     for index, node in enumerate(outline.nodes):
         spec = capability_for(node.capability)
-        if (
-            node.result_selection is not None
-            and not spec.supports_result_selection
-        ):
-            issues.append(RepairIssueV2(
-                pointer=f"/nodes/{index}/result_selection",
-                code="capability_result_selection_forbidden",
-                expected=(
-                    "null because capability "
-                    f"{node.capability.value} does not support result selection"
-                ),
-                allowed=(None,),
-                message=(
-                    f"{node.capability.value} does not support result_selection"
-                ),
-            ))
+        if node.result_selection is not None and not spec.supports_result_selection:
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/nodes/{index}/result_selection",
+                    code="capability_result_selection_forbidden",
+                    expected=("null because capability " f"{node.capability.value} does not support result selection"),
+                    allowed=(None,),
+                    message=(f"{node.capability.value} does not support result_selection"),
+                )
+            )
     if outline.goal != fixed_goal:
-        issues.append(RepairIssueV2(
-            pointer="/goal",
-            code="recovery_goal_changed",
-            expected="the exact frozen Goal Contract from the initial plan",
-            allowed=(fixed_goal.model_dump(mode="json"),),
-            message="recovery planning cannot change the user's frozen goal",
-        ))
-    unexpected = tuple(
-        node.capability
-        for node in outline.nodes
-        if node.capability not in allowed_capabilities
-    )
+        issues.append(
+            RepairIssueV2(
+                pointer="/goal",
+                code="recovery_goal_changed",
+                expected="the exact frozen Goal Contract from the initial plan",
+                allowed=(fixed_goal.model_dump(mode="json"),),
+                message="recovery planning cannot change the user's frozen goal",
+            )
+        )
+    unexpected = tuple(node.capability for node in outline.nodes if node.capability not in allowed_capabilities)
     if unexpected:
-        issues.append(RepairIssueV2(
-            pointer="/nodes",
-            code="recovery_capability_out_of_scope",
-            expected="only program-proposed read-only recovery capabilities",
-            allowed=tuple(sorted(
-                item.value for item in allowed_capabilities
-            )),
-            message=(
-                "recovery plan selected capabilities outside the bounded "
-                "allowlist: "
-                + ", ".join(item.value for item in unexpected)
-            ),
-        ))
-    invalid_node_ids = tuple(
-        node.node_id
-        for node in outline.nodes
-        if not node.node_id.startswith(node_id_prefix)
-    )
+        issues.append(
+            RepairIssueV2(
+                pointer="/nodes",
+                code="recovery_capability_out_of_scope",
+                expected="only program-proposed read-only recovery capabilities",
+                allowed=tuple(sorted(item.value for item in allowed_capabilities)),
+                message=(
+                    "recovery plan selected capabilities outside the bounded "
+                    "allowlist: " + ", ".join(item.value for item in unexpected)
+                ),
+            )
+        )
+    invalid_node_ids = tuple(node.node_id for node in outline.nodes if not node.node_id.startswith(node_id_prefix))
     if invalid_node_ids:
-        issues.append(RepairIssueV2(
-            pointer="/nodes",
-            code="recovery_node_id_not_namespaced",
-            expected=f"every recovery node id starts with {node_id_prefix}",
-            allowed=(f"{node_id_prefix}<name>",),
-            message=(
-                "recovery node ids must be namespaced for durable merging: "
-                + ", ".join(invalid_node_ids)
-            ),
-        ))
+        issues.append(
+            RepairIssueV2(
+                pointer="/nodes",
+                code="recovery_node_id_not_namespaced",
+                expected=f"every recovery node id starts with {node_id_prefix}",
+                allowed=(f"{node_id_prefix}<name>",),
+                message=("recovery node ids must be namespaced for durable merging: " + ", ".join(invalid_node_ids)),
+            )
+        )
     if issues:
         raise ExactContractValidationError(tuple(issues))
 
@@ -883,9 +794,7 @@ def _collapse_subsumed_capabilities(
 ) -> tuple[IntentOutlineV2, int]:
     """Collapse redundant siblings into their program-owned composite Workflow."""
     selected_composites = {
-        node.capability
-        for node in outline.nodes
-        if capability_for(node.capability).subsumes_capabilities
+        node.capability for node in outline.nodes if capability_for(node.capability).subsumes_capabilities
     }
     if not selected_composites:
         return outline, 0
@@ -893,11 +802,7 @@ def _collapse_subsumed_capabilities(
     removable = {
         node.node_id
         for node in outline.nodes
-        if any(
-            node.capability
-            in capability_for(composite).subsumes_capabilities
-            for composite in selected_composites
-        )
+        if any(node.capability in capability_for(composite).subsumes_capabilities for composite in selected_composites)
     }
     for candidate_id in tuple(removable):
         candidate = by_id[candidate_id]
@@ -905,16 +810,13 @@ def _collapse_subsumed_capabilities(
             if consumer.node_id in removable:
                 continue
             references_candidate = any(
-                ref.source == "node" and ref.node_id == candidate_id
-                for ref in consumer.input_refs
+                ref.source == "node" and ref.node_id == candidate_id for ref in consumer.input_refs
             )
             if not references_candidate:
                 continue
             consumer_spec = capability_for(consumer.capability)
             consumer_owns_candidate = (
-                candidate.capability
-                in consumer_spec.subsumes_capabilities
-                and consumer_spec.allow_direct_entities
+                candidate.capability in consumer_spec.subsumes_capabilities and consumer_spec.allow_direct_entities
             )
             if not consumer_owns_candidate:
                 removable.discard(candidate_id)
@@ -922,23 +824,22 @@ def _collapse_subsumed_capabilities(
     if not removable:
         return outline, 0
     nodes = [
-        node.model_copy(update={
-            "input_refs": tuple(
-                ref
-                for ref in node.input_refs
-                if not (
-                    ref.source == "node"
-                    and ref.node_id in removable
-                )
-            ),
-        })
+        node.model_copy(
+            update={
+                "input_refs": tuple(
+                    ref for ref in node.input_refs if not (ref.source == "node" and ref.node_id in removable)
+                ),
+            }
+        )
         for node in outline.nodes
         if node.node_id not in removable
     ]
-    collapsed = IntentOutlineV2.model_validate({
-        **outline.model_dump(mode="python"),
-        "nodes": tuple(nodes),
-    })
+    collapsed = IntentOutlineV2.model_validate(
+        {
+            **outline.model_dump(mode="python"),
+            "nodes": tuple(nodes),
+        }
+    )
     return collapsed, len(removable)
 
 
@@ -963,9 +864,7 @@ def _available_artifacts(
                 result[artifact_id] = _AvailableArtifact(
                     artifact_id=artifact_id,
                     resource_type=resource_type,
-                    producer_node_id=str(
-                        artifact.get("producer_node_id") or ""
-                    ).strip(),
+                    producer_node_id=str(artifact.get("producer_node_id") or "").strip(),
                 )
     return tuple(result.values())
 
@@ -986,10 +885,7 @@ def _normalize_outline_resource_refs(
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, (list, tuple)):
         return payload
-    available_by_id = {
-        artifact.artifact_id: artifact
-        for artifact in available_artifacts
-    }
+    available_by_id = {artifact.artifact_id: artifact for artifact in available_artifacts}
 
     # Providers occasionally insert an identity bridge between a historical
     # resource and its real consumer: a node receives resource R even though
@@ -1002,8 +898,7 @@ def _normalize_outline_resource_refs(
     raw_nodes_by_id = {
         str(node.get("node_id") or "").strip(): node
         for node in raw_nodes
-        if isinstance(node, Mapping)
-        and str(node.get("node_id") or "").strip()
+        if isinstance(node, Mapping) and str(node.get("node_id") or "").strip()
     }
     for node_id, raw_node in raw_nodes_by_id.items():
         try:
@@ -1041,10 +936,7 @@ def _normalize_outline_resource_refs(
         ]
         if not consumer_refs:
             continue
-        if any(
-            ref.get("resource_type") != resource_type.value
-            for ref in consumer_refs
-        ):
+        if any(ref.get("resource_type") != resource_type.value for ref in consumer_refs):
             continue
         bridge_artifacts[node_id] = (artifact_id, resource_type)
 
@@ -1063,21 +955,21 @@ def _normalize_outline_resource_refs(
                 if not isinstance(raw_ref, Mapping):
                     refs.append(raw_ref)
                     continue
-                bridge = bridge_artifacts.get(
-                    str(raw_ref.get("node_id") or "").strip()
-                )
+                bridge = bridge_artifacts.get(str(raw_ref.get("node_id") or "").strip())
                 if (
                     str(raw_ref.get("source") or "node").strip() == "node"
                     and bridge is not None
                     and raw_ref.get("resource_type") == bridge[1].value
                 ):
-                    refs.append({
-                        **raw_ref,
-                        "source": "artifact",
-                        "node_id": None,
-                        "artifact_id": bridge[0],
-                        "resource_type": bridge[1].value,
-                    })
+                    refs.append(
+                        {
+                            **raw_ref,
+                            "source": "artifact",
+                            "node_id": None,
+                            "artifact_id": bridge[0],
+                            "resource_type": bridge[1].value,
+                        }
+                    )
                 else:
                     refs.append(raw_ref)
             node["input_refs"] = refs
@@ -1087,8 +979,7 @@ def _normalize_outline_resource_refs(
     current_node_ids = {
         str(node.get("node_id") or "").strip()
         for node in raw_nodes
-        if isinstance(node, Mapping)
-        and str(node.get("node_id") or "").strip()
+        if isinstance(node, Mapping) and str(node.get("node_id") or "").strip()
     }
     normalized_nodes: list[Any] = []
     issues: list[RepairIssueV2] = []
@@ -1122,66 +1013,45 @@ def _normalize_outline_resource_refs(
             # decision). Such an edge can never be consumed by the selected
             # capability, so remove it deterministically instead of letting an
             # irrelevant model field abort the whole run.
-            if (
-                capability_spec is not None
-                and resource_type not in capability_spec.input_resources
-            ):
+            if capability_spec is not None and resource_type not in capability_spec.input_resources:
                 continue
             source = str(ref.get("source") or "node").strip()
             node_id = str(ref.get("node_id") or "").strip()
-            if (
-                source != "node"
-                or not node_id
-                or node_id in current_node_ids
-            ):
+            if source != "node" or not node_id or node_id in current_node_ids:
                 normalized_refs.append(ref)
                 continue
-            compatible = tuple(
-                artifact
-                for artifact in available_artifacts
-                if artifact.resource_type == resource_type
-            )
-            producer_matches = tuple(
-                artifact
-                for artifact in compatible
-                if artifact.producer_node_id == node_id
-            )
-            candidates = (
-                producer_matches
-                if producer_matches
-                else compatible
-            )
+            compatible = tuple(artifact for artifact in available_artifacts if artifact.resource_type == resource_type)
+            producer_matches = tuple(artifact for artifact in compatible if artifact.producer_node_id == node_id)
+            candidates = producer_matches if producer_matches else compatible
             if len(candidates) == 1:
                 artifact = candidates[0]
-                normalized_refs.append({
-                    **ref,
-                    "source": "artifact",
-                    "node_id": None,
-                    "artifact_id": artifact.artifact_id,
-                    "resource_type": resource_type.value,
-                })
+                normalized_refs.append(
+                    {
+                        **ref,
+                        "source": "artifact",
+                        "node_id": None,
+                        "artifact_id": artifact.artifact_id,
+                        "resource_type": resource_type.value,
+                    }
+                )
                 continue
             if candidates:
                 raise OrchestratorV2Error(
                     AgentErrorCode.CLARIFICATION_REQUIRED,
-                    (
-                        f"找到多个可用的 {resource_type.value} 历史结果，"
-                        "请说明要使用哪一轮或哪一次筛选结果。"
-                    ),
+                    (f"找到多个可用的 {resource_type.value} 历史结果，" "请说明要使用哪一轮或哪一次筛选结果。"),
                     task_id=str(node.get("node_id") or "") or None,
                 )
-            issues.append(RepairIssueV2(
-                pointer=f"/nodes/{node_index}/input_refs/{ref_index}",
-                code="unknown_node_reference",
-                expected=(
-                    "a current-graph node_id or one uniquely resolvable "
-                    "historical artifact"
-                ),
-                message=(
-                    f"{node_id!r} is not a node in this graph and "
-                    f"resolved to {len(candidates)} compatible artifacts"
-                ),
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/nodes/{node_index}/input_refs/{ref_index}",
+                    code="unknown_node_reference",
+                    expected=("a current-graph node_id or one uniquely resolvable " "historical artifact"),
+                    message=(
+                        f"{node_id!r} is not a node in this graph and "
+                        f"resolved to {len(candidates)} compatible artifacts"
+                    ),
+                )
+            )
             normalized_refs.append(ref)
         node["input_refs"] = normalized_refs
         normalized_nodes.append(node)
@@ -1210,10 +1080,7 @@ def _bind_outline_resources(
             if ref.resource_type not in spec.input_resources:
                 raise OrchestratorV2Error(
                     AgentErrorCode.PLANNER_SCHEMA_INVALID,
-                    (
-                        f"{node.node_id} does not accept "
-                        f"{ref.resource_type.value}"
-                    ),
+                    (f"{node.node_id} does not accept " f"{ref.resource_type.value}"),
                     task_id=node.node_id,
                 )
             if ref.source == "node":
@@ -1223,10 +1090,7 @@ def _bind_outline_resources(
                 if ref.resource_type not in producer_spec.output_resources:
                     raise OrchestratorV2Error(
                         AgentErrorCode.PLANNER_SCHEMA_INVALID,
-                        (
-                            f"{ref.node_id} does not produce "
-                            f"{ref.resource_type.value}"
-                        ),
+                        (f"{ref.node_id} does not produce " f"{ref.resource_type.value}"),
                         task_id=node.node_id,
                     )
             else:
@@ -1235,10 +1099,7 @@ def _bind_outline_resources(
                 if actual != ref.resource_type:
                     raise OrchestratorV2Error(
                         AgentErrorCode.RESOURCE_UNAVAILABLE,
-                        (
-                            f"artifact {ref.artifact_id} is missing or does not "
-                            f"contain {ref.resource_type.value}"
-                        ),
+                        (f"artifact {ref.artifact_id} is missing or does not " f"contain {ref.resource_type.value}"),
                         task_id=node.node_id,
                     )
         bound_types = {ref.resource_type for ref in refs}
@@ -1252,41 +1113,37 @@ def _bind_outline_resources(
                 and required in capability_for(candidate.capability).output_resources
             ]
             artifact_producers = [
-                artifact_id
-                for artifact_id, resource_type in available_artifacts.items()
-                if resource_type == required
+                artifact_id for artifact_id, resource_type in available_artifacts.items() if resource_type == required
             ]
             if len(node_producers) + len(artifact_producers) == 1:
                 if node_producers:
-                    refs.append(InputReferenceV2(
-                        source="node",
-                        node_id=node_producers[0].node_id,
-                        resource_type=required,
-                    ))
+                    refs.append(
+                        InputReferenceV2(
+                            source="node",
+                            node_id=node_producers[0].node_id,
+                            resource_type=required,
+                        )
+                    )
                 else:
-                    refs.append(InputReferenceV2(
-                        source="artifact",
-                        artifact_id=artifact_producers[0],
-                        resource_type=required,
-                    ))
+                    refs.append(
+                        InputReferenceV2(
+                            source="artifact",
+                            artifact_id=artifact_producers[0],
+                            resource_type=required,
+                        )
+                    )
                 continue
             if not node_producers and not artifact_producers and spec.allow_direct_entities:
                 continue
             if len(node_producers) + len(artifact_producers) > 1:
                 raise OrchestratorV2Error(
                     AgentErrorCode.CLARIFICATION_REQUIRED,
-                    (
-                        f"{node.node_id} 有多个可用的 {required.value} 来源，"
-                        "请明确要使用哪一个集合。"
-                    ),
+                    (f"{node.node_id} 有多个可用的 {required.value} 来源，" "请明确要使用哪一个集合。"),
                     task_id=node.node_id,
                 )
             raise OrchestratorV2Error(
                 AgentErrorCode.RESOURCE_UNAVAILABLE,
-                (
-                    f"{node.node_id} 缺少 {required.value}，"
-                    "不会改用新闻或公网搜索生成替代集合。"
-                ),
+                (f"{node.node_id} 缺少 {required.value}，" "不会改用新闻或公网搜索生成替代集合。"),
                 task_id=node.node_id,
             )
         updated.append(node.model_copy(update={"input_refs": tuple(refs)}))
@@ -1294,10 +1151,12 @@ def _bind_outline_resources(
     # outline after deterministic edges are added so automatic binding cannot
     # turn a valid provider graph into a cyclic execution graph.
     try:
-        return IntentOutlineV2.model_validate({
-            **outline.model_dump(mode="python"),
-            "nodes": tuple(updated),
-        })
+        return IntentOutlineV2.model_validate(
+            {
+                **outline.model_dump(mode="python"),
+                "nodes": tuple(updated),
+            }
+        )
     except ValidationError as exc:
         raise OrchestratorV2Error(
             AgentErrorCode.PLANNER_SCHEMA_INVALID,
@@ -1373,24 +1232,16 @@ _VERIFIER_SYSTEM_PROMPT = """\
 def _planner_verifier_mode(
     question_type: QuestionType | None = None,
 ) -> str:
-    configured = (
-        os.getenv("AGENT_PLANNER_VERIFIER_MODE") or ""
-    ).strip().lower()
+    configured = (os.getenv("AGENT_PLANNER_VERIFIER_MODE") or "").strip().lower()
     if configured in {"off", "shadow", "enforce"}:
         return configured
-    environment = str(
-        os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or ""
-    ).strip().lower()
+    environment = str(os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
     if environment in {"prod", "production"}:
         return "enforce"
     # Forecasts are the highest-risk semantic mode: a superficially related
     # snapshot can easily be mistaken for evidence about the future.  Keep the
     # independent verifier active in local/demo deployments for this mode too.
-    return (
-        "enforce"
-        if question_type == QuestionType.FORECAST
-        else "off"
-    )
+    return "enforce" if question_type == QuestionType.FORECAST else "off"
 
 
 async def plan_intent_graph_v2(
@@ -1420,11 +1271,7 @@ async def plan_intent_graph_v2(
     raw_intents: dict[str, Any] = {}
     verification: PlannerVerificationV2 | None = None
     available_artifacts = _available_artifacts(semantic_context)
-    recovery_allowlist = (
-        frozenset(allowed_capabilities or ())
-        if fixed_goal is not None
-        else frozenset()
-    )
+    recovery_allowlist = frozenset(allowed_capabilities or ()) if fixed_goal is not None else frozenset()
     if fixed_goal is not None and not recovery_allowlist:
         raise ValueError("recovery planning requires allowed_capabilities")
 
@@ -1447,9 +1294,7 @@ async def plan_intent_graph_v2(
                 {
                     "recovery_mode": True,
                     "frozen_goal": fixed_goal.model_dump(mode="json"),
-                    "allowed_capabilities": sorted(
-                        item.value for item in recovery_allowlist
-                    ),
+                    "allowed_capabilities": sorted(item.value for item in recovery_allowlist),
                     "plan_revision": plan_revision,
                     "recovery_rule": (
                         "Keep frozen_goal exactly unchanged and select "
@@ -1474,11 +1319,9 @@ async def plan_intent_graph_v2(
             if fixed_goal is not None
             else _validate_outline_capability_contracts
         )
-        outline_normalizer = (
-            lambda payload: _normalize_outline_resource_refs(
-                payload,
-                available_artifacts=available_artifacts,
-            )
+        outline_normalizer = lambda payload: _normalize_outline_resource_refs(
+            payload,
+            available_artifacts=available_artifacts,
         )
         outline_value, raw_outline, repair = await call_model_exact_v2(
             llm_cfg=llm_cfg,
@@ -1496,10 +1339,7 @@ async def plan_intent_graph_v2(
                 run_id=active_run_id,
                 stage=AgentStage.OUTLINE,
                 status=StageStatus.STARTED,
-                summary=(
-                    "模型正在识别能力与资源关系，"
-                    f"已持续分析 {elapsed} 秒"
-                ),
+                summary=("模型正在识别能力与资源关系，" f"已持续分析 {elapsed} 秒"),
             ),
         )
         if repair is not None:
@@ -1513,52 +1353,36 @@ async def plan_intent_graph_v2(
         outline, collapsed_count = _collapse_subsumed_capabilities(outline)
         outline = _bind_outline_resources(
             outline,
-            available_artifacts={
-                artifact.artifact_id: artifact.resource_type
-                for artifact in available_artifacts
-            },
+            available_artifacts={artifact.artifact_id: artifact.resource_type for artifact in available_artifacts},
             has_direct_entities=bool(current_entities),
         )
-        verifier_mode = (
-            "off"
-            if fixed_goal is not None
-            else _planner_verifier_mode(
-                outline.goal.question_type
-            )
-        )
+        verifier_mode = "off" if fixed_goal is not None else _planner_verifier_mode(outline.goal.question_type)
         if verifier_mode != "off":
+
             async def verify_candidate(
                 candidate: IntentOutlineV2,
             ) -> PlannerVerificationV2:
-                verification_value, _raw_verification, _repair = (
-                    await call_model_exact_v2(
-                        llm_cfg=llm_cfg,
-                        completion=completion,
-                        function_name="verify_intent_outline_v2",
-                        description=(
-                            "Independently verify semantic coverage, "
-                            "minimality, and resource edges of the frozen "
-                            "intent graph."
-                        ),
-                        model=PlannerVerificationV2,
-                        system_prompt=_VERIFIER_SYSTEM_PROMPT,
-                        semantic_context={
-                            "current_request": request,
-                            "frozen_outline": candidate.model_dump(
-                                mode="json"
-                            ),
-                            "capability_catalog": capability_catalog(),
-                            "conversation_context": dict(
-                                semantic_context or {}
-                            ),
-                        },
-                        node_id=None,
-                        max_tokens=1_500,
-                    )
+                verification_value, _raw_verification, _repair = await call_model_exact_v2(
+                    llm_cfg=llm_cfg,
+                    completion=completion,
+                    function_name="verify_intent_outline_v2",
+                    description=(
+                        "Independently verify semantic coverage, "
+                        "minimality, and resource edges of the frozen "
+                        "intent graph."
+                    ),
+                    model=PlannerVerificationV2,
+                    system_prompt=_VERIFIER_SYSTEM_PROMPT,
+                    semantic_context={
+                        "current_request": request,
+                        "frozen_outline": candidate.model_dump(mode="json"),
+                        "capability_catalog": capability_catalog(),
+                        "conversation_context": dict(semantic_context or {}),
+                    },
+                    node_id=None,
+                    max_tokens=1_500,
                 )
-                return PlannerVerificationV2.model_validate(
-                    verification_value
-                )
+                return PlannerVerificationV2.model_validate(verification_value)
 
             verification = await verify_candidate(outline)
             minimum_confidence = _runtime_float(
@@ -1573,23 +1397,16 @@ async def plan_intent_graph_v2(
                 return (
                     not value.accepted
                     and value.confidence >= minimum_confidence
-                    and bool(
-                        value.missing_capabilities
-                        or value.extraneous_node_ids
-                        or value.resource_issues
-                    )
+                    and bool(value.missing_capabilities or value.extraneous_node_ids or value.resource_issues)
                 )
 
             rejected = verifier_rejected(verification)
-            if (
-                verification.confidence < minimum_confidence
-                or (
-                    not verification.accepted
-                    and not (
-                        verification.missing_capabilities
-                        or verification.extraneous_node_ids
-                        or verification.resource_issues
-                    )
+            if verification.confidence < minimum_confidence or (
+                not verification.accepted
+                and not (
+                    verification.missing_capabilities
+                    or verification.extraneous_node_ids
+                    or verification.resource_issues
                 )
             ):
                 logger.warning(
@@ -1605,53 +1422,40 @@ async def plan_intent_graph_v2(
                     status=StageStatus.STARTED,
                     summary="独立验收发现语义缺口，正在进行一次受控重规划",
                 )
-                replanned_value, raw_outline, replan_repair = (
-                    await call_model_exact_v2(
-                        llm_cfg=llm_cfg,
-                        completion=completion,
-                        function_name="submit_intent_outline_v2",
-                        description=(
-                            "Repair the Goal Contract and capability graph "
-                            "using the independent verifier feedback."
-                        ),
-                        model=IntentOutlineV2,
-                        system_prompt=(
-                            _OUTLINE_SYSTEM_PROMPT
-                            + "\n独立验收反馈只能用于修正当前目标与能力覆盖，"
-                            "不得扩大用户请求。"
-                        ),
-                        semantic_context={
-                            **outline_semantic_context,
-                            "independent_verifier_feedback": (
-                                verification.model_dump(mode="json")
-                            ),
-                            "replan_attempt": 1,
-                        },
-                        node_id=None,
-                        value_validator=outline_validator,
-                        payload_normalizer=outline_normalizer,
-                    )
+                replanned_value, raw_outline, replan_repair = await call_model_exact_v2(
+                    llm_cfg=llm_cfg,
+                    completion=completion,
+                    function_name="submit_intent_outline_v2",
+                    description=(
+                        "Repair the Goal Contract and capability graph " "using the independent verifier feedback."
+                    ),
+                    model=IntentOutlineV2,
+                    system_prompt=(
+                        _OUTLINE_SYSTEM_PROMPT + "\n独立验收反馈只能用于修正当前目标与能力覆盖，" "不得扩大用户请求。"
+                    ),
+                    semantic_context={
+                        **outline_semantic_context,
+                        "independent_verifier_feedback": (verification.model_dump(mode="json")),
+                        "replan_attempt": 1,
+                    },
+                    node_id=None,
+                    value_validator=outline_validator,
+                    payload_normalizer=outline_normalizer,
                 )
                 if replan_repair is not None:
                     repairs.append(replan_repair)
-                outline = IntentOutlineV2.model_validate(
-                    replanned_value
-                )
+                outline = IntentOutlineV2.model_validate(replanned_value)
                 if outline.needs_clarification:
                     raise OrchestratorV2Error(
                         AgentErrorCode.CLARIFICATION_REQUIRED,
-                        outline.clarification_question
-                        or "需要补充任务目标。",
+                        outline.clarification_question or "需要补充任务目标。",
                     )
-                outline, replan_collapsed = (
-                    _collapse_subsumed_capabilities(outline)
-                )
+                outline, replan_collapsed = _collapse_subsumed_capabilities(outline)
                 collapsed_count += replan_collapsed
                 outline = _bind_outline_resources(
                     outline,
                     available_artifacts={
-                        artifact.artifact_id: artifact.resource_type
-                        for artifact in available_artifacts
+                        artifact.artifact_id: artifact.resource_type for artifact in available_artifacts
                     },
                     has_direct_entities=bool(current_entities),
                 )
@@ -1660,14 +1464,9 @@ async def plan_intent_graph_v2(
                 if rejected:
                     raise OrchestratorV2Error(
                         AgentErrorCode.PLANNER_SCHEMA_INVALID,
-                        (
-                            "independent semantic verifier rejected the "
-                            "capability graph after one bounded replan"
-                        ),
+                        ("independent semantic verifier rejected the " "capability graph after one bounded replan"),
                         metadata={
-                            "verification": verification.model_dump(
-                                mode="json"
-                            ),
+                            "verification": verification.model_dump(mode="json"),
                             "minimum_confidence": minimum_confidence,
                         },
                     )
@@ -1677,9 +1476,7 @@ async def plan_intent_graph_v2(
                     active_run_id,
                     verification.model_dump(mode="json"),
                 )
-        durations[AgentStage.OUTLINE.value] = int(
-            (time.monotonic() - stage_started) * 1000
-        )
+        durations[AgentStage.OUTLINE.value] = int((time.monotonic() - stage_started) * 1000)
         await _emit(
             stage_observer,
             run_id=active_run_id,
@@ -1687,11 +1484,7 @@ async def plan_intent_graph_v2(
             status=StageStatus.SUCCEEDED,
             summary=(
                 f"已冻结 {len(outline.nodes)} 个能力节点"
-                + (
-                    f"，并入复合 Workflow {collapsed_count} 个重复节点"
-                    if collapsed_count
-                    else ""
-                )
+                + (f"，并入复合 Workflow {collapsed_count} 个重复节点" if collapsed_count else "")
             ),
         )
 
@@ -1704,12 +1497,14 @@ async def plan_intent_graph_v2(
             summary="正在按节点填充精确业务 Schema",
         )
 
-        parameter_semaphore = asyncio.Semaphore(_runtime_int(
-            "AGENT_PLANNER_PARAMETER_CONCURRENCY",
-            4,
-            minimum=1,
-            maximum=12,
-        ))
+        parameter_semaphore = asyncio.Semaphore(
+            _runtime_int(
+                "AGENT_PLANNER_PARAMETER_CONCURRENCY",
+                4,
+                minimum=1,
+                maximum=12,
+            )
+        )
 
         async def parameterize(
             node: IntentOutlineNodeV2,
@@ -1729,9 +1524,7 @@ async def plan_intent_graph_v2(
                     semantic_context={
                         "current_request": request,
                         "frozen_node": node.model_dump(mode="json"),
-                        "upstream_resources": [
-                            ref.model_dump(mode="json") for ref in node.input_refs
-                        ],
+                        "upstream_resources": [ref.model_dump(mode="json") for ref in node.input_refs],
                         "conversation_context": dict(semantic_context or {}),
                         "runtime_date": now.isoformat(),
                     },
@@ -1741,24 +1534,17 @@ async def plan_intent_graph_v2(
                         run_id=active_run_id,
                         stage=AgentStage.PARAMETERIZATION,
                         status=StageStatus.STARTED,
-                        summary=(
-                            f"模型正在填写“{spec.title}”业务 Schema，"
-                            f"已持续分析 {elapsed} 秒"
-                        ),
+                        summary=(f"模型正在填写“{spec.title}”业务 Schema，" f"已持续分析 {elapsed} 秒"),
                     ),
                 )
             return node, value, raw, node_repair
 
-        parameterized = await asyncio.gather(*(
-            parameterize(node) for node in outline.nodes
-        ))
+        parameterized = await asyncio.gather(*(parameterize(node) for node in outline.nodes))
         for node, _, raw, repair in parameterized:
             raw_intents[node.node_id] = raw
             if repair is not None:
                 repairs.append(repair)
-        durations[AgentStage.PARAMETERIZATION.value] = int(
-            (time.monotonic() - parameter_started) * 1000
-        )
+        durations[AgentStage.PARAMETERIZATION.value] = int((time.monotonic() - parameter_started) * 1000)
         await _emit(
             stage_observer,
             run_id=active_run_id,
@@ -1793,17 +1579,15 @@ async def plan_intent_graph_v2(
                 "semantic_intent": normalized.intent.model_dump(mode="json"),
                 "execution_parameters": dict(normalized.execution_parameters),
             }
-            planned_nodes.append(PlannedIntentNodeV2(
-                outline=node,
-                intent=normalized.intent,
-                execution_parameters=MappingProxyType(
-                    dict(normalized.execution_parameters)
-                ),
-                assumptions=normalized.assumptions,
-            ))
-        durations[AgentStage.NORMALIZATION.value] = int(
-            (time.monotonic() - normalize_started) * 1000
-        )
+            planned_nodes.append(
+                PlannedIntentNodeV2(
+                    outline=node,
+                    intent=normalized.intent,
+                    execution_parameters=MappingProxyType(dict(normalized.execution_parameters)),
+                    assumptions=normalized.assumptions,
+                )
+            )
+        durations[AgentStage.NORMALIZATION.value] = int((time.monotonic() - normalize_started) * 1000)
         await _emit(
             stage_observer,
             run_id=active_run_id,
@@ -1821,11 +1605,7 @@ async def plan_intent_graph_v2(
             normalized_intents=normalized_intents,
             assumptions=tuple(all_assumptions),
             repairs=tuple(repairs),
-            verification=(
-                verification.model_dump(mode="json")
-                if verification is not None
-                else None
-            ),
+            verification=(verification.model_dump(mode="json") if verification is not None else None),
             goal_state={
                 "goal": outline.goal.model_dump(mode="json"),
                 "status": "planned",
@@ -1857,11 +1637,7 @@ async def plan_intent_graph_v2(
         await _emit(
             stage_observer,
             run_id=active_run_id,
-            stage=(
-                AgentStage.OUTLINE
-                if raw_outline is None
-                else AgentStage.PARAMETERIZATION
-            ),
+            stage=(AgentStage.OUTLINE if raw_outline is None else AgentStage.PARAMETERIZATION),
             status=StageStatus.FAILED,
             error_code=AgentErrorCode.PLANNER_TIMEOUT,
             summary=str(timeout_error),
@@ -1871,22 +1647,20 @@ async def plan_intent_graph_v2(
         await _emit(
             stage_observer,
             run_id=active_run_id,
-            stage=(
-                AgentStage.OUTLINE
-                if raw_outline is None
-                else AgentStage.PARAMETERIZATION
+            stage=(AgentStage.OUTLINE if raw_outline is None else AgentStage.PARAMETERIZATION),
+            status=(
+                StageStatus.BLOCKED
+                if exc.code
+                in {
+                    AgentErrorCode.CLARIFICATION_REQUIRED,
+                    AgentErrorCode.RESOURCE_UNAVAILABLE,
+                }
+                else StageStatus.FAILED
             ),
-            status=StageStatus.BLOCKED
-            if exc.code in {
-                AgentErrorCode.CLARIFICATION_REQUIRED,
-                AgentErrorCode.RESOURCE_UNAVAILABLE,
-            }
-            else StageStatus.FAILED,
             task_id=exc.task_id,
             error_code=exc.code,
             summary=(
-                "任务图未通过内部强类型契约校验；"
-                "本轮没有调用任何数据工具"
+                "任务图未通过内部强类型契约校验；" "本轮没有调用任何数据工具"
                 if exc.code == AgentErrorCode.PLANNER_SCHEMA_INVALID
                 else str(exc)
             ),

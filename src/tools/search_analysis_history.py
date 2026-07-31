@@ -36,13 +36,15 @@ def search_analysis_history(
 TOOL = ToolSpec(
     name="search_analysis_history",
     description="查询已保存的正式分析报告历史，可按股票和日期筛选。用户询问过去的分析结论时优先调用。",
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "股票代码，可留空"},
-        "start_date": {"type": "string", "description": "YYYY-MM-DD，可留空"},
-        "end_date": {"type": "string", "description": "YYYY-MM-DD，可留空"},
-        "page": {"type": "integer", "minimum": 1, "default": 1},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-    }),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "股票代码，可留空"},
+            "start_date": {"type": "string", "description": "YYYY-MM-DD，可留空"},
+            "end_date": {"type": "string", "description": "YYYY-MM-DD，可留空"},
+            "page": {"type": "integer", "minimum": 1, "default": 1},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+        }
+    ),
     executor=search_analysis_history,
     category="analysis",
 )

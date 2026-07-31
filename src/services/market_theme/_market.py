@@ -14,12 +14,7 @@ from typing import Any
 
 def build_trade_action(theme: dict[str, Any]) -> str:
     """Return the model's explicit action implication without reclassifying it."""
-    return str(
-        theme.get("action")
-        or theme.get("focus")
-        or theme.get("judgement")
-        or ""
-    ).strip()
+    return str(theme.get("action") or theme.get("focus") or theme.get("judgement") or "").strip()
 
 
 def build_deep_summary(
@@ -30,14 +25,10 @@ def build_deep_summary(
     """Render already-structured semantic output; never infer missing content."""
     stage = str(market_stage.get("label") or "未研判").strip()
     current = "、".join(
-        str(item.get("theme") or "").strip()
-        for item in lifecycle_notes
-        if str(item.get("theme") or "").strip()
+        str(item.get("theme") or "").strip() for item in lifecycle_notes if str(item.get("theme") or "").strip()
     )
     future = "、".join(
-        str(item.get("name") or "").strip()
-        for item in future_outlook
-        if str(item.get("name") or "").strip()
+        str(item.get("name") or "").strip() for item in future_outlook if str(item.get("name") or "").strip()
     )
     if not current and not future:
         return "本轮只有原始市场证据，语义主线研判尚未完成。"
@@ -55,9 +46,7 @@ def validated_themes(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def validated_future_themes(report: dict[str, Any]) -> list[dict[str, Any]]:
-    values = report.get("candidate_mainlines") or report.get(
-        "future_mainlines"
-    )
+    values = report.get("candidate_mainlines") or report.get("future_mainlines")
     return [item for item in values or [] if isinstance(item, dict)]
 
 

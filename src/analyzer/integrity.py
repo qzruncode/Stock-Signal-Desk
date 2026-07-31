@@ -104,11 +104,7 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
             if not isinstance(core, dict):
                 core = {}
                 result.dashboard["core_conclusion"] = core
-            fallback_sentence = (
-                result.analysis_summary
-                or result.operation_advice
-                or placeholder
-            )
+            fallback_sentence = result.analysis_summary or result.operation_advice or placeholder
             if _is_blank_text(core.get("one_sentence")):
                 result.dashboard["core_conclusion"]["one_sentence"] = fallback_sentence
         elif field == "dashboard.intelligence.risk_alerts":

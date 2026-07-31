@@ -31,8 +31,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -46,9 +48,9 @@ def _sse_events(response):
             break
         line = line.decode("utf-8") if isinstance(line, bytes) else line
         if line.startswith("event: "):
-            event_type = line[len("event: "):]
+            event_type = line[len("event: ") :]
         elif line.startswith("data: "):
-            data_parts.append(line[len("data: "):])
+            data_parts.append(line[len("data: ") :])
         elif line == "" and event_type is not None:
             yield event_type, json.loads("".join(data_parts))
             event_type = None
@@ -58,6 +60,7 @@ def _sse_events(response):
 # ---------------------------------------------------------------------------
 # _format_sse_event helper
 # ---------------------------------------------------------------------------
+
 
 def test_format_sse_event_emits_event_and_data_lines():
     out = task_mod._format_sse_event("task_created", {"id": "t1"})
@@ -76,6 +79,7 @@ def test_format_sse_event_serializes_non_ascii():
 # ---------------------------------------------------------------------------
 # task_stream route
 # ---------------------------------------------------------------------------
+
 
 def test_task_stream_emits_connected_and_pending_tasks(client):
     pending_task = MagicMock()
@@ -124,9 +128,7 @@ def test_task_stream_emits_connected_and_pending_tasks(client):
     assert event_types[0] == "connected"
     assert "task_created" in event_types
     # pending task from list_pending_tasks was emitted
-    pending_emitted = any(
-        t == "task_created" and d.get("task_id") == "t1" for t, d in events
-    )
+    pending_emitted = any(t == "task_created" and d.get("task_id") == "t1" for t, d in events)
     assert pending_emitted
     tq.unsubscribe.assert_called_once()
 

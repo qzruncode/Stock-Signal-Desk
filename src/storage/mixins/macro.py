@@ -8,7 +8,13 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import select, and_, desc
 from sqlalchemy.orm import Session
 
-from src.storage.models import MacroIndexDaily, BondYieldDaily, MacroIndicator, FundamentalSnapshot, MarketMainlineReport
+from src.storage.models import (
+    MacroIndexDaily,
+    BondYieldDaily,
+    MacroIndicator,
+    FundamentalSnapshot,
+    MarketMainlineReport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +37,7 @@ class MacroMixin:
             return 0
 
         try:
+
             def _write(session: Session) -> int:
                 session.add(
                     FundamentalSnapshot(
@@ -42,6 +49,7 @@ class MacroMixin:
                     )
                 )
                 return 1
+
             return self._run_write_transaction(
                 f"save_fundamental_snapshot[{query_id}:{code}]",
                 _write,
@@ -189,21 +197,23 @@ class MacroMixin:
                 d = self._normalize_daily_date(rec.get("date"))
                 if d is None:
                     continue
-                rows.append({
-                    "index_code": index_code,
-                    "date": d,
-                    "open": rec.get("open"),
-                    "high": rec.get("high"),
-                    "low": rec.get("low"),
-                    "close": rec.get("close"),
-                    "volume": rec.get("volume"),
-                    "amount": rec.get("amount"),
-                    "pct_chg": rec.get("pct_chg"),
-                    "change_amount": rec.get("change_amount"),
-                    "data_source": data_source,
-                    "created_at": now,
-                    "updated_at": now,
-                })
+                rows.append(
+                    {
+                        "index_code": index_code,
+                        "date": d,
+                        "open": rec.get("open"),
+                        "high": rec.get("high"),
+                        "low": rec.get("low"),
+                        "close": rec.get("close"),
+                        "volume": rec.get("volume"),
+                        "amount": rec.get("amount"),
+                        "pct_chg": rec.get("pct_chg"),
+                        "change_amount": rec.get("change_amount"),
+                        "data_source": data_source,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
             if not rows:
                 return 0
             stmt = sqlite_insert(MacroIndexDaily).values(rows)
@@ -238,12 +248,16 @@ class MacroMixin:
         """获取指数日线历史数据"""
         try:
             with self.get_session() as session:
-                rows = session.execute(
-                    select(MacroIndexDaily)
-                    .where(MacroIndexDaily.index_code == index_code)
-                    .order_by(desc(MacroIndexDaily.date))
-                    .limit(limit)
-                ).scalars().all()
+                rows = (
+                    session.execute(
+                        select(MacroIndexDaily)
+                        .where(MacroIndexDaily.index_code == index_code)
+                        .order_by(desc(MacroIndexDaily.date))
+                        .limit(limit)
+                    )
+                    .scalars()
+                    .all()
+                )
                 if rows:
                     return [
                         {
@@ -276,12 +290,16 @@ class MacroMixin:
         """
         try:
             with self.get_session() as session:
-                rows = session.execute(
-                    select(MacroIndexDaily.date)
-                    .where(MacroIndexDaily.index_code == "000001")
-                    .where(MacroIndexDaily.date >= start_date)
-                    .where(MacroIndexDaily.date <= end_date)
-                ).scalars().all()
+                rows = (
+                    session.execute(
+                        select(MacroIndexDaily.date)
+                        .where(MacroIndexDaily.index_code == "000001")
+                        .where(MacroIndexDaily.date >= start_date)
+                        .where(MacroIndexDaily.date <= end_date)
+                    )
+                    .scalars()
+                    .all()
+                )
             if not rows:
                 return None
             return set(rows)
@@ -308,14 +326,16 @@ class MacroMixin:
                 d = self._normalize_daily_date(rec.get("date"))
                 if d is None:
                     continue
-                rows.append({
-                    "country": country,
-                    "term": term,
-                    "date": d,
-                    "yield_value": rec.get("value"),
-                    "created_at": now,
-                    "updated_at": now,
-                })
+                rows.append(
+                    {
+                        "country": country,
+                        "term": term,
+                        "date": d,
+                        "yield_value": rec.get("value"),
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
             if not rows:
                 return 0
             stmt = sqlite_insert(BondYieldDaily).values(rows)
@@ -343,16 +363,18 @@ class MacroMixin:
         """获取国债收益率历史数据"""
         try:
             with self.get_session() as session:
-                rows = session.execute(
-                    select(BondYieldDaily)
-                    .where(BondYieldDaily.country == country, BondYieldDaily.term == term)
-                    .order_by(desc(BondYieldDaily.date))
-                    .limit(limit)
-                ).scalars().all()
+                rows = (
+                    session.execute(
+                        select(BondYieldDaily)
+                        .where(BondYieldDaily.country == country, BondYieldDaily.term == term)
+                        .order_by(desc(BondYieldDaily.date))
+                        .limit(limit)
+                    )
+                    .scalars()
+                    .all()
+                )
                 if rows:
-                    return [
-                        {"date": str(r.date), "value": r.yield_value} for r in rows
-                    ]
+                    return [{"date": str(r.date), "value": r.yield_value} for r in rows]
         except Exception:
             logger.debug("国债收益率读取失败", exc_info=True)
         return None
@@ -378,16 +400,18 @@ class MacroMixin:
                 extra_json = None
                 if rec.get("extra"):
                     extra_json = json.dumps(rec["extra"], ensure_ascii=False)
-                rows.append({
-                    "indicator": indicator,
-                    "period": period,
-                    "value": rec.get("value"),
-                    "yoy": rec.get("yoy"),
-                    "mom": rec.get("mom"),
-                    "extra_json": extra_json,
-                    "created_at": now,
-                    "updated_at": now,
-                })
+                rows.append(
+                    {
+                        "indicator": indicator,
+                        "period": period,
+                        "value": rec.get("value"),
+                        "yoy": rec.get("yoy"),
+                        "mom": rec.get("mom"),
+                        "extra_json": extra_json,
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                )
             if not rows:
                 return 0
             stmt = sqlite_insert(MacroIndicator).values(rows)
@@ -417,12 +441,16 @@ class MacroMixin:
         """获取宏观经济指标历史数据"""
         try:
             with self.get_session() as session:
-                rows = session.execute(
-                    select(MacroIndicator)
-                    .where(MacroIndicator.indicator == indicator)
-                    .order_by(desc(MacroIndicator.period))
-                    .limit(limit)
-                ).scalars().all()
+                rows = (
+                    session.execute(
+                        select(MacroIndicator)
+                        .where(MacroIndicator.indicator == indicator)
+                        .order_by(desc(MacroIndicator.period))
+                        .limit(limit)
+                    )
+                    .scalars()
+                    .all()
+                )
                 if rows:
                     result = []
                     for r in rows:

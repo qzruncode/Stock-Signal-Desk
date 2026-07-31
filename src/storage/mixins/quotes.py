@@ -19,15 +19,15 @@ class QuoteKlineMixin:
     def save_quote_snapshot(self, code: str, data_json: str) -> None:
         """保存实时行情快照（upsert by code）。写入失败不抛异常。"""
         try:
+
             def _write(session: Session) -> None:
-                existing = session.execute(
-                    select(QuoteSnapshot).where(QuoteSnapshot.code == code)
-                ).scalar_one_or_none()
+                existing = session.execute(select(QuoteSnapshot).where(QuoteSnapshot.code == code)).scalar_one_or_none()
                 if existing:
                     existing.data = data_json
                     existing.updated_at = datetime.now()
                 else:
                     session.add(QuoteSnapshot(code=code, data=data_json))
+
             self._run_write_transaction(f"save_quote_snapshot[{code}]", _write)
         except Exception:
             logger.debug("行情快照写入失败: code=%s", code, exc_info=True)
@@ -52,7 +52,7 @@ class QuoteKlineMixin:
                     try:
                         d = json.loads(row.data or "{}")
                         if isinstance(d, dict):
-                            d['_fetched_at'] = row.updated_at.isoformat() if row.updated_at else None
+                            d["_fetched_at"] = row.updated_at.isoformat() if row.updated_at else None
                             result[row.code] = d
                     except Exception:
                         continue
@@ -63,15 +63,15 @@ class QuoteKlineMixin:
     def save_kline_snapshot(self, code: str, data_json: str) -> None:
         """保存K线数据快照（upsert by code）。写入失败不抛异常。"""
         try:
+
             def _write(session: Session) -> None:
-                existing = session.execute(
-                    select(KlineSnapshot).where(KlineSnapshot.code == code)
-                ).scalar_one_or_none()
+                existing = session.execute(select(KlineSnapshot).where(KlineSnapshot.code == code)).scalar_one_or_none()
                 if existing:
                     existing.data = data_json
                     existing.updated_at = datetime.now()
                 else:
                     session.add(KlineSnapshot(code=code, data=data_json))
+
             self._run_write_transaction(f"save_kline_snapshot[{code}]", _write)
         except Exception:
             logger.debug("K线快照写入失败: code=%s", code, exc_info=True)
@@ -80,13 +80,11 @@ class QuoteKlineMixin:
         """获取K线数据快照。返回 dict 含 _fetched_at 字段，或 None。"""
         try:
             with self.get_session() as session:
-                row = session.execute(
-                    select(KlineSnapshot).where(KlineSnapshot.code == code)
-                ).scalar_one_or_none()
+                row = session.execute(select(KlineSnapshot).where(KlineSnapshot.code == code)).scalar_one_or_none()
                 if row:
                     d = json.loads(row.data or "{}")
                     if isinstance(d, dict):
-                        d['_fetched_at'] = row.updated_at.isoformat() if row.updated_at else None
+                        d["_fetched_at"] = row.updated_at.isoformat() if row.updated_at else None
                         return d
         except Exception:
             logger.debug("K线快照读取失败", exc_info=True)

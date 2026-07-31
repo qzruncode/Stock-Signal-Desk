@@ -38,10 +38,7 @@ def _financial_snapshots(codes: list[str]) -> dict[str, dict[str, Any]]:
                 "net_profit": row.net_profit_latest,
                 "operating_cash_flow": row.operating_cf_latest,
                 "debt_ratio_pct": row.debt_ratio,
-                "fetched_at": (
-                    row.financial_fetched_at.isoformat()
-                    if row.financial_fetched_at else None
-                ),
+                "fetched_at": (row.financial_fetched_at.isoformat() if row.financial_fetched_at else None),
                 "flow_basis": "latest_report_period",
                 "amount_unit": "元",
             }
@@ -52,9 +49,21 @@ def _financial_snapshots(codes: list[str]) -> dict[str, dict[str, Any]]:
 def _technical_summary(result: dict[str, Any]) -> dict[str, Any]:
     indicators = result.get("indicators") or {}
     keys = (
-        "close", "ma5", "ma10", "ma20", "ma60", "rsi14",
-        "macd_dif", "macd_dea", "macd_hist", "boll_lower", "boll_mid",
-        "boll_upper", "return_5d_pct", "return_20d_pct", "return_60d_pct",
+        "close",
+        "ma5",
+        "ma10",
+        "ma20",
+        "ma60",
+        "rsi14",
+        "macd_dif",
+        "macd_dea",
+        "macd_hist",
+        "boll_lower",
+        "boll_mid",
+        "boll_upper",
+        "return_5d_pct",
+        "return_20d_pct",
+        "return_60d_pct",
         "volume_vs_prev5d",
     )
     return {
@@ -104,31 +113,28 @@ def get_multi_stock_snapshot(symbols: str) -> dict[str, Any]:
             warnings.append(
                 f"{entity['name']}({code}) 技术指标截至 {technical.get('data_time') or '未知日期'}，不是最新交易日"
             )
-        items.append({
-            "symbol": code,
-            "name": entity["name"],
-            "input": entity["input"],
-            "quote": quote,
-            "technical": technical,
-            "financial": financials_by_code.get(code),
-        })
+        items.append(
+            {
+                "symbol": code,
+                "name": entity["name"],
+                "input": entity["input"],
+                "quote": quote,
+                "technical": technical,
+                "financial": financials_by_code.get(code),
+            }
+        )
 
     errors = list(quote_result.get("errors") or [])
     if unresolved:
         errors.append(f"无法解析: {', '.join(unresolved)}")
     successful_items = [
-        item for item in items
-        if (
-            item.get("quote") is not None
-            or item["technical"].get("success")
-            or item.get("financial") is not None
-        )
+        item
+        for item in items
+        if (item.get("quote") is not None or item["technical"].get("success") or item.get("financial") is not None)
     ]
     success = bool(successful_items)
     partial = success and (
-        bool(errors)
-        or len(successful_items) < len(items)
-        or any(item.get("quote") is None for item in items)
+        bool(errors) or len(successful_items) < len(items) or any(item.get("quote") is None for item in items)
     )
     return {
         "success": success,
@@ -139,9 +145,7 @@ def get_multi_stock_snapshot(symbols: str) -> dict[str, Any]:
         "total": len(items),
         "data_time": quote_result.get("data_time"),
         "quote_basis": (
-            "盘中实时快照（当日尚未收盘，不是收盘价）"
-            if quote_is_intraday
-            else "非交易时段的最近市场快照"
+            "盘中实时快照（当日尚未收盘，不是收盘价）" if quote_is_intraday else "非交易时段的最近市场快照"
         ),
         "quote_is_intraday": quote_is_intraday,
         "is_stale": quote_result.get("is_stale"),

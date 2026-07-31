@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
         500: {"description": "推送失败", "model": ErrorResponse},
     },
     summary="手动推送分析结果到企业微信",
-    description="将已完成的分析任务结果推送到企业微信"
+    description="将已完成的分析任务结果推送到企业微信",
 )
 def push_analysis_to_wechat(task_id: str):
     """手动推送单股分析结果到企业微信。"""
@@ -70,6 +70,7 @@ def push_analysis_to_wechat(task_id: str):
     else:
         try:
             from src.storage import DatabaseManager
+
             db = DatabaseManager.get_instance()
             records = db.get_analysis_history(query_id=task_id, limit=1)
             if records:
@@ -81,7 +82,7 @@ def push_analysis_to_wechat(task_id: str):
                 )
                 stock_name = get_localized_stock_name(record.name, record.code, report_language)
 
-                is_conversation = getattr(record, 'report_type', None) == 'conversation'
+                is_conversation = getattr(record, "report_type", None) == "conversation"
                 if is_conversation:
                     conversation = (raw_result or {}).get("conversation") if isinstance(raw_result, dict) else {}
                     report_data = {
@@ -110,10 +111,10 @@ def push_analysis_to_wechat(task_id: str):
                                 "analysis_summary": record.analysis_summary,
                             },
                             "strategy": {
-                                "ideal_buy": getattr(record, 'ideal_buy', None),
-                                "secondary_buy": getattr(record, 'secondary_buy', None),
-                                "stop_loss": getattr(record, 'stop_loss', None),
-                                "take_profit": getattr(record, 'take_profit', None),
+                                "ideal_buy": getattr(record, "ideal_buy", None),
+                                "secondary_buy": getattr(record, "secondary_buy", None),
+                                "stop_loss": getattr(record, "stop_loss", None),
+                                "take_profit": getattr(record, "take_profit", None),
                             },
                         },
                     }
@@ -314,12 +315,12 @@ def _stringify_report_strategy_value(value: Any) -> Optional[str]:
 
 
 def _build_analysis_report(
-        report_data: Dict[str, Any],
-        query_id: str,
-        stock_code: str,
-        stock_name: Optional[str] = None,
-        context_snapshot: Optional[Any] = None,
-        fallback_fundamental_payload: Optional[Dict[str, Any]] = None,
+    report_data: Dict[str, Any],
+    query_id: str,
+    stock_code: str,
+    stock_name: Optional[str] = None,
+    context_snapshot: Optional[Any] = None,
+    fallback_fundamental_payload: Optional[Dict[str, Any]] = None,
 ) -> AnalysisReport:
     """构建符合 API 规范的分析报告。"""
     meta_data = report_data.get("meta", {})
@@ -354,7 +355,7 @@ def _build_analysis_report(
         operation_advice=summary_data.get("operation_advice"),
         trend_prediction=summary_data.get("trend_prediction"),
         sentiment_score=summary_data.get("sentiment_score"),
-        sentiment_label=summary_data.get("sentiment_label")
+        sentiment_label=summary_data.get("sentiment_label"),
     )
 
     strategy = None
@@ -363,7 +364,7 @@ def _build_analysis_report(
             ideal_buy=_stringify_report_strategy_value(strategy_data.get("ideal_buy")),
             secondary_buy=_stringify_report_strategy_value(strategy_data.get("secondary_buy")),
             stop_loss=_stringify_report_strategy_value(strategy_data.get("stop_loss")),
-            take_profit=_stringify_report_strategy_value(strategy_data.get("take_profit"))
+            take_profit=_stringify_report_strategy_value(strategy_data.get("take_profit")),
         )
 
     extracted_fundamental = extract_fundamental_detail_fields(
@@ -375,7 +376,9 @@ def _build_analysis_report(
         fallback_fundamental_payload=fallback_fundamental_payload,
     )
     details = None
-    has_board_details = bool(extracted_boards.get("belong_boards")) or extracted_boards.get("sector_rankings") is not None
+    has_board_details = (
+        bool(extracted_boards.get("belong_boards")) or extracted_boards.get("sector_rankings") is not None
+    )
     if details_data or any(extracted_fundamental.values()) or has_board_details or context_snapshot is not None:
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
@@ -387,9 +390,4 @@ def _build_analysis_report(
             sector_rankings=extracted_boards.get("sector_rankings"),
         )
 
-    return AnalysisReport(
-        meta=meta,
-        summary=summary,
-        strategy=strategy,
-        details=details
-    )
+    return AnalysisReport(meta=meta, summary=summary, strategy=strategy, details=details)

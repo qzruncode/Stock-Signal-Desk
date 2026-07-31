@@ -69,14 +69,17 @@ TOOL = ToolSpec(
         "查看、创建、修改、设为默认或删除正式股票分析模板。只有用户明确要求管理模板时调用；"
         "删除必须 confirmed=true。创建/修改后返回完整模板供用户核对。"
     ),
-    parameters=object_schema({
-        "action": {"type": "string", "enum": ["list", "get", "create", "update", "set_default", "delete"]},
-        "template_id": {"type": "string"},
-        "name": {"type": "string"},
-        "content": {"type": "string"},
-        "set_default": {"type": "boolean", "default": False},
-        "confirmed": {"type": "boolean", "default": False},
-    }, required=("action",)),
+    parameters=object_schema(
+        {
+            "action": {"type": "string", "enum": ["list", "get", "create", "update", "set_default", "delete"]},
+            "template_id": {"type": "string"},
+            "name": {"type": "string"},
+            "content": {"type": "string"},
+            "set_default": {"type": "boolean", "default": False},
+            "confirmed": {"type": "boolean", "default": False},
+        },
+        required=("action",),
+    ),
     executor=manage_analysis_templates,
     category="action",
 )

@@ -69,19 +69,21 @@ def _build_streaming_industry_cycle_draft(
     observation_window = _extract_partial_json_string_field(raw_text, "observation_window")
     prosperity_score = _extract_partial_json_number_field(raw_text, "prosperity_score")
 
-    if not any((
-        analysis_status,
-        beneficiary_level,
-        beneficiary_reason,
-        cycle_phase,
-        cycle_phase_reason,
-        prosperity_judgement,
-        core_logic,
-        killer_reason,
-        observation_window,
-        prosperity_score is not None,
-        stock_focus_view,
-    )):
+    if not any(
+        (
+            analysis_status,
+            beneficiary_level,
+            beneficiary_reason,
+            cycle_phase,
+            cycle_phase_reason,
+            prosperity_judgement,
+            core_logic,
+            killer_reason,
+            observation_window,
+            prosperity_score is not None,
+            stock_focus_view,
+        )
+    ):
         return {}
 
     mainline_context = _as_dict(evidence_pack.get("mainline_context"))

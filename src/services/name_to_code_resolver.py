@@ -73,16 +73,8 @@ def _build_local_name_indexes(code_to_name: Dict[str, str]) -> Tuple[Dict[str, s
             continue
         name_to_codes.setdefault(normalized_name, set()).add(code)
 
-    unique_names = {
-        name: next(iter(codes))
-        for name, codes in name_to_codes.items()
-        if len(codes) == 1
-    }
-    ambiguous_names = {
-        name
-        for name, codes in name_to_codes.items()
-        if len(codes) > 1
-    }
+    unique_names = {name: next(iter(codes)) for name, codes in name_to_codes.items() if len(codes) == 1}
+    ambiguous_names = {name for name, codes in name_to_codes.items() if len(codes) > 1}
     return unique_names, ambiguous_names
 
 
@@ -107,9 +99,7 @@ def get_database_stock_indexes() -> tuple[Dict[str, str], Dict[str, str]]:
 
         db = DatabaseManager.get_instance()
         with db.get_session() as session:
-            rows = session.query(StockMeta.code, StockMeta.name).filter(
-                StockMeta.status == "active"
-            ).all()
+            rows = session.query(StockMeta.code, StockMeta.name).filter(StockMeta.status == "active").all()
         code_to_name = {
             str(code).strip(): "".join(str(name).split())
             for code, name in rows

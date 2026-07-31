@@ -31,9 +31,7 @@ class TestResolveGatewayConfig(unittest.TestCase):
         self.assertEqual(cfg["custom_llm_provider"], "anthropic")
         self.assertEqual(cfg["api_key"], "sk-test-token")
         self.assertEqual(cfg["api_base"], "https://gw.example.com")
-        self.assertEqual(
-            cfg["extra_headers"], {"authorization": "Bearer sk-test-token"}
-        )
+        self.assertEqual(cfg["extra_headers"], {"authorization": "Bearer sk-test-token"})
         self.assertEqual(cfg["context_window"], 200_000)
 
     @mock.patch.dict("os.environ", {}, clear=True)
@@ -47,85 +45,121 @@ class TestResolveGatewayConfig(unittest.TestCase):
         self.assertIn("ANTHROPIC_MODEL", msg)
         self.assertIn("设置 - 模型设置", msg)
 
-    @mock.patch.dict("os.environ", {
-        "ANTHROPIC_BASE_URL": "https://gw.example.com",
-        "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            "ANTHROPIC_BASE_URL": "https://gw.example.com",
+            "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
+        },
+        clear=True,
+    )
     def test_missing_model_raises(self):
         with self.assertRaises(AnthropicGatewayConfigError) as ctx:
             resolve_anthropic_gateway_config()
         self.assertIn("主模型(ANTHROPIC_MODEL)", str(ctx.exception))
 
-    @mock.patch.dict("os.environ", {
-        "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
-        "ANTHROPIC_MODEL": "claude-sonnet-4-6",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            "ANTHROPIC_AUTH_TOKEN": "sk-test-token",
+            "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+        },
+        clear=True,
+    )
     def test_missing_base_url_raises(self):
         with self.assertRaises(AnthropicGatewayConfigError) as ctx:
             resolve_anthropic_gateway_config()
         self.assertIn("接入地址(ANTHROPIC_BASE_URL)", str(ctx.exception))
 
-    @mock.patch.dict("os.environ", {
-        "ANTHROPIC_BASE_URL": "https://gw.example.com",
-        "ANTHROPIC_MODEL": "claude-sonnet-4-6",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            "ANTHROPIC_BASE_URL": "https://gw.example.com",
+            "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+        },
+        clear=True,
+    )
     def test_missing_token_raises(self):
         with self.assertRaises(AnthropicGatewayConfigError) as ctx:
             resolve_anthropic_gateway_config()
         self.assertIn("鉴权令牌(ANTHROPIC_AUTH_TOKEN)", str(ctx.exception))
 
-    @mock.patch.dict("os.environ", {
-        **_FULL_ENV,
-        "ANTHROPIC_MODEL": "claude-sonnet-4-6 [1m]",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            **_FULL_ENV,
+            "ANTHROPIC_MODEL": "claude-sonnet-4-6 [1m]",
+        },
+        clear=True,
+    )
     def test_1m_suffix_strips_and_sets_window(self):
         cfg = resolve_anthropic_gateway_config()
         self.assertEqual(cfg["model"], "claude-sonnet-4-6")
         self.assertEqual(cfg["context_window"], 1_000_000)
 
-    @mock.patch.dict("os.environ", {
-        **_FULL_ENV,
-        "ANTHROPIC_MODEL": "claude-sonnet-4-6 [1M]",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            **_FULL_ENV,
+            "ANTHROPIC_MODEL": "claude-sonnet-4-6 [1M]",
+        },
+        clear=True,
+    )
     def test_1m_suffix_case_insensitive(self):
         cfg = resolve_anthropic_gateway_config()
         self.assertEqual(cfg["model"], "claude-sonnet-4-6")
         self.assertEqual(cfg["context_window"], 1_000_000)
 
-    @mock.patch.dict("os.environ", {
-        **_FULL_ENV,
-        # 含 ANSI 转义(\x1b[1m ... \x1b[0m) + 尾部字面 SGR 残片 [0m]
-        "ANTHROPIC_MODEL": "\x1b[1mclaude-sonnet-4-6\x1b[0m[0m]",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            **_FULL_ENV,
+            # 含 ANSI 转义(\x1b[1m ... \x1b[0m) + 尾部字面 SGR 残片 [0m]
+            "ANTHROPIC_MODEL": "\x1b[1mclaude-sonnet-4-6\x1b[0m[0m]",
+        },
+        clear=True,
+    )
     def test_ansi_escape_cleaned(self):
         cfg = resolve_anthropic_gateway_config()
         self.assertEqual(cfg["model"], "claude-sonnet-4-6")
 
-    @mock.patch.dict("os.environ", {
-        "ANTHROPIC_BASE_URL": "  https://gw.example.com  ",
-        "ANTHROPIC_AUTH_TOKEN": "  sk-test-token  ",
-        "ANTHROPIC_MODEL": "  claude-sonnet-4-6  ",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            "ANTHROPIC_BASE_URL": "  https://gw.example.com  ",
+            "ANTHROPIC_AUTH_TOKEN": "  sk-test-token  ",
+            "ANTHROPIC_MODEL": "  claude-sonnet-4-6  ",
+        },
+        clear=True,
+    )
     def test_surrounding_whitespace_stripped(self):
         cfg = resolve_anthropic_gateway_config()
         self.assertEqual(cfg["api_base"], "https://gw.example.com")
         self.assertEqual(cfg["api_key"], "sk-test-token")
         self.assertEqual(cfg["model"], "claude-sonnet-4-6")
 
-    @mock.patch.dict("os.environ", {
-        **_FULL_ENV,
-        "ANTHROPIC_MODEL": "openai/glm-5.2",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            **_FULL_ENV,
+            "ANTHROPIC_MODEL": "openai/glm-5.2",
+        },
+        clear=True,
+    )
     def test_provider_prefix_kept(self):
         """provider/model 前缀原样保留，custom_llm_provider 仍强制 anthropic。"""
         cfg = resolve_anthropic_gateway_config()
         self.assertEqual(cfg["model"], "openai/glm-5.2")
         self.assertEqual(cfg["custom_llm_provider"], "anthropic")
 
-    @mock.patch.dict("os.environ", {
-        **_FULL_ENV,
-        "ANTHROPIC_MODEL": "[1m]model",
-    }, clear=True)
+    @mock.patch.dict(
+        "os.environ",
+        {
+            **_FULL_ENV,
+            "ANTHROPIC_MODEL": "[1m]model",
+        },
+        clear=True,
+    )
     def test_1m_suffix_only_at_tail(self):
         """[1m] 仅在末尾才算窗口后缀；在开头不算。"""
         cfg = resolve_anthropic_gateway_config()
@@ -138,6 +172,7 @@ class TestParseModelContextWindow(unittest.TestCase):
 
     def _parse(self, name):
         from src.llm.anthropic_gateway import _parse_model_context_window
+
         return _parse_model_context_window(name)
 
     def test_1m_suffix_strips_and_sets_window(self):
@@ -176,9 +211,7 @@ class TestBuildLitellmKwargs(unittest.TestCase):
         self.assertEqual(kwargs["api_key"], "sk-test-token")
         self.assertEqual(kwargs["api_base"], "https://gw.example.com")
         self.assertEqual(kwargs["custom_llm_provider"], "anthropic")
-        self.assertEqual(
-            kwargs["extra_headers"], {"authorization": "Bearer sk-test-token"}
-        )
+        self.assertEqual(kwargs["extra_headers"], {"authorization": "Bearer sk-test-token"})
         self.assertEqual(kwargs["messages"], [{"role": "user", "content": "hi"}])
 
     def test_stream_false(self):

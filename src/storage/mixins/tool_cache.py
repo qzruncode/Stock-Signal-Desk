@@ -19,6 +19,7 @@ class ToolCacheMixin:
     def save_tool_cache(self, cache_key: str, payload: bytes) -> None:
         """Upsert a trusted, application-serialized tool cache value."""
         try:
+
             def _write(session: Session) -> None:
                 existing = session.execute(
                     select(ToolCache).where(ToolCache.cache_key == cache_key)
@@ -37,9 +38,7 @@ class ToolCacheMixin:
         """Return binary payload plus its persisted update time."""
         try:
             with self.get_session() as session:
-                row = session.execute(
-                    select(ToolCache).where(ToolCache.cache_key == cache_key)
-                ).scalar_one_or_none()
+                row = session.execute(select(ToolCache).where(ToolCache.cache_key == cache_key)).scalar_one_or_none()
                 if row:
                     return {
                         "payload": bytes(row.payload),

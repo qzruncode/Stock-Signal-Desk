@@ -26,8 +26,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -40,9 +42,7 @@ def _mock_service():
 @pytest.fixture
 def mock_service():
     service = _mock_service()
-    with patch(
-        "api.v1.endpoints.agent.conversations.ChatSessionService", return_value=service
-    ):
+    with patch("api.v1.endpoints.agent.conversations.ChatSessionService", return_value=service):
         yield service
 
 
@@ -50,9 +50,13 @@ def mock_service():
 # list
 # ---------------------------------------------------------------------------
 
+
 def test_list_conversations_returns_service_payload(client, mock_service):
     mock_service.list_conversations.return_value = {
-        "items": [{"id": "c1"}], "total": 1, "page": 1, "limit": 50,
+        "items": [{"id": "c1"}],
+        "total": 1,
+        "page": 1,
+        "limit": 50,
     }
     resp = client.get("/api/v1/agent/conversations", params={"page": 1, "limit": 50})
     assert resp.status_code == 200
@@ -70,6 +74,7 @@ def test_list_conversations_rejects_invalid_page(client):
 # create
 # ---------------------------------------------------------------------------
 
+
 def test_create_conversation_returns_new_conversation(client, mock_service):
     mock_service.create_conversation.return_value = {"id": "c2", "title": "新对话"}
     resp = client.post("/api/v1/agent/conversations")
@@ -80,6 +85,7 @@ def test_create_conversation_returns_new_conversation(client, mock_service):
 # ---------------------------------------------------------------------------
 # get
 # ---------------------------------------------------------------------------
+
 
 def test_get_conversation_returns_payload(client, mock_service):
     mock_service.get_conversation.return_value = {"id": "c1"}
@@ -162,6 +168,7 @@ def test_get_conversation_404_when_missing(client, mock_service):
 # rename
 # ---------------------------------------------------------------------------
 
+
 def test_rename_conversation_rejects_empty_title(client):
     resp = client.patch("/api/v1/agent/conversations/c1", json={"title": "  "})
     assert resp.status_code == 400
@@ -169,9 +176,7 @@ def test_rename_conversation_rejects_empty_title(client):
 
 def test_rename_conversation_returns_updated(client, mock_service):
     mock_service.rename_conversation.return_value = {"id": "c1", "title": "新标题"}
-    resp = client.patch(
-        "/api/v1/agent/conversations/c1", json={"title": "新标题"}
-    )
+    resp = client.patch("/api/v1/agent/conversations/c1", json={"title": "新标题"})
     assert resp.status_code == 200
     assert resp.json()["title"] == "新标题"
     mock_service.rename_conversation.assert_called_once_with("c1", "新标题")
@@ -179,15 +184,14 @@ def test_rename_conversation_returns_updated(client, mock_service):
 
 def test_rename_conversation_404_when_missing(client, mock_service):
     mock_service.rename_conversation.return_value = None
-    resp = client.patch(
-        "/api/v1/agent/conversations/c1", json={"title": "x"}
-    )
+    resp = client.patch("/api/v1/agent/conversations/c1", json={"title": "x"})
     assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
 # delete
 # ---------------------------------------------------------------------------
+
 
 def test_delete_conversation_returns_deleted_flag(client, mock_service):
     mock_service.get_conversation.return_value = {"id": "c1"}
@@ -242,6 +246,7 @@ def test_cancel_conversation_404_when_missing(client, mock_service):
 # ---------------------------------------------------------------------------
 # snapshot
 # ---------------------------------------------------------------------------
+
 
 def test_snapshot_syncs_messages_and_thread_state(client, mock_service):
     mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
@@ -301,21 +306,18 @@ def test_snapshot_forwards_structured_context_pruning_request(client, mock_servi
     )
 
     assert resp.status_code == 200
-    assert (
-        mock_service.save_conversation_snapshot.call_args.kwargs[
-            "prune_agent_context_to_messages"
-        ]
-        is True
-    )
+    assert mock_service.save_conversation_snapshot.call_args.kwargs["prune_agent_context_to_messages"] is True
 
 
 def test_assistant_progress_copy_is_not_persisted():
     service = object.__new__(ChatSessionService)
-    messages = service._normalize_messages([
-        {
-            "id": "assistant-1",
-            "role": "assistant",
-            "content": "正在拆解问题并规划研究路径...\n\n## 最终结论\n证据充分。",
-        }
-    ])
+    messages = service._normalize_messages(
+        [
+            {
+                "id": "assistant-1",
+                "role": "assistant",
+                "content": "正在拆解问题并规划研究路径...\n\n## 最终结论\n证据充分。",
+            }
+        ]
+    )
     assert messages[0]["content"] == "## 最终结论\n证据充分。"

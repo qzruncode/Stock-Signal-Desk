@@ -80,13 +80,8 @@ def _criterion(index: int, status: str = "pass") -> dict:
 
 
 def _item(symbol: str, statuses: list[str]) -> dict:
-    criteria = [
-        _criterion(index, status)
-        for index, status in enumerate(statuses)
-    ]
-    all_pass = len(criteria) == 8 and all(
-        status == "pass" for status in statuses
-    )
+    criteria = [_criterion(index, status) for index, status in enumerate(statuses)]
+    all_pass = len(criteria) == 8 and all(status == "pass" for status in statuses)
     stopped = next(
         (item for item in criteria if item["status"] != "pass"),
         None,
@@ -95,18 +90,8 @@ def _item(symbol: str, statuses: list[str]) -> dict:
         "symbol": symbol,
         "name": f"公司{symbol}",
         "criteria": criteria,
-        "analysis_status": (
-            "source_unavailable"
-            if "insufficient" in statuses
-            else "completed"
-        ),
-        "final_decision": (
-            "可买入"
-            if all_pass
-            else "分析未完成"
-            if "insufficient" in statuses
-            else "不可买入"
-        ),
+        "analysis_status": ("source_unavailable" if "insufficient" in statuses else "completed"),
+        "final_decision": ("可买入" if all_pass else "分析未完成" if "insufficient" in statuses else "不可买入"),
         "gate_pass_complete": all_pass,
         "stopped_at": stopped["criterion_id"] if stopped else None,
         "stopped_at_name": stopped["criterion_name"] if stopped else None,
@@ -137,11 +122,13 @@ def test_shared_market_mainline_tool_returns_one_typed_gate() -> None:
             thesis="减速器",
             thesis_context={
                 "summary": "减速器",
-                "domains": [{
-                    "label": "减速器",
-                    "board_queries": ["减速器"],
-                    "mapping_type": "catalog_binding",
-                }],
+                "domains": [
+                    {
+                        "label": "减速器",
+                        "board_queries": ["减速器"],
+                        "mapping_type": "catalog_binding",
+                    }
+                ],
             },
             market_mainline_snapshot={
                 "snapshot_id": "shared-snapshot",
@@ -164,34 +151,29 @@ def test_investment_workflow_compiles_each_stock_as_an_independent_call() -> Non
     assert len(calls) == len(symbols) + 2
     assert calls[0].tool_name == "prepare_market_mainline_snapshot"
     assert calls[1].tool_name == "evaluate_market_mainline_gate"
-    assert all(
-        call.tool_name == "evaluate_multi_stock_buy_criteria"
-        for call in calls[2:]
-    )
+    assert all(call.tool_name == "evaluate_multi_stock_buy_criteria" for call in calls[2:])
     assert [call.arguments["symbols"] for call in calls[2:]] == list(symbols)
     assert calls[1].arguments["mainline_strategy"] == "confirmed_mainline"
-    assert all(
-        call.arguments["mainline_strategy"] == "confirmed_mainline"
-        for call in calls[2:]
-    )
+    assert all(call.arguments["mainline_strategy"] == "confirmed_mainline" for call in calls[2:])
     assert calls[1].depends_on_steps == ("market_mainline_snapshot",)
-    assert calls[1].result_bindings == (
-        ("market_mainline_snapshot", "market_mainline_snapshot"),
-    )
+    assert calls[1].result_bindings == (("market_mainline_snapshot", "market_mainline_snapshot"),)
     assert all(
-        call.depends_on_steps == (
+        call.depends_on_steps
+        == (
             "market_mainline_snapshot",
             "market_mainline_gate",
         )
         and call.after_steps == ()
-        and call.result_bindings == (
+        and call.result_bindings
+        == (
             ("market_mainline_snapshot", "market_mainline_snapshot"),
             ("market_mainline_assessment", "market_mainline_gate"),
             ("market_mainline_model_error", "market_mainline_gate"),
         )
         and call.execution_guard is not None
         and call.execution_guard.source_step == "market_mainline_gate"
-        and call.execution_guard.result_path == (
+        and call.execution_guard.result_path
+        == (
             "market_mainline_assessment",
             "status",
         )
@@ -258,25 +240,32 @@ def test_investment_executor_keeps_bounded_sliding_progress_and_source_order() -
         }
 
     async def observe(_task, outcome, completed, total):
-        observed.append((
-            str(outcome.arguments.get("symbols") or ""),
-            completed,
-            total,
-        ))
+        observed.append(
+            (
+                str(outcome.arguments.get("symbols") or ""),
+                completed,
+                total,
+            )
+        )
 
-    execution = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-        outcome_observer=observe,
-    ).execute([
-        ResolvedTask(candidate=_task(), symbols=symbols),
-    ]))
+    execution = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            outcome_observer=observe,
+        ).execute(
+            [
+                ResolvedTask(candidate=_task(), symbols=symbols),
+            ]
+        )
+    )
 
     assert execution.success is True
     assert max_active == 4
     assert len(received_snapshots) == len(symbols)
     assert all(
-        snapshot == {
+        snapshot
+        == {
             key: frozen_snapshot[key]
             for key in (
                 "success",
@@ -291,13 +280,9 @@ def test_investment_executor_keeps_bounded_sliding_progress_and_source_order() -
         }
         for snapshot in received_snapshots
     )
-    stock_observations = [
-        item for item in observed if item[0]
-    ]
+    stock_observations = [item for item in observed if item[0]]
     assert stock_observations[0][0] != symbols[0]
-    assert [call.arguments["symbols"] for call in execution.tasks[0].calls[2:]] == list(
-        symbols
-    )
+    assert [call.arguments["symbols"] for call in execution.tasks[0].calls[2:]] == list(symbols)
 
 
 def test_failed_shared_market_gate_projects_every_stock_without_running_tools() -> None:
@@ -343,12 +328,16 @@ def test_failed_shared_market_gate_projects_every_stock_without_running_tools() 
         "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
         side_effect=resolve_one,
     ):
-        execution = asyncio.run(WorkflowExecutor(
-            ToolRegistry(),
-            runner,
-        ).execute([
-            ResolvedTask(candidate=_task(), symbols=symbols),
-        ]))
+        execution = asyncio.run(
+            WorkflowExecutor(
+                ToolRegistry(),
+                runner,
+            ).execute(
+                [
+                    ResolvedTask(candidate=_task(), symbols=symbols),
+                ]
+            )
+        )
 
     task_result = execution.tasks[0]
     assert execution.success is True
@@ -386,20 +375,22 @@ def test_failed_market_snapshot_blocks_every_per_stock_analysis() -> None:
             "errors": [],
         }
 
-    execution = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-    ).execute([
-        ResolvedTask(candidate=_task(), symbols=symbols),
-    ]))
+    execution = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+        ).execute(
+            [
+                ResolvedTask(candidate=_task(), symbols=symbols),
+            ]
+        )
+    )
 
     assert executed == []
     assert execution.tasks[0].status == "failed"
     assert len(execution.tasks[0].calls) == 1
     assert execution.tasks[0].calls[0].success is False
-    assert execution.tasks[0].errors == [
-        "3 个后续步骤因前置步骤失败未执行。"
-    ]
+    assert execution.tasks[0].errors == ["3 个后续步骤因前置步骤失败未执行。"]
 
 
 def test_market_snapshot_inline_failure_is_not_marked_successful() -> None:
@@ -460,16 +451,20 @@ def test_market_snapshot_accepts_candidate_only_lifecycle_report() -> None:
             "as_of_date": "2026-07-29",
             "overview": "当前无确认主线，具身智能进入验证期",
             "current_mainlines": [],
-            "candidate_mainlines": [{
-                "name": "具身智能",
-                "lifecycle": "validating",
-                "branches": ["减速器"],
-            }],
-            "future_mainlines": [{
-                "name": "具身智能",
-                "lifecycle": "validating",
-                "branches": ["减速器"],
-            }],
+            "candidate_mainlines": [
+                {
+                    "name": "具身智能",
+                    "lifecycle": "validating",
+                    "branches": ["减速器"],
+                }
+            ],
+            "future_mainlines": [
+                {
+                    "name": "具身智能",
+                    "lifecycle": "validating",
+                    "branches": ["减速器"],
+                }
+            ],
             "report_pending": False,
         },
     ):
@@ -497,10 +492,13 @@ def test_market_snapshot_forwards_inline_progress_to_workflow() -> None:
             "llm_used": True,
         }
 
-    with patch(
-        "src.tools.prepare_market_mainline_snapshot.MarketThemeService.ensure_model_report_inline",
-        side_effect=ensure_inline,
-    ), tool_progress_observer(updates.append):
+    with (
+        patch(
+            "src.tools.prepare_market_mainline_snapshot.MarketThemeService.ensure_model_report_inline",
+            side_effect=ensure_inline,
+        ),
+        tool_progress_observer(updates.append),
+    ):
         result = prepare_market_mainline_snapshot()
 
     assert result["success"] is True
@@ -530,13 +528,16 @@ def test_buy_tool_forwards_the_frozen_snapshot_to_every_company() -> None:
         captured.append(kwargs["pre_fetched_data"])
         return _item(symbol, ["fail"])
 
-    with patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
-        autospec=True,
-        side_effect=analyze,
+    with (
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
+            autospec=True,
+            side_effect=analyze,
+        ),
     ):
         result = evaluate_multi_stock_buy_criteria(
             "000001,000002",
@@ -556,11 +557,15 @@ def test_failed_company_run_becomes_a_renderable_terminal_result() -> None:
         "000026工具执行超时",
         market_mainline_snapshot_id="shared-snapshot",
     )
-    answer = _build_professional_buy_decision_answer([{
-        "tool": "evaluate_multi_stock_buy_criteria",
-        "arguments": {"symbols": "000026"},
-        "result": result,
-    }])
+    answer = _build_professional_buy_decision_answer(
+        [
+            {
+                "tool": "evaluate_multi_stock_buy_criteria",
+                "arguments": {"symbols": "000026"},
+                "result": result,
+            }
+        ]
+    )
 
     assert answer is not None
     assert "000026" in answer
@@ -574,21 +579,20 @@ def test_failed_company_run_becomes_a_renderable_terminal_result() -> None:
 def test_failed_company_run_sanitizes_gateway_and_schema_details() -> None:
     result = build_professional_buy_failure_result(
         "000026",
-        (
-            "litellm.Timeout: <html><h1>504 Gateway Time-out</h1></html> "
-            "ValidationError headline string_too_long"
-        ),
+        ("litellm.Timeout: <html><h1>504 Gateway Time-out</h1></html> " "ValidationError headline string_too_long"),
     )
-    answer = _build_professional_buy_decision_answer([{
-        "tool": "evaluate_multi_stock_buy_criteria",
-        "arguments": {"symbols": "000026"},
-        "result": result,
-    }])
+    answer = _build_professional_buy_decision_answer(
+        [
+            {
+                "tool": "evaluate_multi_stock_buy_criteria",
+                "arguments": {"symbols": "000026"},
+                "result": result,
+            }
+        ]
+    )
 
     assert result["success"] is False
-    assert result["errors"] == [
-        "analysis_timeout：分析服务响应超时，本轮未形成公司结论"
-    ]
+    assert result["errors"] == ["analysis_timeout：分析服务响应超时，本轮未形成公司结论"]
     assert answer is not None
     assert "<html>" not in answer
     assert "ValidationError" not in answer
@@ -596,16 +600,20 @@ def test_failed_company_run_sanitizes_gateway_and_schema_details() -> None:
 
 
 def test_renderer_does_not_turn_an_unexecuted_call_into_zero_of_eight() -> None:
-    answer = _build_professional_buy_decision_answer([{
-        "tool": "evaluate_multi_stock_buy_criteria",
-        "arguments": {"symbols": "000026"},
-        "executed": False,
-        "result": {
-            "success": False,
-            "errors": ["前置流程阻止了逐股调用"],
-            "partial": False,
-        },
-    }])
+    answer = _build_professional_buy_decision_answer(
+        [
+            {
+                "tool": "evaluate_multi_stock_buy_criteria",
+                "arguments": {"symbols": "000026"},
+                "executed": False,
+                "result": {
+                    "success": False,
+                    "errors": ["前置流程阻止了逐股调用"],
+                    "partial": False,
+                },
+            }
+        ]
+    )
 
     assert answer is not None
     assert "**未执行**" in answer
@@ -615,21 +623,21 @@ def test_renderer_does_not_turn_an_unexecuted_call_into_zero_of_eight() -> None:
 
 
 def test_collection_executor_covers_every_resolved_stock_without_silent_cap() -> None:
-    resolved = [
-        {"symbol": f"{index:06d}", "name": f"公司{index}"}
-        for index in range(1, 24)
-    ]
+    resolved = [{"symbol": f"{index:06d}", "name": f"公司{index}"} for index in range(1, 24)]
 
     def analyze(_self, symbol: str, **_kwargs) -> dict:
         return _item(symbol, ["pass"] * 8)
 
-    with patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
-        autospec=True,
-        side_effect=analyze,
+    with (
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
+            autospec=True,
+            side_effect=analyze,
+        ),
     ):
         result = evaluate_multi_stock_buy_criteria(
             ",".join(item["symbol"] for item in resolved),
@@ -638,19 +646,20 @@ def test_collection_executor_covers_every_resolved_stock_without_silent_cap() ->
     assert result["requested_count"] == 23
     assert result["covered_count"] == 23
     assert result["coverage_complete"] is True
-    assert [item["symbol"] for item in result["items"]] == [
-        item["symbol"] for item in resolved
-    ]
+    assert [item["symbol"] for item in result["items"]] == [item["symbol"] for item in resolved]
 
 
 def test_company_failure_is_reported_as_execution_failure_not_a_fake_gate() -> None:
     resolved = [{"symbol": "600519", "name": "贵州茅台"}]
-    with patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
-        side_effect=RuntimeError("analysis unavailable"),
+    with (
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
+            side_effect=RuntimeError("analysis unavailable"),
+        ),
     ):
         result = evaluate_multi_stock_buy_criteria("600519")
 
@@ -670,15 +679,16 @@ def test_company_failure_is_reported_as_execution_failure_not_a_fake_gate() -> N
 def test_critical_source_outage_is_not_reported_as_company_rejection() -> None:
     resolved = [{"symbol": "600519", "name": "贵州茅台"}]
     unavailable = _item("600519", ["pass", "insufficient"])
-    unavailable["evidence_gaps"] = [
-        "industrial_competitiveness/formal_business_evidence：取证超时"
-    ]
-    with patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
-        return_value=unavailable,
+    unavailable["evidence_gaps"] = ["industrial_competitiveness/formal_business_evidence：取证超时"]
+    with (
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.evaluate_multi_stock_buy_criteria.CriterionOrchestrator.analyze_for_agent",
+            return_value=unavailable,
+        ),
     ):
         result = evaluate_multi_stock_buy_criteria("600519")
 
@@ -686,28 +696,27 @@ def test_critical_source_outage_is_not_reported_as_company_rejection() -> None:
     assert result["source_unavailable_count"] == 1
     assert result["evidence_insufficient_count"] == 0
     assert result["items"][0]["final_decision"] == "分析未完成"
-    assert result["errors"] == [
-        "analysis_timeout：关键来源取证超时，本轮未形成公司结论"
-    ]
+    assert result["errors"] == ["analysis_timeout：关键来源取证超时，本轮未形成公司结论"]
 
 
 def test_renderer_distinguishes_screening_rejection_from_system_unavailable() -> None:
     rejected = _item("000001", ["pass", "fail"])
     insufficient = _item("000002", ["pass", "insufficient"])
-    answer = _build_professional_buy_decision_answer([{
-        "tool": "evaluate_multi_stock_buy_criteria",
-        "arguments": {"symbols": "000001,000002"},
-        "result": {
-            "items": [rejected, insufficient],
-            "errors": [],
-        },
-    }])
+    answer = _build_professional_buy_decision_answer(
+        [
+            {
+                "tool": "evaluate_multi_stock_buy_criteria",
+                "arguments": {"symbols": "000001,000002"},
+                "result": {
+                    "items": [rejected, insufficient],
+                    "errors": [],
+                },
+            }
+        ]
+    )
 
     assert answer is not None
-    assert (
-        "| 公司000001 (000001) | **不符合本次买入条件**"
-        in answer
-    )
+    assert "| 公司000001 (000001) | **不符合本次买入条件**" in answer
     assert "| 公司000002 (000002) | **分析未完成**" in answer
     assert "不符合本次买入条件 1 只" in answer
     assert "分析未完成 1 只" in answer
@@ -717,14 +726,18 @@ def test_renderer_distinguishes_screening_rejection_from_system_unavailable() ->
 def test_renderer_accepts_only_complete_ordered_eight_passes() -> None:
     passed = _item("600519", ["pass"] * 8)
     stopped = _item("000858", ["pass", "fail"])
-    answer = _build_professional_buy_decision_answer([{
-        "tool": "evaluate_multi_stock_buy_criteria",
-        "arguments": {"symbols": "600519,000858"},
-        "result": {
-            "items": [passed, stopped],
-            "errors": [],
-        },
-    }])
+    answer = _build_professional_buy_decision_answer(
+        [
+            {
+                "tool": "evaluate_multi_stock_buy_criteria",
+                "arguments": {"symbols": "600519,000858"},
+                "result": {
+                    "items": [passed, stopped],
+                    "errors": [],
+                },
+            }
+        ]
+    )
 
     assert answer is not None
     assert "公司600519 (600519)" in answer
@@ -741,11 +754,15 @@ def test_renderer_rejects_out_of_order_dimension_payload() -> None:
         malformed["criteria"][1],
         malformed["criteria"][0],
     )
-    answer = _build_professional_buy_decision_answer([{
-        "tool": "evaluate_multi_stock_buy_criteria",
-        "arguments": {"symbols": "600519"},
-        "result": {"items": [malformed], "errors": []},
-    }])
+    answer = _build_professional_buy_decision_answer(
+        [
+            {
+                "tool": "evaluate_multi_stock_buy_criteria",
+                "arguments": {"symbols": "600519"},
+                "result": {"items": [malformed], "errors": []},
+            }
+        ]
+    )
 
     assert answer is not None
     assert "执行结构异常" in answer

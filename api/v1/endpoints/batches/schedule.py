@@ -37,7 +37,10 @@ async def get_batch_schedule():
     schedule = db.get_batch_schedule()
     if schedule is None:
         return BatchScheduleResponse(
-            id=0, enabled=False, times=[], template_id=None,
+            id=0,
+            enabled=False,
+            times=[],
+            template_id=None,
         )
     return BatchScheduleResponse(**schedule)
 
@@ -49,6 +52,7 @@ async def update_batch_schedule(request: BatchScheduleRequest):
         raise HTTPException(status_code=400, detail="必须指定模板 ID")
 
     import re
+
     for t in request.times:
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", t):
             raise HTTPException(status_code=400, detail=f"无效的时间格式: {t}")

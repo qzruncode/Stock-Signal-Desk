@@ -32,7 +32,8 @@ def run_batch_analysis(
             raise ValueError("scope=group 时必须提供 group_name")
         group = next(
             (
-                item for item in DatabaseManager.get_instance().list_watchlist_groups()
+                item
+                for item in DatabaseManager.get_instance().list_watchlist_groups()
                 if str(item.get("name") or "") == target_name
             ),
             None,
@@ -48,12 +49,16 @@ def run_batch_analysis(
         raise ValueError("批量分析股票范围为空")
     if len(codes) > 50:
         raise ValueError("单次批量分析最多支持 50 只股票")
-    response = run_async(trigger_batch_run(BatchRunTriggerRequest(
-        stock_codes=codes,
-        template_id=prompt_template_id,
-        analysis_mode=analysis_mode,
-        force_refresh=bool(force_refresh),
-    )))
+    response = run_async(
+        trigger_batch_run(
+            BatchRunTriggerRequest(
+                stock_codes=codes,
+                template_id=prompt_template_id,
+                analysis_mode=analysis_mode,
+                force_refresh=bool(force_refresh),
+            )
+        )
+    )
     return envelope(
         accepted=True,
         scope=scope,
@@ -71,14 +76,16 @@ TOOL = ToolSpec(
         "scope=watchlist/configured 会使用已保存范围，scope=group 会使用指定自选分组。"
         "超过 10 只时应先向用户概述范围并获得确认。"
     ),
-    parameters=object_schema({
-        "symbols": {"type": "string", "description": "scope=symbols 时必填，逗号分隔"},
-        "scope": {"type": "string", "enum": ["symbols", "watchlist", "configured", "group"], "default": "symbols"},
-        "group_name": {"type": "string", "description": "scope=group 时必填，自选分组名称"},
-        "analysis_mode": {"type": "string", "enum": ["template", "buy_criteria"], "default": "template"},
-        "prompt_template_id": {"type": "string", "description": "template 模式必填"},
-        "force_refresh": {"type": "boolean", "default": False},
-    }),
+    parameters=object_schema(
+        {
+            "symbols": {"type": "string", "description": "scope=symbols 时必填，逗号分隔"},
+            "scope": {"type": "string", "enum": ["symbols", "watchlist", "configured", "group"], "default": "symbols"},
+            "group_name": {"type": "string", "description": "scope=group 时必填，自选分组名称"},
+            "analysis_mode": {"type": "string", "enum": ["template", "buy_criteria"], "default": "template"},
+            "prompt_template_id": {"type": "string", "description": "template 模式必填"},
+            "force_refresh": {"type": "boolean", "default": False},
+        }
+    ),
     executor=run_batch_analysis,
     category="action",
 )

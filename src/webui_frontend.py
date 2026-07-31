@@ -137,10 +137,7 @@ def _has_static_assets(static_dir: Path) -> bool:
     if not assets_dir.is_dir():
         return False
     try:
-        return any(
-            f.suffix in (".js", ".css") and f.is_file()
-            for f in assets_dir.iterdir()
-        )
+        return any(f.suffix in (".js", ".css") and f.is_file() for f in assets_dir.iterdir())
     except OSError:
         return False
 
@@ -151,8 +148,7 @@ def _warn_if_assets_missing(artifact_index: Path, frontend_dir: Path) -> None:
     assets_dir = static_dir / "assets"
     if not _has_static_assets(static_dir):
         logger.warning(
-            "检测到 %s 但 %s 目录不存在或无 CSS/JS 文件，"
-            "WebUI 将因缺少样式与脚本而显示异常（元素过大、布局错乱）",
+            "检测到 %s 但 %s 目录不存在或无 CSS/JS 文件，" "WebUI 将因缺少样式与脚本而显示异常（元素过大、布局错乱）",
             artifact_index,
             assets_dir,
         )
@@ -160,9 +156,7 @@ def _warn_if_assets_missing(artifact_index: Path, frontend_dir: Path) -> None:
             "请重新构建前端以修复此问题: %s",
             _manual_build_command(frontend_dir),
         )
-        logger.warning(
-            "Docker 用户请执行: docker-compose -f ./docker/docker-compose.yml build --no-cache"
-        )
+        logger.warning("Docker 用户请执行: docker-compose -f ./docker/docker-compose.yml build --no-cache")
 
 
 def prepare_webui_frontend_assets() -> bool:

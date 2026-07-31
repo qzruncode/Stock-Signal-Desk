@@ -66,12 +66,8 @@ async def run_agent_runtime_maintenance(
                 ):
                     result = await asyncio.to_thread(
                         database.prune_agent_runtime_data,
-                        finished_before=now - timedelta(
-                            days=retention_days
-                        ),
-                        trace_before=now - timedelta(
-                            days=trace_retention_days
-                        ),
+                        finished_before=now - timedelta(days=retention_days),
+                        trace_before=now - timedelta(days=trace_retention_days),
                         limit=1000,
                     )
                 if any(result.values()):

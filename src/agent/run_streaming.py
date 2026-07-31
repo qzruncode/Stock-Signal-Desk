@@ -18,13 +18,15 @@ from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATUSES = frozenset({
-    "completed",
-    "partial",
-    "failed",
-    "cancelled",
-    "blocked",
-})
+_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        "partial",
+        "failed",
+        "cancelled",
+        "blocked",
+    }
+)
 
 
 async def subscriber_stream(

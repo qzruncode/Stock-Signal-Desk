@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 # Express-style route param: :name / :name? / :name{regex}?
-_PARAM_RE = re.compile(r':([a-zA-Z_][a-zA-Z0-9_]*)(\{[^}]+\})?(\?)?')
+_PARAM_RE = re.compile(r":([a-zA-Z_][a-zA-Z0-9_]*)(\{[^}]+\})?(\?)?")
 
 
 def _readable_http_url(value: Any) -> str:
@@ -182,10 +182,9 @@ def _build_feed_url_generic(
         # Route-path-level formatter wins over the namespace default — lets a
         # specific route override the namespace's param handling (e.g. xueqiu
         # fund codes must not get the stock SH/SZ/BJ prefix).
-        formatter = (
-            _PARAM_FORMATTERS_BY_ROUTE.get(path, {}).get(name)
-            or _PARAM_FORMATTERS.get(namespace or "", {}).get(name)
-        )
+        formatter = _PARAM_FORMATTERS_BY_ROUTE.get(path, {}).get(name) or _PARAM_FORMATTERS.get(
+            namespace or "", {}
+        ).get(name)
         if formatter:
             try:
                 val = formatter(val)
@@ -221,7 +220,7 @@ def _stock_code_to_rsshub_id(code: str) -> str:
     c = code.strip().upper()
     for prefix in ("SH", "SZ", "BJ"):
         if c.startswith(prefix):
-            c = c[len(prefix):]
+            c = c[len(prefix) :]
             break
     if "." in c:
         c = c.split(".")[0]
@@ -240,18 +239,21 @@ def _normalize_stock_code(code: str) -> str:
     raw_code = code.strip().upper()
     for prefix in ("SH", "SZ", "BJ"):
         if raw_code.startswith(prefix):
-            raw_code = raw_code[len(prefix):]
+            raw_code = raw_code[len(prefix) :]
             break
     if "." in raw_code:
         raw_code = raw_code.split(".")[0]
     return raw_code
 
 
-def _build_feed_url(source: str, stock_code: Optional[str] = None,
-                    type: Optional[str] = None,
-                    category: Optional[str] = None,
-                    keyword: Optional[str] = None,
-                    uid: Optional[str] = None) -> str:
+def _build_feed_url(
+    source: str,
+    stock_code: Optional[str] = None,
+    type: Optional[str] = None,
+    category: Optional[str] = None,
+    keyword: Optional[str] = None,
+    uid: Optional[str] = None,
+) -> str:
     """根据 source 和参数构建 RSSHub feed URL。"""
     route_info = RSSHUB_ROUTES.get(source)
     if not route_info:
@@ -298,8 +300,8 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36",
         }
         resp = requests.get(url, headers=headers, timeout=timeout)
         resp.raise_for_status()
@@ -337,6 +339,7 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
                     parsed = getattr(entry, f"{attr}_parsed", None)
                     if parsed:
                         from time import mktime
+
                         published = datetime.fromtimestamp(mktime(parsed)).isoformat()
                     else:
                         published = str(val)
@@ -355,18 +358,20 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
         if _is_unresolvable_truncated_item(title, link, summary):
             continue
 
-        items.append({
-            "id": str(getattr(entry, "id", "") or getattr(entry, "guid", "")),
-            "title": title,
-            "link": link,
-            "summary": summary,
-            "published": published,
-            "author": getattr(entry, "author", ""),
-            "tags": tags,
-            "image": "",
-            "content_html": content_html,
-            "attachments": [],
-        })
+        items.append(
+            {
+                "id": str(getattr(entry, "id", "") or getattr(entry, "guid", "")),
+                "title": title,
+                "link": link,
+                "summary": summary,
+                "published": published,
+                "author": getattr(entry, "author", ""),
+                "tags": tags,
+                "image": "",
+                "content_html": content_html,
+                "attachments": [],
+            }
+        )
 
     feed_title = ""
     feed_link = ""
@@ -412,13 +417,15 @@ def _attachments_from_json(att: Any) -> list:
         url = a.get("url")
         if not url:
             continue
-        out.append({
-            "url": str(url),
-            "mime_type": str(a.get("mime_type") or a.get("mime") or ""),
-            "title": str(a.get("title") or ""),
-            "size_in_bytes": a.get("size_in_bytes"),
-            "duration_in_seconds": a.get("duration_in_seconds"),
-        })
+        out.append(
+            {
+                "url": str(url),
+                "mime_type": str(a.get("mime_type") or a.get("mime") or ""),
+                "title": str(a.get("title") or ""),
+                "size_in_bytes": a.get("size_in_bytes"),
+                "duration_in_seconds": a.get("duration_in_seconds"),
+            }
+        )
     return out
 
 
@@ -435,8 +442,8 @@ def _fetch_rss_feed_json(url: str, limit: int = 20, timeout: float = 20.0) -> di
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/feed+json, application/json",
         }
         resp = requests.get(json_url, headers=headers, timeout=timeout)
@@ -475,21 +482,23 @@ def _fetch_rss_feed_json(url: str, limit: int = 20, timeout: float = 20.0) -> di
         if _is_unresolvable_truncated_item(title, link, summary):
             continue
 
-        items.append({
-            "id": str(entry.get("id") or ""),
-            "title": title,
-            # JSON Feed `id` is an opaque stable identifier. It is not a URL and
-            # must never be rendered as an href (UUID ids otherwise become
-            # localhost-relative links in the web app).
-            "link": link,
-            "summary": summary,
-            "published": str(entry.get("date_published") or entry.get("date_modified") or "") or None,
-            "author": _authors_to_str(entry.get("authors")),
-            "tags": tags,
-            "image": image,
-            "content_html": content_html,
-            "attachments": attachments,
-        })
+        items.append(
+            {
+                "id": str(entry.get("id") or ""),
+                "title": title,
+                # JSON Feed `id` is an opaque stable identifier. It is not a URL and
+                # must never be rendered as an href (UUID ids otherwise become
+                # localhost-relative links in the web app).
+                "link": link,
+                "summary": summary,
+                "published": str(entry.get("date_published") or entry.get("date_modified") or "") or None,
+                "author": _authors_to_str(entry.get("authors")),
+                "tags": tags,
+                "image": image,
+                "content_html": content_html,
+                "attachments": attachments,
+            }
+        )
 
     return {
         "feed_title": str(data.get("title") or ""),

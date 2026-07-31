@@ -38,18 +38,20 @@ def _daily_records(frame: Any, days: int) -> list[dict[str, Any]]:
     for index, row in source_rows.iterrows():
         close = number(row.get("close"))
         previous = number(source_rows.iloc[index - 1].get("close")) if index else None
-        rows.append({
-            "date": str(row.get("date") or "")[:10],
-            "open": number(row.get("open")),
-            "high": number(row.get("high")),
-            "low": number(row.get("low")),
-            "close": close,
-            "volume": number(row.get("volume")),
-            "amount": number(row.get("amount")),
-            "change_amount": round(close - previous, 4) if close is not None and previous is not None else None,
-            "pct_chg": round((close / previous - 1) * 100, 4) if close is not None and previous else None,
-            "record_type": "daily_close",
-        })
+        rows.append(
+            {
+                "date": str(row.get("date") or "")[:10],
+                "open": number(row.get("open")),
+                "high": number(row.get("high")),
+                "low": number(row.get("low")),
+                "close": close,
+                "volume": number(row.get("volume")),
+                "amount": number(row.get("amount")),
+                "change_amount": round(close - previous, 4) if close is not None and previous is not None else None,
+                "pct_chg": round((close / previous - 1) * 100, 4) if close is not None and previous else None,
+                "record_type": "daily_close",
+            }
+        )
     return rows[-days:]
 
 
@@ -105,7 +107,11 @@ def _merge_snapshot(history: list[dict[str, Any]], snapshot: dict[str, Any] | No
         # Only append a current-session quote when it connects to the fetched
         # daily series. This prevents a stale holiday snapshot from becoming a
         # fabricated new trading day.
-        if previous_close is not None and quoted_previous is not None and abs(previous_close - quoted_previous) <= max(0.01, abs(previous_close) * 1e-5):
+        if (
+            previous_close is not None
+            and quoted_previous is not None
+            and abs(previous_close - quoted_previous) <= max(0.01, abs(previous_close) * 1e-5)
+        ):
             by_date[snapshot["date"]] = snapshot
     return ordered(list(by_date.values()), "date")[-days:]
 
@@ -123,7 +129,9 @@ def get_index_data(index_code: str = "000001", days: int = 20) -> dict[str, Any]
     daily_cached = spot_cached = False
     daily = spot = None
     try:
-        daily, daily_cached = cached_call(f"index-daily:{index_code}", lambda: _daily_frame(index_code), ttl_seconds=900)
+        daily, daily_cached = cached_call(
+            f"index-daily:{index_code}", lambda: _daily_frame(index_code), ttl_seconds=900
+        )
     except Exception as exc:
         errors.append(f"新浪指数日线: {exc}")
     try:
@@ -164,15 +172,16 @@ def get_index_data(index_code: str = "000001", days: int = 20) -> dict[str, Any]
         "history_count": len(history),
         "units": {"price": "index_point", "volume": "source_reported", "amount": "CNY", "pct_chg": "%"},
         "source": "AKShare/新浪指数日线+实时快照" if not fallback_used else "本地历史缓存",
-        "source_chain": ["AKShare stock_zh_index_daily", "AKShare stock_zh_index_spot_sina"] if not fallback_used else ["本地指数日线缓存"],
+        "source_chain": (
+            ["AKShare stock_zh_index_daily", "AKShare stock_zh_index_spot_sina"]
+            if not fallback_used
+            else ["本地指数日线缓存"]
+        ),
         "success": success,
         "partial": success and bool(errors or warnings),
         "data_time": data_date.isoformat() if data_date else None,
         "retrieved_at": retrieved_at,
-        "is_stale": (
-            expected is not None and data_date.isoformat() < expected
-            if data_date else None
-        ),
+        "is_stale": (expected is not None and data_date.isoformat() < expected if data_date else None),
         "freshness_unknown": data_date is None,
         "fallback_used": fallback_used,
         "fallback_recommended": not success,
@@ -189,10 +198,12 @@ TOOL = ToolSpec(
         "获取上证、深证、创业板或科创50的日线与当前交易日快照。实时快照只会在能与上一日收盘价对齐时"
         "并入历史，避免把今日行情覆盖到昨日日期；返回价格、涨跌幅、成交量和成交额的明确单位与数据时间。"
     ),
-    parameters=object_schema({
-        "index_code": {"type": "string", "enum": list(INDEX_MAP), "default": "000001"},
-        "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 20},
-    }),
+    parameters=object_schema(
+        {
+            "index_code": {"type": "string", "enum": list(INDEX_MAP), "default": "000001"},
+            "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 20},
+        }
+    ),
     executor=get_index_data,
     category="macro",
 )

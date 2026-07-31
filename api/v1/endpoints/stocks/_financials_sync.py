@@ -60,9 +60,9 @@ def _set(**updates) -> None:
 # 报告期候选日（季报截止日）
 _REPORT_PERIOD_CANDIDATES: list[tuple[int, int]] = [
     (12, 31),  # 年报
-    (9, 30),   # 三季报
-    (6, 30),   # 中报
-    (3, 31),   # 一季报
+    (9, 30),  # 三季报
+    (6, 30),  # 中报
+    (3, 31),  # 一季报
 ]
 
 # 业绩快报在季报后约 25-30 天披露，需要留缓冲避免空数据
@@ -227,24 +227,19 @@ def _persist_updates(updates: list[tuple[str, dict[str, Any]]]) -> tuple[int, in
     from sqlalchemy import update as sa_update
 
     for start in range(0, len(updates), BATCH):
-        batch = updates[start:start + BATCH]
+        batch = updates[start : start + BATCH]
         codes = [code for code, _ in batch]
         with db.get_session() as session:
-            existing_codes = {
-                row[0]
-                for row in session.query(StockMeta.code).filter(StockMeta.code.in_(codes)).all()
-            }
+            existing_codes = {row[0] for row in session.query(StockMeta.code).filter(StockMeta.code.in_(codes)).all()}
         for code, fields in batch:
             if code not in existing_codes:
                 missing += 1
                 continue
             try:
+
                 def _write(s, _code=code, _fields=fields):
-                    s.execute(
-                        sa_update(StockMeta)
-                        .where(StockMeta.code == _code)
-                        .values(**_fields)
-                    )
+                    s.execute(sa_update(StockMeta).where(StockMeta.code == _code).values(**_fields))
+
                 db._run_write_transaction(f"financial_sync[{code}]", _write)
                 updated += 1
             except Exception as exc:
@@ -282,7 +277,10 @@ def run_financial_sync(period: str | None = None) -> None:
         )
         logger.info(
             "[FinancialSync] 同步完成: period=%s total=%d updated=%d missing=%d",
-            period, total, updated, missing,
+            period,
+            total,
+            updated,
+            missing,
         )
     except Exception as exc:
         _set(

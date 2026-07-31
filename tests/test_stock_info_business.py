@@ -31,8 +31,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -40,6 +42,7 @@ def disable_auth():
 # ---------------------------------------------------------------------------
 # cache helpers
 # ---------------------------------------------------------------------------
+
 
 def test_business_cache_get_returns_none_when_db_raises():
     with patch("src.storage.DatabaseManager") as db_cls:
@@ -86,6 +89,7 @@ def test_business_cache_put_serializes_dict_to_json():
 # _sanitize
 # ---------------------------------------------------------------------------
 
+
 def test_get_stock_business_returns_cached_without_force(client):
     cached = {"symbol": "000001", "cached": True}
     with patch("api.v1.endpoints.stock_info.business._business_cache_get", return_value=cached):
@@ -96,17 +100,17 @@ def test_get_stock_business_returns_cached_without_force(client):
 
 def test_get_stock_business_force_refetches_and_caches(client):
     result = {"symbol": "000001", "fresh": True}
-    with patch("api.v1.endpoints.stock_info.business._business_cache_get", return_value=None), \
-         patch("api.v1.endpoints.stock_info.business._fetch_business_intro", return_value={}), \
-         patch("api.v1.endpoints.stock_info.business._fetch_business_composition", return_value=[]), \
-         patch("api.v1.endpoints.stock_info.business._fetch_profit_forecast", return_value=[]), \
-         patch("api.v1.endpoints.stock_info.business._fetch_financial_summary", return_value={}), \
-         patch("api.v1.endpoints.stock_info.business._fetch_recent_events", return_value={}), \
-         patch("api.v1.endpoints.stock_info.business._generate_llm_business_analysis", return_value=result), \
-         patch("api.v1.endpoints.stock_info.business._business_cache_put") as put:
-        resp = client.get(
-            "/api/v1/stocks/business", params={"symbol": "sh000001", "force": True}
-        )
+    with (
+        patch("api.v1.endpoints.stock_info.business._business_cache_get", return_value=None),
+        patch("api.v1.endpoints.stock_info.business._fetch_business_intro", return_value={}),
+        patch("api.v1.endpoints.stock_info.business._fetch_business_composition", return_value=[]),
+        patch("api.v1.endpoints.stock_info.business._fetch_profit_forecast", return_value=[]),
+        patch("api.v1.endpoints.stock_info.business._fetch_financial_summary", return_value={}),
+        patch("api.v1.endpoints.stock_info.business._fetch_recent_events", return_value={}),
+        patch("api.v1.endpoints.stock_info.business._generate_llm_business_analysis", return_value=result),
+        patch("api.v1.endpoints.stock_info.business._business_cache_put") as put,
+    ):
+        resp = client.get("/api/v1/stocks/business", params={"symbol": "sh000001", "force": True})
     assert resp.status_code == 200
     body = resp.json()
     assert body["fresh"] is True
@@ -135,35 +139,64 @@ from api.v1.endpoints.stock_info._llm_prompts import (
 
 def _fake_news_df():
     import pandas as pd
-    return pd.DataFrame([{
-        "关键词": "600519", "新闻标题": "测试新闻标题", "新闻内容": "正文内容",
-        "发布时间": "2026-07-07 22:23:00", "文章来源": "证券时报网",
-        "新闻链接": "http://example.com/n1",
-    }])
+
+    return pd.DataFrame(
+        [
+            {
+                "关键词": "600519",
+                "新闻标题": "测试新闻标题",
+                "新闻内容": "正文内容",
+                "发布时间": "2026-07-07 22:23:00",
+                "文章来源": "证券时报网",
+                "新闻链接": "http://example.com/n1",
+            }
+        ]
+    )
 
 
 def _fake_research_df():
     import pandas as pd
-    return pd.DataFrame([{
-        "序号": 1, "股票代码": "600519", "股票简称": "贵州茅台",
-        "报告名称": "测试研报", "东财评级": "买入", "机构": "诚通证券",
-        "2026-盈利预测-收益": 66.68, "2027-盈利预测-收益": 69.43,
-        "2028-盈利预测-收益": 72.56, "日期": "2026-05-25",
-    }])
+
+    return pd.DataFrame(
+        [
+            {
+                "序号": 1,
+                "股票代码": "600519",
+                "股票简称": "贵州茅台",
+                "报告名称": "测试研报",
+                "东财评级": "买入",
+                "机构": "诚通证券",
+                "2026-盈利预测-收益": 66.68,
+                "2027-盈利预测-收益": 69.43,
+                "2028-盈利预测-收益": 72.56,
+                "日期": "2026-05-25",
+            }
+        ]
+    )
 
 
 def _fake_notice_df():
     import pandas as pd
-    return pd.DataFrame([{
-        "代码": "600519", "名称": "贵州茅台", "公告标题": "权益分派实施公告",
-        "公告类型": "分配方案实施", "公告日期": "2026-06-22",
-        "网址": "http://example.com/a1",
-    }])
+
+    return pd.DataFrame(
+        [
+            {
+                "代码": "600519",
+                "名称": "贵州茅台",
+                "公告标题": "权益分派实施公告",
+                "公告类型": "分配方案实施",
+                "公告日期": "2026-06-22",
+                "网址": "http://example.com/a1",
+            }
+        ]
+    )
 
 
 def test_fetch_recent_events_normalizes_news_and_announcement_fields():
-    with patch("akshare.stock_news_em", return_value=_fake_news_df()), \
-         patch("akshare.stock_individual_notice_report", return_value=_fake_notice_df()):
+    with (
+        patch("akshare.stock_news_em", return_value=_fake_news_df()),
+        patch("akshare.stock_individual_notice_report", return_value=_fake_notice_df()),
+    ):
         events = _fetch_recent_events("600519")
     assert events["news"] and events["announcements"]
     n = events["news"][0]
@@ -188,22 +221,43 @@ def test_build_business_prompt_does_not_raise_with_normalized_data():
     """The prompt reads a['date']/n['time']/f['analyst'] via subscript — must not KeyError."""
     # Build normalized structures directly (mirrors fetcher output) to test prompt in isolation.
     events_norm = {
-        "news": [{
-            "time": "2026-07-07 22:23:00", "source": "证券时报网",
-            "title": "测试新闻标题", "content": "正文内容", "url": "http://example.com/n1",
-        }],
-        "announcements": [{
-            "date": "2026-06-22", "type": "分配方案实施",
-            "title": "权益分派实施公告", "url": "http://example.com/a1",
-        }],
+        "news": [
+            {
+                "time": "2026-07-07 22:23:00",
+                "source": "证券时报网",
+                "title": "测试新闻标题",
+                "content": "正文内容",
+                "url": "http://example.com/n1",
+            }
+        ],
+        "announcements": [
+            {
+                "date": "2026-06-22",
+                "type": "分配方案实施",
+                "title": "权益分派实施公告",
+                "url": "http://example.com/a1",
+            }
+        ],
     }
-    forecast_norm = [{
-        "analyst": "诚通证券", "researcher": "买入", "rating": "买入",
-        "eps_2026": 66.68, "eps_2027": 69.43, "eps_2028": 72.56,
-        "title": "测试研报", "date": "2026-05-25",
-    }]
+    forecast_norm = [
+        {
+            "analyst": "诚通证券",
+            "researcher": "买入",
+            "rating": "买入",
+            "eps_2026": 66.68,
+            "eps_2027": 69.43,
+            "eps_2028": 72.56,
+            "title": "测试研报",
+            "date": "2026-05-25",
+        }
+    ]
     system, user, _ = _build_business_prompt(
-        "600519", {"main_business": "白酒"}, [], forecast_norm, [], events_norm,
+        "600519",
+        {"main_business": "白酒"},
+        [],
+        forecast_norm,
+        [],
+        events_norm,
     )
     assert "诚通证券" in user and "权益分派实施公告" in user and "证券时报网" in user
 

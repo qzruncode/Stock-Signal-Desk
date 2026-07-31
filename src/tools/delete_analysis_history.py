@@ -24,10 +24,13 @@ TOOL = ToolSpec(
         "永久删除分析历史。只有用户明确指定要删除的记录并确认不可恢复时才能调用；"
         "confirmed 必须反映用户本轮的明确确认，不得由推荐、清理建议或模糊表达推断。"
     ),
-    parameters=object_schema({
-        "record_ids": {"type": "string", "description": "逗号分隔的历史记录主键 ID"},
-        "confirmed": {"type": "boolean", "description": "用户是否已经明确确认永久删除", "default": False},
-    }, required=("record_ids", "confirmed")),
+    parameters=object_schema(
+        {
+            "record_ids": {"type": "string", "description": "逗号分隔的历史记录主键 ID"},
+            "confirmed": {"type": "boolean", "description": "用户是否已经明确确认永久删除", "default": False},
+        },
+        required=("record_ids", "confirmed"),
+    ),
     executor=delete_analysis_history,
     category="action",
 )

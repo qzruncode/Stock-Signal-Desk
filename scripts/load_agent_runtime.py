@@ -39,10 +39,12 @@ async def _one_request(
             "POST",
             "/api/v1/agent/chat",
             json={
-                "messages": [{
-                    "role": "user",
-                    "content": f"{prompt}\n[load-case:{index}]",
-                }],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"{prompt}\n[load-case:{index}]",
+                    }
+                ],
             },
         ) as response:
             async for chunk in response.aiter_bytes():
@@ -75,6 +77,7 @@ async def _run(args) -> int:
         headers=headers,
         timeout=httpx.Timeout(args.timeout),
     ) as client:
+
         async def bounded(index: int):
             async with semaphore:
                 return await _one_request(
@@ -83,15 +86,9 @@ async def _run(args) -> int:
                     prompt=args.prompt,
                 )
 
-        results = await asyncio.gather(*[
-            bounded(index)
-            for index in range(args.requests)
-        ])
+        results = await asyncio.gather(*[bounded(index) for index in range(args.requests)])
 
-    durations = [
-        float(result["duration_seconds"])
-        for result in results
-    ]
+    durations = [float(result["duration_seconds"]) for result in results]
     successes = sum(bool(result["ok"]) for result in results)
     summary = {
         "requests": len(results),
@@ -110,14 +107,15 @@ async def _run(args) -> int:
         },
     }
     summary["release_gate_passed"] = (
-        summary["success_rate"] >= args.min_success_rate
-        and summary["latency_seconds"]["p95"] <= args.max_p95_seconds
+        summary["success_rate"] >= args.min_success_rate and summary["latency_seconds"]["p95"] <= args.max_p95_seconds
     )
-    print(json.dumps(
-        {"summary": summary, "results": results},
-        ensure_ascii=False,
-        indent=2,
-    ))
+    print(
+        json.dumps(
+            {"summary": summary, "results": results},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0 if summary["release_gate_passed"] else 1
 
 

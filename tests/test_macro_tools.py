@@ -34,7 +34,9 @@ def test_index_snapshot_only_appends_when_previous_close_connects_to_daily_serie
         {"date": "2026-07-15", "close": 100.0, "record_type": "daily_close"},
     ]
     connected = {
-        "date": "2026-07-16", "close": 101.0, "previous_close": 100.0,
+        "date": "2026-07-16",
+        "close": 101.0,
+        "previous_close": 100.0,
         "record_type": "realtime_snapshot",
     }
     stale_or_unrelated = {**connected, "previous_close": 95.0}
@@ -48,10 +50,12 @@ def test_index_snapshot_only_appends_when_previous_close_connects_to_daily_serie
 
 
 def test_bond_curve_spread_uses_one_common_observation_date():
-    frame = pd.DataFrame([
-        {"日期": "2026-07-14", "中国国债收益率10年": 2.0, "中国国债收益率2年": 1.0},
-        {"日期": "2026-07-15", "中国国债收益率10年": 2.1, "中国国债收益率2年": None},
-    ])
+    frame = pd.DataFrame(
+        [
+            {"日期": "2026-07-14", "中国国债收益率10年": 2.0, "中国国债收益率2年": 1.0},
+            {"日期": "2026-07-15", "中国国债收益率10年": 2.1, "中国国债收益率2年": None},
+        ]
+    )
 
     spread, spread_date = _same_date_spread(frame, "cn")
 
@@ -69,17 +73,19 @@ def test_bond_yield_fetches_only_recent_page_with_explicit_timeout(monkeypatch):
         def json(self):
             return {
                 "result": {
-                    "data": [{
-                        "SOLAR_DATE": "2026-07-18",
-                        "EMM00588704": "1.11",
-                        "EMM00166462": "1.22",
-                        "EMM00166466": "1.33",
-                        "EMM00166469": "1.44",
-                        "EMG00001306": "3.55",
-                        "EMG00001308": "3.66",
-                        "EMG00001310": "3.77",
-                        "EMG00001312": "3.88",
-                    }],
+                    "data": [
+                        {
+                            "SOLAR_DATE": "2026-07-18",
+                            "EMM00588704": "1.11",
+                            "EMM00166462": "1.22",
+                            "EMM00166466": "1.33",
+                            "EMM00166469": "1.44",
+                            "EMG00001306": "3.55",
+                            "EMG00001308": "3.66",
+                            "EMG00001310": "3.77",
+                            "EMG00001312": "3.88",
+                        }
+                    ],
                 },
             }
 

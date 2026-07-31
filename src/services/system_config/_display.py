@@ -31,11 +31,7 @@ class DisplayMixin:
     @classmethod
     def _build_display_config_map(cls, raw_config_map: Dict[str, str]) -> Dict[str, str]:
         raw_upper = {key.upper(): value for key, value in raw_config_map.items()}
-        aliased_keys = {
-            alias
-            for candidates in cls._DISPLAY_KEY_ALIASES.values()
-            for alias in candidates
-        }
+        aliased_keys = {alias for candidates in cls._DISPLAY_KEY_ALIASES.values() for alias in candidates}
         display_map: Dict[str, str] = {}
 
         for key, value in raw_upper.items():

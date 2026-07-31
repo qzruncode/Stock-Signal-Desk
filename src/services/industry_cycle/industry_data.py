@@ -24,7 +24,9 @@ from .normalization import (
 logger = logging.getLogger(__name__)
 
 
-def _find_industry_board(industry_name: str, sector_items: list[dict[str, Any]]) -> tuple[Optional[dict[str, Any]], Optional[int], int]:
+def _find_industry_board(
+    industry_name: str, sector_items: list[dict[str, Any]]
+) -> tuple[Optional[dict[str, Any]], Optional[int], int]:
     if not sector_items:
         return None, None, 0
     target = _compact_text(industry_name)
@@ -99,8 +101,12 @@ def _fetch_ths_industry_summary(industry_name: str) -> dict[str, Any]:
                 "lead_stock_change_pct": _safe_float(row.get("领涨股-涨跌幅")),
                 "up_count": up_count,
                 "down_count": down_count,
-                "total_amount": _safe_float(row.get("总成交额")) * 1e8 if _safe_float(row.get("总成交额")) is not None else None,
-                "net_flow": _safe_float(row.get("净流入")) * 1e8 if _safe_float(row.get("净流入")) is not None else None,
+                "total_amount": (
+                    _safe_float(row.get("总成交额")) * 1e8 if _safe_float(row.get("总成交额")) is not None else None
+                ),
+                "net_flow": (
+                    _safe_float(row.get("净流入")) * 1e8 if _safe_float(row.get("净流入")) is not None else None
+                ),
                 "rank": board_rank,
                 "total": total,
                 "source": "stock_board_industry_summary_ths",
@@ -111,7 +117,9 @@ def _fetch_ths_industry_summary(industry_name: str) -> dict[str, Any]:
         return {"source_ok": False, "error": str(exc)}
 
 
-def _find_sector_flow(industry_name: str, flow_records: list[dict[str, Any]]) -> tuple[Optional[dict[str, Any]], Optional[int], int]:
+def _find_sector_flow(
+    industry_name: str, flow_records: list[dict[str, Any]]
+) -> tuple[Optional[dict[str, Any]], Optional[int], int]:
     if not flow_records:
         return None, None, 0
     target = _compact_text(industry_name)
@@ -210,29 +218,31 @@ def _fetch_lhb_snapshot(symbol: str) -> dict[str, Any]:
             }
 
         row = row_df.iloc[0]
-        return _prune_none({
-            "source_ok": True,
-            "source": "stock_lhb_stock_statistic_em",
-            "matched": True,
-            "window": "近一月",
-            "latest_date": _normalize_text(row.get("最近上榜日")),
-            "appearance_count": _safe_int(row.get("上榜次数")),
-            "close": _safe_float(row.get("收盘价")),
-            "pct_chg": _safe_float(row.get("涨跌幅")),
-            "net_buy_amount": _safe_float(row.get("龙虎榜净买额")),
-            "buy_amount": _safe_float(row.get("龙虎榜买入额")),
-            "sell_amount": _safe_float(row.get("龙虎榜卖出额")),
-            "turnover_amount": _safe_float(row.get("龙虎榜总成交额")),
-            "buy_inst_count": _safe_int(row.get("买方机构次数")),
-            "sell_inst_count": _safe_int(row.get("卖方机构次数")),
-            "inst_net_buy_amount": _safe_float(row.get("机构买入净额")),
-            "inst_buy_amount": _safe_float(row.get("机构买入总额")),
-            "inst_sell_amount": _safe_float(row.get("机构卖出总额")),
-            "pct_chg_1m": _safe_float(row.get("近1个月涨跌幅")),
-            "pct_chg_3m": _safe_float(row.get("近3个月涨跌幅")),
-            "pct_chg_6m": _safe_float(row.get("近6个月涨跌幅")),
-            "pct_chg_1y": _safe_float(row.get("近1年涨跌幅")),
-        })
+        return _prune_none(
+            {
+                "source_ok": True,
+                "source": "stock_lhb_stock_statistic_em",
+                "matched": True,
+                "window": "近一月",
+                "latest_date": _normalize_text(row.get("最近上榜日")),
+                "appearance_count": _safe_int(row.get("上榜次数")),
+                "close": _safe_float(row.get("收盘价")),
+                "pct_chg": _safe_float(row.get("涨跌幅")),
+                "net_buy_amount": _safe_float(row.get("龙虎榜净买额")),
+                "buy_amount": _safe_float(row.get("龙虎榜买入额")),
+                "sell_amount": _safe_float(row.get("龙虎榜卖出额")),
+                "turnover_amount": _safe_float(row.get("龙虎榜总成交额")),
+                "buy_inst_count": _safe_int(row.get("买方机构次数")),
+                "sell_inst_count": _safe_int(row.get("卖方机构次数")),
+                "inst_net_buy_amount": _safe_float(row.get("机构买入净额")),
+                "inst_buy_amount": _safe_float(row.get("机构买入总额")),
+                "inst_sell_amount": _safe_float(row.get("机构卖出总额")),
+                "pct_chg_1m": _safe_float(row.get("近1个月涨跌幅")),
+                "pct_chg_3m": _safe_float(row.get("近3个月涨跌幅")),
+                "pct_chg_6m": _safe_float(row.get("近6个月涨跌幅")),
+                "pct_chg_1y": _safe_float(row.get("近1年涨跌幅")),
+            }
+        )
     except Exception as exc:
         logger.warning("lhb snapshot failed for %s: %s", symbol, exc)
         return {"source_ok": False, "source": "stock_lhb_stock_statistic_em", "error": str(exc)}
@@ -263,11 +273,25 @@ def _build_trading_snapshot(symbol: str) -> dict[str, Any]:
         latest_close = _safe_float((quote or {}).get("price")) or _safe_float(latest_bar.get("close"))
 
         close_20 = _safe_float(recent[-20].get("close")) if len(recent) >= 20 else None
-        close_60 = _safe_float(recent[0].get("close")) if len(recent) >= 60 else (_safe_float(recent[0].get("close")) if recent else None)
-        high_20 = max((_safe_float(item.get("high")) for item in recent[-20:] if _safe_float(item.get("high")) is not None), default=None)
-        low_20 = min((_safe_float(item.get("low")) for item in recent[-20:] if _safe_float(item.get("low")) is not None), default=None)
+        close_60 = (
+            _safe_float(recent[0].get("close"))
+            if len(recent) >= 60
+            else (_safe_float(recent[0].get("close")) if recent else None)
+        )
+        high_20 = max(
+            (_safe_float(item.get("high")) for item in recent[-20:] if _safe_float(item.get("high")) is not None),
+            default=None,
+        )
+        low_20 = min(
+            (_safe_float(item.get("low")) for item in recent[-20:] if _safe_float(item.get("low")) is not None),
+            default=None,
+        )
         avg_turnover_5 = None
-        turnover_values = [_safe_float(item.get("turnover_rate")) for item in recent[-5:] if _safe_float(item.get("turnover_rate")) is not None]
+        turnover_values = [
+            _safe_float(item.get("turnover_rate"))
+            for item in recent[-5:]
+            if _safe_float(item.get("turnover_rate")) is not None
+        ]
         if turnover_values:
             avg_turnover_5 = round(sum(turnover_values) / len(turnover_values), 2)
 
@@ -278,54 +302,56 @@ def _build_trading_snapshot(symbol: str) -> dict[str, Any]:
         if latest_close is not None and close_60 not in (None, 0):
             pct_60d = round((latest_close - close_60) / abs(close_60) * 100, 2)
 
-        return _prune_none({
-            "quote_source": quote_source,
-            "kline_source": kline_source,
-            "latest_quote": {
-                "price": _safe_float((quote or {}).get("price")),
-                "change_pct": _safe_float((quote or {}).get("change_pct")),
-                "change_amount": _safe_float((quote or {}).get("change_amount")),
-                "volume": _safe_float((quote or {}).get("volume")),
-                "amount": _safe_float((quote or {}).get("amount")),
-                "volume_ratio": _safe_float((quote or {}).get("volume_ratio")),
-                "turnover_rate": _safe_float((quote or {}).get("turnover_rate")),
-                "amplitude": _safe_float((quote or {}).get("amplitude")),
-                "high": _safe_float((quote or {}).get("high")),
-                "low": _safe_float((quote or {}).get("low")),
-                "open_price": _safe_float((quote or {}).get("open_price")),
-                "pre_close": _safe_float((quote or {}).get("pre_close")),
-                "pe_ratio": _safe_float((quote or {}).get("pe_ratio")),
-                "pb_ratio": _safe_float((quote or {}).get("pb_ratio")),
-                "total_mv": _safe_float((quote or {}).get("total_mv")),
-                "circ_mv": _safe_float((quote or {}).get("circ_mv")),
-            },
-            "latest_bar": {
-                "date": latest_bar.get("date"),
-                "open": _safe_float(latest_bar.get("open")),
-                "close": _safe_float(latest_bar.get("close")),
-                "high": _safe_float(latest_bar.get("high")),
-                "low": _safe_float(latest_bar.get("low")),
-                "pct_chg": _safe_float(latest_bar.get("pct_chg")),
-                "turnover_rate": _safe_float(latest_bar.get("turnover_rate")),
-                "amount": _safe_float(latest_bar.get("amount")),
-                "volume": _safe_float(latest_bar.get("volume")),
-            },
-            "previous_bar": {
-                "date": prev_bar.get("date"),
-                "close": _safe_float(prev_bar.get("close")),
-                "pct_chg": _safe_float(prev_bar.get("pct_chg")),
-                "turnover_rate": _safe_float(prev_bar.get("turnover_rate")),
-            },
-            "momentum": {
-                "pct_chg_20d": pct_20d,
-                "pct_chg_60d": pct_60d,
-                "high_20d": high_20,
-                "low_20d": low_20,
-                "avg_turnover_5d": avg_turnover_5,
-            },
-            "sample_size": len(recent),
-            "source_ok": bool(recent),
-        })
+        return _prune_none(
+            {
+                "quote_source": quote_source,
+                "kline_source": kline_source,
+                "latest_quote": {
+                    "price": _safe_float((quote or {}).get("price")),
+                    "change_pct": _safe_float((quote or {}).get("change_pct")),
+                    "change_amount": _safe_float((quote or {}).get("change_amount")),
+                    "volume": _safe_float((quote or {}).get("volume")),
+                    "amount": _safe_float((quote or {}).get("amount")),
+                    "volume_ratio": _safe_float((quote or {}).get("volume_ratio")),
+                    "turnover_rate": _safe_float((quote or {}).get("turnover_rate")),
+                    "amplitude": _safe_float((quote or {}).get("amplitude")),
+                    "high": _safe_float((quote or {}).get("high")),
+                    "low": _safe_float((quote or {}).get("low")),
+                    "open_price": _safe_float((quote or {}).get("open_price")),
+                    "pre_close": _safe_float((quote or {}).get("pre_close")),
+                    "pe_ratio": _safe_float((quote or {}).get("pe_ratio")),
+                    "pb_ratio": _safe_float((quote or {}).get("pb_ratio")),
+                    "total_mv": _safe_float((quote or {}).get("total_mv")),
+                    "circ_mv": _safe_float((quote or {}).get("circ_mv")),
+                },
+                "latest_bar": {
+                    "date": latest_bar.get("date"),
+                    "open": _safe_float(latest_bar.get("open")),
+                    "close": _safe_float(latest_bar.get("close")),
+                    "high": _safe_float(latest_bar.get("high")),
+                    "low": _safe_float(latest_bar.get("low")),
+                    "pct_chg": _safe_float(latest_bar.get("pct_chg")),
+                    "turnover_rate": _safe_float(latest_bar.get("turnover_rate")),
+                    "amount": _safe_float(latest_bar.get("amount")),
+                    "volume": _safe_float(latest_bar.get("volume")),
+                },
+                "previous_bar": {
+                    "date": prev_bar.get("date"),
+                    "close": _safe_float(prev_bar.get("close")),
+                    "pct_chg": _safe_float(prev_bar.get("pct_chg")),
+                    "turnover_rate": _safe_float(prev_bar.get("turnover_rate")),
+                },
+                "momentum": {
+                    "pct_chg_20d": pct_20d,
+                    "pct_chg_60d": pct_60d,
+                    "high_20d": high_20,
+                    "low_20d": low_20,
+                    "avg_turnover_5d": avg_turnover_5,
+                },
+                "sample_size": len(recent),
+                "source_ok": bool(recent),
+            }
+        )
     except Exception as exc:
         logger.warning("trading snapshot failed for %s: %s", symbol, exc)
         return {"source_ok": False, "error": str(exc)}
@@ -355,27 +381,29 @@ def _build_trading_signals(trading_snapshot: dict[str, Any], lhb_snapshot: dict[
                 4,
             )
 
-    return _prune_none({
-        "semantic_status": "model_required",
-        "trend_stage": None,
-        "trend_reason": None,
-        "volume_state": None,
-        "position_state": None,
-        "risk_flags": [],
-        "positive_flags": [],
-        "metrics": {
-            "change_pct": change_pct,
-            "volume_ratio": volume_ratio,
-            "turnover_rate": turnover_rate,
-            "pct_chg_20d": pct_20d,
-            "pct_chg_60d": pct_60d,
-            "price_position_20d": price_position_20d,
-            "latest_price": latest_price,
-            "high_20d": high_20d,
-            "low_20d": low_20d,
-            "lhb_appearances_1m": lhb_appearances,
-        },
-    })
+    return _prune_none(
+        {
+            "semantic_status": "model_required",
+            "trend_stage": None,
+            "trend_reason": None,
+            "volume_state": None,
+            "position_state": None,
+            "risk_flags": [],
+            "positive_flags": [],
+            "metrics": {
+                "change_pct": change_pct,
+                "volume_ratio": volume_ratio,
+                "turnover_rate": turnover_rate,
+                "pct_chg_20d": pct_20d,
+                "pct_chg_60d": pct_60d,
+                "price_position_20d": price_position_20d,
+                "latest_price": latest_price,
+                "high_20d": high_20d,
+                "low_20d": low_20d,
+                "lhb_appearances_1m": lhb_appearances,
+            },
+        }
+    )
 
 
 def _build_stock_focus_snapshot(
@@ -395,7 +423,9 @@ def _build_stock_focus_snapshot(
 
     revenue_yoy = _safe_float(financial_snapshot.get("revenue_yoy"))
     profit_yoy = _safe_float(financial_snapshot.get("net_profit_yoy"))
-    deducted_profit_yoy = _safe_float(_as_dict(financial_statements_snapshot.get("income_statement")).get("deducted_net_profit_yoy"))
+    deducted_profit_yoy = _safe_float(
+        _as_dict(financial_statements_snapshot.get("income_statement")).get("deducted_net_profit_yoy")
+    )
     operating_cf = _safe_float(_as_dict(financial_statements_snapshot.get("cashflow")).get("operating_cf"))
     free_cashflow = _safe_float(_as_dict(financial_statements_snapshot.get("cashflow")).get("free_cashflow"))
     holder_change_pct = _safe_float(shareholder_snapshot.get("holder_count_change_pct"))
@@ -427,28 +457,29 @@ def _build_stock_focus_snapshot(
     direct_evidence_count = len(announcements) + len(news) + len(research)
 
     focus_view = (
-        f"{stock_name}的主营、财务、股东、交易和公开事项原始证据已汇总；"
-        "各项强弱与投资含义由模型结合完整证据判断。"
+        f"{stock_name}的主营、财务、股东、交易和公开事项原始证据已汇总；" "各项强弱与投资含义由模型结合完整证据判断。"
     )
 
-    return _prune_none({
-        "focus_view": focus_view,
-        "semantic_status": "model_required",
-        "business_binding_strength": None,
-        "finance_state": None,
-        "holder_state": None,
-        "trading_state": None,
-        "direct_evidence_strength": None,
-        "main_business": main_business,
-        "product_type": company_specific_evidence.get("product_type"),
-        "product_name": company_specific_evidence.get("product_name"),
-        "finance_points": finance_points[:5],
-        "holder_points": holder_points[:5],
-        "trading_points": trading_points[:5],
-        "trading_metrics": trading_signal_snapshot.get("metrics") or {},
-        "major_holder_changes": shareholder_snapshot.get("major_holder_changes") or [],
-        "direct_evidence_count": direct_evidence_count,
-    })
+    return _prune_none(
+        {
+            "focus_view": focus_view,
+            "semantic_status": "model_required",
+            "business_binding_strength": None,
+            "finance_state": None,
+            "holder_state": None,
+            "trading_state": None,
+            "direct_evidence_strength": None,
+            "main_business": main_business,
+            "product_type": company_specific_evidence.get("product_type"),
+            "product_name": company_specific_evidence.get("product_name"),
+            "finance_points": finance_points[:5],
+            "holder_points": holder_points[:5],
+            "trading_points": trading_points[:5],
+            "trading_metrics": trading_signal_snapshot.get("metrics") or {},
+            "major_holder_changes": shareholder_snapshot.get("major_holder_changes") or [],
+            "direct_evidence_count": direct_evidence_count,
+        }
+    )
 
 
 def _fetch_stock_flow_snapshot(symbol: str, *, force: bool = False) -> dict[str, Any]:
@@ -507,15 +538,21 @@ def _fetch_stock_flow_snapshot(symbol: str, *, force: bool = False) -> dict[str,
                     flow_value = _safe_float(text)
                     if flow_value is not None:
                         flow_value *= multiplier
-                payload.update(_prune_none({
-                    "source_ok": True,
-                    "source": "ths_stock_fund_flow_individual",
-                    "window": window,
-                    "latest_price": latest_price,
-                    "stage_change_pct": _safe_float(stage_pct_raw.replace("%", "")) if stage_pct_raw else None,
-                    "continuous_turnover_rate": _safe_float(turnover_raw.replace("%", "")) if turnover_raw else None,
-                    "net_inflow": flow_value,
-                }))
+                payload.update(
+                    _prune_none(
+                        {
+                            "source_ok": True,
+                            "source": "ths_stock_fund_flow_individual",
+                            "window": window,
+                            "latest_price": latest_price,
+                            "stage_change_pct": _safe_float(stage_pct_raw.replace("%", "")) if stage_pct_raw else None,
+                            "continuous_turnover_rate": (
+                                _safe_float(turnover_raw.replace("%", "")) if turnover_raw else None
+                            ),
+                            "net_inflow": flow_value,
+                        }
+                    )
+                )
                 _stock_flow_cache_put(symbol, payload)
                 return payload
             except Exception as exc:

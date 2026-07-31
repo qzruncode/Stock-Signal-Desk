@@ -17,8 +17,10 @@ from ..constants import USER_AGENTS, SINA_REALTIME_ENDPOINT, TENCENT_REALTIME_EN
 from ..circuit_breaker import get_realtime_circuit_breaker
 from ..cache import realtime_cache
 from ..realtime_types import (
-    UnifiedRealtimeQuote, RealtimeSource,
-    safe_float, safe_int,
+    UnifiedRealtimeQuote,
+    RealtimeSource,
+    safe_float,
+    safe_int,
 )
 from ..utils import is_bse_code, normalize_stock_code
 
@@ -31,9 +33,9 @@ logger = logging.getLogger(__name__)
 def _to_sina_tx_symbol(stock_code: str) -> str:
     """Convert a stock code to Sina/Tencent API symbol format."""
     code = stock_code.strip()
-    if code.startswith(('6', '5', '90')):
+    if code.startswith(("6", "5", "90")):
         return f"sh{code}"
-    elif code.startswith(('8', '4', '9')):
+    elif code.startswith(("8", "4", "9")):
         return f"bj{code}"
     else:
         return f"sz{code}"
@@ -83,11 +85,7 @@ def _get_stock_realtime_quote_em_push(stock_code: str) -> Optional[UnifiedRealti
             return None
 
         source_timestamp = safe_int(d.get("f124"))
-        trade_time = (
-            datetime.fromtimestamp(source_timestamp).astimezone().isoformat()
-            if source_timestamp
-            else None
-        )
+        trade_time = datetime.fromtimestamp(source_timestamp).astimezone().isoformat() if source_timestamp else None
         raw_volume = safe_int(d.get("f47"))
         quote = UnifiedRealtimeQuote(
             code=stock_code,
@@ -113,7 +111,9 @@ def _get_stock_realtime_quote_em_push(stock_code: str) -> Optional[UnifiedRealti
             circ_mv=safe_float(d.get("f117")),
         )
         breaker.record_success(source_key)
-        logger.info("[实时行情-东财push] %s %s: 价格=%s, 涨跌=%s%%", stock_code, quote.name, quote.price, quote.change_pct)
+        logger.info(
+            "[实时行情-东财push] %s %s: 价格=%s, 涨跌=%s%%", stock_code, quote.name, quote.price, quote.change_pct
+        )
         return quote
     except Exception as e:
         detail = str(e)
@@ -145,6 +145,7 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
             _EM_TIMEOUT = 20
 
             import time as _time
+
             api_start = _time.time()
 
             try:
@@ -175,34 +176,34 @@ def _get_stock_realtime_quote_em(stock_code: str) -> Optional[UnifiedRealtimeQuo
             logger.info("[实时行情] A股实时行情数据为空，跳过 %s", stock_code)
             return None
 
-        row = df[df['代码'] == stock_code]
+        row = df[df["代码"] == stock_code]
         if row.empty:
             logger.info("[API返回] 未找到股票 %s 的实时行情", stock_code)
             return None
 
         row = row.iloc[0]
-        raw_volume = safe_int(row.get('成交量'))
+        raw_volume = safe_int(row.get("成交量"))
         quote = UnifiedRealtimeQuote(
             code=stock_code,
-            name=str(row.get('名称', '')),
+            name=str(row.get("名称", "")),
             source=RealtimeSource.AKSHARE_EM,
-            price=safe_float(row.get('最新价')),
-            change_pct=safe_float(row.get('涨跌幅')),
-            change_amount=safe_float(row.get('涨跌额')),
+            price=safe_float(row.get("最新价")),
+            change_pct=safe_float(row.get("涨跌幅")),
+            change_amount=safe_float(row.get("涨跌额")),
             # Eastmoney spot volume is lots (手).
             volume=raw_volume * 100 if raw_volume is not None else None,
-            amount=safe_float(row.get('成交额')),
-            volume_ratio=safe_float(row.get('量比')),
-            turnover_rate=safe_float(row.get('换手率')),
-            amplitude=safe_float(row.get('振幅')),
-            open_price=safe_float(row.get('今开')),
-            high=safe_float(row.get('最高')),
-            low=safe_float(row.get('最低')),
-            pe_ratio=safe_float(row.get('市盈率-动态')),
-            pb_ratio=safe_float(row.get('市净率')),
-            total_mv=safe_float(row.get('总市值')),
-            circ_mv=safe_float(row.get('流通市值')),
-            change_60d=safe_float(row.get('60日涨跌幅')),
+            amount=safe_float(row.get("成交额")),
+            volume_ratio=safe_float(row.get("量比")),
+            turnover_rate=safe_float(row.get("换手率")),
+            amplitude=safe_float(row.get("振幅")),
+            open_price=safe_float(row.get("今开")),
+            high=safe_float(row.get("最高")),
+            low=safe_float(row.get("最低")),
+            pe_ratio=safe_float(row.get("市盈率-动态")),
+            pb_ratio=safe_float(row.get("市净率")),
+            total_mv=safe_float(row.get("总市值")),
+            circ_mv=safe_float(row.get("流通市值")),
+            change_60d=safe_float(row.get("60日涨跌幅")),
             # stock_zh_a_spot_em 不含 52 周高低列，high_52w/low_52w 留空
         )
         logger.info("[实时行情-东财] %s %s: 价格=%s, 涨跌=%s%%", stock_code, quote.name, quote.price, quote.change_pct)
@@ -269,9 +270,7 @@ def _get_stock_realtime_quote_xueqiu(stock_code: str) -> Optional[UnifiedRealtim
 
         source_timestamp = safe_int(quote_data.get("timestamp"))
         trade_time = (
-            datetime.fromtimestamp(source_timestamp / 1000).astimezone().isoformat()
-            if source_timestamp
-            else None
+            datetime.fromtimestamp(source_timestamp / 1000).astimezone().isoformat() if source_timestamp else None
         )
         quote = UnifiedRealtimeQuote(
             code=stock_code,
@@ -330,7 +329,9 @@ def _get_stock_realtime_quote_sina(stock_code: str) -> Optional[UnifiedRealtimeQ
             timeout=10,
         )
         if response.status_code != 200:
-            breaker.record_failure(source_key, f"category=http_status endpoint={SINA_REALTIME_ENDPOINT} detail=HTTP {response.status_code}")
+            breaker.record_failure(
+                source_key, f"category=http_status endpoint={SINA_REALTIME_ENDPOINT} detail=HTTP {response.status_code}"
+            )
             return None
 
         response.encoding = "gbk"
@@ -353,9 +354,9 @@ def _get_stock_realtime_quote_sina(stock_code: str) -> Optional[UnifiedRealtimeQ
         trade_time = None
         if len(fields) > 31 and fields[30] and fields[31]:
             try:
-                trade_time = datetime.strptime(
-                    f"{fields[30]} {fields[31]}", "%Y-%m-%d %H:%M:%S"
-                ).astimezone().isoformat()
+                trade_time = (
+                    datetime.strptime(f"{fields[30]} {fields[31]}", "%Y-%m-%d %H:%M:%S").astimezone().isoformat()
+                )
             except ValueError:
                 pass
         quote = UnifiedRealtimeQuote(
@@ -374,13 +375,22 @@ def _get_stock_realtime_quote_sina(stock_code: str) -> Optional[UnifiedRealtimeQ
             pre_close=pre_close,
         )
         breaker.record_success(source_key)
-        logger.info("[实时行情-新浪] %s %s: 价格=%s, 涨跌=%s%% endpoint=%s", stock_code, quote.name, quote.price, quote.change_pct, SINA_REALTIME_ENDPOINT)
+        logger.info(
+            "[实时行情-新浪] %s %s: 价格=%s, 涨跌=%s%% endpoint=%s",
+            stock_code,
+            quote.name,
+            quote.price,
+            quote.change_pct,
+            SINA_REALTIME_ENDPOINT,
+        )
         return quote
     except Exception as e:
         detail = str(e)
         category = "remote_disconnect" if "Remote end closed connection" in detail else type(e).__name__
         breaker.record_failure(source_key, f"category={category} endpoint={SINA_REALTIME_ENDPOINT} detail={detail}")
-        logger.info("[API错误] 新浪实时行情失败: category=%s endpoint=%s detail=%s", category, SINA_REALTIME_ENDPOINT, detail)
+        logger.info(
+            "[API错误] 新浪实时行情失败: category=%s endpoint=%s detail=%s", category, SINA_REALTIME_ENDPOINT, detail
+        )
         return None
 
 
@@ -451,13 +461,22 @@ def _get_stock_realtime_quote_tencent(stock_code: str) -> Optional[UnifiedRealti
             circ_mv=circ_mv_yi * 1e8 if circ_mv_yi is not None else None,
         )
         breaker.record_success(source_key)
-        logger.info("[实时行情-腾讯] %s %s: 价格=%s, 涨跌=%s%% endpoint=%s", stock_code, quote.name, quote.price, quote.change_pct, TENCENT_REALTIME_ENDPOINT)
+        logger.info(
+            "[实时行情-腾讯] %s %s: 价格=%s, 涨跌=%s%% endpoint=%s",
+            stock_code,
+            quote.name,
+            quote.price,
+            quote.change_pct,
+            TENCENT_REALTIME_ENDPOINT,
+        )
         return quote
     except Exception as e:
         detail = str(e)
         category = "remote_disconnect" if "Remote end closed connection" in detail else type(e).__name__
         breaker.record_failure(source_key, f"category={category} endpoint={TENCENT_REALTIME_ENDPOINT} detail={detail}")
-        logger.info("[API错误] 腾讯实时行情失败: category=%s endpoint=%s detail=%s", category, TENCENT_REALTIME_ENDPOINT, detail)
+        logger.info(
+            "[API错误] 腾讯实时行情失败: category=%s endpoint=%s detail=%s", category, TENCENT_REALTIME_ENDPOINT, detail
+        )
         return None
 
 
@@ -482,7 +501,11 @@ def get_realtime_quote(stock_code: str, source: str = "em") -> Optional[UnifiedR
 
     # Single-symbol sources are faster and safer than downloading the entire
     # A-share market for every miss.  Full-scan Eastmoney is the final fallback.
-    for fallback in (_get_stock_realtime_quote_sina, _get_stock_realtime_quote_tencent, _get_stock_realtime_quote_xueqiu):
+    for fallback in (
+        _get_stock_realtime_quote_sina,
+        _get_stock_realtime_quote_tencent,
+        _get_stock_realtime_quote_xueqiu,
+    ):
         quote = fallback(normalized_code)
         if quote and quote.has_basic_data():
             return quote

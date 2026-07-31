@@ -73,19 +73,24 @@ def manage_watchlist_groups(
 
     if action == "list":
         default = _manage_default_watchlist("list", [])
-        groups = [{
-            "id": DEFAULT_GROUP_ID,
-            "name": DEFAULT_GROUP_NAME,
-            "codes": list(default.get("codes") or []),
-            "count": int(default.get("count") or 0),
-            "is_default": True,
-            "source": "system_config",
-        }]
-        groups.extend({
-            **item,
-            "count": len(item.get("codes") or []),
-            "is_default": False,
-        } for item in custom_groups)
+        groups = [
+            {
+                "id": DEFAULT_GROUP_ID,
+                "name": DEFAULT_GROUP_NAME,
+                "codes": list(default.get("codes") or []),
+                "count": int(default.get("count") or 0),
+                "is_default": True,
+                "source": "system_config",
+            }
+        ]
+        groups.extend(
+            {
+                **item,
+                "count": len(item.get("codes") or []),
+                "is_default": False,
+            }
+            for item in custom_groups
+        )
         return _envelope("list", groups=groups, item_count=len(groups))
 
     if action == "create":
@@ -185,16 +190,19 @@ TOOL = ToolSpec(
         "查看并管理默认自选股及自定义分组。支持列出、创建、重命名、删除分组，以及按名称或代码"
         "批量添加/移除分组成员。只有用户明确要求修改时才能调用；删除分组必须 confirmed=true。"
     ),
-    parameters=object_schema({
-        "action": {
-            "type": "string",
-            "enum": ["list", "create", "rename", "delete", "add", "remove"],
+    parameters=object_schema(
+        {
+            "action": {
+                "type": "string",
+                "enum": ["list", "create", "rename", "delete", "add", "remove"],
+            },
+            "group": {"type": "string", "description": "分组名称或 ID；create 时为新分组名称"},
+            "symbols": {"type": "string", "description": "逗号分隔的股票代码或精确名称"},
+            "new_name": {"type": "string", "description": "rename 时的新名称"},
+            "confirmed": {"type": "boolean", "default": False},
         },
-        "group": {"type": "string", "description": "分组名称或 ID；create 时为新分组名称"},
-        "symbols": {"type": "string", "description": "逗号分隔的股票代码或精确名称"},
-        "new_name": {"type": "string", "description": "rename 时的新名称"},
-        "confirmed": {"type": "boolean", "default": False},
-    }, required=("action",)),
+        required=("action",),
+    ),
     executor=manage_watchlist_groups,
     category="action",
 )

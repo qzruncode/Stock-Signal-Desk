@@ -26,9 +26,10 @@ from api.v1.endpoints.agent.tools import (
 # low-level helpers
 # ---------------------------------------------------------------------------
 
+
 def test_format_result_serializes_to_json_str():
     out = _format_result({"a": 1, "b": "中文"})
-    assert "\"a\": 1" in out
+    assert '"a": 1' in out
     assert "中文" in out  # ensure_ascii=False keeps CJK readable
 
 
@@ -57,6 +58,7 @@ def test_trim_list_keeps_raw_items_when_no_fields():
 # ---------------------------------------------------------------------------
 # _compact_tool_result
 # ---------------------------------------------------------------------------
+
 
 def test_compact_non_dict_returned_as_is():
     assert _compact_tool_result("get_kline", ["raw", "list"]) == ["raw", "list"]
@@ -141,6 +143,7 @@ def test_compact_unknown_tool_returns_full_payload():
 # _maybe_attach_search_fallback
 # ---------------------------------------------------------------------------
 
+
 def test_maybe_attach_search_fallback_skips_when_healthy():
     result = {"items": [{"symbol": "000001"}]}
     out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": "000001"}, result)
@@ -159,16 +162,17 @@ def test_maybe_attach_search_fallback_attaches_fallback_on_empty_quotes():
     result = {"items": []}
     fake_payload = {"type": "price", "success": True, "results": [{"title": "t"}]}
 
-    with patch(
-        "api.v1.endpoints.agent.tools._resolve_search_subject",
-        return_value=("000001", "平安银行"),
-    ), patch(
-        "api.v1.endpoints.agent.tools._build_search_fallback_payload",
-        return_value=fake_payload,
+    with (
+        patch(
+            "api.v1.endpoints.agent.tools._resolve_search_subject",
+            return_value=("000001", "平安银行"),
+        ),
+        patch(
+            "api.v1.endpoints.agent.tools._build_search_fallback_payload",
+            return_value=fake_payload,
+        ),
     ):
-        out = _maybe_attach_search_fallback(
-            "get_realtime_quotes", {"symbol": "000001"}, result
-        )
+        out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": "000001"}, result)
 
     assert out["fallback_status"]["used"] is True
     assert out["fallback_status"]["symbol"] == "000001"
@@ -183,15 +187,14 @@ def test_maybe_attach_search_fallback_handles_first_symbol_in_csv():
         captured["raw"] = raw
         return ("600519", "贵州茅台")
 
-    with patch(
-        "api.v1.endpoints.agent.tools._resolve_search_subject", side_effect=_fake_resolve
-    ), patch(
-        "api.v1.endpoints.agent.tools._build_search_fallback_payload",
-        return_value={"type": "price", "success": True, "results": []},
+    with (
+        patch("api.v1.endpoints.agent.tools._resolve_search_subject", side_effect=_fake_resolve),
+        patch(
+            "api.v1.endpoints.agent.tools._build_search_fallback_payload",
+            return_value={"type": "price", "success": True, "results": []},
+        ),
     ):
-        out = _maybe_attach_search_fallback(
-            "get_realtime_quotes", {"symbol": "600519,000001"}, result
-        )
+        out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": "600519,000001"}, result)
 
     assert captured["raw"] == "600519"
     assert out["fallback_status"]["name"] == "贵州茅台"

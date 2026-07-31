@@ -37,9 +37,7 @@ WEBSEARCH_DESCRIPTION = (
 def _mcp_text(payload: str) -> str | None:
     """Parse the JSON or SSE response shape used by OpenCode MCP search."""
     candidates = [payload.strip()]
-    candidates.extend(
-        line[6:].strip() for line in payload.splitlines() if line.startswith("data: ")
-    )
+    candidates.extend(line[6:].strip() for line in payload.splitlines() if line.startswith("data: "))
     for candidate in candidates:
         if not candidate.startswith("{"):
             continue
@@ -51,11 +49,7 @@ def _mcp_text(payload: str) -> str | None:
         content = result.get("content") if isinstance(result, dict) else None
         if not isinstance(content, list):
             continue
-        texts = [
-            str(item["text"]).strip()
-            for item in content
-            if isinstance(item, dict) and item.get("text")
-        ]
+        texts = [str(item["text"]).strip() for item in content if isinstance(item, dict) and item.get("text")]
         if texts:
             return "\n\n".join(texts)
     return None
@@ -182,14 +176,14 @@ def _firecrawl_search(
                 or metadata.get("date")
             )
             row = {
-                    "title": title,
-                    "url": url,
-                    "snippet": str(item.get("description") or "").strip(),
-                    "source": _host(url, "web"),
-                    "published_date": published_date,
-                    "result_type": "web",
-                    "search_provider": "firecrawl_searxng",
-                }
+                "title": title,
+                "url": url,
+                "snippet": str(item.get("description") or "").strip(),
+                "source": _host(url, "web"),
+                "published_date": published_date,
+                "result_type": "web",
+                "search_provider": "firecrawl_searxng",
+            }
             if content:
                 row["content_text"] = content
                 row["content_characters"] = len(content)
@@ -434,13 +428,7 @@ def websearch(
                 session_id=session_id,
             )
 
-        attempts.append(
-            {
-                key: value
-                for key, value in current.items()
-                if key not in {"results", "output"}
-            }
-        )
+        attempts.append({key: value for key, value in current.items() if key not in {"results", "output"}})
         if current.get("success"):
             selected = current
             break
@@ -470,11 +458,7 @@ def websearch(
             continue
     latest = max(published) if published else None
     days = 365 if search_type == "deep" else 30
-    failures = [
-        str(item["error"])
-        for item in attempts
-        if item.get("error") and not item.get("skipped")
-    ]
+    failures = [str(item["error"]) for item in attempts if item.get("error") and not item.get("skipped")]
 
     return {
         "query": resolved_query,
@@ -488,11 +472,7 @@ def websearch(
         "retrieved_at": datetime.now().astimezone().isoformat(),
         "data_time": latest.isoformat() if latest else None,
         "fallback_used": success and provider != "firecrawl_searxng",
-        "is_stale": (
-            latest < datetime.now().astimezone() - timedelta(days=days)
-            if latest
-            else None
-        ),
+        "is_stale": (latest < datetime.now().astimezone() - timedelta(days=days) if latest else None),
         "freshness_unknown": latest is None,
         "latest_published_date": latest.isoformat() if latest else None,
         "_truncated": truncated,

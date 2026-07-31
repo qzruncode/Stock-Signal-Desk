@@ -114,8 +114,10 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             return True
         try:
             from dateutil import parser as dateutil_parser
+
             dt = dateutil_parser.parse(date_str, fuzzy=True)
             from datetime import timedelta, timezone
+
             now = datetime.now(timezone.utc) if dt.tzinfo else datetime.now()
             return (now - dt) <= timedelta(days=days + 1)  # +1 buffer
         except Exception:
@@ -127,20 +129,18 @@ class MiniMaxSearchProvider(BaseSearchProvider):
         """Execute MiniMax web search."""
         try:
             # Detect language hint from query (simple heuristic)
-            has_cjk = any('\u4e00' <= ch <= '\u9fff' for ch in query)
+            has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in query)
             time_hint = self._time_hint(days, is_chinese=has_cjk)
             augmented_query = f"{query} {time_hint}"
 
             headers = {
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json',
-                'MM-API-Source': 'Minimax-MCP',
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "MM-API-Source": "Minimax-MCP",
             }
             payload = {"q": augmented_query}
 
-            response = _ss._post_with_retry(
-                self.API_ENDPOINT, headers=headers, json=payload, timeout=15
-            )
+            response = _ss._post_with_retry(self.API_ENDPOINT, headers=headers, json=payload, timeout=15)
 
             # HTTP error handling
             if response.status_code != 200:
@@ -157,9 +157,9 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             data = response.json()
 
             # Check base_resp status
-            base_resp = data.get('base_resp', {})
-            if base_resp.get('status_code', 0) != 0:
-                error_msg = base_resp.get('status_msg', 'Unknown API error')
+            base_resp = data.get("base_resp", {})
+            if base_resp.get("status_code", 0) != 0:
+                error_msg = base_resp.get("status_msg", "Unknown API error")
                 return SearchResponse(
                     query=query,
                     results=[],
@@ -173,20 +173,22 @@ class MiniMaxSearchProvider(BaseSearchProvider):
 
             # Parse organic results
             results: List[SearchResult] = []
-            for item in data.get('organic', []):
-                date_val = item.get('date')
+            for item in data.get("organic", []):
+                date_val = item.get("date")
 
                 # Client-side time filtering
                 if not self._is_within_days(date_val, days):
                     continue
 
-                results.append(SearchResult(
-                    title=item.get('title', ''),
-                    snippet=(item.get('snippet', '') or '')[:500],
-                    url=item.get('link', ''),
-                    source=extract_domain(item.get('link', '')),
-                    published_date=date_val,
-                ))
+                results.append(
+                    SearchResult(
+                        title=item.get("title", ""),
+                        snippet=(item.get("snippet", "") or "")[:500],
+                        url=item.get("link", ""),
+                        source=extract_domain(item.get("link", "")),
+                        published_date=date_val,
+                    )
+                )
 
                 if len(results) >= max_results:
                     break
@@ -204,36 +206,43 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             error_msg = "Request timeout"
             logger.error(f"[MiniMax] {error_msg}")
             return SearchResponse(
-                query=query, results=[], provider=self.name,
-                success=False, error_message=error_msg,
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg,
             )
         except requests.exceptions.RequestException as e:
             error_msg = f"Network error: {e}"
             logger.error(f"[MiniMax] {error_msg}")
             return SearchResponse(
-                query=query, results=[], provider=self.name,
-                success=False, error_message=error_msg,
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg,
             )
         except Exception as e:
             error_msg = f"Unexpected error: {e}"
             logger.error(f"[MiniMax] {error_msg}")
             return SearchResponse(
-                query=query, results=[], provider=self.name,
-                success=False, error_message=error_msg,
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=error_msg,
             )
 
     @staticmethod
     def _parse_http_error(response) -> str:
         """Parse HTTP error response from MiniMax API."""
         try:
-            ct = response.headers.get('content-type', '')
-            if 'json' in ct:
+            ct = response.headers.get("content-type", "")
+            if "json" in ct:
                 err = response.json()
-                base_resp = err.get('base_resp', {})
-                msg = base_resp.get('status_msg') or err.get('message') or str(err)
+                base_resp = err.get("base_resp", {})
+                msg = base_resp.get("status_msg") or err.get("message") or str(err)
                 return msg
             return response.text[:200]
         except Exception:
             return f"HTTP {response.status_code}: {response.text[:200]}"
-
-

@@ -52,12 +52,8 @@ def test_research_search_tools_contain_no_query_intent_router() -> None:
         assert "_infer_category" not in source
         assert "_INTENT_WORDS" not in source
         assert "_HIGH_PRECISION_SUBJECTS" not in source
-    assert {"query", "topic"} <= set(
-        financial_news_module.TOOL.parameters["required"]
-    )
-    assert {"query", "category", "subjects"} <= set(
-        research_library_module.TOOL.parameters["required"]
-    )
+    assert {"query", "topic"} <= set(financial_news_module.TOOL.parameters["required"])
+    assert {"query", "category", "subjects"} <= set(research_library_module.TOOL.parameters["required"])
 
 
 def _catalog_route(
@@ -79,12 +75,29 @@ def _catalog_route(
 
 def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording() -> None:
     routes = [
-        _catalog_route("/eastmoney/report/:category", "研究报告", params=[{
-            "name": "category", "required": True, "options": [{"value": "stock", "label": "个股研报"}],
-        }]),
-        _catalog_route("/moodysmismicrosite/report/:industry?", "穆迪评级", params=[{
-            "name": "industry", "required": False, "default": "全部", "options": [],
-        }]),
+        _catalog_route(
+            "/eastmoney/report/:category",
+            "研究报告",
+            params=[
+                {
+                    "name": "category",
+                    "required": True,
+                    "options": [{"value": "stock", "label": "个股研报"}],
+                }
+            ],
+        ),
+        _catalog_route(
+            "/moodysmismicrosite/report/:industry?",
+            "穆迪评级",
+            params=[
+                {
+                    "name": "industry",
+                    "required": False,
+                    "default": "全部",
+                    "options": [],
+                }
+            ],
+        ),
     ]
 
     first = _select_specs(routes, "穆迪评级报告", "research")
@@ -109,11 +122,15 @@ def test_all_47_infos_routes_have_an_explicit_business_capability() -> None:
 
 def test_research_selector_never_uses_exchange_inquiry_routes() -> None:
     routes = [
-        _catalog_route("/szse/inquire/:category?/:select?/:keyword?", "半导体研究问询", params=[
-            {"name": "category", "required": False},
-            {"name": "select", "required": False},
-            {"name": "keyword", "required": False},
-        ]),
+        _catalog_route(
+            "/szse/inquire/:category?/:select?/:keyword?",
+            "半导体研究问询",
+            params=[
+                {"name": "category", "required": False},
+                {"name": "select", "required": False},
+                {"name": "keyword", "required": False},
+            ],
+        ),
         _catalog_route("/wkjyqh/research", "五矿期货研究报告"),
     ]
 
@@ -134,7 +151,10 @@ def test_szse_inquiry_fills_all_path_segments_before_keyword() -> None:
     )
 
     selected = _select_specs(
-        [route], "请查询该公司的交易所函件", "announcement", ["000001"],
+        [route],
+        "请查询该公司的交易所函件",
+        "announcement",
+        ["000001"],
     )
 
     assert selected[0][1] == {
@@ -178,17 +198,21 @@ def test_semantic_rss_normalizes_web_fallback_into_items() -> None:
     fallback = {
         "success": True,
         "provider": "test_search",
-        "results": [{
-            "title": "贵州茅台最新公告",
-            "url": "https://example.com/a",
-            "snippet": "公告摘要",
-            "source": "example.com",
-            "published_date": "2026-07-15",
-        }],
+        "results": [
+            {
+                "title": "贵州茅台最新公告",
+                "url": "https://example.com/a",
+                "snippet": "公告摘要",
+                "source": "example.com",
+                "published_date": "2026-07-15",
+            }
+        ],
     }
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
-         patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}), \
-         patch("src.tools.websearch.websearch", return_value=fallback) as mocked_websearch:
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog),
+        patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}),
+        patch("src.tools.websearch.websearch", return_value=fallback) as mocked_websearch,
+    ):
         result = search_financial_news("贵州茅台最新公告", topic="announcement")
 
     assert mocked_websearch.call_args.kwargs["query"] == "贵州茅台最新公告"
@@ -227,8 +251,10 @@ def test_semantic_rss_macro_matching_recognizes_reverse_repo_inside_pbo_c_text()
         ],
         "errors": [],
     }
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
-         patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog),
+        patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed),
+    ):
         result = search_financial_news(
             "请查看这次公开市场流动性操作",
             topic="macro",
@@ -265,11 +291,13 @@ def test_semantic_rss_exact_query_route_beats_broad_topic_description() -> None:
 def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
     catalog = {
         "count": 47,
-        "routes": [_catalog_route(
-            "/eastmoney/search/:keyword",
-            "东方财富搜索",
-            params=[{"name": "keyword", "required": True}],
-        )],
+        "routes": [
+            _catalog_route(
+                "/eastmoney/search/:keyword",
+                "东方财富搜索",
+                params=[{"name": "keyword", "required": True}],
+            )
+        ],
     }
     feed = {
         "items": [
@@ -301,8 +329,10 @@ def test_semantic_rss_filters_expired_and_body_only_company_mentions() -> None:
         "errors": [],
         "_cached": False,
     }
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
-         patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed):
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog),
+        patch("api.v1.endpoints._rss_reader.read_feed", return_value=feed),
+    ):
         result = search_financial_news(
             "贵州茅台最新消息",
             topic="company",
@@ -331,9 +361,11 @@ def test_semantic_rss_empty_success_is_distinct_from_failed_web_fallback() -> No
         "results": [],
         "errors": ["all providers failed"],
     }
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog), \
-         patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}), \
-         patch("src.tools.websearch.websearch", return_value=fallback):
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=catalog),
+        patch("api.v1.endpoints._rss_reader.read_feed", return_value={"items": [], "errors": []}),
+        patch("src.tools.websearch.websearch", return_value=fallback),
+    ):
         result = search_financial_news("市场发生了什么", topic="market")
 
     # The RSS route itself was reached successfully and legitimately returned
@@ -354,14 +386,18 @@ def test_semantic_rss_rejects_empty_query_and_invalid_topic() -> None:
 
 
 def test_capital_flow_normalizes_units_and_window_observations() -> None:
-    direct = pd.DataFrame([
-        {"date": pd.Timestamp("2026-07-14").date(), "main_net_inflow": 10, "main_net_inflow_pct": 1.0},
-        {"date": pd.Timestamp("2026-07-15").date(), "main_net_inflow": -3, "main_net_inflow_pct": -0.5},
-    ])
+    direct = pd.DataFrame(
+        [
+            {"date": pd.Timestamp("2026-07-14").date(), "main_net_inflow": 10, "main_net_inflow_pct": 1.0},
+            {"date": pd.Timestamp("2026-07-15").date(), "main_net_inflow": -3, "main_net_inflow_pct": -0.5},
+        ]
+    )
     direct.attrs["history_transport"] = "curl_cffi"
 
-    with patch("src.tools.get_stock_capital_flow.cached_call", return_value=(direct, False)), \
-         patch("src.tools.get_stock_capital_flow._is_stale", return_value=(False, None)):
+    with (
+        patch("src.tools.get_stock_capital_flow.cached_call", return_value=(direct, False)),
+        patch("src.tools.get_stock_capital_flow._is_stale", return_value=(False, None)),
+    ):
         result = get_stock_capital_flow("600519", days=20)
 
     assert result["success"] is True
@@ -382,10 +418,32 @@ def test_capital_flow_recognizes_bse_920_codes() -> None:
 
 def test_sector_flow_paginates_and_preserves_true_money_flow_fields() -> None:
     page_one = [
-        {"f12": "BK1", "f14": "流入行业", "f3": 1.2, "f62": 100, "f184": 2.0, "f66": 60, "f72": 40, "f78": -20, "f84": -80, "f124": 1784180000},
+        {
+            "f12": "BK1",
+            "f14": "流入行业",
+            "f3": 1.2,
+            "f62": 100,
+            "f184": 2.0,
+            "f66": 60,
+            "f72": 40,
+            "f78": -20,
+            "f84": -80,
+            "f124": 1784180000,
+        },
     ]
     page_two = [
-        {"f12": "BK2", "f14": "流出行业", "f3": -1.2, "f62": -90, "f184": -3.0, "f66": -50, "f72": -40, "f78": 10, "f84": 80, "f124": 1784180000},
+        {
+            "f12": "BK2",
+            "f14": "流出行业",
+            "f3": -1.2,
+            "f62": -90,
+            "f184": -3.0,
+            "f66": -50,
+            "f72": -40,
+            "f78": 10,
+            "f84": 80,
+            "f124": 1784180000,
+        },
     ]
 
     def fake_page(params, page):
@@ -412,8 +470,10 @@ def test_sector_flow_never_substitutes_price_performance_for_money_flow() -> Non
 
 
 def test_consensus_total_failure_has_unknown_freshness_without_data_time() -> None:
-    with patch("src.tools.get_consensus_estimates._forecast", side_effect=RuntimeError("upstream down")), \
-         patch("src.tools.get_consensus_estimates._detail", side_effect=RuntimeError("upstream down")):
+    with (
+        patch("src.tools.get_consensus_estimates._forecast", side_effect=RuntimeError("upstream down")),
+        patch("src.tools.get_consensus_estimates._detail", side_effect=RuntimeError("upstream down")),
+    ):
         result = get_consensus_estimates("600519")
 
     assert result["success"] is False
@@ -425,19 +485,33 @@ def test_consensus_total_failure_has_unknown_freshness_without_data_time() -> No
 def test_peer_result_is_bounded_but_preserves_total_count() -> None:
     rows = [
         {
-            "CORRE_SECURITY_CODE": f"{index:06d}", "CORRE_SECURITY_NAME": f"peer-{index}",
-            "TOTAL_COUNT": 30, "PAIMING": index + 1, "REPORT_DATE": "2025-12-31",
-            "PEG": index / 10, "PE_TTM": 10 + index, "PB_MRQ": 2 + index / 10,
+            "CORRE_SECURITY_CODE": f"{index:06d}",
+            "CORRE_SECURITY_NAME": f"peer-{index}",
+            "TOTAL_COUNT": 30,
+            "PAIMING": index + 1,
+            "REPORT_DATE": "2025-12-31",
+            "PEG": index / 10,
+            "PE_TTM": 10 + index,
+            "PB_MRQ": 2 + index / 10,
         }
         for index in range(15)
     ]
-    rows.append({
-        "CORRE_SECURITY_CODE": "600519", "CORRE_SECURITY_NAME": "贵州茅台",
-        "TOTAL_COUNT": 30, "PAIMING": 20, "REPORT_DATE": "2025-12-31",
-        "PEG": 1.5, "PE_TTM": 20, "PB_MRQ": 5,
-    })
-    with patch("src.tools.get_peer_comparison._request_rows", return_value=rows), \
-         patch("src.tools.get_peer_comparison.cached_call", side_effect=lambda _, fn, **__: (fn(), False)):
+    rows.append(
+        {
+            "CORRE_SECURITY_CODE": "600519",
+            "CORRE_SECURITY_NAME": "贵州茅台",
+            "TOTAL_COUNT": 30,
+            "PAIMING": 20,
+            "REPORT_DATE": "2025-12-31",
+            "PEG": 1.5,
+            "PE_TTM": 20,
+            "PB_MRQ": 5,
+        }
+    )
+    with (
+        patch("src.tools.get_peer_comparison._request_rows", return_value=rows),
+        patch("src.tools.get_peer_comparison.cached_call", side_effect=lambda _, fn, **__: (fn(), False)),
+    ):
         result = get_peer_comparison("600519", dimension="valuation")
 
     bucket = result["dimensions"]["valuation"]
@@ -456,15 +530,25 @@ def test_websearch_is_generic_and_preserves_the_original_query() -> None:
 
 def test_websearch_does_not_spend_remote_fallback_when_local_search_succeeds() -> None:
     local = {
-        "provider": "firecrawl_searxng", "success": True, "skipped": False, "error": None,
+        "provider": "firecrawl_searxng",
+        "success": True,
+        "skipped": False,
+        "error": None,
         "results": [
-            {"title": f"Result {index}", "url": f"https://example.com/{index}", "snippet": "body", "search_provider": "firecrawl_searxng"}
+            {
+                "title": f"Result {index}",
+                "url": f"https://example.com/{index}",
+                "snippet": "body",
+                "search_provider": "firecrawl_searxng",
+            }
             for index in range(3)
         ],
     }
-    with patch("src.tools.websearch._firecrawl_search", return_value=local), \
-         patch("src.tools.websearch._exa_search") as exa, \
-         patch("src.tools.websearch._parallel_search") as parallel:
+    with (
+        patch("src.tools.websearch._firecrawl_search", return_value=local),
+        patch("src.tools.websearch._exa_search") as exa,
+        patch("src.tools.websearch._parallel_search") as parallel,
+    ):
         result = websearch("arbitrary topic", num_results=8)
 
     assert result["success"] is True
@@ -484,13 +568,18 @@ def test_websearch_uses_exa_only_after_local_search_returns_no_results() -> None
         "results": [],
     }
     exa_result = {
-        "provider": "exa", "success": True, "skipped": False, "error": None,
+        "provider": "exa",
+        "success": True,
+        "skipped": False,
+        "error": None,
         "output": "Title: Two\nURL: https://two.example",
         "results": [{"title": "Two", "url": "https://two.example", "snippet": "", "search_provider": "exa"}],
     }
-    with patch("src.tools.websearch._firecrawl_search", return_value=local_failed), \
-         patch("src.tools.websearch._exa_search", return_value=exa_result), \
-         patch("src.tools.websearch._parallel_search") as parallel:
+    with (
+        patch("src.tools.websearch._firecrawl_search", return_value=local_failed),
+        patch("src.tools.websearch._exa_search", return_value=exa_result),
+        patch("src.tools.websearch._parallel_search") as parallel,
+    ):
         result = websearch("anything", num_results=8)
 
     assert result["success"] is True
@@ -503,27 +592,42 @@ def test_websearch_uses_exa_only_after_local_search_returns_no_results() -> None
 
 def test_websearch_uses_parallel_only_after_local_and_exa_fail() -> None:
     local_failed = {
-        "provider": "firecrawl_searxng", "success": False, "skipped": False,
-        "error": "local unavailable", "results": [],
+        "provider": "firecrawl_searxng",
+        "success": False,
+        "skipped": False,
+        "error": "local unavailable",
+        "results": [],
     }
     exa_failed = {
-        "provider": "exa", "success": False, "skipped": False,
-        "error": "exa unavailable", "results": [], "output": "",
+        "provider": "exa",
+        "success": False,
+        "skipped": False,
+        "error": "exa unavailable",
+        "results": [],
+        "output": "",
     }
     parallel_result = {
-        "provider": "parallel", "success": True, "skipped": False, "error": None,
-        "results": [], "output": "Title: Result\nURL: https://example.com",
+        "provider": "parallel",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "results": [],
+        "output": "Title: Result\nURL: https://example.com",
     }
-    with patch("src.tools.websearch._firecrawl_search", return_value=local_failed), \
-         patch("src.tools.websearch._exa_search", return_value=exa_failed), \
-         patch("src.tools.websearch._parallel_search", return_value=parallel_result):
+    with (
+        patch("src.tools.websearch._firecrawl_search", return_value=local_failed),
+        patch("src.tools.websearch._exa_search", return_value=exa_failed),
+        patch("src.tools.websearch._parallel_search", return_value=parallel_result),
+    ):
         result = websearch("anything")
 
     assert result["success"] is True
     assert result["provider"] == "parallel"
     assert result["fallback_used"] is True
     assert [attempt["provider"] for attempt in result["attempts"]] == [
-        "firecrawl_searxng", "exa", "parallel",
+        "firecrawl_searxng",
+        "exa",
+        "parallel",
     ]
 
 
@@ -550,13 +654,17 @@ def test_firecrawl_search_can_crawl_result_content_in_same_request() -> None:
     response.raise_for_status.return_value = None
     response.json.return_value = {
         "success": True,
-        "data": {"web": [{
-            "title": "五洲新春人形机器人丝杠已送样",
-            "url": "https://example.com/2025/03/05/a",
-            "description": "摘要",
-            "markdown": "2025-03-05 五洲新春人形机器人丝杠已向客户送样。",
-            "metadata": {"publishedTime": "2025-03-05T08:00:00+08:00"},
-        }]},
+        "data": {
+            "web": [
+                {
+                    "title": "五洲新春人形机器人丝杠已送样",
+                    "url": "https://example.com/2025/03/05/a",
+                    "description": "摘要",
+                    "markdown": "2025-03-05 五洲新春人形机器人丝杠已向客户送样。",
+                    "metadata": {"publishedTime": "2025-03-05T08:00:00+08:00"},
+                }
+            ]
+        },
     }
 
     with patch("src.tools.websearch.httpx.post", return_value=response) as post:
@@ -570,14 +678,19 @@ def test_firecrawl_search_can_crawl_result_content_in_same_request() -> None:
 
 def test_websearch_include_content_survives_context_compaction() -> None:
     local = {
-        "provider": "firecrawl_searxng", "success": True, "skipped": False, "error": None,
-        "results": [{
-            "title": "Result",
-            "url": "https://example.com/a",
-            "snippet": "body",
-            "content_text": "company evidence",
-            "search_provider": "firecrawl_searxng",
-        }],
+        "provider": "firecrawl_searxng",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "results": [
+            {
+                "title": "Result",
+                "url": "https://example.com/a",
+                "snippet": "body",
+                "content_text": "company evidence",
+                "search_provider": "firecrawl_searxng",
+            }
+        ],
     }
     with patch("src.tools.websearch._firecrawl_search", return_value=local):
         result = websearch(
@@ -594,7 +707,10 @@ def test_websearch_include_content_survives_context_compaction() -> None:
 
 def test_websearch_normalizes_mixed_published_timezones() -> None:
     local = {
-        "provider": "firecrawl_searxng", "success": True, "skipped": False, "error": None,
+        "provider": "firecrawl_searxng",
+        "success": True,
+        "skipped": False,
+        "error": None,
         "results": [
             {
                 "title": "Naive",
@@ -625,10 +741,16 @@ def test_opencode_mcp_parser_supports_json_and_sse() -> None:
 
 
 def test_exa_uses_its_own_key_and_opencode_arguments() -> None:
-    with patch.dict(os.environ, {"EXA_API_KEY": "key +/?"}, clear=True), \
-         patch("src.tools.websearch._mcp_call", return_value="Title: X\nURL: https://example.com") as call:
+    with (
+        patch.dict(os.environ, {"EXA_API_KEY": "key +/?"}, clear=True),
+        patch("src.tools.websearch._mcp_call", return_value="Title: X\nURL: https://example.com") as call,
+    ):
         result = _exa_search(
-            "universal query", limit=5, livecrawl="preferred", search_type="deep", context_max_characters=9000,
+            "universal query",
+            limit=5,
+            livecrawl="preferred",
+            search_type="deep",
+            context_max_characters=9000,
         )
 
     assert result["success"] is True
@@ -640,14 +762,23 @@ def test_exa_uses_its_own_key_and_opencode_arguments() -> None:
 
 def test_webfetch_uses_open_http_path_before_any_fallback() -> None:
     direct = {
-        "provider": "http", "success": True, "skipped": False, "error": None,
-        "content": "正文", "attachments": None, "final_url": "https://example.com/a",
-        "title": "标题", "content_type": "text/html", "extraction_method": "direct_http",
+        "provider": "http",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "content": "正文",
+        "attachments": None,
+        "final_url": "https://example.com/a",
+        "title": "标题",
+        "content_type": "text/html",
+        "extraction_method": "direct_http",
     }
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch._http_fetch", return_value=direct) as http_fetch, \
-         patch("src.tools.webfetch._scrapling_fetch") as scrapling, \
-         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl:
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch._http_fetch", return_value=direct) as http_fetch,
+        patch("src.tools.webfetch._scrapling_fetch") as scrapling,
+        patch("src.tools.webfetch._firecrawl_fetch") as firecrawl,
+    ):
         result = fetch_url("https://example.com/a")
 
     assert result["provider"] == "http"
@@ -660,14 +791,23 @@ def test_webfetch_uses_open_http_path_before_any_fallback() -> None:
 def test_webfetch_falls_back_in_transport_order() -> None:
     failed = {"provider": "http", "success": False, "skipped": False, "error": "blocked"}
     static = {
-        "provider": "scrapling", "success": True, "skipped": False, "error": None,
-        "content": "正文", "attachments": None, "final_url": "https://example.com/a",
-        "title": "标题", "content_type": "text/html", "extraction_method": "scrapling_http",
+        "provider": "scrapling",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "content": "正文",
+        "attachments": None,
+        "final_url": "https://example.com/a",
+        "title": "标题",
+        "content_type": "text/html",
+        "extraction_method": "scrapling_http",
     }
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch._http_fetch", return_value=failed), \
-         patch("src.tools.webfetch._scrapling_fetch", return_value=static) as scrapling, \
-         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl:
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch._http_fetch", return_value=failed),
+        patch("src.tools.webfetch._scrapling_fetch", return_value=static) as scrapling,
+        patch("src.tools.webfetch._firecrawl_fetch") as firecrawl,
+    ):
         result = fetch_url("https://example.com/a")
 
     assert result["provider"] == "scrapling"
@@ -680,19 +820,30 @@ def test_webfetch_falls_back_in_transport_order() -> None:
 
 def test_webfetch_waf_challenge_goes_directly_to_real_browser() -> None:
     challenge = {
-        "provider": "http", "success": False, "skipped": False,
-        "error": "页面返回了 WAF 加密挑战而非正文", "failure_kind": "challenge",
+        "provider": "http",
+        "success": False,
+        "skipped": False,
+        "error": "页面返回了 WAF 加密挑战而非正文",
+        "failure_kind": "challenge",
     }
     rendered = {
-        "provider": "patchright", "success": True, "skipped": False, "error": None,
-        "content": "# 正文\n\n浏览器渲染后的完整内容", "attachments": None,
-        "final_url": "https://example.com/a", "title": "标题", "content_type": "text/html",
+        "provider": "patchright",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "content": "# 正文\n\n浏览器渲染后的完整内容",
+        "attachments": None,
+        "final_url": "https://example.com/a",
+        "title": "标题",
+        "content_type": "text/html",
         "extraction_method": "patchright_browser+semantic_dom",
     }
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch._http_fetch", return_value=challenge), \
-         patch("src.tools.webfetch._scrapling_fetch", return_value=rendered) as scrapling, \
-         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl:
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch._http_fetch", return_value=challenge),
+        patch("src.tools.webfetch._scrapling_fetch", return_value=rendered) as scrapling,
+        patch("src.tools.webfetch._firecrawl_fetch") as firecrawl,
+    ):
         result = fetch_url("https://example.com/a")
 
     assert result["success"] is True
@@ -704,20 +855,31 @@ def test_webfetch_waf_challenge_goes_directly_to_real_browser() -> None:
 
 def test_webfetch_keeps_complete_rendered_dashboard_despite_link_density() -> None:
     challenge = {
-        "provider": "http", "success": False, "skipped": False,
-        "error": "动态占位内容", "failure_kind": "challenge",
+        "provider": "http",
+        "success": False,
+        "skipped": False,
+        "error": "动态占位内容",
+        "failure_kind": "challenge",
     }
     dashboard = {
-        "provider": "patchright", "success": True, "skipped": False, "error": None,
-        "content": "实时行情和成交数据\n" * 200, "attachments": None,
-        "final_url": "https://example.com/quote", "title": "行情", "content_type": "text/html",
+        "provider": "patchright",
+        "success": True,
+        "skipped": False,
+        "error": None,
+        "content": "实时行情和成交数据\n" * 200,
+        "attachments": None,
+        "final_url": "https://example.com/quote",
+        "title": "行情",
+        "content_type": "text/html",
         "extraction_method": "patchright_browser+full_page_fallback",
         "quality_warning": "页面正文链接密度过高，继续尝试主内容抓取器",
     }
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch._http_fetch", return_value=challenge), \
-         patch("src.tools.webfetch._scrapling_fetch", return_value=dashboard), \
-         patch("src.tools.webfetch._firecrawl_fetch") as firecrawl:
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch._http_fetch", return_value=challenge),
+        patch("src.tools.webfetch._scrapling_fetch", return_value=dashboard),
+        patch("src.tools.webfetch._firecrawl_fetch") as firecrawl,
+    ):
         result = fetch_url("https://example.com/quote")
 
     assert result["provider"] == "patchright"
@@ -740,12 +902,16 @@ def test_webfetch_rejects_unrendered_javascript_placeholder_page() -> None:
 
 
 def test_webfetch_semantic_article_beats_long_comment_container() -> None:
-    html = """
+    html = (
+        """
     <html><head><title>公司公告正文</title>
     <meta name="description" content="公司公告正文：核心经营数据保持增长"></head>
     <body><article><h1>公司公告正文</h1><p>核心经营数据保持增长，现金流同步改善。</p></article>
-    <div class="article-content comments">评论区噪声 """ + ("很长的评论 " * 300) + """</div></body></html>
+    <div class="article-content comments">评论区噪声 """
+        + ("很长的评论 " * 300)
+        + """</div></body></html>
     """
+    )
 
     content, method, metadata = _extract_html(html, "markdown")
 
@@ -791,8 +957,10 @@ def test_webfetch_open_http_contract_retries_cloudflare_with_honest_user_agent()
     context.__enter__ = Mock(return_value=client)
     context.__exit__ = Mock(return_value=False)
 
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch.httpx.Client", return_value=context):
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch.httpx.Client", return_value=context),
+    ):
         result = _http_fetch("https://example.com/page", "markdown", 30)
 
     assert result["success"] is True
@@ -824,8 +992,10 @@ def test_webfetch_open_http_contract_supports_images_and_five_mb_cap() -> None:
     context.__enter__ = Mock(return_value=client)
     context.__exit__ = Mock(return_value=False)
 
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch.httpx.Client", return_value=context):
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch.httpx.Client", return_value=context),
+    ):
         image_result = _http_fetch("https://example.com/image.png", "markdown", 30)
         oversized_result = _http_fetch("https://example.com/large.txt", "text", 30)
 
@@ -850,9 +1020,11 @@ def test_webfetch_open_http_contract_parses_pdf_instead_of_decoding_binary() -> 
     context.__enter__ = Mock(return_value=client)
     context.__exit__ = Mock(return_value=False)
 
-    with patch("src.tools.webfetch._validate_public_url"), \
-         patch("src.tools.webfetch.httpx.Client", return_value=context), \
-         patch("src.tools.webfetch._convert_document", return_value=("# 年报\n\n正文", "markitdown")):
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch.httpx.Client", return_value=context),
+        patch("src.tools.webfetch._convert_document", return_value=("# 年报\n\n正文", "markitdown")),
+    ):
         result = _http_fetch("https://example.com/report.pdf", "markdown", 30)
 
     assert result["success"] is True

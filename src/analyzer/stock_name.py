@@ -27,16 +27,16 @@ def get_stock_name_multi_source(
     """
     # 1. 从上下文获取（实时行情数据）
     if context:
-        if context.get('stock_name'):
-            name = context['stock_name']
-            if name and not name.startswith('股票'):
+        if context.get("stock_name"):
+            name = context["stock_name"]
+            if name and not name.startswith("股票"):
                 return name
-        if 'realtime' in context and context['realtime'].get('name'):
-            return context['realtime']['name']
+        if "realtime" in context and context["realtime"].get("name"):
+            return context["realtime"]["name"]
 
     # 2. 从静态映射表获取
     if stock_code in STOCK_NAME_MAP:
         return STOCK_NAME_MAP[stock_code]
 
     # 3. 返回默认名称
-    return f'股票{stock_code}'
+    return f"股票{stock_code}"

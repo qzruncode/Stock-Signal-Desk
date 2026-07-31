@@ -30,21 +30,11 @@ def _sanitize(value: Any, *, depth: int = 0) -> Any:
             "[untrusted-instruction-redacted]",
             cleaned,
         )
-        return (
-            cleaned[:20_000] + "…[truncated]"
-            if len(cleaned) > 20_000
-            else cleaned
-        )
+        return cleaned[:20_000] + "…[truncated]" if len(cleaned) > 20_000 else cleaned
     if isinstance(value, Mapping):
-        return {
-            str(key)[:256]: _sanitize(item, depth=depth + 1)
-            for key, item in list(value.items())[:2_000]
-        }
+        return {str(key)[:256]: _sanitize(item, depth=depth + 1) for key, item in list(value.items())[:2_000]}
     if isinstance(value, (list, tuple)):
-        return [
-            _sanitize(item, depth=depth + 1)
-            for item in value[:5_000]
-        ]
+        return [_sanitize(item, depth=depth + 1) for item in value[:5_000]]
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         return _sanitize(model_dump(mode="json"), depth=depth + 1)
@@ -67,18 +57,16 @@ def build_untrusted_evidence_envelope(
         signals = len(_INSTRUCTION_SIGNAL.findall(raw_serialized))
         packet = _sanitize(raw_packet)
         injection_signal_count += signals
-        tool_name = (
-            str(packet.get("tool") or "unknown_tool")
-            if isinstance(packet, Mapping)
-            else "unknown_tool"
+        tool_name = str(packet.get("tool") or "unknown_tool") if isinstance(packet, Mapping) else "unknown_tool"
+        packets.append(
+            {
+                "packet_index": index,
+                "source_tool": tool_name,
+                "trust": "untrusted_external_data",
+                "instruction_signals_detected": signals,
+                "payload": packet,
+            }
         )
-        packets.append({
-            "packet_index": index,
-            "source_tool": tool_name,
-            "trust": "untrusted_external_data",
-            "instruction_signals_detected": signals,
-            "payload": packet,
-        })
     canonical = json.dumps(
         packets,
         ensure_ascii=False,

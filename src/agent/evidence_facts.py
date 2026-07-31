@@ -25,8 +25,13 @@ class ExtractedEvidenceFact(BaseModel):
     theme_relevance: Literal["direct", "supporting", "unrelated"]
     thesis_fit: Literal["exact", "partial", "outside"]
     commercialization_signal: Literal[
-        "revenue", "order", "batch_delivery", "customer_validation",
-        "commercial_application", "product_layout", "negative_boundary",
+        "revenue",
+        "order",
+        "batch_delivery",
+        "customer_validation",
+        "commercial_application",
+        "product_layout",
+        "negative_boundary",
     ]
     relationship: str
     fact: str
@@ -43,8 +48,13 @@ class BoundEvidenceFact(BaseModel):
     stage: Literal["L3", "L2", "L1", "boundary"]
     thesis_fit: Literal["exact", "partial", "outside"] = "exact"
     commercialization_signal: Literal[
-        "revenue", "order", "batch_delivery", "customer_validation",
-        "commercial_application", "product_layout", "negative_boundary",
+        "revenue",
+        "order",
+        "batch_delivery",
+        "customer_validation",
+        "commercial_application",
+        "product_layout",
+        "negative_boundary",
     ] = "batch_delivery"
     relationship: str
     fact: str
@@ -87,8 +97,13 @@ _FACT_TOOL = {
                             "commercialization_signal": {
                                 "type": "string",
                                 "enum": [
-                                    "revenue", "order", "batch_delivery", "customer_validation",
-                                    "commercial_application", "product_layout", "negative_boundary"
+                                    "revenue",
+                                    "order",
+                                    "batch_delivery",
+                                    "customer_validation",
+                                    "commercial_application",
+                                    "product_layout",
+                                    "negative_boundary",
                                 ],
                             },
                             "relationship": {"type": "string"},
@@ -98,10 +113,18 @@ _FACT_TOOL = {
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         },
                         "required": [
-                            "company_name", "company_mention", "symbol", "stage",
-                            "theme_relevance", "thesis_fit",
-                            "commercialization_signal", "relationship",
-                            "fact", "support_quote", "source_id", "confidence",
+                            "company_name",
+                            "company_mention",
+                            "symbol",
+                            "stage",
+                            "theme_relevance",
+                            "thesis_fit",
+                            "commercialization_signal",
+                            "relationship",
+                            "fact",
+                            "support_quote",
+                            "source_id",
+                            "confidence",
                         ],
                     },
                 },
@@ -161,8 +184,7 @@ def _source_date(source_item: dict[str, Any], result: dict[str, Any]) -> tuple[s
     if match:
         return "-".join((match.group(1), match.group(2).zfill(2), match.group(3).zfill(2))), False
     text = "\n".join(
-        str(source_item.get(key) or "")
-        for key in ("title", "snippet", "summary", "content_text", "content")
+        str(source_item.get(key) or "") for key in ("title", "snippet", "summary", "content_text", "content")
     )
     match = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", text[:1200])
     if match:
@@ -184,12 +206,13 @@ def collect_evidence_sources(evidence: list[dict[str, Any]]) -> list[dict[str, A
     tool_priority = {"websearch": 0, "search_financial_news": 1, "search_research_library": 2}
     ordered_evidence = sorted(
         evidence,
-        key=lambda packet: tool_priority.get(str(packet.get("tool") or ""), 9)
-        if isinstance(packet, dict) else 9,
+        key=lambda packet: tool_priority.get(str(packet.get("tool") or ""), 9) if isinstance(packet, dict) else 9,
     )
     for packet in ordered_evidence:
         if not isinstance(packet, dict) or packet.get("tool") not in {
-            "search_financial_news", "search_research_library", "websearch",
+            "search_financial_news",
+            "search_research_library",
+            "websearch",
         }:
             continue
         result = packet.get("result")
@@ -201,9 +224,7 @@ def collect_evidence_sources(evidence: list[dict[str, Any]]) -> list[dict[str, A
                 continue
             title = str(item.get("title") or "").strip()
             body = "\n".join(
-                str(item.get(key) or "")
-                for key in ("summary", "snippet", "content_text", "content")
-                if item.get(key)
+                str(item.get(key) or "") for key in ("summary", "snippet", "content_text", "content") if item.get(key)
             ).strip()
             if not title and not body:
                 continue
@@ -269,6 +290,7 @@ def _has_independent_mention(value: str, text: str) -> bool:
 
 def _same_security_display_name(left: str, right: str) -> bool:
     """Ignore exchange display markers while preserving the company identity."""
+
     def normalize(value: str) -> str:
         text = re.sub(r"\s+", "", str(value or "")).upper()
         text = re.sub(r"^\*?ST", "", text)
@@ -276,11 +298,7 @@ def _same_security_display_name(left: str, right: str) -> bool:
 
     normalized_left = normalize(left)
     normalized_right = normalize(right)
-    return bool(
-        normalized_left
-        and normalized_right
-        and normalized_left == normalized_right
-    )
+    return bool(normalized_left and normalized_right and normalized_left == normalized_right)
 
 
 def _validate_facts(
@@ -305,15 +323,9 @@ def _validate_facts(
             continue
         mention = fact.company_mention.strip()
         title = str(source.get("title") or "")
-        if not mention or (
-            mention not in quote
-            and mention not in title
-        ):
+        if not mention or (mention not in quote and mention not in title):
             continue
-        if not (
-            _has_independent_mention(mention, source_text)
-            or _has_independent_mention(mention, title)
-        ):
+        if not (_has_independent_mention(mention, source_text) or _has_independent_mention(mention, title)):
             continue
         resolution_text = f"{fact.company_name} {fact.symbol or ''}".strip()
         resolved = find_securities_in_text(resolution_text, limit=5)
@@ -321,20 +333,20 @@ def _validate_facts(
             continue
         entity = next(
             (
-                item for item in resolved
+                item
+                for item in resolved
                 if not fact.symbol or str(item.get("symbol") or "") == str(fact.symbol).zfill(6)
             ),
             None,
         )
         if entity is None:
             continue
-        if (
-            not _same_security_display_name(
-                mention,
-                str(entity.get("name") or fact.company_name),
-            )
-            and resolve_symbol(mention) != str(entity.get("symbol") or "")
-        ):
+        if not _same_security_display_name(
+            mention,
+            str(entity.get("name") or fact.company_name),
+        ) and resolve_symbol(
+            mention
+        ) != str(entity.get("symbol") or ""):
             continue
         symbol = str(entity.get("symbol") or "")
         effective_stage = fact.stage
@@ -365,10 +377,10 @@ def _validate_facts(
         previous = best_by_company.get(key)
         rank = {"boundary": 4, "L3": 3, "L2": 2, "L1": 1}
         fit_rank = {"exact": 3, "partial": 2, "outside": 1}
-        if previous is None or (
-            fit_rank[candidate.thesis_fit], rank[candidate.stage], candidate.confidence
-        ) > (
-            fit_rank[previous.thesis_fit], rank[previous.stage], previous.confidence
+        if previous is None or (fit_rank[candidate.thesis_fit], rank[candidate.stage], candidate.confidence) > (
+            fit_rank[previous.thesis_fit],
+            rank[previous.stage],
+            previous.confidence,
         ):
             best_by_company[key] = candidate
     return list(best_by_company.values())
@@ -388,10 +400,12 @@ async def bind_company_evidence(
     model_sources = []
     for source in sources:
         source_with_candidates = dict(source)
-        identity_text = "\n".join((
-            str(source.get("title") or ""),
-            str(source.get("text") or ""),
-        ))
+        identity_text = "\n".join(
+            (
+                str(source.get("title") or ""),
+                str(source.get("text") or ""),
+            )
+        )
         source_with_candidates["candidate_securities"] = [
             candidate
             for candidate in find_securities_in_text(identity_text, limit=20)
@@ -422,10 +436,7 @@ async def bind_company_evidence(
                 current_characters = 0
             source_batches.append([source])
             continue
-        if current_batch and (
-            len(current_batch) >= 2
-            or current_characters + source_characters > 12_000
-        ):
+        if current_batch and (len(current_batch) >= 2 or current_characters + source_characters > 12_000):
             source_batches.append(current_batch)
             current_batch = []
             current_characters = 0
@@ -475,11 +486,7 @@ async def bind_company_evidence(
         if not topic_text or topic_text not in source_text:
             return facts
         validated = _validate_facts(facts, batch)
-        covered_symbols = {
-            fact.symbol
-            for fact in validated
-            if fact.thesis_fit == "exact"
-        }
+        covered_symbols = {fact.symbol for fact in validated if fact.thesis_fit == "exact"}
         missing_candidates = [
             candidate
             for candidate in source.get("candidate_securities") or []

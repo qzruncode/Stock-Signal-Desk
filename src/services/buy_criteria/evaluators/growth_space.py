@@ -121,7 +121,9 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
     criterion_name = "未来3年空间"
     index = 2
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
+    def collect_data(
+        self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None
+    ) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -193,9 +195,7 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
         research_items = _list_of_dicts(research.get("items"))
         news = _as_dict(raw.get("news"))
         news_items = _list_of_dicts(news.get("items"))
-        formal_items = _list_of_dicts(
-            _as_dict(raw.get("formal_growth_evidence")).get("items")
-        )
+        formal_items = _list_of_dicts(_as_dict(raw.get("formal_growth_evidence")).get("items"))
         lines = [
             "## 公司与行业",
             f"- 股票：{profile.get('name') or symbol} ({profile.get('symbol') or symbol})",
@@ -228,13 +228,15 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
             lines.append(f"- 正文证据读取失败：{raw['formal_growth_evidence_error']}")
         else:
             lines.append("- 未取得与结构化投资逻辑相关的定期报告正文段落")
-        lines.extend([
-            "",
-            "## 券商研报与盈利预测",
-            f"- 研报数量：{research.get('count', 0)}；数据日期：{research.get('data_time') or '缺失'}；是否过期：{research.get('is_stale')}",
-            f"- 盈利预测汇总：{_format_forecasts_summary(research_items)}",
-            f"- 增速预测线索：{_extract_forecast_signals(research_items)}",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 券商研报与盈利预测",
+                f"- 研报数量：{research.get('count', 0)}；数据日期：{research.get('data_time') or '缺失'}；是否过期：{research.get('is_stale')}",
+                f"- 盈利预测汇总：{_format_forecasts_summary(research_items)}",
+                f"- 增速预测线索：{_extract_forecast_signals(research_items)}",
+            ]
+        )
         if research_items:
             for item in research_items[:6]:
                 lines.append(
@@ -248,11 +250,13 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
                     lines.append(f"  摘要：{summary[:180]}")
         else:
             lines.append("- 缺失")
-        lines.extend([
-            "",
-            "## 相关新闻新增需求线索",
-            f"- 新闻数量：{news.get('count', 0)}；数据日期：{news.get('data_time') or '缺失'}；是否过期：{news.get('is_stale')}",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 相关新闻新增需求线索",
+                f"- 新闻数量：{news.get('count', 0)}；数据日期：{news.get('data_time') or '缺失'}；是否过期：{news.get('is_stale')}",
+            ]
+        )
         if news_items:
             for item in news_items[:6]:
                 lines.append(
@@ -263,14 +267,16 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
                 )
         else:
             lines.append("- 缺失")
-        lines.extend([
-            "",
-            "## 判断约束",
-            "- 只能使用上方证据判断未来3年空间，不允许写'基于行业认知'或自行补充外部行业常识。",
-            "- 数据源中无行业CAGR、渗透率、市场规模硬数值时，不得编造；应改用上方研报EPS预测、公司财务增长和新闻线索判断新增需求。",
-            "- 不得引用上方证据中没有出现的产品规格、市场规模、渗透率或CAGR。",
-            "- 如果通过，应基于'研报EPS预测/公司财务增长/明确需求线索'说明，不能写成无来源的行业CAGR结论。",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 判断约束",
+                "- 只能使用上方证据判断未来3年空间，不允许写'基于行业认知'或自行补充外部行业常识。",
+                "- 数据源中无行业CAGR、渗透率、市场规模硬数值时，不得编造；应改用上方研报EPS预测、公司财务增长和新闻线索判断新增需求。",
+                "- 不得引用上方证据中没有出现的产品规格、市场规模、渗透率或CAGR。",
+                "- 如果通过，应基于'研报EPS预测/公司财务增长/明确需求线索'说明，不能写成无来源的行业CAGR结论。",
+            ]
+        )
 
         summary = "\n".join(lines)
         return CriterionEvidence(raw_data=raw, data_summary=summary)
@@ -280,10 +286,10 @@ class GrowthSpaceEvaluator(BaseCriterionEvaluator):
 
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
         raw = evidence.raw_data
-        financial_items = ((raw.get("financials") or {}).get("items") or [])
-        research_items = ((raw.get("research") or {}).get("items") or [])
-        news_items = ((raw.get("news") or {}).get("items") or [])
-        formal_items = ((raw.get("formal_growth_evidence") or {}).get("items") or [])
+        financial_items = (raw.get("financials") or {}).get("items") or []
+        research_items = (raw.get("research") or {}).get("items") or []
+        news_items = (raw.get("news") or {}).get("items") or []
+        formal_items = (raw.get("formal_growth_evidence") or {}).get("items") or []
         if not financial_items and not research_items and not news_items and not formal_items:
             return "财务、正式报告、研报和需求证据均不可用，无法验证未来三年增长空间"
         return None

@@ -15,9 +15,10 @@ from src.tools.registry import ToolRegistry
 
 def test_fresh_stock_universe_skips_refresh() -> None:
     snapshot = {"total": 5200, "data_time": "2026-07-19T08:00:00", "is_stale": False}
-    with patch.object(data_maintenance, "_universe_snapshot", return_value=snapshot), patch.object(
-        data_maintenance, "sync_stock_universe"
-    ) as sync:
+    with (
+        patch.object(data_maintenance, "_universe_snapshot", return_value=snapshot),
+        patch.object(data_maintenance, "sync_stock_universe") as sync,
+    ):
         result = data_maintenance.ensure_stock_universe()
 
     assert result["maintenance_status"] == "ready"
@@ -36,11 +37,12 @@ def test_force_refreshes_stale_stock_universe_and_records_job() -> None:
         "delisted_daily": 0,
         "data_time": fresh["data_time"],
     }
-    with patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale, fresh]), patch.object(
-        data_maintenance, "_claim_job", return_value=("job-1", True)
-    ), patch.object(data_maintenance, "_update_job") as update, patch.object(
-        data_maintenance, "sync_stock_universe", return_value=changes
-    ) as sync:
+    with (
+        patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale, fresh]),
+        patch.object(data_maintenance, "_claim_job", return_value=("job-1", True)),
+        patch.object(data_maintenance, "_update_job") as update,
+        patch.object(data_maintenance, "sync_stock_universe", return_value=changes) as sync,
+    ):
         result = data_maintenance.ensure_stock_universe(trigger="test", force=True)
 
     assert result["maintenance_status"] == "success"
@@ -52,11 +54,13 @@ def test_force_refreshes_stale_stock_universe_and_records_job() -> None:
 
 def test_stale_stock_universe_returns_immediately_and_starts_background_job() -> None:
     stale = {"total": 5100, "data_time": "2026-07-18T08:00:00", "is_stale": True}
-    with patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale]), patch.object(
-        data_maintenance, "_claim_job", return_value=("job-1", True)
-    ), patch.object(data_maintenance, "_get_job", return_value=MagicMock(status="running")), patch.object(
-        data_maintenance, "_launch_stock_universe_worker"
-    ) as launch, patch.object(data_maintenance, "sync_stock_universe") as sync:
+    with (
+        patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale]),
+        patch.object(data_maintenance, "_claim_job", return_value=("job-1", True)),
+        patch.object(data_maintenance, "_get_job", return_value=MagicMock(status="running")),
+        patch.object(data_maintenance, "_launch_stock_universe_worker") as launch,
+        patch.object(data_maintenance, "sync_stock_universe") as sync,
+    ):
         result = data_maintenance.ensure_stock_universe(trigger="test")
 
     assert result["maintenance_status"] == "refreshing"
@@ -69,12 +73,12 @@ def test_stale_stock_universe_returns_immediately_and_starts_background_job() ->
 def test_background_launch_failure_uses_existing_stale_universe() -> None:
     stale = {"total": 5100, "data_time": "2026-07-18T08:00:00", "is_stale": True}
     failed_job = MagicMock(status="failed", error="source down")
-    with patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale]), patch.object(
-        data_maintenance, "_claim_job", return_value=("job-1", True)
-    ), patch.object(data_maintenance, "_get_job", side_effect=[None, failed_job]), patch.object(
-        data_maintenance, "_update_job"
-    ), patch.object(
-        data_maintenance, "_launch_stock_universe_worker", side_effect=RuntimeError("source down")
+    with (
+        patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale]),
+        patch.object(data_maintenance, "_claim_job", return_value=("job-1", True)),
+        patch.object(data_maintenance, "_get_job", side_effect=[None, failed_job]),
+        patch.object(data_maintenance, "_update_job"),
+        patch.object(data_maintenance, "_launch_stock_universe_worker", side_effect=RuntimeError("source down")),
     ):
         result = data_maintenance.ensure_stock_universe(trigger="test")
 
@@ -125,13 +129,16 @@ def test_registry_manage_watchlist_list_ignores_symbols_field() -> None:
 
 
 def test_manage_watchlist_resolves_chinese_name_for_direct_tool_execution() -> None:
-    with patch(
-        "src.tools.manage_watchlist.resolve_securities_csv",
-        return_value=([{"input": "新强联", "symbol": "300850", "name": "新强联"}], []),
-    ), patch(
-        "src.tools.manage_watchlist._manage",
-        return_value={"codes": ["300850"], "count": 1, "changed": ["300850"]},
-    ) as manage:
+    with (
+        patch(
+            "src.tools.manage_watchlist.resolve_securities_csv",
+            return_value=([{"input": "新强联", "symbol": "300850", "name": "新强联"}], []),
+        ),
+        patch(
+            "src.tools.manage_watchlist._manage",
+            return_value={"codes": ["300850"], "count": 1, "changed": ["300850"]},
+        ) as manage,
+    ):
         result = manage_watchlist("add", "新强联")
 
     assert result["changed"] == ["300850"]
@@ -141,9 +148,11 @@ def test_manage_watchlist_resolves_chinese_name_for_direct_tool_execution() -> N
 def test_stale_fallback_hides_internal_repair_detail() -> None:
     stale = {"total": 5532, "data_time": "2026-07-04T21:03:14", "is_stale": True}
     job = MagicMock(status="failed", error="维护结果已失效：已恢复原 active 状态并启用覆盖率保护")
-    with patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale]), patch.object(
-        data_maintenance, "_claim_job", return_value=("job-1", False)
-    ), patch.object(data_maintenance, "_get_job", return_value=job):
+    with (
+        patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale]),
+        patch.object(data_maintenance, "_claim_job", return_value=("job-1", False)),
+        patch.object(data_maintenance, "_get_job", return_value=job),
+    ):
         result = data_maintenance.ensure_stock_universe(trigger="test")
 
     assert result["maintenance_status"] == "stale_fallback"
@@ -177,16 +186,16 @@ def test_stock_universe_rejects_partial_source_before_writing() -> None:
     session.query.return_value.count.return_value = 5200
     db = MagicMock()
     db.get_session.return_value.__enter__.return_value = session
-    partial = [
-        {"code": f"{index:06d}", "name": f"公司{index}", "market": "sz"}
-        for index in range(100)
-    ]
-    with patch(
-        "src.services.stock_universe_service.DatabaseManager.get_instance",
-        return_value=db,
-    ), patch(
-        "src.services.stock_universe_service.AkshareFetcher.get_all_a_stocks",
-        return_value=partial,
+    partial = [{"code": f"{index:06d}", "name": f"公司{index}", "market": "sz"} for index in range(100)]
+    with (
+        patch(
+            "src.services.stock_universe_service.DatabaseManager.get_instance",
+            return_value=db,
+        ),
+        patch(
+            "src.services.stock_universe_service.AkshareFetcher.get_all_a_stocks",
+            return_value=partial,
+        ),
     ):
         with pytest.raises(RuntimeError, match="安全要求"):
             sync_stock_universe()

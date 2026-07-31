@@ -55,10 +55,13 @@ TOOL = ToolSpec(
         "查看、添加或删除用户自选股。add/remove 只允许在用户明确要求修改自选股时调用；"
         "不能因为分析或推荐结果而擅自修改。"
     ),
-    parameters=object_schema({
-        "action": {"type": "string", "enum": ["list", "add", "remove"]},
-        "symbols": {"type": "string", "description": "逗号分隔的股票代码或精确名称；list 时留空"},
-    }, required=("action",)),
+    parameters=object_schema(
+        {
+            "action": {"type": "string", "enum": ["list", "add", "remove"]},
+            "symbols": {"type": "string", "description": "逗号分隔的股票代码或精确名称；list 时留空"},
+        },
+        required=("action",),
+    ),
     executor=manage_watchlist,
     category="action",
 )

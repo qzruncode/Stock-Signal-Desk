@@ -54,9 +54,7 @@ def inspect_financial_source(
         from api.v1.endpoints.rss import test_xueqiu_cookie
 
         readiness = endpoint_value(test_xueqiu_cookie)
-    data_time = (
-        dynamic.get("_fetched_at") if isinstance(dynamic, dict) else None
-    ) or catalog.get("_fetched_at")
+    data_time = (dynamic.get("_fetched_at") if isinstance(dynamic, dict) else None) or catalog.get("_fetched_at")
     stale = bool(dynamic.get("_stale")) if isinstance(dynamic, dict) else bool(catalog.get("_stale"))
     dynamic_error = dynamic.get("_error") if isinstance(dynamic, dict) else None
     return {
@@ -82,11 +80,14 @@ TOOL = ToolSpec(
         "查看一个指定财经资讯源的完整路由参数，并获取格隆汇主题、南华研报分类、中指分类、"
         "财联社话题、富途话题等动态可选值；雪球源还会检查实例读取状态。"
     ),
-    parameters=object_schema({
-        "route_path": {"type": "string", "description": "list_financial_sources 返回的精确 route_path"},
-        "keyword": {"type": "string", "description": "过滤动态主题/话题的关键词，可留空"},
-        "force": {"type": "boolean", "default": False},
-    }, required=("route_path",)),
+    parameters=object_schema(
+        {
+            "route_path": {"type": "string", "description": "list_financial_sources 返回的精确 route_path"},
+            "keyword": {"type": "string", "description": "过滤动态主题/话题的关键词，可留空"},
+            "force": {"type": "boolean", "default": False},
+        },
+        required=("route_path",),
+    ),
     executor=inspect_financial_source,
     category="sentiment",
 )

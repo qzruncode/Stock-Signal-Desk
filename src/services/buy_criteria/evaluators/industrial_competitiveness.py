@@ -44,8 +44,16 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
             "profile": {
                 key: stock_info.get(key)
                 for key in (
-                    "symbol", "name", "short_name", "industry", "main_business",
-                    "product_type", "product_name", "business_scope", "company_profile", "profile",
+                    "symbol",
+                    "name",
+                    "short_name",
+                    "industry",
+                    "main_business",
+                    "product_type",
+                    "product_name",
+                    "business_scope",
+                    "company_profile",
+                    "profile",
                 )
                 if stock_info.get(key) is not None
             },
@@ -71,7 +79,8 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                 target = _bare_symbol(stock_info.get("symbol") or symbol)
                 matched = next(
                     (
-                        item for item in candidates.get("items") or []
+                        item
+                        for item in candidates.get("items") or []
                         if isinstance(item, dict) and _bare_symbol(item.get("symbol")) == target
                     ),
                     None,
@@ -147,16 +156,16 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                     f"{item.get('url') or ''}"
                 )
         elif raw.get("formal_business_evidence_error"):
-            lines.append(
-                f"- 正文读取失败：{raw['formal_business_evidence_error']}"
-            )
+            lines.append(f"- 正文读取失败：{raw['formal_business_evidence_error']}")
         else:
             lines.append("- 未从已读取定期报告中检索到与本轮结构化产业方向相近的段落")
 
-        lines.extend([
-            "",
-            "## 正式披露的主营构成",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 正式披露的主营构成",
+            ]
+        )
         segments = _dict_items((raw.get("business_segments") or {}).get("items"), limit=10)
         if segments:
             for item in segments:
@@ -187,9 +196,13 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
         membership = raw.get("thesis_membership") or {}
         lines.extend(["", "## 结构化产业方向成员关系（L1映射证据）"])
         if membership:
-            lines.append(f"- 请求方向：{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}")
+            lines.append(
+                f"- 请求方向：{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}"
+            )
             lines.append(f"- 公司是否命中：{'是' if membership.get('company_matched') else '否'}")
-            lines.append(f"- 候选召回覆盖方向：{'、'.join(str(item) for item in membership.get('matched_domains') or []) or '无'}（不可据此声称公司拥有对应产品）")
+            lines.append(
+                f"- 候选召回覆盖方向：{'、'.join(str(item) for item in membership.get('matched_domains') or []) or '无'}（不可据此声称公司拥有对应产品）"
+            )
             lines.append(f"- 对应板块：{'、'.join(str(item) for item in membership.get('boards') or []) or '无'}")
             lines.append("- 边界：该证据只证明产业映射，不能单独证明订单、收入或竞争优势。")
         elif raw.get("thesis_membership_error"):
@@ -223,18 +236,20 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
                     f"{item.get('title') or '无标题'}；{summary}"
                 )
 
-        lines.extend([
-            "",
-            "## 判断约束",
-            "- 分业务收入/利润、正式资料证明的成熟主营产品、订单/销量/客户应用/产能/量产/出货/连续增速，是并列替代证据；不得把订单或量产公告设成额外必选项。",
-            "- 对成熟的通用核心零部件，不要求公司必须披露带有特定下游主题名称的专项订单；应核验产品是否真实商业化、是否与本轮产业位置相符，以及竞争优势是否可回查。",
-            "- 请求方向、候选召回覆盖方向和板块别名只能说明候选来源，不能证明公司具体产品。公司产品和真实受益必须以正式主营、经营范围、分业务披露或公告为准。",
-            "- 至少一项业务真实性证据必须来自主营构成、公司正式资料、正式公告或其他公司正式披露；新闻和研报只能补充，不能单独证明真实受益。",
-            "- 定期报告正文段落由结构化投资逻辑做通用相关性检索，只是候选证据；模型必须阅读原文语义，不能把检索命中本身当成通过。",
-            "- 未披露客户名称或未单独公告订单，不等于没有客户或订单；只能标注证据边界，不能把未披露反推成负面事实。",
-            "- 必须同时证明真实受益和可验证竞争优势；任何一项不足都判为不通过。",
-            "- 证据来源异常与真实零披露必须区分；无法核验时不允许乐观推断。",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 判断约束",
+                "- 分业务收入/利润、正式资料证明的成熟主营产品、订单/销量/客户应用/产能/量产/出货/连续增速，是并列替代证据；不得把订单或量产公告设成额外必选项。",
+                "- 对成熟的通用核心零部件，不要求公司必须披露带有特定下游主题名称的专项订单；应核验产品是否真实商业化、是否与本轮产业位置相符，以及竞争优势是否可回查。",
+                "- 请求方向、候选召回覆盖方向和板块别名只能说明候选来源，不能证明公司具体产品。公司产品和真实受益必须以正式主营、经营范围、分业务披露或公告为准。",
+                "- 至少一项业务真实性证据必须来自主营构成、公司正式资料、正式公告或其他公司正式披露；新闻和研报只能补充，不能单独证明真实受益。",
+                "- 定期报告正文段落由结构化投资逻辑做通用相关性检索，只是候选证据；模型必须阅读原文语义，不能把检索命中本身当成通过。",
+                "- 未披露客户名称或未单独公告订单，不等于没有客户或订单；只能标注证据边界，不能把未披露反推成负面事实。",
+                "- 必须同时证明真实受益和可验证竞争优势；任何一项不足都判为不通过。",
+                "- 证据来源异常与真实零披露必须区分；无法核验时不允许乐观推断。",
+            ]
+        )
         return CriterionEvidence(raw_data=raw, data_summary="\n".join(lines))
 
     def get_rubric(self) -> str:
@@ -243,7 +258,9 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
         raw = evidence.raw_data
         formal_sources = (
-            "business_segments", "financials", "announcements",
+            "business_segments",
+            "financials",
+            "announcements",
             "formal_business_evidence",
         )
         profile = raw.get("profile") or {}
@@ -254,9 +271,7 @@ class IndustrialCompetitivenessEvaluator(BaseCriterionEvaluator):
             or profile.get("product_name")
         )
         has_available_formal_source = any(
-            isinstance(raw.get(key), dict)
-            and raw[key].get("success") is not False
-            for key in formal_sources
+            isinstance(raw.get(key), dict) and raw[key].get("success") is not False for key in formal_sources
         )
         if not has_formal_profile and not has_available_formal_source:
             return "公司正式资料、主营构成、财务和公告均获取失败，无法验证真实受益和产业竞争力"

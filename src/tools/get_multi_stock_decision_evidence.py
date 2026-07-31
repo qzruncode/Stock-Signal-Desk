@@ -31,32 +31,68 @@ def _ok(data: Any) -> bool:
 
 
 def _compact_profile(data: dict[str, Any]) -> dict[str, Any]:
-    return _pick(data, (
-        "success", "short_name", "company_name", "market", "industry",
-        "industry_eastmoney", "listing_date", "main_business", "company_profile",
-        "source", "data_time", "is_stale", "errors", "warnings",
-    ))
+    return _pick(
+        data,
+        (
+            "success",
+            "short_name",
+            "company_name",
+            "market",
+            "industry",
+            "industry_eastmoney",
+            "listing_date",
+            "main_business",
+            "company_profile",
+            "source",
+            "data_time",
+            "is_stale",
+            "errors",
+            "warnings",
+        ),
+    )
 
 
 def _compact_financials(data: dict[str, Any]) -> dict[str, Any]:
     fields = (
-        "report_date", "report_period", "revenue", "revenue_yoy", "revenue_qoq",
-        "parent_net_profit", "parent_net_profit_yoy", "deducted_net_profit",
-        "deducted_net_profit_yoy", "gross_margin", "net_margin", "roe",
-        "operating_cash_flow", "free_cash_flow", "cash_conversion_ratio",
-        "debt_ratio", "accounts_receivable", "inventory", "contract_liabilities",
+        "report_date",
+        "report_period",
+        "revenue",
+        "revenue_yoy",
+        "revenue_qoq",
+        "parent_net_profit",
+        "parent_net_profit_yoy",
+        "deducted_net_profit",
+        "deducted_net_profit_yoy",
+        "gross_margin",
+        "net_margin",
+        "roe",
+        "operating_cash_flow",
+        "free_cash_flow",
+        "cash_conversion_ratio",
+        "debt_ratio",
+        "accounts_receivable",
+        "inventory",
+        "contract_liabilities",
         "flow_basis",
     )
     return {
-        **_pick(data, (
-            "success", "partial", "symbol", "periods", "amount_unit", "ratio_unit",
-            "source", "data_time", "is_stale", "errors", "warnings",
-        )),
-        "items": [
-            _pick(item, fields)
-            for item in (data.get("items") or [])[-10:]
-            if isinstance(item, dict)
-        ],
+        **_pick(
+            data,
+            (
+                "success",
+                "partial",
+                "symbol",
+                "periods",
+                "amount_unit",
+                "ratio_unit",
+                "source",
+                "data_time",
+                "is_stale",
+                "errors",
+                "warnings",
+            ),
+        ),
+        "items": [_pick(item, fields) for item in (data.get("items") or [])[-10:] if isinstance(item, dict)],
     }
 
 
@@ -64,35 +100,75 @@ def _compact_segments(data: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in data.get("items") or [] if isinstance(item, dict)]
     latest = max((str(item.get("report_date") or "") for item in items), default="")
     relevant = [
-        item for item in items
-        if str(item.get("report_date") or "") == latest
-        and item.get("category") in {"product", "industry"}
+        item
+        for item in items
+        if str(item.get("report_date") or "") == latest and item.get("category") in {"product", "industry"}
     ]
     relevant.sort(key=lambda item: float(item.get("revenue_share_pct") or 0), reverse=True)
     return {
-        **_pick(data, (
-            "success", "symbol", "periods", "source", "source_url", "data_time",
-            "is_stale", "errors", "warnings",
-        )),
+        **_pick(
+            data,
+            (
+                "success",
+                "symbol",
+                "periods",
+                "source",
+                "source_url",
+                "data_time",
+                "is_stale",
+                "errors",
+                "warnings",
+            ),
+        ),
         "latest_report_date": latest or None,
         "items": [
-            _pick(item, (
-                "report_date", "flow_basis", "category", "segment_name", "revenue",
-                "revenue_share_pct", "gross_profit_share_pct", "gross_margin_pct",
-            ))
+            _pick(
+                item,
+                (
+                    "report_date",
+                    "flow_basis",
+                    "category",
+                    "segment_name",
+                    "revenue",
+                    "revenue_share_pct",
+                    "gross_profit_share_pct",
+                    "gross_margin_pct",
+                ),
+            )
             for item in relevant[:6]
         ],
     }
 
 
 def _compact_valuation(data: dict[str, Any]) -> dict[str, Any]:
-    return _pick(data, (
-        "success", "symbol", "name", "trade_date", "current_price", "pe_ttm",
-        "pe_static", "pe_dynamic", "pb_mrq", "ps_ttm", "pcf_ttm",
-        "peg_trailing", "peg_forward", "forward_pe", "dividend_yield",
-        "history_statistics", "positive_pe_percentile", "industry_average",
-        "source", "data_time", "is_stale", "errors", "warnings",
-    ))
+    return _pick(
+        data,
+        (
+            "success",
+            "symbol",
+            "name",
+            "trade_date",
+            "current_price",
+            "pe_ttm",
+            "pe_static",
+            "pe_dynamic",
+            "pb_mrq",
+            "ps_ttm",
+            "pcf_ttm",
+            "peg_trailing",
+            "peg_forward",
+            "forward_pe",
+            "dividend_yield",
+            "history_statistics",
+            "positive_pe_percentile",
+            "industry_average",
+            "source",
+            "data_time",
+            "is_stale",
+            "errors",
+            "warnings",
+        ),
+    )
 
 
 def _compact_consensus(data: dict[str, Any]) -> dict[str, Any]:
@@ -101,18 +177,39 @@ def _compact_consensus(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict):
             estimates.append(_pick(item, ("year", "coverage_count", "eps", "net_profit")))
     return {
-        **_pick(data, (
-            "success", "partial", "symbol", "coverage_available", "coverage_count_latest",
-            "coverage_status", "source_query_complete", "latest_institution_report_date",
-            "forecast_warning", "source", "data_time",
-            "is_stale", "errors", "warnings",
-        )),
+        **_pick(
+            data,
+            (
+                "success",
+                "partial",
+                "symbol",
+                "coverage_available",
+                "coverage_count_latest",
+                "coverage_status",
+                "source_query_complete",
+                "latest_institution_report_date",
+                "forecast_warning",
+                "source",
+                "data_time",
+                "is_stale",
+                "errors",
+                "warnings",
+            ),
+        ),
         "estimates": estimates,
         "actuals": [
-            _pick(item, (
-                "year", "revenue_yi", "revenue_growth_pct", "net_profit_yi",
-                "net_profit_growth_pct", "cashflow_per_share", "roe_pct",
-            ))
+            _pick(
+                item,
+                (
+                    "year",
+                    "revenue_yi",
+                    "revenue_growth_pct",
+                    "net_profit_yi",
+                    "net_profit_growth_pct",
+                    "cashflow_per_share",
+                    "roe_pct",
+                ),
+            )
             for item in (data.get("actuals") or [])[-3:]
             if isinstance(item, dict)
         ],
@@ -125,35 +222,76 @@ def _compact_peers(data: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, dict):
             continue
         dimensions[dimension] = {
-            **_pick(value, (
-                "label", "report_date", "sample_size", "target_rank", "ranking",
-                "source_scope", "success",
-            )),
+            **_pick(
+                value,
+                (
+                    "label",
+                    "report_date",
+                    "sample_size",
+                    "target_rank",
+                    "ranking",
+                    "source_scope",
+                    "success",
+                ),
+            ),
             "target": value.get("target"),
             "industry_median": value.get("industry_median"),
         }
     return {
-        **_pick(data, (
-            "success", "partial", "symbol", "source", "source_url", "data_time",
-            "is_stale", "errors", "warnings",
-        )),
+        **_pick(
+            data,
+            (
+                "success",
+                "partial",
+                "symbol",
+                "source",
+                "source_url",
+                "data_time",
+                "is_stale",
+                "errors",
+                "warnings",
+            ),
+        ),
         "dimensions": dimensions,
     }
 
 
 def _compact_risks(data: dict[str, Any]) -> dict[str, Any]:
     return {
-        **_pick(data, (
-            "success", "partial", "symbol", "name", "has_risk_events", "analysis",
-            "source", "source_scope", "data_time", "retrieved_at", "is_stale",
-            "freshness_unknown", "errors", "warnings",
-        )),
+        **_pick(
+            data,
+            (
+                "success",
+                "partial",
+                "symbol",
+                "name",
+                "has_risk_events",
+                "analysis",
+                "source",
+                "source_scope",
+                "data_time",
+                "retrieved_at",
+                "is_stale",
+                "freshness_unknown",
+                "errors",
+                "warnings",
+            ),
+        ),
         "items": [
-            _pick(item, (
-                "title", "date", "source", "source_type", "url", "summary",
-                "evidence_basis", "semantic_status",
-                "requires_fulltext_verification",
-            ))
+            _pick(
+                item,
+                (
+                    "title",
+                    "date",
+                    "source",
+                    "source_type",
+                    "url",
+                    "summary",
+                    "evidence_basis",
+                    "semantic_status",
+                    "requires_fulltext_verification",
+                ),
+            )
             for item in (data.get("items") or [])[:20]
             if isinstance(item, dict)
         ],
@@ -163,16 +301,39 @@ def _compact_risks(data: dict[str, Any]) -> dict[str, Any]:
 def _compact_announcements(data: dict[str, Any]) -> dict[str, Any]:
     items = [item for item in data.get("items") or [] if isinstance(item, dict)]
     return {
-        **_pick(data, (
-            "success", "partial", "symbol", "name", "has_announcements", "analysis",
-            "coverage_start", "coverage_end", "source", "data_time", "retrieved_at",
-            "is_stale", "errors", "warnings",
-        )),
+        **_pick(
+            data,
+            (
+                "success",
+                "partial",
+                "symbol",
+                "name",
+                "has_announcements",
+                "analysis",
+                "coverage_start",
+                "coverage_end",
+                "source",
+                "data_time",
+                "retrieved_at",
+                "is_stale",
+                "errors",
+                "warnings",
+            ),
+        ),
         "items": [
-            _pick(item, (
-                "title", "notice_type", "source_notice_type", "publish_date",
-                "url", "source", "source_type", "semantic_status",
-            ))
+            _pick(
+                item,
+                (
+                    "title",
+                    "notice_type",
+                    "source_notice_type",
+                    "publish_date",
+                    "url",
+                    "source",
+                    "source_type",
+                    "semantic_status",
+                ),
+            )
             for item in items[:20]
         ],
     }
@@ -181,16 +342,29 @@ def _compact_announcements(data: dict[str, Any]) -> dict[str, Any]:
 def _compact_flow(data: dict[str, Any]) -> dict[str, Any]:
     summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     return {
-        **_pick(data, (
-            "success", "symbol", "market", "main_flow_definition", "interpretation_warning",
-            "source", "data_time", "is_stale", "errors", "warnings",
-        )),
+        **_pick(
+            data,
+            (
+                "success",
+                "symbol",
+                "market",
+                "main_flow_definition",
+                "interpretation_warning",
+                "source",
+                "data_time",
+                "is_stale",
+                "errors",
+                "warnings",
+            ),
+        ),
         "latest": data.get("latest"),
         "windows": summary.get("windows") or {},
     }
 
 
-def _callers() -> dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]]]]:
+def _callers() -> (
+    dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]]]]
+):
     from src.tools.get_announcements import get_announcements
     from src.tools.get_business_segments import get_business_segments
     from src.tools.get_consensus_estimates import get_consensus_estimates
@@ -229,10 +403,14 @@ def _run_dimension(
         return code, dimension, compact
     except Exception as exc:
         logger.warning("decision evidence %s/%s failed: %s", code, dimension, exc)
-        return code, dimension, {
-            "success": False,
-            "errors": [f"{type(exc).__name__}: {str(exc)[:240]}"],
-        }
+        return (
+            code,
+            dimension,
+            {
+                "success": False,
+                "errors": [f"{type(exc).__name__}: {str(exc)[:240]}"],
+            },
+        )
 
 
 def _coverage(item: dict[str, Any]) -> dict[str, Any]:
@@ -254,6 +432,7 @@ def _coverage(item: dict[str, Any]) -> dict[str, Any]:
         "missing": missing,
         "complete": not missing,
     }
+
 
 def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[str, Any]:
     resolved, unresolved = resolve_securities_csv(symbols)
@@ -282,25 +461,23 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
         }
 
     snapshot = get_multi_stock_snapshot(",".join(codes))
-    snapshot_by_code = {
-        str(item.get("symbol")): item
-        for item in snapshot.get("items") or []
-        if isinstance(item, dict)
-    }
+    snapshot_by_code = {str(item.get("symbol")): item for item in snapshot.get("items") or [] if isinstance(item, dict)}
     details: dict[str, dict[str, Any]] = {code: {} for code in codes}
     callers = _callers()
     futures = []
     with ThreadPoolExecutor(max_workers=min(12, max(1, len(codes) * 2))) as pool:
         for code in codes:
             for dimension, (caller, kwargs, compactor) in callers.items():
-                futures.append(pool.submit(
-                    _run_dimension,
-                    code,
-                    dimension,
-                    caller,
-                    dict(kwargs),
-                    compactor,
-                ))
+                futures.append(
+                    pool.submit(
+                        _run_dimension,
+                        code,
+                        dimension,
+                        caller,
+                        dict(kwargs),
+                        compactor,
+                    )
+                )
         for future in as_completed(futures):
             code, dimension, payload = future.result()
             details[code][dimension] = payload
@@ -320,8 +497,7 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
         item["evidence_coverage"] = _coverage(item)
         if not item["evidence_coverage"]["complete"]:
             warnings.append(
-                f"{entity['name']}({code}) 缺少证据维度: "
-                + ", ".join(item["evidence_coverage"]["missing"])
+                f"{entity['name']}({code}) 缺少证据维度: " + ", ".join(item["evidence_coverage"]["missing"])
             )
         items.append(item)
 
@@ -352,12 +528,16 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
             "capital_flow": "东方财富成交单大小口径",
         },
         "evidence_standard": [
-            "business_reality", "financial_quality", "valuation", "expectations",
-            "peer_context", "trading_state", "catalyst_and_risk",
+            "business_reality",
+            "financial_quality",
+            "valuation",
+            "expectations",
+            "peer_context",
+            "trading_state",
+            "catalyst_and_risk",
         ],
         "decision_rule": (
-            "本工具只报告各来源是否成功及原始结构化证据，不根据数值阈值生成买卖标签；"
-            "语义判断由后续分析模型完成。"
+            "本工具只报告各来源是否成功及原始结构化证据，不根据数值阈值生成买卖标签；" "语义判断由后续分析模型完成。"
         ),
         "errors": errors,
         "warnings": warnings,

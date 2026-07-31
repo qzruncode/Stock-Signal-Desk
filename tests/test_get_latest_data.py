@@ -42,16 +42,20 @@ class GetLatestDataTestCase(unittest.TestCase):
     def _insert_stock_data(self, code: str, days_ago: int, close: float) -> None:
         """插入测试用股票数据"""
         target_date = date.today() - timedelta(days=days_ago)
-        df = pd.DataFrame([{
-            'date': target_date,
-            'open': close - 1,
-            'high': close + 1,
-            'low': close - 2,
-            'close': close,
-            'volume': 1000000,
-            'amount': 10000000,
-            'pct_chg': 1.5,
-        }])
+        df = pd.DataFrame(
+            [
+                {
+                    "date": target_date,
+                    "open": close - 1,
+                    "high": close + 1,
+                    "low": close - 2,
+                    "close": close,
+                    "volume": 1000000,
+                    "amount": 10000000,
+                    "pct_chg": 1.5,
+                }
+            ]
+        )
         self.db.save_daily_data(df, code, data_source="TestData")
 
     def test_get_latest_data_returns_empty_when_no_data(self) -> None:

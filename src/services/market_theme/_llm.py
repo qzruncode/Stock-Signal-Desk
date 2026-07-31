@@ -21,9 +21,7 @@ logger = logging.getLogger(__name__)
 def _validated_text_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return list(dict.fromkeys(
-        str(item).strip() for item in value if str(item).strip()
-    ))
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
 
 
 def _validate_model_report(
@@ -49,14 +47,8 @@ def _validate_model_report(
             if not isinstance(raw, dict):
                 continue
             name = str(raw.get("name") or "").strip()
-            refs = [
-                ref for ref in _validated_text_list(raw.get("evidence_refs"))
-                if ref in allowed_refs
-            ]
-            branches = [
-                branch for branch in _validated_text_list(raw.get("branches"))
-                if branch in allowed_boards
-            ]
+            refs = [ref for ref in _validated_text_list(raw.get("evidence_refs")) if ref in allowed_refs]
+            branches = [branch for branch in _validated_text_list(raw.get("branches")) if branch in allowed_boards]
             if not name or not refs or not branches:
                 continue
             row = {
@@ -64,8 +56,7 @@ def _validate_model_report(
                 "name": name,
                 "evidence_refs": refs,
                 "evidence": [
-                    f"{ref} {str((evidence_index.get(ref) or {}).get('name') or '').strip()}".strip()
-                    for ref in refs
+                    f"{ref} {str((evidence_index.get(ref) or {}).get('name') or '').strip()}".strip() for ref in refs
                 ],
             }
             if current:
@@ -83,32 +74,24 @@ def _validate_model_report(
                         continue
                     axis = str(axis_item.get("axis") or "").strip()
                     axis_refs = [
-                        ref
-                        for ref in _validated_text_list(
-                            axis_item.get("evidence_refs")
-                        )
-                        if ref in allowed_refs
+                        ref for ref in _validated_text_list(axis_item.get("evidence_refs")) if ref in allowed_refs
                     ]
                     if not axis or not axis_refs or axis in seen_axes:
                         continue
                     seen_axes.add(axis)
-                    evidence_axes.append({
-                        "axis": axis,
-                        "evidence_refs": axis_refs,
-                    })
+                    evidence_axes.append(
+                        {
+                            "axis": axis,
+                            "evidence_refs": axis_refs,
+                        }
+                    )
                 trigger_assessments: list[dict[str, Any]] = []
                 for trigger in raw.get("trigger_assessments") or []:
                     if not isinstance(trigger, dict):
                         continue
-                    description = str(
-                        trigger.get("description") or ""
-                    ).strip()
+                    description = str(trigger.get("description") or "").strip()
                     trigger_refs = [
-                        ref
-                        for ref in _validated_text_list(
-                            trigger.get("evidence_refs")
-                        )
-                        if ref in allowed_refs
+                        ref for ref in _validated_text_list(trigger.get("evidence_refs")) if ref in allowed_refs
                     ]
                     status = str(trigger.get("status") or "unknown")
                     if not description or status not in {
@@ -120,30 +103,27 @@ def _validate_model_report(
                         continue
                     if status in {"met", "partial"} and not trigger_refs:
                         status = "unknown"
-                    trigger_assessments.append({
-                        "description": description,
-                        "status": status,
-                        "evidence_refs": trigger_refs,
-                    })
+                    trigger_assessments.append(
+                        {
+                            "description": description,
+                            "status": status,
+                            "evidence_refs": trigger_refs,
+                        }
+                    )
                 row["branches"] = branches
                 row["evidence_axes"] = evidence_axes
                 row["trigger_assessments"] = trigger_assessments
-                row["triggers"] = [
-                    item["description"] for item in trigger_assessments
-                ]
+                row["triggers"] = [item["description"] for item in trigger_assessments]
             rows.append(row)
         return rows
 
     current = validate_rows(payload.get("current_mainlines"), current=True)
     candidates = validate_rows(
-        payload.get("candidate_mainlines")
-        or payload.get("future_mainlines"),
+        payload.get("candidate_mainlines") or payload.get("future_mainlines"),
         current=False,
     )
     if not current and not candidates:
-        raise ValueError(
-            "model report contains no evidence-bound current or candidate mainline"
-        )
+        raise ValueError("model report contains no evidence-bound current or candidate mainline")
     payload["current_mainlines"] = current
     payload["candidate_mainlines"] = candidates
     # Read-only compatibility for existing market API consumers.  New
@@ -394,13 +374,7 @@ def extract_partial_json_string_field(raw_text: str, field_name: str) -> Optiona
     try:
         if closed:
             return json.loads(f'"{fragment}"')
-        repaired = (
-            fragment
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace('\\"', '"')
-            .replace("\\\\", "\\")
-        )
+        repaired = fragment.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\")
         return repaired.strip() or None
     except Exception:
         logger.error("[MarketTheme] _repair_malformed_json failed", exc_info=True)
@@ -427,4 +401,5 @@ def build_streaming_report_draft(raw_text: str) -> dict[str, Any]:
 
 def build_report_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
     from ._context import collect_context
+
     return collect_context(force=force, include_rss=include_rss)

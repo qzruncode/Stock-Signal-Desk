@@ -42,6 +42,7 @@ async def analyze_buy_criteria(
             raise HTTPException(status_code=400, detail=f"Invalid pre_fetched data: {exc}")
 
     from src.services.buy_criteria.orchestrator import CriterionOrchestrator
+
     return CriterionOrchestrator.make_sse_endpoint(symbol.strip(), pre_fetched_data)
 
 

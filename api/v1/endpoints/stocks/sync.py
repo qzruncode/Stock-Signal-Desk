@@ -69,10 +69,12 @@ def _mark_financial_sync_started() -> bool:
         if _financial_sync_state["status"] == "running":
             return False
         _financial_sync_state.update(_initial_state())
-        _financial_sync_state.update({
-            "status": "running",
-            "started_at": _utc_now_iso(),
-        })
+        _financial_sync_state.update(
+            {
+                "status": "running",
+                "started_at": _utc_now_iso(),
+            }
+        )
         return True
 
 
@@ -105,10 +107,12 @@ def _mark_started(state: dict, lock: threading.Lock, *, status: str = "running")
         if state["status"] in ("running", "syncing_kline"):
             return False
         state.update(_initial_state())
-        state.update({
-            "status": status,
-            "started_at": _utc_now_iso(),
-        })
+        state.update(
+            {
+                "status": status,
+                "started_at": _utc_now_iso(),
+            }
+        )
         return True
 
 
@@ -153,10 +157,7 @@ def _get_active_stock_codes() -> list[str]:
     with db.get_session() as session:
         return [
             row.code
-            for row in session.query(StockMeta.code)
-            .filter(StockMeta.status == "active")
-            .order_by(StockMeta.code)
-            .all()
+            for row in session.query(StockMeta.code).filter(StockMeta.status == "active").order_by(StockMeta.code).all()
         ]
 
 
@@ -276,7 +277,9 @@ def _run_kline_sync() -> None:
     try:
         codes = _get_active_stock_codes()
         if not codes:
-            _set_kline_state(status="failed", error="请先同步股票列表", message="请先同步股票列表", finished_at=_utc_now_iso())
+            _set_kline_state(
+                status="failed", error="请先同步股票列表", message="请先同步股票列表", finished_at=_utc_now_iso()
+            )
             return
         _run_kline_sync_for_codes(codes, _set_kline_state)
     except Exception as e:
@@ -315,10 +318,12 @@ def _status_with_db_fallback(state: dict) -> dict:
             db = DatabaseManager.get_instance()
             with db.get_session() as session:
                 total = session.query(StockMeta).filter(StockMeta.status == "active").count()
-            _status_db_fallback_cache.update({
-                "expires_at": now + STATUS_DB_FALLBACK_TTL_SECONDS,
-                "total": total,
-            })
+            _status_db_fallback_cache.update(
+                {
+                    "expires_at": now + STATUS_DB_FALLBACK_TTL_SECONDS,
+                    "total": total,
+                }
+            )
         if total > 0:
             if state["status"] != "idle":
                 return {
@@ -346,7 +351,9 @@ def sync_stock_list(
 ):
     """Trigger stock metadata sync only."""
     if not _mark_list_sync_started():
-        raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "股票列表同步正在进行中，请稍后再试"})
+        raise HTTPException(
+            status_code=409, detail={"error": "sync_in_progress", "message": "股票列表同步正在进行中，请稍后再试"}
+        )
     thread = threading.Thread(target=_run_list_sync, daemon=True)
     thread.start()
     return {"success": True, "message": "同步列表已启动", "status": "running"}
@@ -369,7 +376,9 @@ def sync_stock_kline(
     if not _get_active_stock_codes():
         raise HTTPException(status_code=400, detail={"error": "stock_list_required", "message": "请先同步股票列表"})
     if not _mark_kline_sync_started():
-        raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "K线同步正在进行中，请稍后再试"})
+        raise HTTPException(
+            status_code=409, detail={"error": "sync_in_progress", "message": "K线同步正在进行中，请稍后再试"}
+        )
     thread = threading.Thread(target=_run_kline_sync, daemon=True)
     thread.start()
     return {"success": True, "message": "同步K线已启动", "status": "syncing_kline"}
@@ -389,12 +398,18 @@ def sync_missing_kline(body: dict):
     """Trigger K-line sync for a specified missing-code list."""
     codes = body.get("codes") or []
     if not isinstance(codes, list) or not codes:
-        raise HTTPException(status_code=400, detail={"error": "missing_codes_required", "message": "请提供缺失股票代码列表"})
+        raise HTTPException(
+            status_code=400, detail={"error": "missing_codes_required", "message": "请提供缺失股票代码列表"}
+        )
     clean_codes = [str(code).strip() for code in codes if str(code).strip()]
     if not clean_codes:
-        raise HTTPException(status_code=400, detail={"error": "missing_codes_required", "message": "请提供缺失股票代码列表"})
+        raise HTTPException(
+            status_code=400, detail={"error": "missing_codes_required", "message": "请提供缺失股票代码列表"}
+        )
     if not _mark_missing_kline_sync_started():
-        raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "缺失K线同步正在进行中，请稍后再试"})
+        raise HTTPException(
+            status_code=409, detail={"error": "sync_in_progress", "message": "缺失K线同步正在进行中，请稍后再试"}
+        )
     _set_missing_kline_state(kline_total=len(clean_codes), total=len(clean_codes))
     thread = threading.Thread(target=_run_missing_kline_sync, args=(clean_codes,), daemon=True)
     thread.start()
@@ -418,7 +433,9 @@ def sync_stock_financial(
     if not _get_active_stock_codes():
         raise HTTPException(status_code=400, detail={"error": "stock_list_required", "message": "请先同步股票列表"})
     if not _mark_financial_sync_started():
-        raise HTTPException(status_code=409, detail={"error": "sync_in_progress", "message": "财报同步正在进行中，请稍后再试"})
+        raise HTTPException(
+            status_code=409, detail={"error": "sync_in_progress", "message": "财报同步正在进行中，请稍后再试"}
+        )
     period = _financials_sync.latest_report_period()
     _set_financial_state(message=f"已启动 (报告期 {period})")
     thread = threading.Thread(target=_financials_sync.run_financial_sync, args=(period,), daemon=True)
@@ -433,6 +450,7 @@ def get_stock_financial_sync_status():
 
 # 注入状态对象给 _financials_sync（必须在 _utc_now_iso 等所有 helper 定义后）
 from api.v1.endpoints.stocks import _financials_sync  # noqa: E402
+
 _financials_sync.attach_state(
     state=_financial_sync_state,
     lock=_financial_sync_lock,

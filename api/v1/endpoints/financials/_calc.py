@@ -10,7 +10,12 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from api.v1.endpoints.financials._symbol import (
-    _normalize_symbol, _safe_float, _safe_str, _pick_col, _row_pick, _parse_date,
+    _normalize_symbol,
+    _safe_float,
+    _safe_str,
+    _pick_col,
+    _row_pick,
+    _parse_date,
 )
 
 
@@ -72,7 +77,9 @@ def _calc_pe_percentiles_from_em(df, current_pe: Optional[float]) -> dict:
     return result
 
 
-def _calc_dividend_yield(symbol: str, latest_close: Optional[float]) -> tuple[Optional[float], Optional[str], Optional[str]]:
+def _calc_dividend_yield(
+    symbol: str, latest_close: Optional[float]
+) -> tuple[Optional[float], Optional[str], Optional[str]]:
     if not latest_close or latest_close <= 0:
         return None, None, None
     try:
@@ -83,7 +90,11 @@ def _calc_dividend_yield(symbol: str, latest_close: Optional[float]) -> tuple[Op
         if df is None or df.empty:
             return None, None, None
         date_col = "除权除息日" if "除权除息日" in df.columns else _pick_col(df.columns, ["除权", "日期"])
-        cash_col = "现金分红-现金分红比例" if "现金分红-现金分红比例" in df.columns else _pick_col(df.columns, ["现金分红", "派息"])
+        cash_col = (
+            "现金分红-现金分红比例"
+            if "现金分红-现金分红比例" in df.columns
+            else _pick_col(df.columns, ["现金分红", "派息"])
+        )
         if cash_col is None:
             return None, None, None
         work_df = df.copy()
@@ -98,7 +109,9 @@ def _calc_dividend_yield(symbol: str, latest_close: Optional[float]) -> tuple[Op
             return None, None, None
         cash_per_share = float(cash_per_10) / 10.0
         latest_date = work_df["_date"].iloc[0] if date_col is not None else None
-        dividend_date = latest_date.strftime("%Y-%m-%d") if latest_date is not None and not pd.isna(latest_date) else None
+        dividend_date = (
+            latest_date.strftime("%Y-%m-%d") if latest_date is not None and not pd.isna(latest_date) else None
+        )
         return round(cash_per_share / latest_close * 100, 2), dividend_date, "stock_fhps_detail_em"
     except Exception as exc:
         logger.warning(f"[Valuation] dividend yield failed for {symbol}: {exc}")

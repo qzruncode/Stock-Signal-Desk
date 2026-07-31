@@ -5,6 +5,7 @@ or wording-specific rules.  It preserves the semantic domains already resolved
 by the planner and only falls back to the stock's declared industry when the
 turn has no structured thesis.
 """
+
 from __future__ import annotations
 
 import re
@@ -27,9 +28,7 @@ def structured_thesis_queries(
     values.append(context.get("summary"))
     values.append(stock_info.get("_investment_thesis"))
     research_scope = stock_info.get("_derived_research_scope")
-    research_scope = (
-        research_scope if isinstance(research_scope, dict) else {}
-    )
+    research_scope = research_scope if isinstance(research_scope, dict) else {}
     values.extend(research_scope.get("primary_labels") or [])
     values.append(stock_info.get("industry"))
 

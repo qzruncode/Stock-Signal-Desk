@@ -40,8 +40,7 @@ class TestGetClientIpXffFix(unittest.TestCase):
         """Attacker-injected leftmost IP must NOT be selected (the old [0] bug)."""
         req = _make_request(xff_value="evil-rotated-ip, real-client-ip")
         ip = get_client_ip(req)
-        self.assertNotEqual(ip, "evil-rotated-ip",
-                            "Leftmost (attacker-controlled) IP must not be used")
+        self.assertNotEqual(ip, "evil-rotated-ip", "Leftmost (attacker-controlled) IP must not be used")
         self.assertEqual(ip, "real-client-ip")
 
     @patch.dict(os.environ, {"TRUST_X_FORWARDED_FOR": "true"})

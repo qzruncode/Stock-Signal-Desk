@@ -45,8 +45,11 @@ def get_stock_info(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_symbol", "message": str(exc)}) from exc
     if not result.get("success"):
-        raise HTTPException(status_code=502, detail={
-            "error": "no_data",
-            "message": "; ".join(result.get("errors") or ["无法获取公司资料"]),
-        })
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "no_data",
+                "message": "; ".join(result.get("errors") or ["无法获取公司资料"]),
+            },
+        )
     return result

@@ -20,6 +20,7 @@ from api.v1.endpoints.agent.health import (
 # _parse_iso_datetime
 # ---------------------------------------------------------------------------
 
+
 def test_parse_iso_datetime_accepts_full_iso():
     assert _parse_iso_datetime("2026-06-01T10:00:00") == datetime(2026, 6, 1, 10, 0, 0)
 
@@ -47,6 +48,7 @@ def test_parse_iso_datetime_returns_none_for_empty_or_invalid():
 # ---------------------------------------------------------------------------
 # _latest_date_from_items
 # ---------------------------------------------------------------------------
+
 
 def test_latest_date_from_items_picks_latest_across_keys():
     items = [
@@ -80,9 +82,11 @@ def test_latest_date_from_items_can_compare_naive_and_offset_aware_values():
 # _assess_tool_data_health
 # ---------------------------------------------------------------------------
 
+
 def test_assess_health_non_dict_result_no_fallback():
     assert _assess_tool_data_health("get_realtime_quotes", "not-a-dict") == {
-        "should_fallback": False, "reason": None,
+        "should_fallback": False,
+        "reason": None,
     }
 
 
@@ -108,9 +112,7 @@ def test_assess_health_realtime_quotes_empty_items_fallback():
 
 
 def test_assess_health_realtime_quotes_with_items_no_fallback():
-    health = _assess_tool_data_health(
-        "get_realtime_quotes", {"items": [{"symbol": "000001"}]}
-    )
+    health = _assess_tool_data_health("get_realtime_quotes", {"items": [{"symbol": "000001"}]})
     assert health == {"should_fallback": False, "reason": None}
 
 
@@ -122,17 +124,13 @@ def test_assess_health_kline_empty_series_fallback():
 
 def test_assess_health_kline_recent_series_no_fallback():
     today = datetime.now().strftime("%Y-%m-%d")
-    health = _assess_tool_data_health(
-        "get_kline", {"data": [{"date": today}]}
-    )
+    health = _assess_tool_data_health("get_kline", {"data": [{"date": today}]})
     assert health["should_fallback"] is False
 
 
 def test_assess_health_kline_stale_data_time_fallback():
     old = (datetime.now().date() - timedelta(days=30)).isoformat()
-    health = _assess_tool_data_health(
-        "get_kline", {"data": [{"date": old}], "data_time": old}
-    )
+    health = _assess_tool_data_health("get_kline", {"data": [{"date": old}], "data_time": old})
     assert health["should_fallback"] is True
     assert health["reason"] == "stale_kline"
 
@@ -145,18 +143,14 @@ def test_assess_health_news_family_empty_items_fallback():
 
 def test_assess_health_news_family_stale_data_time_fallback():
     old = (datetime.now() - timedelta(days=60)).isoformat()
-    health = _assess_tool_data_health(
-        "search_news", {"items": [{"title": "x"}], "data_time": old, "days": 30}
-    )
+    health = _assess_tool_data_health("search_news", {"items": [{"title": "x"}], "data_time": old, "days": 30})
     assert health["should_fallback"] is True
     assert health["reason"] == "stale_news_family"
 
 
 def test_assess_health_news_family_recent_items_no_fallback():
     recent = datetime.now().strftime("%Y-%m-%d")
-    health = _assess_tool_data_health(
-        "search_news", {"items": [{"publish_time": recent}], "days": 30}
-    )
+    health = _assess_tool_data_health("search_news", {"items": [{"publish_time": recent}], "days": 30})
     assert health["should_fallback"] is False
 
 

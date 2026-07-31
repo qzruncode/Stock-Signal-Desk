@@ -40,12 +40,11 @@ logger = logging.getLogger(__name__)
         200: {"description": "任务列表"},
     },
     summary="获取分析任务列表",
-    description="获取当前所有分析任务，可按状态筛选"
+    description="获取当前所有分析任务，可按状态筛选",
 )
 def get_task_list(
     status: Optional[str] = Query(
-        None,
-        description="筛选状态：pending, processing, completed, failed（支持逗号分隔多个）"
+        None, description="筛选状态：pending, processing, completed, failed（支持逗号分隔多个）"
     ),
     limit: int = Query(20, description="返回数量限制", ge=1, le=100),
 ) -> TaskListResponse:
@@ -96,10 +95,11 @@ def get_task_list(
         200: {"description": "SSE 事件流", "content": {"text/event-stream": {}}},
     },
     summary="任务状态 SSE 流",
-    description="通过 Server-Sent Events 实时推送任务状态变化"
+    description="通过 Server-Sent Events 实时推送任务状态变化",
 )
 async def task_stream():
     """SSE 任务状态流。"""
+
     async def event_generator():
         task_queue = get_task_queue()
         event_queue: asyncio.Queue = asyncio.Queue()
@@ -118,9 +118,7 @@ async def task_stream():
                     event = await asyncio.wait_for(event_queue.get(), timeout=30)
                     yield _format_sse_event(event["type"], event["data"])
                 except asyncio.TimeoutError:
-                    yield _format_sse_event("heartbeat", {
-                        "timestamp": datetime.now().isoformat()
-                    })
+                    yield _format_sse_event("heartbeat", {"timestamp": datetime.now().isoformat()})
         except asyncio.CancelledError:
             logger.debug("SSE client disconnected, cancelling event generator")
             raise
@@ -134,7 +132,7 @@ async def task_stream():
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-        }
+        },
     )
 
 
@@ -151,7 +149,7 @@ def _format_sse_event(event_type: str, data: Dict[str, Any]) -> str:
         404: {"description": "任务不存在", "model": ErrorResponse},
     },
     summary="查询分析任务状态",
-    description="根据 task_id 查询单个任务的状态"
+    description="根据 task_id 查询单个任务的状态",
 )
 def get_analysis_status(task_id: str) -> TaskStatus:
     """查询分析任务状态。优先从任务队列查询，否则从数据库查询历史记录。"""
@@ -176,11 +174,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_code=task.stock_code,
                     stock_name=task.stock_name,
                     report=report_payload,
-                    created_at=(
-                        task.completed_at.isoformat()
-                        if task.completed_at
-                        else task.created_at.isoformat()
-                    ),
+                    created_at=(task.completed_at.isoformat() if task.completed_at else task.created_at.isoformat()),
                 )
                 logger.info(
                     "任务结果采用通用包装返回: task_id=%s stock_code=%s",
@@ -205,6 +199,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
     try:
         from src.storage import DatabaseManager
+
         db = DatabaseManager.get_instance()
         records = db.get_analysis_history(query_id=task_id, limit=1)
 
@@ -221,21 +216,21 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
             current_price = None
             change_pct = None
-            context_snapshot = parse_json_field(getattr(record, 'context_snapshot', None))
+            context_snapshot = parse_json_field(getattr(record, "context_snapshot", None))
             if context_snapshot and isinstance(context_snapshot, dict):
-                enhanced_context = context_snapshot.get('enhanced_context') or {}
-                realtime = enhanced_context.get('realtime') or {}
-                current_price = realtime.get('price')
-                change_pct = realtime.get('change_pct')
-                realtime_quote_raw = context_snapshot.get('realtime_quote_raw') or {}
+                enhanced_context = context_snapshot.get("enhanced_context") or {}
+                realtime = enhanced_context.get("realtime") or {}
+                current_price = realtime.get("price")
+                change_pct = realtime.get("change_pct")
+                realtime_quote_raw = context_snapshot.get("realtime_quote_raw") or {}
                 if current_price is None:
-                    current_price = realtime_quote_raw.get('price')
+                    current_price = realtime_quote_raw.get("price")
                 if change_pct is None:
-                    change_pct = realtime_quote_raw.get('change_pct')
+                    change_pct = realtime_quote_raw.get("change_pct")
                 if change_pct is None:
-                    change_pct = realtime_quote_raw.get('pct_chg')
+                    change_pct = realtime_quote_raw.get("pct_chg")
 
-            is_conversation = getattr(record, 'report_type', None) == 'conversation'
+            is_conversation = getattr(record, "report_type", None) == "conversation"
 
             if is_conversation:
                 conversation = None
@@ -258,7 +253,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                         query_id=task_id,
                         stock_code=record.code,
                         stock_name=stock_name,
-                        report_type=getattr(record, 'report_type', None),
+                        report_type=getattr(record, "report_type", None),
                         report_language=report_language,
                         created_at=record.created_at.isoformat() if record.created_at else None,
                         model_used=model_used,
@@ -272,10 +267,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                         analysis_summary=record.analysis_summary,
                     ),
                     strategy=ReportStrategy(
-                        ideal_buy=_stringify_report_strategy_value(getattr(record, 'ideal_buy', None)),
-                        secondary_buy=_stringify_report_strategy_value(getattr(record, 'secondary_buy', None)),
-                        stop_loss=_stringify_report_strategy_value(getattr(record, 'stop_loss', None)),
-                        take_profit=_stringify_report_strategy_value(getattr(record, 'take_profit', None)),
+                        ideal_buy=_stringify_report_strategy_value(getattr(record, "ideal_buy", None)),
+                        secondary_buy=_stringify_report_strategy_value(getattr(record, "secondary_buy", None)),
+                        stop_loss=_stringify_report_strategy_value(getattr(record, "stop_loss", None)),
+                        take_profit=_stringify_report_strategy_value(getattr(record, "take_profit", None)),
                     ),
                 ).model_dump()
             return TaskStatus(
@@ -287,7 +282,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_code=record.code,
                     stock_name=stock_name,
                     report=report_dict,
-                    created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
+                    created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat(),
                 ),
                 error=None,
                 message=None,
@@ -296,17 +291,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
     except Exception as e:
         logger.error(f"查询任务状态失败: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "internal_error",
-                "message": f"查询任务状态失败: {str(e)}"
-            }
+            status_code=500, detail={"error": "internal_error", "message": f"查询任务状态失败: {str(e)}"}
         )
 
-    raise HTTPException(
-        status_code=404,
-        detail={
-            "error": "not_found",
-            "message": f"任务 {task_id} 不存在或已过期"
-        }
-    )
+    raise HTTPException(status_code=404, detail={"error": "not_found", "message": f"任务 {task_id} 不存在或已过期"})

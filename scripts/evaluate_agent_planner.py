@@ -32,10 +32,7 @@ from src.llm.anthropic_gateway import (  # noqa: E402
 
 async def _main_async(corpus: Path, maximum_cases: int | None) -> int:
     values = json.loads(corpus.read_text(encoding="utf-8"))
-    cases = [
-        SemanticGoldenCase.from_value(value)
-        for value in values[:maximum_cases]
-    ]
+    cases = [SemanticGoldenCase.from_value(value) for value in values[:maximum_cases]]
     llm_config = resolve_anthropic_gateway_config()
 
     scores = []
@@ -46,14 +43,8 @@ async def _main_async(corpus: Path, maximum_cases: int | None) -> int:
                 llm_config,
                 completion=litellm.acompletion,
             )
-            capabilities = [
-                node.outline.capability.value
-                for node in graph.nodes
-            ]
-            capability_by_node = {
-                node.outline.node_id: node.outline.capability.value
-                for node in graph.nodes
-            }
+            capabilities = [node.outline.capability.value for node in graph.nodes]
+            capability_by_node = {node.outline.node_id: node.outline.capability.value for node in graph.nodes}
             dependencies = [
                 (
                     capability_by_node[reference.node_id],
@@ -61,20 +52,13 @@ async def _main_async(corpus: Path, maximum_cases: int | None) -> int:
                 )
                 for node in graph.nodes
                 for reference in node.outline.input_refs
-                if reference.source == "node"
-                and reference.node_id in capability_by_node
+                if reference.source == "node" and reference.node_id in capability_by_node
             ]
             effects = {
-                capability: capability_for(
-                    capability
-                ).execution_policy.effect.value
-                for capability in capabilities
+                capability: capability_for(capability).execution_policy.effect.value for capability in capabilities
             }
             scope_text = json.dumps(
-                [
-                    node.intent.model_dump(mode="json")
-                    for node in graph.nodes
-                ],
+                [node.intent.model_dump(mode="json") for node in graph.nodes],
                 ensure_ascii=False,
                 default=str,
             )

@@ -13,10 +13,7 @@ def restore_logging_state():
     root_logger = logging.getLogger()
     original_root_level = root_logger.level
     original_handlers = list(root_logger.handlers)
-    original_litellm_levels = {
-        logger_name: logging.getLogger(logger_name).level
-        for logger_name in LITELLM_LOGGERS
-    }
+    original_litellm_levels = {logger_name: logging.getLogger(logger_name).level for logger_name in LITELLM_LOGGERS}
 
     yield
 

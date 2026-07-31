@@ -63,21 +63,15 @@ def _fetch_direct_sentiment_sources(
                 published = _parse_date(row.get(date_col))
                 if published is not None and published < cutoff:
                     continue
-                items.append({
-                    "title": _safe_str(row.get(title_col)),
-                    "content": (
-                        _safe_str(row.get(content_col))
-                        if content_col
-                        else ""
-                    ),
-                    "date_str": (
-                        published.date().isoformat()
-                        if published
-                        else None
-                    ),
-                    "source": _safe_str(row.get(source_col)) or label,
-                    "semantic_status": "model_required",
-                })
+                items.append(
+                    {
+                        "title": _safe_str(row.get(title_col)),
+                        "content": (_safe_str(row.get(content_col)) if content_col else ""),
+                        "date_str": (published.date().isoformat() if published else None),
+                        "source": _safe_str(row.get(source_col)) or label,
+                        "semantic_status": "model_required",
+                    }
+                )
         except Exception as exc:
             errors.append(f"{label}: {exc}")
 
@@ -121,21 +115,15 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
     unique_items: list[dict] = []
     for entry in _dedupe_rss_entries(entries):
         published = _rss_entry_date(entry)
-        unique_items.append({
-            "title": _rss_entry_text(entry),
-            "content": _rss_entry_summary(entry),
-            "date_str": (
-                published.date().isoformat()
-                if published
-                else None
-            ),
-            "source": _safe_str(
-                entry.get("_rss_source_label")
-                or entry.get("author")
-                or "RSSHub"
-            ),
-            "semantic_status": "model_required",
-        })
+        unique_items.append(
+            {
+                "title": _rss_entry_text(entry),
+                "content": _rss_entry_summary(entry),
+                "date_str": (published.date().isoformat() if published else None),
+                "source": _safe_str(entry.get("_rss_source_label") or entry.get("author") or "RSSHub"),
+                "semantic_status": "model_required",
+            }
+        )
 
     if len(unique_items) < 5:
         direct_items, direct_errors = _fetch_direct_sentiment_sources(
@@ -181,21 +169,14 @@ def _fetch_sentiment(symbol: str, days: int) -> dict:
         "positive_count": None,
         "negative_count": None,
         "neutral_count": None,
-        "daily_trend": [
-            {"date": date, "total": total}
-            for date, total in sorted(daily_counts.items())
-        ],
+        "daily_trend": [{"date": date, "total": total} for date, total in sorted(daily_counts.items())],
         "top_keywords": [],
         "items": unique_items[:50],
         "analysis": {
             "semantic_status": "model_required",
             "classification_method": None,
             "item_count": len(unique_items),
-            "source_count": len({
-                str(item.get("source") or "")
-                for item in unique_items
-                if item.get("source")
-            }),
+            "source_count": len({str(item.get("source") or "") for item in unique_items if item.get("source")}),
         },
         "errors": errors,
         "data_time": latest_time,

@@ -27,13 +27,15 @@ def tool_cases() -> dict[str, dict[str, Any]]:
         "manage_watchlist": {"action": "list"},
         "manage_watchlist_groups": {"action": "list"},
         "filter_watchlist_by_theme": {
-            "domains": [{
-                "label": "机器人",
-                "board_queries": ["机器人"],
-                "mapping_type": "catalog_binding",
-                "rationale": "发布审计使用已绑定的结构化板块参数",
-                "unresolved_parts": [],
-            }],
+            "domains": [
+                {
+                    "label": "机器人",
+                    "board_queries": ["机器人"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "发布审计使用已绑定的结构化板块参数",
+                    "unresolved_parts": [],
+                }
+            ],
         },
         "get_data_health": {},
         "get_analysis_status": {"limit": 5},
@@ -203,15 +205,9 @@ async def run_audit(base_url: str, concurrency: int) -> int:
         registry_response = await client.get("/api/v1/agent/tool-registry")
         registry_response.raise_for_status()
         registry_items = registry_response.json().get("tools") or []
-        registered = {
-            str(item.get("name"))
-            for item in registry_items
-            if isinstance(item, dict) and item.get("name")
-        }
+        registered = {str(item.get("name")) for item in registry_items if isinstance(item, dict) and item.get("name")}
         schema_by_name = {
-            str(item.get("name")): item
-            for item in registry_items
-            if isinstance(item, dict) and item.get("name")
+            str(item.get("name")): item for item in registry_items if isinstance(item, dict) and item.get("name")
         }
         schema_only = schema_only_tools()
         configured = set(cases) | schema_only
@@ -252,9 +248,7 @@ async def run_audit(base_url: str, concurrency: int) -> int:
         for name in sorted(schema_only):
             schema = schema_by_name.get(name)
             valid = bool(
-                isinstance(schema, dict)
-                and schema.get("description")
-                and isinstance(schema.get("parameters"), list)
+                isinstance(schema, dict) and schema.get("description") and isinstance(schema.get("parameters"), list)
             )
             row = {
                 "tool": name,
@@ -265,10 +259,7 @@ async def run_audit(base_url: str, concurrency: int) -> int:
             rows.append(row)
             print(json.dumps(row, ensure_ascii=False, sort_keys=True), flush=True)
 
-        tasks = [
-            asyncio.create_task(execute(name, arguments))
-            for name, arguments in cases.items()
-        ]
+        tasks = [asyncio.create_task(execute(name, arguments)) for name, arguments in cases.items()]
         for task in asyncio.as_completed(tasks):
             row = await task
             row["mode"] = "execute"

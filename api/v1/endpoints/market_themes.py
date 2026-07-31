@@ -12,8 +12,7 @@ router = APIRouter()
 
 
 @router.get("/mainline/report", summary="获取市场主线模型报告")
-def get_market_mainline_report(
-):
+def get_market_mainline_report():
     service = MarketThemeService()
     # This endpoint lives in the persistent API process and is the only
     # read-path allowed to lazily start the daily report task.

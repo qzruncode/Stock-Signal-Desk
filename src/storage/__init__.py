@@ -83,9 +83,7 @@ def persist_llm_usage(
             stock_code=stock_code,
         )
     except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "[LLM usage] failed to persist usage record: %s", exc
-        )
+        logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)
 
 
 __all__ = [

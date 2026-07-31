@@ -127,6 +127,7 @@ class AgentPromptService:
         """回落到 chat.py 的 SYSTEM_PROMPT 源码常量。"""
         try:
             from api.v1.endpoints.agent.chat import SYSTEM_PROMPT
+
             return SYSTEM_PROMPT
         except Exception as exc:  # pragma: no cover - 极端兜底
             logger.error("[AgentPrompt] 回落 SYSTEM_PROMPT 失败: %s", exc)

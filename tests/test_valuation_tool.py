@@ -16,10 +16,12 @@ from src.tools.get_valuation_ratios import (
 
 
 def test_pe_percentile_excludes_loss_making_negative_pe_periods() -> None:
-    frame = pd.DataFrame({
-        "数据日期": ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"],
-        "PE(TTM)": [-10.0, 10.0, 20.0, 30.0],
-    })
+    frame = pd.DataFrame(
+        {
+            "数据日期": ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"],
+            "PE(TTM)": [-10.0, 10.0, 20.0, 30.0],
+        }
+    )
 
     percentiles, stats = _history_statistics(frame, current_pe=20.0, as_of=date(2026, 7, 16))
 
@@ -29,12 +31,14 @@ def test_pe_percentile_excludes_loss_making_negative_pe_periods() -> None:
 
 
 def test_ttm_dividend_sums_all_implemented_cash_distributions() -> None:
-    frame = pd.DataFrame([
-        {"报告期": "2025-06-30", "除权除息日": "2025-10-15", "现金分红-现金分红比例": 2.0, "方案进度": "实施分配"},
-        {"报告期": "2025-12-31", "除权除息日": "2026-06-12", "现金分红-现金分红比例": 3.0, "方案进度": "实施分配"},
-        {"报告期": "2026-06-30", "除权除息日": None, "现金分红-现金分红比例": 4.0, "方案进度": "预披露"},
-        {"报告期": "2024-12-31", "除权除息日": "2025-06-01", "现金分红-现金分红比例": 9.0, "方案进度": "实施分配"},
-    ])
+    frame = pd.DataFrame(
+        [
+            {"报告期": "2025-06-30", "除权除息日": "2025-10-15", "现金分红-现金分红比例": 2.0, "方案进度": "实施分配"},
+            {"报告期": "2025-12-31", "除权除息日": "2026-06-12", "现金分红-现金分红比例": 3.0, "方案进度": "实施分配"},
+            {"报告期": "2026-06-30", "除权除息日": None, "现金分红-现金分红比例": 4.0, "方案进度": "预披露"},
+            {"报告期": "2024-12-31", "除权除息日": "2025-06-01", "现金分红-现金分红比例": 9.0, "方案进度": "实施分配"},
+        ]
+    )
 
     result = _ttm_dividend(frame, current_price=10.0, as_of=date(2026, 7, 16))
 
@@ -44,23 +48,37 @@ def test_ttm_dividend_sums_all_implemented_cash_distributions() -> None:
 
 
 def _history_frame() -> pd.DataFrame:
-    return pd.DataFrame([
-        {
-            "数据日期": "2026-07-15", "当日收盘价": 100.0, "总市值": 1_000.0,
-            "流通市值": 900.0, "总股本": 10.0, "流通股本": 9.0,
-            "PE(TTM)": 20.0, "PE(静)": 22.0, "市净率": 4.0,
-            "PEG值": -2.0, "市现率": 12.0, "市销率": 6.0,
-        },
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "数据日期": "2026-07-15",
+                "当日收盘价": 100.0,
+                "总市值": 1_000.0,
+                "流通市值": 900.0,
+                "总股本": 10.0,
+                "流通股本": 9.0,
+                "PE(TTM)": 20.0,
+                "PE(静)": 22.0,
+                "市净率": 4.0,
+                "PEG值": -2.0,
+                "市现率": 12.0,
+                "市销率": 6.0,
+            },
+        ]
+    )
 
 
 def _dividend_frame() -> pd.DataFrame:
-    return pd.DataFrame([
-        {
-            "报告期": "2025-12-31", "除权除息日": "2026-06-12",
-            "现金分红-现金分红比例": 10.0, "方案进度": "实施分配",
-        },
-    ])
+    return pd.DataFrame(
+        [
+            {
+                "报告期": "2025-12-31",
+                "除权除息日": "2026-06-12",
+                "现金分红-现金分红比例": 10.0,
+                "方案进度": "实施分配",
+            },
+        ]
+    )
 
 
 def test_valuation_tool_separates_dynamic_forward_and_trailing_peg() -> None:
@@ -76,16 +94,23 @@ def test_valuation_tool_separates_dynamic_forward_and_trailing_peg() -> None:
         "median": {"pe_ttm": 18.0, "pb_mrq": 2.5},
     }
     quote = {
-        "name": "测试公司", "price": 110.0, "pe_dynamic": 15.0,
-        "pe_static": 24.0, "pe_ttm": 22.0, "pb_annual": 5.0,
-        "total_market_cap": 1_100.0, "circulating_market_cap": 990.0,
+        "name": "测试公司",
+        "price": 110.0,
+        "pe_dynamic": 15.0,
+        "pe_static": 24.0,
+        "pe_ttm": 22.0,
+        "pb_annual": 5.0,
+        "total_market_cap": 1_100.0,
+        "circulating_market_cap": 990.0,
         "quote_time": None,
     }
-    with patch("src.tools.get_valuation_ratios._fetch_history", return_value=_history_frame()), \
-         patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote), \
-         patch("src.tools.get_valuation_ratios._fetch_comparison", return_value=comparison), \
-         patch("src.tools.get_valuation_ratios._fetch_dividends", return_value=_dividend_frame()), \
-         patch("src.tools.get_valuation_ratios._expected_completed_trade_day", return_value=date(2026, 7, 15)):
+    with (
+        patch("src.tools.get_valuation_ratios._fetch_history", return_value=_history_frame()),
+        patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote),
+        patch("src.tools.get_valuation_ratios._fetch_comparison", return_value=comparison),
+        patch("src.tools.get_valuation_ratios._fetch_dividends", return_value=_dividend_frame()),
+        patch("src.tools.get_valuation_ratios._expected_completed_trade_day", return_value=date(2026, 7, 15)),
+    ):
         result = get_valuation_ratios("600519", use_cache=False)
 
     assert result["success"] is True

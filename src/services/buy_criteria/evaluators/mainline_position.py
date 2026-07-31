@@ -1,4 +1,5 @@
 """Gate ①: verify that the requested industry direction is a current mainline."""
+
 from __future__ import annotations
 
 import logging
@@ -63,16 +64,10 @@ def _format_mainline_rows(
         return [*lines, "- 缺失"]
     for index, item in enumerate(rows, start=1):
         prefix = "候选" if candidate else "当前"
-        lines.append(
-            f"{index}. {prefix}主线：{_text(item.get('name'))}"
-            f"；阶段：{_text(item.get('stage'), '-')}"
-        )
+        lines.append(f"{index}. {prefix}主线：{_text(item.get('name'))}" f"；阶段：{_text(item.get('stage'), '-')}")
         branches = item.get("branches") or []
         if branches:
-            lines.append(
-                f"   - 标准板块映射："
-                f"{'、'.join(str(branch) for branch in branches[:8])}"
-            )
+            lines.append(f"   - 标准板块映射：" f"{'、'.join(str(branch) for branch in branches[:8])}")
         reason = _text(item.get("reason"), "")
         if reason:
             lines.append(f"   - 中期叙事依据：{reason[:320]}")
@@ -84,34 +79,21 @@ def _format_mainline_rows(
             lines.append(
                 "   - 已绑定证据维度："
                 + "、".join(
-                    str(axis.get("axis") or "")
-                    for axis in evidence_axes
-                    if str(axis.get("axis") or "").strip()
+                    str(axis.get("axis") or "") for axis in evidence_axes if str(axis.get("axis") or "").strip()
                 )
             )
         evidence = item.get("evidence") or []
         if evidence:
-            lines.append(
-                f"   - 可回查证据："
-                f"{'；'.join(str(piece) for piece in evidence[:5])[:480]}"
-            )
+            lines.append(f"   - 可回查证据：" f"{'；'.join(str(piece) for piece in evidence[:5])[:480]}")
         triggers = item.get("triggers") or []
         if triggers:
-            lines.append(
-                f"   - 后续触发："
-                f"{'；'.join(str(trigger) for trigger in triggers[:4])[:280]}"
-            )
-        trigger_assessments = _list_of_dicts(
-            item.get("trigger_assessments")
-        )
+            lines.append(f"   - 后续触发：" f"{'；'.join(str(trigger) for trigger in triggers[:4])[:280]}")
+        trigger_assessments = _list_of_dicts(item.get("trigger_assessments"))
         if trigger_assessments:
             lines.append(
                 "   - 触发进度："
                 + "；".join(
-                    (
-                        f"{_text(trigger.get('description'))}"
-                        f"[{_text(trigger.get('status'), 'unknown')}]"
-                    )
+                    (f"{_text(trigger.get('description'))}" f"[{_text(trigger.get('status'), 'unknown')}]")
                     for trigger in trigger_assessments[:4]
                 )[:420]
             )
@@ -131,26 +113,16 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
     ) -> CriterionEvidence:
         ds = DataService()
         scope_only = bool(stock_info.get("_scope_only"))
-        strategy_profile = normalize_mainline_strategy(
-            stock_info.get("_mainline_strategy")
-        )
+        strategy_profile = normalize_mainline_strategy(stock_info.get("_mainline_strategy"))
         raw: dict[str, Any] = {
             "market_subject": {
                 "scope_only": scope_only,
-                "symbol": (
-                    None
-                    if scope_only
-                    else stock_info.get("symbol") or symbol
-                ),
+                "symbol": (None if scope_only else stock_info.get("symbol") or symbol),
                 "name": (
-                    "本轮结构化产业方向"
-                    if scope_only
-                    else stock_info.get("name") or stock_info.get("short_name")
+                    "本轮结构化产业方向" if scope_only else stock_info.get("name") or stock_info.get("short_name")
                 ),
                 "investment_thesis": stock_info.get("_investment_thesis"),
-                "fallback_industry_direction": (
-                    None if scope_only else stock_info.get("industry")
-                ),
+                "fallback_industry_direction": (None if scope_only else stock_info.get("industry")),
                 "mainline_strategy": strategy_profile.value,
             },
         }
@@ -158,39 +130,34 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
         thesis_context = stock_info.get("_investment_thesis_context")
         if thesis_context:
             if scope_only:
-                domains = [
-                    item
-                    for item in thesis_context.get("domains") or []
-                    if isinstance(item, dict)
-                ]
+                domains = [item for item in thesis_context.get("domains") or [] if isinstance(item, dict)]
                 raw["thesis_membership"] = {
                     "requested_domains": [
-                        str(item.get("label") or "").strip()
-                        for item in domains
-                        if str(item.get("label") or "").strip()
+                        str(item.get("label") or "").strip() for item in domains if str(item.get("label") or "").strip()
                     ],
                     "matched_domains": [],
-                    "lookup_themes": list(dict.fromkeys(
-                        str(query).strip()
-                        for item in domains
-                        for query in item.get("board_queries") or []
-                        if str(query).strip()
-                    )),
-                    "boards": list(dict.fromkeys(
-                        str(query).strip()
-                        for item in domains
-                        for query in item.get("board_queries") or []
-                        if str(query).strip()
-                    )),
+                    "lookup_themes": list(
+                        dict.fromkeys(
+                            str(query).strip()
+                            for item in domains
+                            for query in item.get("board_queries") or []
+                            if str(query).strip()
+                        )
+                    ),
+                    "boards": list(
+                        dict.fromkeys(
+                            str(query).strip()
+                            for item in domains
+                            for query in item.get("board_queries") or []
+                            if str(query).strip()
+                        )
+                    ),
                     "sources": ["typed_investment_thesis_context"],
                     "coverage_complete": all(
-                        item.get("mapping_type") == "catalog_binding"
-                        and bool(item.get("board_queries"))
+                        item.get("mapping_type") == "catalog_binding" and bool(item.get("board_queries"))
                         for item in domains
                     ),
-                    "decision_boundary": (
-                        "仅判断结构化产业方向，不判断任何候选公司。"
-                    ),
+                    "decision_boundary": ("仅判断结构化产业方向，不判断任何候选公司。"),
                     "warnings": [],
                 }
             else:
@@ -201,8 +168,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                         (
                             item
                             for item in candidates.get("items") or []
-                            if isinstance(item, dict)
-                            and _bare_symbol(item.get("symbol")) == target
+                            if isinstance(item, dict) and _bare_symbol(item.get("symbol")) == target
                         ),
                         None,
                     )
@@ -222,20 +188,14 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
 
         try:
             frozen_snapshot = (
-                pre_fetched_data.get("market_mainline_snapshot")
-                if isinstance(pre_fetched_data, dict)
-                else None
+                pre_fetched_data.get("market_mainline_snapshot") if isinstance(pre_fetched_data, dict) else None
             )
             if frozen_snapshot is not None:
                 if not isinstance(frozen_snapshot, dict):
                     raise TypeError("冻结市场主线快照必须是对象")
                 market_report = frozen_snapshot
-                raw["market_mainline_snapshot_source"] = (
-                    "frozen_batch_snapshot"
-                )
-                raw["market_mainline_snapshot_id"] = (
-                    frozen_snapshot.get("snapshot_id")
-                )
+                raw["market_mainline_snapshot_source"] = "frozen_batch_snapshot"
+                raw["market_mainline_snapshot_id"] = frozen_snapshot.get("snapshot_id")
             else:
                 market_report = ds.get_market_mainline_report()
                 raw["market_mainline_snapshot_source"] = "database_read"
@@ -245,16 +205,12 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                 "overview": market_report.get("overview"),
                 "market_stage": market_report.get("market_stage"),
                 "current_mainlines": [
-                    _compact_mainline(item)
-                    for item in _list_of_dicts(
-                        market_report.get("current_mainlines")
-                    )[:5]
+                    _compact_mainline(item) for item in _list_of_dicts(market_report.get("current_mainlines"))[:5]
                 ],
                 "future_mainlines": [
                     _compact_mainline(item)
                     for item in _list_of_dicts(
-                        market_report.get("candidate_mainlines")
-                        or market_report.get("future_mainlines")
+                        market_report.get("candidate_mainlines") or market_report.get("future_mainlines")
                     )[:5]
                 ],
             }
@@ -269,11 +225,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             for value in membership.get(key) or []
             if str(value).strip()
         }
-        fallback_industry = (
-            ""
-            if scope_only
-            else str(stock_info.get("industry") or "").strip()
-        )
+        fallback_industry = "" if scope_only else str(stock_info.get("industry") or "").strip()
         if fallback_industry:
             exact_names.add(fallback_industry.casefold())
 
@@ -281,11 +233,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
         for sector_type in ("industry", "concept"):
             try:
                 payload = ds.get_sector_list(sector_type)
-                all_items = [
-                    item
-                    for item in payload.get("items") or []
-                    if isinstance(item, dict) and item.get("name")
-                ]
+                all_items = [item for item in payload.get("items") or [] if isinstance(item, dict) and item.get("name")]
                 board_catalog[sector_type] = {
                     "data_time": payload.get("data_time"),
                     "universe_count": len(all_items),
@@ -296,8 +244,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
                             "data_source": item.get("data_source"),
                         }
                         for item in all_items
-                        if str(item.get("name") or "").strip().casefold()
-                        in exact_names
+                        if str(item.get("name") or "").strip().casefold() in exact_names
                     ],
                 }
             except Exception as exc:
@@ -322,25 +269,12 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             *(
                 ["- 判断层级：本批次共享的结构化产业方向；不含任何公司。"]
                 if scope_only
-                else [
-                    f"- 观察标的：{_text(subject.get('name'))} "
-                    f"({_text(subject.get('symbol') or symbol)})"
-                ]
+                else [f"- 观察标的：{_text(subject.get('name'))} " f"({_text(subject.get('symbol') or symbol)})"]
             ),
-            f"- 本轮产业方向："
-            f"{_text(subject.get('investment_thesis'), '未指定；使用所属行业作为退化方向')}",
-            f"- 主线投资口径：{mainline_strategy_label(strategy_profile)}"
-            f"（{strategy_profile.value}）",
-            *(
-                []
-                if scope_only
-                else [
-                    f"- 退化行业方向："
-                    f"{_text(subject.get('fallback_industry_direction'))}"
-                ]
-            ),
-            "- 本关只判断该产业方向是否属于未来1—6个月A股主导叙事；"
-            "不判断公司真实受益、短期交易热度、买点或催化。",
+            f"- 本轮产业方向：" f"{_text(subject.get('investment_thesis'), '未指定；使用所属行业作为退化方向')}",
+            f"- 主线投资口径：{mainline_strategy_label(strategy_profile)}" f"（{strategy_profile.value}）",
+            *([] if scope_only else [f"- 退化行业方向：" f"{_text(subject.get('fallback_industry_direction'))}"]),
+            "- 本关只判断该产业方向是否属于未来1—6个月A股主导叙事；" "不判断公司真实受益、短期交易热度、买点或催化。",
             "",
             "## 最新中期市场主线报告",
             f"- 报告日期：{_text(report.get('as_of_date'))}",
@@ -357,8 +291,7 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             *_format_mainline_rows(
                 (
                     "候选主线（需满足前瞻准入条件）"
-                    if strategy_profile
-                    == MainlineStrategyProfile.EARLY_POSITIONING
+                    if strategy_profile == MainlineStrategyProfile.EARLY_POSITIONING
                     else "候选主线（确认型口径不按当前主线通过）"
                 ),
                 _list_of_dicts(report.get("future_mainlines")),
@@ -366,19 +299,18 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             ),
             "",
             "## 结构化方向与标准板块映射",
-            "- 板块目录只用于名称映射，不是主线证据；"
-            "目录中的涨跌、排名和资金字段均未进入本关。",
+            "- 板块目录只用于名称映射，不是主线证据；" "目录中的涨跌、排名和资金字段均未进入本关。",
         ]
 
         if membership:
-            lines.extend([
-                f"- 请求方向："
-                f"{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}",
-                f"- 查询板块："
-                f"{'、'.join(str(item) for item in membership.get('lookup_themes') or []) or '无'}",
-                f"- 标准板块："
-                f"{'、'.join(str(item) for item in membership.get('boards') or []) or '无'}",
-            ])
+            lines.extend(
+                [
+                    f"- 请求方向："
+                    f"{'、'.join(str(item) for item in membership.get('requested_domains') or []) or '缺失'}",
+                    f"- 查询板块：" f"{'、'.join(str(item) for item in membership.get('lookup_themes') or []) or '无'}",
+                    f"- 标准板块：" f"{'、'.join(str(item) for item in membership.get('boards') or []) or '无'}",
+                ]
+            )
         elif raw.get("thesis_membership_error"):
             lines.append(f"- 方向映射失败：{raw['thesis_membership_error']}")
 
@@ -390,41 +322,38 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             matched_items = _list_of_dicts(payload.get("matched_items"))
             lines.append(
                 f"- {title}命中："
-                + (
-                    "、".join(str(item.get("name")) for item in matched_items)
-                    if matched_items
-                    else "无精确同名项"
-                )
+                + ("、".join(str(item.get("name")) for item in matched_items) if matched_items else "无精确同名项")
             )
 
-        lines.extend([
-            "",
-            "## 判断约束",
-            "- 当前市场主线专指未来1—6个月的主导产业叙事，"
-            "必须由机构策略、政策落地、产业供需、技术路线、资本开支或"
-            "持续景气证据建立。",
-            "- 1—3年结构性趋势只能作为背景，不能单独证明它是当前主线。",
-            "- 资金流、涨跌幅、成交排名、均线、技术指标和个股走势"
-            "完全不属于本关证据，既不能建立主线，也不能否定主线。",
-            "- 板块目录和候选成员关系只用于方向映射，不能证明公司真实受益；"
-            "公司产品、订单、收入和竞争力由第二维独立核验。",
-            "- 公司事件与未来催化由第六维判断，不能把单家公司事件包装成市场主线。",
-            "- 主线报告不可用时，只能用本轮取得的机构策略、政策与产业证据"
-            "独立判断；这些来源也不足时必须返回 insufficient。",
-            *(
-                [
-                    "- 当前使用确认型主线口径：候选主线不能按当前主线通过；"
-                    "结论应写成“未通过确认型主线门槛”，不得写成产业方向不存在。"
-                ]
-                if strategy_profile
-                == MainlineStrategyProfile.CONFIRMED_MAINLINE
-                else [
-                    "- 当前使用前瞻布局型口径：候选方向只有同时满足结构化分支关系、"
-                    "未来1—6个月窗口、至少两类独立中期证据以及至少一个已满足或部分满足"
-                    "的触发条件，才具备第一关通过资格；仅有长期趋势或主题名称仍须失败。"
-                ]
-            ),
-        ])
+        lines.extend(
+            [
+                "",
+                "## 判断约束",
+                "- 当前市场主线专指未来1—6个月的主导产业叙事，"
+                "必须由机构策略、政策落地、产业供需、技术路线、资本开支或"
+                "持续景气证据建立。",
+                "- 1—3年结构性趋势只能作为背景，不能单独证明它是当前主线。",
+                "- 资金流、涨跌幅、成交排名、均线、技术指标和个股走势"
+                "完全不属于本关证据，既不能建立主线，也不能否定主线。",
+                "- 板块目录和候选成员关系只用于方向映射，不能证明公司真实受益；"
+                "公司产品、订单、收入和竞争力由第二维独立核验。",
+                "- 公司事件与未来催化由第六维判断，不能把单家公司事件包装成市场主线。",
+                "- 主线报告不可用时，只能用本轮取得的机构策略、政策与产业证据"
+                "独立判断；这些来源也不足时必须返回 insufficient。",
+                *(
+                    [
+                        "- 当前使用确认型主线口径：候选主线不能按当前主线通过；"
+                        "结论应写成“未通过确认型主线门槛”，不得写成产业方向不存在。"
+                    ]
+                    if strategy_profile == MainlineStrategyProfile.CONFIRMED_MAINLINE
+                    else [
+                        "- 当前使用前瞻布局型口径：候选方向只有同时满足结构化分支关系、"
+                        "未来1—6个月窗口、至少两类独立中期证据以及至少一个已满足或部分满足"
+                        "的触发条件，才具备第一关通过资格；仅有长期趋势或主题名称仍须失败。"
+                    ]
+                ),
+            ]
+        )
         return CriterionEvidence(
             raw_data=raw,
             data_summary="\n".join(lines),
@@ -446,8 +375,5 @@ class MainlinePositionEvaluator(BaseCriterionEvaluator):
             or subject.get("fallback_industry_direction")
         )
         if not has_direction:
-            return (
-                "本轮没有结构化产业方向，且公司所属行业也不可用，"
-                "无法确定市场主线判断对象"
-            )
+            return "本轮没有结构化产业方向，且公司所属行业也不可用，" "无法确定市场主线判断对象"
         return None

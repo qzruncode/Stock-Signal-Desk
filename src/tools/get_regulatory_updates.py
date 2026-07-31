@@ -14,12 +14,23 @@ from src.tools.base import ToolSpec, object_schema
 
 _PROJECT_TYPE = {"all": "0", "ipo": "1", "refinancing": "2", "restructuring": "3"}
 _PROJECT_STAGE = {
-    "all": "0", "accepted": "10", "inquiry": "20", "meeting": "30",
-    "registration": "35", "result": "40", "suspended": "50", "terminated": "60",
+    "all": "0",
+    "accepted": "10",
+    "inquiry": "20",
+    "meeting": "30",
+    "registration": "35",
+    "result": "40",
+    "suspended": "50",
+    "terminated": "60",
 }
 _PROJECT_STATUS = {
-    "all": "0", "newly_accepted": "20", "inquired": "30", "approved": "45",
-    "rejected": "44", "registration_effective": "70", "withdrawn": "95",
+    "all": "0",
+    "newly_accepted": "20",
+    "inquired": "30",
+    "approved": "45",
+    "rejected": "44",
+    "registration_effective": "70",
+    "withdrawn": "95",
 }
 _SZSE_LISTING_NOTICE_URL = "https://www.szse.cn/disclosure/notice/company/index.html"
 
@@ -75,10 +86,24 @@ def _specs(
     if event_type in {"all", "disclosure"}:
         if market in {"all", "sse"}:
             query = [*query_parts, *([f"productId={code}"] if code else [])]
-            specs.append({"path": "/sse/disclosure/:query?", "params": {"query": "&".join(query)}, "exchange": "SSE", "kind": "disclosure"})
+            specs.append(
+                {
+                    "path": "/sse/disclosure/:query?",
+                    "params": {"query": "&".join(query)},
+                    "exchange": "SSE",
+                    "kind": "disclosure",
+                }
+            )
         if market in {"all", "szse"}:
             query = [*([f"stock={code}"] if code else []), *query_parts]
-            specs.append({"path": "/szse/disclosure/listed/notice/:query?", "params": {"query": "&".join(query)}, "exchange": "SZSE", "kind": "disclosure"})
+            specs.append(
+                {
+                    "path": "/szse/disclosure/listed/notice/:query?",
+                    "params": {"query": "&".join(query)},
+                    "exchange": "SZSE",
+                    "kind": "disclosure",
+                }
+            )
     if event_type in {"all", "inquiry"}:
         if market in {"all", "sse"}:
             specs.append({"path": "/sse/inquire", "params": {}, "exchange": "SSE", "kind": "inquiry"})
@@ -88,7 +113,14 @@ def _specs(
                 params = {"category": category, "select": "全部函件类别"}
                 if code or keyword:
                     params["keyword"] = code or keyword
-                specs.append({"path": "/szse/inquire/:category?/:select?/:keyword?", "params": params, "exchange": "SZSE", "kind": "inquiry"})
+                specs.append(
+                    {
+                        "path": "/szse/inquire/:category?/:select?/:keyword?",
+                        "params": params,
+                        "exchange": "SZSE",
+                        "kind": "inquiry",
+                    }
+                )
     if event_type in {"all", "project"}:
         if market in {"all", "sse"}:
             specs.append({"path": "/sse/renewal", "params": {}, "exchange": "SSE", "kind": "project"})
@@ -97,16 +129,18 @@ def _specs(
             # all project types. Fan out explicitly for complete coverage.
             project_types = ["1", "2", "3"] if project_type == "all" else [_PROJECT_TYPE[project_type]]
             for type_value in project_types:
-                specs.append({
-                    "path": "/szse/projectdynamic/:type?/:stage?/:status?",
-                    "params": {
-                        "type": type_value,
-                        "stage": _PROJECT_STAGE[project_stage],
-                        "status": _PROJECT_STATUS[project_status],
-                    },
-                    "exchange": "SZSE",
-                    "kind": "project",
-                })
+                specs.append(
+                    {
+                        "path": "/szse/projectdynamic/:type?/:stage?/:status?",
+                        "params": {
+                            "type": type_value,
+                            "stage": _PROJECT_STAGE[project_stage],
+                            "status": _PROJECT_STATUS[project_status],
+                        },
+                        "exchange": "SZSE",
+                        "kind": "project",
+                    }
+                )
     if event_type in {"all", "listing_notice"} and market in {"all", "szse"}:
         # Despite the stale RSSHub catalog label "可转换债券", the route
         # implementation fetches SZSE /disclosure/notice/company/index.html:
@@ -172,19 +206,21 @@ def _parse_szse_listing_page(html: str, days: int, limit: int) -> list[dict[str,
         published = _published(date_node.get_text(" ", strip=True) if date_node else "")
         if not href_match or not title_match or published is None or published < cutoff:
             continue
-        items.append({
-            "title": re.sub(r"\s+", " ", title_match.group(1)).strip(),
-            "published": published.isoformat(),
-            "summary": "",
-            "link": urljoin(_SZSE_LISTING_NOTICE_URL, href_match.group(1)),
-            "source": "SZSE official listing notice page",
-            "exchange": "SZSE",
-            "event_type": "listing_notice",
-            "project_status": None,
-            "company_code": None,
-            "official": True,
-            "source_type": "official_exchange_html",
-        })
+        items.append(
+            {
+                "title": re.sub(r"\s+", " ", title_match.group(1)).strip(),
+                "published": published.isoformat(),
+                "summary": "",
+                "link": urljoin(_SZSE_LISTING_NOTICE_URL, href_match.group(1)),
+                "source": "SZSE official listing notice page",
+                "exchange": "SZSE",
+                "event_type": "listing_notice",
+                "project_status": None,
+                "company_code": None,
+                "official": True,
+                "source_type": "official_exchange_html",
+            }
+        )
         if len(items) >= limit:
             break
     return items
@@ -260,7 +296,11 @@ def get_regulatory_updates(
         raise ValueError(f"不支持的 event_type: {event_type}")
     if requested_market not in {"auto", "all", "sse", "szse", "bse"}:
         raise ValueError(f"不支持的 market: {requested_market}")
-    if project_type not in _PROJECT_TYPE or project_stage not in _PROJECT_STAGE or project_status not in _PROJECT_STATUS:
+    if (
+        project_type not in _PROJECT_TYPE
+        or project_stage not in _PROJECT_STAGE
+        or project_status not in _PROJECT_STATUS
+    ):
         raise ValueError("不支持的项目类型、阶段或状态")
     if not 1 <= days <= 730 or not 1 <= limit <= 50:
         raise ValueError("days 必须为 1..730，limit 必须为 1..50")
@@ -268,8 +308,14 @@ def get_regulatory_updates(
     code, name = _resolve_subject(keyword)
     resolved_market = _market(code, requested_market)
     specs = _specs(
-        event_type, resolved_market, code=code, keyword=keyword, days=days,
-        project_type=project_type, project_stage=project_stage, project_status=project_status,
+        event_type,
+        resolved_market,
+        code=code,
+        keyword=keyword,
+        days=days,
+        project_type=project_type,
+        project_stage=project_stage,
+        project_status=project_status,
     )
     errors: list[str] = []
     warnings: list[str] = []
@@ -278,7 +324,9 @@ def get_regulatory_updates(
 
     def fetch(spec: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         result = read_feed(
-            route_path=spec["path"], params=spec["params"], limit=50,
+            route_path=spec["path"],
+            params=spec["params"],
+            limit=50,
             fallback_to_xml=False,
         )
         return spec, result
@@ -296,11 +344,18 @@ def get_regulatory_updates(
                 continue
             route_errors = [str(error) for error in result.get("errors") or []]
             errors.extend(f"{spec['path']}: {error}" for error in route_errors)
-            route_meta.append({
-                "route_path": spec["path"], "params": spec["params"], "exchange": spec["exchange"],
-                "event_type": spec["kind"], "item_count": len(result.get("items") or []),
-                "success": not route_errors, "cached": bool(result.get("_cached")), "errors": route_errors,
-            })
+            route_meta.append(
+                {
+                    "route_path": spec["path"],
+                    "params": spec["params"],
+                    "exchange": spec["exchange"],
+                    "event_type": spec["kind"],
+                    "item_count": len(result.get("items") or []),
+                    "success": not route_errors,
+                    "cached": bool(result.get("_cached")),
+                    "errors": route_errors,
+                }
+            )
             candidates.extend(_normalized_item(item, spec) for item in result.get("items") or [])
 
     cutoff = datetime.now() - timedelta(days=days)
@@ -326,19 +381,13 @@ def get_regulatory_updates(
 
     rss_acquisition_success = bool(route_meta) and any(route["success"] for route in route_meta)
     failed_routes = sum(not route["success"] for route in route_meta)
-    listing_route_failed = any(
-        row["route_path"] == "/szse/notice" and not row["success"]
-        for row in route_meta
-    )
+    listing_route_failed = any(row["route_path"] == "/szse/notice" and not row["success"] for row in route_meta)
     official_page_fallback = None
     official_page_used = False
     if listing_route_failed and event_type in {"all", "listing_notice"}:
         official_page_fallback = _read_szse_listing_page(days, limit)
         if official_page_fallback["success"]:
-            direct_items = [
-                item for item in official_page_fallback["items"]
-                if _matches(item, keyword, code, name)
-            ]
+            direct_items = [item for item in official_page_fallback["items"] if _matches(item, keyword, code, name)]
             existing = {item.get("link") for item in items}
             items.extend(item for item in direct_items if item.get("link") not in existing)
             items = sorted(items, key=lambda row: str(row.get("published") or ""), reverse=True)[:limit]
@@ -348,6 +397,7 @@ def get_regulatory_updates(
             errors.append(f"深交所上市公告官网直读: {official_page_fallback['error']}")
 
     if include_content:
+
         def fetch_content(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None, Exception | None]:
             try:
                 if item.get("source_type") == "official_exchange_html":
@@ -356,8 +406,11 @@ def get_regulatory_updates(
                     detail = fetch_url(item["link"], format="text")
                 else:
                     detail = read_item(
-                        route_path=item["rss_route"], params=item["rss_params"], title=item["title"],
-                        link=item["link"], list_summary=item["summary"],
+                        route_path=item["rss_route"],
+                        params=item["rss_params"],
+                        title=item["title"],
+                        link=item["link"],
+                        list_summary=item["summary"],
                     )
                 return item, detail, None
             except Exception as exc:
@@ -392,11 +445,18 @@ def get_regulatory_updates(
     if not items and not acquisition_success and fallback_to_web and resolved_market != "bse":
         from src.tools.websearch import websearch
 
-        domains = "site:sse.com.cn OR site:szse.cn" if resolved_market == "all" else "site:sse.com.cn" if resolved_market == "sse" else "site:szse.cn"
+        domains = (
+            "site:sse.com.cn OR site:szse.cn"
+            if resolved_market == "all"
+            else "site:sse.com.cn" if resolved_market == "sse" else "site:szse.cn"
+        )
         fallback_attempted = True
         intent_label = {
-            "all": "监管披露", "disclosure": "上市公司公告", "inquiry": "监管问询函",
-            "project": "IPO 再融资 项目动态", "listing_notice": "股票 上市交易 终止上市 公告",
+            "all": "监管披露",
+            "disclosure": "上市公司公告",
+            "inquiry": "监管问询函",
+            "project": "IPO 再融资 项目动态",
+            "listing_notice": "股票 上市交易 终止上市 公告",
         }[event_type]
         web_fallback = websearch(
             f"{domains} {keyword} {intent_label} {datetime.now().year}".strip(),
@@ -416,15 +476,22 @@ def get_regulatory_updates(
             ):
                 rejected_web_results += 1
                 continue
-            items.append({
-                "title": title, "published": published.isoformat(),
-                "summary": raw.get("snippet"), "link": raw.get("url"), "source": host,
-                "exchange": "SSE" if host == "sse.com.cn" or host.endswith(".sse.com.cn") else "SZSE",
-                "event_type": event_type,
-                "project_status": None, "company_code": code, "official": True,
-                "source_type": "websearch_official_domain",
-                "semantic_status": "model_required",
-            })
+            items.append(
+                {
+                    "title": title,
+                    "published": published.isoformat(),
+                    "summary": raw.get("snippet"),
+                    "link": raw.get("url"),
+                    "source": host,
+                    "exchange": "SSE" if host == "sse.com.cn" or host.endswith(".sse.com.cn") else "SZSE",
+                    "event_type": event_type,
+                    "project_status": None,
+                    "company_code": code,
+                    "official": True,
+                    "source_type": "websearch_official_domain",
+                    "semantic_status": "model_required",
+                }
+            )
         items = items[:limit]
         fallback_used = bool(items)
         if fallback_used:
@@ -454,16 +521,24 @@ def get_regulatory_updates(
         "has_updates": bool(items),
         "rss_routes": route_meta,
         "source": (
-            "交易所官网/websearch" if fallback_used
-            else "交易所官方披露/RSSHub+官网直读" if official_page_used and rss_acquisition_success
-            else "深交所官网直读" if official_page_used
-            else "交易所官方披露/RSSHub" if acquisition_success
-            else "none"
+            "交易所官网/websearch"
+            if fallback_used
+            else (
+                "交易所官方披露/RSSHub+官网直读"
+                if official_page_used and rss_acquisition_success
+                else (
+                    "深交所官网直读"
+                    if official_page_used
+                    else "交易所官方披露/RSSHub" if acquisition_success else "none"
+                )
+            )
         ),
         "source_scope": "SSE_and_SZSE_official_regulatory_disclosures",
         "success": acquisition_success or fallback_used,
         "partial": bool(errors) and (acquisition_success or fallback_used),
-        "data_time": latest.astimezone().isoformat() if latest and latest.tzinfo else latest.isoformat() if latest else None,
+        "data_time": (
+            latest.astimezone().isoformat() if latest and latest.tzinfo else latest.isoformat() if latest else None
+        ),
         "retrieved_at": retrieved_at,
         "is_stale": latest < datetime.now() - timedelta(days=max(14, days)) if latest else None,
         "freshness_unknown": latest is None,
@@ -484,18 +559,24 @@ TOOL = ToolSpec(
         "直接读取上交所和深交所官方披露路由：上市公司公告、监管问询、科创板/创业板IPO与再融资项目动态、"
         "深交所公司上市及终止上市公告。支持代码/简称、日期、交易所和项目阶段过滤；北交所覆盖缺口会明确说明。"
     ),
-    parameters=object_schema({
-        "keyword": {"type": "string", "default": "", "description": "股票代码、简称或项目关键词"},
-        "event_type": {"type": "string", "enum": ["all", "disclosure", "inquiry", "project", "listing_notice"], "default": "all"},
-        "market": {"type": "string", "enum": ["auto", "all", "sse", "szse", "bse"], "default": "auto"},
-        "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 90},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 12},
-        "include_content": {"type": "boolean", "default": False},
-        "fallback_to_web": {"type": "boolean", "default": True},
-        "project_type": {"type": "string", "enum": list(_PROJECT_TYPE), "default": "all"},
-        "project_stage": {"type": "string", "enum": list(_PROJECT_STAGE), "default": "all"},
-        "project_status": {"type": "string", "enum": list(_PROJECT_STATUS), "default": "all"},
-    }),
+    parameters=object_schema(
+        {
+            "keyword": {"type": "string", "default": "", "description": "股票代码、简称或项目关键词"},
+            "event_type": {
+                "type": "string",
+                "enum": ["all", "disclosure", "inquiry", "project", "listing_notice"],
+                "default": "all",
+            },
+            "market": {"type": "string", "enum": ["auto", "all", "sse", "szse", "bse"], "default": "auto"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 90},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 12},
+            "include_content": {"type": "boolean", "default": False},
+            "fallback_to_web": {"type": "boolean", "default": True},
+            "project_type": {"type": "string", "enum": list(_PROJECT_TYPE), "default": "all"},
+            "project_stage": {"type": "string", "enum": list(_PROJECT_STAGE), "default": "all"},
+            "project_status": {"type": "string", "enum": list(_PROJECT_STATUS), "default": "all"},
+        }
+    ),
     executor=get_regulatory_updates,
     category="regulatory",
 )

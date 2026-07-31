@@ -21,6 +21,7 @@ def _business_cache_key(symbol: str) -> str:
 def _business_cache_get(symbol: str) -> dict | None:
     try:
         from src.storage import DatabaseManager
+
         raw = DatabaseManager.get_instance().get_kline_snapshot(_business_cache_key(symbol))
         if raw:
             return json.loads(raw) if isinstance(raw, str) else raw
@@ -32,7 +33,9 @@ def _business_cache_get(symbol: str) -> dict | None:
 def _business_cache_put(symbol: str, data: dict) -> None:
     try:
         from src.storage import DatabaseManager
+
         DatabaseManager.get_instance().save_kline_snapshot(
-            _business_cache_key(symbol), json.dumps(data, ensure_ascii=False))
+            _business_cache_key(symbol), json.dumps(data, ensure_ascii=False)
+        )
     except Exception:
         logger.warning("[StockBusiness] _business_cache_put failed for symbol=%s", symbol, exc_info=True)

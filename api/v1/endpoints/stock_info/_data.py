@@ -17,7 +17,7 @@ def _sanitize(obj):
     elif isinstance(obj, (datetime, date)):
         # akshare 常返回 datetime.date（如报告日期），JSON 无法直接序列化。
         return obj.isoformat()
-    elif isinstance(obj, float) and (obj != obj or obj == float('inf') or obj == float('-inf')):
+    elif isinstance(obj, float) and (obj != obj or obj == float("inf") or obj == float("-inf")):
         return None
     return obj
 
@@ -34,6 +34,7 @@ def _to_em_prefixed(symbol: str) -> str:
 
 def _fetch_business_intro(symbol: str) -> dict:
     import akshare as ak
+
     try:
         profile = ak.stock_profile_cninfo(symbol=symbol)
         if profile is not None and not profile.empty:
@@ -47,10 +48,11 @@ def _fetch_business_intro(symbol: str) -> dict:
 def _fetch_business_composition(symbol: str) -> list[dict]:
     """主营业务构成（东方财富 stock_zygc_em，需带市场前缀 symbol）。"""
     import akshare as ak
+
     try:
         df = ak.stock_zygc_em(symbol=_to_em_prefixed(symbol))
         if df is not None and not df.empty:
-            return _sanitize(df.to_dict('records'))
+            return _sanitize(df.to_dict("records"))
     except Exception as exc:
         logger.warning("[StockBusiness] composition fetch failed for %s: %s", symbol, exc)
     return []
@@ -66,6 +68,7 @@ def _fetch_profit_forecast(symbol: str) -> list[dict]:
     输出字段对齐 _build_business_prompt 的读取键（analyst/researcher/eps_2026 等）。
     """
     import akshare as ak
+
     try:
         code = str(symbol or "").strip().zfill(6)
         df = ak.stock_research_report_em(symbol=code)
@@ -73,16 +76,18 @@ def _fetch_profit_forecast(symbol: str) -> list[dict]:
             return []
         items: list[dict] = []
         for _, row in df.iterrows():
-            items.append({
-                "analyst": str(row.get("机构", "") or ""),
-                "researcher": str(row.get("东财评级", "") or ""),
-                "rating": str(row.get("东财评级", "") or ""),
-                "eps_2026": _sanitize(row.get("2026-盈利预测-收益")),
-                "eps_2027": _sanitize(row.get("2027-盈利预测-收益")),
-                "eps_2028": _sanitize(row.get("2028-盈利预测-收益")),
-                "title": str(row.get("报告名称", "") or ""),
-                "date": str(row.get("日期", "") or ""),
-            })
+            items.append(
+                {
+                    "analyst": str(row.get("机构", "") or ""),
+                    "researcher": str(row.get("东财评级", "") or ""),
+                    "rating": str(row.get("东财评级", "") or ""),
+                    "eps_2026": _sanitize(row.get("2026-盈利预测-收益")),
+                    "eps_2027": _sanitize(row.get("2027-盈利预测-收益")),
+                    "eps_2028": _sanitize(row.get("2028-盈利预测-收益")),
+                    "title": str(row.get("报告名称", "") or ""),
+                    "date": str(row.get("日期", "") or ""),
+                }
+            )
         return items
     except Exception as exc:
         logger.warning("[StockBusiness] profit forecast failed for %s: %s", symbol, exc)
@@ -91,10 +96,11 @@ def _fetch_profit_forecast(symbol: str) -> list[dict]:
 
 def _fetch_financial_summary(symbol: str) -> dict:
     import akshare as ak
+
     try:
         df = ak.stock_financial_abstract(symbol=symbol)
         if df is not None and not df.empty:
-            return _sanitize(df.to_dict('records'))
+            return _sanitize(df.to_dict("records"))
     except Exception as exc:
         logger.warning("[StockBusiness] financial summary failed for %s: %s", symbol, exc)
     return {}
@@ -116,35 +122,43 @@ def _fetch_recent_events(symbol: str) -> dict:
     code = str(symbol or "").strip().zfill(6)
     try:
         import akshare as ak
+
         try:
             df_news = ak.stock_news_em(symbol=code)
             if df_news is not None and not df_news.empty:
                 for _, row in df_news.iterrows():
-                    news.append({
-                        "time": str(row.get("发布时间", "") or ""),
-                        "source": str(row.get("文章来源", "") or ""),
-                        "title": str(row.get("新闻标题", "") or ""),
-                        "content": str(row.get("新闻内容", "") or ""),
-                        "url": str(row.get("新闻链接", "") or ""),
-                    })
+                    news.append(
+                        {
+                            "time": str(row.get("发布时间", "") or ""),
+                            "source": str(row.get("文章来源", "") or ""),
+                            "title": str(row.get("新闻标题", "") or ""),
+                            "content": str(row.get("新闻内容", "") or ""),
+                            "url": str(row.get("新闻链接", "") or ""),
+                        }
+                    )
         except Exception:
             logger.warning("[StockBusiness] stock_news failed for symbol=%s", symbol, exc_info=True)
         try:
             from datetime import timedelta
+
             end_date = datetime.now().strftime("%Y-%m-%d")
             begin_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
             df_ann = ak.stock_individual_notice_report(
-                security=code, symbol="全部",
-                begin_date=begin_date, end_date=end_date,
+                security=code,
+                symbol="全部",
+                begin_date=begin_date,
+                end_date=end_date,
             )
             if df_ann is not None and not df_ann.empty:
                 for _, row in df_ann.iterrows():
-                    announcements.append({
-                        "date": str(row.get("公告日期", "") or ""),
-                        "type": str(row.get("公告类型", "") or ""),
-                        "title": str(row.get("公告标题", "") or ""),
-                        "url": str(row.get("网址", "") or ""),
-                    })
+                    announcements.append(
+                        {
+                            "date": str(row.get("公告日期", "") or ""),
+                            "type": str(row.get("公告类型", "") or ""),
+                            "title": str(row.get("公告标题", "") or ""),
+                            "url": str(row.get("网址", "") or ""),
+                        }
+                    )
         except Exception:
             logger.warning("[StockBusiness] stock_individual_notice_report failed for symbol=%s", symbol, exc_info=True)
     except Exception as exc:
@@ -165,7 +179,8 @@ def _fetch_macro_data() -> dict:
     result = {}
     try:
         from api.v1.endpoints.macro import INDICATOR_FETCHERS
-        for key, indicator_name in [('pmi', 'PMI'), ('cpi', 'CPI'), ('ppi', 'PPI')]:
+
+        for key, indicator_name in [("pmi", "PMI"), ("cpi", "CPI"), ("ppi", "PPI")]:
             try:
                 fetcher = INDICATOR_FETCHERS.get(indicator_name)
                 if not fetcher:
@@ -174,7 +189,9 @@ def _fetch_macro_data() -> dict:
                 if records:
                     result[key] = records[-3:]
             except Exception:
-                logger.warning("[StockBusiness] _fetch_macro_data fetcher failed for indicator=%s", indicator_name, exc_info=True)
+                logger.warning(
+                    "[StockBusiness] _fetch_macro_data fetcher failed for indicator=%s", indicator_name, exc_info=True
+                )
     except ImportError:
         pass
     return result
@@ -184,14 +201,17 @@ def _fetch_peer_data(industry: str, target_symbol: str, max_peers: int = 3) -> l
     peers = []
     try:
         from src.repositories.stock_repository import get_stocks_by_industry
+
         all_stocks = get_stocks_by_industry(industry) or []
         for s in all_stocks:
-            if str(s.get('code', '')) != target_symbol and s.get('status') == 'active':
-                peers.append({
-                    'code': s.get('code'),
-                    'name': s.get('name'),
-                    'market': s.get('market'),
-                })
+            if str(s.get("code", "")) != target_symbol and s.get("status") == "active":
+                peers.append(
+                    {
+                        "code": s.get("code"),
+                        "name": s.get("name"),
+                        "market": s.get("market"),
+                    }
+                )
                 if len(peers) >= max_peers:
                     break
     except Exception as exc:
@@ -202,13 +222,13 @@ def _fetch_peer_data(industry: str, target_symbol: str, max_peers: int = 3) -> l
 def _get_stock_industry(symbol: str) -> str:
     try:
         from src.storage import DatabaseManager
+
         db = DatabaseManager.get_instance()
         with db.get_session() as session:
             from src.storage import StockMeta
             from sqlalchemy import select
-            meta = session.execute(
-                select(StockMeta).where(StockMeta.code == symbol)
-            ).scalars().first()
+
+            meta = session.execute(select(StockMeta).where(StockMeta.code == symbol)).scalars().first()
             if meta and meta.industry:
                 return meta.industry
     except Exception:
@@ -218,10 +238,7 @@ def _get_stock_industry(symbol: str) -> str:
 
         frame = ak.stock_individual_info_em(symbol=symbol, timeout=10)
         if frame is not None and not frame.empty:
-            info = {
-                str(row.get("item") or "").strip(): row.get("value")
-                for _, row in frame.iterrows()
-            }
+            info = {str(row.get("item") or "").strip(): row.get("value") for _, row in frame.iterrows()}
             industry = str(info.get("行业") or "").strip()
             if industry:
                 return industry

@@ -76,18 +76,11 @@ def _read_active_env_values() -> Optional[Dict[str, str]]:
         logger.warning("读取配置文件 %s 失败，继续沿用当前环境变量: %s", env_path, exc)
         return None
 
-    return {
-        str(key): "" if value is None else str(value)
-        for key, value in values.items()
-        if key is not None
-    }
+    return {str(key): "" if value is None else str(value) for key, value in values.items() if key is not None}
 
 
 _ACTIVE_ENV_FILE_VALUES = _read_active_env_values() or {}
-_RUNTIME_ENV_FILE_KEYS = {
-    key for key in _ACTIVE_ENV_FILE_VALUES
-    if key not in _INITIAL_PROCESS_ENV
-}
+_RUNTIME_ENV_FILE_KEYS = {key for key in _ACTIVE_ENV_FILE_VALUES if key not in _INITIAL_PROCESS_ENV}
 
 # setup_env() already ran at import time above.
 _env_bootstrapped = True
@@ -128,14 +121,11 @@ def _setup_bootstrap_logging(debug: bool = False) -> None:
     root = logging.getLogger()
     root.setLevel(level)
     if not any(
-        isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) is sys.stderr
-        for h in root.handlers
+        isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) is sys.stderr for h in root.handlers
     ):
         handler = logging.StreamHandler(sys.stderr)
         handler.setLevel(level)
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-        )
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
         root.addHandler(handler)
 
 
@@ -163,10 +153,7 @@ def _reload_env_file_values_preserving_overrides() -> None:
     if latest_values is None:
         return
 
-    managed_keys = {
-        key for key in latest_values
-        if key not in _INITIAL_PROCESS_ENV
-    }
+    managed_keys = {key for key in latest_values if key not in _INITIAL_PROCESS_ENV}
 
     for key in _RUNTIME_ENV_FILE_KEYS - managed_keys:
         os.environ.pop(key, None)
@@ -180,59 +167,29 @@ def _reload_env_file_values_preserving_overrides() -> None:
 def parse_arguments() -> argparse.Namespace:
     """解析命令行参数"""
     parser = argparse.ArgumentParser(
-        description='A股自选股智能分析系统',
+        description="A股自选股智能分析系统",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog="""
 示例:
   python main.py                    # 启动 Web 服务
   python main.py --debug            # 调试模式
   python main.py --serve-only       # 仅启动 Web 服务
-        '''
+        """,
     )
 
-    parser.add_argument(
-        '--debug',
-        action='store_true',
-        help='启用调试模式，输出详细日志'
-    )
+    parser.add_argument("--debug", action="store_true", help="启用调试模式，输出详细日志")
 
-    parser.add_argument(
-        '--webui',
-        action='store_true',
-        help='启动 Web 管理界面'
-    )
+    parser.add_argument("--webui", action="store_true", help="启动 Web 管理界面")
 
-    parser.add_argument(
-        '--webui-only',
-        action='store_true',
-        help='仅启动 Web 服务'
-    )
+    parser.add_argument("--webui-only", action="store_true", help="仅启动 Web 服务")
 
-    parser.add_argument(
-        '--serve',
-        action='store_true',
-        help='启动 FastAPI 后端服务'
-    )
+    parser.add_argument("--serve", action="store_true", help="启动 FastAPI 后端服务")
 
-    parser.add_argument(
-        '--serve-only',
-        action='store_true',
-        help='仅启动 FastAPI 后端服务'
-    )
+    parser.add_argument("--serve-only", action="store_true", help="仅启动 FastAPI 后端服务")
 
-    parser.add_argument(
-        '--port',
-        type=int,
-        default=8000,
-        help='FastAPI 服务端口（默认 8000）'
-    )
+    parser.add_argument("--port", type=int, default=8000, help="FastAPI 服务端口（默认 8000）")
 
-    parser.add_argument(
-        '--host',
-        type=str,
-        default='0.0.0.0',
-        help='FastAPI 服务监听地址（默认 0.0.0.0）'
-    )
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="FastAPI 服务监听地址（默认 0.0.0.0）")
 
     return parser.parse_args()
 
@@ -324,10 +281,10 @@ def main() -> int:
 
     # 兼容旧版 WEBUI_HOST/WEBUI_PORT：如果用户未通过 --host/--port 指定，则使用旧变量
     if start_serve:
-        if args.host == '0.0.0.0' and os.getenv('WEBUI_HOST'):
-            args.host = os.getenv('WEBUI_HOST')
-        if args.port == 8000 and os.getenv('WEBUI_PORT'):
-            args.port = int(os.getenv('WEBUI_PORT'))
+        if args.host == "0.0.0.0" and os.getenv("WEBUI_HOST"):
+            args.host = os.getenv("WEBUI_HOST")
+        if args.port == 8000 and os.getenv("WEBUI_PORT"):
+            args.port = int(os.getenv("WEBUI_PORT"))
 
     if start_serve:
         if not prepare_webui_frontend_assets():

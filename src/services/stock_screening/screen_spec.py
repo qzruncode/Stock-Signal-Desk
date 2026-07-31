@@ -81,10 +81,7 @@ class AtrRelativeFrequencyRule(BaseModel):
     def _validate_qualification_thresholds(self) -> "AtrRelativeFrequencyRule":
         if self.min_qualified_days is None and self.min_qualified_ratio_pct is None:
             raise ValueError("达标天数和达标比例至少需要一个条件")
-        if (
-            self.min_qualified_days is not None
-            and self.min_qualified_days > self.lookback_days
-        ):
+        if self.min_qualified_days is not None and self.min_qualified_days > self.lookback_days:
             raise ValueError("min_qualified_days 不能大于 lookback_days")
         return self
 
@@ -138,9 +135,7 @@ class QuantitativeScreenSpec(BaseModel):
     def required_financial_fields(self) -> set[str]:
         fields = {item.field for item in self.financial_filters}
         fields.update(
-            field
-            for field in self.output_fields
-            if field in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}
+            field for field in self.output_fields if field in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}
         )
         if self.sort.field in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}:
             fields.add(self.sort.field)
@@ -167,8 +162,10 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                 "properties": {
                     "status": {"type": "string", "enum": ["active"]},
                     "markets": {
-                        "type": "array", "items": {"type": "string", "enum": ["sh", "sz", "bj"]},
-                        "minItems": 1, "maxItems": 3,
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["sh", "sz", "bj"]},
+                        "minItems": 1,
+                        "maxItems": 3,
                     },
                     "include_st": {"type": "boolean"},
                     "min_listing_trading_days": {"type": "integer", "minimum": 1, "maximum": 1000},
@@ -193,15 +190,25 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                     "min_qualified_ratio_pct": {"type": number_or_null, "minimum": 0, "maximum": 100},
                 },
                 "required": [
-                    "strategy", "atr_period", "atr_average", "baseline_period", "baseline_average",
-                    "threshold_operator", "threshold_value", "daily_comparison", "lookback_days",
-                    "min_qualified_days", "min_qualified_ratio_pct",
+                    "strategy",
+                    "atr_period",
+                    "atr_average",
+                    "baseline_period",
+                    "baseline_average",
+                    "threshold_operator",
+                    "threshold_value",
+                    "daily_comparison",
+                    "lookback_days",
+                    "min_qualified_days",
+                    "min_qualified_ratio_pct",
                 ],
             },
             "financial_filters": {
-                "type": "array", "maxItems": 8,
+                "type": "array",
+                "maxItems": 8,
                 "items": {
-                    "type": "object", "additionalProperties": False,
+                    "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "field": {"type": "string", "enum": ["revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"]},
                         "operator": {"type": "string", "enum": ["gt", "gte", "lt", "lte", "eq"]},
@@ -211,14 +218,21 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                 },
             },
             "sort": {
-                "type": "object", "additionalProperties": False,
+                "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "field": {
                         "type": "string",
                         "enum": [
-                            "code", "current_atr_pct", "long_term_mean_pct", "dynamic_warning_pct",
-                            "qualified_days", "qualified_ratio_pct", "revenue_ttm",
-                            "deducted_net_profit_ttm", "debt_ratio",
+                            "code",
+                            "current_atr_pct",
+                            "long_term_mean_pct",
+                            "dynamic_warning_pct",
+                            "qualified_days",
+                            "qualified_ratio_pct",
+                            "revenue_ttm",
+                            "deducted_net_profit_ttm",
+                            "debt_ratio",
                         ],
                     },
                     "order": {"type": "string", "enum": ["asc", "desc"]},
@@ -226,22 +240,37 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                 "required": ["field", "order"],
             },
             "output_fields": {
-                "type": "array", "minItems": 1, "maxItems": 12, "uniqueItems": True,
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 12,
+                "uniqueItems": True,
                 "items": {
                     "type": "string",
                     "enum": [
-                        "current_atr_pct", "long_term_mean_pct", "dynamic_warning_pct",
-                        "qualified_days", "qualified_ratio_pct", "revenue_ttm",
-                        "deducted_net_profit_ttm", "debt_ratio", "financial_report_period",
-                        "financial_source", "latest_trade_date",
+                        "current_atr_pct",
+                        "long_term_mean_pct",
+                        "dynamic_warning_pct",
+                        "qualified_days",
+                        "qualified_ratio_pct",
+                        "revenue_ttm",
+                        "deducted_net_profit_ttm",
+                        "debt_ratio",
+                        "financial_report_period",
+                        "financial_source",
+                        "latest_trade_date",
                     ],
                 },
             },
             "preview_limit": {"type": "integer", "minimum": 1, "maximum": 20},
         },
         "required": [
-            "version", "universe", "technical_rule", "financial_filters", "sort",
-            "output_fields", "preview_limit",
+            "version",
+            "universe",
+            "technical_rule",
+            "financial_filters",
+            "sort",
+            "output_fields",
+            "preview_limit",
         ],
     }
     if nullable:

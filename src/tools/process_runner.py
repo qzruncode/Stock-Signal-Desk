@@ -25,33 +25,37 @@ from src.tools.evaluate_multi_stock_buy_criteria import (
 from src.tools.process_worker import RESULT_PREFIX
 
 
-ISOLATED_TOOL_NAMES = frozenset({
-    "get_multi_stock_snapshot",
-    "get_multi_stock_decision_evidence",
-    "evaluate_multi_stock_buy_criteria",
-    "analyze_stock_catalysts",
-    "get_domain_stock_candidates",
-    "get_company_theme_evidence",
-    "get_market_status",
-    "get_market_breadth",
-    "get_sector_list",
-    "get_sector_flow",
-    "get_index_data",
-    "get_macro_indicator",
-    "get_bond_yield",
-    "get_monetary_policy_operations",
-})
+ISOLATED_TOOL_NAMES = frozenset(
+    {
+        "get_multi_stock_snapshot",
+        "get_multi_stock_decision_evidence",
+        "evaluate_multi_stock_buy_criteria",
+        "analyze_stock_catalysts",
+        "get_domain_stock_candidates",
+        "get_company_theme_evidence",
+        "get_market_status",
+        "get_market_breadth",
+        "get_sector_list",
+        "get_sector_flow",
+        "get_index_data",
+        "get_macro_indicator",
+        "get_bond_yield",
+        "get_monetary_policy_operations",
+    }
+)
 
 # These tools create or control process-owned task queues/threads. Executing
 # them in the one-shot safety worker would destroy the task as soon as the
 # worker exits. They still run off the asyncio event loop in a thread.
-STATEFUL_TOOL_NAMES = frozenset({
-    "run_stock_analysis",
-    "get_analysis_status",
-    "run_batch_analysis",
-    "manage_batch_run",
-    "manage_analysis_schedule",
-})
+STATEFUL_TOOL_NAMES = frozenset(
+    {
+        "run_stock_analysis",
+        "get_analysis_status",
+        "run_batch_analysis",
+        "manage_batch_run",
+        "manage_analysis_schedule",
+    }
+)
 
 _PROFESSIONAL_EVIDENCE_TOOL = "get_multi_stock_decision_evidence"
 _PROFESSIONAL_EVIDENCE_CHUNK_SIZE = 2
@@ -60,6 +64,7 @@ _PROFESSIONAL_BUY_ANALYSIS_TOOL = "evaluate_multi_stock_buy_criteria"
 
 class ToolProcessTimeout(TimeoutError):
     """An isolated tool exceeded the application-owned deadline."""
+
 
 def _professional_buy_stock_concurrency() -> int:
     try:
@@ -117,16 +122,10 @@ def _execute_tool_process(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
-                timeout=(
-                    max(0.1, float(deadline_seconds))
-                    if deadline_seconds is not None
-                    else None
-                ),
+                timeout=(max(0.1, float(deadline_seconds)) if deadline_seconds is not None else None),
             )
         except subprocess.TimeoutExpired as exc:
-            raise ToolProcessTimeout(
-                f"隔离工具 {name} 超过 {float(deadline_seconds):.1f} 秒截止时间"
-            ) from exc
+            raise ToolProcessTimeout(f"隔离工具 {name} 超过 {float(deadline_seconds):.1f} 秒截止时间") from exc
     else:
         if cancel_event.is_set():
             raise RuntimeError("隔离工具执行已取消")
@@ -157,9 +156,7 @@ def _execute_tool_process(
                     start_new_session=os.name != "nt",
                 )
                 deadline_at = (
-                    time.monotonic() + max(0.1, float(deadline_seconds))
-                    if deadline_seconds is not None
-                    else None
+                    time.monotonic() + max(0.1, float(deadline_seconds)) if deadline_seconds is not None else None
                 )
 
                 def terminate_process_group() -> None:
@@ -194,10 +191,7 @@ def _execute_tool_process(
                         raise RuntimeError("隔离工具执行已取消")
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         terminate_process_group()
-                        raise ToolProcessTimeout(
-                            f"隔离工具 {name} 超过 "
-                            f"{float(deadline_seconds):.1f} 秒截止时间"
-                        )
+                        raise ToolProcessTimeout(f"隔离工具 {name} 超过 " f"{float(deadline_seconds):.1f} 秒截止时间")
                     cancel_event.wait(timeout=0.05)
 
                 stdout_handle.flush()
@@ -213,7 +207,7 @@ def _execute_tool_process(
 
     marker_line = next(
         (
-            line[len(RESULT_PREFIX):]
+            line[len(RESULT_PREFIX) :]
             for line in reversed(completed.stdout.splitlines())
             if line.startswith(RESULT_PREFIX)
         ),
@@ -222,8 +216,7 @@ def _execute_tool_process(
     if marker_line is None:
         stderr_tail = completed.stderr.strip()[-800:]
         raise RuntimeError(
-            f"隔离工具进程异常退出（code={completed.returncode}）"
-            + (f": {stderr_tail}" if stderr_tail else "")
+            f"隔离工具进程异常退出（code={completed.returncode}）" + (f": {stderr_tail}" if stderr_tail else "")
         )
     payload = json.loads(marker_line)
     if not payload.get("ok"):
@@ -254,26 +247,33 @@ def _snapshot_fallback_for_professional_chunk(
         **process_options,
     )
     missing_dimensions = [
-        "business_reality", "financial_quality", "valuation", "expectations",
-        "peer_context", "trading_state", "catalyst_and_risk",
+        "business_reality",
+        "financial_quality",
+        "valuation",
+        "expectations",
+        "peer_context",
+        "trading_state",
+        "catalyst_and_risk",
     ]
     items = []
     for source_item in snapshot.get("items") or []:
         if not isinstance(source_item, dict):
             continue
-        items.append({
-            "symbol": source_item.get("symbol"),
-            "name": source_item.get("name"),
-            "thesis": thesis or None,
-            "snapshot": source_item,
-            "evidence_coverage": {
-                "dimensions": {name: False for name in missing_dimensions},
-                "complete_count": 0,
-                "required_count": len(missing_dimensions),
-                "missing": missing_dimensions,
-                "complete": False,
-            },
-        })
+        items.append(
+            {
+                "symbol": source_item.get("symbol"),
+                "name": source_item.get("name"),
+                "thesis": thesis or None,
+                "snapshot": source_item,
+                "evidence_coverage": {
+                    "dimensions": {name: False for name in missing_dimensions},
+                    "complete_count": 0,
+                    "required_count": len(missing_dimensions),
+                    "missing": missing_dimensions,
+                    "complete": False,
+                },
+            }
+        )
     message = f"专业证据分片 {symbols} 未在时限内完成，已保留多股快照：{error}"
     return {
         "success": bool(items),
@@ -300,22 +300,14 @@ def _merge_professional_chunks(chunks: list[dict[str, Any]]) -> dict[str, Any]:
     items = [item for chunk in chunks for item in (chunk.get("items") or [])]
     errors = [error for chunk in chunks for error in (chunk.get("errors") or [])]
     warnings = [warning for chunk in chunks for warning in (chunk.get("warnings") or [])]
-    unresolved = [
-        entity
-        for chunk in chunks
-        for entity in (chunk.get("unresolved_entities") or [])
-    ]
+    unresolved = [entity for chunk in chunks for entity in (chunk.get("unresolved_entities") or [])]
     return {
         **first,
         "success": bool(items),
         "partial": any(bool(chunk.get("partial")) for chunk in chunks) or bool(errors),
         "fallback_used": any(bool(chunk.get("fallback_used")) for chunk in chunks),
         "items": items,
-        "resolved_entities": [
-            entity
-            for chunk in chunks
-            for entity in (chunk.get("resolved_entities") or [])
-        ],
+        "resolved_entities": [entity for chunk in chunks for entity in (chunk.get("resolved_entities") or [])],
         "unresolved_entities": unresolved,
         "total": len(items),
         "errors": errors,
@@ -345,7 +337,7 @@ def _execute_professional_evidence_chunked(
             **process_options,
         )
     symbol_chunks = [
-        symbols[index:index + _PROFESSIONAL_EVIDENCE_CHUNK_SIZE]
+        symbols[index : index + _PROFESSIONAL_EVIDENCE_CHUNK_SIZE]
         for index in range(0, len(symbols), _PROFESSIONAL_EVIDENCE_CHUNK_SIZE)
     ]
     thesis = str(arguments.get("thesis") or "").strip()
@@ -400,12 +392,11 @@ def _merge_professional_buy_chunks(
     warnings = [item for chunk in chunks for item in (chunk.get("warnings") or [])]
     coverage_complete = len(items) == requested_count and not unresolved
     completed_count = sum(
-        str(item.get("analysis_status") or "completed") == "completed"
-        for item in items
-        if isinstance(item, dict)
+        str(item.get("analysis_status") or "completed") == "completed" for item in items if isinstance(item, dict)
     )
     source_unavailable_count = sum(
-        str(item.get("analysis_status") or "") in {
+        str(item.get("analysis_status") or "")
+        in {
             "source_unavailable",
             # Read-only compatibility for V8 subprocess packets.
             "evidence_insufficient",
@@ -414,24 +405,14 @@ def _merge_professional_buy_chunks(
         if isinstance(item, dict)
     )
     execution_failed_count = sum(
-        str(item.get("analysis_status") or "") == "execution_failed"
-        for item in items
-        if isinstance(item, dict)
+        str(item.get("analysis_status") or "") == "execution_failed" for item in items if isinstance(item, dict)
     )
-    has_partial_chunk = any(
-        chunk.get("partial") is True for chunk in chunks
-    )
+    has_partial_chunk = any(chunk.get("partial") is True for chunk in chunks)
     return {
         **first,
-        "success": bool(items) and not (
-            source_unavailable_count or execution_failed_count
-        ),
+        "success": bool(items) and not (source_unavailable_count or execution_failed_count),
         "partial": bool(
-            errors
-            or has_partial_chunk
-            or source_unavailable_count
-            or execution_failed_count
-            or not coverage_complete
+            errors or has_partial_chunk or source_unavailable_count or execution_failed_count or not coverage_complete
         ),
         "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
         "playbook": PROFESSIONAL_BUY_ANALYSIS_MODE,
@@ -492,25 +473,17 @@ def _execute_professional_buy_analysis_chunked(
                 raise
             result = build_professional_buy_failure_result(
                 symbol,
-                (
-                    f"{symbol}专业买入分析进程失败："
-                    f"{type(exc).__name__}: {str(exc)[:240]}"
-                ),
+                (f"{symbol}专业买入分析进程失败：" f"{type(exc).__name__}: {str(exc)[:240]}"),
                 thesis=str(arguments.get("thesis") or ""),
                 market_mainline_snapshot_id=str(
-                    (
-                        arguments.get("market_mainline_snapshot") or {}
-                    ).get("snapshot_id")
-                    or ""
+                    (arguments.get("market_mainline_snapshot") or {}).get("snapshot_id") or ""
                 ),
             )
         return index, result
 
     ordered: list[dict[str, Any] | None] = [None] * len(symbols)
     stock_concurrency = _professional_buy_stock_concurrency()
-    with ThreadPoolExecutor(
-        max_workers=min(stock_concurrency, len(symbols))
-    ) as pool:
+    with ThreadPoolExecutor(max_workers=min(stock_concurrency, len(symbols))) as pool:
         futures = [pool.submit(run_one, index, symbol) for index, symbol in enumerate(symbols)]
         for future in as_completed(futures):
             index, result = future.result()

@@ -20,13 +20,15 @@ def get_notification_status() -> dict[str, Any]:
     configured = bool(webhook.get("raw_value_exists"))
     return envelope(
         channel_count=1,
-        channels=[{
-            "channel": "wechat",
-            "name": "企业微信",
-            "configured": configured,
-            "enabled": configured,
-            "test_supported": True,
-        }],
+        channels=[
+            {
+                "channel": "wechat",
+                "name": "企业微信",
+                "configured": configured,
+                "enabled": configured,
+                "test_supported": True,
+            }
+        ],
         configured_count=1 if configured else 0,
         settings_path="/setting?section=notification",
         message="企业微信通知已配置" if configured else "请先在设置页配置企业微信 Webhook",

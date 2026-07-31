@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 def _to_em_symbol(symbol: str) -> str:
     code = symbol.strip()
-    if code.startswith(('SH', 'SZ', 'BJ')):
+    if code.startswith(("SH", "SZ", "BJ")):
         return code
-    if code[0] in ('6', '9'):
+    if code[0] in ("6", "9"):
         return f"SH{code}"
     return f"SZ{code}"
 
@@ -51,7 +51,7 @@ def _safe_float(val) -> Optional[float]:
         return None
     if isinstance(val, str):
         val = val.strip().replace(",", "").replace("%", "")
-        if not val or val.lower() in ('false', 'none', 'nan', '-'):
+        if not val or val.lower() in ("false", "none", "nan", "-"):
             return None
     try:
         v = float(val)
@@ -66,14 +66,14 @@ def _safe_amount(val) -> Optional[float]:
     if val is None:
         return None
     s = str(val).strip()
-    if not s or s.lower() in ('false', 'none', 'nan', '-'):
+    if not s or s.lower() in ("false", "none", "nan", "-"):
         return None
     multiplier = 1.0
-    if '亿' in s:
-        s = s.replace('亿', '')
+    if "亿" in s:
+        s = s.replace("亿", "")
         multiplier = 1e8
-    elif '万' in s:
-        s = s.replace('万', '')
+    elif "万" in s:
+        s = s.replace("万", "")
         multiplier = 1e4
     try:
         return float(s) * multiplier
@@ -92,7 +92,7 @@ def _safe_pct(val) -> Optional[float]:
     if val is None:
         return None
     s = str(val).strip().replace("%", "")
-    if not s or s.lower() in ('false', 'none', 'nan', '-'):
+    if not s or s.lower() in ("false", "none", "nan", "-"):
         return None
     try:
         return float(s)
@@ -113,9 +113,7 @@ def _pick_col(columns, keywords: list[str], *, exclude: list[str] | None = None)
     exclude = exclude or []
     for col in columns:
         col_s = str(col)
-        if any(k.lower() in col_s.lower() for k in keywords) and not any(
-            x.lower() in col_s.lower() for x in exclude
-        ):
+        if any(k.lower() in col_s.lower() for k in keywords) and not any(x.lower() in col_s.lower() for x in exclude):
             return col
     return None
 

@@ -139,10 +139,46 @@ def _looks_like_anti_crawl(content: bytes) -> bool:
 
 _ACW_ARG_RE = re.compile(rb"var\s+arg1\s*=\s*['\"]([0-9A-Fa-f]{40})['\"]")
 _ACW_POSITIONS = (
-    15, 35, 29, 24, 33, 16, 1, 38, 10, 9,
-    19, 31, 40, 27, 22, 23, 25, 13, 6, 11,
-    39, 18, 20, 8, 14, 21, 32, 26, 2, 30,
-    7, 4, 17, 5, 3, 28, 34, 37, 12, 36,
+    15,
+    35,
+    29,
+    24,
+    33,
+    16,
+    1,
+    38,
+    10,
+    9,
+    19,
+    31,
+    40,
+    27,
+    22,
+    23,
+    25,
+    13,
+    6,
+    11,
+    39,
+    18,
+    20,
+    8,
+    14,
+    21,
+    32,
+    26,
+    2,
+    30,
+    7,
+    4,
+    17,
+    5,
+    3,
+    28,
+    34,
+    37,
+    12,
+    36,
 )
 _ACW_MASK = "3000176000856006061501533003690027800375"
 
@@ -189,12 +225,21 @@ def _fetch_with_curl(url: str) -> Tuple[bytes, str, str]:
     """
     proc = subprocess.run(
         [
-            "curl", "-sS", "-L", "--max-redirs", "5",
-            "--max-time", str(int(FETCH_TIMEOUT)),
-            "-A", _UA,
-            "-H", "Accept: */*",
-            "-H", "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
-            "-w", "\n@@META\t%{url_effective}\t%{content_type}\n",
+            "curl",
+            "-sS",
+            "-L",
+            "--max-redirs",
+            "5",
+            "--max-time",
+            str(int(FETCH_TIMEOUT)),
+            "-A",
+            _UA,
+            "-H",
+            "Accept: */*",
+            "-H",
+            "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
+            "-w",
+            "\n@@META\t%{url_effective}\t%{content_type}\n",
             url,
         ],
         capture_output=True,
@@ -207,7 +252,7 @@ def _fetch_with_curl(url: str) -> Tuple[bytes, str, str]:
     marker = out.rfind(b"\n@@META\t")
     if marker >= 0:
         body = out[:marker]
-        meta = out[marker + len(b"\n@@META\t"):].splitlines()[0]
+        meta = out[marker + len(b"\n@@META\t") :].splitlines()[0]
         parts = meta.split(b"\t", 1)
         final_url = parts[0].decode("latin1", "ignore").strip() or url
         final_ct = parts[1].decode("latin1", "ignore").strip() if len(parts) > 1 else ""

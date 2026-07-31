@@ -41,10 +41,17 @@ def get_history_data_route(
         datetime.strptime(start_date, "%Y%m%d")
         datetime.strptime(end_date, "%Y%m%d")
     except ValueError:
-        raise HTTPException(status_code=400, detail={
-            "error": "invalid_date", "message": "日期格式错误，应为 YYYYMMDD",
-        })
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_date",
+                "message": "日期格式错误，应为 YYYYMMDD",
+            },
+        )
 
     return get_history_data(
-        symbol=symbol, start_date=start_date, end_date=end_date, use_cache=use_cache,
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
+        use_cache=use_cache,
     )

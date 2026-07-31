@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 class ToolParameterSchema(BaseModel):
     """工具参数定义"""
+
     name: str = Field(..., description="参数名")
     type: str = Field(..., description="参数类型 (string|number|integer|boolean|array|object)")
     description: str = Field(..., description="参数描述")
@@ -26,6 +27,7 @@ class ToolParameterSchema(BaseModel):
 
 class ToolInfo(BaseModel):
     """单个工具信息"""
+
     name: str = Field(..., description="工具名称")
     description: str = Field(..., description="工具描述")
     parameters: List[ToolParameterSchema] = Field(default_factory=list, description="参数列表")
@@ -36,6 +38,7 @@ class ToolInfo(BaseModel):
 
 class CategoryGroup(BaseModel):
     """按分类分组的工具列表"""
+
     category: str = Field(..., description="分类标识")
     display_name: str = Field(..., description="分类中文名")
     tools: List[ToolInfo] = Field(default_factory=list, description="该分类下的工具列表")
@@ -43,12 +46,14 @@ class CategoryGroup(BaseModel):
 
 class ToolsListResponse(BaseModel):
     """工具列表响应"""
+
     groups: List[CategoryGroup] = Field(default_factory=list, description="按分类分组的工具列表")
     total: int = Field(0, description="工具总数")
 
 
 class ToolTestRequest(BaseModel):
     """工具测试请求"""
+
     tool_name: str = Field(..., min_length=1, description="要测试的工具名称")
     stock_code: str = Field(..., min_length=1, description="股票代码，如 600519")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="额外参数")
@@ -57,6 +62,7 @@ class ToolTestRequest(BaseModel):
 
 class ToolTestResponse(BaseModel):
     """工具测试响应"""
+
     success: bool = Field(..., description="执行是否成功")
     tool_name: str = Field(..., description="工具名称")
     result: Optional[Any] = Field(None, description="原始返回结果 (JSON)")

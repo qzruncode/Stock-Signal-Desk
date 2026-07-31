@@ -74,7 +74,7 @@ def _generate_llm_business_analysis(
     resolved_model = llm_cfg["model"]
 
     industry = _get_stock_industry(symbol)
-    main_business = (intro.get('main_business') or intro.get('主营业务', ''))[:200] if isinstance(intro, dict) else ''
+    main_business = (intro.get("main_business") or intro.get("主营业务", ""))[:200] if isinstance(intro, dict) else ""
     macro_data = _fetch_macro_data()
     peer_data = _fetch_peer_data(industry, symbol)
 
@@ -91,7 +91,7 @@ def _generate_llm_business_analysis(
 
     try:
         env_response = litellm.completion(**kwargs)
-        env_text = env_response.choices[0].message.content or ''
+        env_text = env_response.choices[0].message.content or ""
     except Exception as e:
         logger.warning("[StockBusiness] Environment analysis LLM call failed: %s", e)
         env_text = "环境分析暂不可用"
@@ -99,14 +99,16 @@ def _generate_llm_business_analysis(
     env_result = _parse_environment_analysis(env_text, resolved_model, env_input)
 
     # Track quality analysis
-    tr_system, tr_user = _build_track_quality_prompt(symbol, industry, main_business, composition, financial_summary, peer_data)
+    tr_system, tr_user = _build_track_quality_prompt(
+        symbol, industry, main_business, composition, financial_summary, peer_data
+    )
     kwargs["messages"] = [
         {"role": "system", "content": tr_system},
         {"role": "user", "content": tr_user},
     ]
     try:
         tr_response = litellm.completion(**kwargs)
-        tr_text = tr_response.choices[0].message.content or ''
+        tr_text = tr_response.choices[0].message.content or ""
     except Exception as e:
         logger.warning("[StockBusiness] Track quality LLM call failed: %s", e)
         tr_text = "经营质量分析暂不可用"
@@ -121,7 +123,7 @@ def _generate_llm_business_analysis(
     ]
     try:
         cat_response = litellm.completion(**kwargs)
-        cat_text = cat_response.choices[0].message.content or ''
+        cat_text = cat_response.choices[0].message.content or ""
     except Exception as e:
         logger.warning("[StockBusiness] Catalyst LLM call failed: %s", e)
         cat_text = "催化剂分析暂不可用"
@@ -129,14 +131,16 @@ def _generate_llm_business_analysis(
     cat_result = _parse_catalyst_analysis(cat_text, resolved_model, cat_input)
 
     # Full business analysis
-    biz_system, biz_user, llm_input = _build_business_prompt(symbol, intro, composition, profit_forecast, financial_summary, events)
+    biz_system, biz_user, llm_input = _build_business_prompt(
+        symbol, intro, composition, profit_forecast, financial_summary, events
+    )
     kwargs["messages"] = [
         {"role": "system", "content": biz_system},
         {"role": "user", "content": biz_user},
     ]
     try:
         biz_response = litellm.completion(**kwargs)
-        biz_full_text = biz_response.choices[0].message.content or ''
+        biz_full_text = biz_response.choices[0].message.content or ""
     except Exception as e:
         logger.warning("[StockBusiness] Business analysis LLM call failed: %s", e)
         biz_full_text = "业务分析暂不可用"

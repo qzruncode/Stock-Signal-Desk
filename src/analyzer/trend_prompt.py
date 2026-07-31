@@ -11,20 +11,12 @@ from typing import Any, Dict, List
 def _normalize_prompt_reason_items(items: Any) -> List[str]:
     if not isinstance(items, list):
         return []
-    return [
-        text
-        for item in items
-        if (text := str(item).strip())
-    ]
+    return [text for item in items if (text := str(item).strip())]
 
 
 def _infer_trend_direction(trend: Dict[str, Any]) -> str:
     """Return an explicit structured direction, never a prose-word match."""
-    direction = str(
-        trend.get("trend_direction")
-        or trend.get("direction")
-        or ""
-    ).strip().casefold()
+    direction = str(trend.get("trend_direction") or trend.get("direction") or "").strip().casefold()
     if direction in {"bullish", "bearish", "neutral"}:
         return direction
 
@@ -43,12 +35,8 @@ def _sanitize_trend_analysis_for_prompt(
 ) -> Dict[str, Any]:
     """Create a clean prompt copy without reinterpreting business semantics."""
     trend_dict = dict(trend) if isinstance(trend, dict) else {}
-    trend_dict["signal_reasons"] = _normalize_prompt_reason_items(
-        trend_dict.get("signal_reasons")
-    )
-    trend_dict["risk_factors"] = _normalize_prompt_reason_items(
-        trend_dict.get("risk_factors")
-    )
+    trend_dict["signal_reasons"] = _normalize_prompt_reason_items(trend_dict.get("signal_reasons"))
+    trend_dict["risk_factors"] = _normalize_prompt_reason_items(trend_dict.get("risk_factors"))
 
     trend_dict["prompt_consistency_notes"] = []
     trend_dict["prompt_volume_change_ratio"] = volume_change_ratio

@@ -146,11 +146,7 @@ def get_latest_report(report_key: str) -> Optional[dict[str, Any]]:
             mode="llm",
             as_of_date=current_as_of_date,
         )
-        if (
-            report
-            and report.get("contract_version")
-            != MARKET_MAINLINE_REPORT_CONTRACT
-        ):
+        if report and report.get("contract_version") != MARKET_MAINLINE_REPORT_CONTRACT:
             logger.info(
                 "忽略旧版市场主线报告：expected=%s actual=%s",
                 MARKET_MAINLINE_REPORT_CONTRACT,
@@ -168,28 +164,36 @@ def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
     rss = snapshot.get("rss") or {}
     sections: dict[str, list[dict[str, Any]]] = {
         "policy_headlines": summarize_feed_items(
-            rss.get("policy_calendar"), section="policy",
+            rss.get("policy_calendar"),
+            section="policy",
         ),
         "market_news": summarize_feed_items(
-            rss.get("market_news"), section="market_news",
+            rss.get("market_news"),
+            section="market_news",
         ),
         "strategy_reports": summarize_feed_items(
-            rss.get("strategy_reports"), section="strategy_report",
+            rss.get("strategy_reports"),
+            section="strategy_report",
         ),
         "macro_reports": summarize_feed_items(
-            rss.get("macro_reports"), section="macro_report",
+            rss.get("macro_reports"),
+            section="macro_report",
         ),
         "industry_reports": summarize_feed_items(
-            rss.get("industry_reports"), section="industry_report",
+            rss.get("industry_reports"),
+            section="industry_report",
         ),
         "exchange_disclosure": summarize_feed_items(
-            rss.get("exchange_disclosure"), section="exchange_disclosure",
+            rss.get("exchange_disclosure"),
+            section="exchange_disclosure",
         ),
         "exchange_inquire": summarize_feed_items(
-            rss.get("exchange_inquire"), section="exchange_inquire",
+            rss.get("exchange_inquire"),
+            section="exchange_inquire",
         ),
         "money_center": summarize_feed_items(
-            rss.get("money_center"), section="money_center",
+            rss.get("money_center"),
+            section="money_center",
         ),
     }
     evidence_refs = {
@@ -205,14 +209,8 @@ def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
         "as_of_date": snapshot.get("market_status", {}).get("data_time") or datetime.now().date().isoformat(),
         "market_status": snapshot.get("market_status") or {},
         "board_catalog": {
-            "industry": [
-                item for item in snapshot.get("industry_sectors") or []
-                if isinstance(item, dict)
-            ],
-            "concept": [
-                item for item in snapshot.get("concept_sectors") or []
-                if isinstance(item, dict)
-            ],
+            "industry": [item for item in snapshot.get("industry_sectors") or [] if isinstance(item, dict)],
+            "concept": [item for item in snapshot.get("concept_sectors") or [] if isinstance(item, dict)],
         },
         **sections,
         "evidence_refs": evidence_refs,
@@ -224,11 +222,7 @@ def _identified_items(
     items: list[dict[str, Any]],
     section: str,
 ) -> list[dict[str, Any]]:
-    return [
-        {**item, "evidence_id": f"{section}:{index}"}
-        for index, item in enumerate(items)
-        if isinstance(item, dict)
-    ]
+    return [{**item, "evidence_id": f"{section}:{index}"} for index, item in enumerate(items) if isinstance(item, dict)]
 
 
 def summarize_feed_items(
@@ -241,13 +235,15 @@ def summarize_feed_items(
     results: list[dict[str, str]] = []
     selected = items if limit is None else items[: max(0, int(limit))]
     for index, item in enumerate(selected):
-        results.append({
-            "evidence_id": f"{section}:{index}",
-            "title": str(item.get("title") or "").strip(),
-            "summary": shorten(strip_html(str(item.get("summary") or "")), 180),
-            "published": str(item.get("published") or ""),
-            "link": str(item.get("link") or item.get("url") or ""),
-        })
+        results.append(
+            {
+                "evidence_id": f"{section}:{index}",
+                "title": str(item.get("title") or "").strip(),
+                "summary": shorten(strip_html(str(item.get("summary") or "")), 180),
+                "published": str(item.get("published") or ""),
+                "link": str(item.get("link") or item.get("url") or ""),
+            }
+        )
     return results
 
 
@@ -326,18 +322,55 @@ def _current_report_as_of_date() -> str:
 def _build_source_catalog(rss_context: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {"name": "行业与概念板块目录", "category": "方向映射目录", "credibility": "中高", "used": True},
-        {"name": "上交所问询与披露", "category": "交易所", "credibility": "高", "used": bool((rss_context.get("exchange_inquire") or {}).get("items") or (rss_context.get("exchange_disclosure") or {}).get("items"))},
-        {"name": "中国外汇交易中心公开信息", "category": "官方公开信息", "credibility": "高", "used": bool((rss_context.get("money_center") or {}).get("items"))},
-        {"name": "财联社电报 / 华尔街见闻日历", "category": "公共资讯", "credibility": "中高", "used": bool((rss_context.get("market_news") or {}).get("items") or (rss_context.get("policy_calendar") or {}).get("items"))},
-        {"name": "东方财富策略/宏观/行业研报", "category": "卖方公开研报", "credibility": "中", "used": bool((rss_context.get("strategy_reports") or {}).get("items") or (rss_context.get("macro_reports") or {}).get("items") or (rss_context.get("industry_reports") or {}).get("items"))},
+        {
+            "name": "上交所问询与披露",
+            "category": "交易所",
+            "credibility": "高",
+            "used": bool(
+                (rss_context.get("exchange_inquire") or {}).get("items")
+                or (rss_context.get("exchange_disclosure") or {}).get("items")
+            ),
+        },
+        {
+            "name": "中国外汇交易中心公开信息",
+            "category": "官方公开信息",
+            "credibility": "高",
+            "used": bool((rss_context.get("money_center") or {}).get("items")),
+        },
+        {
+            "name": "财联社电报 / 华尔街见闻日历",
+            "category": "公共资讯",
+            "credibility": "中高",
+            "used": bool(
+                (rss_context.get("market_news") or {}).get("items")
+                or (rss_context.get("policy_calendar") or {}).get("items")
+            ),
+        },
+        {
+            "name": "东方财富策略/宏观/行业研报",
+            "category": "卖方公开研报",
+            "credibility": "中",
+            "used": bool(
+                (rss_context.get("strategy_reports") or {}).get("items")
+                or (rss_context.get("macro_reports") or {}).get("items")
+                or (rss_context.get("industry_reports") or {}).get("items")
+            ),
+        },
     ]
 
 
 def _summarize_sources(snapshot: dict[str, Any]) -> dict[str, Any]:
     rss = snapshot.get("rss") or {}
     return {
-        "official_count": sum(1 for key in ("exchange_inquire", "exchange_disclosure", "money_center") if (rss.get(key) or {}).get("items")),
+        "official_count": sum(
+            1
+            for key in ("exchange_inquire", "exchange_disclosure", "money_center")
+            if (rss.get(key) or {}).get("items")
+        ),
         "news_count": sum(len((rss.get(key) or {}).get("items") or []) for key in ("market_news", "policy_calendar")),
-        "report_count": sum(len((rss.get(key) or {}).get("items") or []) for key in ("strategy_reports", "macro_reports", "industry_reports")),
+        "report_count": sum(
+            len((rss.get(key) or {}).get("items") or [])
+            for key in ("strategy_reports", "macro_reports", "industry_reports")
+        ),
         "source_catalog": snapshot.get("source_catalog") or [],
     }

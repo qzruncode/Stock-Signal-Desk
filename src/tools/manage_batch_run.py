@@ -8,7 +8,9 @@ from src.tools._workflow import envelope, model_dump, require_confirmation, run_
 from src.tools.base import ToolSpec, object_schema
 
 
-def manage_batch_run(action: str, run_id: str = "", symbols: str = "", limit: int = 20, confirmed: bool = False) -> dict[str, Any]:
+def manage_batch_run(
+    action: str, run_id: str = "", symbols: str = "", limit: int = 20, confirmed: bool = False
+) -> dict[str, Any]:
     from api.v1.endpoints.batches.run import (
         BatchRunResumeRequest,
         delete_batch_run,
@@ -63,13 +65,31 @@ TOOL = ToolSpec(
         "查看和控制批量分析任务：列表、进度、详情、报告、暂停、继续、失败续跑、重建报告、通知、停止或删除。"
         "notify/stop/delete 只有用户明确确认时才可传 confirmed=true。"
     ),
-    parameters=object_schema({
-        "action": {"type": "string", "enum": ["list", "status", "detail", "report", "pause", "continue", "resume_failed", "regenerate_report", "notify", "stop", "delete"]},
-        "run_id": {"type": "string"},
-        "symbols": {"type": "string", "description": "失败续跑时可选的股票范围"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-        "confirmed": {"type": "boolean", "default": False},
-    }, required=("action",)),
+    parameters=object_schema(
+        {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "list",
+                    "status",
+                    "detail",
+                    "report",
+                    "pause",
+                    "continue",
+                    "resume_failed",
+                    "regenerate_report",
+                    "notify",
+                    "stop",
+                    "delete",
+                ],
+            },
+            "run_id": {"type": "string"},
+            "symbols": {"type": "string", "description": "失败续跑时可选的股票范围"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            "confirmed": {"type": "boolean", "default": False},
+        },
+        required=("action",),
+    ),
     executor=manage_batch_run,
     category="action",
 )

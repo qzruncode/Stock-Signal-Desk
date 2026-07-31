@@ -14,23 +14,29 @@ def _uncached(key, fn, **kwargs):
 
 
 def test_research_report_discovers_forecast_years_from_actual_columns() -> None:
-    frame = pd.DataFrame([{
-        "股票代码": "600519",
-        "股票简称": "贵州茅台",
-        "报告名称": "公司事件点评报告",
-        "东财评级": "买入",
-        "机构": "测试证券",
-        "近一月个股研报数": 3,
-        "2027-盈利预测-收益": 70.5,
-        "2027-盈利预测-市盈率": 18.2,
-        "2029-盈利预测-收益": 80.1,
-        "2029-盈利预测-市盈率": 16.0,
-        "行业": "白酒Ⅱ",
-        "日期": date.today(),
-        "报告PDF链接": "https://example.com/report.pdf",
-    }])
-    with patch("src.tools.get_research_report.cached_call", side_effect=_uncached), \
-         patch("src.tools.get_research_report._fetch_akshare", return_value=frame):
+    frame = pd.DataFrame(
+        [
+            {
+                "股票代码": "600519",
+                "股票简称": "贵州茅台",
+                "报告名称": "公司事件点评报告",
+                "东财评级": "买入",
+                "机构": "测试证券",
+                "近一月个股研报数": 3,
+                "2027-盈利预测-收益": 70.5,
+                "2027-盈利预测-市盈率": 18.2,
+                "2029-盈利预测-收益": 80.1,
+                "2029-盈利预测-市盈率": 16.0,
+                "行业": "白酒Ⅱ",
+                "日期": date.today(),
+                "报告PDF链接": "https://example.com/report.pdf",
+            }
+        ]
+    )
+    with (
+        patch("src.tools.get_research_report.cached_call", side_effect=_uncached),
+        patch("src.tools.get_research_report._fetch_akshare", return_value=frame),
+    ):
         result = get_research_report("600519")
 
     forecasts = result["items"][0]["profit_forecasts"]
@@ -42,14 +48,20 @@ def test_research_report_discovers_forecast_years_from_actual_columns() -> None:
 
 
 def test_no_recent_research_report_is_valid_zero_result() -> None:
-    frame = pd.DataFrame([{
-        "股票代码": "920000",
-        "股票简称": "安徽凤凰",
-        "报告名称": "历史研报",
-        "日期": date(2020, 12, 21),
-    }])
-    with patch("src.tools.get_research_report.cached_call", side_effect=_uncached), \
-         patch("src.tools.get_research_report._fetch_akshare", return_value=frame):
+    frame = pd.DataFrame(
+        [
+            {
+                "股票代码": "920000",
+                "股票简称": "安徽凤凰",
+                "报告名称": "历史研报",
+                "日期": date(2020, 12, 21),
+            }
+        ]
+    )
+    with (
+        patch("src.tools.get_research_report.cached_call", side_effect=_uncached),
+        patch("src.tools.get_research_report._fetch_akshare", return_value=frame),
+    ):
         result = get_research_report("920000", days=365)
 
     assert result["success"] is True
@@ -74,8 +86,10 @@ def test_research_report_uses_rss_only_when_structured_source_failed() -> None:
         "source": "RSSHub/东方财富个股研报",
         "source_type": "rss_research_report",
     }
-    with patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")), \
-         patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([rss_item], [])):
+    with (
+        patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")),
+        patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([rss_item], [])),
+    ):
         result = get_research_report("300850")
 
     assert result["success"] is True
@@ -85,8 +99,10 @@ def test_research_report_uses_rss_only_when_structured_source_failed() -> None:
 
 
 def test_research_report_empty_successful_rss_fallback_is_valid_zero_result() -> None:
-    with patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")), \
-         patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([], [])):
+    with (
+        patch("src.tools.get_research_report.cached_call", side_effect=RuntimeError("down")),
+        patch("src.tools.get_research_report._fetch_rss_fallback", return_value=([], [])),
+    ):
         result = get_research_report("300850")
 
     assert result["success"] is True

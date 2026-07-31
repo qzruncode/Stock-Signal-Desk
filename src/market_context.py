@@ -36,7 +36,7 @@ def detect_market(stock_code: Optional[str]) -> str:
 
     # US stocks: 1-5 uppercase letters (AAPL, TSLA, GOOGL)
     # Also handles suffixed forms like BRK.B
-    if re.match(r'^[A-Z]{1,5}(\.[A-Z]{1,2})?$', code):
+    if re.match(r"^[A-Z]{1,5}(\.[A-Z]{1,2})?$", code):
         return "us"
 
     # Default: A-shares (6-digit numbers like 600519, 000001)

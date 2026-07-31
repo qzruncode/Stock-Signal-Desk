@@ -6,15 +6,17 @@ from src.tools.get_sector_list import get_sector_list
 def test_sector_list_projects_complete_bounded_flow_directory():
     flow = {
         "success": True,
-        "records": [{
-            "sector_code": "BK0477",
-            "name": "酿酒行业",
-            "pct_chg": 1.25,
-            "main_net_inflow": 123.0,
-            "main_net_inflow_pct": 2.3,
-            "leading_stock": "贵州茅台",
-            "leading_stock_code": "600519",
-        }],
+        "records": [
+            {
+                "sector_code": "BK0477",
+                "name": "酿酒行业",
+                "pct_chg": 1.25,
+                "main_net_inflow": 123.0,
+                "main_net_inflow_pct": 2.3,
+                "leading_stock": "贵州茅台",
+                "leading_stock_code": "600519",
+            }
+        ],
         "source": "东方财富板块资金流",
         "data_time": "2026-07-17T15:00:00+08:00",
         "is_stale": False,

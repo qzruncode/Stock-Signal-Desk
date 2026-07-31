@@ -166,9 +166,7 @@ def backup(output: Path) -> dict[str, object]:
 
 
 def _verify_manifest(backup_path: Path) -> None:
-    manifest_path = backup_path.with_suffix(
-        backup_path.suffix + ".manifest.json"
-    )
+    manifest_path = backup_path.with_suffix(backup_path.suffix + ".manifest.json")
     if not manifest_path.is_file():
         raise RuntimeError(f"backup manifest is missing: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -177,8 +175,7 @@ def _verify_manifest(backup_path: Path) -> None:
         raise RuntimeError("backup checksum does not match its manifest")
     if manifest.get("schema_version") != SCHEMA_VERSION:
         raise RuntimeError(
-            "backup schema is incompatible with this release: "
-            f"{manifest.get('schema_version')} != {SCHEMA_VERSION}"
+            "backup schema is incompatible with this release: " f"{manifest.get('schema_version')} != {SCHEMA_VERSION}"
         )
 
 

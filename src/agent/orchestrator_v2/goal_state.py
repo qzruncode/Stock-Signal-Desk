@@ -60,9 +60,7 @@ def _evidence_id(
 def _quality(outcome: TaskOutcomeV2) -> EvidenceQuality:
     if outcome.status == OutcomeStatus.SUCCEEDED:
         return EvidenceQuality.AUTHORITATIVE
-    if outcome.status == OutcomeStatus.PARTIAL and (
-        outcome.evidence or outcome.result is not None
-    ):
+    if outcome.status == OutcomeStatus.PARTIAL and (outcome.evidence or outcome.result is not None):
         return EvidenceQuality.DEGRADED
     return EvidenceQuality.FAILED
 
@@ -96,16 +94,14 @@ def build_evidence_ledger_v2(
         if not normalized_rows:
             # Keep the program-owned result boundary visible in the ledger
             # without pretending it is an external citation.
-            normalized_rows.append((
-                f"capability:{capability.value}",
-                None,
-                None,
+            normalized_rows.append(
                 (
-                    "结构化能力结果已形成"
-                    if quality != EvidenceQuality.FAILED
-                    else "能力执行未形成可用证据"
-                ),
-            ))
+                    f"capability:{capability.value}",
+                    None,
+                    None,
+                    ("结构化能力结果已形成" if quality != EvidenceQuality.FAILED else "能力执行未形成可用证据"),
+                )
+            )
         for source, locator, observed_at, summary in normalized_rows:
             evidence_id = _evidence_id(
                 task_id=outcome.task_id,
@@ -117,22 +113,26 @@ def build_evidence_ledger_v2(
             if evidence_id in seen:
                 continue
             seen.add(evidence_id)
-            entries.append(EvidenceLedgerEntryV2(
-                evidence_id=evidence_id,
-                task_id=outcome.task_id,
-                capability=capability,
-                dimensions=tuple(sorted(
-                    spec.evidence_dimensions,
-                    key=lambda item: item.value,
-                )),
-                quality=quality,
-                source=source,
-                locator=locator,
-                observed_at=observed_at,
-                summary=summary,
-                warnings=outcome.warnings,
-                errors=errors,
-            ))
+            entries.append(
+                EvidenceLedgerEntryV2(
+                    evidence_id=evidence_id,
+                    task_id=outcome.task_id,
+                    capability=capability,
+                    dimensions=tuple(
+                        sorted(
+                            spec.evidence_dimensions,
+                            key=lambda item: item.value,
+                        )
+                    ),
+                    quality=quality,
+                    source=source,
+                    locator=locator,
+                    observed_at=observed_at,
+                    summary=summary,
+                    warnings=outcome.warnings,
+                    errors=errors,
+                )
+            )
     return tuple(entries)
 
 
@@ -153,25 +153,14 @@ def _assess_claims(
     assessments: list[ClaimAssessmentV2] = []
     for claim in goal.claims:
         supported_dimensions = {
-            dimension
-            for dimension in claim.required_dimensions
-            if usable_by_dimension.get(dimension)
+            dimension for dimension in claim.required_dimensions if usable_by_dimension.get(dimension)
         }
-        missing = tuple(
-            dimension
-            for dimension in claim.required_dimensions
-            if dimension not in supported_dimensions
-        )
+        missing = tuple(dimension for dimension in claim.required_dimensions if dimension not in supported_dimensions)
         supporting_entries = {
-            entry.evidence_id: entry
-            for dimension in supported_dimensions
-            for entry in usable_by_dimension[dimension]
+            entry.evidence_id: entry for dimension in supported_dimensions for entry in usable_by_dimension[dimension]
         }
         if not missing:
-            has_degraded = any(
-                entry.quality == EvidenceQuality.DEGRADED
-                for entry in supporting_entries.values()
-            )
+            has_degraded = any(entry.quality == EvidenceQuality.DEGRADED for entry in supporting_entries.values())
             status = ClaimStatus.SUPPORTED
             confidence = 0.68 if has_degraded else 0.9
             rationale = (
@@ -183,24 +172,23 @@ def _assess_claims(
             status = ClaimStatus.PARTIAL
             confidence = max(
                 0.2,
-                0.6 * (
-                    len(supported_dimensions)
-                    / len(claim.required_dimensions)
-                ),
+                0.6 * (len(supported_dimensions) / len(claim.required_dimensions)),
             )
             rationale = "已有部分证据，但仍缺少完成该结论所需的证据维度。"
         else:
             status = ClaimStatus.UNKNOWN
             confidence = 0.05
             rationale = "当前运行尚未形成该结论所需的可用证据。"
-        assessments.append(ClaimAssessmentV2(
-            claim_id=claim.claim_id,
-            status=status,
-            confidence=round(confidence, 3),
-            supported_by=tuple(sorted(supporting_entries)),
-            missing_dimensions=missing,
-            rationale=rationale,
-        ))
+        assessments.append(
+            ClaimAssessmentV2(
+                claim_id=claim.claim_id,
+                status=status,
+                confidence=round(confidence, 3),
+                supported_by=tuple(sorted(supporting_entries)),
+                missing_dimensions=missing,
+                rationale=rationale,
+            )
+        )
     return tuple(assessments)
 
 
@@ -214,20 +202,14 @@ def _expansion_candidates(
     candidates: list[tuple[int, int, Capability]] = []
     fallback_rank: dict[Capability, int] = {}
     for attempted in attempted_capabilities:
-        for index, fallback in enumerate(
-            capability_for(attempted).fallback_capabilities
-        ):
+        for index, fallback in enumerate(capability_for(attempted).fallback_capabilities):
             fallback_rank.setdefault(fallback, index)
 
     for capability in Capability:
         if capability in attempted_capabilities:
             continue
         spec = capability_for(capability)
-        if (
-            spec.execution_policy.effect != EffectLevel.READ
-            or not spec.auto_expandable
-            or spec.input_resources
-        ):
+        if spec.execution_policy.effect != EffectLevel.READ or not spec.auto_expandable or spec.input_resources:
             continue
         covered = len(missing & spec.evidence_dimensions)
         if not covered:
@@ -235,11 +217,13 @@ def _expansion_candidates(
         # Every automatic expansion must improve typed evidence coverage.
         # Declared fallbacks only determine priority among real improvements;
         # they never justify unrelated retrieval.
-        candidates.append((
-            -covered,
-            fallback_rank.get(capability, 10_000),
-            capability,
-        ))
+        candidates.append(
+            (
+                -covered,
+                fallback_rank.get(capability, 10_000),
+                capability,
+            )
+        )
     candidates.sort(key=lambda item: (item[0], item[1], item[2].value))
     return tuple(item[2] for item in candidates[:max_candidates])
 
@@ -258,35 +242,25 @@ def evaluate_goal_v2(
     attempted = tuple(dict.fromkeys(attempted_capabilities))
     evidence_ledger = build_evidence_ledger_v2(task_outcomes)
     assessments = _assess_claims(goal, evidence_ledger)
-    mandatory = {
-        claim.claim_id
-        for claim in goal.claims
-        if claim.mandatory
-    }
+    mandatory = {claim.claim_id for claim in goal.claims if claim.mandatory}
     unresolved = [
         assessment
         for assessment in assessments
         if (
-            assessment.claim_id in mandatory
-            and assessment.status
-            not in {ClaimStatus.SUPPORTED, ClaimStatus.CONTESTED}
+            assessment.claim_id in mandatory and assessment.status not in {ClaimStatus.SUPPORTED, ClaimStatus.CONTESTED}
         )
     ]
-    missing_dimensions = tuple(sorted({
-        dimension
-        for assessment in unresolved
-        for dimension in assessment.missing_dimensions
-    }, key=lambda item: item.value))
+    missing_dimensions = tuple(
+        sorted(
+            {dimension for assessment in unresolved for dimension in assessment.missing_dimensions},
+            key=lambda item: item.value,
+        )
+    )
 
     if not unresolved:
-        has_degraded = any(
-            entry.quality == EvidenceQuality.DEGRADED
-            for entry in evidence_ledger
-        )
+        has_degraded = any(entry.quality == EvidenceQuality.DEGRADED for entry in evidence_ledger)
         terminal_reason = (
-            GoalTerminalReason.COMPLETED_WITH_UNCERTAINTY
-            if has_degraded
-            else GoalTerminalReason.GOAL_SATISFIED
+            GoalTerminalReason.COMPLETED_WITH_UNCERTAINTY if has_degraded else GoalTerminalReason.GOAL_SATISFIED
         )
         evaluation = GoalEvaluationV2(
             disposition=GoalDisposition.COMPLETE,
@@ -314,15 +288,11 @@ def evaluate_goal_v2(
                 assessments=assessments,
                 missing_dimensions=missing_dimensions,
                 proposed_capabilities=proposed,
-                rationale=(
-                    "强制结论仍有证据缺口；只追加未执行过、无副作用且能改善覆盖的读取能力。"
-                ),
+                rationale=("强制结论仍有证据缺口；只追加未执行过、无副作用且能改善覆盖的读取能力。"),
             )
         else:
             terminal_reason = (
-                GoalTerminalReason.BUDGET_EXHAUSTED
-                if not budget.can_revise
-                else GoalTerminalReason.NO_SAFE_EXPANSION
+                GoalTerminalReason.BUDGET_EXHAUSTED if not budget.can_revise else GoalTerminalReason.NO_SAFE_EXPANSION
             )
             evaluation = GoalEvaluationV2(
                 disposition=GoalDisposition.BEST_EFFORT,

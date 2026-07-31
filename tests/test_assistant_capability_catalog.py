@@ -8,14 +8,7 @@ from scripts.agent_tool_audit import schema_only_tools, tool_cases
 
 
 def test_frontend_capability_catalog_covers_every_registered_agent_tool() -> None:
-    catalog_path = (
-        Path(__file__).parents[1]
-        / "apps"
-        / "dsa-web"
-        / "src"
-        / "utils"
-        / "assistantQuickActions.ts"
-    )
+    catalog_path = Path(__file__).parents[1] / "apps" / "dsa-web" / "src" / "utils" / "assistantQuickActions.ts"
     catalog = catalog_path.read_text(encoding="utf-8")
     mapped_tools = re.findall(r"toolName: '([^']+)'", catalog)
 

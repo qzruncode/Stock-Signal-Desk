@@ -93,7 +93,10 @@ def call_ai_for_stock(
         persist_llm_usage(usage, model_used, call_type="batch_analysis")
         logger.info(
             "AI analysis complete for %s(%s): %d chars, model=%s",
-            stock_name, stock_code, len(response_text), model_used,
+            stock_name,
+            stock_code,
+            len(response_text),
+            model_used,
         )
         return response_text, model_used, usage
     except Exception:
@@ -138,7 +141,9 @@ def call_ai_structured(
         persist_llm_usage(usage, model_used, call_type=call_type)
         logger.info(
             "Structured AI call complete: %d chars, model=%s, call_type=%s",
-            len(response_text), model_used, call_type,
+            len(response_text),
+            model_used,
+            call_type,
         )
         return response_text, model_used, usage
     except Exception:

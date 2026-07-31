@@ -38,10 +38,7 @@ logger = logging.getLogger(__name__)
 
 EASTMONEY_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-SINA_KLINE_URL = (
-    "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-    "CN_MarketData.getKLineData"
-)
+SINA_KLINE_URL = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/" "CN_MarketData.getKLineData"
 SINA_OPENAPI_URL = "https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
 EXPORT_DIR = Path(__file__).resolve().parents[3] / "data" / "exports" / "stock-screening"
 KLINE_FETCH_WORKERS = 64
@@ -93,8 +90,7 @@ def _report_dates(reference: date | None = None) -> tuple[str, str | None, str |
         date(year, month, day)
         for year in (today.year, today.year - 1)
         for month, day in ((12, 31), (9, 30), (6, 30), (3, 31))
-        if date(year, month, day) <= today
-        and (today - date(year, month, day)).days >= 25
+        if date(year, month, day) <= today and (today - date(year, month, day)).days >= 25
     ]
     current = max(candidates)
     if current.month == 12 and current.day == 31:
@@ -107,10 +103,7 @@ def _report_dates(reference: date | None = None) -> tuple[str, str | None, str |
 def _fetch_financial_page(period: str, page: int) -> tuple[list[dict[str, Any]], int]:
     params = {
         "reportName": "RPT_F10_FINANCE_MAINFINADATA",
-        "columns": (
-            "SECURITY_CODE,REPORT_DATE,UPDATE_DATE,TOTALOPERATEREVE,"
-            "PARENTNETPROFIT,KCFJCXSYJLR,ZCFZL"
-        ),
+        "columns": ("SECURITY_CODE,REPORT_DATE,UPDATE_DATE,TOTALOPERATEREVE," "PARENTNETPROFIT,KCFJCXSYJLR,ZCFZL"),
         "filter": f"(REPORT_DATE='{period}')",
         "pageNumber": page,
         "pageSize": 500,
@@ -168,8 +161,12 @@ def _fetch_financial_period(period: str) -> dict[str, dict[str, Any]]:
         # create false "missing financial data" exclusions.
         merged = by_code.setdefault(code, {"SECURITY_CODE": code})
         for field in (
-            "REPORT_DATE", "UPDATE_DATE", "TOTALOPERATEREVE", "PARENTNETPROFIT",
-            "KCFJCXSYJLR", "ZCFZL",
+            "REPORT_DATE",
+            "UPDATE_DATE",
+            "TOTALOPERATEREVE",
+            "PARENTNETPROFIT",
+            "KCFJCXSYJLR",
+            "ZCFZL",
         ):
             if row.get(field) is not None:
                 merged[field] = row[field]
@@ -216,9 +213,7 @@ def _build_ttm_financials(reference: date | None = None) -> tuple[dict[str, dict
                 if None not in {current_revenue, annual_revenue, prior_revenue}:
                     values["revenue_ttm"] = float(current_revenue + annual_revenue - prior_revenue)
                 if None not in {current_profit, annual_profit, prior_profit}:
-                    values["deducted_net_profit_ttm"] = float(
-                        current_profit + annual_profit - prior_profit
-                    )
+                    values["deducted_net_profit_ttm"] = float(current_profit + annual_profit - prior_profit)
         else:
             if current_revenue is not None:
                 values["revenue_ttm"] = float(current_revenue)
@@ -280,9 +275,9 @@ def _fetch_ths_ttm_financial(code: str) -> dict[str, Any] | None:
             values["deducted_net_profit_ttm"] = float(current_profit + annual_profit - prior_profit)
     if debt_ratio is not None:
         values["debt_ratio"] = float(debt_ratio)
-    return values if any(
-        field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")
-    ) else None
+    return (
+        values if any(field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")) else None
+    )
 
 
 def _quarter_index(report_period: str) -> int | None:
@@ -335,9 +330,9 @@ def _fetch_sina_ttm_financial(code: str) -> dict[str, Any] | None:
             amounts = [_safe_float(row.get(source_field)) for row in last_four]
             if all(amount is not None for amount in amounts):
                 values[target_field] = float(sum(float(amount) for amount in amounts))
-    return values if any(
-        field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")
-    ) else None
+    return (
+        values if any(field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")) else None
+    )
 
 
 def _fetch_secondary_ttm_financial(
@@ -355,9 +350,7 @@ def _fetch_secondary_ttm_financial(
             if result := fetcher(code):
                 if required.issubset(result):
                     return result
-                errors.append(
-                    f"{source_name}:缺少{','.join(sorted(required.difference(result)))}"
-                )
+                errors.append(f"{source_name}:缺少{','.join(sorted(required.difference(result)))}")
                 continue
             errors.append(f"{source_name}:空数据")
         except Exception as exc:
@@ -382,13 +375,16 @@ def _persist_financials(financials: dict[str, dict[str, Any]], report_period: st
         for code, values in financials.items()
     ]
     with db.session_scope() as session:
-        session.execute(text(
-            "UPDATE stock_meta SET revenue_ttm=COALESCE(:revenue_ttm, revenue_ttm), "
-            "deducted_net_profit_ttm=COALESCE(:deducted_net_profit_ttm, deducted_net_profit_ttm), "
-            "debt_ratio=COALESCE(:debt_ratio, debt_ratio), "
-            "financial_fetched_at=:financial_fetched_at, report_date=:report_date "
-            "WHERE code=:code"
-        ), params)
+        session.execute(
+            text(
+                "UPDATE stock_meta SET revenue_ttm=COALESCE(:revenue_ttm, revenue_ttm), "
+                "deducted_net_profit_ttm=COALESCE(:deducted_net_profit_ttm, deducted_net_profit_ttm), "
+                "debt_ratio=COALESCE(:debt_ratio, debt_ratio), "
+                "financial_fetched_at=:financial_fetched_at, report_date=:report_date "
+                "WHERE code=:code"
+            ),
+            params,
+        )
 
 
 def _load_fresh_cached_financials(
@@ -399,10 +395,16 @@ def _load_fresh_cached_financials(
         return {}, None
     db = DatabaseManager.get_instance()
     with db.session_scope() as session:
-        rows = session.execute(text(
-            "SELECT code, revenue_ttm, deducted_net_profit_ttm, debt_ratio, "
-            "report_date, financial_fetched_at FROM stock_meta WHERE status='active'"
-        )).mappings().all()
+        rows = (
+            session.execute(
+                text(
+                    "SELECT code, revenue_ttm, deducted_net_profit_ttm, debt_ratio, "
+                    "report_date, financial_fetched_at FROM stock_meta WHERE status='active'"
+                )
+            )
+            .mappings()
+            .all()
+        )
     cached: dict[str, dict[str, Any]] = {}
     periods: list[str] = []
     for row in rows:
@@ -443,13 +445,15 @@ def _normalize_bars(raw: Iterable[Iterable[Any]]) -> list[dict[str, Any]]:
         opened, closed, high, low = map(_safe_float, values[1:5])
         if None in {opened, closed, high, low} or min(opened, closed, high, low) <= 0:
             continue
-        bars.append({
-            "date": str(values[0])[:10],
-            "open": opened,
-            "close": closed,
-            "high": high,
-            "low": low,
-        })
+        bars.append(
+            {
+                "date": str(values[0])[:10],
+                "open": opened,
+                "close": closed,
+                "high": high,
+                "low": low,
+            }
+        )
     bars.sort(key=lambda item: item["date"])
     return bars
 
@@ -481,6 +485,7 @@ def _sina_qfq_factors(symbol: str) -> tuple[list[str], list[float]]:
     if not match:
         return [], []
     import json
+
     payload = json.loads(match.group(1))
     pairs = sorted(
         (str(item.get("d"))[:10], float(item.get("f")))
@@ -513,19 +518,23 @@ def _fetch_sina_bars(code: str, count: int) -> list[dict[str, Any]]:
         for bar in bars:
             index = bisect.bisect_right(factor_dates, bar["date"]) - 1
             factor = factors[index] if index >= 0 else factors[0]
-            adjusted.append({
-                **bar,
-                "open": bar["open"] / factor,
-                "high": bar["high"] / factor,
-                "low": bar["low"] / factor,
-                "close": bar["close"] / factor,
-            })
+            adjusted.append(
+                {
+                    **bar,
+                    "open": bar["open"] / factor,
+                    "high": bar["high"] / factor,
+                    "low": bar["low"] / factor,
+                    "close": bar["close"] / factor,
+                }
+            )
         return adjusted
     return bars
 
 
 def _fetch_adjusted_bars(
-    code: str, count: int, allow_tencent: bool = True,
+    code: str,
+    count: int,
+    allow_tencent: bool = True,
 ) -> tuple[str, list[dict[str, Any]], str | None, str | None]:
     def attempt(source_name: str, fetcher) -> tuple[list[dict[str, Any]], str | None]:
         last_error: str | None = None
@@ -607,7 +616,8 @@ def _required_bar_count(spec: QuantitativeScreenSpec) -> int:
 
 
 def calculate_atr_screen_metrics(
-    bars: list[dict[str, Any]], rule: AtrRelativeFrequencyRule,
+    bars: list[dict[str, Any]],
+    rule: AtrRelativeFrequencyRule,
 ) -> dict[str, Any] | None:
     """Calculate one validated ATR-relative-frequency rule without shrinking its window."""
     required = rule.atr_period + rule.baseline_period + rule.lookback_days - 1
@@ -660,10 +670,7 @@ def calculate_atr_screen_metrics(
         evaluation.append((current, _dynamic_threshold(mean, rule)))
     if len(evaluation) != rule.lookback_days:
         return None
-    qualified_days = sum(
-        _compare(current, rule.daily_comparison, warning)
-        for current, warning in evaluation
-    )
+    qualified_days = sum(_compare(current, rule.daily_comparison, warning) for current, warning in evaluation)
     current_atr = float(atr_relative[-1])
     current_mean = float(baselines[-1])
     return {
@@ -720,7 +727,9 @@ def _column_defs(spec: QuantitativeScreenSpec) -> list[dict[str, str]]:
 
 
 def _write_export(
-    items: list[dict[str, Any]], columns: list[dict[str, str]], _fingerprint: str,
+    items: list[dict[str, Any]],
+    columns: list[dict[str, str]],
+    _fingerprint: str,
 ) -> tuple[str, str]:
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     file_id = f"stock-screen-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:8]}.csv"
@@ -729,10 +738,9 @@ def _write_export(
         writer = csv.writer(handle)
         writer.writerow([column["label"] for column in columns] + ["筛选规格指纹"])
         for item in items:
-            writer.writerow([
-                _export_cell_value(column["field"], item.get(column["field"]))
-                for column in columns
-            ] + [_fingerprint])
+            writer.writerow(
+                [_export_cell_value(column["field"], item.get(column["field"])) for column in columns] + [_fingerprint]
+            )
     return file_id, f"/api/v1/agent/exports/{file_id}"
 
 
@@ -827,10 +835,7 @@ def _matches_financial_filters(values: dict[str, Any], spec: QuantitativeScreenS
 def _passes_technical_thresholds(metrics: dict[str, Any], rule: AtrRelativeFrequencyRule) -> bool:
     if rule.min_qualified_days is not None and metrics["qualified_days"] < rule.min_qualified_days:
         return False
-    if (
-        rule.min_qualified_ratio_pct is not None
-        and metrics["qualified_ratio_pct"] < rule.min_qualified_ratio_pct
-    ):
+    if rule.min_qualified_ratio_pct is not None and metrics["qualified_ratio_pct"] < rule.min_qualified_ratio_pct:
         return False
     return True
 
@@ -873,9 +878,7 @@ def run_atr_volatility_screen(
         spec = QuantitativeScreenSpec.model_validate(screen_spec)
     except ValidationError as exc:
         return _failure(
-            "筛选条件校验失败；未执行任何股票筛选: " + "; ".join(
-                error["msg"] for error in exc.errors()[:8]
-            ),
+            "筛选条件校验失败；未执行任何股票筛选: " + "; ".join(error["msg"] for error in exc.errors()[:8]),
             stage="spec_validation",
         )
     if not refresh_if_stale:
@@ -899,9 +902,11 @@ def run_atr_volatility_screen(
     required_financial_fields = spec.required_financial_fields()
     db = DatabaseManager.get_instance()
     with db.session_scope() as session:
-        rows = session.execute(text(
-            "SELECT code, name, ipo_date FROM stock_meta WHERE status='active' ORDER BY code"
-        )).mappings().all()
+        rows = (
+            session.execute(text("SELECT code, name, ipo_date FROM stock_meta WHERE status='active' ORDER BY code"))
+            .mappings()
+            .all()
+        )
     active = {
         str(row["code"]): row
         for row in rows
@@ -936,13 +941,9 @@ def run_atr_volatility_screen(
         except Exception as exc:
             primary_financial_available = False
             primary_error = f"{type(exc).__name__}: {exc}"
-            warnings.append(
-                "东方财富全市场财务接口本轮不可用；已自动切换到本日成功刷新并落库的逐股财务快照。"
-            )
+            warnings.append("东方财富全市场财务接口本轮不可用；已自动切换到本日成功刷新并落库的逐股财务快照。")
             try:
-                financials, report_period = _load_fresh_cached_financials(
-                    set(eligible_universe)
-                )
+                financials, report_period = _load_fresh_cached_financials(set(eligible_universe))
             except Exception as cache_exc:
                 return _failure(
                     f"财务主源失败（{primary_error}），读取本日财务快照也失败: {cache_exc}",
@@ -955,14 +956,9 @@ def run_atr_volatility_screen(
                     },
                     warnings=warnings,
                 )
-            cached_financial_count = sum(
-                required_financial_fields.issubset(values)
-                for values in financials.values()
-            )
+            cached_financial_count = sum(required_financial_fields.issubset(values) for values in financials.values())
         missing_required = [
-            code
-            for code in eligible_universe
-            if not required_financial_fields.issubset(financials.get(code, {}))
+            code for code in eligible_universe if not required_financial_fields.issubset(financials.get(code, {}))
         ]
         # A per-company source is suitable for filling a small number of holes,
         # not for silently turning a bulk-source outage into thousands of slow
@@ -1040,15 +1036,12 @@ def run_atr_volatility_screen(
                     "history_preexcluded": len(definitely_insufficient),
                     "financial_required_fields": sorted(required_financial_fields),
                     "financial_covered": sum(
-                        required_financial_fields.issubset(financials.get(code, {}))
-                        for code in eligible_universe
+                        required_financial_fields.issubset(financials.get(code, {})) for code in eligible_universe
                     ),
                     "financial_cache_count": cached_financial_count,
                     "financial_fallback_count": fallback_financial_count,
                 },
-                failed_symbols=[
-                    f"{code}:{reason}" for code, reason in list(fallback_errors.items())[:20]
-                ],
+                failed_symbols=[f"{code}:{reason}" for code, reason in list(fallback_errors.items())[:20]],
                 warnings=warnings,
             )
 
@@ -1074,8 +1067,7 @@ def run_atr_volatility_screen(
     fetch_count = required_bars + 20
     with concurrent.futures.ThreadPoolExecutor(max_workers=KLINE_FETCH_WORKERS) as pool:
         future_codes = {
-            pool.submit(_fetch_adjusted_bars, code, fetch_count, allow_tencent): code
-            for code in candidates
+            pool.submit(_fetch_adjusted_bars, code, fetch_count, allow_tencent): code for code in candidates
         }
         for future in concurrent.futures.as_completed(future_codes):
             requested_code = future_codes[future]
@@ -1100,10 +1092,7 @@ def run_atr_volatility_screen(
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(KLINE_SECOND_PASS_WORKERS, len(retry_codes))
         ) as pool:
-            retry_futures = {
-                pool.submit(_fetch_adjusted_bars, code, fetch_count, True): code
-                for code in retry_codes
-            }
+            retry_futures = {pool.submit(_fetch_adjusted_bars, code, fetch_count, True): code for code in retry_codes}
             for future in concurrent.futures.as_completed(retry_futures):
                 requested_code = retry_futures[future]
                 try:
@@ -1152,12 +1141,14 @@ def run_atr_volatility_screen(
             continue
         if not _passes_technical_thresholds(metrics, spec.technical_rule):
             continue
-        items.append({
-            "code": code,
-            "name": str(active[code]["name"]),
-            **metrics,
-            **financials.get(code, {}),
-        })
+        items.append(
+            {
+                "code": code,
+                "name": str(active[code]["name"]),
+                **metrics,
+                **financials.get(code, {}),
+            }
+        )
     items.sort(key=lambda item: str(item["code"]))
     items.sort(
         key=lambda item: item.get(spec.sort.field),
@@ -1173,11 +1164,9 @@ def run_atr_volatility_screen(
         "history_preexcluded": len(definitely_insufficient),
         "financial_required_fields": sorted(required_financial_fields),
         "financial_covered": (
-            sum(
-                required_financial_fields.issubset(financials.get(code, {}))
-                for code in eligible_universe
-            )
-            if required_financial_fields else None
+            sum(required_financial_fields.issubset(financials.get(code, {})) for code in eligible_universe)
+            if required_financial_fields
+            else None
         ),
         "financial_cache_count": cached_financial_count,
         "financial_fallback_count": fallback_financial_count,
@@ -1194,25 +1183,19 @@ def run_atr_volatility_screen(
         "atr": f"TR的{spec.technical_rule.atr_period}日{spec.technical_rule.atr_average}",
         "atr_relative_pct": "ATR/close*100%",
         "baseline": (
-            f"ATR相对波动率的{spec.technical_rule.baseline_period}日"
-            f"{spec.technical_rule.baseline_average}"
+            f"ATR相对波动率的{spec.technical_rule.baseline_period}日" f"{spec.technical_rule.baseline_average}"
         ),
         "dynamic_warning": (
-            f"baseline {spec.technical_rule.threshold_operator} "
-            f"{spec.technical_rule.threshold_value:g}"
+            f"baseline {spec.technical_rule.threshold_operator} " f"{spec.technical_rule.threshold_value:g}"
         ),
         "daily_comparison": spec.technical_rule.daily_comparison,
     }
     source_parts: list[str] = []
-    source_parts.extend(
-        f"{source_name}（{count}只）"
-        for source_name, count in sorted(kline_source_counts.items())
-    )
+    source_parts.extend(f"{source_name}（{count}只）" for source_name, count in sorted(kline_source_counts.items()))
     if required_financial_fields:
         source_parts.insert(
             0,
-            "东方财富财务主指标"
-            if primary_financial_available else "本地当日财务快照（主源故障自动切换）",
+            "东方财富财务主指标" if primary_financial_available else "本地当日财务快照（主源故障自动切换）",
         )
         if fallback_financial_count:
             source_parts.extend(sorted(fallback_financial_sources))
@@ -1227,7 +1210,7 @@ def run_atr_volatility_screen(
         "applied_rules": _applied_rules(spec),
         "formula": formula,
         "columns": columns,
-        "items": items[:spec.preview_limit],
+        "items": items[: spec.preview_limit],
         "total": len(items),
         "download_url": download_url,
         "file_id": file_id,

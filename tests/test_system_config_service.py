@@ -152,17 +152,20 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     def test_get_setup_status_uses_runtime_env_without_reloading_singletons(self) -> None:
         self._rewrite_env("")
 
-        with patch.dict(
-            os.environ,
-            {
-                "ANTHROPIC_BASE_URL": "https://gw.example.com",
-                "ANTHROPIC_AUTH_TOKEN": "runtime-secret",
-                "ANTHROPIC_MODEL": "claude-sonnet-4-6",
-                "STOCK_LIST": "600519",
-            },
-            clear=True,
-        ), patch("src.services.system_config_service.Config.reset_instance") as mock_reset, \
-             patch("src.services.system_config_service.setup_env") as mock_setup_env:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ANTHROPIC_BASE_URL": "https://gw.example.com",
+                    "ANTHROPIC_AUTH_TOKEN": "runtime-secret",
+                    "ANTHROPIC_MODEL": "claude-sonnet-4-6",
+                    "STOCK_LIST": "600519",
+                },
+                clear=True,
+            ),
+            patch("src.services.system_config_service.Config.reset_instance") as mock_reset,
+            patch("src.services.system_config_service.setup_env") as mock_setup_env,
+        ):
             status = self.service.get_setup_status()
 
         self.assertTrue(status["is_complete"])
@@ -214,28 +217,24 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(any(issue["code"] == "invalid_format" for issue in validation["issues"]))
 
     def test_validate_reports_invalid_searxng_url(self) -> None:
-        validation = self.service.validate(items=[{"key": "SEARXNG_BASE_URLS", "value": "searx.local,https://ok.example"}])
+        validation = self.service.validate(
+            items=[{"key": "SEARXNG_BASE_URLS", "value": "searx.local,https://ok.example"}]
+        )
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
 
     def test_validate_reports_invalid_public_searxng_toggle(self) -> None:
-        validation = self.service.validate(
-            items=[{"key": "SEARXNG_PUBLIC_INSTANCES_ENABLED", "value": "maybe"}]
-        )
+        validation = self.service.validate(items=[{"key": "SEARXNG_PUBLIC_INSTANCES_ENABLED", "value": "maybe"}])
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_type" for issue in validation["issues"]))
 
     def test_validate_reports_invalid_feishu_webhook_url(self) -> None:
-        validation = self.service.validate(
-            items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}]
-        )
+        validation = self.service.validate(items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}])
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
 
     def test_validate_warns_daily_digest_is_reserved(self) -> None:
-        validation = self.service.validate(
-            items=[{"key": "NOTIFICATION_DAILY_DIGEST_ENABLED", "value": "true"}]
-        )
+        validation = self.service.validate(items=[{"key": "NOTIFICATION_DAILY_DIGEST_ENABLED", "value": "true"}])
 
         self.assertTrue(validation["valid"])
         self.assertTrue(
@@ -257,8 +256,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertTrue(
             any(
-                issue["code"] == "feishu_mode_mismatch"
-                and issue["severity"] == "warning"
+                issue["code"] == "feishu_mode_mismatch" and issue["severity"] == "warning"
                 for issue in validation["issues"]
             )
         )
@@ -274,8 +272,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertFalse(
             any(
-                issue["code"] == "feishu_mode_mismatch"
-                and issue["severity"] == "warning"
+                issue["code"] == "feishu_mode_mismatch" and issue["severity"] == "warning"
                 for issue in validation["issues"]
             )
         )
@@ -298,8 +295,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertTrue(
             any(
-                issue["code"] == "feishu_mode_mismatch"
-                and issue["severity"] == "warning"
+                issue["code"] == "feishu_mode_mismatch" and issue["severity"] == "warning"
                 for issue in validation["issues"]
             )
         )
@@ -426,16 +422,8 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         )
 
         self.assertTrue(response["success"])
-        run_warning = next(
-            warning
-            for warning in response["warnings"]
-            if "RUN_IMMEDIATELY 已写入 .env" in warning
-        )
-        schedule_warning = next(
-            warning
-            for warning in response["warnings"]
-            if "SCHEDULE_ENABLED" in warning
-        )
+        run_warning = next(warning for warning in response["warnings"] if "RUN_IMMEDIATELY 已写入 .env" in warning)
+        schedule_warning = next(warning for warning in response["warnings"] if "SCHEDULE_ENABLED" in warning)
 
         self.assertIn("非 schedule 模式", run_warning)
         self.assertNotIn("以 schedule 模式", run_warning)
@@ -453,9 +441,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(response["success"])
         schedule_time_warning = next(
-            warning
-            for warning in response["warnings"]
-            if "SCHEDULE_TIME=09:30 已写入 .env" in warning
+            warning for warning in response["warnings"] if "SCHEDULE_TIME=09:30 已写入 .env" in warning
         )
 
         self.assertIn("已经以 schedule 模式运行", schedule_time_warning)
@@ -489,9 +475,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(response["success"])
         bind_warning = next(
-            warning
-            for warning in response["warnings"]
-            if "WEBUI_HOST" in warning and "WEBUI_PORT" in warning
+            warning for warning in response["warnings"] if "WEBUI_HOST" in warning and "WEBUI_PORT" in warning
         )
 
         self.assertIn("启动期监听配置", bind_warning)

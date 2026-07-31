@@ -28,8 +28,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -108,6 +110,4 @@ def test_update_schedule_persists_valid_input(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["times"] == ["09:30"]
-    db.save_batch_schedule.assert_called_once_with(
-        enabled=True, times=["09:30"], template_id="tpl-1"
-    )
+    db.save_batch_schedule.assert_called_once_with(enabled=True, times=["09:30"], template_id="tpl-1")

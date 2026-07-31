@@ -1,4 +1,5 @@
 """Abstract base class for criterion evaluators."""
+
 from __future__ import annotations
 
 import json
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CriterionEvidence:
     """Evidence collected for a criterion."""
+
     raw_data: dict[str, Any] = field(default_factory=dict)
     data_summary: str = ""
 
@@ -22,6 +24,7 @@ class CriterionEvidence:
 @dataclass
 class CriterionResult:
     """Result of a single criterion evaluation."""
+
     criterion_id: str
     criterion_name: str
     index: int
@@ -175,7 +178,12 @@ class BaseCriterionEvaluator(ABC):
                 raise ValueError("response does not contain an extractable JSON object")
             passed = payload.get("passed")
             if not isinstance(passed, bool) and str(passed).strip().lower() not in {
-                "true", "false", "yes", "no", "是", "否",
+                "true",
+                "false",
+                "yes",
+                "no",
+                "是",
+                "否",
             }:
                 raise ValueError("response passed must be an explicit boolean")
             if not str(payload.get("verdict") or "").strip():
@@ -206,7 +214,9 @@ class BaseCriterionEvaluator(ABC):
                 err_msg = err_msg[:200] + "…"
             logger.warning(
                 "[buy_criteria] LLM call failed for %s (attempt %d): %s",
-                self.criterion_id, attempt, err_msg,
+                self.criterion_id,
+                attempt,
+                err_msg,
             )
             return None, err_msg
 

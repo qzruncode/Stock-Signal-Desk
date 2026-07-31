@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+
 def _normalize_symbol(symbol: str) -> str:
     code = str(symbol or "").strip().upper()
     if "." in code:

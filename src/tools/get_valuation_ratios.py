@@ -107,7 +107,7 @@ def _fetch_comparison(code: str) -> dict[str, Any]:
         timeout=httpx.Timeout(12.0, connect=3.0),
     )
     response.raise_for_status()
-    rows = ((response.json().get("result") or {}).get("data") or [])
+    rows = (response.json().get("result") or {}).get("data") or []
     if not rows:
         raise RuntimeError("东方财富没有返回同行估值比较")
     target = next((row for row in rows if str(row.get("CORRE_SECURITY_CODE")) == code), {})
@@ -172,20 +172,22 @@ def _latest_history(frame) -> dict[str, Any]:
         trade_date = _date_text(row.get("数据日期"))
         if not trade_date:
             continue
-        normalized.append({
-            "trade_date": trade_date,
-            "price": _number(row.get("当日收盘价")),
-            "total_market_cap": _number(row.get("总市值")),
-            "circulating_market_cap": _number(row.get("流通市值")),
-            "total_shares": _number(row.get("总股本")),
-            "circulating_shares": _number(row.get("流通股本")),
-            "pe_ttm": _number(row.get("PE(TTM)")),
-            "pe_static": _number(row.get("PE(静)")),
-            "pb_mrq": _number(row.get("市净率")),
-            "peg_trailing": _number(row.get("PEG值")),
-            "pcf_ttm": _number(row.get("市现率")),
-            "ps_ttm": _number(row.get("市销率")),
-        })
+        normalized.append(
+            {
+                "trade_date": trade_date,
+                "price": _number(row.get("当日收盘价")),
+                "total_market_cap": _number(row.get("总市值")),
+                "circulating_market_cap": _number(row.get("流通市值")),
+                "total_shares": _number(row.get("总股本")),
+                "circulating_shares": _number(row.get("流通股本")),
+                "pe_ttm": _number(row.get("PE(TTM)")),
+                "pe_static": _number(row.get("PE(静)")),
+                "pb_mrq": _number(row.get("市净率")),
+                "peg_trailing": _number(row.get("PEG值")),
+                "pcf_ttm": _number(row.get("市现率")),
+                "ps_ttm": _number(row.get("市销率")),
+            }
+        )
     if not normalized:
         raise RuntimeError("估值历史没有可解析交易日")
     return max(normalized, key=lambda item: item["trade_date"])
@@ -233,12 +235,14 @@ def _ttm_dividend(frame, current_price: float | None, as_of: date) -> dict[str, 
             continue
         parsed = datetime.fromisoformat(ex_date).date()
         if cutoff < parsed <= as_of:
-            items.append({
-                "report_date": _date_text(row.get("报告期")),
-                "ex_dividend_date": ex_date,
-                "cash_dividend_per_10_shares": cash_per_10,
-                "cash_dividend_per_share": round(cash_per_10 / 10, 6),
-            })
+            items.append(
+                {
+                    "report_date": _date_text(row.get("报告期")),
+                    "ex_dividend_date": ex_date,
+                    "cash_dividend_per_10_shares": cash_per_10,
+                    "cash_dividend_per_share": round(cash_per_10 / 10, 6),
+                }
+            )
     items.sort(key=lambda item: item["ex_dividend_date"])
     cash_per_share = round(sum(item["cash_dividend_per_share"] for item in items), 6)
     return {
@@ -315,12 +319,16 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
     def history_call():
         if not use_cache:
             return _fetch_history(code), False
-        return cached_call(f"valuation:history:v2:{code}", lambda: _fetch_history(code), ttl_seconds=30 * 60, attempts=2)
+        return cached_call(
+            f"valuation:history:v2:{code}", lambda: _fetch_history(code), ttl_seconds=30 * 60, attempts=2
+        )
 
     def dividend_call():
         if not use_cache:
             return _fetch_dividends(code), False
-        return cached_call(f"valuation:dividend:v2:{code}", lambda: _fetch_dividends(code), ttl_seconds=6 * 3600, attempts=2)
+        return cached_call(
+            f"valuation:dividend:v2:{code}", lambda: _fetch_dividends(code), ttl_seconds=6 * 3600, attempts=2
+        )
 
     def quote_call():
         if not use_cache:
@@ -330,7 +338,9 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
     def comparison_call():
         if not use_cache:
             return _fetch_comparison(code), False
-        return cached_call(f"valuation:comparison:v2:{code}", lambda: _fetch_comparison(code), ttl_seconds=30 * 60, attempts=2)
+        return cached_call(
+            f"valuation:comparison:v2:{code}", lambda: _fetch_comparison(code), ttl_seconds=30 * 60, attempts=2
+        )
 
     calls = {
         "history": history_call,
@@ -372,13 +382,21 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
     forward_ps = _active_forward_series(raw_forward_ps, now.year)
     forward_pe_current, forward_pe_next = _select_forward(forward_pe, now.year)
     peg_forward = comparison.get("peg_forward")
-    dividend = _ttm_dividend(dividend_frame, current_price, now.date()) if dividend_frame is not None else {
-        "cash_dividend_per_share_ttm": None,
-        "dividend_yield_ttm_pct": None,
-        "dividend_count_ttm": None,
-        "dividends_ttm": [],
-    }
-    percentiles, history_stats = _history_statistics(history_frame, pe_ttm, now.date()) if with_history and history_frame is not None else ({}, {})
+    dividend = (
+        _ttm_dividend(dividend_frame, current_price, now.date())
+        if dividend_frame is not None
+        else {
+            "cash_dividend_per_share_ttm": None,
+            "dividend_yield_ttm_pct": None,
+            "dividend_count_ttm": None,
+            "dividends_ttm": [],
+        }
+    )
+    percentiles, history_stats = (
+        _history_statistics(history_frame, pe_ttm, now.date())
+        if with_history and history_frame is not None
+        else ({}, {})
+    )
     benchmark = {
         "report_date": comparison.get("report_date"),
         "sample_size": comparison.get("total") or 0,
@@ -398,15 +416,17 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
 
     from api.v1.endpoints.financials._signal import _build_price_overdraft_signal
 
-    signal = _build_price_overdraft_signal({
-        "pe_ttm": pe_ttm,
-        "forward_pe": forward_pe_current,
-        "pb": pb_mrq,
-        "peg": peg_forward if peg_forward is not None and peg_forward > 0 else None,
-        "dividend_yield": dividend.get("dividend_yield_ttm_pct"),
-        "pe_percentiles": percentiles,
-        "industry_average": industry_compat,
-    })
+    signal = _build_price_overdraft_signal(
+        {
+            "pe_ttm": pe_ttm,
+            "forward_pe": forward_pe_current,
+            "pb": pb_mrq,
+            "peg": peg_forward if peg_forward is not None and peg_forward > 0 else None,
+            "dividend_yield": dividend.get("dividend_yield_ttm_pct"),
+            "pe_percentiles": percentiles,
+            "industry_average": industry_compat,
+        }
+    )
     success = any(value is not None for value in (pe_ttm, pe_static, pb_mrq, ps_ttm, pcf_ttm))
     quote_live = bool(quote and quote.get("price") is not None)
     history_trade_date = history.get("trade_date")
@@ -448,13 +468,13 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         "peg_basis": "forward_growth" if peg_forward is not None else "trailing_growth",
         "forward_pe": forward_pe,
         "forward_ps": forward_ps,
-        "excluded_expired_forward_years": sorted({
-            item["year"]
-            for item in [*raw_forward_pe, *raw_forward_ps]
-            if isinstance(item, dict)
-            and isinstance(item.get("year"), int)
-            and item["year"] < now.year
-        }),
+        "excluded_expired_forward_years": sorted(
+            {
+                item["year"]
+                for item in [*raw_forward_pe, *raw_forward_ps]
+                if isinstance(item, dict) and isinstance(item.get("year"), int) and item["year"] < now.year
+            }
+        ),
         "forward_pe_current_year": forward_pe_current,
         "forward_pe_next_year": forward_pe_next,
         "dividend_yield_ttm_pct": dividend.get("dividend_yield_ttm_pct"),
@@ -527,10 +547,13 @@ TOOL = ToolSpec(
         "获取当前 PE(TTM/静态/动态)、PB(MRQ/年报)、PS(TTM)、PCF(TTM)、远期 PE/PEG、"
         "近365天真实已实施股息率、仅使用正 PE 的历史分位，以及行业中值和均值。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "股票代码或名称"},
-        "with_history": {"type": "boolean", "default": True, "description": "是否计算 1/3/5 年正 PE 历史分位"},
-    }, ["symbol"]),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "股票代码或名称"},
+            "with_history": {"type": "boolean", "default": True, "description": "是否计算 1/3/5 年正 PE 历史分位"},
+        },
+        ["symbol"],
+    ),
     executor=get_valuation_ratios,
     category="financials",
 )

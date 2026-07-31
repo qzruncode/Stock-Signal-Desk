@@ -112,18 +112,20 @@ def _normalize_direct(frame: Any, code: str, name: str | None) -> tuple[list[dic
         if not any(mentions.values()):
             weak_mentions += 1
         published = _date_time(row.get("发布时间"))
-        items.append({
-            "title": title,
-            "summary": summary,
-            "published": published.isoformat() if published else None,
-            "source": _clean_text(row.get("文章来源"), 100) or "东方财富新闻",
-            "url": str(row.get("新闻链接") or "").strip(),
-            "source_type": "akshare_stock_news_em",
-            "entity_mentions": mentions,
-            "relevance": None,
-            "relevance_score": None,
-            "semantic_status": "model_required",
-        })
+        items.append(
+            {
+                "title": title,
+                "summary": summary,
+                "published": published.isoformat() if published else None,
+                "source": _clean_text(row.get("文章来源"), 100) or "东方财富新闻",
+                "url": str(row.get("新闻链接") or "").strip(),
+                "source_type": "akshare_stock_news_em",
+                "entity_mentions": mentions,
+                "relevance": None,
+                "relevance_score": None,
+                "semantic_status": "model_required",
+            }
+        )
     return items, weak_mentions
 
 
@@ -137,19 +139,21 @@ def _normalize_rss(payload: dict[str, Any], code: str, name: str | None) -> tupl
         if not any(mentions.values()):
             weak_mentions += 1
         published = _date_time(row.get("published"))
-        items.append({
-            "title": title,
-            "summary": summary,
-            "published": published.isoformat() if published else None,
-            "source": _clean_text(row.get("source") or row.get("author"), 100) or "RSSHub/东方财富搜索",
-            "url": str(row.get("link") or "").strip(),
-            "source_type": "rsshub_eastmoney_search",
-            "rss_route": _RSS_ROUTE,
-            "entity_mentions": mentions,
-            "relevance": None,
-            "relevance_score": None,
-            "semantic_status": "model_required",
-        })
+        items.append(
+            {
+                "title": title,
+                "summary": summary,
+                "published": published.isoformat() if published else None,
+                "source": _clean_text(row.get("source") or row.get("author"), 100) or "RSSHub/东方财富搜索",
+                "url": str(row.get("link") or "").strip(),
+                "source_type": "rsshub_eastmoney_search",
+                "rss_route": _RSS_ROUTE,
+                "entity_mentions": mentions,
+                "relevance": None,
+                "relevance_score": None,
+                "semantic_status": "model_required",
+            }
+        )
     return items, weak_mentions
 
 
@@ -226,8 +230,7 @@ def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = 
 
     if direct_weak + rss_weak:
         warnings.append(
-            f"{direct_weak + rss_weak} 条结果未在标题或摘要中逐字出现证券代码/简称；"
-            "已保留供模型结合来源语义复核"
+            f"{direct_weak + rss_weak} 条结果未在标题或摘要中逐字出现证券代码/简称；" "已保留供模型结合来源语义复核"
         )
     if undated_count:
         warnings.append(f"包含 {undated_count} 条无可验证发布时间的结果")
@@ -272,7 +275,11 @@ TOOL = ToolSpec(
             "symbol": {"type": "string", "description": "A股/北交所股票代码或公司名称"},
             "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "最近天数"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "最多返回条数"},
-            "use_cache": {"type": "boolean", "default": True, "description": "是否使用半小时缓存；需要强制刷新时设为 false"},
+            "use_cache": {
+                "type": "boolean",
+                "default": True,
+                "description": "是否使用半小时缓存；需要强制刷新时设为 false",
+            },
         },
         ["symbol"],
     ),

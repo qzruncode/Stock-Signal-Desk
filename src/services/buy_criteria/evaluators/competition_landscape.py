@@ -25,7 +25,9 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
     criterion_name = "竞争格局"
     index = 4
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
+    def collect_data(
+        self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None
+    ) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {
             "investment_thesis": str(stock_info.get("_investment_thesis") or "").strip() or None,
@@ -63,8 +65,7 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
             items = _list_of_dicts(financials.get("items"))[:4]
             raw["margin_trend"] = {
                 "items": [
-                    {"date": item.get("report_date"), "gross_margin": item.get("gross_margin")}
-                    for item in items
+                    {"date": item.get("report_date"), "gross_margin": item.get("gross_margin")} for item in items
                 ],
             }
         except Exception as exc:
@@ -80,10 +81,7 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
         for query in competition_queries:
             try:
                 result = ds.search_industry_news(query, days=365, limit=8)
-                competition_items.extend(
-                    {**item, "query": query}
-                    for item in _list_of_dicts(result.get("items"))[:8]
-                )
+                competition_items.extend({**item, "query": query} for item in _list_of_dicts(result.get("items"))[:8])
             except Exception as exc:
                 competition_errors.append(f"{query}: {exc}")
         raw["competition_evidence"] = {
@@ -101,9 +99,9 @@ class CompetitionLandscapeEvaluator(BaseCriterionEvaluator):
 
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
         raw = evidence.raw_data
-        margins = ((raw.get("margin_trend") or {}).get("items") or [])
-        reports = ((raw.get("industry_research") or {}).get("items") or [])
-        industry_items = ((raw.get("competition_evidence") or {}).get("items") or [])
+        margins = (raw.get("margin_trend") or {}).get("items") or []
+        reports = (raw.get("industry_research") or {}).get("items") or []
+        industry_items = (raw.get("competition_evidence") or {}).get("items") or []
         if not margins and not reports and not industry_items:
             return "毛利率趋势、公司研究和细分产业竞争证据均不可用，无法证明竞争格局健康"
         return None
@@ -135,6 +133,7 @@ def _fetch_targeted_research(ds: DataService, symbol: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Summary builder
 # ---------------------------------------------------------------------------
+
 
 def _build_summary(raw: dict[str, Any]) -> str:
     profile = raw.get("company_profile") or {}
@@ -177,11 +176,13 @@ def _build_summary(raw: dict[str, Any]) -> str:
         lines.append("- 无已按证券过滤的研报数据")
 
     competition = raw.get("competition_evidence") or {}
-    lines.extend([
-        "",
-        "## 细分产业竞争与供给证据",
-        f"- 结构化查询方向：{'、'.join(competition.get('queries') or []) or '缺失'}",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 细分产业竞争与供给证据",
+            f"- 结构化查询方向：{'、'.join(competition.get('queries') or []) or '缺失'}",
+        ]
+    )
     for item in _list_of_dicts(competition.get("items")):
         lines.append(
             f"- [{item.get('query') or '未标注方向'}] "
@@ -192,14 +193,16 @@ def _build_summary(raw: dict[str, Any]) -> str:
     if not _list_of_dicts(competition.get("items")):
         lines.append("- 未取得可用的细分产业竞争材料")
 
-    lines.extend([
-        "",
-        "## 判断约束",
-        "- 只判断公司真实受益的细分产品行业。其他行业的降价、产能或内卷材料均为无效证据。",
-        "- 股价、板块涨跌、资金流、换手率和新闻中的个股下跌，全部不能证明产品价格战或产业内卷。",
-        "- 单个季度毛利率回落不等于连续下滑；至少需要两个连续季度下降，或同时有同一细分行业的降价、扩产过剩、份额恶化等证据，才可据此否决。",
-        "- 公司毛利率不等于行业平均毛利率。若行业均值缺失，必须如实标注，不能把公司单季变化改写为行业趋势。",
-        "- 通过也需要正面竞争力证据，例如份额、技术/客户壁垒、规模成本、差异化或盈利能力；仅仅没有找到价格战新闻不够。",
-    ])
+    lines.extend(
+        [
+            "",
+            "## 判断约束",
+            "- 只判断公司真实受益的细分产品行业。其他行业的降价、产能或内卷材料均为无效证据。",
+            "- 股价、板块涨跌、资金流、换手率和新闻中的个股下跌，全部不能证明产品价格战或产业内卷。",
+            "- 单个季度毛利率回落不等于连续下滑；至少需要两个连续季度下降，或同时有同一细分行业的降价、扩产过剩、份额恶化等证据，才可据此否决。",
+            "- 公司毛利率不等于行业平均毛利率。若行业均值缺失，必须如实标注，不能把公司单季变化改写为行业趋势。",
+            "- 通过也需要正面竞争力证据，例如份额、技术/客户壁垒、规模成本、差异化或盈利能力；仅仅没有找到价格战新闻不够。",
+        ]
+    )
 
     return "\n".join(lines)

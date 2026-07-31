@@ -15,12 +15,7 @@ class BatchMixin:
 
     def get_batch_runs(self, limit: int = 20) -> List[Dict[str, Any]]:
         with self.session_scope() as session:
-            rows = (
-                session.query(BatchRun)
-                .order_by(desc(BatchRun.started_at))
-                .limit(limit)
-                .all()
-            )
+            rows = session.query(BatchRun).order_by(desc(BatchRun.started_at)).limit(limit).all()
             return [self._batch_run_to_dict(r) for r in rows]
 
     def get_batch_run(self, run_id: str) -> Optional[Dict[str, Any]]:
@@ -89,9 +84,7 @@ class BatchMixin:
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             }
 
-    def save_batch_schedule(
-        self, enabled: bool, times: List[str], template_id: str
-    ) -> Dict[str, Any]:
+    def save_batch_schedule(self, enabled: bool, times: List[str], template_id: str) -> Dict[str, Any]:
         with self.session_scope() as session:
             row = session.query(BatchSchedule).first()
             if row is None:

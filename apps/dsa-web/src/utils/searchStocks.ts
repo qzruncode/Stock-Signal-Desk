@@ -18,6 +18,36 @@ export interface SearchOptions {
   activeOnly?: boolean;
 }
 
+type NormalizedStockFields = {
+  canonicalCode: string;
+  displayCode: string;
+  name: string;
+  pinyinFull: string;
+  pinyinAbbr: string;
+  aliases: string[];
+};
+
+// The loaded stock index is immutable during a session. Cache normalized
+// fields per object so repeated autocomplete queries do not repeat the same
+// Unicode normalization work for every stock.
+const normalizedFieldsCache = new WeakMap<StockIndexItem, NormalizedStockFields>();
+
+function getNormalizedStockFields(item: StockIndexItem): NormalizedStockFields {
+  const cached = normalizedFieldsCache.get(item);
+  if (cached) return cached;
+
+  const normalized: NormalizedStockFields = {
+    canonicalCode: normalizeQuery(item.canonicalCode),
+    displayCode: normalizeQuery(item.displayCode),
+    name: normalizeQuery(item.nameZh),
+    pinyinFull: normalizeQuery(item.pinyinFull || ''),
+    pinyinAbbr: normalizeQuery(item.pinyinAbbr || ''),
+    aliases: item.aliases?.map(alias => normalizeQuery(alias)) || [],
+  };
+  normalizedFieldsCache.set(item, normalized);
+  return normalized;
+}
+
 /**
  * Search stock index
  *
@@ -35,7 +65,7 @@ export function searchStocks(
   if (!normalizedQuery) {
     return [];
   }
-  const limit = options.limit || SEARCH_CONFIG.DEFAULT_LIMIT;
+  const limit = options.limit ?? SEARCH_CONFIG.DEFAULT_LIMIT;
   const activeOnly = options.activeOnly !== false;
 
   // Filter index
@@ -86,32 +116,27 @@ export function searchStocks(
  */
 function calculateMatchScore(query: string, item: StockIndexItem): number {
   let score = 0;
-  const q = query.toLowerCase();
-  const normalizedCanonicalCode = normalizeQuery(item.canonicalCode);
-  const normalizedDisplayCode = normalizeQuery(item.displayCode);
-  const normalizedName = normalizeQuery(item.nameZh);
-  const normalizedPinyinFull = normalizeQuery(item.pinyinFull || '');
-  const normalizedPinyinAbbr = normalizeQuery(item.pinyinAbbr || '');
-  const normalizedAliases = item.aliases?.map(alias => normalizeQuery(alias)) || [];
+  const q = query;
+  const { canonicalCode, displayCode, name, pinyinFull, pinyinAbbr, aliases } = getNormalizedStockFields(item);
 
   // 1. Exact match (96-100 points)
-  if (q === normalizedCanonicalCode) return 100;
-  if (q === normalizedDisplayCode) return 99;
-  if (q === normalizedName) return 98;
-  if (normalizedAliases.some(a => a === q)) return 97;
-  if (q === normalizedPinyinAbbr) return 96;
+  if (q === canonicalCode) return 100;
+  if (q === displayCode) return 99;
+  if (q === name) return 98;
+  if (aliases.some(a => a === q)) return 97;
+  if (q === pinyinAbbr) return 96;
 
   // 2. Prefix match (77-80 points)
-  if (normalizedDisplayCode.startsWith(q)) score = Math.max(score, 80);
-  if (normalizedName.startsWith(q)) score = Math.max(score, 79);
-  if (normalizedPinyinAbbr.startsWith(q)) score = Math.max(score, 78);
-  if (normalizedAliases.some(a => a.startsWith(q))) score = Math.max(score, 77);
+  if (displayCode.startsWith(q)) score = Math.max(score, 80);
+  if (name.startsWith(q)) score = Math.max(score, 79);
+  if (pinyinAbbr.startsWith(q)) score = Math.max(score, 78);
+  if (aliases.some(a => a.startsWith(q))) score = Math.max(score, 77);
 
   // 3. Contains match (57-60 points)
-  if (normalizedDisplayCode.includes(q)) score = Math.max(score, 60);
-  if (normalizedName.includes(q)) score = Math.max(score, 59);
-  if (normalizedPinyinFull.includes(q)) score = Math.max(score, 58);
-  if (normalizedAliases.some(a => a.includes(q))) score = Math.max(score, 57);
+  if (displayCode.includes(q)) score = Math.max(score, 60);
+  if (name.includes(q)) score = Math.max(score, 59);
+  if (pinyinFull.includes(q)) score = Math.max(score, 58);
+  if (aliases.some(a => a.includes(q))) score = Math.max(score, 57);
 
   return score;
 }
@@ -130,24 +155,17 @@ function determineMatchType(score: number): 'exact' | 'prefix' | 'contains' | 'f
  * Determine match field
  */
 function determineMatchField(query: string, item: StockIndexItem): 'code' | 'name' | 'pinyin' | 'alias' {
-  const q = query.toLowerCase();
-  const normalizedCanonicalCode = normalizeQuery(item.canonicalCode);
-  const normalizedDisplayCode = normalizeQuery(item.displayCode);
-  const normalizedName = normalizeQuery(item.nameZh);
-  const normalizedPinyinFull = normalizeQuery(item.pinyinFull || '');
-  const normalizedPinyinAbbr = normalizeQuery(item.pinyinAbbr || '');
-  const normalizedAliases = item.aliases?.map(alias => normalizeQuery(alias)) || [];
+  const q = query;
+  const { canonicalCode, displayCode, name, pinyinFull, pinyinAbbr, aliases } = getNormalizedStockFields(item);
 
-  if (normalizedCanonicalCode.includes(q) ||
-      normalizedDisplayCode.includes(q)) {
+  if (canonicalCode.includes(q) || displayCode.includes(q)) {
     return 'code';
   }
-  if (normalizedName.includes(q)) return 'name';
-  if (normalizedPinyinFull.includes(q) ||
-      normalizedPinyinAbbr.includes(q)) {
+  if (name.includes(q)) return 'name';
+  if (pinyinFull.includes(q) || pinyinAbbr.includes(q)) {
     return 'pinyin';
   }
-  if (normalizedAliases.some(a => a.includes(q))) return 'alias';
+  if (aliases.some(a => a.includes(q))) return 'alias';
   return 'name';
 }
 

@@ -29,10 +29,7 @@ _DIMENSION_IDS = tuple(item[0] for item in DIMENSION_DEFINITIONS)
 
 
 def _format_sse(event_type: str, data: dict[str, Any]) -> str:
-    return (
-        f"event: {event_type}\n"
-        f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-    )
+    return f"event: {event_type}\n" f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def _get_stock_info_safe(symbol: str) -> dict[str, Any]:
@@ -54,33 +51,23 @@ def _cache_matches_current_contract(cached: dict[str, Any] | None) -> bool:
     """Accept only a valid fail-fast prefix of the current eight dimensions."""
     if not isinstance(cached, dict):
         return False
-    results = [
-        item
-        for item in cached.get("results") or []
-        if isinstance(item, dict)
-    ]
+    results = [item for item in cached.get("results") or [] if isinstance(item, dict)]
     if not results or len(results) > len(_DIMENSION_IDS):
         return False
     actual_ids = tuple(str(item.get("criterion_id") or "") for item in results)
-    if actual_ids != _DIMENSION_IDS[:len(actual_ids)]:
+    if actual_ids != _DIMENSION_IDS[: len(actual_ids)]:
         return False
     statuses = tuple(str(item.get("status") or "") for item in results)
     if any(status not in {"pass", "fail", "insufficient"} for status in statuses):
         return False
-    return (
-        all(status == "pass" for status in statuses[:-1])
-        and (
-            statuses[-1] != "pass"
-            or len(statuses) == len(_DIMENSION_IDS)
-        )
+    return all(status == "pass" for status in statuses[:-1]) and (
+        statuses[-1] != "pass" or len(statuses) == len(_DIMENSION_IDS)
     )
 
 
 def _analysis_to_results(analysis: dict[str, Any]) -> list[CriterionResult]:
     dimensions = {
-        str(item.get("dimension_id") or ""): item
-        for item in analysis.get("dimensions") or []
-        if isinstance(item, dict)
+        str(item.get("dimension_id") or ""): item for item in analysis.get("dimensions") or [] if isinstance(item, dict)
     }
     results: list[CriterionResult] = []
     for index, (dimension_id, title) in enumerate(DIMENSION_DEFINITIONS):
@@ -92,36 +79,32 @@ def _analysis_to_results(analysis: dict[str, Any]) -> list[CriterionResult]:
             break
         if status not in {"pass", "fail", "insufficient"}:
             status = "insufficient"
-        results.append(CriterionResult(
-            criterion_id=dimension_id,
-            criterion_name=title,
-            index=index,
-            passed=status == "pass",
-            status=status,
-            confidence="",
-            verdict=str(
-                item.get("analysis")
-                or item.get("headline")
-                or "当前维度未返回有效结论"
-            ),
-            evidence=CriterionEvidence(
-                raw_data={
+        results.append(
+            CriterionResult(
+                criterion_id=dimension_id,
+                criterion_name=title,
+                index=index,
+                passed=status == "pass",
+                status=status,
+                confidence="",
+                verdict=str(item.get("analysis") or item.get("headline") or "当前维度未返回有效结论"),
+                evidence=CriterionEvidence(
+                    raw_data={
+                        "key_evidence": item.get("key_evidence") or [],
+                        "counter_evidence": item.get("counter_evidence") or [],
+                    },
+                    data_summary=str(item.get("headline") or ""),
+                ),
+                details={
+                    "headline": item.get("headline"),
+                    "evaluated_subjects": item.get("evaluated_subjects") or [],
                     "key_evidence": item.get("key_evidence") or [],
                     "counter_evidence": item.get("counter_evidence") or [],
+                    "monitoring_points": item.get("monitoring_points") or [],
+                    "mainline_classification": item.get("mainline_classification"),
                 },
-                data_summary=str(item.get("headline") or ""),
-            ),
-            details={
-                "headline": item.get("headline"),
-                "evaluated_subjects": item.get("evaluated_subjects") or [],
-                "key_evidence": item.get("key_evidence") or [],
-                "counter_evidence": item.get("counter_evidence") or [],
-                "monitoring_points": item.get("monitoring_points") or [],
-                "mainline_classification": item.get(
-                    "mainline_classification"
-                ),
-            },
-        ))
+            )
+        )
         if status != "pass":
             break
     return results
@@ -139,21 +122,11 @@ def _build_summary(
             "criterion_id": item.get("criterion_id"),
             "criterion_name": item.get("criterion_name"),
             "index": item.get("index"),
-            "passed": (
-                str(item.get("status") or "") == "pass"
-                and bool(item.get("passed"))
-            ),
-            "status": str(
-                item.get("status")
-                or ("pass" if item.get("passed") else "fail")
-            ),
+            "passed": (str(item.get("status") or "") == "pass" and bool(item.get("passed"))),
+            "status": str(item.get("status") or ("pass" if item.get("passed") else "fail")),
             "confidence": str(item.get("confidence") or ""),
             "verdict": str(item.get("verdict") or ""),
-            "details": (
-                item.get("details")
-                if isinstance(item.get("details"), dict)
-                else {}
-            ),
+            "details": (item.get("details") if isinstance(item.get("details"), dict) else {}),
         }
         for item in result_dicts
         if isinstance(item, dict)
@@ -161,30 +134,21 @@ def _build_summary(
     total = len(DIMENSION_DEFINITIONS)
     passed_count = sum(item["status"] == "pass" for item in criteria)
     failed_count = sum(item["status"] == "fail" for item in criteria)
-    insufficient_count = sum(
-        item["status"] == "insufficient"
-        for item in criteria
-    )
+    insufficient_count = sum(item["status"] == "insufficient" for item in criteria)
     stopped = next(
         (item for item in criteria if item["status"] != "pass"),
         None,
     )
     all_passed = len(criteria) == total and passed_count == total
     resolved_analysis_status = analysis_status or (
-        "execution_failed"
-        if model_error
-        else "source_unavailable"
-        if insufficient_count
-        else "completed"
+        "execution_failed" if model_error else "source_unavailable" if insufficient_count else "completed"
     )
     final_decision = (
         "分析失败"
         if resolved_analysis_status == "execution_failed"
-        else "分析未完成"
-        if resolved_analysis_status == "source_unavailable"
-        else "可买入"
-        if all_passed
-        else "不可买入"
+        else (
+            "分析未完成" if resolved_analysis_status == "source_unavailable" else "可买入" if all_passed else "不可买入"
+        )
     )
     return {
         "contract_version": BUY_GATE_CONTRACT_VERSION,
@@ -205,10 +169,7 @@ def _build_summary(
         "coverage_complete": (
             resolved_analysis_status == "completed"
             and bool(criteria)
-            and (
-                all_passed
-                or (stopped is not None and stopped["status"] == "fail")
-            )
+            and (all_passed or (stopped is not None and stopped["status"] == "fail"))
         ),
         "gate_pass_complete": all_passed,
         "from_cache": from_cache,
@@ -226,9 +187,7 @@ class CriterionOrchestrator:
         save_to_db: bool = True,
         thesis: str = "",
         thesis_context: dict[str, Any] | None = None,
-        mainline_strategy: MainlineStrategyProfile | str = (
-            MainlineStrategyProfile.CONFIRMED_MAINLINE
-        ),
+        mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
     ) -> list[CriterionResult]:
         analysis = analyze_professional_buy(
             symbol,
@@ -248,9 +207,7 @@ class CriterionOrchestrator:
         *,
         thesis: str = "",
         thesis_context: dict[str, Any] | None = None,
-        mainline_strategy: MainlineStrategyProfile | str = (
-            MainlineStrategyProfile.CONFIRMED_MAINLINE
-        ),
+        mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
         pre_fetched_data: dict[str, Any] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
@@ -276,11 +233,10 @@ class CriterionOrchestrator:
             "thesis": resolve_investment_thesis(
                 thesis,
                 thesis_context,
-            ) or None,
+            )
+            or None,
             "thesis_context": thesis_context,
-            "mainline_strategy": normalize_mainline_strategy(
-                mainline_strategy
-            ).value,
+            "mainline_strategy": normalize_mainline_strategy(mainline_strategy).value,
         }
 
     def analyze_for_batch(
@@ -342,10 +298,7 @@ class CriterionOrchestrator:
                 stock_name=stock_name,
                 final_decision=summary["final_decision"],
                 passed_count=summary["passed_count"],
-                failed_count=(
-                    summary["failed_count"]
-                    + summary["insufficient_count"]
-                ),
+                failed_count=(summary["failed_count"] + summary["insufficient_count"]),
                 not_evaluated_count=summary["not_evaluated_count"],
                 stopped_at=summary["stopped_at"],
                 summary=(
@@ -378,10 +331,13 @@ class CriterionOrchestrator:
             try:
                 loop.call_soon_threadsafe(
                     queue.put_nowait,
-                    ("connected", {
-                        "cached": False,
-                        "contract_version": BUY_GATE_CONTRACT_VERSION,
-                    }),
+                    (
+                        "connected",
+                        {
+                            "cached": False,
+                            "contract_version": BUY_GATE_CONTRACT_VERSION,
+                        },
+                    ),
                 )
                 results = CriterionOrchestrator().run(
                     symbol,

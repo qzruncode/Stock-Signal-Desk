@@ -67,10 +67,7 @@ def _normalize_rss_text(value: Any) -> str:
 
 
 def _rss_entry_matches_keywords(entry: dict, keywords: list[str]) -> bool:
-    text = " ".join(
-        _normalize_rss_text(entry.get(field))
-        for field in ("title", "summary", "author", "link")
-    )
+    text = " ".join(_normalize_rss_text(entry.get(field)) for field in ("title", "summary", "author", "link"))
     return any(_normalize_rss_text(keyword) in text for keyword in keywords)
 
 
@@ -89,27 +86,33 @@ def _rss_entry_is_recent(entry: dict, cutoff: datetime) -> bool:
 def _rss_stock_feed_specs(keywords: list[str]) -> list[tuple[str, dict, str, bool]]:
     feed_specs: list[tuple[str, dict, str, bool]] = []
     for keyword in keywords:
-        feed_specs.append((
-            "eastmoney_search",
-            {"keyword": keyword},
-            f"东方财富搜索:{keyword}",
-            True,
-        ))
-        feed_specs.append((
-            "gelonghui_keyword",
-            {"keyword": keyword},
-            f"格隆汇搜索:{keyword}",
-            True,
-        ))
-    feed_specs.extend([
-        ("cls", {"category": "telegraph"}, "财联社电报", True),
-        ("cls", {"category": "depth"}, "财联社深度", True),
-        ("wallstreetcn_live", {}, "华尔街见闻实时快讯", True),
-        ("wallstreetcn", {"category": "shares"}, "华尔街见闻股市", True),
-        ("wallstreetcn_hot", {}, "华尔街见闻热门", True),
-        ("jqka_realtime", {}, "同花顺7×24快讯", True),
-        ("stcn_kx", {}, "证券时报快讯", True),
-    ])
+        feed_specs.append(
+            (
+                "eastmoney_search",
+                {"keyword": keyword},
+                f"东方财富搜索:{keyword}",
+                True,
+            )
+        )
+        feed_specs.append(
+            (
+                "gelonghui_keyword",
+                {"keyword": keyword},
+                f"格隆汇搜索:{keyword}",
+                True,
+            )
+        )
+    feed_specs.extend(
+        [
+            ("cls", {"category": "telegraph"}, "财联社电报", True),
+            ("cls", {"category": "depth"}, "财联社深度", True),
+            ("wallstreetcn_live", {}, "华尔街见闻实时快讯", True),
+            ("wallstreetcn", {"category": "shares"}, "华尔街见闻股市", True),
+            ("wallstreetcn_hot", {}, "华尔街见闻热门", True),
+            ("jqka_realtime", {}, "同花顺7×24快讯", True),
+            ("stcn_kx", {}, "证券时报快讯", True),
+        ]
+    )
     return feed_specs
 
 

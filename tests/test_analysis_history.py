@@ -38,6 +38,7 @@ from src.analyzer import AnalysisResult
 from src.services.history_service import HistoryService
 import src.auth as auth
 
+
 class AnalysisHistoryTestCase(unittest.TestCase):
     """分析历史存储测试"""
 
@@ -108,7 +109,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             report_type="simple",
             news_content="新闻摘要",
             context_snapshot=context_snapshot,
-            save_snapshot=True
+            save_snapshot=True,
         )
 
         self.assertEqual(saved, 1)
@@ -137,7 +138,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             report_type="simple",
             news_content="新闻摘要",
             context_snapshot={"foo": "bar"},
-            save_snapshot=False
+            save_snapshot=False,
         )
 
         self.assertEqual(saved, 1)
@@ -159,7 +160,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             report_type="simple",
             news_content="新闻摘要",
             context_snapshot=None,
-            save_snapshot=False
+            save_snapshot=False,
         )
         self.assertEqual(saved, 1)
 
@@ -296,7 +297,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             report_type="simple",
             news_content="新闻摘要",
             context_snapshot=None,
-            save_snapshot=False
+            save_snapshot=False,
         )
         self.assertEqual(saved, 1)
 
@@ -322,7 +323,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             report_type="simple",
             news_content="新闻摘要",
             context_snapshot=None,
-            save_snapshot=False
+            save_snapshot=False,
         )
         self.assertEqual(saved, 1)
 
@@ -379,7 +380,7 @@ class AnalysisHistoryTestCase(unittest.TestCase):
                         "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
                         "dividend": {"ttm_dividend_yield_pct": 2.6, "ttm_cash_dividend_per_share": 1.3},
                     }
-                }
+                },
             },
         )
 
@@ -501,14 +502,16 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         record_id = self._save_history("query_delete_001")
 
         with self.db.session_scope() as session:
-            session.add(BacktestResult(
-                analysis_history_id=record_id,
-                code="600519",
-                analysis_date=None,
-                eval_window_days=10,
-                engine_version="v1",
-                eval_status="pending",
-            ))
+            session.add(
+                BacktestResult(
+                    analysis_history_id=record_id,
+                    code="600519",
+                    analysis_date=None,
+                    eval_window_days=10,
+                    engine_version="v1",
+                    eval_status="pending",
+                )
+            )
 
         deleted = self.db.delete_analysis_history_records([record_id])
         self.assertEqual(deleted, 1)

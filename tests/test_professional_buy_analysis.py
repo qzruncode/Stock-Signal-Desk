@@ -55,15 +55,9 @@ def _dimension(index: int, status: str) -> DimensionAssessment:
         mainline_classification=(
             {
                 "strategy_profile": "confirmed_mainline",
-                "direction_relation": (
-                    "core" if status == "pass" else "unrelated"
-                ),
-                "lifecycle": (
-                    "confirmed" if status == "pass" else None
-                ),
-                "matched_mainline": (
-                    "测试主线" if status == "pass" else None
-                ),
+                "direction_relation": ("core" if status == "pass" else "unrelated"),
+                "lifecycle": ("confirmed" if status == "pass" else None),
+                "matched_mainline": ("测试主线" if status == "pass" else None),
                 "matched_branch": None,
                 "trigger_progress": "unknown",
             }
@@ -84,10 +78,7 @@ def _assessment(
         biggest_issue="利润向经营现金流的转化仍然偏弱",
         recommendation_code=recommendation_code,
         recommendation_reason="产业逻辑较强，但关键经营质量指标尚未同时改善。",
-        dimensions=[
-            _dimension(index, status)
-            for index, status in enumerate(statuses)
-        ],
+        dimensions=[_dimension(index, status) for index, status in enumerate(statuses)],
         bull_case_chain="行业需求增长 → 高端产品放量 → 盈利改善 → 估值修复",
         risk_chain="客户压价 → 应收存货增加 → 现金流承压 → 估值长期折价",
         monitoring_points=[
@@ -110,11 +101,13 @@ def _evidence() -> dict:
         "requested_at": "2026-07-23T12:00:00+08:00",
         "mainline_strategy": "confirmed_mainline",
         "market_mainline_snapshot": {
-            "current_mainlines": [{
-                "name": "测试主线",
-                "lifecycle": "confirmed",
-                "branches": ["测试方向"],
-            }],
+            "current_mainlines": [
+                {
+                    "name": "测试主线",
+                    "lifecycle": "confirmed",
+                    "branches": ["测试方向"],
+                }
+            ],
             "candidate_mainlines": [],
         },
         "source_links": [],
@@ -131,19 +124,14 @@ def test_prompt_requires_all_eight_professional_axes_and_counter_evidence() -> N
     assert "现金流、应收、存货、客户集中" in ANALYST_SYSTEM_PROMPT
     assert "1—3年结构性趋势" in ANALYST_SYSTEM_PROMPT
     assert "未来1—6个月A股主导产业叙事" in ANALYST_SYSTEM_PROMPT
-    assert (
-        "资金流、涨跌幅、成交排名、均线、技术指标和个股走势完全不属于第一维证据"
-        in ANALYST_SYSTEM_PROMPT
-    )
+    assert "资金流、涨跌幅、成交排名、均线、技术指标和个股走势完全不属于第一维证据" in ANALYST_SYSTEM_PROMPT
     assert "公司真实受益由第二维判断" in ANALYST_SYSTEM_PROMPT
     assert "detected 只证明曾出现过" in ANALYST_SYSTEM_PROMPT
     assert "不能笼统写“证据不足”" in ANALYST_SYSTEM_PROMPT
 
 
 def test_model_dimension_schema_exposes_only_binary_qualification_status() -> None:
-    status_schema = ModelDimensionAssessment.model_json_schema()[
-        "properties"
-    ]["status"]
+    status_schema = ModelDimensionAssessment.model_json_schema()["properties"]["status"]
     assert status_schema["enum"] == ["pass", "fail"]
 
 
@@ -158,28 +146,33 @@ def _candidate_gate_evidence(
                 "raw_data": {
                     "market_mainline_report": {
                         "current_mainlines": [],
-                        "candidate_mainlines": [{
-                            "name": "具身智能",
-                            "lifecycle": "validating",
-                            "branches": ["减速器", "机器人"],
-                            "expected_horizon": "one_to_six_months",
-                            "evidence_axes": [{
-                                "axis": "policy",
-                                "evidence_refs": ["strategy_report:1"],
-                            }, {
-                                "axis": "supply_demand",
-                                "evidence_refs": ["industry_report:1"],
-                            }],
-                            "trigger_assessments": [{
-                                "description": "核心零部件订单验证",
-                                "status": trigger_status,
-                                "evidence_refs": (
-                                    ["industry_report:1"]
-                                    if trigger_status in {"met", "partial"}
-                                    else []
-                                ),
-                            }],
-                        }],
+                        "candidate_mainlines": [
+                            {
+                                "name": "具身智能",
+                                "lifecycle": "validating",
+                                "branches": ["减速器", "机器人"],
+                                "expected_horizon": "one_to_six_months",
+                                "evidence_axes": [
+                                    {
+                                        "axis": "policy",
+                                        "evidence_refs": ["strategy_report:1"],
+                                    },
+                                    {
+                                        "axis": "supply_demand",
+                                        "evidence_refs": ["industry_report:1"],
+                                    },
+                                ],
+                                "trigger_assessments": [
+                                    {
+                                        "description": "核心零部件订单验证",
+                                        "status": trigger_status,
+                                        "evidence_refs": (
+                                            ["industry_report:1"] if trigger_status in {"met", "partial"} else []
+                                        ),
+                                    }
+                                ],
+                            }
+                        ],
                     },
                 },
             },
@@ -265,15 +258,14 @@ def test_mainline_classification_rejects_composite_dynamic_branch_name() -> None
             },
         )
 
-    assert caught.value.issues == [{
-        "pointer": "/mainline_classification/matched_branch",
-        "code": "mainline_branch_binding_invalid",
-        "expected": (
-            "one exact branch name copied from the matched structured "
-            "mainline"
-        ),
-        "allowed": ["减速器", "机器人"],
-    }]
+    assert caught.value.issues == [
+        {
+            "pointer": "/mainline_classification/matched_branch",
+            "code": "mainline_branch_binding_invalid",
+            "expected": ("one exact branch name copied from the matched structured " "mainline"),
+            "allowed": ["减速器", "机器人"],
+        }
+    ]
 
 
 def test_source_failures_are_recorded_without_leaking_provider_payloads() -> None:
@@ -282,9 +274,7 @@ def test_source_failures_are_recorded_without_leaking_provider_payloads() -> Non
             "industrial_competitiveness": {
                 "evidence_gap": None,
                 "raw_data": {
-                    "formal_business_evidence_error": (
-                        "<html><h1>504 Gateway Time-out</h1></html>"
-                    ),
+                    "formal_business_evidence_error": ("<html><h1>504 Gateway Time-out</h1></html>"),
                 },
             },
         },
@@ -303,9 +293,7 @@ def test_source_failures_are_recorded_without_leaking_provider_payloads() -> Non
             "section": "industrial_competitiveness",
             "source": "formal_business_evidence",
             "error_code": "timeout",
-            "summary": (
-                "industrial_competitiveness/formal_business_evidence：取证超时"
-            ),
+            "summary": ("industrial_competitiveness/formal_business_evidence：取证超时"),
         },
         {
             "section": "public_research",
@@ -377,24 +365,28 @@ def test_structured_domain_precedes_business_but_summary_does_not_consume_search
             "_investment_thesis": "",
             "_investment_thesis_context": {
                 "summary": "人形机器人产业里的减速器财务筛选候选集合",
-                "domains": [{
-                    "label": "减速器",
-                    "board_queries": ["减速器"],
-                    "mapping_type": "catalog_binding",
-                    "rationale": "关节传动环节",
-                    "unresolved_parts": [],
-                }],
+                "domains": [
+                    {
+                        "label": "减速器",
+                        "board_queries": ["减速器"],
+                        "mapping_type": "catalog_binding",
+                        "rationale": "关节传动环节",
+                        "unresolved_parts": [],
+                    }
+                ],
             },
         },
         {
             "business_segments": {
                 "source_url": "https://example.com/segments",
-                "items": [{
-                    "report_date": "2025-12-31",
-                    "category": "product",
-                    "segment_name": "精密轴承",
-                    "revenue_share_pct": 17.18,
-                }],
+                "items": [
+                    {
+                        "report_date": "2025-12-31",
+                        "category": "product",
+                        "segment_name": "精密轴承",
+                        "revenue_share_pct": 17.18,
+                    }
+                ],
             },
         },
     )
@@ -406,11 +398,13 @@ def test_structured_domain_precedes_business_but_summary_does_not_consume_search
 def test_empty_plain_thesis_resolves_from_structured_domain() -> None:
     context = {
         "summary": "人形机器人产业里的减速器候选",
-        "domains": [{
-            "label": "减速器",
-            "board_queries": ["减速器"],
-            "mapping_type": "catalog_binding",
-        }],
+        "domains": [
+            {
+                "label": "减速器",
+                "board_queries": ["减速器"],
+                "mapping_type": "catalog_binding",
+            }
+        ],
     }
 
     assert resolve_investment_thesis("", context) == "减速器"
@@ -442,12 +436,14 @@ def test_public_research_distinguishes_failure_from_valid_empty_result() -> None
             return {"results": [], "errors": ["provider timeout"]}
         if "竞争格局" in query or "近三个月" in query:
             return {
-                "results": [{
-                    "title": "可核验研究",
-                    "url": "https://example.com/research",
-                    "snippet": "公开研究摘要",
-                    "source": "测试来源",
-                }],
+                "results": [
+                    {
+                        "title": "可核验研究",
+                        "url": "https://example.com/research",
+                        "snippet": "公开研究摘要",
+                        "source": "测试来源",
+                    }
+                ],
                 "errors": [],
             }
         return {"results": [], "errors": []}
@@ -463,9 +459,7 @@ def test_public_research_distinguishes_failure_from_valid_empty_result() -> None
     assert result["lens_status"]["market_consensus"] == "retrieved"
     assert result["lens_status"]["competition_structure"] == "retrieved"
     assert result["lens_status"]["cycle_supply_demand"] == "retrieval_failed"
-    assert result["lens_status"]["company_position"] == (
-        "no_matching_public_material"
-    )
+    assert result["lens_status"]["company_position"] == ("no_matching_public_material")
 
 
 def test_contract_rejects_missing_or_reordered_dimensions() -> None:
@@ -501,22 +495,31 @@ def test_numeric_claim_guard_rejects_untraceable_numbers_and_allows_rounding() -
     assert "28%" not in unsupported
 
     item.analysis = "未来6个月到12个月需要继续观察。"
-    assert _unsupported_numeric_claims(
-        item,
-        "分析窗口为未来6—12个月。",
-    ) == []
+    assert (
+        _unsupported_numeric_claims(
+            item,
+            "分析窗口为未来6—12个月。",
+        )
+        == []
+    )
 
     item.analysis = "截至2026年7月23日，结论仍需复核。"
-    assert _unsupported_numeric_claims(
-        item,
-        "requested_at=2026-07-23T12:00:00+08:00",
-    ) == []
+    assert (
+        _unsupported_numeric_claims(
+            item,
+            "requested_at=2026-07-23T12:00:00+08:00",
+        )
+        == []
+    )
 
     item.analysis = "当前价格为24.84元。"
-    assert _unsupported_numeric_claims(
-        item,
-        {"quote": {"price": 24.84}, "url": "https://example.test/35"},
-    ) == []
+    assert (
+        _unsupported_numeric_claims(
+            item,
+            {"quote": {"price": 24.84}, "url": "https://example.test/35"},
+        )
+        == []
+    )
 
     item.analysis = "行业毛利率通常为35%。"
     assert "35%" in _unsupported_numeric_claims(
@@ -525,10 +528,13 @@ def test_numeric_claim_guard_rejects_untraceable_numbers_and_allows_rounding() -
     )
 
     item.analysis = "资金金额为3902万元，年度收入为46.28亿元。"
-    assert _unsupported_numeric_claims(
-        item,
-        {"capital_flow_yuan": 39_020_000, "revenue_yuan": 4_628_000_000},
-    ) == []
+    assert (
+        _unsupported_numeric_claims(
+            item,
+            {"capital_flow_yuan": 39_020_000, "revenue_yuan": 4_628_000_000},
+        )
+        == []
+    )
 
     item.analysis = "行业毛利率通常为35%，估值折价60%。"
     redacted = _redact_unsupported_numeric_claims(item, ["35%", "60%"])
@@ -573,16 +579,11 @@ def test_numeric_guard_covers_bare_overall_monitoring_thresholds() -> None:
 def test_incomplete_dimension_headline_is_repaired_from_analysis() -> None:
     item = _dimension(0, "pass")
     item.headline = "中期主导叙事为"
-    item.analysis = (
-        "中期主导叙事为科技与出海，公司所在方向属于结构趋势下的轮动支线。"
-        "短期交易确认偏强。"
-    )
+    item.analysis = "中期主导叙事为科技与出海，公司所在方向属于结构趋势下的轮动支线。" "短期交易确认偏强。"
 
     repaired = _repair_incomplete_dimension_headline(item)
 
-    assert repaired.headline == (
-        "中期主导叙事为科技与出海，公司所在方向属于结构趋势下的轮动支线"
-    )
+    assert repaired.headline == ("中期主导叙事为科技与出海，公司所在方向属于结构趋势下的轮动支线")
 
 
 def test_professional_model_executes_each_dimension_and_overall_contract() -> None:
@@ -616,39 +617,46 @@ def test_professional_model_executes_each_dimension_and_overall_contract() -> No
                 for key, value in _assessment(
                     ["pass"] * 8,
                     recommendation_code="conditional_buy",
-                ).model_dump().items()
+                )
+                .model_dump()
+                .items()
                 if key != "dimensions"
             }
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": tool_name,
-                            "arguments": __import__("json").dumps(
-                                payload,
-                                ensure_ascii=False,
-                            ),
-                        }
-                    }]
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": __import__("json").dumps(
+                                        payload,
+                                        ensure_ascii=False,
+                                    ),
+                                }
+                            }
+                        ]
+                    }
                 }
-            }],
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(evidence)
 
     assert error == ""
     assert assessment is not None
     assert called_dimensions == [key for key, _ in DIMENSION_DEFINITIONS]
-    assert [item.dimension_id for item in assessment.dimensions] == [
-        key for key, _ in DIMENSION_DEFINITIONS
-    ]
+    assert [item.dimension_id for item in assessment.dimensions] == [key for key, _ in DIMENSION_DEFINITIONS]
     assert all(item.status == "pass" for item in assessment.dimensions)
 
 
@@ -681,26 +689,33 @@ def test_professional_model_stops_after_first_non_pass_dimension() -> None:
         ).model_dump()
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": tool_name,
-                            "arguments": __import__("json").dumps(
-                                payload,
-                                ensure_ascii=False,
-                            ),
-                        }
-                    }]
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": __import__("json").dumps(
+                                        payload,
+                                        ensure_ascii=False,
+                                    ),
+                                }
+                            }
+                        ]
+                    }
                 }
-            }],
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(evidence)
 
     assert error == ""
@@ -726,13 +741,15 @@ def test_dimension_request_keeps_structured_thesis_and_target_board_context() ->
     long_summary = "全市场板块榜单" * 800
     thesis_context = {
         "summary": "人形机器人产业里的减速器候选",
-        "domains": [{
-            "label": "减速器",
-            "board_queries": ["减速器"],
-            "mapping_type": "catalog_binding",
-            "rationale": "人形机器人关节传动环节",
-            "unresolved_parts": [],
-        }],
+        "domains": [
+            {
+                "label": "减速器",
+                "board_queries": ["减速器"],
+                "mapping_type": "catalog_binding",
+                "rationale": "人形机器人关节传动环节",
+                "unresolved_parts": [],
+            }
+        ],
     }
     evidence = {
         **_evidence(),
@@ -750,10 +767,12 @@ def test_dimension_request_keeps_structured_thesis_and_target_board_context() ->
                     },
                     "direction_board_mapping": {
                         "industry": [],
-                        "concept": [{
-                            "name": "减速器",
-                            "code": "BK001",
-                        }],
+                        "concept": [
+                            {
+                                "name": "减速器",
+                                "code": "BK001",
+                            }
+                        ],
                     },
                 },
             },
@@ -764,39 +783,42 @@ def test_dimension_request_keeps_structured_thesis_and_target_board_context() ->
     def completion(**kwargs):
         request = __import__("json").loads(kwargs["messages"][1]["content"])
         captured.append(request)
-        payload = _dimension(0, "fail").model_copy(
-            update={"evaluated_subjects": ["减速器"]}
-        ).model_dump()
+        payload = _dimension(0, "fail").model_copy(update={"evaluated_subjects": ["减速器"]}).model_dump()
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "submit_dimension_assessment",
-                            "arguments": __import__("json").dumps(
-                                payload,
-                                ensure_ascii=False,
-                            ),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_dimension_assessment",
+                                    "arguments": __import__("json").dumps(
+                                        payload,
+                                        ensure_ascii=False,
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(evidence)
 
     assert error == ""
     assert assessment is not None
     assert captured[0]["thesis_context"] == thesis_context
-    structured = captured[0]["dimension_evidence"]["market_mainline"][
-        "structured_context"
-    ]
+    structured = captured[0]["dimension_evidence"]["market_mainline"]["structured_context"]
     assert structured["thesis_membership"]["requested_domains"] == ["减速器"]
     assert structured["direction_board_mapping"]["concept"][0]["name"] == "减速器"
     assert "target_board_flows" not in structured
@@ -826,23 +848,30 @@ def test_model_result_without_structured_subject_confirmation_is_rejected() -> N
         payload = _dimension(0, "fail").model_dump()
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "submit_dimension_assessment",
-                            "arguments": __import__("json").dumps(payload),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_dimension_assessment",
+                                    "arguments": __import__("json").dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(evidence)
 
     assert assessment is not None
@@ -869,23 +898,30 @@ def test_first_gate_failure_does_not_load_later_gate_evidence() -> None:
         payload = _dimension(0, "fail").model_dump()
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "submit_dimension_assessment",
-                            "arguments": __import__("json").dumps(payload),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_dimension_assessment",
+                                    "arguments": __import__("json").dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(
             evidence,
             dimension_loader=loaded.append,
@@ -917,37 +953,46 @@ def test_truncated_forced_schema_gets_one_targeted_repair_without_timeout() -> N
         if len(calls) == 1:
             return {
                 "model": "test-model",
-                "choices": [{
-                    "finish_reason": "length",
-                    "message": {
-                        "content": "",
-                        "reasoning_content": "完整但被截断的分析过程" * 1000,
-                        "tool_calls": [],
-                    },
-                }],
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "完整但被截断的分析过程" * 1000,
+                            "tool_calls": [],
+                        },
+                    }
+                ],
                 "usage": {"completion_tokens": 12_000},
             }
         payload = _dimension(0, "fail").model_dump()
         return {
             "model": "test-model",
-            "choices": [{
-                "finish_reason": "tool_calls",
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "submit_dimension_assessment",
-                            "arguments": __import__("json").dumps(payload),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "finish_reason": "tool_calls",
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_dimension_assessment",
+                                    "arguments": __import__("json").dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(evidence)
 
     assert error == ""
@@ -958,16 +1003,10 @@ def test_truncated_forced_schema_gets_one_targeted_repair_without_timeout() -> N
     assert calls[1]["max_tokens"] == 16_000
     assert "timeout" not in calls[0]
     assert "extra_body" not in calls[0]
-    repair_request = __import__("json").loads(
-        calls[1]["messages"][1]["content"]
-    )["targeted_repair"]
+    repair_request = __import__("json").loads(calls[1]["messages"][1]["content"])["targeted_repair"]
     assert repair_request["invalid_payload"]["finish_reason"] == "length"
-    assert "完整但被截断的分析过程" in repair_request[
-        "invalid_payload"
-    ]["reasoning_content"]
-    assert repair_request["issues"][0]["pointer"] == (
-        "/choices/0/message/tool_calls"
-    )
+    assert "完整但被截断的分析过程" in repair_request["invalid_payload"]["reasoning_content"]
+    assert repair_request["issues"][0]["pointer"] == ("/choices/0/message/tool_calls")
 
 
 def test_professional_gate_streams_provider_reasoning_without_changing_schema() -> None:
@@ -992,32 +1031,38 @@ def test_professional_gate_streams_provider_reasoning_without_changing_schema() 
         return [
             SimpleNamespace(
                 model="test-model",
-                choices=[SimpleNamespace(
-                    finish_reason=None,
-                    delta=SimpleNamespace(
-                        content=None,
-                        reasoning_content="先核对产业方向与市场主线。",
-                        tool_calls=None,
-                    ),
-                )],
+                choices=[
+                    SimpleNamespace(
+                        finish_reason=None,
+                        delta=SimpleNamespace(
+                            content=None,
+                            reasoning_content="先核对产业方向与市场主线。",
+                            tool_calls=None,
+                        ),
+                    )
+                ],
                 usage=None,
             ),
             SimpleNamespace(
                 model="test-model",
-                choices=[SimpleNamespace(
-                    finish_reason="tool_calls",
-                    delta=SimpleNamespace(
-                        content=None,
-                        reasoning_content=None,
-                        tool_calls=[SimpleNamespace(
-                            index=0,
-                            function=SimpleNamespace(
-                                name="submit_dimension_assessment",
-                                arguments=__import__("json").dumps(payload),
-                            ),
-                        )],
-                    ),
-                )],
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="tool_calls",
+                        delta=SimpleNamespace(
+                            content=None,
+                            reasoning_content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    function=SimpleNamespace(
+                                        name="submit_dimension_assessment",
+                                        arguments=__import__("json").dumps(payload),
+                                    ),
+                                )
+                            ],
+                        ),
+                    )
+                ],
                 usage=SimpleNamespace(
                     prompt_tokens=10,
                     completion_tokens=5,
@@ -1026,10 +1071,13 @@ def test_professional_gate_streams_provider_reasoning_without_changing_schema() 
             ),
         ]
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(
             evidence,
             on_reasoning=reasoning.append,
@@ -1040,9 +1088,7 @@ def test_professional_gate_streams_provider_reasoning_without_changing_schema() 
     assert assessment.dimensions[0].status == "fail"
     assert captured["stream"] is True
     assert captured["stream_options"] == {"include_usage": True}
-    assert captured["tool_choice"]["function"]["name"] == (
-        "submit_dimension_assessment"
-    )
+    assert captured["tool_choice"]["function"]["name"] == ("submit_dimension_assessment")
     assert reasoning == ["先核对产业方向与市场主线。"]
 
 
@@ -1068,34 +1114,39 @@ def test_schema_validation_repair_uses_exact_invalid_field_pointer() -> None:
             payload["headline"] = "过长标题" * 40
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "submit_dimension_assessment",
-                            "arguments": __import__("json").dumps(
-                                payload,
-                                ensure_ascii=False,
-                            ),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_dimension_assessment",
+                                    "arguments": __import__("json").dumps(
+                                        payload,
+                                        ensure_ascii=False,
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(evidence)
 
     assert error == ""
     assert assessment is not None
     assert len(calls) == 2
-    repair_request = __import__("json").loads(
-        calls[1]["messages"][1]["content"]
-    )["targeted_repair"]
+    repair_request = __import__("json").loads(calls[1]["messages"][1]["content"])["targeted_repair"]
     assert repair_request["invalid_payload"]["headline"].startswith("过长标题")
     assert repair_request["issues"][0]["pointer"] == "/headline"
     assert repair_request["issues"][0]["code"] == "string_too_long"
@@ -1117,30 +1168,35 @@ def test_precomputed_mainline_is_not_rejudged_and_is_sent_to_gate_two() -> None:
     captured: list[dict] = []
 
     def completion(**kwargs):
-        request = __import__("json").loads(
-            kwargs["messages"][1]["content"]
-        )
+        request = __import__("json").loads(kwargs["messages"][1]["content"])
         captured.append(request)
         payload = _dimension(1, "fail").model_dump()
         return {
             "model": "test-model",
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": "submit_dimension_assessment",
-                            "arguments": __import__("json").dumps(payload),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_dimension_assessment",
+                                    "arguments": __import__("json").dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
             "usage": {},
         }
 
-    with patch(
-        "src.llm.anthropic_gateway.completion_gateway",
-        side_effect=completion,
-    ), patch("src.storage.persist_llm_usage"):
+    with (
+        patch(
+            "src.llm.anthropic_gateway.completion_gateway",
+            side_effect=completion,
+        ),
+        patch("src.storage.persist_llm_usage"),
+    ):
         assessment, error = _call_professional_model(
             evidence,
             precomputed_dimensions=(_dimension(0, "pass"),),
@@ -1149,12 +1205,8 @@ def test_precomputed_mainline_is_not_rejudged_and_is_sent_to_gate_two() -> None:
     assert error == ""
     assert assessment is not None
     assert len(captured) == 1
-    assert captured[0]["requested_dimension"]["dimension_id"] == (
-        "industrial_competitiveness"
-    )
-    assert captured[0]["prior_dimensions"][0]["dimension_id"] == (
-        "market_mainline"
-    )
+    assert captured[0]["requested_dimension"]["dimension_id"] == ("industrial_competitiveness")
+    assert captured[0]["prior_dimensions"][0]["dimension_id"] == ("market_mainline")
 
 
 def test_target_board_context_contains_mapping_but_no_market_timing_data() -> None:
@@ -1168,12 +1220,14 @@ def test_target_board_context_contains_mapping_but_no_market_timing_data() -> No
         "board_catalog": {
             "industry": {"matched_items": []},
             "concept": {
-                "matched_items": [{
-                    "name": "减速器",
-                    "code": "BK001",
-                    "change_pct": 8.8,
-                    "net_flow": 100,
-                }],
+                "matched_items": [
+                    {
+                        "name": "减速器",
+                        "code": "BK001",
+                        "change_pct": 8.8,
+                        "net_flow": 100,
+                    }
+                ],
             },
         },
     }
@@ -1192,38 +1246,40 @@ def test_target_board_context_contains_mapping_but_no_market_timing_data() -> No
 
 def test_structured_mainline_requires_a_defined_direction_not_market_flow() -> None:
     evaluator = MainlinePositionEvaluator()
-    structured = CriterionEvidence(raw_data={
-        "market_subject": {"investment_thesis": "减速器"},
-        "market_mainline_report": {"report_pending": True},
-        "thesis_membership": {"requested_domains": ["减速器"]},
-    })
-    no_direction = CriterionEvidence(raw_data={
-        "market_subject": {},
-        "market_mainline_report": {"report_pending": True},
-    })
+    structured = CriterionEvidence(
+        raw_data={
+            "market_subject": {"investment_thesis": "减速器"},
+            "market_mainline_report": {"report_pending": True},
+            "thesis_membership": {"requested_domains": ["减速器"]},
+        }
+    )
+    no_direction = CriterionEvidence(
+        raw_data={
+            "market_subject": {},
+            "market_mainline_report": {"report_pending": True},
+        }
+    )
 
     assert evaluator.evidence_failure_reason(structured) is None
-    assert "无法确定市场主线判断对象" in (
-        evaluator.evidence_failure_reason(no_direction) or ""
-    )
+    assert "无法确定市场主线判断对象" in (evaluator.evidence_failure_reason(no_direction) or "")
 
 
 def test_competitiveness_rejects_failed_dict_payloads_as_available_sources() -> None:
     evaluator = IndustrialCompetitivenessEvaluator()
-    evidence = CriterionEvidence(raw_data={
-        "profile": {},
-        "business_segments": {"success": False, "errors": ["timeout"]},
-        "financials": {"success": False, "errors": ["timeout"]},
-        "announcements": {"success": False, "errors": ["timeout"]},
-        "formal_business_evidence": {
-            "success": False,
-            "errors": ["timeout"],
-        },
-    })
-
-    assert "均获取失败" in (
-        evaluator.evidence_failure_reason(evidence) or ""
+    evidence = CriterionEvidence(
+        raw_data={
+            "profile": {},
+            "business_segments": {"success": False, "errors": ["timeout"]},
+            "financials": {"success": False, "errors": ["timeout"]},
+            "announcements": {"success": False, "errors": ["timeout"]},
+            "formal_business_evidence": {
+                "success": False,
+                "errors": ["timeout"],
+            },
+        }
     )
+
+    assert "均获取失败" in (evaluator.evidence_failure_reason(evidence) or "")
 
 
 def test_dimension_context_uses_structured_financials_without_text_truncation() -> None:
@@ -1253,10 +1309,7 @@ def test_dimension_context_uses_structured_financials_without_text_truncation() 
     risk = _dimension_company_context(packet, "major_risks")
     assert risk["financials"]["latest_full_year"]["year"] == 2025
     assert risk["financials"]["latest_full_year"]["revenue_亿元"] == 4
-    assert (
-        risk["financials"]["latest_full_year"]["operating_cash_flow_亿元"]
-        == 0.04
-    )
+    assert risk["financials"]["latest_full_year"]["operating_cash_flow_亿元"] == 0.04
     assert risk["risk_events"]["items"][0]["title"] == "补充质押"
 
     valuation = _dimension_company_context(packet, "valuation_odds")
@@ -1293,17 +1346,17 @@ def test_market_mainline_evaluator_uses_the_frozen_batch_snapshot(
         "as_of_date": "2026-07-27",
         "overview": "测试主线",
         "market_stage": {"label": "主线形成"},
-        "current_mainlines": [{
-            "name": "国产算力",
-            "branches": ["算力概念"],
-        }],
+        "current_mainlines": [
+            {
+                "name": "国产算力",
+                "branches": ["算力概念"],
+            }
+        ],
         "future_mainlines": [],
     }
     monkeypatch.setattr(
         "src.services.buy_criteria.evaluators.mainline_position.DataService.get_market_mainline_report",
-        lambda _self: (_ for _ in ()).throw(
-            AssertionError("逐股分析不得重新读取数据库快照")
-        ),
+        lambda _self: (_ for _ in ()).throw(AssertionError("逐股分析不得重新读取数据库快照")),
     )
     monkeypatch.setattr(
         "src.services.buy_criteria.evaluators.mainline_position.DataService.get_sector_list",
@@ -1321,15 +1374,9 @@ def test_market_mainline_evaluator_uses_the_frozen_batch_snapshot(
         {"market_mainline_snapshot": snapshot},
     )
 
-    assert evidence.raw_data["market_mainline_snapshot_source"] == (
-        "frozen_batch_snapshot"
-    )
-    assert evidence.raw_data["market_mainline_snapshot_id"] == (
-        "shared-snapshot"
-    )
-    assert evidence.raw_data["market_mainline_report"][
-        "current_mainlines"
-    ][0]["name"] == "国产算力"
+    assert evidence.raw_data["market_mainline_snapshot_source"] == ("frozen_batch_snapshot")
+    assert evidence.raw_data["market_mainline_snapshot_id"] == ("shared-snapshot")
+    assert evidence.raw_data["market_mainline_report"]["current_mainlines"][0]["name"] == "国产算力"
 
 
 def test_market_mainline_scope_only_never_checks_a_candidate_company(
@@ -1337,9 +1384,7 @@ def test_market_mainline_scope_only_never_checks_a_candidate_company(
 ) -> None:
     monkeypatch.setattr(
         "src.services.buy_criteria.evaluators.mainline_position.DataService.get_investment_thesis_candidates",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("共享主线闸门不得查询个股候选关系")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("共享主线闸门不得查询个股候选关系")),
     )
     monkeypatch.setattr(
         "src.services.buy_criteria.evaluators.mainline_position.DataService.get_sector_list",
@@ -1354,11 +1399,13 @@ def test_market_mainline_scope_only_never_checks_a_candidate_company(
             "_investment_thesis": "减速器",
             "_investment_thesis_context": {
                 "summary": "减速器",
-                "domains": [{
-                    "label": "减速器",
-                    "board_queries": ["减速器"],
-                    "mapping_type": "catalog_binding",
-                }],
+                "domains": [
+                    {
+                        "label": "减速器",
+                        "board_queries": ["减速器"],
+                        "mapping_type": "catalog_binding",
+                    }
+                ],
             },
         },
         {
@@ -1374,30 +1421,32 @@ def test_market_mainline_scope_only_never_checks_a_candidate_company(
     assert subject["scope_only"] is True
     assert subject["symbol"] is None
     assert "不含任何公司" in evidence.data_summary
-    assert evidence.raw_data["thesis_membership"]["requested_domains"] == [
-        "减速器"
-    ]
+    assert evidence.raw_data["thesis_membership"]["requested_domains"] == ["减速器"]
 
 
 def test_dimension_context_derives_latest_full_year_and_annual_yoy() -> None:
     items = []
     for year, revenue in ((2024, 100_000_000), (2025, 150_000_000)):
         for month in (3, 6, 9, 12):
-            items.append({
-                "report_date": f"{year}-{month:02d}-28",
-                "report_period": f"{year}Q{month // 3}",
-                "revenue": revenue,
-                "parent_net_profit": 10_000_000,
-                "deducted_net_profit": 9_000_000,
-                "operating_cash_flow": 5_000_000,
-                "free_cash_flow": 2_000_000,
-            })
-    items.append({
-        "report_date": "2026-03-31",
-        "report_period": "2026Q1",
-        "revenue": 200_000_000,
-        "revenue_yoy": 33.33,
-    })
+            items.append(
+                {
+                    "report_date": f"{year}-{month:02d}-28",
+                    "report_period": f"{year}Q{month // 3}",
+                    "revenue": revenue,
+                    "parent_net_profit": 10_000_000,
+                    "deducted_net_profit": 9_000_000,
+                    "operating_cash_flow": 5_000_000,
+                    "free_cash_flow": 2_000_000,
+                }
+            )
+    items.append(
+        {
+            "report_date": "2026-03-31",
+            "report_period": "2026Q1",
+            "revenue": 200_000_000,
+            "revenue_yoy": 33.33,
+        }
+    )
 
     context = _dimension_company_context(
         {"financials": {"items": items}},
@@ -1408,12 +1457,7 @@ def test_dimension_context_derives_latest_full_year_and_annual_yoy() -> None:
     assert latest["year"] == 2025
     assert latest["revenue_亿元"] == 6
     assert latest["revenue_yoy_pct"] == 50
-    assert (
-        context["financials"]["quarterly"][-1][
-            "reported_period_revenue_yoy_pct"
-        ]
-        == 33.33
-    )
+    assert context["financials"]["quarterly"][-1]["reported_period_revenue_yoy_pct"] == 33.33
     assert "annual_2025" not in context["financials"]
 
 
@@ -1429,12 +1473,15 @@ def test_program_rejects_at_first_failed_gate_without_score() -> None:
         "not_evaluated",
     ]
     assessment = _assessment(statuses, recommendation_code="conditional_buy")
-    with patch(
-        "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
-        return_value=_evidence(),
-    ), patch(
-        "src.services.buy_criteria.professional_analysis._call_professional_model",
-        return_value=(assessment, ""),
+    with (
+        patch(
+            "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
+            return_value=_evidence(),
+        ),
+        patch(
+            "src.services.buy_criteria.professional_analysis._call_professional_model",
+            return_value=(assessment, ""),
+        ),
     ):
         result = analyze_professional_buy("300850")
 
@@ -1458,12 +1505,15 @@ def test_program_allows_conditional_buy_only_after_eight_passes() -> None:
         ["pass"] * 8,
         recommendation_code="conditional_buy",
     )
-    with patch(
-        "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
-        return_value=_evidence(),
-    ), patch(
-        "src.services.buy_criteria.professional_analysis._call_professional_model",
-        return_value=(assessment, ""),
+    with (
+        patch(
+            "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
+            return_value=_evidence(),
+        ),
+        patch(
+            "src.services.buy_criteria.professional_analysis._call_professional_model",
+            return_value=(assessment, ""),
+        ),
     ):
         result = analyze_professional_buy("300850")
 
@@ -1475,12 +1525,15 @@ def test_program_allows_conditional_buy_only_after_eight_passes() -> None:
 
 
 def test_model_failure_marks_analysis_unavailable_and_skips_seven() -> None:
-    with patch(
-        "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
-        return_value=_evidence(),
-    ), patch(
-        "src.services.buy_criteria.professional_analysis._call_professional_model",
-        return_value=(None, "TLS unavailable"),
+    with (
+        patch(
+            "src.services.buy_criteria.professional_analysis.collect_professional_evidence",
+            return_value=_evidence(),
+        ),
+        patch(
+            "src.services.buy_criteria.professional_analysis._call_professional_model",
+            return_value=(None, "TLS unavailable"),
+        ),
     ):
         result = analyze_professional_buy("300850")
 
@@ -1491,7 +1544,4 @@ def test_model_failure_marks_analysis_unavailable_and_skips_seven() -> None:
     assert result["counts"]["not_evaluated"] == 7
     assert len(result["dimensions"]) == 8
     assert result["dimensions"][0]["status"] == "insufficient"
-    assert all(
-        item["status"] == "not_evaluated"
-        for item in result["dimensions"][1:]
-    )
+    assert all(item["status"] == "not_evaluated" for item in result["dimensions"][1:])

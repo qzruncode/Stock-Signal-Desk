@@ -73,9 +73,7 @@ class EvaluateMultiStockBuyCriteriaArgs(BaseModel):
     symbols: str = Field(min_length=1)
     thesis: str = ""
     thesis_context: InvestmentThesisContext | None = None
-    mainline_strategy: MainlineStrategyProfile = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    )
+    mainline_strategy: MainlineStrategyProfile = MainlineStrategyProfile.CONFIRMED_MAINLINE
     market_mainline_snapshot: MarketMainlineSnapshotArgs | None = None
     market_mainline_assessment: DimensionAssessment | None = None
     market_mainline_model_error: str | None = None
@@ -121,40 +119,51 @@ def public_buy_analysis_error(value: Any) -> str:
     text = str(value or "").strip()
     if text.startswith("analysis_"):
         return text
-    if text.startswith((
-        "无法解析：",
-        "没有可验证的A股公司",
-        "单轮最多分析",
-        "前置流程阻止",
-        "工具没有返回",
-    )):
+    if text.startswith(
+        (
+            "无法解析：",
+            "没有可验证的A股公司",
+            "单轮最多分析",
+            "前置流程阻止",
+            "工具没有返回",
+        )
+    ):
         return text
     lowered = text.lower()
-    if any(marker in lowered for marker in (
-        "timeout",
-        "timed out",
-        "gateway time-out",
-        "gateway timeout",
-        "504",
-        "超时",
-    )):
+    if any(
+        marker in lowered
+        for marker in (
+            "timeout",
+            "timed out",
+            "gateway time-out",
+            "gateway timeout",
+            "504",
+            "超时",
+        )
+    ):
         return "analysis_timeout：分析服务响应超时，本轮未形成公司结论"
-    if any(marker in lowered for marker in (
-        "validationerror",
-        "schema",
-        "string_too_long",
-        "tool arguments",
-        "结构化",
-    )):
+    if any(
+        marker in lowered
+        for marker in (
+            "validationerror",
+            "schema",
+            "string_too_long",
+            "tool arguments",
+            "结构化",
+        )
+    ):
         return "analysis_schema_invalid：结构化分析结果校验失败，本轮未形成公司结论"
-    if any(marker in lowered for marker in (
-        "connection",
-        "connecterror",
-        "remoteprotocolerror",
-        "ssl",
-        "broken pipe",
-        "连接",
-    )):
+    if any(
+        marker in lowered
+        for marker in (
+            "connection",
+            "connecterror",
+            "remoteprotocolerror",
+            "ssl",
+            "broken pipe",
+            "连接",
+        )
+    ):
         return "analysis_connection_failed：分析服务连接失败，本轮未形成公司结论"
     return "analysis_failed：专业分析未完成，本轮未形成公司结论"
 
@@ -164,9 +173,7 @@ def build_professional_buy_failure_item(
     message: str,
     *,
     thesis: str,
-    mainline_strategy: MainlineStrategyProfile | str = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    ),
+    mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
 ) -> dict[str, Any]:
     public_message = public_buy_analysis_error(message)
     strategy_profile = normalize_mainline_strategy(mainline_strategy)
@@ -205,9 +212,7 @@ def build_professional_buy_failure_result(
     message: str,
     *,
     thesis: str = "",
-    mainline_strategy: MainlineStrategyProfile | str = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    ),
+    mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
     market_mainline_snapshot_id: str | None = None,
 ) -> dict[str, Any]:
     """Return one complete, fail-closed terminal packet for a failed company run."""
@@ -226,9 +231,7 @@ def build_professional_buy_failure_result(
         "playbook": PROFESSIONAL_BUY_ANALYSIS_MODE,
         "thesis": str(thesis or "").strip() or None,
         "mainline_strategy": strategy_profile.value,
-        "market_mainline_snapshot_id": (
-            str(market_mainline_snapshot_id or "").strip() or None
-        ),
+        "market_mainline_snapshot_id": (str(market_mainline_snapshot_id or "").strip() or None),
         "items": [item],
         "resolved_entities": [],
         "unresolved_entities": [],
@@ -255,9 +258,7 @@ def evaluate_multi_stock_buy_criteria(
     symbols: str,
     thesis: str = "",
     thesis_context: dict[str, Any] | None = None,
-    mainline_strategy: MainlineStrategyProfile | str = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    ),
+    mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
     market_mainline_snapshot: dict[str, Any] | None = None,
     market_mainline_assessment: dict[str, Any] | None = None,
     market_mainline_model_error: str | None = None,
@@ -276,9 +277,7 @@ def evaluate_multi_stock_buy_criteria(
             "thesis_context": thesis_context,
             "mainline_strategy": strategy_profile.value,
             "market_mainline_snapshot_id": (
-                market_mainline_snapshot.get("snapshot_id")
-                if isinstance(market_mainline_snapshot, dict)
-                else None
+                market_mainline_snapshot.get("snapshot_id") if isinstance(market_mainline_snapshot, dict) else None
             ),
             "items": [],
             "resolved_entities": [],
@@ -287,9 +286,7 @@ def evaluate_multi_stock_buy_criteria(
             "covered_count": 0,
             "coverage_complete": False,
             "gate_order": _gate_contract(),
-            "decision_rule": (
-                "每只股票首项失败立即停止；连续八维全部通过才可买入"
-            ),
+            "decision_rule": ("每只股票首项失败立即停止；连续八维全部通过才可买入"),
             "completed_count": 0,
             "source_unavailable_count": 0,
             "evidence_insufficient_count": 0,
@@ -309,9 +306,7 @@ def evaluate_multi_stock_buy_criteria(
             "thesis_context": thesis_context,
             "mainline_strategy": strategy_profile.value,
             "market_mainline_snapshot_id": (
-                market_mainline_snapshot.get("snapshot_id")
-                if isinstance(market_mainline_snapshot, dict)
-                else None
+                market_mainline_snapshot.get("snapshot_id") if isinstance(market_mainline_snapshot, dict) else None
             ),
             "items": [],
             "resolved_entities": [],
@@ -320,9 +315,7 @@ def evaluate_multi_stock_buy_criteria(
             "covered_count": 0,
             "coverage_complete": False,
             "gate_order": _gate_contract(),
-            "decision_rule": (
-                "每只股票首项失败立即停止；连续八维全部通过才可买入"
-            ),
+            "decision_rule": ("每只股票首项失败立即停止；连续八维全部通过才可买入"),
             "completed_count": 0,
             "source_unavailable_count": 0,
             "evidence_insufficient_count": 0,
@@ -347,31 +340,20 @@ def evaluate_multi_stock_buy_criteria(
                 pre_fetched_data=(
                     {
                         **(
-                            {
-                                "market_mainline_snapshot": (
-                                    market_mainline_snapshot
-                                )
-                            }
+                            {"market_mainline_snapshot": (market_mainline_snapshot)}
                             if market_mainline_snapshot is not None
                             else {}
                         ),
                         **(
                             {
-                                "market_mainline_assessment": (
-                                    market_mainline_assessment
-                                ),
-                                "market_mainline_model_error": (
-                                    market_mainline_model_error
-                                ),
+                                "market_mainline_assessment": (market_mainline_assessment),
+                                "market_mainline_model_error": (market_mainline_model_error),
                             }
                             if market_mainline_assessment is not None
                             else {}
                         ),
                     }
-                    if (
-                        market_mainline_snapshot is not None
-                        or market_mainline_assessment is not None
-                    )
+                    if (market_mainline_snapshot is not None or market_mainline_assessment is not None)
                     else None
                 ),
                 on_reasoning=lambda delta: report_tool_progress(
@@ -381,35 +363,19 @@ def evaluate_multi_stock_buy_criteria(
             )
             result["name"] = entity.get("name") or symbol
             if result.get("analysis_status") == "execution_failed":
-                raw_error = str(
-                    result.get("model_error")
-                    or result.get("stopped_verdict")
-                    or f"{symbol}分析执行失败"
-                )
+                raw_error = str(result.get("model_error") or result.get("stopped_verdict") or f"{symbol}分析执行失败")
                 error = public_buy_analysis_error(raw_error)
                 result["model_error"] = error
                 result["stopped_verdict"] = error
                 return symbol, result, error
             if result.get("analysis_status") == "source_unavailable":
-                gaps = "；".join(
-                    str(value)
-                    for value in result.get("evidence_gaps") or []
-                )
+                gaps = "；".join(str(value) for value in result.get("evidence_gaps") or [])
                 if "取证超时" in gaps:
-                    error = (
-                        "analysis_timeout：关键来源取证超时，"
-                        "本轮未形成公司结论"
-                    )
+                    error = "analysis_timeout：关键来源取证超时，" "本轮未形成公司结论"
                 elif "连接失败" in gaps:
-                    error = (
-                        "analysis_connection_failed：关键来源连接失败，"
-                        "本轮未形成公司结论"
-                    )
+                    error = "analysis_connection_failed：关键来源连接失败，" "本轮未形成公司结论"
                 else:
-                    error = (
-                        "analysis_source_unavailable：关键来源未完成，"
-                        "本轮未形成公司结论"
-                    )
+                    error = "analysis_source_unavailable：关键来源未完成，" "本轮未形成公司结论"
                 return symbol, result, error
             return symbol, result, ""
         except Exception as exc:
@@ -418,9 +384,7 @@ def evaluate_multi_stock_buy_criteria(
                 entity.get("name") or symbol,
                 symbol,
             )
-            message = public_buy_analysis_error(
-                f"{type(exc).__name__}: {str(exc)[:240]}"
-            )
+            message = public_buy_analysis_error(f"{type(exc).__name__}: {str(exc)[:240]}")
             return (
                 symbol,
                 build_professional_buy_failure_item(
@@ -435,32 +399,20 @@ def evaluate_multi_stock_buy_criteria(
     with ThreadPoolExecutor(
         max_workers=min(4, max(1, len(resolved))),
     ) as pool:
-        futures = {
-            pool.submit(analyze, entity): entity
-            for entity in resolved
-        }
+        futures = {pool.submit(analyze, entity): entity for entity in resolved}
         for future in as_completed(futures):
             symbol, result, error = future.result()
             results_by_symbol[symbol] = result
             if error:
                 errors.append(error)
 
-    items = [
-        results_by_symbol[str(entity["symbol"])]
-        for entity in resolved
-    ]
+    items = [results_by_symbol[str(entity["symbol"])] for entity in resolved]
     if unresolved:
         errors.append("无法解析：" + "、".join(unresolved))
     covered_count = len(items)
-    coverage_complete = (
-        covered_count == len(resolved)
-        and not unresolved
-    )
+    coverage_complete = covered_count == len(resolved) and not unresolved
     status_counts = {
-        status: sum(
-            str(item.get("analysis_status") or "completed") == status
-            for item in items
-        )
+        status: sum(str(item.get("analysis_status") or "completed") == status for item in items)
         for status in (
             "completed",
             "source_unavailable",
@@ -470,31 +422,20 @@ def evaluate_multi_stock_buy_criteria(
     source_unavailable = status_counts["source_unavailable"]
     execution_failed = status_counts["execution_failed"]
     if source_unavailable:
-        warnings = [
-            f"{source_unavailable} 只股票因关键来源未完成而暂停，系统未对公司形成结论。"
-        ]
+        warnings = [f"{source_unavailable} 只股票因关键来源未完成而暂停，系统未对公司形成结论。"]
     else:
         warnings = []
     now = datetime.now().astimezone().isoformat()
     return {
-        "success": bool(items) and not (
-            source_unavailable or execution_failed
-        ),
-        "partial": bool(
-            errors
-            or source_unavailable
-            or execution_failed
-            or not coverage_complete
-        ),
+        "success": bool(items) and not (source_unavailable or execution_failed),
+        "partial": bool(errors or source_unavailable or execution_failed or not coverage_complete),
         "contract_version": BUY_GATE_CONTRACT_VERSION,
         "playbook": PROFESSIONAL_BUY_ANALYSIS_MODE,
         "thesis": clean_thesis or None,
         "thesis_context": thesis_context,
         "mainline_strategy": strategy_profile.value,
         "market_mainline_snapshot_id": (
-            market_mainline_snapshot.get("snapshot_id")
-            if isinstance(market_mainline_snapshot, dict)
-            else None
+            market_mainline_snapshot.get("snapshot_id") if isinstance(market_mainline_snapshot, dict) else None
         ),
         "items": items,
         "resolved_entities": resolved,
@@ -515,10 +456,7 @@ def evaluate_multi_stock_buy_criteria(
         "warnings": warnings,
         "data_time": now,
         "is_stale": None,
-        "source": (
-            "内部同步股票池、市场证据、公司披露、财务、公告、"
-            "行情及技术指标"
-        ),
+        "source": ("内部同步股票池、市场证据、公司披露、财务、公告、" "行情及技术指标"),
     }
 
 
@@ -533,12 +471,7 @@ def _failure_result(
         f"{symbol}{error_text}",
         thesis=str(arguments.get("thesis") or ""),
         mainline_strategy=arguments.get("mainline_strategy"),
-        market_mainline_snapshot_id=str(
-            (arguments.get("market_mainline_snapshot") or {}).get(
-                "snapshot_id"
-            )
-            or ""
-        ),
+        market_mainline_snapshot_id=str((arguments.get("market_mainline_snapshot") or {}).get("snapshot_id") or ""),
     )
     result["runtime_attempts"] = attempt
     return result
@@ -549,16 +482,10 @@ def _project_shared_mainline_block(
 ) -> dict[str, Any]:
     """Project the shared first-gate verdict across one stock deterministically."""
     raw_assessment = arguments.get("market_mainline_assessment")
-    assessment = (
-        raw_assessment
-        if isinstance(raw_assessment, Mapping)
-        else {}
-    )
+    assessment = raw_assessment if isinstance(raw_assessment, Mapping) else {}
     status = str(assessment.get("status") or "").strip()
     if status not in {"fail", "insufficient"}:
-        raise ValueError(
-            "shared market mainline projection requires a non-pass assessment"
-        )
+        raise ValueError("shared market mainline projection requires a non-pass assessment")
     return evaluate_multi_stock_buy_criteria(**dict(arguments))
 
 

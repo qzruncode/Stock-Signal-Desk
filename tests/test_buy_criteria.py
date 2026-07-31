@@ -46,15 +46,8 @@ def _dimension(index: int, status: str) -> dict:
 def _analysis(statuses: list[str]) -> dict:
     return {
         "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
-        "dimensions": [
-            _dimension(index, status)
-            for index, status in enumerate(statuses)
-        ],
-        "recommendation_code": (
-            "conditional_buy"
-            if all(status == "pass" for status in statuses)
-            else "wait"
-        ),
+        "dimensions": [_dimension(index, status) for index, status in enumerate(statuses)],
+        "recommendation_code": ("conditional_buy" if all(status == "pass" for status in statuses) else "wait"),
         "recommendation_reason": "八维布尔闸门结果",
         "overall_summary": "八维布尔闸门已经按顺序执行。",
     }
@@ -78,22 +71,22 @@ def test_dimension_contract_is_exactly_the_user_required_eight_axes() -> None:
 
 
 def test_analysis_conversion_stops_at_first_non_pass_dimension() -> None:
-    analysis = _analysis([
-        "pass",
-        "pass",
-        "fail",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-    ])
+    analysis = _analysis(
+        [
+            "pass",
+            "pass",
+            "fail",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+        ]
+    )
 
     results = _analysis_to_results(analysis)
 
-    assert [result.criterion_id for result in results] == list(
-        EXPECTED_DIMENSIONS[:3]
-    )
+    assert [result.criterion_id for result in results] == list(EXPECTED_DIMENSIONS[:3])
     assert [result.status for result in results] == ["pass", "pass", "fail"]
 
 
@@ -124,35 +117,42 @@ def test_cache_accepts_only_a_valid_fail_fast_prefix() -> None:
         ]
     }
     assert _cache_matches_current_contract(valid_failure) is True
-    assert _cache_matches_current_contract({
-        "results": [_criterion(index, "pass").to_dict() for index in range(8)]
-    }) is True
+    assert (
+        _cache_matches_current_contract({"results": [_criterion(index, "pass").to_dict() for index in range(8)]})
+        is True
+    )
 
-    assert _cache_matches_current_contract({
-        "results": [
-            _criterion(0, "fail").to_dict(),
-            _criterion(1, "pass").to_dict(),
-        ]
-    }) is False
-    assert _cache_matches_current_contract({
-        "results": [_criterion(index, "pass").to_dict() for index in range(7)]
-    }) is False
-    assert _cache_matches_current_contract({
-        "results": [_criterion(1, "fail").to_dict()]
-    }) is False
+    assert (
+        _cache_matches_current_contract(
+            {
+                "results": [
+                    _criterion(0, "fail").to_dict(),
+                    _criterion(1, "pass").to_dict(),
+                ]
+            }
+        )
+        is False
+    )
+    assert (
+        _cache_matches_current_contract({"results": [_criterion(index, "pass").to_dict() for index in range(7)]})
+        is False
+    )
+    assert _cache_matches_current_contract({"results": [_criterion(1, "fail").to_dict()]}) is False
 
 
 def test_orchestrator_has_one_professional_analysis_entrypoint() -> None:
-    analysis = _analysis([
-        "pass",
-        "fail",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-        "not_evaluated",
-    ])
+    analysis = _analysis(
+        [
+            "pass",
+            "fail",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+            "not_evaluated",
+        ]
+    )
     with patch(
         "src.services.buy_criteria.orchestrator.analyze_professional_buy",
         return_value=analysis,

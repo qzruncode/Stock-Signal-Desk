@@ -49,25 +49,19 @@ class AuthPasswordHashTestCase(unittest.TestCase):
     def test_verify_password_hash_correct(self) -> None:
         salt = secrets.token_bytes(32)
         pwd = "testpass123"
-        derived = hashlib.pbkdf2_hmac(
-            "sha256", pwd.encode("utf-8"), salt=salt, iterations=auth.PBKDF2_ITERATIONS
-        )
+        derived = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), salt=salt, iterations=auth.PBKDF2_ITERATIONS)
         self.assertTrue(auth._verify_password_hash(pwd, salt, derived))
 
     def test_verify_password_hash_wrong_password(self) -> None:
         salt = secrets.token_bytes(32)
         pwd = "testpass123"
-        derived = hashlib.pbkdf2_hmac(
-            "sha256", pwd.encode("utf-8"), salt=salt, iterations=auth.PBKDF2_ITERATIONS
-        )
+        derived = hashlib.pbkdf2_hmac("sha256", pwd.encode("utf-8"), salt=salt, iterations=auth.PBKDF2_ITERATIONS)
         self.assertFalse(auth._verify_password_hash("wrong", salt, derived))
 
     def test_verify_password_hash_constant_time(self) -> None:
         """Verify compare_digest is used (constant-time)."""
         salt = secrets.token_bytes(32)
-        derived = hashlib.pbkdf2_hmac(
-            "sha256", b"x", salt=salt, iterations=auth.PBKDF2_ITERATIONS
-        )
+        derived = hashlib.pbkdf2_hmac("sha256", b"x", salt=salt, iterations=auth.PBKDF2_ITERATIONS)
         self.assertFalse(auth._verify_password_hash("y", salt, derived))
 
 
@@ -80,9 +74,7 @@ class AuthSessionTestCase(unittest.TestCase):
         self.data_dir = Path(self.temp_dir.name)
         self.addCleanup(self.temp_dir.cleanup)
 
-    def _patch_env_and_run(
-        self, auth_enabled: bool = True, test_fn=None
-    ):
+    def _patch_env_and_run(self, auth_enabled: bool = True, test_fn=None):
         with patch.object(auth, "_is_auth_enabled_from_env", return_value=auth_enabled):
             with patch.object(auth, "_get_data_dir", return_value=self.data_dir):
                 auth._auth_enabled = auth_enabled

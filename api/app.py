@@ -121,6 +121,7 @@ def _missing_asset_media_type(asset_path: str) -> str:
         return content_type
     return "text/plain"
 
+
 from api.v1 import api_v1_router
 from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
@@ -185,17 +186,17 @@ async def app_lifespan(app: FastAPI):
 def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     """
     创建并配置 FastAPI 应用实例
-    
+
     Args:
         static_dir: 静态文件目录路径（可选，默认为项目根目录下的 static）
-        
+
     Returns:
         配置完成的 FastAPI 应用实例
     """
     # 默认静态文件目录
     if static_dir is None:
         static_dir = Path(__file__).parent.parent / "static"
-    
+
     # 创建 FastAPI 实例
     app = FastAPI(
         title="Daily Stock Analysis API",
@@ -212,33 +213,37 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         lifespan=app_lifespan,
     )
     app.state.static_dir = static_dir
-    
+
     # ============================================================
     # CORS 配置
     # ============================================================
-    
+
     # Production serves the SPA from the same origin, so no cross-origin
     # allowance is needed by default.  Keeping localhost origins enabled in
     # production would let an unrelated local web page issue credentialed API
     # requests from a user's browser.
-    allowed_origins = [] if is_production_environment() else [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
-    
+    allowed_origins = (
+        []
+        if is_production_environment()
+        else [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    )
+
     # 从环境变量添加额外的允许来源
     extra_origins = os.environ.get("CORS_ORIGINS", "")
     if extra_origins:
         allowed_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
-    
+
     # 允许所有来源（开发/演示用）
     allow_all_origins = os.environ.get("CORS_ALLOW_ALL", "").lower() == "true"
     allow_credentials = not allow_all_origins
     if allow_all_origins:
         allowed_origins = ["*"]
-    
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -248,20 +253,20 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
     )
 
     add_auth_middleware(app)
-    
+
     # ============================================================
     # 注册路由
     # ============================================================
-    
+
     app.include_router(api_v1_router)
     add_error_handlers(app)
-    
+
     # ============================================================
     # 根路由和健康检查
     # ============================================================
-    
+
     has_frontend = static_dir.exists() and (static_dir / "index.html").exists()
-    
+
     if has_frontend:
         # Surface bundle inconsistencies as soon as the app starts so that
         # blank-page reports (#1064 / #1065 / #1050) can be diagnosed from
@@ -272,6 +277,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         async def root():
             """根路由 - 返回前端页面"""
             return _frontend_index_response(static_dir)
+
     else:
         _FRONTEND_NOT_BUILT_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -304,25 +310,22 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
         async def root():
             """根路由 - 前端未构建时返回引导页面"""
             return HTMLResponse(content=_FRONTEND_NOT_BUILT_HTML)
-    
+
     @app.get(
         "/api/health",
         response_model=HealthResponse,
         tags=["Health"],
         summary="健康检查",
-        description="用于负载均衡器或监控系统检查服务状态"
+        description="用于负载均衡器或监控系统检查服务状态",
     )
     async def health_check() -> HealthResponse:
         """健康检查接口"""
-        return HealthResponse(
-            status="ok",
-            timestamp=datetime.now().isoformat()
-        )
-    
+        return HealthResponse(status="ok", timestamp=datetime.now().isoformat())
+
     # ============================================================
     # 静态文件托管（前端 SPA）
     # ============================================================
-    
+
     if has_frontend:
         # Serve `/assets/*` explicitly so that misses return a plain-text
         # 404 with the correct Content-Type instead of the default JSON
@@ -362,8 +365,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
             """SPA 路由回退 - 非 API 路由返回 index.html"""
             if full_path == "api" or full_path.startswith("api/"):
                 return JSONResponse(
-                    status_code=404,
-                    content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
+                    status_code=404, content={"error": "not_found", "message": f"API endpoint /{full_path} not found"}
                 )
 
             # Reuse the same containment check as /assets/* so that requests
@@ -381,7 +383,7 @@ def create_app(static_dir: Optional[Path] = None) -> FastAPI:
                 return FileResponse(file_path, media_type=content_type)
 
             return _frontend_index_response(static_dir)
-    
+
     return app
 
 

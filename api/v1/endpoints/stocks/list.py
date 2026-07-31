@@ -47,21 +47,11 @@ def list_stocks(
 
         if count:
             total = query.count()
-            items = (
-                query.order_by(StockMeta.code)
-                .offset((page - 1) * page_size)
-                .limit(page_size)
-                .all()
-            )
+            items = query.order_by(StockMeta.code).offset((page - 1) * page_size).limit(page_size).all()
             has_more = page < max(1, (total + page_size - 1) // page_size)
             total_pages = max(1, (total + page_size - 1) // page_size)
         else:
-            rows = (
-                query.order_by(StockMeta.code)
-                .offset((page - 1) * page_size)
-                .limit(page_size + 1)
-                .all()
-            )
+            rows = query.order_by(StockMeta.code).offset((page - 1) * page_size).limit(page_size + 1).all()
             items = rows[:page_size]
             has_more = len(rows) > page_size
             total = 0
@@ -100,9 +90,7 @@ def get_kline_status():
         total_stocks = session.query(func.count(StockMeta.id)).filter(StockMeta.status == "active").scalar()
         active_codes = select(StockMeta.code).where(StockMeta.status == "active")
         stocks_with_kline = (
-            session.query(func.count(func.distinct(StockDaily.code)))
-            .filter(StockDaily.code.in_(active_codes))
-            .scalar()
+            session.query(func.count(func.distinct(StockDaily.code))).filter(StockDaily.code.in_(active_codes)).scalar()
         )
         latest_trading_day = session.execute(select(func.max(StockDaily.date))).scalar()
         codes_with_kline = select(StockDaily.code).distinct()
@@ -172,22 +160,24 @@ def get_kline_batch(body: dict):
 
     klines: dict[str, list] = {c: [] for c in codes}
     for row in rows:
-        date_str = row[1].isoformat() if hasattr(row[1], 'isoformat') else str(row[1])[:10]
-        klines[row[0]].append({
-            "date": date_str,
-            "open": row[2],
-            "high": row[3],
-            "low": row[4],
-            "close": row[5],
-            "volume": row[6],
-            "amount": row[7],
-            "pct_chg": row[8],
-            "ma5": row[9],
-            "ma10": row[10],
-            "ma20": row[11],
-            "volume_ratio": row[12],
-            "data_source": row[13],
-        })
+        date_str = row[1].isoformat() if hasattr(row[1], "isoformat") else str(row[1])[:10]
+        klines[row[0]].append(
+            {
+                "date": date_str,
+                "open": row[2],
+                "high": row[3],
+                "low": row[4],
+                "close": row[5],
+                "volume": row[6],
+                "amount": row[7],
+                "pct_chg": row[8],
+                "ma5": row[9],
+                "ma10": row[10],
+                "ma20": row[11],
+                "volume_ratio": row[12],
+                "data_source": row[13],
+            }
+        )
 
     results = {}
     for code in codes:

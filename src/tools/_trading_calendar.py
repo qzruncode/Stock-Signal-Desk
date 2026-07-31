@@ -57,10 +57,7 @@ def is_trading_time(now: datetime | None = None, calendar: list[date] | None = N
     """Whether *now* is inside an official A-share continuous session."""
     now = now or datetime.now().astimezone()
     current = now.time()
-    in_session = (
-        time(9, 30) <= current <= time(11, 30)
-        or time(13, 0) <= current <= time(15, 0)
-    )
+    in_session = time(9, 30) <= current <= time(11, 30) or time(13, 0) <= current <= time(15, 0)
     if not in_session or now.weekday() >= 5:
         return False
     try:
@@ -75,6 +72,10 @@ _fallback_trade_day = fallback_trade_day
 
 
 __all__ = [
-    "trade_dates", "expected_trade_day", "fallback_trade_day", "is_trading_time",
-    "_fetch_trade_dates", "_fallback_trade_day",
+    "trade_dates",
+    "expected_trade_day",
+    "fallback_trade_day",
+    "is_trading_time",
+    "_fetch_trade_dates",
+    "_fallback_trade_day",
 ]

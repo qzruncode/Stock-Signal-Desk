@@ -46,22 +46,16 @@ def sync_stock_universe(on_progress: ProgressCallback | None = None) -> dict:
             time.sleep(LIST_SYNC_FETCH_RETRY_DELAY_SECONDS * attempt)
 
     if not stocks_raw:
-        raise RuntimeError(
-            "未能从数据源获取股票列表"
-            + (f": {last_error}" if last_error else "")
-        )
+        raise RuntimeError("未能从数据源获取股票列表" + (f": {last_error}" if last_error else ""))
 
     unique_by_code = {
-        str(item.get("code") or "").strip(): item
-        for item in stocks_raw
-        if str(item.get("code") or "").strip()
+        str(item.get("code") or "").strip(): item for item in stocks_raw if str(item.get("code") or "").strip()
     }
     stocks_raw = list(unique_by_code.values())
     markets = {str(item.get("market") or "").strip().lower() for item in stocks_raw}
     with db.get_session() as session:
         known_active_codes = {
-            str(row.code)
-            for row in session.query(StockMeta.code).filter(StockMeta.status == "active").all()
+            str(row.code) for row in session.query(StockMeta.code).filter(StockMeta.status == "active").all()
         }
     minimum_safe_total = max(
         MINIMUM_A_SHARE_UNIVERSE_SIZE,
@@ -93,26 +87,25 @@ def sync_stock_universe(on_progress: ProgressCallback | None = None) -> dict:
     total = len(stocks_raw)
 
     for start in range(0, total, LIST_SYNC_BATCH_SIZE):
-        batch = stocks_raw[start:start + LIST_SYNC_BATCH_SIZE]
+        batch = stocks_raw[start : start + LIST_SYNC_BATCH_SIZE]
         batch_codes = [str(item["code"]) for item in batch]
         with db.get_session() as session:
-            existing = {
-                row.code: row
-                for row in session.query(StockMeta).filter(StockMeta.code.in_(batch_codes)).all()
-            }
+            existing = {row.code: row for row in session.query(StockMeta).filter(StockMeta.code.in_(batch_codes)).all()}
             for item in batch:
                 code = str(item["code"])
                 meta = existing.get(code)
                 if meta is None:
-                    session.add(StockMeta(
-                        code=code,
-                        name=item["name"],
-                        market=item["market"],
-                        status="active",
-                        sector=item.get("sector"),
-                        ipo_date=item.get("ipo_date"),
-                        last_sync_at=now,
-                    ))
+                    session.add(
+                        StockMeta(
+                            code=code,
+                            name=item["name"],
+                            market=item["market"],
+                            status="active",
+                            sector=item.get("sector"),
+                            ipo_date=item.get("ipo_date"),
+                            last_sync_at=now,
+                        )
+                    )
                     added += 1
                     continue
                 meta.name = item["name"]
@@ -138,9 +131,9 @@ def sync_stock_universe(on_progress: ProgressCallback | None = None) -> dict:
         ]
         if delisted_codes:
             delisted = len(delisted_codes)
-            session.query(StockMeta).filter(
-                StockMeta.code.in_(delisted_codes)
-            ).update({"status": "delisted", "updated_at": now}, synchronize_session=False)
+            session.query(StockMeta).filter(StockMeta.code.in_(delisted_codes)).update(
+                {"status": "delisted", "updated_at": now}, synchronize_session=False
+            )
         session.commit()
 
     summary = {

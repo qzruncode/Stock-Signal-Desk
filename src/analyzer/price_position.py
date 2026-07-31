@@ -11,7 +11,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PRICE_POS_KEYS = ("ma5", "ma10", "ma20", "bias_ma5", "bias_status", "current_price", "support_level", "resistance_level")
+_PRICE_POS_KEYS = (
+    "ma5",
+    "ma10",
+    "ma20",
+    "bias_ma5",
+    "bias_status",
+    "current_price",
+    "support_level",
+    "resistance_level",
+)
 
 
 def fill_price_position_if_needed(
@@ -32,8 +41,10 @@ def fill_price_position_if_needed(
 
         computed: Dict[str, Any] = {}
         if trend_result:
-            tr = trend_result if isinstance(trend_result, dict) else (
-                trend_result.__dict__ if hasattr(trend_result, "__dict__") else {}
+            tr = (
+                trend_result
+                if isinstance(trend_result, dict)
+                else (trend_result.__dict__ if hasattr(trend_result, "__dict__") else {})
             )
             computed["ma5"] = tr.get("ma5")
             computed["ma10"] = tr.get("ma10")
@@ -47,8 +58,10 @@ def fill_price_position_if_needed(
             if resistance_levels:
                 computed["resistance_level"] = resistance_levels[0]
         if realtime_quote:
-            rq = realtime_quote if isinstance(realtime_quote, dict) else (
-                realtime_quote.to_dict() if hasattr(realtime_quote, "to_dict") else {}
+            rq = (
+                realtime_quote
+                if isinstance(realtime_quote, dict)
+                else (realtime_quote.to_dict() if hasattr(realtime_quote, "to_dict") else {})
             )
             if _is_value_placeholder(computed.get("current_price")):
                 computed["current_price"] = rq.get("price")

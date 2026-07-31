@@ -32,13 +32,15 @@ def test_risk_tool_prefers_formal_announcement_when_title_and_date_match() -> No
         "success": True,
         "name": "测试公司",
         "source": "AKShare stock_news_em",
-        "items": [{
-            "title": "测试公司收到监管问询函",
-            "summary": "交易所要求说明相关事项",
-            "published": "2026-07-15T10:00:00+08:00",
-            "source": "媒体",
-            "url": "https://example.com/news",
-        }],
+        "items": [
+            {
+                "title": "测试公司收到监管问询函",
+                "summary": "交易所要求说明相关事项",
+                "published": "2026-07-15T10:00:00+08:00",
+                "source": "媒体",
+                "url": "https://example.com/news",
+            }
+        ],
         "errors": [],
         "warnings": [],
     }
@@ -46,22 +48,27 @@ def test_risk_tool_prefers_formal_announcement_when_title_and_date_match() -> No
         "success": True,
         "name": "测试公司",
         "source_chain": ["AKShare/东方财富公司公告"],
-        "items": [{
-            "title": "测试公司收到监管问询函",
-            "source_notice_type": "交易所问询函",
-            "publish_date": "2026-07-15",
-            "source": "AKShare/东方财富公司公告",
-            "url": "https://example.com/announcement",
-        }],
+        "items": [
+            {
+                "title": "测试公司收到监管问询函",
+                "source_notice_type": "交易所问询函",
+                "publish_date": "2026-07-15",
+                "source": "AKShare/东方财富公司公告",
+                "url": "https://example.com/announcement",
+            }
+        ],
         "errors": [],
         "warnings": [],
     }
-    with patch(
-        "src.tools.search_news.search_news",
-        return_value=news,
-    ), patch(
-        "src.tools.get_announcements.get_announcements",
-        return_value=announcements,
+    with (
+        patch(
+            "src.tools.search_news.search_news",
+            return_value=news,
+        ),
+        patch(
+            "src.tools.get_announcements.get_announcements",
+            return_value=announcements,
+        ),
     ):
         result = get_risk_events("600519")
 
@@ -82,12 +89,15 @@ def test_empty_successful_sources_are_not_converted_to_no_risk_conclusion() -> N
         "errors": [],
         "warnings": [],
     }
-    with patch(
-        "src.tools.search_news.search_news",
-        return_value=news,
-    ), patch(
-        "src.tools.get_announcements.get_announcements",
-        return_value=announcements,
+    with (
+        patch(
+            "src.tools.search_news.search_news",
+            return_value=news,
+        ),
+        patch(
+            "src.tools.get_announcements.get_announcements",
+            return_value=announcements,
+        ),
     ):
         result = get_risk_events("000001")
 

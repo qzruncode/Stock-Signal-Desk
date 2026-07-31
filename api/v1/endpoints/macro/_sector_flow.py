@@ -26,8 +26,11 @@ def get_sector_flow(
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_argument", "message": str(exc)}) from exc
     if not result.get("success"):
-        raise HTTPException(status_code=502, detail={
-            "error": "no_data",
-            "message": "; ".join(result.get("errors") or ["无法获取板块资金流数据"]),
-        })
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "no_data",
+                "message": "; ".join(result.get("errors") or ["无法获取板块资金流数据"]),
+            },
+        )
     return result

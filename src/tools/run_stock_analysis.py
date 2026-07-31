@@ -57,12 +57,15 @@ TOOL = ToolSpec(
         "启动会持久化报告的完整单股分析任务。只有用户明确要求分析、重新分析或生成正式报告时调用；"
         "普通行情或研究问题继续使用数据工具。notify_on_complete 仅在用户明确要求完成后通知时设为 true。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "股票代码或精确名称"},
-        "force_refresh": {"type": "boolean", "default": False},
-        "notify_on_complete": {"type": "boolean", "default": False},
-        "prompt_template_id": {"type": "string", "description": "分析模板 ID，可留空使用默认模板"},
-    }, required=("symbol",)),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "股票代码或精确名称"},
+            "force_refresh": {"type": "boolean", "default": False},
+            "notify_on_complete": {"type": "boolean", "default": False},
+            "prompt_template_id": {"type": "string", "description": "分析模板 ID，可留空使用默认模板"},
+        },
+        required=("symbol",),
+    ),
     executor=run_stock_analysis,
     category="action",
 )

@@ -15,12 +15,7 @@ from src.tools.base import ToolSpec, object_schema
 
 
 def _date_value(item: dict[str, Any]) -> str | None:
-    value = str(
-        item.get("published")
-        or item.get("publish_date")
-        or item.get("date")
-        or ""
-    ).strip()
+    value = str(item.get("published") or item.get("publish_date") or item.get("date") or "").strip()
     return value[:10] or None
 
 
@@ -40,8 +35,7 @@ def _evidence_item(
     return {
         "title": title,
         "date": _date_value(item),
-        "source": item.get("source")
-        or ("公司公告" if source_type == "announcement" else "新闻"),
+        "source": item.get("source") or ("公司公告" if source_type == "announcement" else "新闻"),
         "source_type": source_type,
         "url": item.get("url") or item.get("link") or "",
         "summary": summary[:700] or None,
@@ -118,14 +112,22 @@ def get_risk_events(
     announcements_ok = bool(announcements.get("success"))
     acquisition_succeeded = news_ok or announcements_ok
     partial = acquisition_succeeded and not (news_ok and announcements_ok)
-    errors = list(dict.fromkeys([
-        *[str(error) for error in news.get("errors") or []],
-        *[str(error) for error in announcements.get("errors") or []],
-    ]))
-    warnings = list(dict.fromkeys([
-        *[str(warning) for warning in news.get("warnings") or []],
-        *[str(warning) for warning in announcements.get("warnings") or []],
-    ]))
+    errors = list(
+        dict.fromkeys(
+            [
+                *[str(error) for error in news.get("errors") or []],
+                *[str(error) for error in announcements.get("errors") or []],
+            ]
+        )
+    )
+    warnings = list(
+        dict.fromkeys(
+            [
+                *[str(warning) for warning in news.get("warnings") or []],
+                *[str(warning) for warning in announcements.get("warnings") or []],
+            ]
+        )
+    )
     if not items and acquisition_succeeded:
         warnings.append(f"最近 {days} 天的数据源未返回可用的新闻或公告证据")
 
@@ -150,32 +152,26 @@ def get_risk_events(
                 "news_coverage_days": min(days, 365),
                 "announcement_coverage_days": days,
                 "news_sample_count": len(news.get("items") or []),
-                "announcement_sample_count": len(
-                    announcements.get("items") or []
-                ),
+                "announcement_sample_count": len(announcements.get("items") or []),
             },
         },
         "source": "search_news + get_announcements",
-        "source_chain": list(dict.fromkeys([
-            *([str(news.get("source"))] if news.get("source") else []),
-            *[
-                str(source)
-                for source in announcements.get("source_chain") or []
-            ],
-        ])),
-        "source_scope": (
-            "retrieved_news_and_formal_announcements_for_model_risk_review"
+        "source_chain": list(
+            dict.fromkeys(
+                [
+                    *([str(news.get("source"))] if news.get("source") else []),
+                    *[str(source) for source in announcements.get("source_chain") or []],
+                ]
+            )
         ),
+        "source_scope": ("retrieved_news_and_formal_announcements_for_model_risk_review"),
         "success": acquisition_succeeded,
         "partial": partial,
         "data_time": latest,
         "retrieved_at": datetime.now().astimezone().isoformat(),
         "is_stale": False if latest else None,
         "freshness_unknown": latest is None,
-        "fallback_used": bool(
-            news.get("fallback_used")
-            or announcements.get("fallback_used")
-        ),
+        "fallback_used": bool(news.get("fallback_used") or announcements.get("fallback_used")),
         "fallback_recommended": not acquisition_succeeded,
         "errors": errors[:10],
         "warnings": warnings[:10],
@@ -188,21 +184,24 @@ TOOL = ToolSpec(
         "获取公司的新闻和正式公告，保留时间、来源、链接与摘要，供模型研判风险类别、"
         "严重度和事项生命周期。工具本身不使用关键词词典给风险下结论。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "A 股代码或名称"},
-        "days": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 730,
-            "default": 90,
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "A 股代码或名称"},
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 730,
+                "default": 90,
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 30,
+            },
         },
-        "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 100,
-            "default": 30,
-        },
-    }, ["symbol"]),
+        ["symbol"],
+    ),
     executor=get_risk_events,
     category="risk",
 )

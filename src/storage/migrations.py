@@ -23,9 +23,7 @@ def get_schema_version(engine) -> str | None:
         return None
     session = Session(bind=engine)
     try:
-        row = session.execute(
-            text("SELECT value FROM _meta WHERE key = 'schema_version'")
-        ).fetchone()
+        row = session.execute(text("SELECT value FROM _meta WHERE key = 'schema_version'")).fetchone()
         return str(row[0]) if row and row[0] else None
     finally:
         session.close()
@@ -78,35 +76,22 @@ def _seed_agent_runtime_control(engine) -> None:
 
 
 def _ensure_meta_table(session: Session) -> None:
-    session.execute(text(
-        "CREATE TABLE IF NOT EXISTS _meta ("
-        "  key VARCHAR(128) PRIMARY KEY,"
-        "  value TEXT"
-        ")"
-    ))
+    session.execute(text("CREATE TABLE IF NOT EXISTS _meta (" "  key VARCHAR(128) PRIMARY KEY," "  value TEXT" ")"))
 
 
 def _record_schema_version(engine) -> None:
     session = Session(bind=engine)
     try:
         _ensure_meta_table(session)
-        existing = session.execute(
-            text("SELECT value FROM _meta WHERE key = 'schema_version'")
-        ).fetchone()
+        existing = session.execute(text("SELECT value FROM _meta WHERE key = 'schema_version'")).fetchone()
         if existing is None:
             session.execute(
-                text(
-                    "INSERT INTO _meta (key, value) "
-                    "VALUES ('schema_version', :version)"
-                ),
+                text("INSERT INTO _meta (key, value) " "VALUES ('schema_version', :version)"),
                 {"version": SCHEMA_VERSION},
             )
         else:
             session.execute(
-                text(
-                    "UPDATE _meta SET value = :version "
-                    "WHERE key = 'schema_version'"
-                ),
+                text("UPDATE _meta SET value = :version " "WHERE key = 'schema_version'"),
                 {"version": SCHEMA_VERSION},
             )
         session.commit()
@@ -122,10 +107,7 @@ def _migrate_chat_ownership_fields(engine) -> None:
     inspector = inspect(engine)
     if "chat_conversations" not in inspector.get_table_names():
         return
-    columns = {
-        column["name"]
-        for column in inspector.get_columns("chat_conversations")
-    }
+    columns = {column["name"] for column in inspector.get_columns("chat_conversations")}
     additions = (
         ("tenant_id", "VARCHAR(64) NOT NULL DEFAULT 'local'"),
         ("owner_id", "VARCHAR(128) NOT NULL DEFAULT 'admin'"),
@@ -134,25 +116,19 @@ def _migrate_chat_ownership_fields(engine) -> None:
     try:
         for name, sql_type in additions:
             if name not in columns:
-                session.execute(text(
-                    f'ALTER TABLE chat_conversations ADD COLUMN "{name}" {sql_type}'
-                ))
-        session.execute(text(
-            "UPDATE chat_conversations SET tenant_id = 'local' "
-            "WHERE tenant_id IS NULL OR tenant_id = ''"
-        ))
-        session.execute(text(
-            "UPDATE chat_conversations SET owner_id = 'admin' "
-            "WHERE owner_id IS NULL OR owner_id = ''"
-        ))
-        session.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_chat_conversations_tenant_id "
-            "ON chat_conversations (tenant_id)"
-        ))
-        session.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_chat_conversations_owner_id "
-            "ON chat_conversations (owner_id)"
-        ))
+                session.execute(text(f'ALTER TABLE chat_conversations ADD COLUMN "{name}" {sql_type}'))
+        session.execute(
+            text("UPDATE chat_conversations SET tenant_id = 'local' " "WHERE tenant_id IS NULL OR tenant_id = ''")
+        )
+        session.execute(
+            text("UPDATE chat_conversations SET owner_id = 'admin' " "WHERE owner_id IS NULL OR owner_id = ''")
+        )
+        session.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_chat_conversations_tenant_id " "ON chat_conversations (tenant_id)")
+        )
+        session.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_chat_conversations_owner_id " "ON chat_conversations (owner_id)")
+        )
         session.commit()
     except Exception:
         session.rollback()
@@ -166,27 +142,15 @@ def _migrate_agent_run_trace_latest_stage(engine) -> None:
     inspector = inspect(engine)
     if "agent_run_traces" not in inspector.get_table_names():
         return
-    columns = {
-        column["name"]
-        for column in inspector.get_columns("agent_run_traces")
-    }
+    columns = {column["name"] for column in inspector.get_columns("agent_run_traces")}
     session = Session(bind=engine)
     try:
         if "latest_stage_json" not in columns:
-            session.execute(text(
-                "ALTER TABLE agent_run_traces "
-                "ADD COLUMN latest_stage_json TEXT"
-            ))
+            session.execute(text("ALTER TABLE agent_run_traces " "ADD COLUMN latest_stage_json TEXT"))
         if "verification_json" not in columns:
-            session.execute(text(
-                "ALTER TABLE agent_run_traces "
-                "ADD COLUMN verification_json TEXT"
-            ))
+            session.execute(text("ALTER TABLE agent_run_traces " "ADD COLUMN verification_json TEXT"))
         if "goal_state_json" not in columns:
-            session.execute(text(
-                "ALTER TABLE agent_run_traces "
-                "ADD COLUMN goal_state_json TEXT"
-            ))
+            session.execute(text("ALTER TABLE agent_run_traces " "ADD COLUMN goal_state_json TEXT"))
         session.commit()
     except Exception:
         session.rollback()
@@ -200,10 +164,7 @@ def _migrate_agent_run_budget_fields(engine) -> None:
     inspector = inspect(engine)
     if "agent_runs" not in inspector.get_table_names():
         return
-    columns = {
-        column["name"]
-        for column in inspector.get_columns("agent_runs")
-    }
+    columns = {column["name"] for column in inspector.get_columns("agent_runs")}
     additions = (
         ("tool_call_count", "INTEGER NOT NULL DEFAULT 0"),
         ("provider_call_count", "INTEGER NOT NULL DEFAULT 0"),
@@ -214,9 +175,7 @@ def _migrate_agent_run_budget_fields(engine) -> None:
     try:
         for name, sql_type in additions:
             if name not in columns:
-                session.execute(text(
-                    f'ALTER TABLE agent_runs ADD COLUMN "{name}" {sql_type}'
-                ))
+                session.execute(text(f'ALTER TABLE agent_runs ADD COLUMN "{name}" {sql_type}'))
         session.commit()
     except Exception:
         session.rollback()
@@ -229,18 +188,12 @@ def _migrate_agent_step_observability_fields(engine) -> None:
     inspector = inspect(engine)
     if "agent_step_executions" not in inspector.get_table_names():
         return
-    columns = {
-        column["name"]
-        for column in inspector.get_columns("agent_step_executions")
-    }
+    columns = {column["name"] for column in inspector.get_columns("agent_step_executions")}
     if "reuse_count" in columns:
         return
     session = Session(bind=engine)
     try:
-        session.execute(text(
-            "ALTER TABLE agent_step_executions "
-            "ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0"
-        ))
+        session.execute(text("ALTER TABLE agent_step_executions " "ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0"))
         session.commit()
     except Exception:
         session.rollback()
@@ -254,34 +207,30 @@ def _migrate_chat_agent_context_field(engine) -> None:
     inspector = inspect(engine)
     if "chat_conversations" not in inspector.get_table_names():
         return
-    columns = {
-        column["name"]
-        for column in inspector.get_columns("chat_conversations")
-    }
+    columns = {column["name"] for column in inspector.get_columns("chat_conversations")}
     session = Session(bind=engine)
     try:
         if "agent_context_json" not in columns:
-            session.execute(text(
-                "ALTER TABLE chat_conversations "
-                "ADD COLUMN agent_context_json TEXT"
-            ))
+            session.execute(text("ALTER TABLE chat_conversations " "ADD COLUMN agent_context_json TEXT"))
             session.commit()
 
-        rows = session.execute(text(
-            "SELECT id, thread_state_json, agent_context_json "
-            "FROM chat_conversations "
-            "WHERE agent_context_json IS NULL AND thread_state_json IS NOT NULL"
-        )).mappings().all()
+        rows = (
+            session.execute(
+                text(
+                    "SELECT id, thread_state_json, agent_context_json "
+                    "FROM chat_conversations "
+                    "WHERE agent_context_json IS NULL AND thread_state_json IS NOT NULL"
+                )
+            )
+            .mappings()
+            .all()
+        )
         for row in rows:
             try:
                 thread_state = json.loads(row["thread_state_json"])
             except (TypeError, ValueError):
                 continue
-            context = (
-                thread_state.get("agent_context")
-                if isinstance(thread_state, dict)
-                else None
-            )
+            context = thread_state.get("agent_context") if isinstance(thread_state, dict) else None
             if not isinstance(context, dict):
                 continue
             session.execute(
@@ -293,7 +242,8 @@ def _migrate_chat_agent_context_field(engine) -> None:
                 {
                     "conversation_id": row["id"],
                     "agent_context_json": json.dumps(
-                        context, ensure_ascii=False,
+                        context,
+                        ensure_ascii=False,
                     ),
                 },
             )
@@ -360,11 +310,7 @@ def _migrate_financial_fields_rename(engine) -> None:
     # A current schema intentionally contains both revenue_ttm and
     # revenue_latest: they now have different meanings. Rename only a legacy
     # source column whose destination does not exist yet.
-    effective_rename_map = {
-        old: new
-        for old, new in rename_map.items()
-        if old in columns and new not in columns
-    }
+    effective_rename_map = {old: new for old, new in rename_map.items() if old in columns and new not in columns}
     needs_rename = bool(effective_rename_map)
     needs_drop = any(col in columns for col in drop_cols)
     if not needs_rename and not needs_drop:
@@ -374,15 +320,8 @@ def _migrate_financial_fields_rename(engine) -> None:
     session = Session(bind=engine)
     try:
         # 用 _meta 标记一次性执行
-        session.execute(text(
-            "CREATE TABLE IF NOT EXISTS _meta ("
-            "  key   TEXT PRIMARY KEY,"
-            "  value TEXT"
-            ")"
-        ))
-        already = session.execute(
-            text("SELECT value FROM _meta WHERE key = 'stock_meta_financial_v2'")
-        ).fetchone()
+        session.execute(text("CREATE TABLE IF NOT EXISTS _meta (" "  key   TEXT PRIMARY KEY," "  value TEXT" ")"))
+        already = session.execute(text("SELECT value FROM _meta WHERE key = 'stock_meta_financial_v2'")).fetchone()
         if already:
             return
         session.commit()
@@ -403,6 +342,7 @@ def _migrate_financial_fields_rename(engine) -> None:
         # 复用最新模型定义（用 SQLAlchemy 反射得到 CREATE TABLE 语句）
         from sqlalchemy.schema import CreateTable
         from src.storage.models import StockMeta
+
         create_stmt = str(CreateTable(StockMeta.__table__).compile(engine))
         # CreateTable 会包含 IF NOT EXISTS 但我们要的是 stock_meta_new
         create_stmt = create_stmt.replace("stock_meta", "stock_meta_new", 1)
@@ -421,22 +361,16 @@ def _migrate_financial_fields_rename(engine) -> None:
             else:
                 select_exprs.append("NULL")
         select_csv = ", ".join(select_exprs)
-        session.execute(text(
-            f'INSERT INTO stock_meta_new ({new_cols_csv}) SELECT {select_csv} FROM stock_meta'
-        ))
+        session.execute(text(f"INSERT INTO stock_meta_new ({new_cols_csv}) SELECT {select_csv} FROM stock_meta"))
         # 重建索引（create_all 已在新表上加，这里再保险一次）
         for idx in inspector.get_indexes("stock_meta"):
             cols_csv = ", ".join(f'"{c}"' for c in idx["column_names"])
             unique = "UNIQUE " if idx.get("unique") else ""
-            session.execute(text(
-                f'CREATE {unique}INDEX IF NOT EXISTS "{idx["name"]}" ON stock_meta_new ({cols_csv})'
-            ))
+            session.execute(text(f'CREATE {unique}INDEX IF NOT EXISTS "{idx["name"]}" ON stock_meta_new ({cols_csv})'))
 
         session.execute(text("DROP TABLE stock_meta"))
         session.execute(text("ALTER TABLE stock_meta_new RENAME TO stock_meta"))
-        session.execute(text(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('stock_meta_financial_v2', '1')"
-        ))
+        session.execute(text("INSERT OR REPLACE INTO _meta (key, value) VALUES ('stock_meta_financial_v2', '1')"))
         session.commit()
         logger.info("stock_meta financial fields migration complete.")
     except Exception:
@@ -459,9 +393,7 @@ def _migrate_legacy_kline_tables(engine) -> None:
     session: Optional[Session] = None
     try:
         session = Session(bind=engine)
-        row = session.execute(
-            text("SELECT value FROM _meta WHERE key = 'kline_snapshot_v2'")
-        ).fetchone()
+        row = session.execute(text("SELECT value FROM _meta WHERE key = 'kline_snapshot_v2'")).fetchone()
         if row:
             return
     except Exception:
@@ -479,34 +411,29 @@ def _migrate_legacy_kline_tables(engine) -> None:
     session = Session(bind=engine)
     try:
         session.execute(text("DROP TABLE IF EXISTS kline_snapshot_new"))
-        session.execute(text(
-            "CREATE TABLE kline_snapshot_new ("
-            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
-            "  code VARCHAR(16) NOT NULL UNIQUE,"
-            "  data TEXT NOT NULL,"
-            "  created_at DATETIME,"
-            "  updated_at DATETIME"
-            ")"
-        ))
-        session.execute(text(
-            "INSERT INTO kline_snapshot_new (id, data, created_at, updated_at) "
-            "SELECT id, data, created_at, updated_at FROM kline_snapshot"
-        ))
+        session.execute(
+            text(
+                "CREATE TABLE kline_snapshot_new ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                "  code VARCHAR(16) NOT NULL UNIQUE,"
+                "  data TEXT NOT NULL,"
+                "  created_at DATETIME,"
+                "  updated_at DATETIME"
+                ")"
+            )
+        )
+        session.execute(
+            text(
+                "INSERT INTO kline_snapshot_new (id, data, created_at, updated_at) "
+                "SELECT id, data, created_at, updated_at FROM kline_snapshot"
+            )
+        )
         session.execute(text("DROP TABLE kline_snapshot"))
         session.execute(text("ALTER TABLE kline_snapshot_new RENAME TO kline_snapshot"))
-        session.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS ix_kline_snapshot_code ON kline_snapshot(code)"
-        ))
+        session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_kline_snapshot_code ON kline_snapshot(code)"))
 
-        session.execute(text(
-            "CREATE TABLE IF NOT EXISTS _meta ("
-            "  key   TEXT PRIMARY KEY,"
-            "  value TEXT"
-            ")"
-        ))
-        session.execute(text(
-            "INSERT OR REPLACE INTO _meta (key, value) VALUES ('kline_snapshot_v2', '1')"
-        ))
+        session.execute(text("CREATE TABLE IF NOT EXISTS _meta (" "  key   TEXT PRIMARY KEY," "  value TEXT" ")"))
+        session.execute(text("INSERT OR REPLACE INTO _meta (key, value) VALUES ('kline_snapshot_v2', '1')"))
         session.commit()
         logger.info("Legacy kline_snapshot migration complete.")
     except Exception:

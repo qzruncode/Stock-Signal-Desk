@@ -122,11 +122,7 @@ def _disclosure_complete_date(report_date: date) -> date:
 
 def _select_completed_report_date(values: list[Any], as_of: date) -> tuple[str | None, str | None]:
     dates = sorted(
-        {
-            parsed
-            for value in values
-            if (text := _date_text(value)) and (parsed := datetime.fromisoformat(text).date())
-        },
+        {parsed for value in values if (text := _date_text(value)) and (parsed := datetime.fromisoformat(text).date())},
         reverse=True,
     )
     newest = dates[0].isoformat() if dates else None
@@ -162,9 +158,7 @@ def _normalize_holder_count(payload: dict[str, Any]) -> dict[str, Any]:
         "previous_report_date": _date_text(previous.get("END_DATE")),
         "previous_holder_count": previous_count,
         "change_count": (
-            current_count - previous_count
-            if current_count is not None and previous_count is not None
-            else None
+            current_count - previous_count if current_count is not None and previous_count is not None else None
         ),
         "change_pct": _number(latest.get("TOTAL_NUM_RATIO")),
         "average_holding_shares": _integer(latest.get("AVG_FREE_SHARES")),
@@ -198,17 +192,19 @@ def _normalize_top_holders(payload: dict[str, Any]) -> tuple[list[dict[str, Any]
     for row in rows[:10]:
         name = str(row.get("HOLDER_NAME") or "").strip()
         direction, change_shares = _change_direction(row.get("HOLD_NUM_CHANGE"))
-        holders.append({
-            "rank": _integer(row.get("HOLDER_RANK")),
-            "holder_name": name or None,
-            "holder_type": free_types.get(name),
-            "share_type": str(row.get("SHARES_TYPE") or "").strip() or None,
-            "holding_shares": _integer(row.get("HOLD_NUM")),
-            "holding_ratio_pct": _number(row.get("HOLD_NUM_RATIO")),
-            "change_direction": direction,
-            "change_shares": _integer(change_shares),
-            "change_ratio_pct": _number(row.get("CHANGE_RATIO")),
-        })
+        holders.append(
+            {
+                "rank": _integer(row.get("HOLDER_RANK")),
+                "holder_name": name or None,
+                "holder_type": free_types.get(name),
+                "share_type": str(row.get("SHARES_TYPE") or "").strip() or None,
+                "holding_shares": _integer(row.get("HOLD_NUM")),
+                "holding_ratio_pct": _number(row.get("HOLD_NUM_RATIO")),
+                "change_direction": direction,
+                "change_shares": _integer(change_shares),
+                "change_ratio_pct": _number(row.get("CHANGE_RATIO")),
+            }
+        )
     return holders, report_date
 
 
@@ -232,14 +228,16 @@ def _normalize_institution(payload: dict[str, Any], report_date: str | None) -> 
         code = str(row.get("ORG_TYPE") or "")
         if code == "00":
             continue
-        breakdown.append({
-            "institution_type": _ORG_TYPE.get(code, f"类型{code}"),
-            "institution_type_code": code,
-            "institution_count": _integer(row.get("TOTAL_ORG_NUM")),
-            "holding_shares": _integer(row.get("TOTAL_FREE_SHARES")),
-            "percent_of_circulating_shares": _number(row.get("TOTAL_SHARES_RATIO")),
-            "percent_of_total_shares": _number(row.get("ALL_SHARES_RATIO")),
-        })
+        breakdown.append(
+            {
+                "institution_type": _ORG_TYPE.get(code, f"类型{code}"),
+                "institution_type_code": code,
+                "institution_count": _integer(row.get("TOTAL_ORG_NUM")),
+                "holding_shares": _integer(row.get("TOTAL_FREE_SHARES")),
+                "percent_of_circulating_shares": _number(row.get("TOTAL_SHARES_RATIO")),
+                "percent_of_total_shares": _number(row.get("ALL_SHARES_RATIO")),
+            }
+        )
     return {
         "available": bool(total),
         "report_date": report_date,
@@ -278,17 +276,19 @@ def _normalize_holder_changes(frame: Any) -> list[dict[str, Any]]:
         else:
             direction = None
             signed = amount
-        items.append({
-            "announcement_date": _date_text(row.get("公告日期")),
-            "holder_name": str(row.get("变动股东") or "").strip() or None,
-            "change_direction": direction,
-            "change_shares": int(abs(amount)) if amount is not None else None,
-            "signed_change_shares": int(signed) if signed is not None else None,
-            "average_price_yuan": _number(row.get("交易均价")),
-            "remaining_shares": _integer(_share_amount(row.get("剩余股份总数"))),
-            "change_period": str(row.get("变动期间") or "").strip() or None,
-            "transaction_method": str(row.get("变动途径") or "").strip() or None,
-        })
+        items.append(
+            {
+                "announcement_date": _date_text(row.get("公告日期")),
+                "holder_name": str(row.get("变动股东") or "").strip() or None,
+                "change_direction": direction,
+                "change_shares": int(abs(amount)) if amount is not None else None,
+                "signed_change_shares": int(signed) if signed is not None else None,
+                "average_price_yuan": _number(row.get("交易均价")),
+                "remaining_shares": _integer(_share_amount(row.get("剩余股份总数"))),
+                "change_period": str(row.get("变动期间") or "").strip() or None,
+                "transaction_method": str(row.get("变动途径") or "").strip() or None,
+            }
+        )
     items.sort(key=lambda item: item.get("announcement_date") or "", reverse=True)
     return items[:20]
 
@@ -309,14 +309,18 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
         if not use_cache:
             return _fetch_f10_profile(code), False
         return cached_call(
-            f"shareholders:f10:{code}", lambda: _fetch_f10_profile(code), ttl_seconds=6 * 3600,
+            f"shareholders:f10:{code}",
+            lambda: _fetch_f10_profile(code),
+            ttl_seconds=6 * 3600,
         )
 
     def changes_task():
         if not use_cache:
             return _fetch_holder_change_frame(code), False
         return cached_call(
-            f"shareholders:changes:{code}", lambda: _fetch_holder_change_frame(code), ttl_seconds=6 * 3600,
+            f"shareholders:changes:{code}",
+            lambda: _fetch_holder_change_frame(code),
+            ttl_seconds=6 * 3600,
         )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -355,9 +359,7 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
     institution = _normalize_institution(institution_payload, institution_date)
 
     if newest_institution_date and institution_date and newest_institution_date > institution_date:
-        warnings.append(
-            f"机构持仓跳过仍在披露中的 {newest_institution_date}，采用已完成披露期 {institution_date}"
-        )
+        warnings.append(f"机构持仓跳过仍在披露中的 {newest_institution_date}，采用已完成披露期 {institution_date}")
     if controller.get("available"):
         warnings.append(str(controller["date_note"]))
 
@@ -370,10 +372,7 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
     ]
     data_time = max((value for value in dated_values if value), default=None)
     expected_report_date = _expected_latest_report_date(as_of)
-    is_stale = (
-        holder_report_date < expected_report_date.isoformat()
-        if holder_report_date else None
-    )
+    is_stale = holder_report_date < expected_report_date.isoformat() if holder_report_date else None
 
     core_sections = {
         "holder_count": bool(holder_count),
@@ -411,7 +410,8 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
             "institution": "最近已完成披露报告期的机构持仓合计与分类",
             "holder_changes": "同花顺公司大事中的单股重要股东持股变动",
         },
-        "section_availability": core_sections | {
+        "section_availability": core_sections
+        | {
             "actual_controller": controller.get("available") is True,
             "holder_changes": change_frame is not None,
         },

@@ -34,10 +34,15 @@ def _successful_result() -> dict:
             {"field": "qualified_days", "label": "近120日达标天数", "format": "integer"},
             {"field": "revenue_ttm", "label": "营业收入TTM(元)", "format": "currency_yuan"},
         ],
-        "items": [{
-            "code": "000001", "name": "平安银行", "current_atr_pct": 2.1,
-            "qualified_days": 80, "revenue_ttm": 1_500_000_000,
-        }],
+        "items": [
+            {
+                "code": "000001",
+                "name": "平安银行",
+                "current_atr_pct": 2.1,
+                "qualified_days": 80,
+                "revenue_ttm": 1_500_000_000,
+            }
+        ],
         "total": 11,
         "download_url": "/api/v1/agent/exports/result.csv",
         "data_time": "2026-07-17",
@@ -47,9 +52,14 @@ def _successful_result() -> dict:
         },
         "financial_report_period": "2026-03-31",
         "coverage": {
-            "universe": 5528, "history_preexcluded": 30, "financial_covered": 5498,
-            "financial_eligible": 2800, "fresh_kline": 2800,
-            "financial_cache_count": 5495, "financial_fallback_count": 3, "complete": True,
+            "universe": 5528,
+            "history_preexcluded": 30,
+            "financial_covered": 5498,
+            "financial_eligible": 2800,
+            "fresh_kline": 2800,
+            "financial_cache_count": 5495,
+            "financial_fallback_count": 3,
+            "complete": True,
         },
         "source": "verified source",
         "warnings": ["财务主源故障后已切换本日快照"],
@@ -57,10 +67,14 @@ def _successful_result() -> dict:
 
 
 def test_deterministic_answer_uses_dynamic_spec_columns_and_download_link() -> None:
-    answer = _build_quantitative_screen_answer([{
-        "tool": "screen_atr_volatility_stocks",
-        "result": _successful_result(),
-    }])
+    answer = _build_quantitative_screen_answer(
+        [
+            {
+                "tool": "screen_atr_volatility_stocks",
+                "result": _successful_result(),
+            }
+        ]
+    )
 
     assert "000001" in answer and "平安银行" in answer
     assert "共 **11 只**" in answer
@@ -79,10 +93,14 @@ def test_deterministic_answer_confirms_saved_watchlist_group() -> None:
     result = _successful_result()
     result["saved_group"] = {"id": 3, "name": "高波动观察", "count": 11}
 
-    answer = _build_quantitative_screen_answer([{
-        "tool": "screen_atr_volatility_stocks",
-        "result": result,
-    }])
+    answer = _build_quantitative_screen_answer(
+        [
+            {
+                "tool": "screen_atr_volatility_stocks",
+                "result": result,
+            }
+        ]
+    )
 
     assert "已保存到自选分组" in answer
     assert "高波动观察" in answer
@@ -90,13 +108,19 @@ def test_deterministic_answer_confirms_saved_watchlist_group() -> None:
 
 
 def test_deterministic_answer_fails_closed_without_tool_coverage() -> None:
-    answer = _build_quantitative_screen_answer([{
-        "tool": "screen_atr_volatility_stocks",
-        "result": {
-            "success": False, "failure_stage": "kline_coverage",
-            "errors": ["行情刷新失败"], "coverage": {"universe": 5528},
-        },
-    }])
+    answer = _build_quantitative_screen_answer(
+        [
+            {
+                "tool": "screen_atr_volatility_stocks",
+                "result": {
+                    "success": False,
+                    "failure_stage": "kline_coverage",
+                    "errors": ["行情刷新失败"],
+                    "coverage": {"universe": 5528},
+                },
+            }
+        ]
+    )
     assert "本轮不输出任何股票结论" in answer
     assert "kline_coverage" in answer
     assert "行情刷新失败" in answer
@@ -106,18 +130,28 @@ def test_deterministic_answer_fails_closed_without_tool_coverage() -> None:
 def test_deterministic_answer_rejects_success_without_auditable_contract(missing_key: str) -> None:
     result = _successful_result()
     result.pop(missing_key)
-    answer = _build_quantitative_screen_answer([{
-        "tool": "screen_atr_volatility_stocks", "result": result,
-    }])
+    answer = _build_quantitative_screen_answer(
+        [
+            {
+                "tool": "screen_atr_volatility_stocks",
+                "result": result,
+            }
+        ]
+    )
     assert "本轮不输出任何股票结论" in answer
 
 
 def test_deterministic_answer_rejects_missing_requested_row_field() -> None:
     result = _successful_result()
     result["items"][0].pop("revenue_ttm")
-    answer = _build_quantitative_screen_answer([{
-        "tool": "screen_atr_volatility_stocks", "result": result,
-    }])
+    answer = _build_quantitative_screen_answer(
+        [
+            {
+                "tool": "screen_atr_volatility_stocks",
+                "result": result,
+            }
+        ]
+    )
     assert "预览行缺少请求字段" in answer
 
 

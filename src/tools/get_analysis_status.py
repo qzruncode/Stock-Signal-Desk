@@ -30,11 +30,13 @@ def get_analysis_status(task_id: str = "", status: str = "", limit: int = 20) ->
 TOOL = ToolSpec(
     name="get_analysis_status",
     description="查询一个分析任务，或查看运行中/最近的分析任务及进度。不会启动新分析。",
-    parameters=object_schema({
-        "task_id": {"type": "string", "description": "任务 ID；留空时返回任务列表"},
-        "status": {"type": "string", "description": "列表状态过滤，逗号分隔，如 pending,processing"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-    }),
+    parameters=object_schema(
+        {
+            "task_id": {"type": "string", "description": "任务 ID；留空时返回任务列表"},
+            "status": {"type": "string", "description": "列表状态过滤，逗号分隔，如 pending,processing"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+        }
+    ),
     executor=get_analysis_status,
     category="analysis",
 )

@@ -196,25 +196,16 @@ class ChatSessionService:
                 "created_at": message.get("created_at"),
             }
             for message in detail.get("messages") or []
-            if (
-                isinstance(message, dict)
-                and not str(message.get("id") or "").endswith(
-                    "-assistant-pending"
-                )
-            )
+            if (isinstance(message, dict) and not str(message.get("id") or "").endswith("-assistant-pending"))
         ]
         clean_parent = str(parent_message_id or "").strip()
         if clean_parent:
             parent_index = next(
-                (
-                    index
-                    for index, message in enumerate(historical)
-                    if message["id"] == clean_parent
-                ),
+                (index for index, message in enumerate(historical) if message["id"] == clean_parent),
                 None,
             )
             if parent_index is not None:
-                historical = historical[:parent_index + 1]
+                historical = historical[: parent_index + 1]
         elif parent_message_id is not None:
             historical = []
 
@@ -224,11 +215,7 @@ class ChatSessionService:
             if isinstance(message, dict)
         }
         if incoming_ids:
-            historical = [
-                message
-                for message in historical
-                if message["id"] not in incoming_ids
-            ]
+            historical = [message for message in historical if message["id"] not in incoming_ids]
         return [*historical, *incoming_messages]
 
     def save_partial_assistant_text(self, conversation_id: str, assistant_text: str) -> None:
@@ -270,17 +257,11 @@ class ChatSessionService:
             except (TypeError, ValueError):
                 existing_thread_state = {}
 
-        normalized_messages = (
-            self._normalize_messages(messages)
-            if messages is not None
-            else None
-        )
+        normalized_messages = self._normalize_messages(messages) if messages is not None else None
         effective_thread_state: Optional[Dict[str, Any]] = None
         if thread_state is not None:
             effective_thread_state = dict(thread_state)
-            legacy_context_value = effective_thread_state.pop(
-                self.AGENT_CONTEXT_KEY, ...
-            )
+            legacy_context_value = effective_thread_state.pop(self.AGENT_CONTEXT_KEY, ...)
             if legacy_context_value is None:
                 prune_agent_context_to_messages = True
 
@@ -296,16 +277,13 @@ class ChatSessionService:
         run_ids_to_keep: set[str] | None = None
         if next_agent_context is None and prune_agent_context_to_messages:
             existing_context = self.get_agent_context(conversation_id)
-            if (
-                isinstance(existing_context, dict)
-                and str(existing_context.get("version") or "") == "3"
-            ):
+            if isinstance(existing_context, dict) and str(existing_context.get("version") or "") == "3":
                 from src.agent.orchestrator_v2.state import ConversationContextV2
 
                 parsed_context = ConversationContextV2.from_value(existing_context)
-                next_agent_context = parsed_context.retain_for_messages(
-                    normalized_messages or []
-                ).model_dump(mode="json")
+                next_agent_context = parsed_context.retain_for_messages(normalized_messages or []).model_dump(
+                    mode="json"
+                )
                 artifact_ids_to_keep = {
                     artifact_id
                     for turn in next_agent_context.get("turns") or []
@@ -331,18 +309,15 @@ class ChatSessionService:
                 if existing_context:
                     parsed_context = ConversationContext.from_value(existing_context)
                 else:
-                    parsed_context = recover_context_from_thread_state(
-                        thread_state or existing_thread_state
-                    )
-                next_agent_context = parsed_context.retain_for_messages(
-                    normalized_messages or []
-                ).model_dump()
+                    parsed_context = recover_context_from_thread_state(thread_state or existing_thread_state)
+                next_agent_context = parsed_context.retain_for_messages(normalized_messages or []).model_dump()
 
         agent_context_json = None
         if next_agent_context is not None:
             try:
                 agent_context_json = json.dumps(
-                    next_agent_context, ensure_ascii=False,
+                    next_agent_context,
+                    ensure_ascii=False,
                 )
             except (TypeError, ValueError):
                 agent_context_json = None
@@ -428,11 +403,7 @@ class ChatSessionService:
                 continue
             normalized_messages.append(
                 {
-                    "id": str(
-                        raw.get("id")
-                        or raw.get("unstable_id")
-                        or uuid.uuid4().hex
-                    ),
+                    "id": str(raw.get("id") or raw.get("unstable_id") or uuid.uuid4().hex),
                     "role": role,
                     "content": content,
                     "created_at": raw.get("created_at") or datetime.now().isoformat(),

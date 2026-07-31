@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from api.v1.endpoints.financials._symbol import _safe_str, _parse_date
 
+
 def _latest_content_time(items: list[dict], keys: list[str]) -> str | None:
     latest: datetime | None = None
     for item in items:
@@ -35,7 +36,7 @@ def _content_is_stale(items: list[dict], max_age_days: int, keys: list[str]) -> 
 def _resolve_post_publish_time(update_time: str, now: datetime | None = None) -> datetime | None:
     if now is None:
         now = datetime.now()
-    date_match = re.match(r'(\d{2})-(\d{2})\s+(\d{2}):(\d{2})', update_time)
+    date_match = re.match(r"(\d{2})-(\d{2})\s+(\d{2}):(\d{2})", update_time)
     if date_match:
         month, day, hour, minute = date_match.groups()
         try:

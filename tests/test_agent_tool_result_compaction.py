@@ -34,11 +34,14 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                     "success": True,
                     "coverage_complete": True,
                     "candidate_count": 1,
-                    "items": [{
-                        "symbol": "300580", "name": "贝斯特",
-                        "boards": ["机器人执行器"],
-                        "matched_domains": ["行星滚柱丝杠"],
-                    }],
+                    "items": [
+                        {
+                            "symbol": "300580",
+                            "name": "贝斯特",
+                            "boards": ["机器人执行器"],
+                            "matched_domains": ["行星滚柱丝杠"],
+                        }
+                    ],
                 },
                 {
                     "domain": "减速器",
@@ -50,11 +53,14 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
                     "success": True,
                     "coverage_complete": True,
                     "candidate_count": 1,
-                    "items": [{
-                        "symbol": "688017", "name": "绿的谐波",
-                        "boards": ["减速器"],
-                        "matched_domains": ["减速器"],
-                    }],
+                    "items": [
+                        {
+                            "symbol": "688017",
+                            "name": "绿的谐波",
+                            "boards": ["减速器"],
+                            "matched_domains": ["减速器"],
+                        }
+                    ],
                 },
             ],
         }
@@ -132,17 +138,22 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertEqual(compact["_tool_payload_meta"]["payload_policy"], "compacted")
 
     def test_multi_stock_snapshot_labels_realtime_pe_as_dynamic_not_ttm(self) -> None:
-        compact = _compact_tool_result("get_multi_stock_snapshot", {
-            "success": True,
-            "items": [{
-                "symbol": "600519",
-                "name": "贵州茅台",
-                "quote": {"price": 100.0, "pe_ratio": 14.4, "pb_ratio": 6.7},
-                "technical": {"success": True, "indicators": {}},
-                "financial": {"report_date": "2026-03-31"},
-            }],
-            "total": 1,
-        })
+        compact = _compact_tool_result(
+            "get_multi_stock_snapshot",
+            {
+                "success": True,
+                "items": [
+                    {
+                        "symbol": "600519",
+                        "name": "贵州茅台",
+                        "quote": {"price": 100.0, "pe_ratio": 14.4, "pb_ratio": 6.7},
+                        "technical": {"success": True, "indicators": {}},
+                        "financial": {"report_date": "2026-03-31"},
+                    }
+                ],
+                "total": 1,
+            },
+        )
 
         quote = compact["items"][0]["quote"]
         self.assertEqual(quote["pe_dynamic"], 14.4)
@@ -171,10 +182,13 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
 
     def test_semantic_search_compacts_each_long_body_with_explicit_length(self) -> None:
         body = "证据" * 4000
-        compact = _compact_tool_result("search_financial_news", {
-            "success": True,
-            "items": [{"title": "测试", "summary": body, "content_text": body}],
-        })
+        compact = _compact_tool_result(
+            "search_financial_news",
+            {
+                "success": True,
+                "items": [{"title": "测试", "summary": body, "content_text": body}],
+            },
+        )
 
         item = compact["items"][0]
         self.assertLessEqual(len(item["content_text"]), 1801)
@@ -192,19 +206,23 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
             "institution_holding_ratio": 72.5,
             "institution_holding_ratio_basis": "percent_of_total_shares",
             "institution_holding": {"report_date": "2026-03-31", "percent_of_total_shares": 72.5},
-            "top_holders": [{
-                "rank": 1,
-                "holder_name": "中国贵州茅台酒厂（集团）有限责任公司",
-                "holding_shares": 680000000,
-                "holding_ratio_pct": 54.0,
-                "holder_type": "国有法人",
-            }],
-            "holder_changes": [{
-                "holder_name": "测试股东",
-                "change_direction": "增持",
-                "change_shares": 10000,
-                "announcement_date": "2026-07-01",
-            }],
+            "top_holders": [
+                {
+                    "rank": 1,
+                    "holder_name": "中国贵州茅台酒厂（集团）有限责任公司",
+                    "holding_shares": 680000000,
+                    "holding_ratio_pct": 54.0,
+                    "holder_type": "国有法人",
+                }
+            ],
+            "holder_changes": [
+                {
+                    "holder_name": "测试股东",
+                    "change_direction": "增持",
+                    "change_shares": 10000,
+                    "announcement_date": "2026-07-01",
+                }
+            ],
             "data_time": "2026-06-30",
             "is_stale": False,
         }
@@ -252,10 +270,17 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertTrue(compact["_tool_payload_meta"]["compacted"])
 
     def test_empty_quotes_attach_price_search_fallback(self) -> None:
-        search_payload = {"query": "贵州茅台 600519 今日股价", "provider": "TestSearch", "success": True, "results": [{"title": "贵州茅台股价走势", "url": "https://example.com/price"}]}
+        search_payload = {
+            "query": "贵州茅台 600519 今日股价",
+            "provider": "TestSearch",
+            "success": True,
+            "results": [{"title": "贵州茅台股价走势", "url": "https://example.com/price"}],
+        }
 
-        with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
-             patch("src.tools.websearch.websearch", return_value=search_payload):
+        with (
+            patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"),
+            patch("src.tools.websearch.websearch", return_value=search_payload),
+        ):
             enriched = _maybe_attach_search_fallback(
                 "get_realtime_quotes",
                 {"symbols": "贵州茅台"},
@@ -284,10 +309,17 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         websearch.assert_not_called()
 
     def test_unavailable_consensus_uses_specific_search_fallback(self) -> None:
-        search_payload = {"query": "贵州茅台 600519 最新 券商一致预期 EPS 净利润预测", "provider": "TestSearch", "success": True, "results": []}
+        search_payload = {
+            "query": "贵州茅台 600519 最新 券商一致预期 EPS 净利润预测",
+            "provider": "TestSearch",
+            "success": True,
+            "results": [],
+        }
 
-        with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
-             patch("src.tools.websearch.websearch", return_value=search_payload):
+        with (
+            patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"),
+            patch("src.tools.websearch.websearch", return_value=search_payload),
+        ):
             enriched = _maybe_attach_search_fallback(
                 "get_consensus_estimates",
                 {"symbol": "贵州茅台"},
@@ -468,9 +500,7 @@ class AgentToolResultCompactionTestCase(unittest.TestCase):
         self.assertIn("饮品", compact["main_business"])
         self.assertEqual(compact["capital_snapshot"]["total_shares"], 145806262)
         self.assertEqual(compact["capital_snapshot"]["market_cap_unit"], "元")
-        self.assertEqual(
-            compact["_tool_payload_meta"]["compaction_reason"], "stock_info_key_fields"
-        )
+        self.assertEqual(compact["_tool_payload_meta"]["compaction_reason"], "stock_info_key_fields")
 
     def test_every_registered_tool_preserves_explicit_success_when_compacted(self) -> None:
         for tool_name in ToolRegistry().get_tool_names():

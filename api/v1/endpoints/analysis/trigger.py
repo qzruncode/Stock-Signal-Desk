@@ -91,11 +91,10 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
         500: {"description": "分析失败", "model": ErrorResponse},
     },
     summary="触发股票分析",
-    description="启动 AI 智能分析任务，支持同步和异步模式。异步模式下相同股票代码不允许重复提交。"
+    description="启动 AI 智能分析任务，支持同步和异步模式。异步模式下相同股票代码不允许重复提交。",
 )
 def trigger_analysis(
-        request: AnalyzeRequest,
-        config: Config = Depends(get_config_dep)
+    request: AnalyzeRequest, config: Config = Depends(get_config_dep)
 ) -> Union[AnalysisResultResponse, JSONResponse]:
     """触发股票分析。
 
@@ -109,11 +108,7 @@ def trigger_analysis(
 
     if not stock_codes:
         raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "validation_error",
-                "message": "必须提供 stock_code 或 stock_codes 参数"
-            }
+            status_code=400, detail={"error": "validation_error", "message": "必须提供 stock_code 或 stock_codes 参数"}
         )
 
     resolved = [_resolve_and_normalize_input(c) for c in stock_codes]
@@ -134,19 +129,12 @@ def trigger_analysis(
     if len(stock_codes) > MAX_BATCH_SIZE:
         raise HTTPException(
             status_code=400,
-            detail={
-                "error": "validation_error",
-                "message": f"单次分析请求最多支持 {MAX_BATCH_SIZE} 只股票"
-            }
+            detail={"error": "validation_error", "message": f"单次分析请求最多支持 {MAX_BATCH_SIZE} 只股票"},
         )
 
     if not stock_codes:
         raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "validation_error",
-                "message": "股票代码不能为空或仅包含空白字符"
-            }
+            status_code=400, detail={"error": "validation_error", "message": "股票代码不能为空或仅包含空白字符"}
         )
 
     if not request.async_mode:
@@ -155,18 +143,15 @@ def trigger_analysis(
                 status_code=400,
                 detail={
                     "error": "validation_error",
-                    "message": "同步模式仅支持单只股票分析，请使用 async_mode=true 进行批量分析"
-                }
+                    "message": "同步模式仅支持单只股票分析，请使用 async_mode=true 进行批量分析",
+                },
             )
         return _handle_sync_analysis(stock_codes[0], request)
 
     return _handle_async_analysis_batch(stock_codes, request)
 
 
-def _handle_async_analysis_batch(
-    stock_codes: list,
-    request: AnalyzeRequest
-) -> JSONResponse:
+def _handle_async_analysis_batch(stock_codes: list, request: AnalyzeRequest) -> JSONResponse:
     """Handle asynchronous analysis requests, including batch submission."""
     task_queue = get_task_queue()
 
@@ -217,10 +202,7 @@ def _handle_async_analysis_batch(
             stock_code=dup.stock_code,
             existing_task_id=dup.existing_task_id,
         )
-        return JSONResponse(
-            status_code=409,
-            content=error_response.model_dump()
-        )
+        return JSONResponse(status_code=409, content=error_response.model_dump())
 
     if len(stock_codes) == 1 and accepted:
         task_accepted = TaskAccepted(
@@ -228,26 +210,17 @@ def _handle_async_analysis_batch(
             status="pending",
             message=accepted[0].message,
         )
-        return JSONResponse(
-            status_code=202,
-            content=task_accepted.model_dump()
-        )
+        return JSONResponse(status_code=202, content=task_accepted.model_dump())
 
     batch_response = BatchTaskAcceptedResponse(
         accepted=accepted,
         duplicates=duplicates,
         message=f"已提交 {len(accepted)} 个任务，{len(duplicates)} 个重复跳过",
     )
-    return JSONResponse(
-        status_code=202,
-        content=batch_response.model_dump()
-    )
+    return JSONResponse(status_code=202, content=batch_response.model_dump())
 
 
-def _handle_sync_analysis(
-    stock_code: str,
-    request: AnalyzeRequest
-) -> AnalysisResultResponse:
+def _handle_sync_analysis(stock_code: str, request: AnalyzeRequest) -> AnalysisResultResponse:
     """处理同步分析请求，直接执行分析并返回结果。"""
     from src.services.analysis_service import AnalysisService
     from api.v1.endpoints.analysis.report import _build_conversation_report
@@ -272,7 +245,7 @@ def _handle_sync_analysis(
                 detail={
                     "error": "analysis_failed",
                     "message": error_message,
-                }
+                },
             )
 
         conversation = result.get("conversation", {})
@@ -289,7 +262,7 @@ def _handle_sync_analysis(
             stock_code=result.get("stock_code", stock_code),
             stock_name=result.get("stock_name"),
             report=report.model_dump() if report else None,
-            created_at=datetime.now().isoformat()
+            created_at=datetime.now().isoformat(),
         )
 
     except HTTPException:
@@ -297,9 +270,5 @@ def _handle_sync_analysis(
     except Exception as e:
         logger.error(f"分析失败: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "internal_error",
-                "message": f"分析过程发生错误: {str(e)}"
-            }
+            status_code=500, detail={"error": "internal_error", "message": f"分析过程发生错误: {str(e)}"}
         )

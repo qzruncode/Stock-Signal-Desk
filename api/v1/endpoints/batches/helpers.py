@@ -214,11 +214,7 @@ def _parse_results_json(raw: Optional[str]) -> dict:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    return {
-        str(code): result
-        for code, result in parsed.items()
-        if code != "__all__" and isinstance(result, dict)
-    }
+    return {str(code): result for code, result in parsed.items() if code != "__all__" and isinstance(result, dict)}
 
 
 def _parse_stock_codes_json(raw: Optional[str]) -> list[str]:

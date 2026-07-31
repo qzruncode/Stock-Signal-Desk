@@ -64,8 +64,8 @@ def _fetch_page(seq_mark: str = "") -> Optional[Dict[str, Any]]:
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36",
     }
     try:
         resp = requests.get(
@@ -190,8 +190,7 @@ def get_futunn_topics(force: bool = False, keyword: Optional[str] = None) -> Dic
     kw = (keyword or "").strip().lower()
     if kw:
         topics = [
-            t for t in topics
-            if kw in (str(t.get("title") or "").lower() + " " + str(t.get("detail") or "").lower())
+            t for t in topics if kw in (str(t.get("title") or "").lower() + " " + str(t.get("detail") or "").lower())
         ]
 
     return {

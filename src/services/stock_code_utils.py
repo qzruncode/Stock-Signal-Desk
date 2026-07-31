@@ -42,7 +42,7 @@ def _strip_exchange_prefix(text: str) -> Optional[str]:
     """Strip leading exchange prefix (SH/SZ/HK etc.) and return the bare digits, or None."""
     for prefix, digit_lens in _PREFIX_DIGIT_LENS.items():
         if text.startswith(prefix):
-            base = text[len(prefix):]
+            base = text[len(prefix) :]
             if _valid_exchange_code(prefix, base, digit_lens):
                 return base.zfill(5) if prefix == "HK" else base
     return None

@@ -37,8 +37,17 @@ logger = logging.getLogger(__name__)
 
 _DESCRIPTION_MAX_LEN = 500
 _VALID_CATEGORIES = {
-    "data", "market", "financials", "sentiment", "macro", "search", "analysis",
-    "research", "regulatory", "events", "risk",
+    "data",
+    "market",
+    "financials",
+    "sentiment",
+    "macro",
+    "search",
+    "analysis",
+    "research",
+    "regulatory",
+    "events",
+    "risk",
     "action",
 }
 _registry = ToolRegistry()
@@ -93,16 +102,9 @@ def _build_tool_meta(tool_def: Any) -> ToolMeta:
         category=category,  # type: ignore[arg-type]
         description=_truncate_description(tool_def.description or ""),
         parameters=_flatten_parameters(tool_def.parameters or {}),
-        typed=(
-            tool_def.args_model is not None
-            and tool_def.result_model is not None
-        ),
+        typed=(tool_def.args_model is not None and tool_def.result_model is not None),
         args_schema=dict(tool_def.parameters or {}),
-        result_schema=(
-            tool_def.result_model.model_json_schema()
-            if tool_def.result_model is not None
-            else None
-        ),
+        result_schema=(tool_def.result_model.model_json_schema() if tool_def.result_model is not None else None),
     )
 
 
@@ -151,6 +153,7 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
         return int((time.perf_counter() - start) * 1000)
 
     try:
+
         def _sync_fetch() -> Any:
             # Every registered tool runs out-of-process.  Several apparently
             # harmless tools can enter AKShare/libmini_racer indirectly when a
@@ -158,6 +161,7 @@ async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
             # leaves the FastAPI worker vulnerable to a native abort during
             # concurrent probes.
             from src.tools.process_runner import STATEFUL_TOOL_NAMES
+
             result = (
                 _registry.execute(tool_name, args)
                 if tool_name in STATEFUL_TOOL_NAMES

@@ -573,7 +573,7 @@ class AuthApiTestCase(unittest.TestCase):
         with patch.object(auth, "_is_auth_enabled_from_env", side_effect=self._read_auth_enabled_from_env):
             # 1. Setup an existing password, auth is currently disabled
             auth.set_initial_password("passwd6")
-            
+
             # 2. Simulate the race condition:
             # The middleware let the request through because auth was supposedly False.
             # But just before the handler runs, another thread enables auth.
@@ -581,7 +581,7 @@ class AuthApiTestCase(unittest.TestCase):
                 "STOCK_LIST=600519\nGEMINI_API_KEY=test\nADMIN_AUTH_ENABLED=true\n",
                 encoding="utf-8",
             )
-            auth.refresh_auth_state() # simulate the flip to True
+            auth.refresh_auth_state()  # simulate the flip to True
 
             # 3. The attacker tries to re-enable auth without a password or valid cookie
             response = asyncio.run(

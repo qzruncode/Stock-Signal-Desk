@@ -46,10 +46,7 @@ async def _live_dependency_probe() -> Dict[str, Any]:
     with _dependency_probe_lock:
         cached_at = float(_dependency_probe_cache.get("checked_at") or 0.0)
         cached_value = _dependency_probe_cache.get("value")
-    if (
-        isinstance(cached_value, dict)
-        and time.monotonic() - cached_at < _DEPENDENCY_PROBE_TTL_SECONDS
-    ):
+    if isinstance(cached_value, dict) and time.monotonic() - cached_at < _DEPENDENCY_PROBE_TTL_SECONDS:
         return {**cached_value, "cached": True}
 
     checks: Dict[str, Any] = {}
@@ -64,10 +61,12 @@ async def _live_dependency_probe() -> Dict[str, Any]:
         kwargs = build_litellm_kwargs(
             model_config,
             stream=False,
-            messages=[{
-                "role": "user",
-                "content": "Reply with OK only.",
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Reply with OK only.",
+                }
+            ],
             temperature=0,
             max_tokens=4,
         )
@@ -89,8 +88,7 @@ async def _live_dependency_probe() -> Dict[str, Any]:
                 deadline_seconds=8.0,
             )
         checks["market_data"] = {
-            "ok": isinstance(result, dict)
-            and result.get("success") is not False,
+            "ok": isinstance(result, dict) and result.get("success") is not False,
         }
     except Exception as exc:
         checks["market_data"] = {
@@ -154,10 +152,7 @@ def _latest_date_from_items(items: Any, keys: List[str]) -> datetime | None:
             continue
         for key in keys:
             dt = _parse_iso_datetime(item.get(key))
-            if dt and (
-                latest is None
-                or _comparison_datetime(dt) > _comparison_datetime(latest)
-            ):
+            if dt and (latest is None or _comparison_datetime(dt) > _comparison_datetime(latest)):
                 latest = dt
     return latest
 
@@ -195,7 +190,13 @@ def _assess_tool_data_health(tool_name: str, result: Any) -> Dict[str, Any]:
             return {"should_fallback": True, "reason": "stale_kline", "latest_date": latest.date().isoformat()}
         return {"should_fallback": False, "reason": None}
 
-    if tool_name in {"search_news", "get_announcements", "get_risk_events", "get_research_report", "get_social_sentiment"}:
+    if tool_name in {
+        "search_news",
+        "get_announcements",
+        "get_risk_events",
+        "get_research_report",
+        "get_social_sentiment",
+    }:
         items = result.get("items") or []
         if not items:
             return {"should_fallback": True, "reason": "empty_news_family"}
@@ -204,7 +205,11 @@ def _assess_tool_data_health(tool_name: str, result: Any) -> Dict[str, Any]:
             days = int(result.get("days") or 30)
             cutoff = datetime.now().astimezone() - timedelta(days=max(days, 1))
             if latest and _comparison_datetime(latest) < cutoff:
-                return {"should_fallback": True, "reason": "stale_news_family", "latest_date": latest.date().isoformat()}
+                return {
+                    "should_fallback": True,
+                    "reason": "stale_news_family",
+                    "latest_date": latest.date().isoformat(),
+                }
         latest = _latest_date_from_items(items, ["publish_time", "publish_date", "date_str"])
         days = int(result.get("days") or 30)
         cutoff = datetime.now().astimezone() - timedelta(days=max(days, 1))
@@ -226,9 +231,7 @@ async def agent_readiness(
     try:
         with db_manager.get_session() as session:
             session.execute(text("SELECT 1"))
-            schema_version = session.execute(text(
-                "SELECT value FROM _meta WHERE key = 'schema_version'"
-            )).scalar()
+            schema_version = session.execute(text("SELECT value FROM _meta WHERE key = 'schema_version'")).scalar()
         checks["database"] = {
             "ok": schema_version == SCHEMA_VERSION,
             "schema_version": schema_version,
@@ -249,9 +252,7 @@ async def agent_readiness(
     except Exception as exc:
         checks["model"] = {"ok": False, "error": str(exc)}
 
-    runtime_issues = agent_production_issues(
-        getattr(request.app.state, "static_dir", None)
-    )
+    runtime_issues = agent_production_issues(getattr(request.app.state, "static_dir", None))
     limits = get_agent_runtime_limits()
     checks["runtime"] = {
         "ok": not runtime_issues,
@@ -304,54 +305,55 @@ def agent_metrics(
     metrics = db_manager.agent_runtime_metrics()
     slo = metrics.get("slo_24h") or {}
     try:
-        minimum_success_rate = float(
-            os.getenv("AGENT_SLO_MIN_SUCCESS_RATE", "0.95")
-        )
-        max_p95_ms = int(
-            os.getenv("AGENT_SLO_MAX_DURATION_P95_MS", "900000")
-        )
+        minimum_success_rate = float(os.getenv("AGENT_SLO_MIN_SUCCESS_RATE", "0.95"))
+        max_p95_ms = int(os.getenv("AGENT_SLO_MAX_DURATION_P95_MS", "900000"))
     except (TypeError, ValueError):
         minimum_success_rate = 0.95
         max_p95_ms = 900_000
     alerts: List[Dict[str, Any]] = []
     success_rate = slo.get("success_rate")
     if success_rate is not None and success_rate < minimum_success_rate:
-        alerts.append({
-            "code": "agent_success_rate_below_slo",
-            "severity": "critical",
-            "value": success_rate,
-            "threshold": minimum_success_rate,
-        })
+        alerts.append(
+            {
+                "code": "agent_success_rate_below_slo",
+                "severity": "critical",
+                "value": success_rate,
+                "threshold": minimum_success_rate,
+            }
+        )
     p95 = slo.get("duration_ms_p95")
     if p95 is not None and p95 > max_p95_ms:
-        alerts.append({
-            "code": "agent_latency_above_slo",
-            "severity": "warning",
-            "value": p95,
-            "threshold": max_p95_ms,
-        })
+        alerts.append(
+            {
+                "code": "agent_latency_above_slo",
+                "severity": "warning",
+                "value": p95,
+                "threshold": max_p95_ms,
+            }
+        )
     if metrics.get("expired_run_leases"):
-        alerts.append({
-            "code": "agent_expired_run_leases",
-            "severity": "warning",
-            "value": metrics["expired_run_leases"],
-            "threshold": 0,
-        })
+        alerts.append(
+            {
+                "code": "agent_expired_run_leases",
+                "severity": "warning",
+                "value": metrics["expired_run_leases"],
+                "threshold": 0,
+            }
+        )
     if metrics.get("open_circuits"):
-        alerts.append({
-            "code": "agent_dependency_circuit_open",
-            "severity": "warning",
-            "value": metrics["open_circuits"],
-            "threshold": 0,
-        })
+        alerts.append(
+            {
+                "code": "agent_dependency_circuit_open",
+                "severity": "warning",
+                "value": metrics["open_circuits"],
+                "threshold": 0,
+            }
+        )
     return {
         "checked_at": datetime.now().astimezone().isoformat(),
         "metrics": metrics,
         "alerts": alerts,
-        "healthy": not any(
-            alert["severity"] == "critical"
-            for alert in alerts
-        ),
+        "healthy": not any(alert["severity"] == "critical" for alert in alerts),
     }
 
 
@@ -366,35 +368,36 @@ def agent_metrics_prometheus(
         "# TYPE dsa_agent_runs_total counter",
     ]
     for status, count in sorted((metrics.get("runs") or {}).items()):
-        lines.append(
-            f'dsa_agent_runs_total{{status="{status}"}} {int(count)}'
-        )
-    lines.extend([
-        "# TYPE dsa_agent_expired_run_leases gauge",
-        f"dsa_agent_expired_run_leases {int(metrics.get('expired_run_leases') or 0)}",
-        "# TYPE dsa_agent_open_circuits gauge",
-        f"dsa_agent_open_circuits {int(metrics.get('open_circuits') or 0)}",
-        "# TYPE dsa_agent_active_resource_leases gauge",
-        "dsa_agent_active_resource_leases "
-        f"{int(metrics.get('active_resource_leases') or 0)}",
-        "# TYPE dsa_agent_step_idempotency_reuses_total counter",
-        "dsa_agent_step_idempotency_reuses_total "
-        f"{int(metrics.get('step_idempotency_reuses') or 0)}",
-        "# TYPE dsa_agent_recovery_attempts_24h gauge",
-        "dsa_agent_recovery_attempts_24h "
-        f"{int(metrics.get('recovery_attempts_24h') or 0)}",
-    ])
+        lines.append(f'dsa_agent_runs_total{{status="{status}"}} {int(count)}')
+    lines.extend(
+        [
+            "# TYPE dsa_agent_expired_run_leases gauge",
+            f"dsa_agent_expired_run_leases {int(metrics.get('expired_run_leases') or 0)}",
+            "# TYPE dsa_agent_open_circuits gauge",
+            f"dsa_agent_open_circuits {int(metrics.get('open_circuits') or 0)}",
+            "# TYPE dsa_agent_active_resource_leases gauge",
+            "dsa_agent_active_resource_leases " f"{int(metrics.get('active_resource_leases') or 0)}",
+            "# TYPE dsa_agent_step_idempotency_reuses_total counter",
+            "dsa_agent_step_idempotency_reuses_total " f"{int(metrics.get('step_idempotency_reuses') or 0)}",
+            "# TYPE dsa_agent_recovery_attempts_24h gauge",
+            "dsa_agent_recovery_attempts_24h " f"{int(metrics.get('recovery_attempts_24h') or 0)}",
+        ]
+    )
     slo = metrics.get("slo_24h") or {}
     if slo.get("success_rate") is not None:
-        lines.extend([
-            "# TYPE dsa_agent_success_rate_24h gauge",
-            f"dsa_agent_success_rate_24h {float(slo['success_rate'])}",
-        ])
+        lines.extend(
+            [
+                "# TYPE dsa_agent_success_rate_24h gauge",
+                f"dsa_agent_success_rate_24h {float(slo['success_rate'])}",
+            ]
+        )
     if slo.get("duration_ms_p95") is not None:
-        lines.extend([
-            "# TYPE dsa_agent_duration_ms_p95_24h gauge",
-            f"dsa_agent_duration_ms_p95_24h {int(slo['duration_ms_p95'])}",
-        ])
+        lines.extend(
+            [
+                "# TYPE dsa_agent_duration_ms_p95_24h gauge",
+                f"dsa_agent_duration_ms_p95_24h {int(slo['duration_ms_p95'])}",
+            ]
+        )
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4",

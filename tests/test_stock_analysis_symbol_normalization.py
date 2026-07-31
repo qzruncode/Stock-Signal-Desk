@@ -18,8 +18,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -80,13 +82,17 @@ def test_news_uses_direct_fallback_when_rsshub_is_empty(client, monkeypatch):
     monkeypatch.setattr("src.tools.search_news._stock_name", lambda symbol: "新强联")
     monkeypatch.setattr(
         "src.tools.search_news._fetch_direct",
-        lambda symbol: pd.DataFrame([{
-            "新闻标题": "新强联直连新闻",
-            "新闻内容": "新强联 300850 生产经营正常",
-            "发布时间": "2026-07-15T00:00:00",
-            "文章来源": "东方财富新闻",
-            "新闻链接": "https://example.com/news",
-        }]),
+        lambda symbol: pd.DataFrame(
+            [
+                {
+                    "新闻标题": "新强联直连新闻",
+                    "新闻内容": "新强联 300850 生产经营正常",
+                    "发布时间": "2026-07-15T00:00:00",
+                    "文章来源": "东方财富新闻",
+                    "新闻链接": "https://example.com/news",
+                }
+            ]
+        ),
     )
     monkeypatch.setattr(
         "src.tools.search_news._fetch_rss",
@@ -107,27 +113,31 @@ def test_announcements_uses_rsshub_fallback_when_direct_source_is_empty(client, 
 
     tool_module = importlib.import_module("src.tools.get_announcements")
     monkeypatch.setattr(tool_module, "cached_call", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(tool_module, "_fetch_exchange_rss", lambda *args, **kwargs: (
-        [{
-            "代码": "300850",
-            "名称": "新强联",
-            "公告标题": "交易所公告",
-            "公告类型": "交易所公告",
-            "公告日期": "2026-06-08",
-            "网址": "https://example.com/announcement",
-        }],
-        "/szse/disclosure/listed/notice/:query?",
-        [],
-    ))
+    monkeypatch.setattr(
+        tool_module,
+        "_fetch_exchange_rss",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "代码": "300850",
+                    "名称": "新强联",
+                    "公告标题": "交易所公告",
+                    "公告类型": "交易所公告",
+                    "公告日期": "2026-06-08",
+                    "网址": "https://example.com/announcement",
+                }
+            ],
+            "/szse/disclosure/listed/notice/:query?",
+            [],
+        ),
+    )
 
     response = client.get("/api/v1/stocks/announcements", params={"symbol": "300850.SZ", "force": True})
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["items"][0]["title"] == "交易所公告"
-    assert payload["source_chain"] == [
-        "RSSHub/交易所官方披露:/szse/disclosure/listed/notice/:query?"
-    ]
+    assert payload["source_chain"] == ["RSSHub/交易所官方披露:/szse/disclosure/listed/notice/:query?"]
     assert payload["fallback_used"] is True
 
 
@@ -135,15 +145,19 @@ def test_announcements_return_notice_type_distribution(client, monkeypatch):
     import importlib
 
     tool_module = importlib.import_module("src.tools.get_announcements")
-    monkeypatch.setattr(tool_module, "get_announcements", lambda *args, **kwargs: {
-        "symbol": "300850",
-        "items": [],
-        "item_count": 4,
-        "analysis": {
-            "notice_type_distribution": {"分红": 2, "业绩": 1, "高管变动": 1},
+    monkeypatch.setattr(
+        tool_module,
+        "get_announcements",
+        lambda *args, **kwargs: {
+            "symbol": "300850",
+            "items": [],
+            "item_count": 4,
+            "analysis": {
+                "notice_type_distribution": {"分红": 2, "业绩": 1, "高管变动": 1},
+            },
+            "success": True,
         },
-        "success": True,
-    })
+    )
 
     response = client.get("/api/v1/stocks/announcements", params={"symbol": "300850.SZ", "force": True})
 
@@ -161,21 +175,30 @@ def test_research_uses_rsshub_fallback_when_direct_source_is_empty(client, monke
 
     tool_module = importlib.import_module("src.tools.get_research_report")
     monkeypatch.setattr(tool_module, "cached_call", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(tool_module, "_fetch_rss_fallback", lambda *args, **kwargs: ([{
-        "symbol": "300850",
-        "name": "新强联",
-        "title": "RSSHub研报",
-        "org": "RSSHub研报源",
-        "rating": None,
-        "industry": None,
-        "publish_date": "2026-06-08",
-        "url": "https://example.com/report",
-        "summary": "",
-        "profit_forecasts": [],
-        "monthly_report_count": None,
-        "source": "RSSHub/东方财富个股研报",
-        "source_type": "rss_research_report",
-    }], []))
+    monkeypatch.setattr(
+        tool_module,
+        "_fetch_rss_fallback",
+        lambda *args, **kwargs: (
+            [
+                {
+                    "symbol": "300850",
+                    "name": "新强联",
+                    "title": "RSSHub研报",
+                    "org": "RSSHub研报源",
+                    "rating": None,
+                    "industry": None,
+                    "publish_date": "2026-06-08",
+                    "url": "https://example.com/report",
+                    "summary": "",
+                    "profit_forecasts": [],
+                    "monthly_report_count": None,
+                    "source": "RSSHub/东方财富个股研报",
+                    "source_type": "rss_research_report",
+                }
+            ],
+            [],
+        ),
+    )
 
     response = client.get("/api/v1/stocks/research-report", params={"symbol": "300850.SZ", "force": True})
 

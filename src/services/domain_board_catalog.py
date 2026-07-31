@@ -24,14 +24,10 @@ def domain_board_catalog_snapshot_id(
                 str(item.get("name") or "").strip(),
             )
             for item in boards
-            if str(item.get("sector_code") or "").strip()
-            and str(item.get("name") or "").strip()
+            if str(item.get("sector_code") or "").strip() and str(item.get("name") or "").strip()
         }
     )
-    payload = [
-        {"board_id": board_id, "name": name}
-        for board_id, name in identities
-    ]
+    payload = [{"board_id": board_id, "name": name} for board_id, name in identities]
     return hashlib.sha256(
         json.dumps(
             payload,
@@ -54,22 +50,19 @@ def get_domain_board_catalog() -> dict[str, Any]:
         name = str(item.get("name") or "").strip()
         if not board_id or not name:
             continue
-        by_identity.setdefault((board_id, name), {
-            "sector_code": board_id,
-            "name": name,
-            "main_flow_rank": item.get("main_flow_rank"),
-            "main_net_inflow": item.get("main_net_inflow"),
-            "main_net_inflow_pct": item.get("main_net_inflow_pct"),
-            "pct_chg": item.get("pct_chg"),
-        })
-    boards = [
-        by_identity[identity]
-        for identity in sorted(by_identity)
-    ]
-    names = sorted({
-        item["name"]
-        for item in boards
-    })
+        by_identity.setdefault(
+            (board_id, name),
+            {
+                "sector_code": board_id,
+                "name": name,
+                "main_flow_rank": item.get("main_flow_rank"),
+                "main_net_inflow": item.get("main_net_inflow"),
+                "main_net_inflow_pct": item.get("main_net_inflow_pct"),
+                "pct_chg": item.get("pct_chg"),
+            },
+        )
+    boards = [by_identity[identity] for identity in sorted(by_identity)]
+    names = sorted({item["name"] for item in boards})
     return {
         "success": bool(names),
         "boards": boards,

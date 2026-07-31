@@ -100,21 +100,23 @@ def _fetch_rss_fallback(
             continue
         if not _within_days(raw.get("published"), cutoff):
             continue
-        items.append({
-            "symbol": code,
-            "name": name,
-            "title": title,
-            "org": str(raw.get("author") or raw.get("source") or "").strip() or None,
-            "rating": None,
-            "industry": None,
-            "publish_date": _date_text(raw.get("published")),
-            "url": str(raw.get("link") or "").strip(),
-            "summary": summary,
-            "profit_forecasts": [],
-            "monthly_report_count": None,
-            "source": "RSSHub/东方财富个股研报",
-            "source_type": "rss_research_report",
-        })
+        items.append(
+            {
+                "symbol": code,
+                "name": name,
+                "title": title,
+                "org": str(raw.get("author") or raw.get("source") or "").strip() or None,
+                "rating": None,
+                "industry": None,
+                "publish_date": _date_text(raw.get("published")),
+                "url": str(raw.get("link") or "").strip(),
+                "summary": summary,
+                "profit_forecasts": [],
+                "monthly_report_count": None,
+                "source": "RSSHub/东方财富个股研报",
+                "source_type": "rss_research_report",
+            }
+        )
     return items[:limit], [str(error) for error in result.get("errors") or []]
 
 
@@ -185,7 +187,9 @@ def get_research_report(
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in sorted(items, key=lambda row: row.get("publish_date") or "", reverse=True):
-        key = re.sub(r"\s+", "", f"{item.get('title', '')}|{item.get('publish_date', '')}|{item.get('org', '')}").lower()
+        key = re.sub(
+            r"\s+", "", f"{item.get('title', '')}|{item.get('publish_date', '')}|{item.get('org', '')}"
+        ).lower()
         if not key or key in seen:
             continue
         seen.add(key)
@@ -204,9 +208,7 @@ def get_research_report(
         rating_distribution[rating] = rating_distribution.get(rating, 0) + 1
         institution_distribution[org] = institution_distribution.get(org, 0) + 1
         forecast_years.update(
-            int(forecast["year"])
-            for forecast in item.get("profit_forecasts") or []
-            if forecast.get("year") is not None
+            int(forecast["year"]) for forecast in item.get("profit_forecasts") or [] if forecast.get("year") is not None
         )
     latest = next((item.get("publish_date") for item in items if item.get("publish_date")), None)
     if primary_available:
@@ -229,7 +231,9 @@ def get_research_report(
         "analysis": {
             "latest_report_date": latest,
             "rating_distribution": dict(sorted(rating_distribution.items(), key=lambda pair: (-pair[1], pair[0]))),
-            "institution_distribution": dict(sorted(institution_distribution.items(), key=lambda pair: (-pair[1], pair[0]))),
+            "institution_distribution": dict(
+                sorted(institution_distribution.items(), key=lambda pair: (-pair[1], pair[0]))
+            ),
             "institution_count": len(institution_distribution),
             "forecast_years": sorted(forecast_years),
         },
@@ -258,11 +262,14 @@ TOOL = ToolSpec(
         "PDF 链接及预测 EPS（元/股）和 PE（倍）。不要用于公司新闻、公告、已实现财务数据、行业、"
         "宏观、期货或评级研究；后五类必须使用 search_research_library。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "A 股代码或名称"},
-        "days": {"type": "integer", "minimum": 1, "maximum": 1825, "default": 365},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-    }, ["symbol"]),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "A 股代码或名称"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 1825, "default": 365},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+        },
+        ["symbol"],
+    ),
     executor=get_research_report,
     category="research",
 )

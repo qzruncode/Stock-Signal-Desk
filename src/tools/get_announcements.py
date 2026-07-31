@@ -69,15 +69,17 @@ def _fetch_exchange_rss(
         if not title:
             continue
         published = str(item.get("published") or "").strip()
-        records.append({
-            "代码": code,
-            "名称": None,
-            "公告标题": title,
-            "公告类型": "交易所公告",
-            "公告日期": published[:10] or None,
-            "网址": str(item.get("link") or "").strip(),
-            "_rss_route": route_path,
-        })
+        records.append(
+            {
+                "代码": code,
+                "名称": None,
+                "公告标题": title,
+                "公告类型": "交易所公告",
+                "公告日期": published[:10] or None,
+                "网址": str(item.get("link") or "").strip(),
+                "_rss_route": route_path,
+            }
+        )
     return records, route_path, [str(error) for error in result.get("errors") or []]
 
 
@@ -216,7 +218,9 @@ def get_announcements(
         "analysis": {
             "semantic_status": "model_required",
             "classification_method": None,
-            "source_notice_type_distribution": dict(sorted(type_distribution.items(), key=lambda pair: (-pair[1], pair[0]))),
+            "source_notice_type_distribution": dict(
+                sorted(type_distribution.items(), key=lambda pair: (-pair[1], pair[0]))
+            ),
             "latest_announcement_date": latest,
         },
         "coverage_start": begin_date,
@@ -245,17 +249,20 @@ TOOL = ToolSpec(
         "获取单只 A 股在指定时间窗内的正式公司公告，返回公告日期、数据源原始类型和可引用链接。"
         "工具不按标题词典判断事件分类或重要性；没有公告也是有效查询结果。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "A 股代码或名称"},
-        "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 30, "description": "向前查询自然日数"},
-        "type": {
-            "type": "string",
-            "enum": ["all"],
-            "default": "all",
-            "description": "固定为 all；公告语义由模型根据证据判断",
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "A 股代码或名称"},
+            "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 30, "description": "向前查询自然日数"},
+            "type": {
+                "type": "string",
+                "enum": ["all"],
+                "default": "all",
+                "description": "固定为 all；公告语义由模型根据证据判断",
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
         },
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
-    }, ["symbol"]),
+        ["symbol"],
+    ),
     executor=get_announcements,
     category="events",
 )

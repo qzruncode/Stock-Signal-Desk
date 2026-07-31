@@ -95,12 +95,14 @@ class TestBuildChipStructureFromData(unittest.TestCase):
         self.assertEqual(out["chip_health"], "未由模型评估")
 
     def test_explicit_model_health_is_preserved(self) -> None:
-        out = _build_chip_structure_from_data({
-            "profit_ratio": 0.5,
-            "avg_cost": 100.0,
-            "concentration_90": 0.1,
-            "chip_health": "健康",
-        })
+        out = _build_chip_structure_from_data(
+            {
+                "profit_ratio": 0.5,
+                "avg_cost": 100.0,
+                "concentration_90": 0.1,
+                "chip_health": "健康",
+            }
+        )
         self.assertEqual(out["chip_health"], "健康")
 
     def test_dict_with_string_values(self) -> None:
@@ -156,7 +158,11 @@ class TestFillChipStructureIfNeeded(unittest.TestCase):
 
     def test_full_fill_when_cs_all_empty(self) -> None:
         result = self._make_result(
-            dashboard={"data_perspective": {"chip_structure": {"profit_ratio": 0, "avg_cost": 0, "concentration": 0, "chip_health": ""}}}
+            dashboard={
+                "data_perspective": {
+                    "chip_structure": {"profit_ratio": 0, "avg_cost": 0, "concentration": 0, "chip_health": ""}
+                }
+            }
         )
         chip = self._make_chip()
         fill_chip_structure_if_needed(result, chip)
@@ -214,9 +220,7 @@ class TestFillChipStructureIfNeeded(unittest.TestCase):
 
     def test_data_perspective_null_handled(self) -> None:
         """When LLM returns data_perspective: null, fill should still work."""
-        result = self._make_result(
-            dashboard={"data_perspective": None, "core_conclusion": {"one_sentence": "观望"}}
-        )
+        result = self._make_result(dashboard={"data_perspective": None, "core_conclusion": {"one_sentence": "观望"}})
         chip = self._make_chip()
         fill_chip_structure_if_needed(result, chip)
         self.assertIsNotNone(result.dashboard["data_perspective"])

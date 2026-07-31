@@ -27,9 +27,21 @@ DESCRIPTION = (
 _URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
 _REALTIME_URL = "https://push2delay.eastmoney.com/api/qt/ulist.np/get"
 _RAW_COLUMNS = [
-    "date", "main_net_inflow", "small_net_inflow", "medium_net_inflow", "large_net_inflow",
-    "super_large_net_inflow", "main_net_inflow_pct", "small_net_inflow_pct", "medium_net_inflow_pct",
-    "large_net_inflow_pct", "super_large_net_inflow_pct", "close", "pct_chg", "_unused_1", "_unused_2",
+    "date",
+    "main_net_inflow",
+    "small_net_inflow",
+    "medium_net_inflow",
+    "large_net_inflow",
+    "super_large_net_inflow",
+    "main_net_inflow_pct",
+    "small_net_inflow_pct",
+    "medium_net_inflow_pct",
+    "large_net_inflow_pct",
+    "super_large_net_inflow_pct",
+    "close",
+    "pct_chg",
+    "_unused_1",
+    "_unused_2",
 ]
 _NUMERIC_FIELDS = [column for column in _RAW_COLUMNS if column not in {"date", "_unused_1", "_unused_2"}]
 
@@ -90,7 +102,12 @@ def _fetch_eastmoney_direct(code: str, market: str) -> pd.DataFrame:
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
             for column in _NUMERIC_FIELDS:
                 frame[column] = pd.to_numeric(frame[column], errors="coerce")
-            frame = frame.dropna(subset=["date"]).sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+            frame = (
+                frame.dropna(subset=["date"])
+                .sort_values("date")
+                .drop_duplicates("date", keep="last")
+                .reset_index(drop=True)
+            )
             frame.attrs["transport"] = "curl_cffi"
             return frame
         except Exception as exc:
@@ -120,11 +137,18 @@ def _fetch_eastmoney_direct(code: str, market: str) -> pd.DataFrame:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.date
         for column in _NUMERIC_FIELDS:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
-        frame = frame.dropna(subset=["date"]).sort_values("date").drop_duplicates("date", keep="last").reset_index(drop=True)
+        frame = (
+            frame.dropna(subset=["date"])
+            .sort_values("date")
+            .drop_duplicates("date", keep="last")
+            .reset_index(drop=True)
+        )
         frame.attrs["transport"] = "scrapling_dynamic"
         return frame
     except Exception as browser_exc:
-        raise RuntimeError(f"东方财富个股资金流请求失败: {last_error}; Scrapling 浏览器降级失败: {browser_exc}") from browser_exc
+        raise RuntimeError(
+            f"东方财富个股资金流请求失败: {last_error}; Scrapling 浏览器降级失败: {browser_exc}"
+        ) from browser_exc
 
 
 def _fetch_current_flow(code: str, market: str) -> dict[str, Any] | None:
@@ -145,13 +169,13 @@ def _fetch_current_flow(code: str, market: str) -> dict[str, Any] | None:
         "f87": "small_net_inflow_pct",
     }
     params = {
-            "secids": f"{market_code}.{code}",
-            "fields": ",".join(["f12", "f14", "f124", *field_map]),
-            "fltt": 2,
-            "invt": 2,
-            "ut": "b2884a393a59ad64002292a3e90d46a5",
-            "_": int(time.time() * 1000),
-        }
+        "secids": f"{market_code}.{code}",
+        "fields": ",".join(["f12", "f14", "f124", *field_map]),
+        "fltt": 2,
+        "invt": 2,
+        "ut": "b2884a393a59ad64002292a3e90d46a5",
+        "_": int(time.time() * 1000),
+    }
     response = httpx.get(
         _REALTIME_URL,
         params=params,
@@ -159,7 +183,7 @@ def _fetch_current_flow(code: str, market: str) -> dict[str, Any] | None:
         timeout=12,
     )
     response.raise_for_status()
-    rows = ((response.json().get("data") or {}).get("diff") or [])
+    rows = (response.json().get("data") or {}).get("diff") or []
     if isinstance(rows, dict):
         rows = list(rows.values())
     raw = rows[0] if rows and isinstance(rows[0], dict) else None
@@ -274,7 +298,9 @@ def get_stock_capital_flow(symbol: str, days: int = 20) -> dict[str, Any]:
     raw_records = frame.to_dict(orient="records") if isinstance(frame, pd.DataFrame) and not frame.empty else []
     if isinstance(frame, pd.DataFrame) and frame.attrs.get("history_error"):
         errors.append(f"历史资金流降级失败，仅返回实时交易日: {frame.attrs['history_error']}")
-    source_transport = str(frame.attrs.get("history_transport") or "unknown") if isinstance(frame, pd.DataFrame) else "unavailable"
+    source_transport = (
+        str(frame.attrs.get("history_transport") or "unknown") if isinstance(frame, pd.DataFrame) else "unavailable"
+    )
     all_items = [_record(row, now) for row in raw_records]
     items = all_items[-limit:]
     latest = items[-1] if items else None
@@ -326,7 +352,13 @@ TOOL = ToolSpec(
     parameters=object_schema(
         {
             "symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"},
-            "days": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "返回最近交易日数量"},
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 20,
+                "description": "返回最近交易日数量",
+            },
         },
         ["symbol"],
     ),

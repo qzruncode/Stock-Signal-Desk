@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 # Daily-cache helpers (Pattern B — _macro_cache_get / _macro_cache_put)
 # ---------------------------------------------------------------------------
 
+
 def _macro_cache_key(prefix: str) -> str:
     return f"macro:v2:{prefix}:{datetime.now().strftime('%Y%m%d')}"
 
@@ -41,6 +42,7 @@ def _macro_cache_key(prefix: str) -> str:
 def _macro_cache_get(prefix: str) -> dict | None:
     try:
         from src.storage import DatabaseManager
+
         raw = DatabaseManager.get_instance().get_kline_snapshot(_macro_cache_key(prefix))
         if raw:
             return json.loads(raw) if isinstance(raw, str) else raw
@@ -52,8 +54,10 @@ def _macro_cache_get(prefix: str) -> dict | None:
 def _macro_cache_put(prefix: str, data: dict) -> None:
     try:
         from src.storage import DatabaseManager
+
         DatabaseManager.get_instance().save_kline_snapshot(
-            _macro_cache_key(prefix), json.dumps(data, ensure_ascii=False))
+            _macro_cache_key(prefix), json.dumps(data, ensure_ascii=False)
+        )
     except Exception:
         logger.warning("[Macro-Cache] write error", exc_info=True)
 
@@ -61,6 +65,7 @@ def _macro_cache_put(prefix: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 # Background-refresh helper (Pattern A)
 # ---------------------------------------------------------------------------
+
 
 def bg_refresh_if_stale(
     *,
@@ -84,6 +89,7 @@ def bg_refresh_if_stale(
         Prefix for warning logs on failure.
     """
     if lock.acquire(blocking=False):
+
         def _bg():
             try:
                 data = fetcher()
@@ -93,4 +99,5 @@ def bg_refresh_if_stale(
                 logger.warning(f"{log_tag} bg-refresh failed: {e}")
             finally:
                 lock.release()
+
         threading.Thread(target=_bg, daemon=True).start()

@@ -104,7 +104,10 @@ def _validate_request(metric: str, period_basis: str, fiscal_year: int | None) -
     if metric not in _METRIC_FIELDS:
         raise ValueError("unsupported financial metric")
     if period_basis not in {
-        "latest_report", "ttm", "previous_fiscal_year", "fiscal_year",
+        "latest_report",
+        "ttm",
+        "previous_fiscal_year",
+        "fiscal_year",
     }:
         raise ValueError("unsupported financial period basis")
     if metric == "debt_ratio" and period_basis == "ttm":
@@ -215,56 +218,46 @@ def get_multi_stock_financials(
         code = entity["symbol"]
         row = by_code.get(code)
         if annual:
-            value = _safe_float(
-                row.get(metric_definition["annual_field"]) if isinstance(row, dict) else None
-            )
+            value = _safe_float(row.get(metric_definition["annual_field"]) if isinstance(row, dict) else None)
             row_report_date = (
-                str(row.get("REPORT_DATE") or report_period)[:10]
-                if isinstance(row, dict)
-                else report_period
+                str(row.get("REPORT_DATE") or report_period)[:10] if isinstance(row, dict) else report_period
             )
             fetched_at = snapshot_time.isoformat() if snapshot_time is not None else None
             compatibility_fields: dict[str, Any] = {}
         else:
-            value = _safe_float(
-                getattr(row, str(metric_definition["local_field"]), None)
-                if row is not None
-                else None
-            )
+            value = _safe_float(getattr(row, str(metric_definition["local_field"]), None) if row is not None else None)
             row_report_date = getattr(row, "report_date", None) if row is not None else None
             fetched = getattr(row, "financial_fetched_at", None) if row is not None else None
             fetched_at = fetched.isoformat() if isinstance(fetched, datetime) else None
             compatibility_fields = {
                 "debt_ratio_pct": getattr(row, "debt_ratio", None) if row is not None else None,
                 "revenue_ttm": getattr(row, "revenue_ttm", None) if row is not None else None,
-                "deducted_net_profit_ttm": (
-                    getattr(row, "deducted_net_profit_ttm", None) if row is not None else None
-                ),
+                "deducted_net_profit_ttm": (getattr(row, "deducted_net_profit_ttm", None) if row is not None else None),
             }
         if fetched_at:
             fetched_times.append(fetched_at)
         if value is None:
             missing_financial_symbols.append(code)
-        items.append({
-            "symbol": code,
-            "name": entity["name"],
-            "input": entity["input"],
-            "metric": metric,
-            "period_basis": period_basis,
-            "financial_value": value,
-            "value_unit": metric_definition["unit"],
-            "report_date": row_report_date,
-            "financial_fetched_at": fetched_at,
-            **compatibility_fields,
-        })
+        items.append(
+            {
+                "symbol": code,
+                "name": entity["name"],
+                "input": entity["input"],
+                "metric": metric,
+                "period_basis": period_basis,
+                "financial_value": value,
+                "value_unit": metric_definition["unit"],
+                "report_date": row_report_date,
+                "financial_fetched_at": fetched_at,
+                **compatibility_fields,
+            }
+        )
 
     errors: list[str] = []
     if unresolved:
         errors.append(f"无法解析: {', '.join(unresolved)}")
     if missing_financial_symbols:
-        errors.append(
-            f"缺少{metric_definition['label']}数据: " + ", ".join(missing_financial_symbols)
-        )
+        errors.append(f"缺少{metric_definition['label']}数据: " + ", ".join(missing_financial_symbols))
     covered_count = len(items) - len(missing_financial_symbols)
     success = covered_count > 0
     source = (

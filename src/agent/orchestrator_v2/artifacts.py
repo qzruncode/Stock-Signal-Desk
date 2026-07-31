@@ -23,6 +23,7 @@ from src.agent.orchestrator_v2.state import (
 from src.agent.task_executor import action_fingerprint
 from src.agent.task_workflows import ConfirmationState
 
+
 def build_execution_artifacts_v2(
     compiled: CompiledIntentGraphV2,
     outcomes: tuple[TaskOutcomeV2, ...],
@@ -56,19 +57,24 @@ def build_execution_artifacts_v2(
             if projected is None:
                 continue
             payload = projected.payload
-            fingerprint = stable_fingerprint({
-                "capability": compiled_task.capability.value,
-                "capability_version": compiled_task.capability_version,
-                "schema_version": compiled_task.intent_schema_version,
-                "resource_type": resource_type.value,
-                "resource_fingerprint": compiled_task.resource_fingerprint,
-                "payload": payload,
-            })
+            fingerprint = stable_fingerprint(
+                {
+                    "capability": compiled_task.capability.value,
+                    "capability_version": compiled_task.capability_version,
+                    "schema_version": compiled_task.intent_schema_version,
+                    "resource_type": resource_type.value,
+                    "resource_fingerprint": compiled_task.resource_fingerprint,
+                    "payload": payload,
+                }
+            )
             artifact = AgentArtifactV2(
-                artifact_id="artifact_" + stable_fingerprint({
-                    "conversation_id": conversation_id,
-                    "fingerprint": fingerprint,
-                })[:32],
+                artifact_id="artifact_"
+                + stable_fingerprint(
+                    {
+                        "conversation_id": conversation_id,
+                        "fingerprint": fingerprint,
+                    }
+                )[:32],
                 schema_version=ARTIFACT_SCHEMA_VERSION,
                 run_id=compiled.run_id,
                 conversation_id=conversation_id,
@@ -77,14 +83,13 @@ def build_execution_artifacts_v2(
                 coverage=projected.coverage,
                 sources=(
                     outcome.evidence
-                    or (EvidenceV2(
-                        source="validated_workflow_execution",
-                        observed_at=now,
-                        summary=(
-                            f"{compiled_task.capability.value} "
-                            f"{outcome.status.value}"
+                    or (
+                        EvidenceV2(
+                            source="validated_workflow_execution",
+                            observed_at=now,
+                            summary=(f"{compiled_task.capability.value} " f"{outcome.status.value}"),
                         ),
-                    ),)
+                    )
                 ),
                 produced_at=now,
                 fingerprint=fingerprint,
@@ -92,15 +97,10 @@ def build_execution_artifacts_v2(
                 payload=payload,
             )
             artifacts.append(artifact)
-            artifact_by_node_resource[
-                (compiled_task.task.task_id, resource_type)
-            ] = artifact
+            artifact_by_node_resource[(compiled_task.task.task_id, resource_type)] = artifact
 
     artifacts_with_lineage: list[AgentArtifactV2] = []
-    compiled_by_id = {
-        item.task.task_id: item
-        for item in compiled.tasks
-    }
+    compiled_by_id = {item.task.task_id: item for item in compiled.tasks}
     for artifact in artifacts:
         task = compiled_by_id[artifact.producer_node_id]
         dependency_artifacts = [
@@ -109,14 +109,16 @@ def build_execution_artifacts_v2(
             for (producer_id, _), value in artifact_by_node_resource.items()
             if producer_id == dependency_id
         ]
-        lineage = tuple(dict.fromkeys([
-            *artifact.lineage,
-            *dependency_artifacts,
-        ]))
+        lineage = tuple(
+            dict.fromkeys(
+                [
+                    *artifact.lineage,
+                    *dependency_artifacts,
+                ]
+            )
+        )
         updated = artifact.model_copy(update={"lineage": lineage})
-        artifact_by_node_resource[
-            (updated.producer_node_id, updated.resource_type)
-        ] = updated
+        artifact_by_node_resource[(updated.producer_node_id, updated.resource_type)] = updated
         artifacts_with_lineage.append(updated)
     artifacts = artifacts_with_lineage
 
@@ -126,18 +128,12 @@ def build_execution_artifacts_v2(
     # projection of node input references.
     for task in compiled.plan.tasks:
         for dependency_id in task.depends_on:
-            input_resources = capability_for(
-                compiled_by_id[task.task_id].capability
-            ).input_resources
+            input_resources = capability_for(compiled_by_id[task.task_id].capability).input_resources
             for resource_type in input_resources:
                 if (dependency_id, resource_type) in artifact_by_node_resource:
                     consumers.add((dependency_id, resource_type))
 
-    terminal_artifacts = tuple(
-        artifact
-        for key, artifact in artifact_by_node_resource.items()
-        if key not in consumers
-    )
+    terminal_artifacts = tuple(artifact for key, artifact in artifact_by_node_resource.items() if key not in consumers)
     terminal_refs = tuple(
         ArtifactReferenceV2(
             artifact_id=artifact.artifact_id,
@@ -149,9 +145,7 @@ def build_execution_artifacts_v2(
     )
     refs_by_node: dict[str, list[str]] = {}
     for artifact in terminal_artifacts:
-        refs_by_node.setdefault(artifact.producer_node_id, []).append(
-            artifact.artifact_id
-        )
+        refs_by_node.setdefault(artifact.producer_node_id, []).append(artifact.artifact_id)
     turn = TurnSummaryV2(
         run_id=compiled.run_id,
         request_message_id=request_message_id,
@@ -166,15 +160,12 @@ def build_execution_artifacts_v2(
                 coverage=outcome_by_id[task.task.task_id].coverage,
                 action_fingerprint=(
                     action_fingerprint(task.task)
-                    if task.task.candidate.confirmation
-                    != ConfirmationState.NOT_REQUIRED
+                    if task.task.candidate.confirmation != ConfirmationState.NOT_REQUIRED
                     else None
                 ),
                 confirmation_pending=(
-                    outcome_by_id[task.task.task_id].status
-                    == OutcomeStatus.BLOCKED
-                    and task.task.candidate.confirmation
-                    == ConfirmationState.MISSING
+                    outcome_by_id[task.task.task_id].status == OutcomeStatus.BLOCKED
+                    and task.task.candidate.confirmation == ConfirmationState.MISSING
                 ),
             )
             for task in compiled.tasks
@@ -194,13 +185,13 @@ def attach_artifact_refs_v2(
     """Return outcomes whose artifact references match persisted resources."""
     refs_by_task: dict[str, list[str]] = {}
     for artifact in artifacts:
-        refs_by_task.setdefault(artifact.producer_node_id, []).append(
-            artifact.artifact_id
-        )
+        refs_by_task.setdefault(artifact.producer_node_id, []).append(artifact.artifact_id)
     return tuple(
-        outcome.model_copy(update={
-            "artifact_refs": tuple(refs_by_task.get(outcome.task_id, ())),
-        })
+        outcome.model_copy(
+            update={
+                "artifact_refs": tuple(refs_by_task.get(outcome.task_id, ())),
+            }
+        )
         for outcome in outcomes
     )
 

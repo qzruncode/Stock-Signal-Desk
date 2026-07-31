@@ -102,6 +102,11 @@ def timestamp() -> str:
 
 
 __all__ = [
-    "array_value", "endpoint_value", "ensure_financial_route", "html_text", "object_value",
-    "rss_options_schema", "timestamp",
+    "array_value",
+    "endpoint_value",
+    "ensure_financial_route",
+    "html_text",
+    "object_value",
+    "rss_options_schema",
+    "timestamp",
 ]

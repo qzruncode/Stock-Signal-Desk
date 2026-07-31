@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Mixin: news intelligence storage operations."""
 import hashlib
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.storage.models import NewsIntel
 
-logger = __import__('logging').getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class NewsMixin:
@@ -22,8 +23,8 @@ class NewsMixin:
         name: str,
         dimension: str,
         query: str,
-        response: 'SearchResponse',
-        query_context: Optional[Dict[str, str]] = None
+        response: "SearchResponse",
+        query_context: Optional[Dict[str, str]] = None,
     ) -> int:
         """
         保存新闻情报到数据库
@@ -46,25 +47,20 @@ class NewsMixin:
             local_saved_count = 0
 
             for item in response.results:
-                title = (item.title or '').strip()
-                url = (item.url or '').strip()
-                source = (item.source or '').strip()
-                snippet = (item.snippet or '').strip()
+                title = (item.title or "").strip()
+                url = (item.url or "").strip()
+                source = (item.source or "").strip()
+                snippet = (item.snippet or "").strip()
                 published_date = self._parse_published_date(item.published_date)
 
                 if not title and not url:
                     continue
 
                 url_key = url or self._build_fallback_url_key(
-                    code=code,
-                    title=title,
-                    source=source,
-                    published_date=published_date
+                    code=code, title=title, source=source, published_date=published_date
                 )
 
-                existing = session.execute(
-                    select(NewsIntel).where(NewsIntel.url == url_key)
-                ).scalar_one_or_none()
+                existing = session.execute(select(NewsIntel).where(NewsIntel.url == url_key)).scalar_one_or_none()
 
                 if existing:
                     existing.name = name or existing.name
@@ -79,9 +75,7 @@ class NewsMixin:
                     if query_context:
                         if not existing.query_id and current_query_id:
                             existing.query_id = current_query_id
-                        existing.query_source = (
-                            query_context.get("query_source") or existing.query_source
-                        )
+                        existing.query_source = query_context.get("query_source") or existing.query_source
                         existing.requester_platform = (
                             query_context.get("requester_platform") or existing.requester_platform
                         )
@@ -97,9 +91,7 @@ class NewsMixin:
                         existing.requester_message_id = (
                             query_context.get("requester_message_id") or existing.requester_message_id
                         )
-                        existing.requester_query = (
-                            query_context.get("requester_query") or existing.requester_query
-                        )
+                        existing.requester_query = query_context.get("requester_query") or existing.requester_query
                     continue
 
                 try:
@@ -152,17 +144,16 @@ class NewsMixin:
         cutoff_date = datetime.now() - timedelta(days=days)
 
         with self.get_session() as session:
-            results = session.execute(
-                select(NewsIntel)
-                .where(
-                    and_(
-                        NewsIntel.code == code,
-                        NewsIntel.fetched_at >= cutoff_date
-                    )
+            results = (
+                session.execute(
+                    select(NewsIntel)
+                    .where(and_(NewsIntel.code == code, NewsIntel.fetched_at >= cutoff_date))
+                    .order_by(desc(NewsIntel.fetched_at))
+                    .limit(limit)
                 )
-                .order_by(desc(NewsIntel.fetched_at))
-                .limit(limit)
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             return list(results)
 
@@ -178,25 +169,23 @@ class NewsMixin:
             NewsIntel 列表（按发布时间或抓取时间倒序）
         """
         with self.get_session() as session:
-            results = session.execute(
-                select(NewsIntel)
-                .where(NewsIntel.query_id == query_id)
-                .order_by(
-                    desc(func.coalesce(NewsIntel.published_date, NewsIntel.fetched_at)),
-                    desc(NewsIntel.fetched_at)
+            results = (
+                session.execute(
+                    select(NewsIntel)
+                    .where(NewsIntel.query_id == query_id)
+                    .order_by(
+                        desc(func.coalesce(NewsIntel.published_date, NewsIntel.fetched_at)), desc(NewsIntel.fetched_at)
+                    )
+                    .limit(limit)
                 )
-                .limit(limit)
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             return list(results)
 
     @staticmethod
-    def _build_fallback_url_key(
-        code: str,
-        title: str,
-        source: str,
-        published_date: Optional[datetime]
-    ) -> str:
+    def _build_fallback_url_key(code: str, title: str, source: str, published_date: Optional[datetime]) -> str:
         """
         生成无 URL 时的去重键（确保稳定且较短）
         """

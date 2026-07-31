@@ -20,13 +20,15 @@ def test_company_theme_evidence_collects_one_stock_from_project_tools() -> None:
     }
     segments = {
         "success": True,
-        "items": [{
-            "report_date": "2025-12-31",
-            "category": "product",
-            "segment_name": "精密执行部件",
-            "revenue": 100_000_000,
-            "revenue_share_pct": 35.0,
-        }],
+        "items": [
+            {
+                "report_date": "2025-12-31",
+                "category": "product",
+                "segment_name": "精密执行部件",
+                "revenue": 100_000_000,
+                "revenue_share_pct": 35.0,
+            }
+        ],
         "source": "东方财富主营构成",
         "source_url": "https://example.com/segments",
         "data_time": "2025-12-31",
@@ -34,33 +36,39 @@ def test_company_theme_evidence_collects_one_stock_from_project_tools() -> None:
     }
     announcements = {
         "success": True,
-        "items": [{
-            "title": "关于扩建精密部件产线的公告",
-            "publish_date": "2026-06-01",
-            "url": "https://example.com/notice",
-            "source": "交易所公告",
-        }],
+        "items": [
+            {
+                "title": "关于扩建精密部件产线的公告",
+                "publish_date": "2026-06-01",
+                "url": "https://example.com/notice",
+                "source": "交易所公告",
+            }
+        ],
         "errors": [],
     }
     news = {
         "success": True,
-        "items": [{
-            "title": "测试公司推进新产品客户验证",
-            "summary": "测试公司相关产品已进入客户验证。",
-            "published": "2026-07-01",
-            "url": "https://example.com/news",
-            "source": "公司新闻",
-        }],
+        "items": [
+            {
+                "title": "测试公司推进新产品客户验证",
+                "summary": "测试公司相关产品已进入客户验证。",
+                "published": "2026-07-01",
+                "url": "https://example.com/news",
+                "source": "公司新闻",
+            }
+        ],
         "errors": [],
     }
     reports = {
         "success": True,
-        "items": [{
-            "title": "执行部件业务进入放量阶段",
-            "publish_date": "2026-07-02",
-            "url": "https://example.com/report",
-            "source": "个股研报",
-        }],
+        "items": [
+            {
+                "title": "执行部件业务进入放量阶段",
+                "publish_date": "2026-07-02",
+                "url": "https://example.com/report",
+                "source": "个股研报",
+            }
+        ],
         "errors": [],
     }
 
@@ -99,10 +107,7 @@ def test_company_theme_evidence_collects_one_stock_from_project_tools() -> None:
     assert result["project_source_coverage_complete"] is True
     assert result["fallback_attempted"] is False
     assert result["fallback_used"] is False
-    assert {
-        document["source_type"]
-        for document in result["evidence_documents"]
-    } == {
+    assert {document["source_type"] for document in result["evidence_documents"]} == {
         "company_profile",
         "business_segments",
         "announcement",
@@ -121,13 +126,15 @@ def test_company_theme_evidence_uses_stock_scoped_web_fallback_only_when_empty()
     fallback = {
         "success": True,
         "provider": "test",
-        "results": [{
-            "title": "测试公司目标产业项目进展",
-            "snippet": "测试公司披露目标产业项目已进入客户验证。",
-            "url": "https://example.com/fallback",
-            "published_date": "2026-07-20",
-            "source": "测试公开源",
-        }],
+        "results": [
+            {
+                "title": "测试公司目标产业项目进展",
+                "snippet": "测试公司披露目标产业项目已进入客户验证。",
+                "url": "https://example.com/fallback",
+                "published_date": "2026-07-20",
+                "source": "测试公开源",
+            }
+        ],
         "errors": [],
     }
     with (

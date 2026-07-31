@@ -43,7 +43,7 @@ router = APIRouter()
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="获取历史分析列表",
-    description="分页获取历史分析记录摘要，支持按股票代码和日期范围筛选"
+    description="分页获取历史分析记录摘要，支持按股票代码和日期范围筛选",
 )
 def get_history_list(
     stock_code: Optional[str] = Query(None, description="股票代码筛选"),
@@ -51,7 +51,7 @@ def get_history_list(
     end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
     page: int = Query(1, ge=1, description="页码（从 1 开始）"),
     limit: int = Query(20, ge=1, le=100, description="每页数量"),
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> HistoryListResponse:
     try:
         service = HistoryService(db_manager)
@@ -106,8 +106,7 @@ def get_history_list(
     description="按历史记录主键 ID 批量删除分析历史",
 )
 def delete_history_records(
-    request: DeleteHistoryRequest = Body(...),
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    request: DeleteHistoryRequest = Body(...), db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> DeleteHistoryResponse:
     record_ids = sorted({record_id for record_id in request.record_ids if record_id is not None})
     if not record_ids:
@@ -147,10 +146,7 @@ def delete_history_records(
     summary="获取历史报告详情",
     description="根据分析历史记录 ID 或 query_id 获取完整的历史分析报告",
 )
-def get_history_detail(
-    record_id: str,
-    db_manager: DatabaseManager = Depends(get_database_manager)
-) -> AnalysisReport:
+def get_history_detail(record_id: str, db_manager: DatabaseManager = Depends(get_database_manager)) -> AnalysisReport:
     try:
         service = HistoryService(db_manager)
         result = service.resolve_and_get_detail(record_id)
@@ -191,7 +187,7 @@ def get_history_detail(
 def get_history_news(
     record_id: str,
     limit: int = Query(20, ge=1, le=100, description="返回数量限制"),
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> NewsIntelResponse:
     try:
         service = HistoryService(db_manager)
@@ -233,8 +229,7 @@ def get_history_news(
     description="根据分析历史记录 ID 获取 Markdown 格式的完整分析报告",
 )
 def get_history_markdown(
-    record_id: str,
-    db_manager: DatabaseManager = Depends(get_database_manager)
+    record_id: str, db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> MarkdownReportResponse:
     service = HistoryService(db_manager)
 

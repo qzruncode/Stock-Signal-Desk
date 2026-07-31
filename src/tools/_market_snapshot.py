@@ -230,13 +230,15 @@ def _fetch_index_daily() -> list[dict[str, Any]]:
         raise RuntimeError("上证指数日线为空")
     records: list[dict[str, Any]] = []
     for _, row in frame.tail(40).iterrows():
-        records.append({
-            "date": str(row.get("date") or "")[:10],
-            "open": _safe_float(row.get("open")),
-            "high": _safe_float(row.get("high")),
-            "low": _safe_float(row.get("low")),
-            "close": _safe_float(row.get("close")),
-        })
+        records.append(
+            {
+                "date": str(row.get("date") or "")[:10],
+                "open": _safe_float(row.get("open")),
+                "high": _safe_float(row.get("high")),
+                "low": _safe_float(row.get("low")),
+                "close": _safe_float(row.get("close")),
+            }
+        )
     return records
 
 
@@ -374,9 +376,7 @@ def fetch_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
 
     data_time = breadth.get("data_time")
     parsed_data_time = _parse_datetime(data_time)
-    is_stale: bool | None = (
-        parsed_data_time.date() < trade_day if parsed_data_time is not None else None
-    )
+    is_stale: bool | None = parsed_data_time.date() < trade_day if parsed_data_time is not None else None
     if (
         parsed_data_time is not None
         and parsed_data_time.date() == trade_day
@@ -468,9 +468,7 @@ def _cache_put(now: datetime, data: dict[str, Any]) -> None:
     try:
         from src.storage import DatabaseManager
 
-        DatabaseManager.get_instance().save_kline_snapshot(
-            _cache_key(now), json.dumps(data, ensure_ascii=False)
-        )
+        DatabaseManager.get_instance().save_kline_snapshot(_cache_key(now), json.dumps(data, ensure_ascii=False))
     except Exception:
         logger.warning("写入市场快照缓存失败", exc_info=True)
 
@@ -526,11 +524,32 @@ def get_market_snapshot(*, force: bool = False, now: datetime | None = None) -> 
 
 def market_status_view(snapshot: dict[str, Any]) -> dict[str, Any]:
     fields = (
-        "market_date", "is_trading_time", "up_count", "down_count", "flat_count", "halt_count",
-        "limit_up_count", "limit_down_count", "total_amount", "total_amount_unit", "turnover_scope",
-        "indices", "sh_index", "breadth_scope", "breadth_source", "north_flow",
-        "north_flow_available", "north_flow_note", "source", "errors", "warnings", "data_time",
-        "is_stale", "fallback_used", "_fetched_at", "_cached",
+        "market_date",
+        "is_trading_time",
+        "up_count",
+        "down_count",
+        "flat_count",
+        "halt_count",
+        "limit_up_count",
+        "limit_down_count",
+        "total_amount",
+        "total_amount_unit",
+        "turnover_scope",
+        "indices",
+        "sh_index",
+        "breadth_scope",
+        "breadth_source",
+        "north_flow",
+        "north_flow_available",
+        "north_flow_note",
+        "source",
+        "errors",
+        "warnings",
+        "data_time",
+        "is_stale",
+        "fallback_used",
+        "_fetched_at",
+        "_cached",
     )
     result = {key: snapshot.get(key) for key in fields}
     result["success"] = snapshot.get("up_count") is not None or bool(snapshot.get("indices"))
@@ -540,12 +559,36 @@ def market_status_view(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 def market_breadth_view(snapshot: dict[str, Any]) -> dict[str, Any]:
     fields = (
-        "market_date", "up_count", "down_count", "flat_count", "halt_count",
-        "advance_decline_ratio", "advance_rate_pct", "decline_rate_pct", "market_activity_pct",
-        "limit_up_count", "limit_down_count", "real_limit_up_count", "real_limit_down_count",
-        "broken_board_count", "broken_board_rate", "consecutive_up_days", "consecutive_down_days",
-        "total_amount", "total_amount_unit", "turnover_scope", "breadth_scope", "breadth_source",
-        "source", "errors", "warnings", "data_time", "is_stale", "fallback_used", "_fetched_at", "_cached",
+        "market_date",
+        "up_count",
+        "down_count",
+        "flat_count",
+        "halt_count",
+        "advance_decline_ratio",
+        "advance_rate_pct",
+        "decline_rate_pct",
+        "market_activity_pct",
+        "limit_up_count",
+        "limit_down_count",
+        "real_limit_up_count",
+        "real_limit_down_count",
+        "broken_board_count",
+        "broken_board_rate",
+        "consecutive_up_days",
+        "consecutive_down_days",
+        "total_amount",
+        "total_amount_unit",
+        "turnover_scope",
+        "breadth_scope",
+        "breadth_source",
+        "source",
+        "errors",
+        "warnings",
+        "data_time",
+        "is_stale",
+        "fallback_used",
+        "_fetched_at",
+        "_cached",
     )
     result = {key: snapshot.get(key) for key in fields}
     result["success"] = snapshot.get("up_count") is not None and snapshot.get("down_count") is not None

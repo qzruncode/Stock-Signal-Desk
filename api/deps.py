@@ -23,12 +23,12 @@ from src.services.system_config_service import SystemConfigService
 def get_db() -> Generator[Session, None, None]:
     """
     获取数据库 Session 依赖
-    
+
     使用 FastAPI 依赖注入机制，确保请求结束后自动关闭 Session
-    
+
     Yields:
         Session: SQLAlchemy Session 对象
-        
+
     Example:
         @router.get("/items")
         async def get_items(db: Session = Depends(get_db)):
@@ -45,7 +45,7 @@ def get_db() -> Generator[Session, None, None]:
 def get_config_dep() -> Config:
     """
     获取配置依赖
-    
+
     Returns:
         Config: 配置单例对象
     """
@@ -55,7 +55,7 @@ def get_config_dep() -> Config:
 def get_database_manager() -> DatabaseManager:
     """
     获取数据库管理器依赖
-    
+
     Returns:
         DatabaseManager: 数据库管理器单例对象
     """

@@ -93,14 +93,10 @@ class SystemConfigService(
         registered_keys = set(get_registered_field_keys())
         all_keys = set(config_map.keys()) | registered_keys
 
-        category_orders = {
-            item["category"]: item["display_order"]
-            for item in get_category_definitions()
-        }
+        category_orders = {item["category"]: item["display_order"] for item in get_category_definitions()}
 
         schema_by_key: Dict[str, Dict[str, Any]] = {
-            key: get_field_definition(key, config_map.get(key, ""))
-            for key in all_keys
+            key: get_field_definition(key, config_map.get(key, "")) for key in all_keys
         }
 
         items: List[Dict[str, Any]] = []
@@ -392,15 +388,9 @@ class SystemConfigService(
         removed_fallbacks: List[str] = []
         if "LITELLM_FALLBACK_MODELS" in updates:
             previous_fallbacks = [
-                item.strip()
-                for item in previous_map.get("LITELLM_FALLBACK_MODELS", "").split(",")
-                if item.strip()
+                item.strip() for item in previous_map.get("LITELLM_FALLBACK_MODELS", "").split(",") if item.strip()
             ]
-            next_fallbacks = {
-                item.strip()
-                for item in updates["LITELLM_FALLBACK_MODELS"].split(",")
-                if item.strip()
-            }
+            next_fallbacks = {item.strip() for item in updates["LITELLM_FALLBACK_MODELS"].split(",") if item.strip()}
             removed_fallbacks = [item for item in previous_fallbacks if item not in next_fallbacks]
 
         if not cleared_labels and not removed_fallbacks:

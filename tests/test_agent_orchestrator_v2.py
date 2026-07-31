@@ -78,49 +78,41 @@ def _response(function_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     if function_name == "submit_intent_outline_v2":
         payload = _with_test_goal(payload)
     return {
-        "choices": [{
-            "message": {
-                "tool_calls": [{
-                    "function": {
-                        "name": function_name,
-                        "arguments": json.dumps(payload, ensure_ascii=False),
-                    },
-                }],
-            },
-        }],
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": function_name,
+                                "arguments": json.dumps(payload, ensure_ascii=False),
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
     }
 
 
 def _with_test_goal(payload: dict[str, Any]) -> dict[str, Any]:
     if "goal" in payload:
         return payload
-    nodes = [
-        item
-        for item in payload.get("nodes") or ()
-        if isinstance(item, dict) and item.get("capability")
-    ]
-    capabilities = [
-        Capability(str(item["capability"]))
-        for item in nodes
-    ]
+    nodes = [item for item in payload.get("nodes") or () if isinstance(item, dict) and item.get("capability")]
+    capabilities = [Capability(str(item["capability"])) for item in nodes]
     specs = [capability_for(item) for item in capabilities]
-    if any(
-        Capability.INVESTMENT_DECISION == item
-        for item in capabilities
-    ):
+    if any(Capability.INVESTMENT_DECISION == item for item in capabilities):
         question_type = "decision"
         uncertainty_mode = "bounded"
-    elif any(
-        spec.execution_policy.effect.value != "read"
-        for spec in specs
-    ):
+    elif any(spec.execution_policy.effect.value != "read" for spec in specs):
         question_type = "operation"
         uncertainty_mode = "not_applicable"
     elif any(
         __import__(
             "src.agent.orchestrator_v2.contracts",
             fromlist=["QuestionType"],
-        ).QuestionType.RESEARCH in spec.supported_question_types
+        ).QuestionType.RESEARCH
+        in spec.supported_question_types
         for spec in specs
     ):
         question_type = "research"
@@ -128,16 +120,13 @@ def _with_test_goal(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         question_type = "direct"
         uncertainty_mode = "bounded"
-    dimensions = sorted({
-        dimension.value
-        for spec in specs
-        for dimension in spec.evidence_dimensions
-    })
-    objective = "；".join(
-        str(item.get("objective") or "").strip()
-        for item in nodes
-        if str(item.get("objective") or "").strip()
-    ) or "完成当前请求"
+    dimensions = sorted({dimension.value for spec in specs for dimension in spec.evidence_dimensions})
+    objective = (
+        "；".join(
+            str(item.get("objective") or "").strip() for item in nodes if str(item.get("objective") or "").strip()
+        )
+        or "完成当前请求"
+    )
     return {
         **payload,
         "goal": {
@@ -146,13 +135,15 @@ def _with_test_goal(payload: dict[str, Any]) -> dict[str, Any]:
             "uncertainty_mode": uncertainty_mode,
             "time_horizon": None,
             "deliverables": [objective],
-            "claims": [{
-                "claim_id": "answer",
-                "question": objective,
-                "required_dimensions": dimensions or ["general_knowledge"],
-                "optional_dimensions": [],
-                "mandatory": True,
-            }],
+            "claims": [
+                {
+                    "claim_id": "answer",
+                    "question": objective,
+                    "required_dimensions": dimensions or ["general_knowledge"],
+                    "optional_dimensions": [],
+                    "mandatory": True,
+                }
+            ],
         },
     }
 
@@ -209,18 +200,13 @@ def _artifact(symbols: tuple[str, ...]) -> AgentArtifactV2:
         fingerprint="candidate-fingerprint",
         lineage=(),
         payload={
-            "securities": [
-                {"symbol": symbol, "name": symbol}
-                for symbol in symbols
-            ],
+            "securities": [{"symbol": symbol, "name": symbol} for symbol in symbols],
         },
     )
 
 
 def test_unified_registry_covers_every_standard_capability_once() -> None:
-    assert {item.value for item in Capability} == {
-        item.value for item in StandardTaskKind
-    }
+    assert {item.value for item in Capability} == {item.value for item in StandardTaskKind}
     assert set(CAPABILITY_REGISTRY) == set(Capability)
     assert migration_coverage()["complete"] is True
     assert migration_coverage()["migrated"] == 46
@@ -229,25 +215,15 @@ def test_unified_registry_covers_every_standard_capability_once() -> None:
 
     for spec in CAPABILITY_REGISTRY.values():
         assert spec.intent_model.model_config.get("extra") == "forbid"
-        expected_version = (
-            "4.2.0"
-            if spec.capability == Capability.INVESTMENT_DECISION
-            else "4.0.0"
-        )
+        expected_version = "4.2.0" if spec.capability == Capability.INVESTMENT_DECISION else "4.0.0"
         assert spec.schema_version.startswith(f"{expected_version}:")
         assert spec.result_model.__name__ == "TaskOutcomeV2"
         assert callable(spec.compiler)
         assert callable(spec.projector)
         workflow = workflow_for(StandardTaskKind(spec.capability.value))
-        assert (
-            spec.supports_result_selection
-            is workflow.supports_result_selection
-        )
+        assert spec.supports_result_selection is workflow.supports_result_selection
 
-    catalog = {
-        item["capability"]: item
-        for item in capability_catalog()
-    }
+    catalog = {item["capability"]: item for item in capability_catalog()}
     assert catalog["industry_research"]["supports_result_selection"] is True
     assert catalog["theme_stock_discovery"]["supports_result_selection"] is False
     for spec in CAPABILITY_REGISTRY.values():
@@ -263,9 +239,7 @@ def test_capability_freshness_is_explicit_and_realtime_never_crosses_runs():
     assert set(CAPABILITY_REGISTRY) == set(Capability)
     realtime = CAPABILITY_REGISTRY[Capability.REALTIME_QUOTE].freshness_policy
     overview = CAPABILITY_REGISTRY[Capability.MARKET_OVERVIEW].freshness_policy
-    fundamentals = CAPABILITY_REGISTRY[
-        Capability.FUNDAMENTAL_ANALYSIS
-    ].freshness_policy
+    fundamentals = CAPABILITY_REGISTRY[Capability.FUNDAMENTAL_ANALYSIS].freshness_policy
     assert realtime.reuse_scope == CacheReuseScope.RUN_ONLY
     assert realtime.max_age_seconds is None
     assert overview.reuse_scope == CacheReuseScope.CROSS_RUN
@@ -299,12 +273,15 @@ def test_cross_run_cache_requires_policy_and_authoritative_observation_time():
         tool_name="get_realtime_quotes",
         arguments={},
     )
-    assert execution_cache_key_v2(
-        compiled_for(Capability.REALTIME_QUOTE),
-        call,
-        {"symbol": "600519"},
-        model_config={"model": "test"},
-    ) is None
+    assert (
+        execution_cache_key_v2(
+            compiled_for(Capability.REALTIME_QUOTE),
+            call,
+            {"symbol": "600519"},
+            model_config={"model": "test"},
+        )
+        is None
+    )
     overview = compiled_for(Capability.MARKET_OVERVIEW)
     cache_key = execution_cache_key_v2(
         overview,
@@ -351,15 +328,17 @@ def test_compiled_graph_checkpoint_round_trips_and_rejects_contract_drift():
     compiled = CompiledIntentGraphV2(
         run_id="checkpoint-run",
         plan=TaskPlan(tasks=[candidate]),
-        tasks=(CompiledTaskV2(
-            task=ResolvedTask(candidate=candidate),
-            capability=Capability.GENERAL_RESPONSE,
-            capability_version=spec.version,
-            intent_schema_version=spec.schema_version,
-            execution_policy=spec.execution_policy,
-            freshness_policy=spec.freshness_policy,
-            resource_fingerprint="resource-fingerprint",
-        ),),
+        tasks=(
+            CompiledTaskV2(
+                task=ResolvedTask(candidate=candidate),
+                capability=Capability.GENERAL_RESPONSE,
+                capability_version=spec.version,
+                intent_schema_version=spec.schema_version,
+                execution_policy=spec.execution_policy,
+                freshness_policy=spec.freshness_policy,
+                resource_fingerprint="resource-fingerprint",
+            ),
+        ),
         assumptions=(),
     )
     trace = PlanningTraceV2(
@@ -387,89 +366,98 @@ def test_compiled_graph_checkpoint_round_trips_and_rejects_contract_drift():
         **checkpoint,
         "compiled_graph": {
             **checkpoint["compiled_graph"],
-            "tasks": [{
-                **checkpoint["compiled_graph"]["tasks"][0],
-                "capability_version": "stale",
-            }],
+            "tasks": [
+                {
+                    **checkpoint["compiled_graph"]["tasks"][0],
+                    "capability_version": "stale",
+                }
+            ],
         },
     }
-    assert restore_compiled_intent_graph_v2(
-        drifted,
-        expected_run_id="checkpoint-run",
-        request_fingerprint="request-fingerprint",
-    ) is None
+    assert (
+        restore_compiled_intent_graph_v2(
+            drifted,
+            expected_run_id="checkpoint-run",
+            request_fingerprint="request-fingerprint",
+        )
+        is None
+    )
 
 
 def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> None:
-    values: dict[Capability, dict[str, Any]] = {
-        capability: {} for capability in Capability
-    }
-    values.update({
-        Capability.SECURITY_LOOKUP: {"query": "贵州茅台"},
-        Capability.MACRO_ANALYSIS: {"indicators": ["PMI"]},
-        Capability.INDUSTRY_RESEARCH: {
-            "explicit_subjects": ["人形机器人"],
-        },
-        Capability.THEME_STOCK_DISCOVERY: {
-            "selection_mode": "named_subset",
-            "themes": ["机器人执行器"],
-        },
-        Capability.STOCK_SCREENING: {"screen_spec": {
-            "version": "1.0",
-            "universe": {
-                "status": "active",
-                "markets": ["sh"],
-                "include_st": False,
-                "min_listing_trading_days": 60,
-                "price_adjustment": "qfq",
+    values: dict[Capability, dict[str, Any]] = {capability: {} for capability in Capability}
+    values.update(
+        {
+            Capability.SECURITY_LOOKUP: {"query": "贵州茅台"},
+            Capability.MACRO_ANALYSIS: {"indicators": ["PMI"]},
+            Capability.INDUSTRY_RESEARCH: {
+                "explicit_subjects": ["人形机器人"],
             },
-            "technical_rule": {
-                "strategy": "atr_relative_frequency",
-                "atr_period": 14,
-                "atr_average": "wilder",
-                "baseline_period": 20,
-                "baseline_average": "sma",
-                "threshold_operator": "multiply",
-                "threshold_value": 1.2,
-                "daily_comparison": "gt",
-                "lookback_days": 20,
-                "min_qualified_days": 5,
-                "min_qualified_ratio_pct": None,
+            Capability.THEME_STOCK_DISCOVERY: {
+                "selection_mode": "named_subset",
+                "themes": ["机器人执行器"],
             },
-            "financial_filters": [],
-            "sort": {"field": "code", "order": "asc"},
-            "output_fields": ["current_atr_pct"],
-            "preview_limit": 10,
-        }},
-        Capability.COLLECTION_FINANCIAL_FILTER: {
-            "predicates": [{
-                "metric": "debt_ratio",
-                "operator": "gt",
-                "percent": 70,
-                "action": "exclude_matching",
-            }],
-        },
-        Capability.WATCHLIST_MUTATION: {"action": "add"},
-        Capability.WATCHLIST_GROUP_MANAGEMENT: {"action": "list"},
-        Capability.FORMAL_ANALYSIS: {"action": "status"},
-        Capability.ANALYSIS_HISTORY: {"action": "search"},
-        Capability.ANALYSIS_TEMPLATE_MANAGEMENT: {"action": "list"},
-        Capability.BATCH_ANALYSIS: {
-            "scope": "symbols",
-            "analysis_mode": "buy_criteria",
-        },
-        Capability.BATCH_RUN_MANAGEMENT: {"action": "list"},
-        Capability.ANALYSIS_SCHEDULE_MANAGEMENT: {"action": "get"},
-        Capability.NOTIFICATION: {"action": "status"},
-        Capability.FINANCIAL_FEED_READ: {"route_path": "/finance/example"},
-        Capability.FINANCIAL_ARTICLE_READ: {
-            "route_path": "/finance/example",
-            "title": "示例",
-        },
-        Capability.WEBPAGE_FEED_TRANSFORM: {"url": "https://example.com"},
-        Capability.FINANCIAL_FEED_EXPORT: {"route_path": "/finance/example"},
-        Capability.PUBLIC_WEB_RESEARCH: {"query": "市场研究"},
-    })
+            Capability.STOCK_SCREENING: {
+                "screen_spec": {
+                    "version": "1.0",
+                    "universe": {
+                        "status": "active",
+                        "markets": ["sh"],
+                        "include_st": False,
+                        "min_listing_trading_days": 60,
+                        "price_adjustment": "qfq",
+                    },
+                    "technical_rule": {
+                        "strategy": "atr_relative_frequency",
+                        "atr_period": 14,
+                        "atr_average": "wilder",
+                        "baseline_period": 20,
+                        "baseline_average": "sma",
+                        "threshold_operator": "multiply",
+                        "threshold_value": 1.2,
+                        "daily_comparison": "gt",
+                        "lookback_days": 20,
+                        "min_qualified_days": 5,
+                        "min_qualified_ratio_pct": None,
+                    },
+                    "financial_filters": [],
+                    "sort": {"field": "code", "order": "asc"},
+                    "output_fields": ["current_atr_pct"],
+                    "preview_limit": 10,
+                }
+            },
+            Capability.COLLECTION_FINANCIAL_FILTER: {
+                "predicates": [
+                    {
+                        "metric": "debt_ratio",
+                        "operator": "gt",
+                        "percent": 70,
+                        "action": "exclude_matching",
+                    }
+                ],
+            },
+            Capability.WATCHLIST_MUTATION: {"action": "add"},
+            Capability.WATCHLIST_GROUP_MANAGEMENT: {"action": "list"},
+            Capability.FORMAL_ANALYSIS: {"action": "status"},
+            Capability.ANALYSIS_HISTORY: {"action": "search"},
+            Capability.ANALYSIS_TEMPLATE_MANAGEMENT: {"action": "list"},
+            Capability.BATCH_ANALYSIS: {
+                "scope": "symbols",
+                "analysis_mode": "buy_criteria",
+            },
+            Capability.BATCH_RUN_MANAGEMENT: {"action": "list"},
+            Capability.ANALYSIS_SCHEDULE_MANAGEMENT: {"action": "get"},
+            Capability.NOTIFICATION: {"action": "status"},
+            Capability.FINANCIAL_FEED_READ: {"route_path": "/finance/example"},
+            Capability.FINANCIAL_ARTICLE_READ: {
+                "route_path": "/finance/example",
+                "title": "示例",
+            },
+            Capability.WEBPAGE_FEED_TRANSFORM: {"url": "https://example.com"},
+            Capability.FINANCIAL_FEED_EXPORT: {"route_path": "/finance/example"},
+            Capability.PUBLIC_WEB_RESEARCH: {"query": "市场研究"},
+        }
+    )
 
     for capability, payload in values.items():
         normalized = normalize_capability_intent(
@@ -486,10 +474,12 @@ def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> Non
             CAPABILITY_REGISTRY[capability].intent_model,
         )
         with pytest.raises(ValueError):
-            CAPABILITY_REGISTRY[capability].intent_model.model_validate({
-                **payload,
-                "_program_owned_field": "forbidden",
-            })
+            CAPABILITY_REGISTRY[capability].intent_model.model_validate(
+                {
+                    **payload,
+                    "_program_owned_field": "forbidden",
+                }
+            )
 
 
 def test_no_capability_exposes_one_open_parameters_object() -> None:
@@ -518,17 +508,23 @@ def test_no_capability_exposes_one_open_parameters_object() -> None:
 
 
 def test_industry_result_count_defaults_to_program_owned_top_16() -> None:
-    outline = IntentOutlineV2.model_validate(_with_test_goal({
-        "nodes": [{
-            "node_id": "industry",
-            "capability": "industry_research",
-            "objective": "判断人形机器人哪些领域最受益",
-            "input_refs": [],
-            "result_selection": None,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }))
+    outline = IntentOutlineV2.model_validate(
+        _with_test_goal(
+            {
+                "nodes": [
+                    {
+                        "node_id": "industry",
+                        "capability": "industry_research",
+                        "objective": "判断人形机器人哪些领域最受益",
+                        "input_refs": [],
+                        "result_selection": None,
+                    }
+                ],
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        )
+    )
     normalized = normalize_capability_intent(
         node_id="industry",
         objective=outline.nodes[0].objective,
@@ -541,12 +537,14 @@ def test_industry_result_count_defaults_to_program_owned_top_16() -> None:
     graph = PlannedIntentGraphV2(
         run_id="run-default-selection",
         outline=outline,
-        nodes=(PlannedIntentNodeV2(
-            outline=outline.nodes[0],
-            intent=normalized.intent,
-            execution_parameters=normalized.execution_parameters,
-            assumptions=normalized.assumptions,
-        ),),
+        nodes=(
+            PlannedIntentNodeV2(
+                outline=outline.nodes[0],
+                intent=normalized.intent,
+                execution_parameters=normalized.execution_parameters,
+                assumptions=normalized.assumptions,
+            ),
+        ),
         trace=PlanningTraceV2(
             run_id="run-default-selection",
             schema_version="test",
@@ -558,27 +556,35 @@ def test_industry_result_count_defaults_to_program_owned_top_16() -> None:
     assert task.result_selection is not None
     assert task.result_selection.mode.value == "top_k"
     assert task.result_selection.max_items == 16
-    assert task.parameters["_assumptions"] == [{
-        "field_path": "/result_selection",
-        "value": {"mode": "top_k", "max_items": 16},
-        "reason": "用户未指定返回数量，产业受益板块默认最多返回 16 个。",
-        "source": "program_default",
-    }]
+    assert task.parameters["_assumptions"] == [
+        {
+            "field_path": "/result_selection",
+            "value": {"mode": "top_k", "max_items": 16},
+            "reason": "用户未指定返回数量，产业受益板块默认最多返回 16 个。",
+            "source": "program_default",
+        }
+    ]
     assert normalized.assumptions[0].field_path == "/result_selection"
 
 
 def test_explicit_industry_top_k_count_is_not_clamped_to_the_default() -> None:
-    outline = IntentOutlineV2.model_validate(_with_test_goal({
-        "nodes": [{
-            "node_id": "industry",
-            "capability": "industry_research",
-            "objective": "返回人形机器人受益最大的 40 个板块",
-            "input_refs": [],
-            "result_selection": {"mode": "top_k", "max_items": 40},
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    }))
+    outline = IntentOutlineV2.model_validate(
+        _with_test_goal(
+            {
+                "nodes": [
+                    {
+                        "node_id": "industry",
+                        "capability": "industry_research",
+                        "objective": "返回人形机器人受益最大的 40 个板块",
+                        "input_refs": [],
+                        "result_selection": {"mode": "top_k", "max_items": 40},
+                    }
+                ],
+                "needs_clarification": False,
+                "clarification_question": None,
+            }
+        )
+    )
     normalized = normalize_capability_intent(
         node_id="industry",
         objective=outline.nodes[0].objective,
@@ -591,12 +597,14 @@ def test_explicit_industry_top_k_count_is_not_clamped_to_the_default() -> None:
     graph = PlannedIntentGraphV2(
         run_id="run-explicit-selection",
         outline=outline,
-        nodes=(PlannedIntentNodeV2(
-            outline=outline.nodes[0],
-            intent=normalized.intent,
-            execution_parameters=normalized.execution_parameters,
-            assumptions=normalized.assumptions,
-        ),),
+        nodes=(
+            PlannedIntentNodeV2(
+                outline=outline.nodes[0],
+                intent=normalized.intent,
+                execution_parameters=normalized.execution_parameters,
+                assumptions=normalized.assumptions,
+            ),
+        ),
         trace=PlanningTraceV2(
             run_id="run-explicit-selection",
             schema_version="test",
@@ -619,24 +627,32 @@ def test_planner_installs_one_total_deadline() -> None:
         calls.append(function_name)
         await asyncio.sleep(0.01)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "industry",
-                    "capability": "industry_research",
-                    "objective": "判断人形机器人最受益领域",
-                    "input_refs": [],
-                    "result_selection": {
-                        "mode": "all_relevant",
-                        "max_items": None,
-                    },
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "industry",
+                            "capability": "industry_research",
+                            "objective": "判断人形机器人最受益领域",
+                            "input_refs": [],
+                            "result_selection": {
+                                "mode": "all_relevant",
+                                "max_items": None,
+                            },
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_industry_research_intent_v2":
-            return _response(function_name, {
-                "explicit_subjects": ["人形机器人"],
-            })
+            return _response(
+                function_name,
+                {
+                    "explicit_subjects": ["人形机器人"],
+                },
+            )
         raise AssertionError(function_name)
 
     original_timeout = asyncio.timeout
@@ -644,12 +660,14 @@ def test_planner_installs_one_total_deadline() -> None:
         "src.agent.orchestrator_v2.planner.asyncio.timeout",
         wraps=original_timeout,
     ) as timeout_factory:
-        graph = asyncio.run(plan_intent_graph_v2(
-            [{"role": "user", "content": "人形机器人哪些领域最受益"}],
-            {"model": "test-model"},
-            completion=completion,
-            today=date(2026, 7, 28),
-        ))
+        graph = asyncio.run(
+            plan_intent_graph_v2(
+                [{"role": "user", "content": "人形机器人哪些领域最受益"}],
+                {"model": "test-model"},
+                completion=completion,
+                today=date(2026, 7, 28),
+            )
+        )
 
     timeout_factory.assert_called_once()
     assert graph.nodes[0].outline.capability == Capability.INDUSTRY_RESEARCH
@@ -667,32 +685,34 @@ def test_outline_prompt_requires_terminal_company_judgment_after_discovery() -> 
         function_name = _function_name(kwargs)
         assert function_name == "submit_intent_outline_v2"
         observed_system_prompt = kwargs["messages"][0]["content"]
-        return _response(function_name, {
-            "nodes": [{
-                "node_id": "answer",
-                "capability": "general_response",
-                "objective": "回答问候",
-                "input_refs": [],
-                "result_selection": None,
-            }],
-            "needs_clarification": False,
-            "clarification_question": None,
-        })
+        return _response(
+            function_name,
+            {
+                "nodes": [
+                    {
+                        "node_id": "answer",
+                        "capability": "general_response",
+                        "objective": "回答问候",
+                        "input_refs": [],
+                        "result_selection": None,
+                    }
+                ],
+                "needs_clarification": False,
+                "clarification_question": None,
+            },
+        )
 
-    asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "你好"}],
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "你好"}],
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert "不能只完成前置候选发现" in observed_system_prompt
-    assert (
-        "候选成员关系不等于公司业务匹配" in observed_system_prompt
-    )
-    assert (
-        "domain_collection 和 security_collection"
-        in observed_system_prompt
-    )
+    assert "候选成员关系不等于公司业务匹配" in observed_system_prompt
+    assert "domain_collection 和 security_collection" in observed_system_prompt
 
 
 def test_planner_emits_heartbeats_without_stopping_the_model() -> None:
@@ -702,23 +722,31 @@ def test_planner_emits_heartbeats_without_stopping_the_model() -> None:
         function_name = _function_name(kwargs)
         await asyncio.sleep(0.03)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "industry",
-                    "capability": "industry_research",
-                    "objective": "判断人形机器人最受益领域",
-                    "input_refs": [],
-                    "result_selection": {
-                        "mode": "all_relevant",
-                        "max_items": None,
-                    },
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
-        return _response(function_name, {
-            "explicit_subjects": ["人形机器人"],
-        })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "industry",
+                            "capability": "industry_research",
+                            "objective": "判断人形机器人最受益领域",
+                            "input_refs": [],
+                            "result_selection": {
+                                "mode": "all_relevant",
+                                "max_items": None,
+                            },
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
+        return _response(
+            function_name,
+            {
+                "explicit_subjects": ["人形机器人"],
+            },
+        )
 
     def observe(event: Any) -> None:
         summaries.append(event.summary)
@@ -727,48 +755,45 @@ def test_planner_emits_heartbeats_without_stopping_the_model() -> None:
         "src.agent.orchestrator_v2.planner.MODEL_PROGRESS_HEARTBEAT_SECONDS",
         0.005,
     ):
-        graph = asyncio.run(plan_intent_graph_v2(
-            [{"role": "user", "content": "人形机器人哪些领域最受益"}],
-            {"model": "test-model"},
-            completion=completion,
-            stage_observer=observe,
-            today=date(2026, 7, 28),
-        ))
+        graph = asyncio.run(
+            plan_intent_graph_v2(
+                [{"role": "user", "content": "人形机器人哪些领域最受益"}],
+                {"model": "test-model"},
+                completion=completion,
+                stage_observer=observe,
+                today=date(2026, 7, 28),
+            )
+        )
 
     assert graph.nodes[0].outline.capability == Capability.INDUSTRY_RESEARCH
-    assert any(
-        "模型正在识别能力与资源关系，已持续分析" in item
-        for item in summaries
-    )
-    assert any(
-        "模型正在填写“产业研究”业务 Schema，已持续分析" in item
-        for item in summaries
-    )
+    assert any("模型正在识别能力与资源关系，已持续分析" in item for item in summaries)
+    assert any("模型正在填写“产业研究”业务 Schema，已持续分析" in item for item in summaries)
 
 
 def test_provider_fallback_accepts_valid_fenced_json_after_malformed_tool_args() -> None:
     response = {
-        "choices": [{
-            "message": {
-                "tool_calls": [{
-                    "function": {
-                        "name": "submit_investment_decision_intent_v2",
-                        "arguments": (
-                            '{"thesis":"减速器",'
-                            '"mainline_strategy":confirmed_mainline}'
-                        ),
-                    },
-                }],
-                "content": None,
-                "reasoning_content": (
-                    "已按同一份精确 Schema 修正：\n"
-                    "```json\n"
-                    '{"thesis":"减速器",'
-                    '"mainline_strategy":"confirmed_mainline"}\n'
-                    "```"
-                ),
-            },
-        }],
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "submit_investment_decision_intent_v2",
+                                "arguments": ('{"thesis":"减速器",' '"mainline_strategy":confirmed_mainline}'),
+                            },
+                        }
+                    ],
+                    "content": None,
+                    "reasoning_content": (
+                        "已按同一份精确 Schema 修正：\n"
+                        "```json\n"
+                        '{"thesis":"减速器",'
+                        '"mainline_strategy":"confirmed_mainline"}\n'
+                        "```"
+                    ),
+                },
+            }
+        ],
     }
 
     assert _payload_from_response(
@@ -791,15 +816,15 @@ def test_all_registered_tools_have_model_generated_args_and_typed_results() -> N
         assert tool.parameters == tool.args_model.model_json_schema()
         assert tool.args_model.model_config.get("extra") == "forbid"
         result_properties = tool.result_model.model_json_schema()["properties"]
-        assert {"success", "partial", "errors", "warnings"} <= set(
-            result_properties
-        )
+        assert {"success", "partial", "errors", "warnings"} <= set(result_properties)
     feed_tool = registry.get_tool("read_financial_feed")
     assert feed_tool is not None
-    validated = feed_tool.args_model.model_validate({
-        "route_path": "/finance/example/:symbol",
-        "params": {"symbol": "600519", "nested": {"page": 1}},
-    })
+    validated = feed_tool.args_model.model_validate(
+        {
+            "route_path": "/finance/example/:symbol",
+            "params": {"symbol": "600519", "nested": {"page": 1}},
+        }
+    )
     assert validated.params["nested"]["page"] == 1
 
 
@@ -851,52 +876,62 @@ def test_original_financial_request_plans_and_compiles_against_35_artifact_entit
         function_name = _function_name(kwargs)
         calls.append(function_name)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "filter",
-                    "capability": "collection_financial_filter",
-                    "objective": "联合剔除不满足三项财务条件的股票",
-                    "input_refs": [{
-                        "source": "artifact",
-                        "node_id": None,
-                        "artifact_id": artifact.artifact_id,
-                        "resource_type": "security_collection",
-                    }],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "filter",
+                            "capability": "collection_financial_filter",
+                            "objective": "联合剔除不满足三项财务条件的股票",
+                            "input_refs": [
+                                {
+                                    "source": "artifact",
+                                    "node_id": None,
+                                    "artifact_id": artifact.artifact_id,
+                                    "resource_type": "security_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_collection_financial_filter_intent_v2":
             return _response(function_name, _filter_payload())
         raise AssertionError(function_name)
 
     semantic_context = {
         "version": "3",
-        "turns": [{
-            "terminal_artifacts": [{
-                "artifact_id": artifact.artifact_id,
-                "resource_type": "security_collection",
-            }],
-        }],
+        "turns": [
+            {
+                "terminal_artifacts": [
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "resource_type": "security_collection",
+                    }
+                ],
+            }
+        ],
     }
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{
-            "role": "user",
-            "content": (
-                "剔除其中归母净利润为负，去年营收低于5亿，"
-                "负债率高于70%的股票"
-            ),
-        }],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context=semantic_context,
-        today=date(2026, 7, 28),
-    ))
-
-    normalized = CollectionFinancialFilterSpec.model_validate(
-        graph.nodes[0].execution_parameters
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [
+                {
+                    "role": "user",
+                    "content": ("剔除其中归母净利润为负，去年营收低于5亿，" "负债率高于70%的股票"),
+                }
+            ],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context=semantic_context,
+            today=date(2026, 7, 28),
+        )
     )
+
+    normalized = CollectionFinancialFilterSpec.model_validate(graph.nodes[0].execution_parameters)
     assert len(normalized.conditions) == 3
     assert {
         (
@@ -916,13 +951,15 @@ def test_original_financial_request_plans_and_compiles_against_35_artifact_entit
     async def unused_completion(**_: Any) -> Any:
         raise AssertionError("financial filter needs no semantic resource call")
 
-    compiled = asyncio.run(compile_intent_graph_v2(
-        graph,
-        {"model": "test-model"},
-        completion=unused_completion,
-        artifacts={artifact.artifact_id: artifact},
-        registry=ToolRegistry(),
-    ))
+    compiled = asyncio.run(
+        compile_intent_graph_v2(
+            graph,
+            {"model": "test-model"},
+            completion=unused_completion,
+            artifacts={artifact.artifact_id: artifact},
+            registry=ToolRegistry(),
+        )
+    )
     assert compiled.resolved_tasks[0].symbols == symbols
     workflow_calls = compile_task(compiled.resolved_tasks[0])
     assert len(workflow_calls) == 6
@@ -959,19 +996,17 @@ def test_financial_filter_does_not_inherit_domain_parameters_from_security_linea
         fingerprint="domain-fingerprint",
         lineage=(),
         payload={
-            "domains": [{
-                "label": "减速器",
-                "board_code": "BK1100",
-                "board_queries": ["减速器"],
-            }],
+            "domains": [
+                {
+                    "label": "减速器",
+                    "board_code": "BK1100",
+                    "board_queries": ["减速器"],
+                }
+            ],
         },
     )
-    security_artifact = _artifact(("001306", "002434")).model_copy(
-        update={"lineage": (domain_artifact.artifact_id,)}
-    )
-    intent = CollectionFinancialFilterIntent.model_validate(
-        _filter_payload()
-    )
+    security_artifact = _artifact(("001306", "002434")).model_copy(update={"lineage": (domain_artifact.artifact_id,)})
+    intent = CollectionFinancialFilterIntent.model_validate(_filter_payload())
     normalized = normalize_capability_intent(
         capability=Capability.COLLECTION_FINANCIAL_FILTER,
         node_id="financial_filter",
@@ -987,18 +1022,26 @@ def test_financial_filter_does_not_inherit_domain_parameters_from_security_linea
         result_selection=None,
         current_year=2026,
     )
-    outline = IntentOutlineV2.model_validate(_with_test_goal({
-        "nodes": [{
-            "node_id": "financial_filter",
-            "capability": "collection_financial_filter",
-            "objective": "按三项财务条件剔除股票",
-            "input_refs": [{
-                "source": "artifact",
-                "artifact_id": security_artifact.artifact_id,
-                "resource_type": "security_collection",
-            }],
-        }],
-    }))
+    outline = IntentOutlineV2.model_validate(
+        _with_test_goal(
+            {
+                "nodes": [
+                    {
+                        "node_id": "financial_filter",
+                        "capability": "collection_financial_filter",
+                        "objective": "按三项财务条件剔除股票",
+                        "input_refs": [
+                            {
+                                "source": "artifact",
+                                "artifact_id": security_artifact.artifact_id,
+                                "resource_type": "security_collection",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
     graph = PlannedIntentGraphV2(
         run_id="run-financial-filter-lineage",
         outline=outline,
@@ -1026,10 +1069,17 @@ def test_financial_filter_does_not_inherit_domain_parameters_from_security_linea
 
     assert set(task.parameters) == {"conditions"}
     assert task.entities == ["001306", "002434"]
-    assert len(compile_task(ResolvedTask(
-        candidate=task,
-        symbols=tuple(task.entities),
-    ))) == 3
+    assert (
+        len(
+            compile_task(
+                ResolvedTask(
+                    candidate=task,
+                    symbols=tuple(task.entities),
+                )
+            )
+        )
+        == 3
+    )
 
 
 def test_domain_collection_v2_projects_only_the_named_followup_board() -> None:
@@ -1051,31 +1101,35 @@ def test_domain_collection_v2_projects_only_the_named_followup_board() -> None:
         fingerprint="domain-fingerprint",
         lineage=(),
         payload={
-            "domains": [{
-                "label": "机器人执行器",
-                "board_code": "BK1234",
-                "board_queries": ["机器人执行器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "机器人执行器对应执行器环节",
-                "unresolved_parts": [],
-                "tier": 1,
-            }, {
-                "label": "传感器",
-                "board_code": "BK5678",
-                "board_queries": ["传感器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "传感器对应感知环节",
-                "unresolved_parts": [],
-                "tier": 2,
-            }, {
-                "label": "人工智能",
-                "board_code": "BK9012",
-                "board_queries": ["人工智能"],
-                "mapping_type": "catalog_binding",
-                "rationale": "人工智能对应决策环节",
-                "unresolved_parts": [],
-                "tier": 3,
-            }],
+            "domains": [
+                {
+                    "label": "机器人执行器",
+                    "board_code": "BK1234",
+                    "board_queries": ["机器人执行器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "机器人执行器对应执行器环节",
+                    "unresolved_parts": [],
+                    "tier": 1,
+                },
+                {
+                    "label": "传感器",
+                    "board_code": "BK5678",
+                    "board_queries": ["传感器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "传感器对应感知环节",
+                    "unresolved_parts": [],
+                    "tier": 2,
+                },
+                {
+                    "label": "人工智能",
+                    "board_code": "BK9012",
+                    "board_queries": ["人工智能"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "人工智能对应决策环节",
+                    "unresolved_parts": [],
+                    "tier": 3,
+                },
+            ],
             "domain_collection_v2": {
                 "type": "domain_collection_v2",
                 "schema_version": "domain-collection-v2.0",
@@ -1083,22 +1137,26 @@ def test_domain_collection_v2_projects_only_the_named_followup_board() -> None:
                 "requested_topic": "人形机器人哪些领域最受益",
                 "benefit_outline": {
                     "topic": "人形机器人",
-                    "roles": [{
-                        "role_id": "actuator",
-                        "label": "机器人执行器",
-                        "benefit_mechanism": "执行机构承接运动控制价值量",
-                        "tier": 1,
-                    }],
+                    "roles": [
+                        {
+                            "role_id": "actuator",
+                            "label": "机器人执行器",
+                            "benefit_mechanism": "执行机构承接运动控制价值量",
+                            "tier": 1,
+                        }
+                    ],
                     "selection_objective": "选择受益最直接的实时板块",
                 },
-                "boards": [{
-                    "board_id": "BK1234",
-                    "board_name": "机器人执行器",
-                    "role_id": "actuator",
-                    "role_label": "机器人执行器",
-                    "tier": 1,
-                    "rationale": "机器人执行器对应执行器环节",
-                }],
+                "boards": [
+                    {
+                        "board_id": "BK1234",
+                        "board_name": "机器人执行器",
+                        "role_id": "actuator",
+                        "role_label": "机器人执行器",
+                        "tier": 1,
+                        "rationale": "机器人执行器对应执行器环节",
+                    }
+                ],
                 "result_selection": {
                     "mode": "top_k",
                     "max_items": 16,
@@ -1121,44 +1179,60 @@ def test_domain_collection_v2_projects_only_the_named_followup_board() -> None:
     async def completion(**kwargs: Any) -> dict[str, Any]:
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "discover",
-                    "capability": "theme_stock_discovery",
-                    "objective": "从这些领域发现候选",
-                    "input_refs": [{
-                        "source": "artifact",
-                        "node_id": None,
-                        "artifact_id": artifact.artifact_id,
-                        "resource_type": "domain_collection",
-                    }],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "discover",
+                            "capability": "theme_stock_discovery",
+                            "objective": "从这些领域发现候选",
+                            "input_refs": [
+                                {
+                                    "source": "artifact",
+                                    "node_id": None,
+                                    "artifact_id": artifact.artifact_id,
+                                    "resource_type": "domain_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_theme_stock_discovery_intent_v2":
-            return _response(function_name, {
-                "selection_mode": "named_subset",
-                "themes": ["机器人执行器（BK1234）"],
-                "output": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "selection_mode": "named_subset",
+                    "themes": ["机器人执行器（BK1234）"],
+                    "output": None,
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "从这些领域继续找股票"}],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context={
-            "version": "3",
-            "turns": [{
-                "terminal_artifacts": [{
-                    "artifact_id": artifact.artifact_id,
-                    "resource_type": "domain_collection",
-                }],
-            }],
-        },
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "从这些领域继续找股票"}],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context={
+                "version": "3",
+                "turns": [
+                    {
+                        "terminal_artifacts": [
+                            {
+                                "artifact_id": artifact.artifact_id,
+                                "resource_type": "domain_collection",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
     task = task_plan_from_v2(
         graph,
         artifacts={artifact.artifact_id: artifact},
@@ -1166,14 +1240,10 @@ def test_domain_collection_v2_projects_only_the_named_followup_board() -> None:
     assert len(task.parameters["domains"]) == 1
     assert task.parameters["domains"][0]["label"] == "机器人执行器"
     assert task.parameters["domains"][0]["board_queries"] == ["机器人执行器"]
-    assert {
-        item["label"] for item in task.parameters["domains"]
-    }.isdisjoint({"传感器", "人工智能"})
+    assert {item["label"] for item in task.parameters["domains"]}.isdisjoint({"传感器", "人工智能"})
     calls = compile_task(ResolvedTask(candidate=task))
     assert len(calls) == 1
-    assert [
-        item["label"] for item in calls[0].arguments["domains"]
-    ] == ["机器人执行器"]
+    assert [item["label"] for item in calls[0].arguments["domains"]] == ["机器人执行器"]
     assert "人形机器人" not in json.dumps(
         {"domains": task.parameters["domains"]},
         ensure_ascii=False,
@@ -1199,13 +1269,15 @@ def test_domain_collection_v2_resolves_board_and_role_names_to_one_board_id() ->
         fingerprint="reducer-domain-fingerprint",
         lineage=(),
         payload={
-            "domains": [{
-                "label": "减速器",
-                "board_queries": ["减速器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "减速器对应谐波减速器环节",
-                "unresolved_parts": [],
-            }],
+            "domains": [
+                {
+                    "label": "减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "减速器对应谐波减速器环节",
+                    "unresolved_parts": [],
+                }
+            ],
             "domain_collection_v2": {
                 "type": "domain_collection_v2",
                 "schema_version": "2.0",
@@ -1213,22 +1285,26 @@ def test_domain_collection_v2_resolves_board_and_role_names_to_one_board_id() ->
                 "requested_topic": "人形机器人哪些领域最受益",
                 "benefit_outline": {
                     "topic": "人形机器人",
-                    "roles": [{
-                        "role_id": "harmonic_reducer",
-                        "label": "谐波减速器",
-                        "benefit_mechanism": "关节减速传动核心部件",
-                        "tier": 1,
-                    }],
+                    "roles": [
+                        {
+                            "role_id": "harmonic_reducer",
+                            "label": "谐波减速器",
+                            "benefit_mechanism": "关节减速传动核心部件",
+                            "tier": 1,
+                        }
+                    ],
                     "selection_objective": "选择受益最直接的实时板块",
                 },
-                "boards": [{
-                    "board_id": "BK1100",
-                    "board_name": "减速器",
-                    "role_id": "harmonic_reducer",
-                    "role_label": "谐波减速器",
-                    "tier": 1,
-                    "rationale": "减速器对应谐波减速器环节",
-                }],
+                "boards": [
+                    {
+                        "board_id": "BK1100",
+                        "board_name": "减速器",
+                        "role_id": "harmonic_reducer",
+                        "role_label": "谐波减速器",
+                        "tier": 1,
+                        "rationale": "减速器对应谐波减速器环节",
+                    }
+                ],
                 "result_selection": {
                     "mode": "top_k",
                     "max_items": 16,
@@ -1250,56 +1326,74 @@ def test_domain_collection_v2_resolves_board_and_role_names_to_one_board_id() ->
     async def completion(**kwargs: Any) -> dict[str, Any]:
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "discover",
-                    "capability": "theme_stock_discovery",
-                    "objective": "寻找谐波减速器相关公司",
-                    "input_refs": [{
-                        "source": "artifact",
-                        "artifact_id": artifact.artifact_id,
-                        "resource_type": "domain_collection",
-                    }],
-                }],
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "discover",
+                            "capability": "theme_stock_discovery",
+                            "objective": "寻找谐波减速器相关公司",
+                            "input_refs": [
+                                {
+                                    "source": "artifact",
+                                    "artifact_id": artifact.artifact_id,
+                                    "resource_type": "domain_collection",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
         if function_name == "submit_theme_stock_discovery_intent_v2":
-            return _response(function_name, {
-                "selection_mode": "named_subset",
-                "themes": ["减速器", "谐波减速器"],
-            })
+            return _response(
+                function_name,
+                {
+                    "selection_mode": "named_subset",
+                    "themes": ["减速器", "谐波减速器"],
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "找减速器中的谐波减速器公司"}],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context={
-            "version": "3",
-            "turns": [{
-                "terminal_artifacts": [{
-                    "artifact_id": artifact.artifact_id,
-                    "resource_type": "domain_collection",
-                }],
-            }],
-        },
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "找减速器中的谐波减速器公司"}],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context={
+                "version": "3",
+                "turns": [
+                    {
+                        "terminal_artifacts": [
+                            {
+                                "artifact_id": artifact.artifact_id,
+                                "resource_type": "domain_collection",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
     task = task_plan_from_v2(
         graph,
         artifacts={artifact.artifact_id: artifact},
     ).tasks[0]
 
-    assert task.parameters["domains"] == [{
-        "label": "减速器",
-        "catalog_snapshot_id": "catalog_snapshot",
-        "board_id": "BK1100",
-        "board_name": "减速器",
-        "role_id": "harmonic_reducer",
-        "role_label": "谐波减速器",
-        "board_queries": ["减速器"],
-        "mapping_type": "catalog_binding",
-        "rationale": "减速器对应谐波减速器环节",
-        "unresolved_parts": [],
-    }]
+    assert task.parameters["domains"] == [
+        {
+            "label": "减速器",
+            "catalog_snapshot_id": "catalog_snapshot",
+            "board_id": "BK1100",
+            "board_name": "减速器",
+            "role_id": "harmonic_reducer",
+            "role_label": "谐波减速器",
+            "board_queries": ["减速器"],
+            "mapping_type": "catalog_binding",
+            "rationale": "减速器对应谐波减速器环节",
+            "unresolved_parts": [],
+        }
+    ]
     calls = compile_task(ResolvedTask(candidate=task))
     assert calls[0].arguments["domains"][0]["board_id"] == "BK1100"
     assert calls[0].arguments["domains"][0]["role_id"] == "harmonic_reducer"
@@ -1324,18 +1418,17 @@ def test_historical_domain_identity_bridge_collapses_before_parameterization() -
         fingerprint="domain-fingerprint",
         lineage=(),
         payload={
-            "domains": [{
-                "label": "减速器",
-                "board_code": "BK1100",
-                "board_queries": ["减速器"],
-                "mapping_type": "catalog_binding",
-                "rationale": (
-                    "减速器对应谐波减速器环节；"
-                    "人形机器人旋转关节核心减速部件"
-                ),
-                "unresolved_parts": [],
-                "tier": 1,
-            }],
+            "domains": [
+                {
+                    "label": "减速器",
+                    "board_code": "BK1100",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": ("减速器对应谐波减速器环节；" "人形机器人旋转关节核心减速部件"),
+                    "unresolved_parts": [],
+                    "tier": 1,
+                }
+            ],
         },
     )
     calls: list[str] = []
@@ -1344,76 +1437,92 @@ def test_historical_domain_identity_bridge_collapses_before_parameterization() -
         function_name = _function_name(kwargs)
         calls.append(function_name)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "goal": {
-                    "objective": "从上轮减速器领域找出相关公司",
-                    "question_type": "research",
-                    "uncertainty_mode": "bounded",
-                    "time_horizon": None,
-                    "deliverables": ["减速器领域相关公司候选集合"],
-                    "claims": [{
-                        "claim_id": "candidates",
-                        "question": "哪些公司属于上轮减速器领域候选集合",
-                        "required_dimensions": [
-                            "domain_candidates",
-                            "security_identity",
+            return _response(
+                function_name,
+                {
+                    "goal": {
+                        "objective": "从上轮减速器领域找出相关公司",
+                        "question_type": "research",
+                        "uncertainty_mode": "bounded",
+                        "time_horizon": None,
+                        "deliverables": ["减速器领域相关公司候选集合"],
+                        "claims": [
+                            {
+                                "claim_id": "candidates",
+                                "question": "哪些公司属于上轮减速器领域候选集合",
+                                "required_dimensions": [
+                                    "domain_candidates",
+                                    "security_identity",
+                                ],
+                                "optional_dimensions": [],
+                                "mandatory": True,
+                            }
                         ],
-                        "optional_dimensions": [],
-                        "mandatory": True,
-                    }],
+                    },
+                    "nodes": [
+                        {
+                            "node_id": "harmonic_reducer_industry",
+                            "capability": "industry_research",
+                            "objective": "找出人形机器人谐波减速器环节中大力发展的公司",
+                            "input_refs": [
+                                {
+                                    "source": "artifact",
+                                    "artifact_id": artifact.artifact_id,
+                                    "resource_type": "domain_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        },
+                        {
+                            "node_id": "find_stocks",
+                            "capability": "theme_stock_discovery",
+                            "objective": "从谐波减速器产业板块中找出相关大力发展的公司",
+                            "input_refs": [
+                                {
+                                    "source": "node",
+                                    "node_id": "harmonic_reducer_industry",
+                                    "resource_type": "domain_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        },
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
                 },
-                "nodes": [{
-                    "node_id": "harmonic_reducer_industry",
-                    "capability": "industry_research",
-                    "objective": "找出人形机器人谐波减速器环节中大力发展的公司",
-                    "input_refs": [{
-                        "source": "artifact",
-                        "artifact_id": artifact.artifact_id,
-                        "resource_type": "domain_collection",
-                    }],
-                    "result_selection": None,
-                }, {
-                    "node_id": "find_stocks",
-                    "capability": "theme_stock_discovery",
-                    "objective": "从谐波减速器产业板块中找出相关大力发展的公司",
-                    "input_refs": [{
-                        "source": "node",
-                        "node_id": "harmonic_reducer_industry",
-                        "resource_type": "domain_collection",
-                    }],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            )
         if function_name == "submit_theme_stock_discovery_intent_v2":
-            return _response(function_name, {
-                "selection_mode": "named_subset",
-                "themes": [
-                    "减速器（BK1100）：减速器对应“谐波减速器”环节；"
-                    "人形机器人旋转关节核心减速部件"
-                ],
-                "output": None,
-            })
-        raise AssertionError(
-            f"identity bridge must not parameterize {function_name}"
-        )
+            return _response(
+                function_name,
+                {
+                    "selection_mode": "named_subset",
+                    "themes": ["减速器（BK1100）：减速器对应“谐波减速器”环节；" "人形机器人旋转关节核心减速部件"],
+                    "output": None,
+                },
+            )
+        raise AssertionError(f"identity bridge must not parameterize {function_name}")
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "找上面第一个减速器中的相关公司"}],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context={
-            "version": "3",
-            "turns": [{
-                "terminal_artifacts": [{
-                    "artifact_id": artifact.artifact_id,
-                    "resource_type": "domain_collection",
-                    "producer_node_id": artifact.producer_node_id,
-                }],
-            }],
-        },
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "找上面第一个减速器中的相关公司"}],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context={
+                "version": "3",
+                "turns": [
+                    {
+                        "terminal_artifacts": [
+                            {
+                                "artifact_id": artifact.artifact_id,
+                                "resource_type": "domain_collection",
+                                "producer_node_id": artifact.producer_node_id,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
 
     assert calls == [
         "submit_intent_outline_v2",
@@ -1422,52 +1531,53 @@ def test_historical_domain_identity_bridge_collapses_before_parameterization() -
     assert len(graph.nodes) == 1
     node = graph.nodes[0]
     assert node.outline.node_id == "find_stocks"
-    assert [
-        ref.model_dump(mode="json")
-        for ref in node.outline.input_refs
-    ] == [{
-        "source": "artifact",
-        "node_id": None,
-        "artifact_id": artifact.artifact_id,
-        "resource_type": "domain_collection",
-    }]
+    assert [ref.model_dump(mode="json") for ref in node.outline.input_refs] == [
+        {
+            "source": "artifact",
+            "node_id": None,
+            "artifact_id": artifact.artifact_id,
+            "resource_type": "domain_collection",
+        }
+    ]
 
     async def unused_completion(**_: Any) -> Any:
-        raise AssertionError(
-            "a validated DomainCollection artifact must not be rebound by a model"
-        )
+        raise AssertionError("a validated DomainCollection artifact must not be rebound by a model")
 
-    compiled = asyncio.run(compile_intent_graph_v2(
-        graph,
-        {"model": "test-model"},
-        completion=unused_completion,
-        artifacts={artifact.artifact_id: artifact},
-        registry=ToolRegistry(),
-    ))
+    compiled = asyncio.run(
+        compile_intent_graph_v2(
+            graph,
+            {"model": "test-model"},
+            completion=unused_completion,
+            artifacts={artifact.artifact_id: artifact},
+            registry=ToolRegistry(),
+        )
+    )
     assert len(compiled.resolved_tasks) == 1
     assert compiled.resolved_tasks[0].candidate.depends_on == []
-    assert compiled.resolved_tasks[0].candidate.parameters["domains"] == [{
-        "label": "减速器",
-        "board_queries": ["减速器"],
-        "mapping_type": "catalog_binding",
-        "rationale": (
-            "减速器对应谐波减速器环节；"
-            "人形机器人旋转关节核心减速部件"
-        ),
-        "unresolved_parts": [],
-    }]
+    assert compiled.resolved_tasks[0].candidate.parameters["domains"] == [
+        {
+            "label": "减速器",
+            "board_queries": ["减速器"],
+            "mapping_type": "catalog_binding",
+            "rationale": ("减速器对应谐波减速器环节；" "人形机器人旋转关节核心减速部件"),
+            "unresolved_parts": [],
+        }
+    ]
 
 
 def test_named_domain_projection_never_widens_an_unmatched_subset() -> None:
-    domains = [{
-        "label": "机器人执行器",
-        "board_code": "BK1145",
-        "board_queries": ["机器人执行器"],
-    }, {
-        "label": "传感器",
-        "board_code": "BK1000",
-        "board_queries": ["传感器"],
-    }]
+    domains = [
+        {
+            "label": "机器人执行器",
+            "board_code": "BK1145",
+            "board_queries": ["机器人执行器"],
+        },
+        {
+            "label": "传感器",
+            "board_code": "BK1000",
+            "board_queries": ["传感器"],
+        },
+    ]
 
     with pytest.raises(OrchestratorV2Error) as exc:
         _project_artifact_domain_subset(
@@ -1479,12 +1589,15 @@ def test_named_domain_projection_never_widens_an_unmatched_subset() -> None:
 
     assert exc.value.code == AgentErrorCode.RESOURCE_UNAVAILABLE
     assert "没有扩大为整个上游集合" in str(exc.value)
-    assert _project_artifact_domain_subset(
-        domains,
-        [],
-        selection_mode="all_bound",
-        task_id="discover",
-    ) == domains
+    assert (
+        _project_artifact_domain_subset(
+            domains,
+            [],
+            selection_mode="all_bound",
+            task_id="discover",
+        )
+        == domains
+    )
 
 
 def test_investment_decision_recovers_structured_thesis_from_collection_lineage() -> None:
@@ -1506,62 +1619,78 @@ def test_investment_decision_recovers_structured_thesis_from_collection_lineage(
         fingerprint="domain-fingerprint",
         lineage=(),
         payload={
-            "domains": [{
-                "label": "减速器",
-                "board_queries": ["减速器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "人形机器人关节传动环节",
-                "unresolved_parts": [],
-                "tier": 1,
-            }],
+            "domains": [
+                {
+                    "label": "减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "人形机器人关节传动环节",
+                    "unresolved_parts": [],
+                    "tier": 1,
+                }
+            ],
         },
     )
-    security_artifact = _artifact(("000001", "000002")).model_copy(
-        update={"lineage": (domain_artifact.artifact_id,)}
-    )
+    security_artifact = _artifact(("000001", "000002")).model_copy(update={"lineage": (domain_artifact.artifact_id,)})
 
     async def completion(**kwargs: Any) -> dict[str, Any]:
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "decision",
-                    "capability": "investment_decision",
-                    "objective": "通过的这些股票哪些现在能买",
-                    "input_refs": [{
-                        "source": "artifact",
-                        "node_id": None,
-                        "artifact_id": security_artifact.artifact_id,
-                        "resource_type": "security_collection",
-                    }],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "decision",
+                            "capability": "investment_decision",
+                            "objective": "通过的这些股票哪些现在能买",
+                            "input_refs": [
+                                {
+                                    "source": "artifact",
+                                    "node_id": None,
+                                    "artifact_id": security_artifact.artifact_id,
+                                    "resource_type": "security_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_investment_decision_intent_v2":
-            return _response(function_name, {
-                "thesis": None,
-                "output": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "thesis": None,
+                    "output": None,
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "通过的这些股票哪些现在能买"}],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context={
-            "version": "3",
-            "turns": [{
-                "terminal_artifacts": [{
-                    "artifact_id": security_artifact.artifact_id,
-                    "resource_type": "security_collection",
-                    "fingerprint": security_artifact.fingerprint,
-                    "producer_node_id": security_artifact.producer_node_id,
-                }],
-            }],
-        },
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "通过的这些股票哪些现在能买"}],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context={
+                "version": "3",
+                "turns": [
+                    {
+                        "terminal_artifacts": [
+                            {
+                                "artifact_id": security_artifact.artifact_id,
+                                "resource_type": "security_collection",
+                                "fingerprint": security_artifact.fingerprint,
+                                "producer_node_id": security_artifact.producer_node_id,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
     task = task_plan_from_v2(
         graph,
         artifacts={
@@ -1572,102 +1701,111 @@ def test_investment_decision_recovers_structured_thesis_from_collection_lineage(
 
     assert task.parameters["thesis"] == "减速器"
     assert task.parameters["thesis_context"]["summary"] == "减速器"
-    assert task.parameters["thesis_context"]["domains"][0][
-        "board_queries"
-    ] == ["减速器"]
+    assert task.parameters["thesis_context"]["domains"][0]["board_queries"] == ["减速器"]
     assert task.parameters["mainline_strategy"] == "confirmed_mainline"
     assert any(
-        assumption.field_path == "/mainline_strategy"
-        and assumption.value == "confirmed_mainline"
+        assumption.field_path == "/mainline_strategy" and assumption.value == "confirmed_mainline"
         for assumption in graph.nodes[0].assumptions
     )
 
 
 def test_historical_producer_node_ref_is_bound_to_the_unique_matching_artifact() -> None:
-    financial_artifact = _artifact(("000001", "000002")).model_copy(update={
-        "artifact_id": "artifact_financial_filter",
-        "producer_node_id": "collection_financial_filter",
-        "fingerprint": "financial-filter-fingerprint",
-    })
-    later_decision_artifact = _artifact(("000001",)).model_copy(update={
-        "artifact_id": "artifact_previous_decision",
-        "producer_node_id": "investment_decision",
-        "fingerprint": "previous-decision-fingerprint",
-    })
+    financial_artifact = _artifact(("000001", "000002")).model_copy(
+        update={
+            "artifact_id": "artifact_financial_filter",
+            "producer_node_id": "collection_financial_filter",
+            "fingerprint": "financial-filter-fingerprint",
+        }
+    )
+    later_decision_artifact = _artifact(("000001",)).model_copy(
+        update={
+            "artifact_id": "artifact_previous_decision",
+            "producer_node_id": "investment_decision",
+            "fingerprint": "previous-decision-fingerprint",
+        }
+    )
     called_functions: list[str] = []
 
     async def completion(**kwargs: Any) -> dict[str, Any]:
         function_name = _function_name(kwargs)
         called_functions.append(function_name)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "investment_decision",
-                    "capability": "investment_decision",
-                    "objective": "对上一轮财务筛选通过的股票执行买入判断",
-                    "input_refs": [{
-                        "source": "node",
-                        "node_id": "collection_financial_filter",
-                        "artifact_id": None,
-                        "resource_type": "security_collection",
-                    }],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "investment_decision",
+                            "capability": "investment_decision",
+                            "objective": "对上一轮财务筛选通过的股票执行买入判断",
+                            "input_refs": [
+                                {
+                                    "source": "node",
+                                    "node_id": "collection_financial_filter",
+                                    "artifact_id": None,
+                                    "resource_type": "security_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_investment_decision_intent_v2":
-            return _response(function_name, {
-                "thesis": None,
-                "output": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "thesis": None,
+                    "output": None,
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{
-            "role": "user",
-            "content": "通过的这些股票，哪些现在就能买？",
-        }],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context={
-            "version": "3",
-            "turns": [
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [
                 {
-                    "terminal_artifacts": [{
-                        "artifact_id": financial_artifact.artifact_id,
-                        "resource_type": "security_collection",
-                        "producer_node_id": (
-                            financial_artifact.producer_node_id
-                        ),
-                    }],
-                },
-                {
-                    "terminal_artifacts": [
-                        {
-                            "artifact_id": financial_artifact.artifact_id,
-                            "resource_type": "security_collection",
-                            "producer_node_id": (
-                                financial_artifact.producer_node_id
-                            ),
-                        },
-                        {
-                            "artifact_id": later_decision_artifact.artifact_id,
-                            "resource_type": "security_collection",
-                            "producer_node_id": (
-                                later_decision_artifact.producer_node_id
-                            ),
-                        },
-                    ],
-                },
+                    "role": "user",
+                    "content": "通过的这些股票，哪些现在就能买？",
+                }
             ],
-        },
-    ))
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context={
+                "version": "3",
+                "turns": [
+                    {
+                        "terminal_artifacts": [
+                            {
+                                "artifact_id": financial_artifact.artifact_id,
+                                "resource_type": "security_collection",
+                                "producer_node_id": (financial_artifact.producer_node_id),
+                            }
+                        ],
+                    },
+                    {
+                        "terminal_artifacts": [
+                            {
+                                "artifact_id": financial_artifact.artifact_id,
+                                "resource_type": "security_collection",
+                                "producer_node_id": (financial_artifact.producer_node_id),
+                            },
+                            {
+                                "artifact_id": later_decision_artifact.artifact_id,
+                                "resource_type": "security_collection",
+                                "producer_node_id": (later_decision_artifact.producer_node_id),
+                            },
+                        ],
+                    },
+                ],
+            },
+        )
+    )
 
     raw_ref = graph.trace.raw_outline["nodes"][0]["input_refs"][0]
-    normalized_ref = graph.trace.normalized_outline[
-        "nodes"
-    ][0]["input_refs"][0]
+    normalized_ref = graph.trace.normalized_outline["nodes"][0]["input_refs"][0]
     assert raw_ref["source"] == "node"
     assert raw_ref["node_id"] == "collection_financial_filter"
     assert normalized_ref == {
@@ -1676,9 +1814,7 @@ def test_historical_producer_node_ref_is_bound_to_the_unique_matching_artifact()
         "artifact_id": financial_artifact.artifact_id,
         "resource_type": "security_collection",
     }
-    assert graph.outline.nodes[0].input_refs[0].artifact_id == (
-        financial_artifact.artifact_id
-    )
+    assert graph.outline.nodes[0].input_refs[0].artifact_id == (financial_artifact.artifact_id)
     task = task_plan_from_v2(
         graph,
         artifacts={
@@ -1698,18 +1834,22 @@ def test_ambiguous_historical_node_ref_requests_minimal_clarification() -> None:
     events: list[AgentStageEventV2] = []
     outline_calls = 0
     stale_payload = {
-        "nodes": [{
-            "node_id": "investment_decision",
-            "capability": "investment_decision",
-            "objective": "判断这些股票哪些可以买入",
-            "input_refs": [{
-                "source": "node",
-                "node_id": "collection_financial_filter",
-                "artifact_id": None,
-                "resource_type": "security_collection",
-            }],
-            "result_selection": None,
-        }],
+        "nodes": [
+            {
+                "node_id": "investment_decision",
+                "capability": "investment_decision",
+                "objective": "判断这些股票哪些可以买入",
+                "input_refs": [
+                    {
+                        "source": "node",
+                        "node_id": "collection_financial_filter",
+                        "artifact_id": None,
+                        "resource_type": "security_collection",
+                    }
+                ],
+                "result_selection": None,
+            }
+        ],
         "needs_clarification": False,
         "clarification_question": None,
     }
@@ -1722,35 +1862,38 @@ def test_ambiguous_historical_node_ref_requests_minimal_clarification() -> None:
         return _response(function_name, stale_payload)
 
     with pytest.raises(OrchestratorV2Error) as captured:
-        asyncio.run(plan_intent_graph_v2(
-            [{"role": "user", "content": "这些股票哪些可以买入"}],
-            {"model": "test-model"},
-            completion=completion,
-            semantic_context={
-                "version": "3",
-                "turns": [{
-                    "terminal_artifacts": [
+        asyncio.run(
+            plan_intent_graph_v2(
+                [{"role": "user", "content": "这些股票哪些可以买入"}],
+                {"model": "test-model"},
+                completion=completion,
+                semantic_context={
+                    "version": "3",
+                    "turns": [
                         {
-                            "artifact_id": "artifact_first",
-                            "resource_type": "security_collection",
-                            "producer_node_id": "first_filter",
-                        },
-                        {
-                            "artifact_id": "artifact_second",
-                            "resource_type": "security_collection",
-                            "producer_node_id": "second_filter",
-                        },
+                            "terminal_artifacts": [
+                                {
+                                    "artifact_id": "artifact_first",
+                                    "resource_type": "security_collection",
+                                    "producer_node_id": "first_filter",
+                                },
+                                {
+                                    "artifact_id": "artifact_second",
+                                    "resource_type": "security_collection",
+                                    "producer_node_id": "second_filter",
+                                },
+                            ],
+                        }
                     ],
-                }],
-            },
-            stage_observer=events.append,
-        ))
+                },
+                stage_observer=events.append,
+            )
+        )
 
     assert captured.value.code == AgentErrorCode.CLARIFICATION_REQUIRED
     assert outline_calls == 1
     assert str(captured.value) == (
-        "找到多个可用的 security_collection 历史结果，"
-        "请说明要使用哪一轮或哪一次筛选结果。"
+        "找到多个可用的 security_collection 历史结果，" "请说明要使用哪一轮或哪一次筛选结果。"
     )
     assert events[-1].summary == str(captured.value)
     assert "validation error" not in events[-1].summary
@@ -1761,18 +1904,22 @@ def test_unknown_historical_node_keeps_precise_issue_private() -> None:
     outline_calls = 0
     repair_context: dict[str, Any] = {}
     stale_payload = {
-        "nodes": [{
-            "node_id": "investment_decision",
-            "capability": "investment_decision",
-            "objective": "判断这些股票哪些可以买入",
-            "input_refs": [{
-                "source": "node",
-                "node_id": "collection_financial_filter",
-                "artifact_id": None,
-                "resource_type": "security_collection",
-            }],
-            "result_selection": None,
-        }],
+        "nodes": [
+            {
+                "node_id": "investment_decision",
+                "capability": "investment_decision",
+                "objective": "判断这些股票哪些可以买入",
+                "input_refs": [
+                    {
+                        "source": "node",
+                        "node_id": "collection_financial_filter",
+                        "artifact_id": None,
+                        "resource_type": "security_collection",
+                    }
+                ],
+                "result_selection": None,
+            }
+        ],
         "needs_clarification": False,
         "clarification_question": None,
     }
@@ -1783,40 +1930,35 @@ def test_unknown_historical_node_keeps_precise_issue_private() -> None:
         assert function_name == "submit_intent_outline_v2"
         outline_calls += 1
         if outline_calls == 2:
-            repair_context.update(json.loads(
-                kwargs["messages"][-1]["content"]
-            ))
+            repair_context.update(json.loads(kwargs["messages"][-1]["content"]))
         return _response(function_name, stale_payload)
 
     with pytest.raises(OrchestratorV2Error) as captured:
-        asyncio.run(plan_intent_graph_v2(
-            [{"role": "user", "content": "这些股票哪些可以买入"}],
-            {"model": "test-model"},
-            completion=completion,
-            semantic_context={"version": "3", "turns": []},
-            stage_observer=events.append,
-        ))
+        asyncio.run(
+            plan_intent_graph_v2(
+                [{"role": "user", "content": "这些股票哪些可以买入"}],
+                {"model": "test-model"},
+                completion=completion,
+                semantic_context={"version": "3", "turns": []},
+                stage_observer=events.append,
+            )
+        )
 
     assert captured.value.code == AgentErrorCode.PLANNER_SCHEMA_INVALID
     assert outline_calls == 2
     repair = repair_context["targeted_repair"]
-    assert repair["issues"] == [{
-        "pointer": "/nodes/0/input_refs/0",
-        "code": "unknown_node_reference",
-        "expected": (
-            "a current-graph node_id or one uniquely resolvable "
-            "historical artifact"
-        ),
-        "allowed": [],
-        "message": (
-            "'collection_financial_filter' is not a node in this graph "
-            "and resolved to 0 compatible artifacts"
-        ),
-    }]
-    assert events[-1].summary == (
-        "任务图未通过内部强类型契约校验；"
-        "本轮没有调用任何数据工具"
-    )
+    assert repair["issues"] == [
+        {
+            "pointer": "/nodes/0/input_refs/0",
+            "code": "unknown_node_reference",
+            "expected": ("a current-graph node_id or one uniquely resolvable " "historical artifact"),
+            "allowed": [],
+            "message": (
+                "'collection_financial_filter' is not a node in this graph " "and resolved to 0 compatible artifacts"
+            ),
+        }
+    ]
+    assert events[-1].summary == ("任务图未通过内部强类型契约校验；" "本轮没有调用任何数据工具")
     assert "validation error" not in events[-1].summary
     assert "collection_financial_filter" not in events[-1].summary
 
@@ -1829,17 +1971,22 @@ def test_targeted_repair_keeps_the_frozen_graph() -> None:
         nonlocal attempts
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "filter",
-                    "capability": "collection_financial_filter",
-                    "objective": "筛选",
-                    "input_refs": [],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "filter",
+                            "capability": "collection_financial_filter",
+                            "objective": "筛选",
+                            "input_refs": [],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         attempts += 1
         if attempts == 1:
             invalid = _filter_payload()
@@ -1848,59 +1995,69 @@ def test_targeted_repair_keeps_the_frozen_graph() -> None:
         repair_context.update(json.loads(kwargs["messages"][-1]["content"]))
         return _response(function_name, _filter_payload())
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "筛选这些股票"}],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context={},
-        today=date(2026, 7, 28),
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "筛选这些股票"}],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context={},
+            today=date(2026, 7, 28),
+        )
+    )
     assert attempts == 2
     assert graph.nodes[0].outline.node_id == "filter"
     repair = repair_context["targeted_repair"]
     assert repair["invalid_payload"]["predicates"][0]["batch_size"] == 24
-    assert any(
-        issue["pointer"].endswith("/batch_size")
-        for issue in repair["issues"]
-    )
+    assert any(issue["pointer"].endswith("/batch_size") for issue in repair["issues"])
 
 
 def test_exact_contract_unwraps_provider_stringified_nested_models() -> None:
-    goal = _with_test_goal({
-        "nodes": [{
-            "node_id": "lookup",
-            "capability": "security_lookup",
-            "objective": "查找贵州茅台",
-            "input_refs": [],
-            "result_selection": None,
-        }],
-    })["goal"]
-
-    async def completion(**kwargs: Any) -> dict[str, Any]:
-        function_name = _function_name(kwargs)
-        if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "goal": json.dumps(goal, ensure_ascii=False),
-                "nodes": [{
+    goal = _with_test_goal(
+        {
+            "nodes": [
+                {
                     "node_id": "lookup",
                     "capability": "security_lookup",
                     "objective": "查找贵州茅台",
                     "input_refs": [],
                     "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+                }
+            ],
+        }
+    )["goal"]
+
+    async def completion(**kwargs: Any) -> dict[str, Any]:
+        function_name = _function_name(kwargs)
+        if function_name == "submit_intent_outline_v2":
+            return _response(
+                function_name,
+                {
+                    "goal": json.dumps(goal, ensure_ascii=False),
+                    "nodes": [
+                        {
+                            "node_id": "lookup",
+                            "capability": "security_lookup",
+                            "objective": "查找贵州茅台",
+                            "input_refs": [],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_security_lookup_intent_v2":
             return _response(function_name, {"query": "贵州茅台"})
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "查找贵州茅台"}],
-        {"model": "test-model"},
-        completion=completion,
-        today=date(2026, 7, 28),
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "查找贵州茅台"}],
+            {"model": "test-model"},
+            completion=completion,
+            today=date(2026, 7, 28),
+        )
+    )
 
     assert graph.outline.goal.objective
     assert graph.outline.nodes[0].capability == Capability.SECURITY_LOOKUP
@@ -1916,39 +2073,47 @@ def test_outline_repairs_result_selection_from_capability_contract() -> None:
         if function_name == "submit_intent_outline_v2":
             outline_attempts += 1
             if outline_attempts == 2:
-                repair_context.update(
-                    json.loads(kwargs["messages"][-1]["content"])
-                )
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "lookup",
-                    "capability": "security_lookup",
-                    "objective": "查找用户明确要求的证券",
-                    "input_refs": [],
-                    "result_selection": (
+                repair_context.update(json.loads(kwargs["messages"][-1]["content"]))
+            return _response(
+                function_name,
+                {
+                    "nodes": [
                         {
-                            "mode": "all_relevant",
-                            "max_items": None,
+                            "node_id": "lookup",
+                            "capability": "security_lookup",
+                            "objective": "查找用户明确要求的证券",
+                            "input_refs": [],
+                            "result_selection": (
+                                {
+                                    "mode": "all_relevant",
+                                    "max_items": None,
+                                }
+                                if outline_attempts == 1
+                                else None
+                            ),
                         }
-                        if outline_attempts == 1
-                        else None
-                    ),
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_security_lookup_intent_v2":
-            return _response(function_name, {
-                "query": "贵州茅台",
-            })
+            return _response(
+                function_name,
+                {
+                    "query": "贵州茅台",
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "查找贵州茅台"}],
-        {"model": "test-model"},
-        completion=completion,
-        today=date(2026, 7, 28),
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "查找贵州茅台"}],
+            {"model": "test-model"},
+            completion=completion,
+            today=date(2026, 7, 28),
+        )
+    )
 
     assert outline_attempts == 2
     assert graph.outline.nodes[0].result_selection is None
@@ -1957,16 +2122,15 @@ def test_outline_repairs_result_selection_from_capability_contract() -> None:
         "mode": "all_relevant",
         "max_items": None,
     }
-    assert repair["issues"] == [{
-        "pointer": "/nodes/0/result_selection",
-        "code": "capability_result_selection_forbidden",
-        "expected": (
-            "null because capability security_lookup does not support "
-            "result selection"
-        ),
-        "allowed": [None],
-        "message": "security_lookup does not support result_selection",
-    }]
+    assert repair["issues"] == [
+        {
+            "pointer": "/nodes/0/result_selection",
+            "code": "capability_result_selection_forbidden",
+            "expected": ("null because capability security_lookup does not support " "result selection"),
+            "allowed": [None],
+            "message": "security_lookup does not support result_selection",
+        }
+    ]
 
 
 def test_outline_removes_capabilities_owned_by_investment_workflow() -> None:
@@ -1980,9 +2144,7 @@ def test_outline_removes_capabilities_owned_by_investment_workflow() -> None:
         if function_name == "submit_intent_outline_v2":
             outline_attempts += 1
             if outline_attempts == 2:
-                repair_context.update(
-                    json.loads(kwargs["messages"][-1]["content"])
-                )
+                repair_context.update(json.loads(kwargs["messages"][-1]["content"]))
             decision_node = {
                 "node_id": "decision",
                 "capability": "investment_decision",
@@ -1991,75 +2153,85 @@ def test_outline_removes_capabilities_owned_by_investment_workflow() -> None:
                 "result_selection": None,
             }
             if outline_attempts == 1:
-                return _response(function_name, {
-                    "nodes": [{
-                        **decision_node,
-                        "input_refs": [{
-                            "source": "node",
-                            "node_id": None,
-                            "resource_type": "security_collection",
-                        }],
-                    }],
-                    "needs_clarification": False,
-                    "clarification_question": None,
-                })
+                return _response(
+                    function_name,
+                    {
+                        "nodes": [
+                            {
+                                **decision_node,
+                                "input_refs": [
+                                    {
+                                        "source": "node",
+                                        "node_id": None,
+                                        "resource_type": "security_collection",
+                                    }
+                                ],
+                            }
+                        ],
+                        "needs_clarification": False,
+                        "clarification_question": None,
+                    },
+                )
             nodes = [
-                    {
-                        "node_id": "lookup",
-                        "capability": "security_lookup",
-                        "objective": "识别平安银行",
-                        "input_refs": [],
-                        "result_selection": None,
-                    },
-                    {
-                        "node_id": "valuation",
-                        "capability": "valuation_analysis",
-                        "objective": "分析平安银行估值",
-                        "input_refs": [],
-                        "result_selection": None,
-                    },
-                    {
-                        **decision_node,
-                        "input_refs": [{
+                {
+                    "node_id": "lookup",
+                    "capability": "security_lookup",
+                    "objective": "识别平安银行",
+                    "input_refs": [],
+                    "result_selection": None,
+                },
+                {
+                    "node_id": "valuation",
+                    "capability": "valuation_analysis",
+                    "objective": "分析平安银行估值",
+                    "input_refs": [],
+                    "result_selection": None,
+                },
+                {
+                    **decision_node,
+                    "input_refs": [
+                        {
                             "source": "node",
                             "node_id": "lookup",
                             "artifact_id": None,
                             "resource_type": "security_collection",
-                        }],
-                    },
-                ]
-            return _response(function_name, {
-                "nodes": nodes,
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+                        }
+                    ],
+                },
+            ]
+            return _response(
+                function_name,
+                {
+                    "nodes": nodes,
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         parameterized_functions.append(function_name)
         if function_name == "submit_investment_decision_intent_v2":
-            return _response(function_name, {
-                "thesis": None,
-                "output": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "thesis": None,
+                    "output": None,
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "平安银行（000001）现在能买入吗？"}],
-        {"model": "test-model"},
-        completion=completion,
-        today=date(2026, 7, 28),
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "平安银行（000001）现在能买入吗？"}],
+            {"model": "test-model"},
+            completion=completion,
+            today=date(2026, 7, 28),
+        )
+    )
 
     assert outline_attempts == 2
-    assert [node.capability for node in graph.outline.nodes] == [
-        Capability.INVESTMENT_DECISION
-    ]
-    assert parameterized_functions == [
-        "submit_investment_decision_intent_v2"
-    ]
+    assert [node.capability for node in graph.outline.nodes] == [Capability.INVESTMENT_DECISION]
+    assert parameterized_functions == ["submit_investment_decision_intent_v2"]
     repair = repair_context["targeted_repair"]
-    assert any(
-        issue["pointer"] == "/nodes/0/input_refs/0"
-        for issue in repair["issues"]
-    )
+    assert any(issue["pointer"] == "/nodes/0/input_refs/0" for issue in repair["issues"])
     assert graph.outline.nodes[0].input_refs == ()
 
 
@@ -2071,42 +2243,52 @@ def test_outline_drops_type_impossible_resource_edge_before_binding() -> None:
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
             outline_attempts += 1
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "decision",
-                    "capability": "investment_decision",
-                    "objective": "判断贵州茅台现在是否可以买入",
-                    "input_refs": [{
-                        "source": "artifact",
-                        "artifact_id": "unrelated-evidence",
-                        "node_id": None,
-                        "resource_type": "evidence_collection",
-                    }],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "decision",
+                            "capability": "investment_decision",
+                            "objective": "判断贵州茅台现在是否可以买入",
+                            "input_refs": [
+                                {
+                                    "source": "artifact",
+                                    "artifact_id": "unrelated-evidence",
+                                    "node_id": None,
+                                    "resource_type": "evidence_collection",
+                                }
+                            ],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_investment_decision_intent_v2":
-            return _response(function_name, {
-                "thesis": "判断贵州茅台现在是否可以买入",
-                "output": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "thesis": "判断贵州茅台现在是否可以买入",
+                    "output": None,
+                },
+            )
         raise AssertionError(function_name)
 
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "贵州茅台现在能买入吗？"}],
-        {"model": "test-model"},
-        completion=completion,
-        today=date(2026, 7, 29),
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "贵州茅台现在能买入吗？"}],
+            {"model": "test-model"},
+            completion=completion,
+            today=date(2026, 7, 29),
+        )
+    )
 
     assert outline_attempts == 1
     assert graph.outline.nodes[0].capability == Capability.INVESTMENT_DECISION
     assert graph.outline.nodes[0].input_refs == ()
-    assert graph.trace.raw_outline["nodes"][0]["input_refs"][0][
-        "resource_type"
-    ] == "evidence_collection"
+    assert graph.trace.raw_outline["nodes"][0]["input_refs"][0]["resource_type"] == "evidence_collection"
     assert graph.trace.normalized_outline["nodes"][0]["input_refs"] == []
 
 
@@ -2114,50 +2296,64 @@ def test_direct_entity_request_does_not_bind_ambiguous_historical_sets() -> None
     async def completion(**kwargs: Any) -> dict[str, Any]:
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "decision",
-                    "capability": "investment_decision",
-                    "objective": "重新判断贵州茅台现在是否可以买入",
-                    "input_refs": [],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "decision",
+                            "capability": "investment_decision",
+                            "objective": "重新判断贵州茅台现在是否可以买入",
+                            "input_refs": [],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
         if function_name == "submit_investment_decision_intent_v2":
-            return _response(function_name, {
-                "thesis": "重新判断贵州茅台现在是否可以买入",
-                "output": None,
-            })
+            return _response(
+                function_name,
+                {
+                    "thesis": "重新判断贵州茅台现在是否可以买入",
+                    "output": None,
+                },
+            )
         raise AssertionError(function_name)
 
     semantic_context = {
         "turns": [
             {
-                "terminal_artifacts": [{
-                    "artifact_id": "old-set-1",
-                    "resource_type": "security_collection",
-                    "producer_node_id": "filter-1",
-                }],
+                "terminal_artifacts": [
+                    {
+                        "artifact_id": "old-set-1",
+                        "resource_type": "security_collection",
+                        "producer_node_id": "filter-1",
+                    }
+                ],
             },
             {
-                "terminal_artifacts": [{
-                    "artifact_id": "old-set-2",
-                    "resource_type": "security_collection",
-                    "producer_node_id": "filter-2",
-                }],
+                "terminal_artifacts": [
+                    {
+                        "artifact_id": "old-set-2",
+                        "resource_type": "security_collection",
+                        "producer_node_id": "filter-2",
+                    }
+                ],
             },
         ],
     }
-    graph = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "贵州茅台现在能买入吗？"}],
-        {"model": "test-model"},
-        completion=completion,
-        semantic_context=semantic_context,
-        current_entities=[{"symbol": "600519", "name": "贵州茅台"}],
-        today=date(2026, 7, 29),
-    ))
+    graph = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "贵州茅台现在能买入吗？"}],
+            {"model": "test-model"},
+            completion=completion,
+            semantic_context=semantic_context,
+            current_entities=[{"symbol": "600519", "name": "贵州茅台"}],
+            today=date(2026, 7, 29),
+        )
+    )
 
     assert graph.outline.nodes[0].input_refs == ()
 
@@ -2166,36 +2362,52 @@ def test_runtime_rejects_unsupported_result_selection_as_v2_error() -> None:
     async def completion(**kwargs: Any) -> dict[str, Any]:
         function_name = _function_name(kwargs)
         if function_name == "submit_intent_outline_v2":
-            return _response(function_name, {
-                "nodes": [{
-                    "node_id": "lookup",
-                    "capability": "security_lookup",
-                    "objective": "查找贵州茅台",
-                    "input_refs": [],
-                    "result_selection": None,
-                }],
-                "needs_clarification": False,
-                "clarification_question": None,
-            })
-        return _response(function_name, {
-            "query": "贵州茅台",
-        })
-
-    valid = asyncio.run(plan_intent_graph_v2(
-        [{"role": "user", "content": "查找贵州茅台"}],
-        {"model": "test-model"},
-        completion=completion,
-    ))
-    invalid_outline = IntentOutlineV2.model_validate(_with_test_goal({
-        **valid.outline.model_dump(mode="json"),
-        "nodes": [{
-            **valid.outline.nodes[0].model_dump(mode="json"),
-            "result_selection": {
-                "mode": "all_relevant",
-                "max_items": None,
+            return _response(
+                function_name,
+                {
+                    "nodes": [
+                        {
+                            "node_id": "lookup",
+                            "capability": "security_lookup",
+                            "objective": "查找贵州茅台",
+                            "input_refs": [],
+                            "result_selection": None,
+                        }
+                    ],
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                },
+            )
+        return _response(
+            function_name,
+            {
+                "query": "贵州茅台",
             },
-        }],
-    }))
+        )
+
+    valid = asyncio.run(
+        plan_intent_graph_v2(
+            [{"role": "user", "content": "查找贵州茅台"}],
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
+    invalid_outline = IntentOutlineV2.model_validate(
+        _with_test_goal(
+            {
+                **valid.outline.model_dump(mode="json"),
+                "nodes": [
+                    {
+                        **valid.outline.nodes[0].model_dump(mode="json"),
+                        "result_selection": {
+                            "mode": "all_relevant",
+                            "max_items": None,
+                        },
+                    }
+                ],
+            }
+        )
+    )
     invalid = PlannedIntentGraphV2(
         run_id=valid.run_id,
         outline=invalid_outline,
@@ -2221,22 +2433,30 @@ def test_confirmation_signal_cannot_change_the_reviewed_action_fingerprint() -> 
         async def completion(**kwargs: Any) -> dict[str, Any]:
             function_name = _function_name(kwargs)
             if function_name == "submit_intent_outline_v2":
-                return _response(function_name, {
-                    "nodes": [{
-                        "node_id": "delete_history",
-                        "capability": "analysis_history",
-                        "objective": "删除指定历史记录",
-                        "input_refs": [],
-                        "result_selection": None,
-                    }],
-                    "needs_clarification": False,
-                    "clarification_question": None,
-                })
-            return _response(function_name, {
-                "action": "delete",
-                "record_ids": [7],
-                "user_confirmed": confirmed,
-            })
+                return _response(
+                    function_name,
+                    {
+                        "nodes": [
+                            {
+                                "node_id": "delete_history",
+                                "capability": "analysis_history",
+                                "objective": "删除指定历史记录",
+                                "input_refs": [],
+                                "result_selection": None,
+                            }
+                        ],
+                        "needs_clarification": False,
+                        "clarification_question": None,
+                    },
+                )
+            return _response(
+                function_name,
+                {
+                    "action": "delete",
+                    "record_ids": [7],
+                    "user_confirmed": confirmed,
+                },
+            )
 
         return await plan_intent_graph_v2(
             [{"role": "user", "content": "确认删除第7条历史记录"}],
@@ -2248,9 +2468,8 @@ def test_confirmation_signal_cannot_change_the_reviewed_action_fingerprint() -> 
     confirmed_task = task_plan_from_v2(asyncio.run(planned(True))).tasks[0]
     assert pending_task.confirmation == ConfirmationState.MISSING
     assert confirmed_task.confirmation == ConfirmationState.EXPLICIT
-    assert (
-        action_fingerprint(ResolvedTask(candidate=pending_task))
-        == action_fingerprint(ResolvedTask(candidate=confirmed_task))
+    assert action_fingerprint(ResolvedTask(candidate=pending_task)) == action_fingerprint(
+        ResolvedTask(candidate=confirmed_task)
     )
 
 
@@ -2280,13 +2499,15 @@ def test_unsupported_explicit_financial_basis_requires_clarification() -> None:
             objective="筛选",
             capability=Capability.COLLECTION_FINANCIAL_FILTER,
             intent={
-                "predicates": [{
-                    "metric": "net_profit",
-                    "operator": "lt",
-                    "amount": {"value": 0, "unit": "cny"},
-                    "period": {"kind": "ttm"},
-                    "action": "exclude_matching",
-                }],
+                "predicates": [
+                    {
+                        "metric": "net_profit",
+                        "operator": "lt",
+                        "amount": {"value": 0, "unit": "cny"},
+                        "period": {"kind": "ttm"},
+                        "action": "exclude_matching",
+                    }
+                ],
             },
             input_refs=(),
             result_selection=None,
@@ -2340,20 +2561,20 @@ def test_currency_units_and_predicate_order_canonicalize() -> None:
 def test_legacy_context_adapter_creates_terminal_artifact_without_markdown() -> None:
     legacy = {
         "version": "1",
-        "turns": [{
-            "request": "这些股票",
-            "tasks": [],
-            "entities": [{"symbol": "000001", "name": "平安银行"}],
-        }],
+        "turns": [
+            {
+                "request": "这些股票",
+                "tasks": [],
+                "entities": [{"symbol": "000001", "name": "平安银行"}],
+            }
+        ],
     }
     context, artifacts = migrate_legacy_context(
         legacy,
         conversation_id="conversation",
     )
     assert context.version == "3"
-    assert artifacts[0].payload == {
-        "securities": [{"symbol": "000001", "name": "平安银行"}]
-    }
+    assert artifacts[0].payload == {"securities": [{"symbol": "000001", "name": "平安银行"}]}
     serialized = context.model_dump_json()
     assert "parameters" not in serialized
     assert "result_context" not in serialized
@@ -2375,42 +2596,46 @@ def test_legacy_ranked_domains_migrate_as_typed_resource_not_answer_text() -> No
     context, artifacts = migrate_legacy_context(
         {
             "version": "1",
-            "turns": [{
-                "request": "人形机器人最受益领域",
-                "entities": [],
-                "tasks": [{
-                    "task_id": "industry",
-                    "kind": "industry_research",
-                    "objective": "结构化领域排序",
-                    "status": "completed",
-                    "semantic_artifacts": [{
-                        "type": "ranked_domains",
-                        "topic": "人形机器人",
-                        "groups": [{
-                            "tier": 1,
-                            "domains": [{
-                                "label": "机器人执行器",
-                                "board_queries": ["机器人执行器"],
-                                "mapping_type": "catalog_binding",
-                                "rationale": "执行器是核心环节",
-                                "unresolved_parts": [],
-                            }],
-                        }],
-                    }],
-                }],
-            }],
+            "turns": [
+                {
+                    "request": "人形机器人最受益领域",
+                    "entities": [],
+                    "tasks": [
+                        {
+                            "task_id": "industry",
+                            "kind": "industry_research",
+                            "objective": "结构化领域排序",
+                            "status": "completed",
+                            "semantic_artifacts": [
+                                {
+                                    "type": "ranked_domains",
+                                    "topic": "人形机器人",
+                                    "groups": [
+                                        {
+                                            "tier": 1,
+                                            "domains": [
+                                                {
+                                                    "label": "机器人执行器",
+                                                    "board_queries": ["机器人执行器"],
+                                                    "mapping_type": "catalog_binding",
+                                                    "rationale": "执行器是核心环节",
+                                                    "unresolved_parts": [],
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
         },
         conversation_id="conversation",
     )
-    domain_artifact = next(
-        item
-        for item in artifacts
-        if item.resource_type == ResourceType.DOMAIN_COLLECTION
-    )
+    domain_artifact = next(item for item in artifacts if item.resource_type == ResourceType.DOMAIN_COLLECTION)
     assert domain_artifact.payload["domains"][0]["label"] == "机器人执行器"
-    assert context.turns[0].terminal_artifacts[0].artifact_id == (
-        domain_artifact.artifact_id
-    )
+    assert context.turns[0].terminal_artifacts[0].artifact_id == (domain_artifact.artifact_id)
     assert "answer" not in domain_artifact.model_dump_json().lower()
 
 
@@ -2427,9 +2652,7 @@ def test_program_defaults_are_recorded_not_model_invented() -> None:
         result_selection=None,
         current_year=2026,
     )
-    assert {
-        item.field_path for item in normalized.assumptions
-    } == {
+    assert {item.field_path for item in normalized.assumptions} == {
         "/output/language",
         "/output/format",
         "/output/include_assumptions",
@@ -2448,13 +2671,8 @@ def test_program_defaults_are_recorded_not_model_invented() -> None:
         result_selection=None,
         current_year=2026,
     )
-    assert confirmed.execution_parameters["mainline_strategy"] == (
-        "confirmed_mainline"
-    )
-    assert any(
-        item.field_path == "/mainline_strategy"
-        for item in confirmed.assumptions
-    )
+    assert confirmed.execution_parameters["mainline_strategy"] == ("confirmed_mainline")
+    assert any(item.field_path == "/mainline_strategy" for item in confirmed.assumptions)
 
     early = normalize_capability_intent(
         node_id="decision-early",
@@ -2468,34 +2686,31 @@ def test_program_defaults_are_recorded_not_model_invented() -> None:
         result_selection=None,
         current_year=2026,
     )
-    assert early.execution_parameters["mainline_strategy"] == (
-        "early_positioning"
-    )
-    assert not any(
-        item.field_path == "/mainline_strategy"
-        for item in early.assumptions
-    )
+    assert early.execution_parameters["mainline_strategy"] == ("early_positioning")
+    assert not any(item.field_path == "/mainline_strategy" for item in early.assumptions)
 
 
 def test_planner_context_deduplicates_retries_and_excludes_current_request() -> None:
-    context = ConversationContextV2(turns=(
-        TurnSummaryV2(
-            run_id="filter",
-            request_summary="按财务条件筛选这些股票",
-        ),
-        TurnSummaryV2(
-            run_id="decision-failed",
-            request_summary="通过的这些股票，哪些现在就能买？",
-        ),
-        TurnSummaryV2(
-            run_id="decision-succeeded",
-            request_summary="  通过的这些股票，哪些现在就能买？  ",
-        ),
-        TurnSummaryV2(
-            run_id="other",
-            request_summary="解释筛选口径",
-        ),
-    ))
+    context = ConversationContextV2(
+        turns=(
+            TurnSummaryV2(
+                run_id="filter",
+                request_summary="按财务条件筛选这些股票",
+            ),
+            TurnSummaryV2(
+                run_id="decision-failed",
+                request_summary="通过的这些股票，哪些现在就能买？",
+            ),
+            TurnSummaryV2(
+                run_id="decision-succeeded",
+                request_summary="  通过的这些股票，哪些现在就能买？  ",
+            ),
+            TurnSummaryV2(
+                run_id="other",
+                request_summary="解释筛选口径",
+            ),
+        )
+    )
 
     deduplicated = context.planner_payload()
     assert [turn["run_id"] for turn in deduplicated["turns"]] == [
@@ -2528,7 +2743,8 @@ def test_real_35_candidate_decision_compiles_one_snapshot_and_every_stock() -> N
     assert calls[1].tool_name == "evaluate_market_mainline_gate"
     assert tuple(call.arguments["symbols"] for call in calls[2:]) == symbols
     assert all(
-        call.result_bindings == (
+        call.result_bindings
+        == (
             ("market_mainline_snapshot", "market_mainline_snapshot"),
             ("market_mainline_assessment", "market_mainline_gate"),
             ("market_mainline_model_error", "market_mainline_gate"),
@@ -2557,19 +2773,21 @@ def test_company_evidence_coverage_counts_every_terminal_candidate() -> None:
     execution = TaskExecutionResult(
         task=resolved,
         status="completed",
-        derived_results=[{
-            "processor": "company_theme_evidence_analysis",
-            "result": {
-                "success": True,
-                "partial": False,
-                "candidate_scope": "candidate_collection",
-                "company_results": [
-                    {"symbol": "000001", "verdict": "pass"},
-                    {"symbol": "000002", "verdict": "fail"},
-                    {"symbol": "000003", "verdict": "insufficient"},
-                ],
-            },
-        }],
+        derived_results=[
+            {
+                "processor": "company_theme_evidence_analysis",
+                "result": {
+                    "success": True,
+                    "partial": False,
+                    "candidate_scope": "candidate_collection",
+                    "company_results": [
+                        {"symbol": "000001", "verdict": "pass"},
+                        {"symbol": "000002", "verdict": "fail"},
+                        {"symbol": "000003", "verdict": "insufficient"},
+                    ],
+                },
+            }
+        ],
         output_entities=(SecurityEntity(symbol="000001", name="甲公司"),),
     )
 

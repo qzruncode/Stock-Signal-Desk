@@ -83,7 +83,7 @@ def _request_rows(code: str, dimension: str) -> list[dict[str, Any]]:
         timeout=httpx.Timeout(12.0, connect=3.0),
     )
     response.raise_for_status()
-    rows = ((response.json().get("result") or {}).get("data") or [])
+    rows = (response.json().get("result") or {}).get("data") or []
     if not rows:
         raise RuntimeError(f"东方财富没有返回{_LABELS[dimension]}同行数据")
     return [row for row in rows if isinstance(row, dict)]
@@ -152,17 +152,19 @@ def _profitability_row(row: dict[str, Any]) -> dict[str, Any]:
     years = [base_year - 3, base_year - 2, base_year - 1] if base_year else [None, None, None]
     annual = []
     for year, suffix in zip(years, ("L3", "L2", "L1")):
-        annual.append({
-            "year": year,
-            "roe_pct": _number(row.get(f"ROEPJ_{suffix}")),
-            "net_margin_pct": _number(row.get(f"XSJLL_{suffix}")),
-            "asset_turnover": (
-                round(value / 100, 6) if (value := _number(row.get(f"TOAZZL_{suffix}"))) is not None else None
-            ),
-            "equity_multiplier": (
-                round(value / 100, 6) if (value := _number(row.get(f"QYCS_{suffix}"))) is not None else None
-            ),
-        })
+        annual.append(
+            {
+                "year": year,
+                "roe_pct": _number(row.get(f"ROEPJ_{suffix}")),
+                "net_margin_pct": _number(row.get(f"XSJLL_{suffix}")),
+                "asset_turnover": (
+                    round(value / 100, 6) if (value := _number(row.get(f"TOAZZL_{suffix}"))) is not None else None
+                ),
+                "equity_multiplier": (
+                    round(value / 100, 6) if (value := _number(row.get(f"QYCS_{suffix}"))) is not None else None
+                ),
+            }
+        )
     return {
         "symbol": str(row.get("CORRE_SECURITY_CODE") or ""),
         "name": str(row.get("CORRE_SECURITY_NAME") or ""),
@@ -238,7 +240,9 @@ def _dimension_result(code: str, dimension: str, rows: list[dict[str, Any]]) -> 
     peers = [item for item in normalized if item["symbol"] not in {code, "行业中值", "行业平均"}]
     sample_size = max((_integer(row.get("TOTAL_COUNT")) or 0 for row in rows), default=0)
     if dimension == "scale":
-        sample_size = max(sample_size, len([item for item in normalized if item["symbol"] not in {"行业中值", "行业平均"}]))
+        sample_size = max(
+            sample_size, len([item for item in normalized if item["symbol"] not in {"行业中值", "行业平均"}])
+        )
     report_dates = [_date_text(row.get("REPORT_DATE")) for row in rows]
     report_date = max((value for value in report_dates if value), default=None)
     ranking = {
@@ -306,9 +310,17 @@ def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
                 cache_detail[key] = False
                 errors.append(f"{_LABELS[key]}: {exc}")
     dimensions = {
-        key: _dimension_result(code, key, raw[key]) if raw[key] else {
-            "label": _LABELS[key], "success": False, "target": None, "top_peers": [], "sample_size": 0,
-        }
+        key: (
+            _dimension_result(code, key, raw[key])
+            if raw[key]
+            else {
+                "label": _LABELS[key],
+                "success": False,
+                "target": None,
+                "top_peers": [],
+                "sample_size": 0,
+            }
+        )
         for key in requested
     }
     success = any(item.get("success") for item in dimensions.values())
@@ -332,10 +344,7 @@ def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
         "errors": errors,
         "data_time": data_time,
         "freshness_unknown": success and data_time is None,
-        "is_stale": (
-            datetime.fromisoformat(data_time).date() < expected_annual
-            if data_time else None
-        ),
+        "is_stale": (datetime.fromisoformat(data_time).date() < expected_annual if data_time else None),
         "fallback_used": False,
         "cache_detail": cache_detail,
         "_cached": bool(cache_detail) and all(cache_detail.values()),

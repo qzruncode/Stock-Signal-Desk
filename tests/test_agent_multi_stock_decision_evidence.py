@@ -63,20 +63,31 @@ def test_decision_evidence_collects_all_seven_dimensions_without_early_stop() ->
             lambda payload: payload,
         )
         for dimension in (
-            "profile", "financials", "business_segments", "valuation", "consensus",
-            "peer_comparison", "risk_events", "announcements", "capital_flow",
+            "profile",
+            "financials",
+            "business_segments",
+            "valuation",
+            "consensus",
+            "peer_comparison",
+            "risk_events",
+            "announcements",
+            "capital_flow",
         )
     }
 
-    with patch(
-        "src.tools.get_multi_stock_decision_evidence.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.get_multi_stock_decision_evidence.get_multi_stock_snapshot",
-        return_value=snapshot,
-    ), patch(
-        "src.tools.get_multi_stock_decision_evidence._callers",
-        return_value=callers,
+    with (
+        patch(
+            "src.tools.get_multi_stock_decision_evidence.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.get_multi_stock_decision_evidence.get_multi_stock_snapshot",
+            return_value=snapshot,
+        ),
+        patch(
+            "src.tools.get_multi_stock_decision_evidence._callers",
+            return_value=callers,
+        ),
     ):
         result = get_multi_stock_decision_evidence("甲公司,乙公司", thesis="测试产业")
 
@@ -104,15 +115,19 @@ def test_decision_evidence_marks_a_failed_dimension_instead_of_dropping_it() -> 
     callers = {
         "profile": (fail, {}, lambda payload: payload),
     }
-    with patch(
-        "src.tools.get_multi_stock_decision_evidence.resolve_securities_csv",
-        return_value=(resolved, []),
-    ), patch(
-        "src.tools.get_multi_stock_decision_evidence.get_multi_stock_snapshot",
-        return_value=snapshot,
-    ), patch(
-        "src.tools.get_multi_stock_decision_evidence._callers",
-        return_value=callers,
+    with (
+        patch(
+            "src.tools.get_multi_stock_decision_evidence.resolve_securities_csv",
+            return_value=(resolved, []),
+        ),
+        patch(
+            "src.tools.get_multi_stock_decision_evidence.get_multi_stock_snapshot",
+            return_value=snapshot,
+        ),
+        patch(
+            "src.tools.get_multi_stock_decision_evidence._callers",
+            return_value=callers,
+        ),
     ):
         result = get_multi_stock_decision_evidence("甲公司")
 
@@ -150,29 +165,35 @@ def test_decision_evidence_treats_verified_zero_consensus_as_complete() -> None:
 
 
 def test_event_compactors_keep_raw_timeline_without_semantic_labels() -> None:
-    announcements = _compact_announcements({
-        "success": True,
-        "items": [
-            {
-                "title": f"事项进展公告{index}",
-                "notice_type": "再融资",
-                "publish_date": f"2026-{(index % 12) + 1:02d}-01",
-                "importance": "medium",
-                "url": f"https://example.com/a{index}",
-            }
-            for index in range(25)
-        ],
-    })
-    risks = _compact_risks({
-        "success": True,
-        "items": [{
-            "title": "审核问询函",
-            "date": "2026-04-01",
-            "summary": "交易所提出审核问题",
-            "semantic_status": "model_required",
-            "requires_fulltext_verification": True,
-        }],
-    })
+    announcements = _compact_announcements(
+        {
+            "success": True,
+            "items": [
+                {
+                    "title": f"事项进展公告{index}",
+                    "notice_type": "再融资",
+                    "publish_date": f"2026-{(index % 12) + 1:02d}-01",
+                    "importance": "medium",
+                    "url": f"https://example.com/a{index}",
+                }
+                for index in range(25)
+            ],
+        }
+    )
+    risks = _compact_risks(
+        {
+            "success": True,
+            "items": [
+                {
+                    "title": "审核问询函",
+                    "date": "2026-04-01",
+                    "summary": "交易所提出审核问题",
+                    "semantic_status": "model_required",
+                    "requires_fulltext_verification": True,
+                }
+            ],
+        }
+    )
 
     assert len(announcements["items"]) == 20
     assert risks["items"][0]["summary"] == "交易所提出审核问题"

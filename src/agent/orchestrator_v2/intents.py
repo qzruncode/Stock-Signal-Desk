@@ -96,18 +96,14 @@ class FundamentalAnalysisIntent(StrictModel):
 class ValuationAnalysisIntent(StrictModel):
     include_history: bool | None = None
     consensus_metric: Literal["eps", "revenue", "net_profit"] | None = None
-    peer_dimension: Literal[
-        "valuation", "growth", "profitability", "quality", "all"
-    ] | None = None
+    peer_dimension: Literal["valuation", "growth", "profitability", "quality", "all"] | None = None
 
 
 class FinancialStatementAnalysisIntent(StrictModel):
     periods: int | None = Field(default=None, ge=1, le=20)
 
 
-NewsTopic = Literal[
-    "market", "company", "announcement", "research", "macro", "industry", "social"
-]
+NewsTopic = Literal["market", "company", "announcement", "research", "macro", "industry", "social"]
 
 
 class NewsAnalysisIntent(StrictModel):
@@ -149,9 +145,7 @@ class SocialSentimentAnalysisIntent(StrictModel):
 
 
 class StockComparisonIntent(StrictModel):
-    dimension: Literal[
-        "valuation", "growth", "profitability", "quality", "all"
-    ] | None = None
+    dimension: Literal["valuation", "growth", "profitability", "quality", "all"] | None = None
     include_peers: bool | None = None
 
 
@@ -210,12 +204,7 @@ class MacroAnalysisIntent(StrictModel):
 
     @model_validator(mode="after")
     def _has_source(self) -> "MacroAnalysisIntent":
-        if not (
-            self.indicators
-            or self.bond_yield
-            or self.monetary_operations
-            or self.research_query
-        ):
+        if not (self.indicators or self.bond_yield or self.monetary_operations or self.research_query):
             raise ValueError("at least one macro source is required")
         if self.bond_yield and (not self.country or not self.term):
             raise ValueError("bond_yield requires country and term")
@@ -247,8 +236,7 @@ class IndustryResearchIntent(StrictModel):
 class ThemeStockDiscoveryIntent(StrictModel):
     selection_mode: Literal["named_subset", "all_bound"] = Field(
         description=(
-            "named_subset 表示只消费用户明确点名的领域；all_bound 表示用户明确"
-            "要求消费上游结构化集合中的全部领域。"
+            "named_subset 表示只消费用户明确点名的领域；all_bound 表示用户明确" "要求消费上游结构化集合中的全部领域。"
         ),
     )
     themes: tuple[str, ...] = Field(default_factory=tuple, max_length=12)
@@ -257,9 +245,7 @@ class ThemeStockDiscoveryIntent(StrictModel):
     @field_validator("themes")
     @classmethod
     def _themes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(
-            item.strip() for item in value if item.strip()
-        ))
+        return tuple(dict.fromkeys(item.strip() for item in value if item.strip()))
 
     @model_validator(mode="after")
     def _selection_contract(self) -> "ThemeStockDiscoveryIntent":
@@ -459,8 +445,17 @@ class BatchAnalysisIntent(ConfirmationSignal):
 
 class BatchRunManagementIntent(ConfirmationSignal):
     action: Literal[
-        "list", "status", "detail", "report", "pause", "continue",
-        "resume_failed", "regenerate_report", "notify", "stop", "delete",
+        "list",
+        "status",
+        "detail",
+        "report",
+        "pause",
+        "continue",
+        "resume_failed",
+        "regenerate_report",
+        "notify",
+        "stop",
+        "delete",
     ]
     run_id: str | None = Field(default=None, min_length=1, max_length=80)
     limit: int | None = Field(default=None, ge=1, le=100)

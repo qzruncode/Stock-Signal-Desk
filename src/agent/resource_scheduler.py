@@ -47,18 +47,18 @@ async def agent_resource_lease(
         if lease_id is not None:
             break
         if asyncio.get_running_loop().time() >= deadline:
-            raise ResourceCapacityExceeded(
-                f"resource capacity exhausted: {resource_name}"
-            )
+            raise ResourceCapacityExceeded(f"resource capacity exhausted: {resource_name}")
         await asyncio.sleep(0.1)
     try:
         yield lease_id
     finally:
-        await asyncio.shield(asyncio.to_thread(
-            database.release_agent_resource,
-            lease_id,
-            lease_owner=lease_owner,
-        ))
+        await asyncio.shield(
+            asyncio.to_thread(
+                database.release_agent_resource,
+                lease_id,
+                lease_owner=lease_owner,
+            )
+        )
 
 
 __all__ = ["ResourceCapacityExceeded", "agent_resource_lease"]

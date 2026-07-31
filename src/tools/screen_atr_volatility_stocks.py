@@ -49,18 +49,21 @@ TOOL = ToolSpec(
         "缺少条件、超出能力或数据覆盖不完整时失败关闭，禁止静默套用固定示例参数。"
         "仅当用户明确要求把完整筛选结果保存为自选分组时，才传 save_group_name。"
     ),
-    parameters=object_schema({
-        "screen_spec": quantitative_screen_spec_schema(),
-        "refresh_if_stale": {
-            "type": "boolean",
-            "description": "必须为 true；先刷新到最近交易日再筛选。",
-            "default": True,
+    parameters=object_schema(
+        {
+            "screen_spec": quantitative_screen_spec_schema(),
+            "refresh_if_stale": {
+                "type": "boolean",
+                "description": "必须为 true；先刷新到最近交易日再筛选。",
+                "default": True,
+            },
+            "save_group_name": {
+                "type": "string",
+                "description": "可选；用户明确要求保存完整结果时提供目标自选分组名称",
+            },
         },
-        "save_group_name": {
-            "type": "string",
-            "description": "可选；用户明确要求保存完整结果时提供目标自选分组名称",
-        },
-    }, required=("screen_spec", "refresh_if_stale")),
+        required=("screen_spec", "refresh_if_stale"),
+    ),
     executor=screen_atr_volatility_stocks,
     category="analysis",
 )

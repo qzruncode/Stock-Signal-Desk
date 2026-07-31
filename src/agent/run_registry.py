@@ -69,10 +69,7 @@ def _json_safe(value: Any, *, depth: int = 0) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Mapping):
-        return {
-            str(key): _json_safe(item, depth=depth + 1)
-            for key, item in value.items()
-        }
+        return {str(key): _json_safe(item, depth=depth + 1) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item, depth=depth + 1) for item in value]
     model_dump = getattr(value, "model_dump", None)
@@ -83,11 +80,7 @@ def _json_safe(value: Any, *, depth: int = 0) -> Any:
 
 def serialize_assistant_chunk(chunk: AssistantStreamChunk) -> dict[str, Any]:
     """Serialize assistant-stream dataclasses without private implementation APIs."""
-    return {
-        str(key): _json_safe(value)
-        for key, value in vars(chunk).items()
-        if not str(key).startswith("_")
-    }
+    return {str(key): _json_safe(value) for key, value in vars(chunk).items() if not str(key).startswith("_")}
 
 
 def deserialize_assistant_chunk(
@@ -169,9 +162,7 @@ class RunBroadcaster:
         *,
         run_id: str | None = None,
         event_sink: Callable[[str, int, AssistantStreamChunk], None] | None = None,
-        event_batch_sink: (
-            Callable[[str, int, List[AssistantStreamChunk]], None] | None
-        ) = None,
+        event_batch_sink: Callable[[str, int, List[AssistantStreamChunk]], None] | None = None,
         initial_sequence: int = 0,
     ) -> None:
         self._subscribers: Set[asyncio.Queue] = set()
@@ -201,16 +192,12 @@ class RunBroadcaster:
     def append_reasoning(self, reasoning_delta: str) -> None:
         self._emit(ReasoningDeltaChunk(reasoning_delta=reasoning_delta))
 
-    async def add_tool_call(
-        self, tool_name: str, tool_call_id: Optional[str] = None
-    ) -> _BroadcasterToolCallController:
+    async def add_tool_call(self, tool_name: str, tool_call_id: Optional[str] = None) -> _BroadcasterToolCallController:
         # 保持 async 签名，与 RunController.add_tool_call 一致，标准任务流水线里
         # 用 await 调用,无需改调用方。
         if tool_call_id is None:
             tool_call_id = f"call_{asyncio.get_running_loop().time()}"
-        self._emit(
-            ToolCallBeginChunk(tool_call_id=tool_call_id, tool_name=tool_name)
-        )
+        self._emit(ToolCallBeginChunk(tool_call_id=tool_call_id, tool_name=tool_name))
         return _BroadcasterToolCallController(self, tool_call_id, tool_name)
 
     def add_tool_result(self, tool_call_id: str, result: Any) -> None:
@@ -284,9 +271,7 @@ class RunBroadcaster:
         if self._pending_events:
             await self._flush_pending()
         if self._persistence_error is not None:
-            raise RuntimeError(
-                "durable Agent event persistence failed"
-            ) from self._persistence_error
+            raise RuntimeError("durable Agent event persistence failed") from self._persistence_error
         if self._finish_requested:
             self._finish_now()
 
@@ -302,17 +287,10 @@ class RunBroadcaster:
 
     def _emit(self, chunk: AssistantStreamChunk) -> None:
         if self._persistence_error is not None:
-            raise RuntimeError(
-                "durable Agent event persistence is unavailable"
-            ) from self._persistence_error
-        if self._run_id is not None and (
-            self._event_batch_sink is not None
-            or self._event_sink is not None
-        ):
+            raise RuntimeError("durable Agent event persistence is unavailable") from self._persistence_error
+        if self._run_id is not None and (self._event_batch_sink is not None or self._event_sink is not None):
             self._pending_events.append(chunk)
-            self._schedule_flush(
-                immediate=len(self._pending_events) >= _EVENT_BATCH_MAX_CHUNKS
-            )
+            self._schedule_flush(immediate=len(self._pending_events) >= _EVENT_BATCH_MAX_CHUNKS)
             return
         self._publish_committed_batch([chunk])
 
@@ -367,12 +345,9 @@ class RunBroadcaster:
         async with self._flush_lock:
             while self._pending_events:
                 batch = self._pending_events[:_EVENT_BATCH_MAX_CHUNKS]
-                del self._pending_events[:len(batch)]
+                del self._pending_events[: len(batch)]
                 start_sequence = self._history_next_index
-                if (
-                    self._event_batch_sink is not None
-                    and self._run_id is not None
-                ):
+                if self._event_batch_sink is not None and self._run_id is not None:
                     await asyncio.to_thread(
                         self._event_batch_sink,
                         self._run_id,
@@ -446,16 +421,11 @@ class RunBroadcaster:
                     queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-            queue.put_nowait(ErrorChunk(
-                error=(
-                    "subscriber_backpressure: reconnect with the last "
-                    "durable event cursor"
-                )
-            ))
-            queue.put_nowait(None)
-            logger.warning(
-                "[RunBroadcaster] slow subscriber disconnected for durable replay"
+            queue.put_nowait(
+                ErrorChunk(error=("subscriber_backpressure: reconnect with the last " "durable event cursor"))
             )
+            queue.put_nowait(None)
+            logger.warning("[RunBroadcaster] slow subscriber disconnected for durable replay")
             return False
 
     # 兼容 _flush_substreams (chat.py:423) 访问 controller._stream_tasks:
@@ -517,11 +487,7 @@ class ActiveRun:
             if self.task.done():
                 break
             try:
-                cancel_requested = (
-                    await self.cancel_callback()
-                    if self.cancel_callback is not None
-                    else False
-                )
+                cancel_requested = await self.cancel_callback() if self.cancel_callback is not None else False
                 now = asyncio.get_running_loop().time()
                 if (
                     not cancel_requested
@@ -633,10 +599,7 @@ class ActiveRunRegistry:
                 events=[
                     {
                         "event_type": str(
-                            (payload := serialize_assistant_chunk(chunk)).get(
-                                "type"
-                            )
-                            or type(chunk).__name__
+                            (payload := serialize_assistant_chunk(chunk)).get("type") or type(chunk).__name__
                         ),
                         "payload": payload,
                     }
@@ -644,16 +607,12 @@ class ActiveRunRegistry:
                 ],
             )
             if not persisted:
-                raise RuntimeError(
-                    f"durable Agent run disappeared while writing events: {run_id}"
-                )
+                raise RuntimeError(f"durable Agent run disappeared while writing events: {run_id}")
         except Exception:
             self._event_batch_failures += 1
             raise
         finally:
-            self._event_write_ms_total += (
-                datetime.now() - started_at
-            ).total_seconds() * 1000
+            self._event_write_ms_total += (datetime.now() - started_at).total_seconds() * 1000
         self._event_batches += 1
         self._event_chunks += len(chunks)
 
@@ -681,10 +640,7 @@ class ActiveRunRegistry:
         )
         if record is None:
             raise RuntimeError("durable Agent run no longer exists")
-        if (
-            record.get("worker_id") != self._worker_id
-            and record.get("status") in {"queued", "running", "recovering"}
-        ):
+        if record.get("worker_id") != self._worker_id and record.get("status") in {"queued", "running", "recovering"}:
             raise RuntimeError("durable Agent run is owned by another worker")
         return bool(record.get("cancel_requested"))
 
@@ -759,36 +715,20 @@ class ActiveRunRegistry:
                         )
                     return None
             elif max_active_runs is not None and active_count >= max_active_runs:
-                raise RunCapacityExceeded(
-                    f"active Agent run capacity exhausted ({active_count}/{max_active_runs})"
-                )
+                raise RunCapacityExceeded(f"active Agent run capacity exhausted ({active_count}/{max_active_runs})")
 
             broadcaster = RunBroadcaster(
                 run_id=claimed_run_id if self._database is not None else None,
-                event_batch_sink=(
-                    self._persist_events
-                    if self._database is not None
-                    else None
-                ),
+                event_batch_sink=(self._persist_events if self._database is not None else None),
             )
             run = ActiveRun(
                 conversation_id=conversation_id,
                 broadcaster=broadcaster,
                 run_id=claimed_run_id,
-                attempt=(
-                    int((claim.get("run") or {}).get("attempt") or 1)
-                    if self._database is not None
-                    else 1
-                ),
-                lease_callback=(
-                    (lambda: self._heartbeat(claimed_run_id))
-                    if self._database is not None
-                    else None
-                ),
+                attempt=(int((claim.get("run") or {}).get("attempt") or 1) if self._database is not None else 1),
+                lease_callback=((lambda: self._heartbeat(claimed_run_id)) if self._database is not None else None),
                 cancel_callback=(
-                    (lambda: self._cancel_requested(claimed_run_id))
-                    if self._database is not None
-                    else None
+                    (lambda: self._cancel_requested(claimed_run_id)) if self._database is not None else None
                 ),
             )
             self._runs[conversation_id] = run
@@ -985,23 +925,34 @@ class ActiveRunRegistry:
                 "batches": self._event_batches,
                 "chunks": self._event_chunks,
                 "batch_failures": self._event_batch_failures,
-                "average_batch_size": round(
-                    self._event_chunks / self._event_batches,
-                    3,
-                ) if self._event_batches else 0.0,
-                "average_write_ms": round(
-                    self._event_write_ms_total / self._event_batches,
-                    3,
-                ) if self._event_batches else 0.0,
+                "average_batch_size": (
+                    round(
+                        self._event_chunks / self._event_batches,
+                        3,
+                    )
+                    if self._event_batches
+                    else 0.0
+                ),
+                "average_write_ms": (
+                    round(
+                        self._event_write_ms_total / self._event_batches,
+                        3,
+                    )
+                    if self._event_batches
+                    else 0.0
+                ),
             },
             "execution_cache": {
                 "hits": self._cache_hits,
                 "misses": self._cache_misses,
-                "hit_rate": round(
-                    self._cache_hits
-                    / (self._cache_hits + self._cache_misses),
-                    6,
-                ) if self._cache_hits + self._cache_misses else None,
+                "hit_rate": (
+                    round(
+                        self._cache_hits / (self._cache_hits + self._cache_misses),
+                        6,
+                    )
+                    if self._cache_hits + self._cache_misses
+                    else None
+                ),
             },
         }
         if self._database is not None:
@@ -1050,11 +1001,7 @@ class ActiveRunRegistry:
                 pass
         for task in cleanup_tasks:
             task.cancel()
-        lease_tasks = [
-            run.lease_task
-            for run in runs
-            if run.lease_task is not None
-        ]
+        lease_tasks = [run.lease_task for run in runs if run.lease_task is not None]
         if lease_tasks:
             await asyncio.gather(*lease_tasks, return_exceptions=True)
         if cleanup_tasks:

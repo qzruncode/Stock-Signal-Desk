@@ -22,9 +22,7 @@ from src.storage.models import AgentRun, AgentRunTrace
 @pytest.fixture
 def database(tmp_path: Path):
     DatabaseManager.reset_instance()
-    manager = DatabaseManager(
-        db_url=f"sqlite:///{tmp_path / 'agent-runtime.db'}"
-    )
+    manager = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'agent-runtime.db'}")
     try:
         yield manager
     finally:
@@ -59,15 +57,17 @@ def test_cross_thread_admission_enforces_one_global_slot(database):
     second = _conversation(database, "capacity-b")
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(
-            lambda item: _claim(
-                database,
-                item[0],
-                run_id=item[1],
-                max_active_runs=1,
-            ),
-            [(first, "run-a"), (second, "run-b")],
-        ))
+        results = list(
+            executor.map(
+                lambda item: _claim(
+                    database,
+                    item[0],
+                    run_id=item[1],
+                    max_active_runs=1,
+                ),
+                [(first, "run-a"), (second, "run-b")],
+            )
+        )
 
     assert sum(result["claimed"] is True for result in results) == 1
     rejected = next(result for result in results if not result["claimed"])
@@ -94,10 +94,14 @@ def test_goal_state_is_persisted_as_authoritative_run_trace(database):
     )
 
     with database.session_scope() as session:
-        record = session.query(AgentRunTrace).filter_by(
-            run_id="run-goal-state",
-            orchestrator_mode="unified",
-        ).one()
+        record = (
+            session.query(AgentRunTrace)
+            .filter_by(
+                run_id="run-goal-state",
+                orchestrator_mode="unified",
+            )
+            .one()
+        )
         assert json.loads(record.goal_state_json) == goal_state
 
 
@@ -238,10 +242,7 @@ def test_run_event_batches_commit_cursor_and_state_together(database):
     )
     assert batch is not None
     assert batch["run"]["event_cursor"] == 3
-    assert [
-        event["payload"]["text_delta"]
-        for event in batch["events"]
-    ] == ["b", "c"]
+    assert [event["payload"]["text_delta"] for event in batch["events"]] == ["b", "c"]
 
 
 def test_compiled_checkpoint_is_fenced_by_owner_and_attempt(database):
@@ -262,9 +263,7 @@ def test_compiled_checkpoint_is_fenced_by_owner_and_attempt(database):
         attempt=1,
         checkpoint=checkpoint,
     )
-    assert database.get_agent_run(
-        run_id="run-checkpoint"
-    )["context_snapshot"] == checkpoint
+    assert database.get_agent_run(run_id="run-checkpoint")["context_snapshot"] == checkpoint
     assert not database.save_agent_run_checkpoint(
         "run-checkpoint",
         worker_id="worker-b",
@@ -282,9 +281,7 @@ def test_compiled_checkpoint_is_fenced_by_owner_and_attempt(database):
         status="failed",
         error_code="test",
     )
-    assert database.get_agent_run(
-        run_id="run-checkpoint"
-    )["context_snapshot"] is None
+    assert database.get_agent_run(run_id="run-checkpoint")["context_snapshot"] is None
 
 
 def test_terminal_publisher_flushes_events_before_terminal_commit():
@@ -320,10 +317,12 @@ def test_terminal_publisher_flushes_events_before_terminal_commit():
         state={},
         worker_id="worker",
     )
-    asyncio.run(publisher.commit(
-        status="completed",
-        final_text="done",
-    ))
+    asyncio.run(
+        publisher.commit(
+            status="completed",
+            final_text="done",
+        )
+    )
 
     assert order == ["events", "terminal"]
 
@@ -430,18 +429,24 @@ def test_step_ledger_fences_stale_workers_and_key_collisions(database):
     )
 
     assert claim["attempt"] == 1
-    assert database.finish_agent_step(
-        "fenced-step-key",
-        result={"success": True},
-        worker_id="worker-b",
-        attempt=1,
-    ) is False
-    assert database.finish_agent_step(
-        "fenced-step-key",
-        result={"success": True},
-        worker_id="worker-a",
-        attempt=2,
-    ) is False
+    assert (
+        database.finish_agent_step(
+            "fenced-step-key",
+            result={"success": True},
+            worker_id="worker-b",
+            attempt=1,
+        )
+        is False
+    )
+    assert (
+        database.finish_agent_step(
+            "fenced-step-key",
+            result={"success": True},
+            worker_id="worker-a",
+            attempt=2,
+        )
+        is False
+    )
     with pytest.raises(RuntimeError, match="different execution"):
         database.claim_agent_step(
             idempotency_key="fenced-step-key",
@@ -456,12 +461,15 @@ def test_step_ledger_fences_stale_workers_and_key_collisions(database):
             lease_seconds=30,
             max_attempts=2,
         )
-    assert database.finish_agent_step(
-        "fenced-step-key",
-        result={"success": True},
-        worker_id="worker-a",
-        attempt=1,
-    ) is True
+    assert (
+        database.finish_agent_step(
+            "fenced-step-key",
+            result={"success": True},
+            worker_id="worker-a",
+            attempt=1,
+        )
+        is True
+    )
 
 
 def test_effect_outbox_is_stable_across_replay(database):
@@ -531,9 +539,7 @@ def test_terminal_commit_rolls_back_all_published_state_on_error(
             "latest_stage": {"status": "succeeded"},
         },
     )
-    assert [message.content for message in database.get_chat_messages(
-        conversation_id
-    )] == ["问题", "答案"]
+    assert [message.content for message in database.get_chat_messages(conversation_id)] == ["问题", "答案"]
     assert database.get_agent_run(run_id="run-terminal")["status"] == "completed"
 
 
@@ -573,10 +579,7 @@ def test_terminal_commit_rejects_a_stale_recovered_worker(database):
 
     assert stale_commit is False
     assert current_commit is True
-    assert [
-        message.content
-        for message in database.get_chat_messages(conversation_id)
-    ] == ["current"]
+    assert [message.content for message in database.get_chat_messages(conversation_id)] == ["current"]
 
 
 def test_resource_slots_rate_limit_and_budget_are_shared(database):
@@ -589,12 +592,15 @@ def test_resource_slots_rate_limit_and_budget_are_shared(database):
         lease_seconds=30,
     )
     assert first_lease
-    assert database.try_acquire_agent_resource(
-        resource_name="provider:test",
-        lease_owner="owner-b",
-        slots=1,
-        lease_seconds=30,
-    ) is None
+    assert (
+        database.try_acquire_agent_resource(
+            resource_name="provider:test",
+            lease_owner="owner-b",
+            slots=1,
+            lease_seconds=30,
+        )
+        is None
+    )
     assert database.release_agent_resource(
         first_lease,
         lease_owner="owner-a",
@@ -665,17 +671,17 @@ def test_model_runtime_retries_only_transient_start_failures(
         model="test-model",
         token_estimator=lambda messages, model: 10,
     )
-    result = asyncio.run(runtime.complete(
-        completion,
-        messages=[{"role": "user", "content": "hello"}],
-        max_tokens=20,
-    ))
+    result = asyncio.run(
+        runtime.complete(
+            completion,
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=20,
+        )
+    )
 
     assert result["choices"][0]["message"]["content"] == "ok"
     assert calls == 2
-    assert database.get_agent_run(
-        run_id="run-model-retry"
-    )["provider_call_count"] == 2
+    assert database.get_agent_run(run_id="run-model-retry")["provider_call_count"] == 2
 
 
 def test_model_stream_close_releases_the_shared_provider_slot(

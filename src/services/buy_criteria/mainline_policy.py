@@ -81,11 +81,7 @@ def mainline_strategy_label(
     value: MainlineStrategyProfile | str,
 ) -> str:
     profile = normalize_mainline_strategy(value)
-    return (
-        "前瞻布局型"
-        if profile == MainlineStrategyProfile.EARLY_POSITIONING
-        else "确认型主线"
-    )
+    return "前瞻布局型" if profile == MainlineStrategyProfile.EARLY_POSITIONING else "确认型主线"
 
 
 __all__ = [

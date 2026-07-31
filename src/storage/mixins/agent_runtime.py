@@ -105,9 +105,7 @@ class AgentRuntimeMixin:
         lease_expires_at = now + timedelta(seconds=max(5.0, lease_seconds))
 
         def _claim(session):
-            admission = select(AgentRuntimeControl).where(
-                AgentRuntimeControl.name == "run_admission"
-            )
+            admission = select(AgentRuntimeControl).where(AgentRuntimeControl.name == "run_admission")
             if not self._is_sqlite_engine:
                 admission = admission.with_for_update()
             control = session.execute(admission).scalars().first()
@@ -123,9 +121,9 @@ class AgentRuntimeMixin:
             # A second request for the same conversation is a resumable
             # conflict, not a capacity failure. Resolve this first so callers
             # receive the stable 409 path even when the shared pool is full.
-            existing = session.execute(
-                select(AgentRun).where(AgentRun.active_slot == conversation_id)
-            ).scalars().first()
+            existing = (
+                session.execute(select(AgentRun).where(AgentRun.active_slot == conversation_id)).scalars().first()
+            )
             if existing is not None:
                 return {
                     "claimed": False,
@@ -134,11 +132,10 @@ class AgentRuntimeMixin:
                 }
 
             if max_active_runs is not None:
-                active_count = session.execute(
-                    select(func.count(AgentRun.id)).where(
-                        AgentRun.active_slot.is_not(None)
-                    )
-                ).scalar() or 0
+                active_count = (
+                    session.execute(select(func.count(AgentRun.id)).where(AgentRun.active_slot.is_not(None))).scalar()
+                    or 0
+                )
                 if active_count >= max_active_runs:
                     return {
                         "claimed": False,
@@ -146,13 +143,16 @@ class AgentRuntimeMixin:
                         "active_count": int(active_count),
                     }
             if max_owner_active_runs is not None:
-                owner_active_count = session.execute(
-                    select(func.count(AgentRun.id)).where(
-                        AgentRun.active_slot.is_not(None),
-                        AgentRun.tenant_id == tenant_id,
-                        AgentRun.owner_id == owner_id,
-                    )
-                ).scalar() or 0
+                owner_active_count = (
+                    session.execute(
+                        select(func.count(AgentRun.id)).where(
+                            AgentRun.active_slot.is_not(None),
+                            AgentRun.tenant_id == tenant_id,
+                            AgentRun.owner_id == owner_id,
+                        )
+                    ).scalar()
+                    or 0
+                )
                 if owner_active_count >= max_owner_active_runs:
                     return {
                         "claimed": False,
@@ -199,9 +199,9 @@ class AgentRuntimeMixin:
             if run_id:
                 statement = statement.where(AgentRun.id == run_id)
             else:
-                statement = statement.where(
-                    AgentRun.conversation_id == conversation_id
-                ).order_by(AgentRun.created_at.desc())
+                statement = statement.where(AgentRun.conversation_id == conversation_id).order_by(
+                    AgentRun.created_at.desc()
+                )
             record = session.execute(statement).scalars().first()
             return _run_dict(record) if record is not None else None
 
@@ -232,9 +232,7 @@ class AgentRuntimeMixin:
             record.updated_at = now
             return True
 
-        return bool(
-            self._run_write_transaction("save_agent_run_checkpoint", _save)
-        )
+        return bool(self._run_write_transaction("save_agent_run_checkpoint", _save))
 
     def heartbeat_agent_run(
         self,
@@ -258,9 +256,7 @@ class AgentRuntimeMixin:
                 return _run_dict(record)
             record.worker_id = worker_id
             record.heartbeat_at = now
-            record.lease_expires_at = now + timedelta(
-                seconds=max(5.0, lease_seconds)
-            )
+            record.lease_expires_at = now + timedelta(seconds=max(5.0, lease_seconds))
             record.updated_at = now
             session.flush()
             return _run_dict(record)
@@ -271,9 +267,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _cancel(session):
-            statement = select(AgentRun).where(
-                AgentRun.active_slot == conversation_id
-            )
+            statement = select(AgentRun).where(AgentRun.active_slot == conversation_id)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -350,49 +344,29 @@ class AgentRuntimeMixin:
         if status not in _TERMINAL_RUN_STATUSES:
             raise ValueError(f"invalid terminal Agent run status: {status}")
         now = datetime.now()
-        normalized_messages = [
-            dict(message)
-            for message in messages
-            if isinstance(message, Mapping)
-        ]
+        normalized_messages = [dict(message) for message in messages if isinstance(message, Mapping)]
         trace_payload = dict(trace or {})
 
         def _commit(session):
             run_statement = select(AgentRun).where(AgentRun.id == run_id)
-            conversation_statement = select(ChatConversation).where(
-                ChatConversation.id == conversation_id
-            )
+            conversation_statement = select(ChatConversation).where(ChatConversation.id == conversation_id)
             if not self._is_sqlite_engine:
                 run_statement = run_statement.with_for_update()
-                conversation_statement = (
-                    conversation_statement.with_for_update()
-                )
+                conversation_statement = conversation_statement.with_for_update()
             run = session.execute(run_statement).scalars().first()
-            conversation = session.execute(
-                conversation_statement
-            ).scalars().first()
+            conversation = session.execute(conversation_statement).scalars().first()
             if run is None or conversation is None:
                 return False
             if run.status in _TERMINAL_RUN_STATUSES:
                 return run.status == status
             if (
                 run.status not in _ACTIVE_RUN_STATUSES
-                or (
-                    worker_id is not None
-                    and run.worker_id != worker_id
-                )
-                or (
-                    attempt is not None
-                    and int(run.attempt or 0) != int(attempt)
-                )
+                or (worker_id is not None and run.worker_id != worker_id)
+                or (attempt is not None and int(run.attempt or 0) != int(attempt))
             ):
                 return False
 
-            session.execute(
-                delete(ChatMessage).where(
-                    ChatMessage.conversation_id == conversation_id
-                )
-            )
+            session.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
             latest_preview = ""
             for sequence, message in enumerate(normalized_messages):
                 content = message.get("content")
@@ -401,45 +375,39 @@ class AgentRuntimeMixin:
                 created_at = message.get("created_at")
                 if not isinstance(created_at, datetime):
                     try:
-                        created_at = datetime.fromisoformat(
-                            str(created_at).replace("Z", "+00:00")
-                        )
+                        created_at = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
                     except (TypeError, ValueError):
                         created_at = now
-                session.add(ChatMessage(
-                    id=str(
-                        message.get("id")
-                        or f"{conversation_id}-{sequence}"
-                    )[:64],
-                    conversation_id=conversation_id,
-                    role=str(message.get("role") or "user")[:16],
-                    content=content_text,
-                    sequence=sequence,
-                    created_at=created_at,
-                ))
+                session.add(
+                    ChatMessage(
+                        id=str(message.get("id") or f"{conversation_id}-{sequence}")[:64],
+                        conversation_id=conversation_id,
+                        role=str(message.get("role") or "user")[:16],
+                        content=content_text,
+                        sequence=sequence,
+                        created_at=created_at,
+                    )
+                )
             conversation.preview_text = latest_preview[:200] if latest_preview else None
             if agent_context is not None:
                 conversation.agent_context_json = _json(dict(agent_context))
-            if (
-                generated_title
-                and conversation.title_source != "manual"
-            ):
+            if generated_title and conversation.title_source != "manual":
                 conversation.title = str(generated_title).strip()[:120] or "新对话"
                 conversation.title_source = "auto"
             conversation.updated_at = now
 
             for artifact in artifacts:
                 artifact_id = str(getattr(artifact, "artifact_id", "") or "")
-                artifact_fingerprint = str(
-                    getattr(artifact, "fingerprint", "") or ""
-                )
+                artifact_fingerprint = str(getattr(artifact, "fingerprint", "") or "")
                 duplicate_fingerprint = (
                     session.execute(
                         select(AgentArtifact.id).where(
                             AgentArtifact.conversation_id == conversation_id,
                             AgentArtifact.fingerprint == artifact_fingerprint,
                         )
-                    ).scalars().first()
+                    )
+                    .scalars()
+                    .first()
                     if artifact_fingerprint
                     else None
                 )
@@ -451,43 +419,47 @@ class AgentRuntimeMixin:
                     continue
                 coverage = getattr(artifact, "coverage", None)
                 sources = getattr(artifact, "sources", ())
-                session.add(AgentArtifact(
-                    id=artifact_id,
-                    conversation_id=conversation_id,
-                    run_id=run_id,
-                    schema_version=str(getattr(artifact, "schema_version", "")),
-                    producer_node_id=str(getattr(artifact, "producer_node_id", "")),
-                    resource_type=str(
-                        getattr(
-                            getattr(artifact, "resource_type", None),
-                            "value",
-                            getattr(artifact, "resource_type", ""),
-                        )
-                    ),
-                    coverage_json=(
-                        coverage.model_dump_json()
-                        if hasattr(coverage, "model_dump_json")
-                        else _json(coverage)
-                    ),
-                    sources_json=_json([
-                        source.model_dump(mode="json")
-                        if hasattr(source, "model_dump")
-                        else source
-                        for source in sources
-                    ]),
-                    fingerprint=artifact_fingerprint,
-                    lineage_json=_json(list(getattr(artifact, "lineage", ()))),
-                    payload_json=_json(getattr(artifact, "payload", {})),
-                    produced_at=getattr(artifact, "produced_at", now),
-                    created_at=now,
-                ))
-
-            trace_record = session.execute(
-                select(AgentRunTrace).where(
-                    AgentRunTrace.run_id == run_id,
-                    AgentRunTrace.orchestrator_mode == "unified",
+                session.add(
+                    AgentArtifact(
+                        id=artifact_id,
+                        conversation_id=conversation_id,
+                        run_id=run_id,
+                        schema_version=str(getattr(artifact, "schema_version", "")),
+                        producer_node_id=str(getattr(artifact, "producer_node_id", "")),
+                        resource_type=str(
+                            getattr(
+                                getattr(artifact, "resource_type", None),
+                                "value",
+                                getattr(artifact, "resource_type", ""),
+                            )
+                        ),
+                        coverage_json=(
+                            coverage.model_dump_json() if hasattr(coverage, "model_dump_json") else _json(coverage)
+                        ),
+                        sources_json=_json(
+                            [
+                                source.model_dump(mode="json") if hasattr(source, "model_dump") else source
+                                for source in sources
+                            ]
+                        ),
+                        fingerprint=artifact_fingerprint,
+                        lineage_json=_json(list(getattr(artifact, "lineage", ()))),
+                        payload_json=_json(getattr(artifact, "payload", {})),
+                        produced_at=getattr(artifact, "produced_at", now),
+                        created_at=now,
+                    )
                 )
-            ).scalars().first()
+
+            trace_record = (
+                session.execute(
+                    select(AgentRunTrace).where(
+                        AgentRunTrace.run_id == run_id,
+                        AgentRunTrace.orchestrator_mode == "unified",
+                    )
+                )
+                .scalars()
+                .first()
+            )
             if trace_record is None:
                 trace_record = AgentRunTrace(
                     id=f"{run_id}:unified"[:64],
@@ -499,9 +471,7 @@ class AgentRuntimeMixin:
                 )
                 session.add(trace_record)
             trace_record.status = str(trace_payload.get("status") or status)
-            trace_record.error_code = (
-                str(trace_payload.get("error_code") or error_code or "") or None
-            )
+            trace_record.error_code = str(trace_payload.get("error_code") or error_code or "") or None
             trace_field_map = {
                 "stage_durations": "stage_durations_json",
                 "outcomes": "outcomes_json",
@@ -515,6 +485,7 @@ class AgentRuntimeMixin:
                         from src.storage.mixins.agent_run_trace import (
                             encode_agent_trace_json,
                         )
+
                         encoded_value = encode_agent_trace_json(
                             trace_payload[source_key],
                             encrypt=True,
@@ -533,11 +504,13 @@ class AgentRuntimeMixin:
             run.final_text = final_text
             run.error_code = error_code
             run.error_detail = error_detail
-            run.result_json = _json({
-                "message_count": len(normalized_messages),
-                "artifact_count": len(artifacts),
-                "trace_status": trace_record.status,
-            })
+            run.result_json = _json(
+                {
+                    "message_count": len(normalized_messages),
+                    "artifact_count": len(artifacts),
+                    "trace_status": trace_record.status,
+                }
+            )
             run.context_snapshot_json = None
             run.cancel_requested = status == "cancelled"
             run.lease_expires_at = None
@@ -558,10 +531,12 @@ class AgentRuntimeMixin:
         return self.append_agent_run_events(
             run_id=run_id,
             start_sequence=sequence,
-            events=[{
-                "event_type": event_type,
-                "payload": dict(payload),
-            }],
+            events=[
+                {
+                    "event_type": event_type,
+                    "payload": dict(payload),
+                }
+            ],
         )
 
     def append_agent_run_events(
@@ -599,19 +574,20 @@ class AgentRuntimeMixin:
                     return True
             if start_sequence != expected_sequence:
                 raise RuntimeError(
-                    "durable Agent event sequence gap: "
-                    f"expected {expected_sequence}, received {start_sequence}"
+                    "durable Agent event sequence gap: " f"expected {expected_sequence}, received {start_sequence}"
                 )
             for offset, event in enumerate(normalized_events):
                 sequence = start_sequence + offset
-                session.add(AgentRunEvent(
-                    id=f"{run_id}:{sequence}",
-                    run_id=run_id,
-                    sequence=sequence,
-                    event_type=event["event_type"],
-                    payload_json=_json(event["payload"]),
-                    created_at=now,
-                ))
+                session.add(
+                    AgentRunEvent(
+                        id=f"{run_id}:{sequence}",
+                        run_id=run_id,
+                        sequence=sequence,
+                        event_type=event["event_type"],
+                        payload_json=_json(event["payload"]),
+                        created_at=now,
+                    )
+                )
             record.event_cursor = start_sequence + len(normalized_events)
             record.updated_at = now
             return True
@@ -623,11 +599,7 @@ class AgentRuntimeMixin:
             # batch was already committed before treating the conflict as a
             # successful idempotent replay.
             latest = self.get_agent_run(run_id=run_id)
-            return bool(
-                latest
-                and int(latest.get("event_cursor") or 0)
-                >= start_sequence + len(normalized_events)
-            )
+            return bool(latest and int(latest.get("event_cursor") or 0) >= start_sequence + len(normalized_events))
 
     def list_agent_run_events(
         self,
@@ -638,15 +610,19 @@ class AgentRuntimeMixin:
     ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 10_000))
         with self.get_session() as session:
-            records = session.execute(
-                select(AgentRunEvent)
-                .where(
-                    AgentRunEvent.run_id == run_id,
-                    AgentRunEvent.sequence >= max(0, int(after_sequence)),
+            records = (
+                session.execute(
+                    select(AgentRunEvent)
+                    .where(
+                        AgentRunEvent.run_id == run_id,
+                        AgentRunEvent.sequence >= max(0, int(after_sequence)),
+                    )
+                    .order_by(AgentRunEvent.sequence.asc())
+                    .limit(safe_limit)
                 )
-                .order_by(AgentRunEvent.sequence.asc())
-                .limit(safe_limit)
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return [
                 {
                     "sequence": int(record.sequence),
@@ -671,15 +647,19 @@ class AgentRuntimeMixin:
             run = session.get(AgentRun, run_id)
             if run is None:
                 return None
-            records = session.execute(
-                select(AgentRunEvent)
-                .where(
-                    AgentRunEvent.run_id == run_id,
-                    AgentRunEvent.sequence >= cursor,
+            records = (
+                session.execute(
+                    select(AgentRunEvent)
+                    .where(
+                        AgentRunEvent.run_id == run_id,
+                        AgentRunEvent.sequence >= cursor,
+                    )
+                    .order_by(AgentRunEvent.sequence.asc())
+                    .limit(safe_limit)
                 )
-                .order_by(AgentRunEvent.sequence.asc())
-                .limit(safe_limit)
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return {
                 "run": _run_dict(run),
                 "events": [
@@ -695,16 +675,21 @@ class AgentRuntimeMixin:
 
     def agent_run_has_tool_events(self, run_id: str) -> bool:
         with self.get_session() as session:
-            count = session.execute(
-                select(func.count(AgentRunEvent.id)).where(
-                    AgentRunEvent.run_id == run_id,
-                    AgentRunEvent.event_type.in_({
-                        "tool-call-begin",
-                        "tool-call-delta",
-                        "tool-result",
-                    }),
-                )
-            ).scalar() or 0
+            count = (
+                session.execute(
+                    select(func.count(AgentRunEvent.id)).where(
+                        AgentRunEvent.run_id == run_id,
+                        AgentRunEvent.event_type.in_(
+                            {
+                                "tool-call-begin",
+                                "tool-call-delta",
+                                "tool-result",
+                            }
+                        ),
+                    )
+                ).scalar()
+                or 0
+            )
             return bool(count)
 
     def list_recoverable_agent_runs(
@@ -715,17 +700,21 @@ class AgentRuntimeMixin:
     ) -> list[dict[str, Any]]:
         cutoff = now or datetime.now()
         with self.get_session() as session:
-            records = session.execute(
-                select(AgentRun)
-                .where(
-                    AgentRun.status.in_(_ACTIVE_RUN_STATUSES),
-                    AgentRun.lease_expires_at.is_not(None),
-                    AgentRun.lease_expires_at < cutoff,
-                    AgentRun.cancel_requested.is_(False),
+            records = (
+                session.execute(
+                    select(AgentRun)
+                    .where(
+                        AgentRun.status.in_(_ACTIVE_RUN_STATUSES),
+                        AgentRun.lease_expires_at.is_not(None),
+                        AgentRun.lease_expires_at < cutoff,
+                        AgentRun.cancel_requested.is_(False),
+                    )
+                    .order_by(AgentRun.lease_expires_at.asc())
+                    .limit(max(1, min(limit, 500)))
                 )
-                .order_by(AgentRun.lease_expires_at.asc())
-                .limit(max(1, min(limit, 500)))
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return [_run_dict(record) for record in records]
 
     def reclaim_agent_run(
@@ -746,18 +735,13 @@ class AgentRuntimeMixin:
                 record is None
                 or record.status not in _ACTIVE_RUN_STATUSES
                 or record.cancel_requested
-                or (
-                    record.lease_expires_at is not None
-                    and record.lease_expires_at >= now
-                )
+                or (record.lease_expires_at is not None and record.lease_expires_at >= now)
             ):
                 return None
             record.status = "recovering"
             record.worker_id = worker_id
             record.heartbeat_at = now
-            record.lease_expires_at = now + timedelta(
-                seconds=max(5.0, lease_seconds)
-            )
+            record.lease_expires_at = now + timedelta(seconds=max(5.0, lease_seconds))
             record.attempt = int(record.attempt or 1) + 1
             record.updated_at = now
             session.flush()
@@ -779,11 +763,7 @@ class AgentRuntimeMixin:
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
-            if (
-                record is None
-                or record.status not in _ACTIVE_RUN_STATUSES
-                or record.worker_id != worker_id
-            ):
+            if record is None or record.status not in _ACTIVE_RUN_STATUSES or record.worker_id != worker_id:
                 return False
             record.status = "recovering"
             record.heartbeat_at = now
@@ -816,9 +796,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _claim(session):
-            statement = select(AgentStepExecution).where(
-                AgentStepExecution.idempotency_key == idempotency_key
-            )
+            statement = select(AgentStepExecution).where(AgentStepExecution.idempotency_key == idempotency_key)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -828,10 +806,7 @@ class AgentRuntimeMixin:
                     or record.tool_name != tool_name
                     or _load_json(record.arguments_json, {}) != dict(arguments)
                 ):
-                    raise RuntimeError(
-                        "Agent step idempotency key was reused for a "
-                        "different execution"
-                    )
+                    raise RuntimeError("Agent step idempotency key was reused for a " "different execution")
                 if record.status == "completed":
                     record.reuse_count = int(record.reuse_count or 0) + 1
                     record.updated_at = now
@@ -848,10 +823,7 @@ class AgentRuntimeMixin:
                         "error_code": record.error_code,
                         "error_detail": record.error_detail,
                     }
-                lease_live = (
-                    record.lease_expires_at is not None
-                    and record.lease_expires_at >= now
-                )
+                lease_live = record.lease_expires_at is not None and record.lease_expires_at >= now
                 if record.status in _RUNNING_STEP_STATUSES and lease_live:
                     return {
                         "action": "wait",
@@ -882,9 +854,7 @@ class AgentRuntimeMixin:
 
             record.status = "running"
             record.worker_id = worker_id
-            record.lease_expires_at = now + timedelta(
-                seconds=max(5.0, lease_seconds)
-            )
+            record.lease_expires_at = now + timedelta(seconds=max(5.0, lease_seconds))
             record.attempt = int(record.attempt or 0) + 1
             record.started_at = record.started_at or now
             record.updated_at = now
@@ -911,9 +881,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _finish(session):
-            statement = select(AgentStepExecution).where(
-                AgentStepExecution.idempotency_key == idempotency_key
-            )
+            statement = select(AgentStepExecution).where(AgentStepExecution.idempotency_key == idempotency_key)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -921,10 +889,7 @@ class AgentRuntimeMixin:
                 return False
             if (
                 (worker_id is not None and record.worker_id != worker_id)
-                or (
-                    attempt is not None
-                    and int(record.attempt or 0) != int(attempt)
-                )
+                or (attempt is not None and int(record.attempt or 0) != int(attempt))
                 or record.status != "running"
             ):
                 return False
@@ -952,9 +917,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _fail(session):
-            statement = select(AgentStepExecution).where(
-                AgentStepExecution.idempotency_key == idempotency_key
-            )
+            statement = select(AgentStepExecution).where(AgentStepExecution.idempotency_key == idempotency_key)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -962,10 +925,7 @@ class AgentRuntimeMixin:
                 return False
             if (
                 (worker_id is not None and record.worker_id != worker_id)
-                or (
-                    attempt is not None
-                    and int(record.attempt or 0) != int(attempt)
-                )
+                or (attempt is not None and int(record.attempt or 0) != int(attempt))
                 or record.status != "running"
             ):
                 return False
@@ -992,9 +952,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _upsert(session):
-            statement = select(AgentEffectOutbox).where(
-                AgentEffectOutbox.idempotency_key == idempotency_key
-            )
+            statement = select(AgentEffectOutbox).where(AgentEffectOutbox.idempotency_key == idempotency_key)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1015,10 +973,7 @@ class AgentRuntimeMixin:
                 or record.tool_name != tool_name
                 or _load_json(record.payload_json, {}) != dict(payload)
             ):
-                raise RuntimeError(
-                    "Agent effect idempotency key was reused for a "
-                    "different dispatch"
-                )
+                raise RuntimeError("Agent effect idempotency key was reused for a " "different dispatch")
             return {
                 "status": record.status,
                 "result": _load_json(record.result_json),
@@ -1048,9 +1003,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _complete(session):
-            statement = select(AgentEffectOutbox).where(
-                AgentEffectOutbox.idempotency_key == idempotency_key
-            )
+            statement = select(AgentEffectOutbox).where(AgentEffectOutbox.idempotency_key == idempotency_key)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1084,9 +1037,7 @@ class AgentRuntimeMixin:
         bucket_id = f"{key_hash}:{window_number}"
 
         def _record(session):
-            statement = select(AgentRateLimitBucket).where(
-                AgentRateLimitBucket.id == bucket_id
-            )
+            statement = select(AgentRateLimitBucket).where(AgentRateLimitBucket.id == bucket_id)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1189,9 +1140,7 @@ class AgentRuntimeMixin:
         def _acquire(session):
             for slot_index in range(safe_slots):
                 lease_id = f"{normalized_resource}:{slot_index}"
-                statement = select(AgentResourceLease).where(
-                    AgentResourceLease.id == lease_id
-                )
+                statement = select(AgentResourceLease).where(AgentResourceLease.id == lease_id)
                 if not self._is_sqlite_engine:
                     statement = statement.with_for_update()
                 record = session.execute(statement).scalars().first()
@@ -1236,9 +1185,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
 
         def _release(session):
-            statement = select(AgentResourceLease).where(
-                AgentResourceLease.id == lease_id
-            )
+            statement = select(AgentResourceLease).where(AgentResourceLease.id == lease_id)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1263,9 +1210,7 @@ class AgentRuntimeMixin:
         normalized_resource = str(resource_name).strip()[:160]
 
         def _before(session):
-            statement = select(AgentCircuitBreaker).where(
-                AgentCircuitBreaker.resource_name == normalized_resource
-            )
+            statement = select(AgentCircuitBreaker).where(AgentCircuitBreaker.resource_name == normalized_resource)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1296,9 +1241,7 @@ class AgentRuntimeMixin:
         normalized_resource = str(resource_name).strip()[:160]
 
         def _success(session):
-            statement = select(AgentCircuitBreaker).where(
-                AgentCircuitBreaker.resource_name == normalized_resource
-            )
+            statement = select(AgentCircuitBreaker).where(AgentCircuitBreaker.resource_name == normalized_resource)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1326,9 +1269,7 @@ class AgentRuntimeMixin:
         threshold = max(1, int(failure_threshold))
 
         def _failure(session):
-            statement = select(AgentCircuitBreaker).where(
-                AgentCircuitBreaker.resource_name == normalized_resource
-            )
+            statement = select(AgentCircuitBreaker).where(AgentCircuitBreaker.resource_name == normalized_resource)
             if not self._is_sqlite_engine:
                 statement = statement.with_for_update()
             record = session.execute(statement).scalars().first()
@@ -1343,9 +1284,7 @@ class AgentRuntimeMixin:
             record.failure_count = int(record.failure_count or 0) + 1
             if record.state == "half_open" or record.failure_count >= threshold:
                 record.state = "open"
-                record.opened_until = now + timedelta(
-                    seconds=max(1.0, float(cooldown_seconds))
-                )
+                record.opened_until = now + timedelta(seconds=max(1.0, float(cooldown_seconds)))
                 record.probe_owner = None
             record.last_error = str(error)[:2000]
             record.updated_at = now
@@ -1370,9 +1309,7 @@ class AgentRuntimeMixin:
         now = datetime.now()
         with self.get_session() as session:
             status_rows = session.execute(
-                select(AgentRun.status, func.count(AgentRun.id)).group_by(
-                    AgentRun.status
-                )
+                select(AgentRun.status, func.count(AgentRun.id)).group_by(AgentRun.status)
             ).all()
             step_rows = session.execute(
                 select(
@@ -1384,35 +1321,40 @@ class AgentRuntimeMixin:
                     AgentStepExecution.status,
                 )
             ).all()
-            expired = session.execute(
-                select(func.count(AgentRun.id)).where(
-                    AgentRun.active_slot.is_not(None),
-                    AgentRun.lease_expires_at < now,
+            expired = (
+                session.execute(
+                    select(func.count(AgentRun.id)).where(
+                        AgentRun.active_slot.is_not(None),
+                        AgentRun.lease_expires_at < now,
+                    )
+                ).scalar()
+                or 0
+            )
+            recent_runs = (
+                session.execute(
+                    select(AgentRun)
+                    .where(AgentRun.created_at >= now - timedelta(hours=24))
+                    .order_by(AgentRun.created_at.desc())
+                    .limit(10_000)
                 )
-            ).scalar() or 0
-            recent_runs = session.execute(
-                select(AgentRun).where(
-                    AgentRun.created_at >= now - timedelta(hours=24)
-                ).order_by(AgentRun.created_at.desc()).limit(10_000)
-            ).scalars().all()
-            recent_traces = session.execute(
-                select(AgentRunTrace).where(
-                    AgentRunTrace.created_at >= now - timedelta(hours=24)
-                ).order_by(AgentRunTrace.created_at.desc()).limit(10_000)
-            ).scalars().all()
-            terminal_recent = [
-                record
-                for record in recent_runs
-                if record.status in _TERMINAL_RUN_STATUSES
-            ]
+                .scalars()
+                .all()
+            )
+            recent_traces = (
+                session.execute(
+                    select(AgentRunTrace)
+                    .where(AgentRunTrace.created_at >= now - timedelta(hours=24))
+                    .order_by(AgentRunTrace.created_at.desc())
+                    .limit(10_000)
+                )
+                .scalars()
+                .all()
+            )
+            terminal_recent = [record for record in recent_runs if record.status in _TERMINAL_RUN_STATUSES]
             durations_ms = sorted(
-                int(
-                    (record.finished_at - record.started_at).total_seconds()
-                    * 1000
-                )
+                int((record.finished_at - record.started_at).total_seconds() * 1000)
                 for record in terminal_recent
-                if record.started_at is not None
-                and record.finished_at is not None
+                if record.started_at is not None and record.finished_at is not None
             )
             planning_stages = {
                 "outline",
@@ -1448,57 +1390,31 @@ class AgentRuntimeMixin:
                 )
                 return values[index]
 
-            successes = sum(
-                record.status == "completed"
-                for record in terminal_recent
+            successes = sum(record.status == "completed" for record in terminal_recent)
+            open_circuits = (
+                session.execute(
+                    select(func.count(AgentCircuitBreaker.resource_name)).where(AgentCircuitBreaker.state != "closed")
+                ).scalar()
+                or 0
             )
-            open_circuits = session.execute(
-                select(func.count(AgentCircuitBreaker.resource_name)).where(
-                    AgentCircuitBreaker.state != "closed"
-                )
-            ).scalar() or 0
-            active_resource_leases = session.execute(
-                select(func.count(AgentResourceLease.id)).where(
-                    AgentResourceLease.lease_owner.is_not(None),
-                    AgentResourceLease.lease_expires_at >= now,
-                )
-            ).scalar() or 0
-            step_reuses = session.execute(
-                select(func.sum(AgentStepExecution.reuse_count))
-            ).scalar() or 0
-            recovery_attempts = sum(
-                max(0, int(record.attempt or 1) - 1)
-                for record in recent_runs
+            active_resource_leases = (
+                session.execute(
+                    select(func.count(AgentResourceLease.id)).where(
+                        AgentResourceLease.lease_owner.is_not(None),
+                        AgentResourceLease.lease_expires_at >= now,
+                    )
+                ).scalar()
+                or 0
             )
-            recovered_terminal = [
-                record
-                for record in terminal_recent
-                if int(record.attempt or 1) > 1
-            ]
-            recovered_successes = sum(
-                record.status == "completed"
-                for record in recovered_terminal
-            )
-            event_count = sum(
-                int(record.event_cursor or 0)
-                for record in recent_runs
-            )
-            provider_calls = sum(
-                int(record.provider_call_count or 0)
-                for record in recent_runs
-            )
-            tool_calls = sum(
-                int(record.tool_call_count or 0)
-                for record in recent_runs
-            )
-            estimated_tokens = sum(
-                int(record.estimated_token_count or 0)
-                for record in recent_runs
-            )
-            estimated_cost_micros = sum(
-                int(record.estimated_cost_micros or 0)
-                for record in recent_runs
-            )
+            step_reuses = session.execute(select(func.sum(AgentStepExecution.reuse_count))).scalar() or 0
+            recovery_attempts = sum(max(0, int(record.attempt or 1) - 1) for record in recent_runs)
+            recovered_terminal = [record for record in terminal_recent if int(record.attempt or 1) > 1]
+            recovered_successes = sum(record.status == "completed" for record in recovered_terminal)
+            event_count = sum(int(record.event_cursor or 0) for record in recent_runs)
+            provider_calls = sum(int(record.provider_call_count or 0) for record in recent_runs)
+            tool_calls = sum(int(record.tool_call_count or 0) for record in recent_runs)
+            estimated_tokens = sum(int(record.estimated_token_count or 0) for record in recent_runs)
+            estimated_cost_micros = sum(int(record.estimated_cost_micros or 0) for record in recent_runs)
             return {
                 "runs": {status: int(count) for status, count in status_rows},
                 "steps": [
@@ -1528,11 +1444,7 @@ class AgentRuntimeMixin:
                 },
                 "workload_24h": {
                     "events": event_count,
-                    "events_per_run": (
-                        round(event_count / len(recent_runs), 3)
-                        if recent_runs
-                        else 0.0
-                    ),
+                    "events_per_run": (round(event_count / len(recent_runs), 3) if recent_runs else 0.0),
                     "provider_calls": provider_calls,
                     "tool_calls": tool_calls,
                     "estimated_tokens": estimated_tokens,
@@ -1541,11 +1453,7 @@ class AgentRuntimeMixin:
                 "slo_24h": {
                     "terminal_runs": len(terminal_recent),
                     "successful_runs": successes,
-                    "success_rate": (
-                        round(successes / len(terminal_recent), 6)
-                        if terminal_recent
-                        else None
-                    ),
+                    "success_rate": (round(successes / len(terminal_recent), 6) if terminal_recent else None),
                     "duration_ms_p50": percentile(durations_ms, 0.50),
                     "duration_ms_p95": percentile(durations_ms, 0.95),
                     "planning_ms_p50": percentile(
@@ -1568,47 +1476,52 @@ class AgentRuntimeMixin:
     ) -> dict[str, int]:
         """Delete bounded terminal runtime history; cascades events and steps."""
         with self.session_scope() as session:
-            run_ids = session.execute(
-                select(AgentRun.id)
-                .where(
-                    AgentRun.status.in_(_TERMINAL_RUN_STATUSES),
-                    AgentRun.finished_at < finished_before,
+            run_ids = (
+                session.execute(
+                    select(AgentRun.id)
+                    .where(
+                        AgentRun.status.in_(_TERMINAL_RUN_STATUSES),
+                        AgentRun.finished_at < finished_before,
+                    )
+                    .order_by(AgentRun.finished_at.asc())
+                    .limit(max(1, min(limit, 5000)))
                 )
-                .order_by(AgentRun.finished_at.asc())
-                .limit(max(1, min(limit, 5000)))
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             trace_cutoff = trace_before or finished_before
             safe_limit = max(1, min(limit, 5000))
-            trace_ids = session.execute(
-                select(AgentRunTrace.id)
-                .where(AgentRunTrace.created_at < trace_cutoff)
-                .order_by(AgentRunTrace.created_at.asc())
-                .limit(safe_limit)
-            ).scalars().all()
-            traces = (
+            trace_ids = (
                 session.execute(
-                    delete(AgentRunTrace).where(
-                        AgentRunTrace.id.in_(trace_ids)
-                    )
-                ).rowcount or 0
+                    select(AgentRunTrace.id)
+                    .where(AgentRunTrace.created_at < trace_cutoff)
+                    .order_by(AgentRunTrace.created_at.asc())
+                    .limit(safe_limit)
+                )
+                .scalars()
+                .all()
+            )
+            traces = (
+                session.execute(delete(AgentRunTrace).where(AgentRunTrace.id.in_(trace_ids))).rowcount or 0
                 if trace_ids
                 else 0
             )
             # Artifacts are semantic conversation state and may be referenced
             # by later turns. They follow conversation deletion, not trace TTL.
             artifacts = 0
-            bucket_ids = session.execute(
-                select(AgentRateLimitBucket.id)
-                .where(AgentRateLimitBucket.expires_at < datetime.now())
-                .order_by(AgentRateLimitBucket.expires_at.asc())
-                .limit(safe_limit)
-            ).scalars().all()
-            rate_buckets = (
+            bucket_ids = (
                 session.execute(
-                    delete(AgentRateLimitBucket).where(
-                        AgentRateLimitBucket.id.in_(bucket_ids)
-                    )
-                ).rowcount or 0
+                    select(AgentRateLimitBucket.id)
+                    .where(AgentRateLimitBucket.expires_at < datetime.now())
+                    .order_by(AgentRateLimitBucket.expires_at.asc())
+                    .limit(safe_limit)
+                )
+                .scalars()
+                .all()
+            )
+            rate_buckets = (
+                session.execute(delete(AgentRateLimitBucket).where(AgentRateLimitBucket.id.in_(bucket_ids))).rowcount
+                or 0
                 if bucket_ids
                 else 0
             )

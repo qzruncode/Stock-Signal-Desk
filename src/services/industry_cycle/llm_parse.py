@@ -20,7 +20,7 @@ def _extract_json_object_from_text(text: str) -> Optional[str]:
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         return None
-    candidate = text[start:end + 1]
+    candidate = text[start : end + 1]
     try:
         json.loads(candidate)
         return candidate
@@ -126,13 +126,7 @@ def _extract_partial_json_string_field(raw_text: str, field_name: str) -> Option
     try:
         if closed:
             return json.loads(f'"{fragment}"')
-        repaired = (
-            fragment
-            .replace("\\n", "\n")
-            .replace("\\t", "\t")
-            .replace('\\"', '"')
-            .replace("\\\\", "\\")
-        )
+        repaired = fragment.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"').replace("\\\\", "\\")
         return repaired.strip() or None
     except Exception:
         logger.error("[IndustryCycle] _repair_malformed_json failed", exc_info=True)

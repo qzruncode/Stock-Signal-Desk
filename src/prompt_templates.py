@@ -83,9 +83,7 @@ class PromptTemplateStore:
     def load_all(self) -> List[dict]:
         db = get_db()
         with db._engine.begin() as conn:
-            rows = conn.execute(
-                PromptTemplate.__table__.select().order_by(PromptTemplate.created_at)
-            ).fetchall()
+            rows = conn.execute(PromptTemplate.__table__.select().order_by(PromptTemplate.created_at)).fetchall()
         return [
             {
                 "id": row.id,
@@ -101,9 +99,7 @@ class PromptTemplateStore:
     def get(self, template_id: str) -> Optional[dict]:
         db = get_db()
         with db._engine.begin() as conn:
-            row = conn.execute(
-                PromptTemplate.__table__.select().where(PromptTemplate.id == template_id)
-            ).fetchone()
+            row = conn.execute(PromptTemplate.__table__.select().where(PromptTemplate.id == template_id)).fetchone()
         if row is None:
             return None
         return {
@@ -118,9 +114,7 @@ class PromptTemplateStore:
     def get_default(self) -> Optional[dict]:
         db = get_db()
         with db._engine.begin() as conn:
-            row = conn.execute(
-                PromptTemplate.__table__.select().where(PromptTemplate.is_default == 1)
-            ).fetchone()
+            row = conn.execute(PromptTemplate.__table__.select().where(PromptTemplate.is_default == 1)).fetchone()
         if row is None:
             return None
         return {
@@ -149,7 +143,13 @@ class PromptTemplateStore:
             )
         return self.get(template_id)
 
-    def update(self, template_id: str, name: Optional[str] = None, content: Optional[str] = None, is_default: Optional[bool] = None) -> Optional[dict]:
+    def update(
+        self,
+        template_id: str,
+        name: Optional[str] = None,
+        content: Optional[str] = None,
+        is_default: Optional[bool] = None,
+    ) -> Optional[dict]:
         existing = self.get(template_id)
         if existing is None:
             return None
@@ -162,11 +162,7 @@ class PromptTemplateStore:
         if is_default is not None:
             values["is_default"] = 1 if is_default else 0
         with db._engine.begin() as conn:
-            conn.execute(
-                PromptTemplate.__table__.update()
-                .where(PromptTemplate.id == template_id)
-                .values(**values)
-            )
+            conn.execute(PromptTemplate.__table__.update().where(PromptTemplate.id == template_id).values(**values))
         return self.get(template_id)
 
     def delete(self, template_id: str) -> bool:
@@ -175,9 +171,7 @@ class PromptTemplateStore:
             return False
         db = get_db()
         with db._engine.begin() as conn:
-            conn.execute(
-                PromptTemplate.__table__.delete().where(PromptTemplate.id == template_id)
-            )
+            conn.execute(PromptTemplate.__table__.delete().where(PromptTemplate.id == template_id))
         return True
 
 

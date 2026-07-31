@@ -61,12 +61,16 @@ def _assess_evidence_gate(evidence_pack: dict[str, Any]) -> dict[str, Any]:
     sector_snapshot = _as_dict(industry_beta.get("sector_snapshot"))
     fund_flow_snapshot = _as_dict(industry_beta.get("fund_flow_snapshot"))
     source_health = _as_dict(supporting.get("source_health"))
-    board_available = any((
-        bool(source_health.get("ths_industry_summary_ok")),
-        bool(source_health.get("sector_board_available")),
-        sector_snapshot.get("rank") is not None,
-    ))
-    peer_available = bool(source_health.get("peer_source_ok")) or _safe_int(_as_dict(industry_beta.get("peer_snapshot")).get("sample_size")) not in (0, None)
+    board_available = any(
+        (
+            bool(source_health.get("ths_industry_summary_ok")),
+            bool(source_health.get("sector_board_available")),
+            sector_snapshot.get("rank") is not None,
+        )
+    )
+    peer_available = bool(source_health.get("peer_source_ok")) or _safe_int(
+        _as_dict(industry_beta.get("peer_snapshot")).get("sample_size")
+    ) not in (0, None)
     direct_evidence_count = (
         len(_as_list(company_specific.get("announcements")))
         + len(_as_list(company_specific.get("news")))
@@ -153,23 +157,42 @@ def _build_evidence_insufficient_report(
             "risks": ["证据不足导致结论失真风险高"],
             "observation_points": [str(item) for item in reasons if str(item).strip()],
             "mainline_detector": {"passed": False, "conclusion": "", "failed_reason": reason_text, "checklist": []},
-            "industry_beta_detector": {"passed": False, "conclusion": "", "failed_reason": reason_text, "checklist": []},
+            "industry_beta_detector": {
+                "passed": False,
+                "conclusion": "",
+                "failed_reason": reason_text,
+                "checklist": [],
+            },
             "evidence": {
-                "stock_focus_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")),
+                "stock_focus_snapshot": _as_dict(
+                    _as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")
+                ),
                 "market_mainline": {
                     "report_pending": bool(_as_dict(evidence_pack.get("mainline_context")).get("report_pending")),
                     "market_stage": _as_dict(_as_dict(evidence_pack.get("mainline_context")).get("market_stage")),
-                    "report_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
-                    "report_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                    "report_current_mainlines": _list_of_dicts(
+                        _as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")
+                    ),
+                    "report_future_mainlines": _list_of_dicts(
+                        _as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")
+                    ),
                     "matched_current_mainlines": [],
                     "matched_future_mainlines": [],
-                    "current_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("current_theme_evidence")),
-                    "future_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("future_theme_evidence")),
+                    "current_theme_detail": _first_dict(
+                        _as_dict(evidence_pack.get("mainline_context")).get("current_theme_evidence")
+                    ),
+                    "future_theme_detail": _first_dict(
+                        _as_dict(evidence_pack.get("mainline_context")).get("future_theme_evidence")
+                    ),
                 },
-                "sector_snapshot": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("sector_snapshot")),
+                "sector_snapshot": _as_dict(
+                    _as_dict(evidence_pack.get("industry_beta_evidence")).get("sector_snapshot")
+                ),
                 "fund_flow": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("fund_flow_snapshot")),
                 "peer_group": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("peer_snapshot")),
-                "financial_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("financial_snapshot")),
+                "financial_snapshot": _as_dict(
+                    _as_dict(evidence_pack.get("company_specific_evidence")).get("financial_snapshot")
+                ),
                 "valuation_snapshot": _as_dict(evidence_pack.get("valuation_snapshot")),
                 "sentiment_snapshot": _as_dict(supporting.get("coverage_snapshot")),
                 "risk_snapshot": _as_dict(supporting.get("risk_snapshot")),

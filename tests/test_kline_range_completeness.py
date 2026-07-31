@@ -31,11 +31,11 @@ def _seed_index_days(db, days: list[date]) -> None:
 def _seed_stock_daily(db, symbol: str, days: list[date], closes: list[float]) -> None:
     """灌入个股 StockDaily（date + close）。"""
     rows = [
-        {"date": d, "open": c, "close": c, "high": c, "low": c,
-         "volume": 1000.0, "amount": 100000.0, "pct_chg": 1.0}
+        {"date": d, "open": c, "close": c, "high": c, "low": c, "volume": 1000.0, "amount": 100000.0, "pct_chg": 1.0}
         for d, c in zip(days, closes)
     ]
     import pandas as pd
+
     db.save_daily_data(pd.DataFrame(rows), symbol, data_source="test")
 
 
@@ -53,9 +53,7 @@ class KlineRangeCompletenessTestCase(unittest.TestCase):
         _seed_index_days(self.db, trading_days)
         _seed_stock_daily(self.db, "600519", trading_days, [100.0, 101.0, 102.0])
 
-        result = kline._get_kline_range_from_stock_daily(
-            "600519", "20260105", "20260107"
-        )
+        result = kline._get_kline_range_from_stock_daily("600519", "20260105", "20260107")
         self.assertIsNotNone(result)
         records, complete = result  # type: ignore[misc]
         self.assertTrue(complete)
@@ -67,14 +65,13 @@ class KlineRangeCompletenessTestCase(unittest.TestCase):
         _seed_index_days(self.db, trading_days)
         # 个股缺 1-6 那天
         _seed_stock_daily(
-            self.db, "600519",
+            self.db,
+            "600519",
             [date(2026, 1, 5), date(2026, 1, 7)],
             [100.0, 102.0],
         )
 
-        result = kline._get_kline_range_from_stock_daily(
-            "600519", "20260105", "20260107"
-        )
+        result = kline._get_kline_range_from_stock_daily("600519", "20260105", "20260107")
         self.assertIsNotNone(result)
         records, complete = result  # type: ignore[misc]
         self.assertFalse(complete)  # 缺交易日 → 不完整 → 回源
@@ -86,9 +83,7 @@ class KlineRangeCompletenessTestCase(unittest.TestCase):
         trading_days = [date(2026, 1, 5), date(2026, 1, 7)]  # 注意首尾恰好对齐区间
         _seed_stock_daily(self.db, "600519", trading_days, [100.0, 102.0])
 
-        result = kline._get_kline_range_from_stock_daily(
-            "600519", "20260105", "20260107"
-        )
+        result = kline._get_kline_range_from_stock_daily("600519", "20260105", "20260107")
         self.assertIsNotNone(result)
         records, complete = result  # type: ignore[misc]
         # 回退首尾对齐：首=20260105 尾=20260107，恰好对齐 → complete=True
@@ -96,9 +91,7 @@ class KlineRangeCompletenessTestCase(unittest.TestCase):
 
     def test_returns_none_when_no_local_data(self) -> None:
         """本地完全无该股数据 → None。"""
-        result = kline._get_kline_range_from_stock_daily(
-            "999999", "20260105", "20260107"
-        )
+        result = kline._get_kline_range_from_stock_daily("999999", "20260105", "20260107")
         self.assertIsNone(result)
 
     def test_get_trading_days_returns_set_or_none(self) -> None:

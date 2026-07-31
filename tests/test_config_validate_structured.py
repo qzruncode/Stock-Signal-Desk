@@ -18,6 +18,7 @@ from src.config import Config, ConfigIssue
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_config(**kwargs) -> Config:
     """Build a minimal Config object with sensible defaults for testing.
 
@@ -50,6 +51,7 @@ def _fields(issues):
 # ConfigIssue basics
 # ---------------------------------------------------------------------------
 
+
 class TestConfigIssue:
     def test_str_equals_message(self):
         issue = ConfigIssue(severity="error", message="something went wrong", field="FOO")
@@ -69,6 +71,7 @@ class TestConfigIssue:
 # validate_structured() — happy path (all good)
 # ---------------------------------------------------------------------------
 
+
 class TestValidateStructuredHappyPath:
     def test_no_issues_when_fully_configured(self):
         cfg = _make_config()
@@ -84,6 +87,7 @@ class TestValidateStructuredHappyPath:
 # validate_structured() — stock list
 # ---------------------------------------------------------------------------
 
+
 class TestValidateStructuredStockList:
     def test_empty_stock_list_is_error(self):
         cfg = _make_config(stock_list=[])
@@ -95,6 +99,7 @@ class TestValidateStructuredStockList:
         cfg = _make_config(stock_list=["600519", "000001"])
         issues = cfg.validate_structured()
         assert not any(i.field == "STOCK_LIST" for i in issues if i.severity == "error")
+
 
 class TestValidateStructuredNotification:
     def test_notification_configured_no_warning(self):
@@ -129,10 +134,10 @@ class TestValidateStructuredNotification:
 # Deprecated field migration hints
 # ---------------------------------------------------------------------------
 
+
 class TestValidateBackwardCompat:
     def test_returns_list_of_str(self):
         cfg = _make_config()
         result = cfg.validate()
         assert isinstance(result, list)
         assert all(isinstance(s, str) for s in result)
-

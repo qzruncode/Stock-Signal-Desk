@@ -55,8 +55,7 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
             news_strategy_profile=news_strategy_profile,
         )
         mock_search = MagicMock(
-            return_value=response
-            or _response([_result("default", datetime.now().date().isoformat())])
+            return_value=response or _response([_result("default", datetime.now().date().isoformat())])
         )
         service._providers[0].search = mock_search
         return service, mock_search

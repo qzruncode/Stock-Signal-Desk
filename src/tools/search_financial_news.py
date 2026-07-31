@@ -71,17 +71,14 @@ _DEFAULT_ROUTE_LIMITS = {
     "social": 2,
 }
 
+
 def _subject_terms(subjects: list[str]) -> list[str]:
     """Normalize semantic subjects supplied by the Planner/Workflow.
 
     This layer deliberately does not infer subjects from user wording.  Its
     only job is retrieval against an already structured request.
     """
-    return list(dict.fromkeys(
-        str(subject).strip().lower()
-        for subject in subjects
-        if len(str(subject).strip()) >= 2
-    ))
+    return list(dict.fromkeys(str(subject).strip().lower() for subject in subjects if len(str(subject).strip()) >= 2))
 
 
 def _published_key(item: dict[str, Any]) -> str:
@@ -193,7 +190,11 @@ def _route_params(
             else:
                 value = narrowed_query
         elif name == "lang":
-            value = "zh-Hans" if any(str(option.get("value")) == "zh-Hans" for option in param.get("options") or []) else "Mandarin"
+            value = (
+                "zh-Hans"
+                if any(str(option.get("value")) == "zh-Hans" for option in param.get("options") or [])
+                else "Mandarin"
+            )
         elif param.get("default") is not None:
             value = str(param.get("default"))
         elif param.get("required"):
@@ -318,10 +319,7 @@ def search_financial_news(
     deduped: dict[str, dict[str, Any]] = {}
     for route_result in route_results:
         result = route_result["result"]
-        errors.extend(
-            f"{route_result['route_path']}: {error}"
-            for error in result.get("errors") or []
-        )
+        errors.extend(f"{route_result['route_path']}: {error}" for error in result.get("errors") or [])
         for raw in result.get("items") or []:
             item = dict(raw)
             item["rss_route"] = route_result["route_path"]
@@ -338,21 +336,13 @@ def search_financial_news(
 
     cutoff = datetime.now() - timedelta(days=int(days))
     candidate_items = list(deduped.values())
-    expired_count = sum(
-        1 for item in candidate_items
-        if _has_known_time(item) and not _item_is_recent(item, cutoff)
-    )
+    expired_count = sum(1 for item in candidate_items if _has_known_time(item) and not _item_is_recent(item, cutoff))
     unknown_time_count = sum(1 for item in candidate_items if not _has_known_time(item))
     items = [item for item in candidate_items if _item_is_recent(item, cutoff)]
     subject_terms = _subject_terms(subjects or [])
     for item in items:
-        searchable = (
-            f"{item.get('title', '')} {item.get('summary', '')}"
-        ).lower()
-        item["exact_subject_mentions"] = [
-            subject for subject in subject_terms
-            if subject in searchable
-        ]
+        searchable = (f"{item.get('title', '')} {item.get('summary', '')}").lower()
+        item["exact_subject_mentions"] = [subject for subject in subject_terms if subject in searchable]
         item["semantic_status"] = "model_required"
     items.sort(
         key=lambda item: (
@@ -411,15 +401,17 @@ def search_financial_news(
             title = str(raw.get("title") or "").strip()
             if not link and not title:
                 continue
-            selected.append({
-                "title": raw.get("title") or "",
-                "summary": raw.get("snippet") or "",
-                "link": link,
-                "published": raw.get("published_date"),
-                "source": raw.get("source") or web_fallback.get("provider"),
-                "source_type": "websearch",
-                "semantic_status": "model_required",
-            })
+            selected.append(
+                {
+                    "title": raw.get("title") or "",
+                    "summary": raw.get("snippet") or "",
+                    "link": link,
+                    "published": raw.get("published_date"),
+                    "source": raw.get("source") or web_fallback.get("provider"),
+                    "source_type": "websearch",
+                    "semantic_status": "model_required",
+                }
+            )
         selected = selected[: max(1, min(int(limit), 30))]
         fallback_used = bool(selected)
         if fallback_used:
@@ -435,8 +427,7 @@ def search_financial_news(
             "params": result["params"],
             "item_count": len(result["result"].get("items") or []),
             "recent_item_count": sum(
-                1 for item in result["result"].get("items") or []
-                if _item_is_recent(item, cutoff)
+                1 for item in result["result"].get("items") or [] if _item_is_recent(item, cutoff)
             ),
             # A feed that was read successfully can legitimately contain no
             # items inside the requested time window.
@@ -466,9 +457,7 @@ def search_financial_news(
         "announcement": 90,
         "research": 120,
     }[resolved_topic]
-    acquisition_success = successful_route_count > 0 or bool(
-        web_fallback and web_fallback.get("success")
-    )
+    acquisition_success = successful_route_count > 0 or bool(web_fallback and web_fallback.get("success"))
     if selected:
         source = f"websearch/{web_fallback.get('provider', 'unknown')}" if fallback_used and web_fallback else "RSSHub"
     elif successful_route_count > 0:
@@ -492,7 +481,11 @@ def search_financial_news(
         # source. `item_count == 0` describes a valid empty search result.
         "success": acquisition_success,
         "partial": partial,
-        "data_time": latest_time.astimezone().isoformat() if latest_time and latest_time.tzinfo else latest_time.isoformat() if latest_time else None,
+        "data_time": (
+            latest_time.astimezone().isoformat()
+            if latest_time and latest_time.tzinfo
+            else latest_time.isoformat() if latest_time else None
+        ),
         "retrieved_at": datetime.now().astimezone().isoformat(),
         "fallback_attempted": fallback_attempted,
         "fallback_used": fallback_used,
@@ -509,7 +502,10 @@ TOOL = ToolSpec(
     description=DESCRIPTION,
     parameters=object_schema(
         {
-            "query": {"type": "string", "description": "要查的公司、行业、事件或宏观主题；例如 贵州茅台、半导体景气、央行降准"},
+            "query": {
+                "type": "string",
+                "description": "要查的公司、行业、事件或宏观主题；例如 贵州茅台、半导体景气、央行降准",
+            },
             "topic": {
                 "type": "string",
                 "enum": ["market", "company", "announcement", "research", "macro", "industry", "social"],
@@ -521,10 +517,30 @@ TOOL = ToolSpec(
                 "maxItems": 12,
                 "description": "Planner 提取的核心公司、行业或事件主体；工具只记录逐字提及，语义相关性由分析模型判断",
             },
-            "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "只返回最近多少天的记录；缺少发布时间的记录会保留并明确告警"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12, "description": "去重后最多返回条数"},
-            "include_content": {"type": "boolean", "default": False, "description": "是否在同一次调用中补取前 3 条正文；仅深入阅读时开启"},
-            "fallback_to_web": {"type": "boolean", "default": True, "description": "RSS 无结果时是否自动调用联网搜索兜底"},
+            "days": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 365,
+                "default": 30,
+                "description": "只返回最近多少天的记录；缺少发布时间的记录会保留并明确告警",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 12,
+                "description": "去重后最多返回条数",
+            },
+            "include_content": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否在同一次调用中补取前 3 条正文；仅深入阅读时开启",
+            },
+            "fallback_to_web": {
+                "type": "boolean",
+                "default": True,
+                "description": "RSS 无结果时是否自动调用联网搜索兜底",
+            },
         },
         ["query", "topic"],
     ),

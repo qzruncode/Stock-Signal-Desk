@@ -35,13 +35,24 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests  # kept at module level so tests can monkeypatch "data_provider.akshare_fetcher.requests"
 from tenacity import (
-    retry, stop_after_attempt, wait_exponential,
-    retry_if_exception_type, before_sleep_log,
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
 )
 
 from src.patches.eastmoney_patch import eastmoney_patch, set_request_user_agent
 from src.config import get_config
-from .utils import DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
+from .utils import (
+    DataFetchError,
+    RateLimitError,
+    STANDARD_COLUMNS,
+    is_bse_code,
+    is_st_stock,
+    is_kc_cy_stock,
+    normalize_stock_code,
+)
 from .rate_limiter import akshare_rate_limiter
 from .realtime_types import UnifiedRealtimeQuote, ChipDistribution, RealtimeSource, safe_float, safe_int
 from .us_index_mapping import is_us_index_code, is_us_stock_code
@@ -62,7 +73,9 @@ from .fetchers.kline import (
     fetch_stock_kline_history as _fetch_stock_kline_history,
     _normalize_data as _normalize_kline_data,
     get_main_indices as _fetch_main_indices,
-    _is_us_code, _is_hk_code, _is_etf_code,
+    _is_us_code,
+    _is_hk_code,
+    _is_etf_code,
     _to_sina_tx_symbol,
 )
 from .fetchers.market import (
@@ -139,55 +152,72 @@ class AkshareFetcher:
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_raw_data(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
 
     def _fetch_stock_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         from .fetchers.kline import fetch_stock_data
+
         return fetch_stock_data(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
 
     def _fetch_stock_data_em(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_stock_data_em(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
 
     def _fetch_stock_data_sina(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_stock_data_sina(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit_no_jitter,
         )
 
     def _fetch_stock_data_tx(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_stock_data_tx(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit_no_jitter,
         )
 
     def _fetch_etf_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_etf_data(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
 
     def _fetch_us_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_us_data(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
 
     def _fetch_hk_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         return _fetch_hk_data(
-            stock_code, start_date, end_date,
+            stock_code,
+            start_date,
+            end_date,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
@@ -202,22 +232,27 @@ class AkshareFetcher:
 
     def _get_stock_realtime_quote_em(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         from .fetchers.realtime import _get_stock_realtime_quote_em as _fn
+
         return _fn(stock_code)
 
     def _get_stock_realtime_quote_em_push(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         from .fetchers.realtime import _get_stock_realtime_quote_em_push as _fn
+
         return _fn(stock_code)
 
     def _get_stock_realtime_quote_xueqiu(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         from .fetchers.realtime import _get_stock_realtime_quote_xueqiu as _fn
+
         return _fn(stock_code)
 
     def _get_stock_realtime_quote_sina(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         from .fetchers.realtime import _get_stock_realtime_quote_sina as _fn
+
         return _fn(stock_code)
 
     def _get_stock_realtime_quote_tencent(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         from .fetchers.realtime import _get_stock_realtime_quote_tencent as _fn
+
         return _fn(stock_code)
 
     # ── Chip distribution ──────────────────────────────────────────────
@@ -233,17 +268,17 @@ class AkshareFetcher:
 
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
         result: Dict[str, Any] = {
-            'code': stock_code,
-            'daily_data': None,
-            'realtime_quote': None,
-            'chip_distribution': None,
+            "code": stock_code,
+            "daily_data": None,
+            "realtime_quote": None,
+            "chip_distribution": None,
         }
         try:
-            result['daily_data'] = self.get_daily_data(stock_code, days=days)
+            result["daily_data"] = self.get_daily_data(stock_code, days=days)
         except Exception as e:
             logger.error("获取 %s 日线数据失败: %s", stock_code, e)
-        result['realtime_quote'] = self.get_realtime_quote(stock_code)
-        result['chip_distribution'] = self.get_chip_distribution(stock_code)
+        result["realtime_quote"] = self.get_realtime_quote(stock_code)
+        result["chip_distribution"] = self.get_chip_distribution(stock_code)
         return result
 
     # ── Indices ────────────────────────────────────────────────────────
@@ -261,6 +296,7 @@ class AkshareFetcher:
 
     def _calc_market_stats(self, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         from .fetchers.market import _calc_market_stats
+
         return _calc_market_stats(df)
 
     # ── All A-share list ───────────────────────────────────────────────
@@ -283,7 +319,9 @@ class AkshareFetcher:
     def fetch_stock_kline_history(self, code: str, days: int = 365) -> Optional[pd.DataFrame]:
         return _fetch_stock_kline_history(code, days, enforce_rate_limit=self._enforce_rate_limit)
 
-    def fetch_stock_kline_batch(self, codes: List[str], days: int = 365, workers: int = 5) -> Dict[str, Optional[pd.DataFrame]]:
+    def fetch_stock_kline_batch(
+        self, codes: List[str], days: int = 365, workers: int = 5
+    ) -> Dict[str, Optional[pd.DataFrame]]:
         import concurrent.futures
 
         results: Dict[str, Optional[pd.DataFrame]] = {}
@@ -327,21 +365,25 @@ class AkshareFetcher:
 
     def _get_eastmoney_hot_stocks(self, ak, n: int = 10) -> Optional[List[Dict[str, Any]]]:
         from .fetchers.market import _get_eastmoney_hot_stocks
+
         return _get_eastmoney_hot_stocks(ak, n, self._enforce_rate_limit, self._set_random_user_agent)
 
     def _get_eastmoney_hot_up_stocks(self, ak, n: int = 10) -> Optional[List[Dict[str, Any]]]:
         from .fetchers.market import _get_eastmoney_hot_up_stocks
+
         return _get_eastmoney_hot_up_stocks(ak, n, self._enforce_rate_limit, self._set_random_user_agent)
 
     def _get_xueqiu_hot_stocks(self, ak, n: int = 10) -> Optional[List[Dict[str, Any]]]:
         from .fetchers.market import _get_xueqiu_hot_stocks
+
         return _get_xueqiu_hot_stocks(ak, n, self._enforce_rate_limit, self._set_random_user_agent)
 
     # ── Limit-up pool ──────────────────────────────────────────────────
 
     def get_limit_up_pool(self, date: Optional[str] = None, n: int = 20) -> Optional[List[Dict[str, Any]]]:
         return _fetch_limit_up_pool(
-            date, n,
+            date,
+            n,
             enforce_rate_limit=self._enforce_rate_limit,
             set_user_agent=self._set_random_user_agent,
         )
@@ -355,6 +397,7 @@ class AkshareFetcher:
     @staticmethod
     def _normalize_limit_time_value(value: Any) -> str:
         from .fetchers.market import _normalize_limit_time_value
+
         return _normalize_limit_time_value(value)
 
     @staticmethod
@@ -368,11 +411,13 @@ class AkshareFetcher:
     @staticmethod
     def _find_first_column(df: pd.DataFrame, candidates: Tuple[str, ...]) -> Optional[str]:
         from .fetchers.market import _find_first_column
+
         return _find_first_column(df, candidates)
 
     @staticmethod
     def _find_column_containing(df: pd.DataFrame, keywords: Tuple[str, ...]) -> Optional[str]:
         from .fetchers.market import _find_column_containing
+
         return _find_column_containing(df, keywords)
 
     # ── Legacy convenience (delegates to fetch_stock_kline_history internally) ──
@@ -388,18 +433,19 @@ _realtime_circuit_breaker = get_realtime_circuit_breaker()
 
 # ── Legacy helpers (kept for test compatibility) ─────────────────────────
 
+
 def _is_etf_code(stock_code: str) -> bool:
-    etf_prefixes = ('51', '52', '56', '58', '15', '16', '18')
-    code = stock_code.strip().split('.')[0]
+    etf_prefixes = ("51", "52", "56", "58", "15", "16", "18")
+    code = stock_code.strip().split(".")[0]
     return code.startswith(etf_prefixes) and len(code) == 6
 
 
 def _is_hk_code(stock_code: str) -> bool:
     code = stock_code.strip().lower()
-    if code.endswith('.hk'):
+    if code.endswith(".hk"):
         numeric_part = code[:-3]
         return numeric_part.isdigit() and 1 <= len(numeric_part) <= 5
-    if code.startswith('hk'):
+    if code.startswith("hk"):
         numeric_part = code[2:]
         return numeric_part.isdigit() and 1 <= len(numeric_part) <= 5
     return code.isdigit() and len(code) == 5
@@ -420,7 +466,7 @@ if __name__ == "__main__":
     print("测试普通股票数据获取")
     print("=" * 50)
     try:
-        df = fetcher.get_daily_data('600519')
+        df = fetcher.get_daily_data("600519")
         print(f"[股票] 获取成功，共 {len(df)} 条数据")
         print(df.tail())
     except Exception as e:

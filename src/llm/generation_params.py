@@ -188,9 +188,7 @@ def _matches_model_family(model: str, family: str) -> bool:
 def _should_omit_litellm_temperature(model: str) -> bool:
     """Return whether a model family should rely on the provider default temperature."""
     return any(
-        part.startswith(("gpt-5", "gpt5"))
-        or part in {"o1", "o3", "o4"}
-        or part.startswith(("o1-", "o3-", "o4-"))
+        part.startswith(("gpt-5", "gpt5")) or part in {"o1", "o3", "o4"} or part.startswith(("o1-", "o3-", "o4-"))
         for part in _model_parts(model)
     )
 
@@ -282,19 +280,12 @@ def _redact_recovery_cache_value(param_name: str, value: Any) -> Any:
 
 
 def _stable_recovery_cache_json(value: Mapping[str, Any]) -> str:
-    redacted = {
-        key: _redact_recovery_cache_value(key, val)
-        for key, val in sorted(value.items())
-    }
+    redacted = {key: _redact_recovery_cache_value(key, val) for key, val in sorted(value.items())}
     return json.dumps(redacted, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _filter_litellm_routing_params(params: Mapping[str, Any]) -> Dict[str, Any]:
-    return {
-        key: params[key]
-        for key in _LITELLM_ROUTING_PARAM_KEYS
-        if key in params and params[key] not in (None, "")
-    }
+    return {key: params[key] for key in _LITELLM_ROUTING_PARAM_KEYS if key in params and params[key] not in (None, "")}
 
 
 def _request_endpoint_cache_scope(request_overrides: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -347,9 +338,7 @@ def _recovery_cache_key(
     if endpoint_scope is None:
         return None
     return (
-        f"{wire_model or (model or '').strip().lower()}"
-        f"|thinking={thinking_enabled}"
-        f"|endpoint={endpoint_scope}"
+        f"{wire_model or (model or '').strip().lower()}" f"|thinking={thinking_enabled}" f"|endpoint={endpoint_scope}"
     )
 
 

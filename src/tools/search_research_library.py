@@ -21,6 +21,7 @@ _NIFD_CATEGORIES = {
     "working_paper": "3d23ba0e-4f46-44c2-9d21-6b38df4cdd70",
 }
 
+
 def _nanhua_spec(futures_type: str | None) -> dict[str, Any] | None:
     suffix = str(futures_type or "").strip()
     if not suffix:
@@ -30,9 +31,15 @@ def _nanhua_spec(futures_type: str | None) -> dict[str, Any] | None:
 
         types = get_nanhua_tree(force=False).get("types") or []
         weekly = next((row for row in types if row.get("type") == "WEEK"), None)
-        child = next((row for row in (weekly or {}).get("children") or [] if str(row.get("type") or "").endswith(suffix)), None)
+        child = next(
+            (row for row in (weekly or {}).get("children") or [] if str(row.get("type") or "").endswith(suffix)), None
+        )
         if child:
-            return {"path": "/nanhua/report/:type1/:type2", "params": {"type1": "WEEK", "type2": str(child["type"])}, "source": "南华期货"}
+            return {
+                "path": "/nanhua/report/:type1/:type2",
+                "params": {"type1": "WEEK", "type2": str(child["type"])},
+                "source": "南华期货",
+            }
     except Exception:
         return None
     return None
@@ -50,10 +57,18 @@ def _route_specs(category: str, futures_type: str | None = None) -> list[dict[st
         return specs
     if category == "macro":
         return [
-            {"path": "/eastmoney/report/:category", "params": {"category": "macresearch"}, "source": "东方财富宏观研报"},
+            {
+                "path": "/eastmoney/report/:category",
+                "params": {"category": "macresearch"},
+                "source": "东方财富宏观研报",
+            },
             {"path": "/mckinsey/cn/:category?", "params": {"category": "macroeconomy"}, "source": "麦肯锡"},
             {"path": "/moodysmismicrosite/report/:industry?", "params": {"industry": "宏观经济"}, "source": "穆迪评级"},
-            {"path": "/nifd/research/:categoryGuid?", "params": {"categoryGuid": _NIFD_CATEGORIES["weekly"]}, "source": "国家金融与发展实验室"},
+            {
+                "path": "/nifd/research/:categoryGuid?",
+                "params": {"categoryGuid": _NIFD_CATEGORIES["weekly"]},
+                "source": "国家金融与发展实验室",
+            },
         ]
     return [
         {"path": "/eastmoney/report/:category", "params": {"category": "industry"}, "source": "东方财富行业研报"},
@@ -65,11 +80,7 @@ def _route_specs(category: str, futures_type: str | None = None) -> list[dict[st
 
 def _semantic_terms(subjects: list[str]) -> list[str]:
     """Normalize Planner-supplied subjects without interpreting user prose."""
-    return list(dict.fromkeys(
-        str(subject).strip().lower()
-        for subject in subjects
-        if len(str(subject).strip()) >= 2
-    ))
+    return list(dict.fromkeys(str(subject).strip().lower() for subject in subjects if len(str(subject).strip()) >= 2))
 
 
 def _parse_time(value: Any) -> datetime | None:
@@ -114,7 +125,10 @@ def search_research_library(
 
     def fetch(spec: dict[str, Any]):
         return spec, read_feed(
-            spec["path"], spec["params"], limit=50, fallback_to_xml=False,
+            spec["path"],
+            spec["params"],
+            limit=50,
+            fallback_to_xml=False,
         )
 
     with ThreadPoolExecutor(max_workers=min(4, len(specs) or 1)) as pool:
@@ -127,11 +141,17 @@ def search_research_library(
                 continue
             route_errors = [str(error) for error in result.get("errors") or []]
             errors.extend(f"{spec['source']}: {error}" for error in route_errors)
-            coverage.append({
-                "source": spec["source"], "route_path": spec["path"], "params": spec["params"],
-                "item_count": len(result.get("items") or []), "success": not route_errors,
-                "cached": bool(result.get("_cached")), "errors": route_errors,
-            })
+            coverage.append(
+                {
+                    "source": spec["source"],
+                    "route_path": spec["path"],
+                    "params": spec["params"],
+                    "item_count": len(result.get("items") or []),
+                    "success": not route_errors,
+                    "cached": bool(result.get("_cached")),
+                    "errors": route_errors,
+                }
+            )
             for raw in result.get("items") or []:
                 title = re.sub(r"\s+", " ", str(raw.get("title") or "")).strip()
                 link = str(raw.get("link") or "").strip()
@@ -142,17 +162,22 @@ def search_research_library(
                     continue
                 summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
                 text = f"{title} {summary}".lower()
-                candidates.append({
-                    "title": title, "published": raw.get("published"), "summary": summary,
-                    "link": link, "author": raw.get("author") or raw.get("source"),
-                    "source": spec["source"], "source_type": "institutional_research_rss",
-                    "research_category": resolved,
-                    "exact_subject_mentions": [
-                        term for term in subject_terms if term in text
-                    ],
-                    "semantic_status": "model_required",
-                    "rss_route": spec["path"], "rss_params": spec["params"],
-                })
+                candidates.append(
+                    {
+                        "title": title,
+                        "published": raw.get("published"),
+                        "summary": summary,
+                        "link": link,
+                        "author": raw.get("author") or raw.get("source"),
+                        "source": spec["source"],
+                        "source_type": "institutional_research_rss",
+                        "research_category": resolved,
+                        "exact_subject_mentions": [term for term in subject_terms if term in text],
+                        "semantic_status": "model_required",
+                        "rss_route": spec["path"],
+                        "rss_params": spec["params"],
+                    }
+                )
 
     candidates.sort(
         key=lambda row: (
@@ -175,8 +200,11 @@ def search_research_library(
         for item in items[:3]:
             try:
                 detail = read_item(
-                    route_path=item["rss_route"], params=item["rss_params"], title=item["title"],
-                    link=item["link"], list_summary=item["summary"],
+                    route_path=item["rss_route"],
+                    params=item["rss_params"],
+                    title=item["title"],
+                    link=item["link"],
+                    list_summary=item["summary"],
                 )
                 item["content_text"] = detail.get("content_text") or item["summary"]
                 item["content_fallback"] = bool(detail.get("_fallback"))
@@ -193,12 +221,18 @@ def search_research_library(
         web_fallback = websearch(query, num_results=min(limit, 10))
         for raw in web_fallback.get("results") or []:
             if raw.get("title") and raw.get("url"):
-                items.append({
-                    "title": raw["title"], "published": raw.get("published_date"),
-                    "summary": raw.get("snippet") or "", "link": raw["url"],
-                    "author": raw.get("source"), "source": raw.get("source"),
-                    "source_type": "websearch", "research_category": resolved,
-                })
+                items.append(
+                    {
+                        "title": raw["title"],
+                        "published": raw.get("published_date"),
+                        "summary": raw.get("snippet") or "",
+                        "link": raw["url"],
+                        "author": raw.get("source"),
+                        "source": raw.get("source"),
+                        "source_type": "websearch",
+                        "research_category": resolved,
+                    }
+                )
         items = items[:limit]
         fallback_used = bool(items)
         if fallback_used:
@@ -220,13 +254,15 @@ def search_research_library(
         "item_count": len(items),
         "source_coverage": coverage,
         "source": (
-            f"websearch/{(web_fallback or {}).get('provider', 'unknown')}" if fallback_used
-            else "Infos/RSSHub研究资料库" if acquisition_success
-            else "none"
+            f"websearch/{(web_fallback or {}).get('provider', 'unknown')}"
+            if fallback_used
+            else "Infos/RSSHub研究资料库" if acquisition_success else "none"
         ),
         "success": acquisition_success or fallback_used,
         "partial": bool(items) and bool(errors),
-        "data_time": latest.astimezone().isoformat() if latest and latest.tzinfo else latest.isoformat() if latest else None,
+        "data_time": (
+            latest.astimezone().isoformat() if latest and latest.tzinfo else latest.isoformat() if latest else None
+        ),
         "retrieved_at": retrieved_at,
         "is_stale": latest < datetime.now() - timedelta(days=max(120, days)) if latest else None,
         "freshness_unknown": latest is None,
@@ -246,16 +282,44 @@ TOOL = ToolSpec(
         "必须使用 get_research_report；若询问公司新闻或公告，不要调用本工具。数据来自东方财富、中指研究院、"
         "麦肯锡、穆迪、南华期货、国家金融与发展实验室、前瞻和五矿期货等 Infos/RSSHub 路由。"
     ),
-    parameters=object_schema({
-        "query": {"type": "string", "description": "Planner 组织的检索表达式"},
-        "category": {"type": "string", "enum": ["industry", "macro", "futures", "rating"], "description": "Planner 已解析的研究类别"},
-        "subjects": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 12, "description": "Planner 提取的核心研究主题"},
-        "futures_type": {"type": "string", "enum": ["black", "enchem", "nonfe", "agri", "bond", "exrate", "option", "ship", "stockindex_IM/IF/IH/IC", "macro"], "description": "仅期货研究可选的结构化品类"},
-        "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 365},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
-        "include_content": {"type": "boolean", "default": False},
-        "fallback_to_web": {"type": "boolean", "default": True},
-    }, ["query", "category", "subjects"]),
+    parameters=object_schema(
+        {
+            "query": {"type": "string", "description": "Planner 组织的检索表达式"},
+            "category": {
+                "type": "string",
+                "enum": ["industry", "macro", "futures", "rating"],
+                "description": "Planner 已解析的研究类别",
+            },
+            "subjects": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": 12,
+                "description": "Planner 提取的核心研究主题",
+            },
+            "futures_type": {
+                "type": "string",
+                "enum": [
+                    "black",
+                    "enchem",
+                    "nonfe",
+                    "agri",
+                    "bond",
+                    "exrate",
+                    "option",
+                    "ship",
+                    "stockindex_IM/IF/IH/IC",
+                    "macro",
+                ],
+                "description": "仅期货研究可选的结构化品类",
+            },
+            "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 365},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
+            "include_content": {"type": "boolean", "default": False},
+            "fallback_to_web": {"type": "boolean", "default": True},
+        },
+        ["query", "category", "subjects"],
+    ),
     executor=search_research_library,
     category="research",
 )

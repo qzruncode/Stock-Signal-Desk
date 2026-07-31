@@ -20,21 +20,25 @@ def get_sector_list(type: str = "industry") -> Any:
         raise ValueError("type 仅支持 industry 或 concept")
     flow = get_sector_flow(type=sector_type, period="today", top_n=30)
     records = flow.get("records") if isinstance(flow, dict) else []
-    items = [{
-        "name": record.get("name"),
-        "code": record.get("sector_code"),
-        "change_pct": record.get("pct_chg"),
-        "lead_stock": record.get("leading_stock"),
-        "lead_stock_code": record.get("leading_stock_code"),
-        "lead_stock_price": None,
-        "lead_stock_change_pct": None,
-        "up_count": None,
-        "down_count": None,
-        "company_count": None,
-        "net_flow": record.get("main_net_inflow"),
-        "net_flow_pct": record.get("main_net_inflow_pct"),
-        "data_source": "东方财富",
-    } for record in (records or []) if isinstance(record, dict) and record.get("name")]
+    items = [
+        {
+            "name": record.get("name"),
+            "code": record.get("sector_code"),
+            "change_pct": record.get("pct_chg"),
+            "lead_stock": record.get("leading_stock"),
+            "lead_stock_code": record.get("leading_stock_code"),
+            "lead_stock_price": None,
+            "lead_stock_change_pct": None,
+            "up_count": None,
+            "down_count": None,
+            "company_count": None,
+            "net_flow": record.get("main_net_inflow"),
+            "net_flow_pct": record.get("main_net_inflow_pct"),
+            "data_source": "东方财富",
+        }
+        for record in (records or [])
+        if isinstance(record, dict) and record.get("name")
+    ]
     errors = list(flow.get("errors") or []) if isinstance(flow, dict) else ["板块目录返回格式异常"]
     warnings = list(flow.get("warnings") or []) if isinstance(flow, dict) else []
     success = bool(items)
@@ -59,9 +63,16 @@ def get_sector_list(type: str = "industry") -> Any:
 TOOL = ToolSpec(
     name="get_sector_list",
     description="获取行业或概念板块列表及涨跌、领涨股和上涨下跌家数，用于板块强弱比较。",
-    parameters=object_schema({
-        "type": {"type": "string", "enum": ["industry", "concept"], "default": "industry", "description": "板块类型"},
-    }),
+    parameters=object_schema(
+        {
+            "type": {
+                "type": "string",
+                "enum": ["industry", "concept"],
+                "default": "industry",
+                "description": "板块类型",
+            },
+        }
+    ),
     executor=get_sector_list,
     category="market",
 )

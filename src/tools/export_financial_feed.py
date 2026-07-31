@@ -49,14 +49,17 @@ TOOL = ToolSpec(
         "准备下载指定财经 Feed，支持 RSS 2.0、Atom、JSON Feed、RSS3。工具返回后，助手卡片会提供下载按钮；"
         "只有用户明确要求导出或下载时调用。"
     ),
-    parameters=object_schema({
-        "route_path": {"type": "string"},
-        "params": {"type": "object", "additionalProperties": True},
-        "options": rss_options_schema(),
-        "namespace": {"type": "string"},
-        "format": {"type": "string", "enum": list(_FORMATS), "default": "rss"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
-    }, required=("route_path",)),
+    parameters=object_schema(
+        {
+            "route_path": {"type": "string"},
+            "params": {"type": "object", "additionalProperties": True},
+            "options": rss_options_schema(),
+            "namespace": {"type": "string"},
+            "format": {"type": "string", "enum": list(_FORMATS), "default": "rss"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
+        },
+        required=("route_path",),
+    ),
     executor=export_financial_feed,
     category="action",
 )

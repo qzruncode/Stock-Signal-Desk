@@ -42,6 +42,7 @@ _rate_limit_lock = threading.Lock()
 def _ensure_env_loaded() -> None:
     """Ensure .env is loaded before reading config."""
     from src.config import setup_env
+
     setup_env()
 
 

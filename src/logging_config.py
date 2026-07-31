@@ -22,13 +22,13 @@ from typing import List, Optional, Tuple
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(pathname)s:%(lineno)d | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _ALLOWED_LOG_LEVELS = {
-    'DEBUG': logging.DEBUG,
-    'INFO': logging.INFO,
-    'WARNING': logging.WARNING,
-    'ERROR': logging.ERROR,
-    'CRITICAL': logging.CRITICAL,
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
 }
-_DEFAULT_LITELLM_LOG_LEVEL = 'WARNING'
+_DEFAULT_LITELLM_LOG_LEVEL = "WARNING"
 
 
 class RelativePathFormatter(logging.Formatter):
@@ -48,29 +48,28 @@ class RelativePathFormatter(logging.Formatter):
         return super().format(record)
 
 
-
 # 默认需要降低日志级别的第三方库
 DEFAULT_QUIET_LOGGERS = [
-    'urllib3',
-    'sqlalchemy',
-    'google',
-    'httpx',
+    "urllib3",
+    "sqlalchemy",
+    "google",
+    "httpx",
 ]
 
 LITELLM_LOGGERS = [
-    'LiteLLM',
-    'LiteLLM Router',
-    'LiteLLM Proxy',
-    'litellm',
+    "LiteLLM",
+    "LiteLLM Router",
+    "LiteLLM Proxy",
+    "litellm",
 ]
 
 
 def _resolve_litellm_log_level(raw_level: Optional[str] = None) -> Tuple[int, Optional[str]]:
     """Resolve LiteLLM logger level from env, returning invalid raw value if any."""
     if raw_level is None:
-        raw_level = os.getenv('LITELLM_LOG_LEVEL', '')
+        raw_level = os.getenv("LITELLM_LOG_LEVEL", "")
 
-    normalized = (raw_level or '').strip().upper()
+    normalized = (raw_level or "").strip().upper()
     if not normalized:
         normalized = _DEFAULT_LITELLM_LOG_LEVEL
 
@@ -113,7 +112,7 @@ def setup_logging(
     log_path.mkdir(parents=True, exist_ok=True)
 
     # 日志文件路径（按日期分文件）
-    today_str = datetime.now().strftime('%Y%m%d')
+    today_str = datetime.now().strftime("%Y%m%d")
     log_file = log_path / f"{log_prefix}_{today_str}.log"
     debug_log_file = log_path / f"{log_prefix}_debug_{today_str}.log"
 
@@ -126,9 +125,7 @@ def setup_logging(
         root_logger.handlers.clear()
     # 创建相对路径 Formatter（相对于项目根目录）
     project_root = Path.cwd()
-    rel_formatter = RelativePathFormatter(
-        LOG_FORMAT, LOG_DATE_FORMAT, relative_to=project_root
-    )
+    rel_formatter = RelativePathFormatter(LOG_FORMAT, LOG_DATE_FORMAT, relative_to=project_root)
     # Handler 1: 控制台输出
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
@@ -136,22 +133,14 @@ def setup_logging(
     root_logger.addHandler(console_handler)
 
     # Handler 2: 常规日志文件（INFO 级别，10MB 轮转）
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5,
-        encoding='utf-8'
-    )
+    file_handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")  # 10MB
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(rel_formatter)
     root_logger.addHandler(file_handler)
 
     # Handler 3: 调试日志文件（DEBUG 级别，包含所有详细信息）
     debug_handler = RotatingFileHandler(
-        debug_log_file,
-        maxBytes=50 * 1024 * 1024,  # 50MB
-        backupCount=3,
-        encoding='utf-8'
+        debug_log_file, maxBytes=50 * 1024 * 1024, backupCount=3, encoding="utf-8"  # 50MB
     )
     debug_handler.setLevel(logging.DEBUG)
     debug_handler.setFormatter(rel_formatter)

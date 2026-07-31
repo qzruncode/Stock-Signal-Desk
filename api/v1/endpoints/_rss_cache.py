@@ -15,6 +15,7 @@ def _cache_get(key: str) -> Optional[dict]:
     """从数据库获取缓存的 RSS 数据。"""
     try:
         from src.storage import DatabaseManager
+
         db = DatabaseManager.get_instance()
         data = db.get_rss_cache(key)
         return data
@@ -27,6 +28,7 @@ def _cache_put(key: str, data: dict) -> None:
     """将 RSS 数据写入缓存。"""
     try:
         from src.storage import DatabaseManager
+
         db = DatabaseManager.get_instance()
         db.save_rss_cache(key, json.dumps(data, ensure_ascii=False))
     except Exception as exc:

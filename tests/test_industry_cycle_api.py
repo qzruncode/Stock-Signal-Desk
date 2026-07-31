@@ -18,8 +18,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -224,13 +226,19 @@ def test_build_llm_industry_cycle_report_falls_back_when_model_returns_non_json(
 def test_build_llm_industry_cycle_report_disables_structured_json_validator(monkeypatch):
     from src.services import industry_cycle_service as service_module
 
-    monkeypatch.setattr("src.analyzer.get_analyzer", lambda: type("Analyzer", (), {"is_available": staticmethod(lambda: True)})())
+    monkeypatch.setattr(
+        "src.analyzer.get_analyzer", lambda: type("Analyzer", (), {"is_available": staticmethod(lambda: True)})()
+    )
 
     captured = {}
 
     def _fake_call_ai_structured(*args, **kwargs):
         captured["validator"] = kwargs.get("response_validator")
-        return ('{"analysis_status":"观察","prosperity_score":10,"prosperity_judgement":"观察","core_logic":"测试","mainline_detector":{},"industry_beta_detector":{}}', "openai/glm-5.1", {})
+        return (
+            '{"analysis_status":"观察","prosperity_score":10,"prosperity_judgement":"观察","core_logic":"测试","mainline_detector":{},"industry_beta_detector":{}}',
+            "openai/glm-5.1",
+            {},
+        )
 
     monkeypatch.setattr("src.ai_caller.call_ai_structured", _fake_call_ai_structured)
     monkeypatch.setattr(service_module, "_cache_put", lambda symbol, payload: None)

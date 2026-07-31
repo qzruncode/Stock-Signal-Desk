@@ -26,11 +26,7 @@ class SetupStatusMixin:
             self._build_setup_storage_check(effective_map),
         ]
 
-        required_missing = [
-            check["key"]
-            for check in checks
-            if check["required"] and check["status"] == "needs_action"
-        ]
+        required_missing = [check["key"] for check in checks if check["required"] and check["status"] == "needs_action"]
         return {
             "is_complete": not required_missing,
             "ready_for_smoke": not required_missing,
@@ -125,11 +121,13 @@ class SetupStatusMixin:
     def _gateway_configured(self, effective_map: Dict[str, str]) -> Tuple[bool, List[str]]:
         """Return (configured, missing_keys) for the Anthropic gateway."""
         missing = [
-            name for name, key in (
+            name
+            for name, key in (
                 ("接入地址(ANTHROPIC_BASE_URL)", "ANTHROPIC_BASE_URL"),
                 ("鉴权令牌(ANTHROPIC_AUTH_TOKEN)", "ANTHROPIC_AUTH_TOKEN"),
                 ("主模型(ANTHROPIC_MODEL)", "ANTHROPIC_MODEL"),
-            ) if not (effective_map.get(key) or "").strip()
+            )
+            if not (effective_map.get(key) or "").strip()
         ]
         return (not missing, missing)
 

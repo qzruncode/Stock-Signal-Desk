@@ -37,13 +37,8 @@ def filter_watchlist_by_theme(domains: list[Any], group: str = "") -> dict[str, 
     group_payload = manage_watchlist_groups("list")
     selected_group = _select_group(list(group_payload.get("groups") or []), group)
     raw_codes = [str(code or "").strip() for code in selected_group.get("codes") or []]
-    valid_codes = list(dict.fromkeys(
-        code for code in raw_codes if len(code) == 6 and code.isdigit()
-    ))
-    invalid_entries = [
-        code for code in raw_codes
-        if code and not (len(code) == 6 and code.isdigit())
-    ]
+    valid_codes = list(dict.fromkeys(code for code in raw_codes if len(code) == 6 and code.isdigit()))
+    invalid_entries = [code for code in raw_codes if code and not (len(code) == 6 and code.isdigit())]
 
     matches_by_code: dict[str, dict[str, Any]] = {}
     source_coverage: list[dict[str, Any]] = []
@@ -70,38 +65,43 @@ def filter_watchlist_by_theme(domains: list[Any], group: str = "") -> dict[str, 
         if not isinstance(domain_result, dict):
             continue
         requested_theme = str(domain_result.get("domain") or "")
-        source_coverage.append({
-            "theme": requested_theme,
-            "candidate_count": int(domain_result.get("candidate_count") or 0),
-            "coverage_complete": bool(domain_result.get("coverage_complete")),
-            "mapping_type": domain_result.get("mapping_type"),
-            "mapping_rationale": domain_result.get("mapping_rationale"),
-            "sources": [
-                {
-                    "name": board.get("source"),
-                    "board": board.get("name"),
-                    "coverage": board.get("coverage"),
-                    "url": board.get("url"),
-                }
-                for board in domain_result.get("matched_boards") or []
-                if isinstance(board, dict)
-            ],
-        })
+        source_coverage.append(
+            {
+                "theme": requested_theme,
+                "candidate_count": int(domain_result.get("candidate_count") or 0),
+                "coverage_complete": bool(domain_result.get("coverage_complete")),
+                "mapping_type": domain_result.get("mapping_type"),
+                "mapping_rationale": domain_result.get("mapping_rationale"),
+                "sources": [
+                    {
+                        "name": board.get("source"),
+                        "board": board.get("name"),
+                        "coverage": board.get("coverage"),
+                        "url": board.get("url"),
+                    }
+                    for board in domain_result.get("matched_boards") or []
+                    if isinstance(board, dict)
+                ],
+            }
+        )
         for item in domain_result.get("items") or []:
             if not isinstance(item, dict):
                 continue
             symbol = str(item.get("symbol") or "")
             if symbol not in valid_codes:
                 continue
-            match = matches_by_code.setdefault(symbol, {
-                "symbol": symbol,
-                "name": str(item.get("name") or ""),
-                "matched_themes": [],
-                "boards": [],
-                "evidence_level": "L1",
-                "evidence_boundary": "主题板块成员关系，不等同已形成相关订单或收入",
-                "sources": [],
-            })
+            match = matches_by_code.setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "name": str(item.get("name") or ""),
+                    "matched_themes": [],
+                    "boards": [],
+                    "evidence_level": "L1",
+                    "evidence_boundary": "主题板块成员关系，不等同已形成相关订单或收入",
+                    "sources": [],
+                },
+            )
             if requested_theme not in match["matched_themes"]:
                 match["matched_themes"].append(requested_theme)
             for board in item.get("boards") or []:
@@ -150,31 +150,37 @@ TOOL = ToolSpec(
         "工具内部完成集合交集，只返回自选中的匹配项，不返回全市场候选，也不查询无关行情。"
         "适用于‘我的自选里哪些与AI/机器人有关’；概念成员仅标为L1，不代表订单或收入。"
     ),
-    parameters=object_schema({
-        "domains": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "label": {"type": "string"},
-                    "board_queries": {"type": "array", "items": {"type": "string"}},
-                    "mapping_type": {
-                        "type": "string",
-                        "enum": ["catalog_binding", "unresolved"],
+    parameters=object_schema(
+        {
+            "domains": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "label": {"type": "string"},
+                        "board_queries": {"type": "array", "items": {"type": "string"}},
+                        "mapping_type": {
+                            "type": "string",
+                            "enum": ["catalog_binding", "unresolved"],
+                        },
+                        "rationale": {"type": "string"},
+                        "unresolved_parts": {"type": "array", "items": {"type": "string"}},
                     },
-                    "rationale": {"type": "string"},
-                    "unresolved_parts": {"type": "array", "items": {"type": "string"}},
+                    "required": [
+                        "label",
+                        "board_queries",
+                        "mapping_type",
+                        "rationale",
+                        "unresolved_parts",
+                    ],
                 },
-                "required": [
-                    "label", "board_queries", "mapping_type",
-                    "rationale", "unresolved_parts",
-                ],
+                "description": "由语义资源绑定器对照实时板块目录生成的领域对象",
             },
-            "description": "由语义资源绑定器对照实时板块目录生成的领域对象",
+            "group": {"type": "string", "description": "可选的自选分组名称或ID；为空时使用默认自选股"},
         },
-        "group": {"type": "string", "description": "可选的自选分组名称或ID；为空时使用默认自选股"},
-    }, required=("domains",)),
+        required=("domains",),
+    ),
     executor=filter_watchlist_by_theme,
     category="research",
 )

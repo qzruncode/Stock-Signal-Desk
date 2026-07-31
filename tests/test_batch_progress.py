@@ -145,14 +145,16 @@ def test_batch_progress_is_persisted_incrementally(monkeypatch):
 
 
 def test_partial_report_can_be_built_from_persisted_results():
-    report = _build_partial_report_from_run({
-        "started_at": "2026-05-24T14:44:39",
-        "template_name": "行业+预期差",
-        "stock_count": 347,
-        "success_count": 1,
-        "fail_count": 0,
-        "results_json": '{"600519":{"success":true,"text":"分析正文","model":"test-model"}}',
-    })
+    report = _build_partial_report_from_run(
+        {
+            "started_at": "2026-05-24T14:44:39",
+            "template_name": "行业+预期差",
+            "stock_count": 347,
+            "success_count": 1,
+            "fail_count": 0,
+            "results_json": '{"600519":{"success":true,"text":"分析正文","model":"test-model"}}',
+        }
+    )
 
     assert "批量分析报告（部分结果）" in report
     assert "600519" in report
@@ -169,21 +171,25 @@ def test_resume_stock_codes_prefers_persisted_original_list():
 
 
 def test_auto_resume_ignores_empty_incomplete_runs():
-    codes = _resolve_auto_resume_stock_codes({
-        "stock_codes_json": '["600519", "000001"]',
-        "stock_count": 2,
-        "results_json": "{}",
-    })
+    codes = _resolve_auto_resume_stock_codes(
+        {
+            "stock_codes_json": '["600519", "000001"]',
+            "stock_count": 2,
+            "results_json": "{}",
+        }
+    )
 
     assert codes == []
 
 
 def test_auto_resume_only_uses_partial_runs():
-    codes = _resolve_auto_resume_stock_codes({
-        "stock_codes_json": '["600519", "000001"]',
-        "stock_count": 2,
-        "results_json": '{"600519":{"success":true,"text":"ok","model":"test-model"}}',
-    })
+    codes = _resolve_auto_resume_stock_codes(
+        {
+            "stock_codes_json": '["600519", "000001"]',
+            "stock_count": 2,
+            "results_json": '{"600519":{"success":true,"text":"ok","model":"test-model"}}',
+        }
+    )
 
     assert codes == ["600519", "000001"]
 

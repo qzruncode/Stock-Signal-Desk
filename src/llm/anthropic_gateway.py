@@ -74,9 +74,7 @@ def resolve_anthropic_gateway_config() -> Dict[str, Any]:
     if not raw_model.strip():
         missing.append("主模型(ANTHROPIC_MODEL)")
     if missing:
-        raise AnthropicGatewayConfigError(
-            AnthropicGatewayConfigError.MESSAGE_PREFIX + "、".join(missing)
-        )
+        raise AnthropicGatewayConfigError(AnthropicGatewayConfigError.MESSAGE_PREFIX + "、".join(missing))
 
     # 先解析 [1m] 窗口后缀（必须先于 _clean_model_name：SGR 正则会误吃 [1m] 字面后缀），
     # 再清洗 ANSI 转义。后缀仅用于本地窗口判定，传给 litellm/网关前剥离。
@@ -97,9 +95,7 @@ def resolve_anthropic_gateway_config() -> Dict[str, Any]:
     }
 
 
-def build_litellm_kwargs(
-    llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any
-) -> Dict[str, Any]:
+def build_litellm_kwargs(llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any) -> Dict[str, Any]:
     """Assemble litellm kwargs from the gateway config.
 
     合并基础鉴权字段（model/api_key/api_base/custom_llm_provider/extra_headers，

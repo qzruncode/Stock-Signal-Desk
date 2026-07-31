@@ -171,11 +171,7 @@ def validate_chat_request_body(body: Any) -> tuple[list[dict[str, Any]], str | N
         # by this service and can legitimately contain a complete candidate
         # inventory or structured tool evidence larger than one user message;
         # it remains bounded by the overall request limit above.
-        message_limit = (
-            limits.max_message_chars
-            if role == "user"
-            else limits.max_request_chars
-        )
+        message_limit = limits.max_message_chars if role == "user" else limits.max_request_chars
         if message_chars > message_limit:
             raise AgentRequestValidationError(
                 f"messages[{index}] 内容过大，最多允许 {message_limit} 个字符",
@@ -213,11 +209,13 @@ class AgentRequestRateLimiter:
         if limit <= 0:
             return 0
         if database is not None:
-            return int(database.check_agent_rate_limit(
-                key,
-                limit=limit,
-                window_seconds=window_seconds,
-            ))
+            return int(
+                database.check_agent_rate_limit(
+                    key,
+                    limit=limit,
+                    window_seconds=window_seconds,
+                )
+            )
         now = time.monotonic()
         cutoff = now - window_seconds
         with self._lock:
@@ -267,9 +265,7 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
 
         orchestrator_coverage = migration_coverage()
         if not orchestrator_coverage["complete"]:
-            issues.append(
-                "Agent orchestrator capability registry is incomplete"
-            )
+            issues.append("Agent orchestrator capability registry is incomplete")
     except Exception as exc:
         issues.append(f"Agent orchestrator registry is invalid: {exc}")
 
@@ -292,36 +288,21 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
     try:
         from src.config import get_config
 
-        db_url = (
-            (os.getenv("DATABASE_URL") or "").strip()
-            or get_config().get_db_url()
-        )
-        if str(db_url).lower().startswith("sqlite:") and not _truthy(
-            "ALLOW_SQLITE_PRODUCTION"
-        ):
+        db_url = (os.getenv("DATABASE_URL") or "").strip() or get_config().get_db_url()
+        if str(db_url).lower().startswith("sqlite:") and not _truthy("ALLOW_SQLITE_PRODUCTION"):
             issues.append(
                 "DATABASE_URL must use a production database in production "
                 "(set ALLOW_SQLITE_PRODUCTION=true only for a deliberate single-node deployment)"
             )
     except Exception as exc:
         issues.append(f"database configuration is invalid: {exc}")
-    if _truthy("AGENT_MULTI_TENANT_ENABLED") and not _truthy(
-        "TRUSTED_IDENTITY_HEADERS"
-    ):
+    if _truthy("AGENT_MULTI_TENANT_ENABLED") and not _truthy("TRUSTED_IDENTITY_HEADERS"):
+        issues.append("TRUSTED_IDENTITY_HEADERS=true is required when " "AGENT_MULTI_TENANT_ENABLED=true")
+    if _truthy("TRUSTED_IDENTITY_HEADERS") and not _truthy("TRUSTED_PROXY_IDENTITY"):
         issues.append(
-            "TRUSTED_IDENTITY_HEADERS=true is required when "
-            "AGENT_MULTI_TENANT_ENABLED=true"
+            "TRUSTED_PROXY_IDENTITY=true is required before accepting " "identity headers from an upstream proxy"
         )
-    if _truthy("TRUSTED_IDENTITY_HEADERS") and not _truthy(
-        "TRUSTED_PROXY_IDENTITY"
-    ):
-        issues.append(
-            "TRUSTED_PROXY_IDENTITY=true is required before accepting "
-            "identity headers from an upstream proxy"
-        )
-    if _truthy("TRUSTED_IDENTITY_HEADERS") and len(
-        (os.getenv("TRUSTED_IDENTITY_SHARED_SECRET") or "").strip()
-    ) < 32:
+    if _truthy("TRUSTED_IDENTITY_HEADERS") and len((os.getenv("TRUSTED_IDENTITY_SHARED_SECRET") or "").strip()) < 32:
         issues.append(
             "TRUSTED_IDENTITY_SHARED_SECRET must contain at least 32 "
             "characters before accepting proxy identity headers"
@@ -329,8 +310,7 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
     trace_key = (os.getenv("AGENT_TRACE_ENCRYPTION_KEY") or "").strip()
     if not trace_key:
         issues.append(
-            "AGENT_TRACE_ENCRYPTION_KEY is required in production for "
-            "stored normalized plans and outcomes"
+            "AGENT_TRACE_ENCRYPTION_KEY is required in production for " "stored normalized plans and outcomes"
         )
     else:
         try:
@@ -338,19 +318,11 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
 
             Fernet(trace_key.encode("ascii"))
         except Exception:
-            issues.append(
-                "AGENT_TRACE_ENCRYPTION_KEY must be a valid Fernet key"
-            )
-    if str(
-        os.getenv("AGENT_PLANNER_VERIFIER_MODE") or ""
-    ).strip().lower() != "enforce":
-        issues.append(
-            "AGENT_PLANNER_VERIFIER_MODE=enforce is required in production"
-        )
+            issues.append("AGENT_TRACE_ENCRYPTION_KEY must be a valid Fernet key")
+    if str(os.getenv("AGENT_PLANNER_VERIFIER_MODE") or "").strip().lower() != "enforce":
+        issues.append("AGENT_PLANNER_VERIFIER_MODE=enforce is required in production")
     if not _truthy("AGENT_ISOLATE_ALL_STATELESS"):
-        issues.append(
-            "AGENT_ISOLATE_ALL_STATELESS=true is required in production"
-        )
+        issues.append("AGENT_ISOLATE_ALL_STATELESS=true is required in production")
     if static_dir is not None:
         index_path = static_dir / "index.html"
         if not index_path.is_file():

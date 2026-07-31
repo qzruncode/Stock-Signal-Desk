@@ -116,8 +116,7 @@ class AnalysisService:
                 "严格遵守系统提示词中的实时数据硬性要求。"
             )
             full_prompt = (
-                f"【System Prompt — {template_name}】\n{effective_system_prompt}\n\n"
-                f"【User Prompt】\n{user_prompt}"
+                f"【System Prompt — {template_name}】\n{effective_system_prompt}\n\n" f"【User Prompt】\n{user_prompt}"
             )
             conversation = {
                 "prompt": full_prompt,
@@ -191,6 +190,7 @@ class AnalysisService:
         """Create a GeminiAnalyzer instance from config."""
         try:
             from src.analyzer import GeminiAnalyzer
+
             return GeminiAnalyzer(config=config)
         except Exception as e:
             logger.error(f"创建分析器失败: {e}", exc_info=True)
@@ -233,11 +233,10 @@ class AnalysisService:
         """Send push notification for completed analysis."""
         try:
             from src.notification import Notifier
+
             notifier = Notifier()
             if notifier.is_available():
                 preview = response_text[:300].replace("\n", " ").strip()
-                notifier.send(
-                    f"📊 {stock_name}({stock_code}) 分析完成\n\n{preview}..."
-                )
+                notifier.send(f"📊 {stock_name}({stock_code}) 分析完成\n\n{preview}...")
         except Exception as e:
             logger.warning(f"发送通知失败（非致命）: {e}")

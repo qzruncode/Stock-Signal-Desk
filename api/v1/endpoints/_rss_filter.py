@@ -119,9 +119,7 @@ UNUSEFUL_ROUTES: set[str] = {
 }
 
 # Union for O(1) membership test.
-_HIDDEN_ROUTES: set[str] = (
-    KNOWN_BROKEN_ROUTES | ENGLISH_ONLY_ROUTES | UNUSEFUL_ROUTES
-)
+_HIDDEN_ROUTES: set[str] = KNOWN_BROKEN_ROUTES | ENGLISH_ONLY_ROUTES | UNUSEFUL_ROUTES
 
 
 def is_hidden_from_explore(route: Any) -> bool:

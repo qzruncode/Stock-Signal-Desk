@@ -24,7 +24,9 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
     criterion_name = "驱动因素"
     index = 4
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
+    def collect_data(
+        self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None
+    ) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -86,10 +88,12 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
                 )
         else:
             lines.append("- 无新闻数据")
-        lines.extend([
-            "",
-            "## 技术驱动证据（近1年研报，请自行判断是否涉及技术突破/迭代）",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 技术驱动证据（近1年研报，请自行判断是否涉及技术突破/迭代）",
+            ]
+        )
         tr = raw.get("tech_research", [])
         if tr:
             for item in tr[:8]:
@@ -98,10 +102,12 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
                 )
         else:
             lines.append("- 无研报数据")
-        lines.extend([
-            "",
-            "## 需求驱动证据（近6个月新闻，请自行判断是否涉及订单/出货/需求增长）",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 需求驱动证据（近6个月新闻，请自行判断是否涉及订单/出货/需求增长）",
+            ]
+        )
         dn = raw.get("demand_news", [])
         if dn:
             for item in dn[:10]:
@@ -110,14 +116,16 @@ class GrowthDriversEvaluator(BaseCriterionEvaluator):
                 )
         else:
             lines.append("- 无新闻数据")
-        lines.extend([
-            "",
-            "## 判断约束",
-            "- 请基于上方原始新闻和研报内容，自行判断是否存在政策/技术/需求驱动。",
-            "- 不要因为新闻标题不含关键词就忽略实际内容中的驱动信号。",
-            "- 三类驱动至少有一种明确成立才判为通过。",
-            "- 纯概念炒作（有题材但无实质政策/技术/需求落地）不算驱动成立。",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 判断约束",
+                "- 请基于上方原始新闻和研报内容，自行判断是否存在政策/技术/需求驱动。",
+                "- 不要因为新闻标题不含关键词就忽略实际内容中的驱动信号。",
+                "- 三类驱动至少有一种明确成立才判为通过。",
+                "- 纯概念炒作（有题材但无实质政策/技术/需求落地）不算驱动成立。",
+            ]
+        )
         summary = "\n".join(lines)
         return CriterionEvidence(raw_data=raw, data_summary=summary)
 

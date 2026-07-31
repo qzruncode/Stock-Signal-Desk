@@ -84,10 +84,7 @@ def prepare_market_mainline_snapshot(
             ),
         )
     except Exception as exc:
-        message = (
-            "市场主线快照生成失败："
-            f"{type(exc).__name__}: {str(exc)[:220]}"
-        )
+        message = "市场主线快照生成失败：" f"{type(exc).__name__}: {str(exc)[:220]}"
         return {
             "success": False,
             "partial": False,
@@ -102,31 +99,20 @@ def prepare_market_mainline_snapshot(
     available = bool(
         not report.get("report_pending")
         and report.get("as_of_date")
-        and (
-            report.get("current_mainlines")
-            or report.get("candidate_mainlines")
-            or report.get("future_mainlines")
-        )
+        and (report.get("current_mainlines") or report.get("candidate_mainlines") or report.get("future_mainlines"))
     )
     if not available:
-        task = (
-            report.get("generation_task")
-            if isinstance(report.get("generation_task"), dict)
-            else {}
-        )
+        task = report.get("generation_task") if isinstance(report.get("generation_task"), dict) else {}
         if report.get("generation_failed"):
-            reason = str(
-                report.get("generation_error")
-                or task.get("error")
-                or "市场主线生成任务失败"
-            )
+            reason = str(report.get("generation_error") or task.get("error") or "市场主线生成任务失败")
         else:
             reason = "当日市场主线报告没有形成可用主线"
         return {
             "success": False,
             "partial": False,
             "available": False,
-            "generation_pending": str(task.get("status") or "") in {
+            "generation_pending": str(task.get("status") or "")
+            in {
                 "pending",
                 "processing",
             },
@@ -149,10 +135,7 @@ def prepare_market_mainline_snapshot(
         "partial": False,
         "available": True,
         "generation_pending": False,
-        "snapshot_id": ":".join(
-            value for value in (contract_version, as_of_date, generated_at)
-            if value
-        ),
+        "snapshot_id": ":".join(value for value in (contract_version, as_of_date, generated_at) if value),
         **snapshot,
         "report_pending": False,
         "errors": [],

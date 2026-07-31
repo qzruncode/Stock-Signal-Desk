@@ -58,10 +58,24 @@ def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
         try:
             raw = get_kline(code, count=safe_count, use_cache=True)
         except Exception as exc:
-            return {"symbol": code, "indicators": {}, "errors": [str(exc)], "source": "K线多源链", "success": False, "is_stale": None, "fallback_used": True}
+            return {
+                "symbol": code,
+                "indicators": {},
+                "errors": [str(exc)],
+                "source": "K线多源链",
+                "success": False,
+                "is_stale": None,
+                "fallback_used": True,
+            }
     rows = raw.get("data") or []
     if len(rows) < 30:
-        return {"symbol": code, "indicators": {}, "errors": ["有效 K 线少于 30 条，无法稳定计算技术指标"], "success": False, **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")}}
+        return {
+            "symbol": code,
+            "indicators": {},
+            "errors": ["有效 K 线少于 30 条，无法稳定计算技术指标"],
+            "success": False,
+            **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")},
+        }
 
     frame = pd.DataFrame(rows)
     if "date" in frame.columns:
@@ -70,7 +84,13 @@ def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
         frame[col] = pd.to_numeric(frame.get(col), errors="coerce")
     frame = frame.dropna(subset=["high", "low", "close"])
     if len(frame) < 30:
-        return {"symbol": code, "indicators": {}, "errors": ["有效 OHLC K 线少于 30 条"], "success": False, **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")}}
+        return {
+            "symbol": code,
+            "indicators": {},
+            "errors": ["有效 OHLC K 线少于 30 条"],
+            "success": False,
+            **{k: raw.get(k) for k in ("source", "data_time", "is_stale", "fallback_used", "_cached")},
+        }
     close = frame["close"]
     high = frame["high"]
     low = frame["low"]
@@ -155,7 +175,13 @@ TOOL = ToolSpec(
     parameters=object_schema(
         {
             "symbol": {"type": "string", "description": "股票代码或股票名称"},
-            "count": {"type": "integer", "minimum": 80, "maximum": 250, "default": 120, "description": "用于计算的最近日线数量"},
+            "count": {
+                "type": "integer",
+                "minimum": 80,
+                "maximum": 250,
+                "default": 120,
+                "description": "用于计算的最近日线数量",
+            },
         },
         ["symbol"],
     ),

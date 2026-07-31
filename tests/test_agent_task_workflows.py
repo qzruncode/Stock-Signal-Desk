@@ -79,23 +79,28 @@ def _unified_pipeline(
     plan: TaskPlan,
     resolved: list[ResolvedTask],
 ):
-    dimensions = tuple(sorted({
-        dimension
-        for task in resolved
-        for dimension in capability_for(
-            Capability(task.kind.value)
-        ).evidence_dimensions
-    }, key=lambda item: item.value))
+    dimensions = tuple(
+        sorted(
+            {
+                dimension
+                for task in resolved
+                for dimension in capability_for(Capability(task.kind.value)).evidence_dimensions
+            },
+            key=lambda item: item.value,
+        )
+    )
     goal = GoalContractV2(
         objective="完成测试计划",
         question_type=QuestionType.RESEARCH,
         uncertainty_mode=UncertaintyMode.BOUNDED,
         deliverables=("返回测试计划结果",),
-        claims=(ClaimRequirementV2(
-            claim_id="result",
-            question="测试计划是否形成结果",
-            required_dimensions=dimensions,
-        ),),
+        claims=(
+            ClaimRequirementV2(
+                claim_id="result",
+                question="测试计划是否形成结果",
+                required_dimensions=dimensions,
+            ),
+        ),
     )
     compiled = CompiledIntentGraphV2(
         run_id="test-run",
@@ -104,15 +109,9 @@ def _unified_pipeline(
             CompiledTaskV2(
                 task=task,
                 capability=Capability(task.kind.value),
-                capability_version=capability_for(
-                    Capability(task.kind.value)
-                ).version,
-                intent_schema_version=capability_for(
-                    Capability(task.kind.value)
-                ).schema_version,
-                execution_policy=capability_for(
-                    Capability(task.kind.value)
-                ).execution_policy,
+                capability_version=capability_for(Capability(task.kind.value)).version,
+                intent_schema_version=capability_for(Capability(task.kind.value)).schema_version,
+                execution_policy=capability_for(Capability(task.kind.value)).execution_policy,
                 resource_fingerprint=f"test-{task.task_id}",
             )
             for task in resolved
@@ -124,14 +123,17 @@ def _unified_pipeline(
     graph.outline.goal = goal
     graph.trace.schema_version = "orchestrator-4.0"
     graph.trace.stage_durations_ms = {}
-    with patch.object(
-        chat_mod,
-        "plan_intent_graph_v2",
-        new=AsyncMock(return_value=graph),
-    ), patch.object(
-        chat_mod,
-        "compile_intent_graph_v2",
-        new=AsyncMock(return_value=compiled),
+    with (
+        patch.object(
+            chat_mod,
+            "plan_intent_graph_v2",
+            new=AsyncMock(return_value=graph),
+        ),
+        patch.object(
+            chat_mod,
+            "compile_intent_graph_v2",
+            new=AsyncMock(return_value=compiled),
+        ),
     ):
         yield
 
@@ -148,17 +150,20 @@ def _task(
 ) -> StandardTask:
     normalized_parameters = dict(parameters or {})
     if kind == StandardTaskKind.THEME_BUSINESS_EVIDENCE:
-        normalized_parameters.setdefault("evidence_context", {
-            "target_topics": ["人形机器人"],
-            "domain_theses": [
-                {
-                    "label": str(domain.get("label") or ""),
-                    "rationale": "该板块是人形机器人产业链的直接受益环节",
-                }
-                for domain in normalized_parameters.get("domains") or []
-                if isinstance(domain, dict) and domain.get("label")
-            ],
-        })
+        normalized_parameters.setdefault(
+            "evidence_context",
+            {
+                "target_topics": ["人形机器人"],
+                "domain_theses": [
+                    {
+                        "label": str(domain.get("label") or ""),
+                        "rationale": "该板块是人形机器人产业链的直接受益环节",
+                    }
+                    for domain in normalized_parameters.get("domains") or []
+                    if isinstance(domain, dict) and domain.get("label")
+                ],
+            },
+        )
     return StandardTask(
         task_id=task_id,
         kind=kind,
@@ -205,13 +210,23 @@ def _financial_conditions(*conditions: dict) -> dict:
 
 
 def _model_response(function_name: str, payload: dict) -> SimpleNamespace:
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        tool_calls=[SimpleNamespace(function=SimpleNamespace(
-            name=function_name,
-            arguments=json.dumps(payload, ensure_ascii=False),
-        ))],
-        content=None,
-    ))])
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    tool_calls=[
+                        SimpleNamespace(
+                            function=SimpleNamespace(
+                                name=function_name,
+                                arguments=json.dumps(payload, ensure_ascii=False),
+                            )
+                        )
+                    ],
+                    content=None,
+                )
+            )
+        ]
+    )
 
 
 def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
@@ -219,17 +234,14 @@ def test_every_registered_tool_belongs_to_at_least_one_fixed_workflow() -> None:
     assert all(
         spec.max_tool_calls <= 104
         for kind, spec in WORKFLOW_REGISTRY.items()
-        if kind not in {
+        if kind
+        not in {
             StandardTaskKind.THEME_BUSINESS_EVIDENCE,
             StandardTaskKind.INVESTMENT_DECISION,
         }
     )
-    assert WORKFLOW_REGISTRY[
-        StandardTaskKind.THEME_BUSINESS_EVIDENCE
-    ].max_tool_calls == 6000
-    assert WORKFLOW_REGISTRY[
-        StandardTaskKind.INVESTMENT_DECISION
-    ].max_tool_calls == 302
+    assert WORKFLOW_REGISTRY[StandardTaskKind.THEME_BUSINESS_EVIDENCE].max_tool_calls == 6000
+    assert WORKFLOW_REGISTRY[StandardTaskKind.INVESTMENT_DECISION].max_tool_calls == 302
 
 
 def test_planner_catalog_does_not_expose_tool_names() -> None:
@@ -282,7 +294,10 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         StandardTaskKind.PRICE_HISTORY: {"count": 60},
         StandardTaskKind.TECHNICAL_ANALYSIS: {},
         StandardTaskKind.NEWS_ANALYSIS: {
-            "query": "白酒行业", "topic": "industry", "subjects": ["白酒"], "days": 7,
+            "query": "白酒行业",
+            "topic": "industry",
+            "subjects": ["白酒"],
+            "days": 7,
         },
         StandardTaskKind.REGULATORY_ANALYSIS: {"keyword": "再融资"},
         StandardTaskKind.MARKET_OVERVIEW: {"include_index": True},
@@ -298,14 +313,16 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
             "candidate_scope": "public_fallback",
         },
         StandardTaskKind.STOCK_SCREENING: {"screen_spec": screen_spec},
-        StandardTaskKind.COLLECTION_FINANCIAL_FILTER: _financial_conditions({
-            "metric": "debt_ratio",
-            "period_basis": "latest_report",
-            "operator": "gt",
-            "threshold": 70,
-            "threshold_unit": "percent",
-            "action": "exclude_matching",
-        }),
+        StandardTaskKind.COLLECTION_FINANCIAL_FILTER: _financial_conditions(
+            {
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            }
+        ),
         StandardTaskKind.WATCHLIST_MUTATION: {"action": "add"},
         StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT: {"action": "list"},
         StandardTaskKind.FORMAL_ANALYSIS: {"action": "status"},
@@ -351,8 +368,10 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
     for kind, spec in WORKFLOW_REGISTRY.items():
         if not spec.enabled:
             continue
-        symbols = ("600519", "000858") if kind == StandardTaskKind.STOCK_COMPARISON else (
-            ("600519",) if kind in entity_tasks else ()
+        symbols = (
+            ("600519", "000858")
+            if kind == StandardTaskKind.STOCK_COMPARISON
+            else (("600519",) if kind in entity_tasks else ())
         )
         candidate = _task(
             kind,
@@ -369,9 +388,7 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         assert len(calls) <= spec.max_tool_calls
         assert {call.call.tool_name for call in calls} <= spec.tool_whitelist
         exercised.add(kind)
-    assert exercised == {
-        kind for kind, spec in WORKFLOW_REGISTRY.items() if spec.enabled
-    }
+    assert exercised == {kind for kind, spec in WORKFLOW_REGISTRY.items() if spec.enabled}
 
 
 def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
@@ -405,9 +422,7 @@ def test_industry_research_always_uses_one_project_catalog_snapshot() -> None:
         },
     )
     project_calls = compile_task(ResolvedTask(candidate=project_task))
-    assert [call.tool_name for call in project_calls] == [
-        "get_domain_board_catalog"
-    ]
+    assert [call.tool_name for call in project_calls] == ["get_domain_board_catalog"]
 
     fallback_task = _task(
         StandardTaskKind.INDUSTRY_RESEARCH,
@@ -442,14 +457,14 @@ def test_theme_business_evidence_compiles_only_after_candidates_are_bound() -> N
         },
     )
 
-    calls = compile_task(ResolvedTask(
-        candidate=candidate,
-        symbols=("002979", "300007", "301368"),
-    ))
+    calls = compile_task(
+        ResolvedTask(
+            candidate=candidate,
+            symbols=("002979", "300007", "301368"),
+        )
+    )
 
-    assert "get_domain_stock_candidates" not in [
-        call.tool_name for call in calls
-    ]
+    assert "get_domain_stock_candidates" not in [call.tool_name for call in calls]
     assert [call.tool_name for call in calls] == [
         "get_company_theme_evidence",
         "get_company_theme_evidence",
@@ -461,11 +476,15 @@ def test_theme_business_evidence_compiles_only_after_candidates_are_bound() -> N
         "301368",
     ]
     assert all(call.arguments["target_topics"] == ["人形机器人"] for call in calls)
-    assert all(call.arguments["domains"] == [
-        "灵巧手",
-        "六维力传感器",
-        "谐波减速器",
-    ] for call in calls)
+    assert all(
+        call.arguments["domains"]
+        == [
+            "灵巧手",
+            "六维力传感器",
+            "谐波减速器",
+        ]
+        for call in calls
+    )
 
 
 def test_theme_business_evidence_compiles_all_488_candidates_as_single_stock_calls() -> None:
@@ -479,19 +498,11 @@ def test_theme_business_evidence_compiles_all_488_candidates_as_single_stock_cal
     )
     symbols = tuple(f"{100000 + index:06d}" for index in range(488))
 
-    calls = WorkflowPolicyValidator(ToolRegistry()).preflight_task(
-        ResolvedTask(candidate=candidate, symbols=symbols)
-    )
+    calls = WorkflowPolicyValidator(ToolRegistry()).preflight_task(ResolvedTask(candidate=candidate, symbols=symbols))
 
     assert len(calls) == 488
-    assert {
-        call.call.tool_name
-        for call in calls
-    } == {"get_company_theme_evidence"}
-    assert [
-        call.arguments["symbol"]
-        for call in calls
-    ] == list(symbols)
+    assert {call.call.tool_name for call in calls} == {"get_company_theme_evidence"}
+    assert [call.arguments["symbol"] for call in calls] == list(symbols)
     assert all("," not in call.arguments["symbol"] for call in calls)
 
 
@@ -534,14 +545,16 @@ def test_collection_financial_filter_compiles_all_batches_without_truncation() -
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "debt_ratio",
-            "period_basis": "latest_report",
-            "operator": "gt",
-            "threshold": 70,
-            "threshold_unit": "percent",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            }
+        ),
     )
     calls = compile_task(ResolvedTask(candidate=candidate, symbols=symbols))
     assert len(calls) == 2
@@ -561,19 +574,29 @@ def test_domain_discovery_and_multi_condition_filter_form_one_resource_dag() -> 
         task_id="filter",
         parameters=_financial_conditions(
             {
-                "metric": "debt_ratio", "period_basis": "latest_report",
-                "operator": "gt", "threshold": 70,
-                "threshold_unit": "percent", "action": "exclude_matching",
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
             },
             {
-                "metric": "net_profit", "period_basis": "previous_fiscal_year",
-                "operator": "lt", "threshold": 0,
-                "threshold_unit": "cny", "action": "exclude_matching",
+                "metric": "net_profit",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 0,
+                "threshold_unit": "cny",
+                "action": "exclude_matching",
             },
             {
-                "metric": "revenue", "period_basis": "fiscal_year",
-                "fiscal_year": 2025, "operator": "lt", "threshold": 5,
-                "threshold_unit": "yi_cny", "action": "exclude_matching",
+                "metric": "revenue",
+                "period_basis": "fiscal_year",
+                "fiscal_year": 2025,
+                "operator": "lt",
+                "threshold": 5,
+                "threshold_unit": "yi_cny",
+                "action": "exclude_matching",
             },
         ),
         depends_on=["discover"],
@@ -589,31 +612,25 @@ def test_domain_discovery_and_multi_condition_filter_form_one_resource_dag() -> 
 
     assert [task.task_id for task in resolved] == ["discover", "filter"]
     assert resolved[1].symbols == ()
-    contracts = {
-        item["capability"]: item
-        for item in capability_catalog()
-    }
-    assert contracts["theme_stock_discovery"]["output_resources"] == [
-        "domain_collection",
-        "security_collection"
-    ]
-    assert contracts["collection_financial_filter"]["input_resources"] == [
-        "security_collection"
-    ]
+    contracts = {item["capability"]: item for item in capability_catalog()}
+    assert contracts["theme_stock_discovery"]["output_resources"] == ["domain_collection", "security_collection"]
+    assert contracts["collection_financial_filter"]["input_resources"] == ["security_collection"]
 
 
 def test_previous_fiscal_year_revenue_filter_has_one_typed_contract_for_every_batch() -> None:
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "revenue",
-            "period_basis": "previous_fiscal_year",
-            "operator": "lt",
-            "threshold": 5,
-            "threshold_unit": "yi_cny",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "revenue",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 5,
+                "threshold_unit": "yi_cny",
+                "action": "exclude_matching",
+            }
+        ),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
@@ -628,14 +645,16 @@ def test_previous_fiscal_year_revenue_filter_has_one_typed_contract_for_every_ba
 def test_collection_financial_filter_rejects_metric_unit_mismatch() -> None:
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "revenue",
-            "period_basis": "previous_fiscal_year",
-            "operator": "lt",
-            "threshold": 5,
-            "threshold_unit": "percent",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "revenue",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 5,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            }
+        ),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     with pytest.raises(ValueError, match="currency metrics require a CNY threshold unit"):
@@ -645,14 +664,16 @@ def test_collection_financial_filter_rejects_metric_unit_mismatch() -> None:
 def test_collection_financial_filter_accepts_negative_profit_threshold() -> None:
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "deducted_net_profit",
-            "period_basis": "previous_fiscal_year",
-            "operator": "lt",
-            "threshold": -1,
-            "threshold_unit": "yi_cny",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "deducted_net_profit",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": -1,
+                "threshold_unit": "yi_cny",
+                "action": "exclude_matching",
+            }
+        ),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
@@ -661,14 +682,16 @@ def test_collection_financial_filter_accepts_negative_profit_threshold() -> None
 def test_collection_financial_filter_keeps_net_profit_distinct_from_deducted_profit() -> None:
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "net_profit",
-            "period_basis": "previous_fiscal_year",
-            "operator": "lt",
-            "threshold": 0,
-            "threshold_unit": "cny",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "net_profit",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 0,
+                "threshold_unit": "cny",
+                "action": "exclude_matching",
+            }
+        ),
     ).model_copy(update={"entity_scope": EntityScope.PREVIOUS_ANSWER})
 
     validate_candidate_plan(TaskPlan(tasks=[candidate]))
@@ -681,14 +704,16 @@ def test_collection_filter_executor_runs_every_batch_even_when_one_fails() -> No
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "debt_ratio",
-            "period_basis": "latest_report",
-            "operator": "gt",
-            "threshold": 70,
-            "threshold_unit": "percent",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            }
+        ),
     )
     seen: list[str] = []
     active = 0
@@ -710,9 +735,13 @@ def test_collection_filter_executor_runs_every_batch_even_when_one_fails() -> No
         active -= 1
         return result
 
-    result = asyncio.run(WorkflowExecutor(ToolRegistry(), runner).execute([
-        ResolvedTask(candidate=candidate, symbols=symbols),
-    ]))
+    result = asyncio.run(
+        WorkflowExecutor(ToolRegistry(), runner).execute(
+            [
+                ResolvedTask(candidate=candidate, symbols=symbols),
+            ]
+        )
+    )
     assert len(seen) == 2
     assert sorted(len(batch.split(",")) for batch in seen) == [23, 24]
     assert result.tasks[0].status == "failed"
@@ -776,9 +805,7 @@ def test_action_specific_parameters_are_rejected_before_tool_execution(
 
 
 def test_template_update_requires_a_real_change() -> None:
-    intent_model = capability_for(
-        Capability.ANALYSIS_TEMPLATE_MANAGEMENT
-    ).intent_model
+    intent_model = capability_for(Capability.ANALYSIS_TEMPLATE_MANAGEMENT).intent_model
     with pytest.raises(ValueError, match="update requires"):
         intent_model.model_validate({"action": "update", "template_id": 1})
 
@@ -795,14 +822,14 @@ def test_saved_batch_scope_requires_declared_and_explicit_confirmation() -> None
     with pytest.raises(ValueError, match="confirmation state"):
         validate_candidate_plan(TaskPlan(tasks=[unmarked]))
 
-    pending_confirmation = unmarked.model_copy(update={
-        "confirmation": ConfirmationState.MISSING,
-    })
+    pending_confirmation = unmarked.model_copy(
+        update={
+            "confirmation": ConfirmationState.MISSING,
+        }
+    )
     validate_candidate_plan(TaskPlan(tasks=[pending_confirmation]))
     with pytest.raises(ConfirmationRequired):
-        WorkflowPolicyValidator(ToolRegistry()).preflight_task(
-            ResolvedTask(candidate=pending_confirmation)
-        )
+        WorkflowPolicyValidator(ToolRegistry()).preflight_task(ResolvedTask(candidate=pending_confirmation))
 
 
 def test_batch_symbol_scope_is_bounded_before_runner_is_called() -> None:
@@ -820,11 +847,13 @@ def test_batch_symbol_scope_is_bounded_before_runner_is_called() -> None:
         return {"success": True, "errors": [], "partial": False}
 
     resolved = ResolvedTask(candidate=candidate, symbols=symbols)
-    result = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-        approved_actions={action_fingerprint(resolved)},
-    ).execute([resolved]))
+    result = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            approved_actions={action_fingerprint(resolved)},
+        ).execute([resolved])
+    )
     assert calls == 0
     assert result.tasks[0].status == "blocked"
     assert "at most 50" in result.tasks[0].errors[0]
@@ -839,9 +868,13 @@ def test_trade_requests_are_stopped_at_the_fixed_state_machine() -> None:
         calls += 1
         return {"success": True, "errors": [], "partial": False}
 
-    result = asyncio.run(WorkflowExecutor(ToolRegistry(), runner).execute([
-        ResolvedTask(candidate=candidate),
-    ]))
+    result = asyncio.run(
+        WorkflowExecutor(ToolRegistry(), runner).execute(
+            [
+                ResolvedTask(candidate=candidate),
+            ]
+        )
+    )
     assert calls == 0
     assert result.tasks[0].status == "blocked"
     assert "参数校验 → 账户检查 → 风控检查 → 用户确认 → 下单 → 订单状态" in result.tasks[0].errors[0]
@@ -849,9 +882,7 @@ def test_trade_requests_are_stopped_at_the_fixed_state_machine() -> None:
 
 def test_workflow_registry_cannot_be_mutated_at_runtime() -> None:
     with pytest.raises(TypeError):
-        WORKFLOW_REGISTRY[StandardTaskKind.GENERAL_RESPONSE] = WORKFLOW_REGISTRY[
-            StandardTaskKind.SECURITY_LOOKUP
-        ]
+        WORKFLOW_REGISTRY[StandardTaskKind.GENERAL_RESPONSE] = WORKFLOW_REGISTRY[StandardTaskKind.SECURITY_LOOKUP]
 
 
 def test_executor_reuses_identical_calls_across_independent_tasks() -> None:
@@ -895,11 +926,13 @@ def test_executor_enforces_the_plan_wide_call_budget() -> None:
         )
         for index in range(9)
     ]
-    result = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-        max_plan_tool_calls=64,
-    ).execute(tasks))
+    result = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            max_plan_tool_calls=64,
+        ).execute(tasks)
+    )
     assert calls == 64
     blocked_by_budget = [
         call
@@ -960,10 +993,14 @@ def test_executor_binds_declared_collection_resources_without_task_type_rules() 
             }
         return {"success": True, "items": []}
 
-    result = asyncio.run(WorkflowExecutor(ToolRegistry(), runner).execute([
-        ResolvedTask(candidate=source),
-        ResolvedTask(candidate=consumer),
-    ]))
+    result = asyncio.run(
+        WorkflowExecutor(ToolRegistry(), runner).execute(
+            [
+                ResolvedTask(candidate=source),
+                ResolvedTask(candidate=consumer),
+            ]
+        )
+    )
 
     assert result.success is True
     assert seen == [
@@ -1020,25 +1057,31 @@ def test_executor_discovers_board_candidates_before_business_evidence() -> None:
         return {"success": True, "errors": [], "partial": False, "items": []}
 
     async def processor(name, task, _evidence):
-        processor_tasks.append((
-            name,
-            list(task.parameters.get("domains") or []),
-            task.symbols,
-        ))
+        processor_tasks.append(
+            (
+                name,
+                list(task.parameters.get("domains") or []),
+                task.symbols,
+            )
+        )
         if name == "ranked_domain_selection":
             return {
                 "success": True,
                 "errors": [],
-                "semantic_artifacts": [{
-                    "type": "ranked_domains",
-                    "groups": [{
-                        "tier": 1,
-                        "domains": [
-                            {"label": "灵巧手", "tier": 1},
-                            {"label": "六维力传感器", "tier": 1},
+                "semantic_artifacts": [
+                    {
+                        "type": "ranked_domains",
+                        "groups": [
+                            {
+                                "tier": 1,
+                                "domains": [
+                                    {"label": "灵巧手", "tier": 1},
+                                    {"label": "六维力传感器", "tier": 1},
+                                ],
+                            }
                         ],
-                    }],
-                }],
+                    }
+                ],
                 "resource_outputs": {
                     "domain_collection": [
                         _domain("灵巧手", "机器人执行器"),
@@ -1058,27 +1101,29 @@ def test_executor_discovers_board_candidates_before_business_evidence() -> None:
             },
         }
 
-    result = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-        processor_runner=processor,
-    ).execute([
-        ResolvedTask(candidate=industry),
-        ResolvedTask(candidate=domain_candidates),
-        ResolvedTask(
-            candidate=companies,
-            # Simulates the incidental name resolution that turns the phrase
-            # “人形机器人” into the listed company 300024. The explicit
-            # dependency collection must remain authoritative.
-            symbols=("300024",),
-            entity_names=(("300024", "机器人"),),
-        ),
-    ]))
+    result = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            processor_runner=processor,
+        ).execute(
+            [
+                ResolvedTask(candidate=industry),
+                ResolvedTask(candidate=domain_candidates),
+                ResolvedTask(
+                    candidate=companies,
+                    # Simulates the incidental name resolution that turns the phrase
+                    # “人形机器人” into the listed company 300024. The explicit
+                    # dependency collection must remain authoritative.
+                    symbols=("300024",),
+                    entity_names=(("300024", "机器人"),),
+                ),
+            ]
+        )
+    )
 
     assert result.success is True
-    assert tool_names.index("get_domain_stock_candidates") < tool_names.index(
-        "get_company_theme_evidence"
-    )
+    assert tool_names.index("get_domain_stock_candidates") < tool_names.index("get_company_theme_evidence")
     assert tool_names.count("get_domain_board_catalog") == 1
     assert tool_names.count("get_domain_stock_candidates") == 1
     assert tool_names.count("get_company_theme_evidence") == 2
@@ -1153,15 +1198,19 @@ def test_failed_domain_collection_v2_blocks_every_downstream_data_tool() -> None
             },
         }
 
-    result = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-        processor_runner=processor,
-    ).execute([
-        ResolvedTask(candidate=industry),
-        ResolvedTask(candidate=domain_candidates),
-        ResolvedTask(candidate=companies),
-    ]))
+    result = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            processor_runner=processor,
+        ).execute(
+            [
+                ResolvedTask(candidate=industry),
+                ResolvedTask(candidate=domain_candidates),
+                ResolvedTask(candidate=companies),
+            ]
+        )
+    )
 
     assert tool_names == ["get_domain_board_catalog"]
     assert [task.status for task in result.tasks] == [
@@ -1204,13 +1253,17 @@ def test_business_evidence_preserves_one_terminal_result_per_company() -> None:
             },
         }
 
-    result = asyncio.run(WorkflowExecutor(
-        ToolRegistry(),
-        runner,
-        processor_runner=processor,
-    ).execute([
-        ResolvedTask(candidate=companies, symbols=("301368",)),
-    ]))
+    result = asyncio.run(
+        WorkflowExecutor(
+            ToolRegistry(),
+            runner,
+            processor_runner=processor,
+        ).execute(
+            [
+                ResolvedTask(candidate=companies, symbols=("301368",)),
+            ]
+        )
+    )
 
     assert result.success is True
     assert result.tasks[0].status == "completed"
@@ -1252,9 +1305,7 @@ def test_executor_parallelizes_independent_reads_and_serializes_mutations() -> N
             ToolRegistry(),
             runner,
             approved_actions={
-                action_fingerprint(task)
-                for task in tasks
-                if task.candidate.confirmation == ConfirmationState.EXPLICIT
+                action_fingerprint(task) for task in tasks if task.candidate.confirmation == ConfirmationState.EXPLICIT
             },
         ).execute(tasks)
         assert result.success is True
@@ -1297,16 +1348,20 @@ def test_executor_parallelizes_independent_reads_and_serializes_mutations() -> N
 def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
-    plan = TaskPlan(tasks=[_task(
-        StandardTaskKind.THEME_STOCK_DISCOVERY,
-        parameters={
-            "domains": [
-                _domain("行星滚柱丝杠", "机器人执行器"),
-                _domain("减速器"),
-                _domain("无框力矩电机", "机器人执行器"),
-            ],
-        },
-    )])
+    plan = TaskPlan(
+        tasks=[
+            _task(
+                StandardTaskKind.THEME_STOCK_DISCOVERY,
+                parameters={
+                    "domains": [
+                        _domain("行星滚柱丝杠", "机器人执行器"),
+                        _domain("减速器"),
+                        _domain("无框力矩电机", "机器人执行器"),
+                    ],
+                },
+            )
+        ]
+    )
     resolved = [ResolvedTask(candidate=plan.tasks[0])]
     result = {
         "success": True,
@@ -1356,11 +1411,13 @@ def test_production_pipeline_uses_only_fixed_domain_workflow_for_tier_followup()
     controller = _Controller()
 
     async def run() -> str:
-        with _unified_pipeline(chat_mod, plan, resolved), \
-             patch.object(chat_mod, "execute_tool_isolated", return_value=result), \
-             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+        with (
+            _unified_pipeline(chat_mod, plan, resolved),
+            patch.object(chat_mod, "execute_tool_isolated", return_value=result),
+            patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value),
+            patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
+        ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
                 [{"role": "user", "content": "按上面第一梯队找A股公司"}],
@@ -1383,12 +1440,14 @@ def test_production_pipeline_reports_binding_unavailable_without_public_fallback
         with patch.object(
             chat_mod,
             "plan_intent_graph_v2",
-            new=AsyncMock(side_effect=(
-                OrchestratorV2Error(
-                    AgentErrorCode.RESOURCE_UNAVAILABLE,
-                    "实时板块语义绑定暂不可用",
+            new=AsyncMock(
+                side_effect=(
+                    OrchestratorV2Error(
+                        AgentErrorCode.RESOURCE_UNAVAILABLE,
+                        "实时板块语义绑定暂不可用",
+                    )
                 )
-            )),
+            ),
         ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
@@ -1414,14 +1473,16 @@ def test_production_collection_filter_retries_a_transient_failed_batch() -> None
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "debt_ratio",
-            "period_basis": "latest_report",
-            "operator": "gt",
-            "threshold": 70,
-            "threshold_unit": "percent",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
+            }
+        ),
     )
     plan = TaskPlan(tasks=[candidate])
     resolved = [ResolvedTask(candidate=candidate, symbols=symbols)]
@@ -1458,17 +1519,21 @@ def test_production_collection_filter_retries_a_transient_failed_batch() -> None
         }
 
     async def run() -> str:
-        with _unified_pipeline(chat_mod, plan, resolved), \
-             patch.object(chat_mod._registry, "execute", side_effect=execute), \
-             patch.object(chat_mod, "execute_tool_isolated", side_effect=AssertionError("local finance must not be isolated")), \
-             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch.object(
-                 chat_mod.asyncio,
-                 "wait_for",
-                 side_effect=AssertionError("Agent execution must not install a deadline"),
-             ), \
-             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+        with (
+            _unified_pipeline(chat_mod, plan, resolved),
+            patch.object(chat_mod._registry, "execute", side_effect=execute),
+            patch.object(
+                chat_mod, "execute_tool_isolated", side_effect=AssertionError("local finance must not be isolated")
+            ),
+            patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value),
+            patch.object(
+                chat_mod.asyncio,
+                "wait_for",
+                side_effect=AssertionError("Agent execution must not install a deadline"),
+            ),
+            patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
+        ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
                 [{"role": "user", "content": "把上面负债率高于70%的筛掉"}],
@@ -1529,9 +1594,7 @@ def test_original_three_condition_request_executes_all_35_candidates() -> None:
         metric = arguments["metric"]
         values = {
             "net_profit": lambda number: -1.0 if number % 5 == 0 else 1.0,
-            "revenue": lambda number: (
-                400_000_000.0 if number % 7 == 0 else 600_000_000.0
-            ),
+            "revenue": lambda number: (400_000_000.0 if number % 7 == 0 else 600_000_000.0),
             "debt_ratio": lambda number: 80.0 if number % 11 == 0 else 50.0,
         }
         return {
@@ -1541,39 +1604,39 @@ def test_original_three_condition_request_executes_all_35_candidates() -> None:
             "warnings": [],
             "requested_count": len(batch_symbols),
             "covered_count": len(batch_symbols),
-            "items": [{
-                "symbol": symbol,
-                "name": f"公司{symbol}",
-                "metric": metric,
-                "period_basis": arguments["period_basis"],
-                "fiscal_year": arguments.get("fiscal_year"),
-                "financial_value": values[metric](int(symbol)),
-                "value_unit": "percent" if metric == "debt_ratio" else "cny",
-                "report_date": (
-                    "2026-03-31"
-                    if metric == "debt_ratio"
-                    else "2025-12-31"
-                ),
-            } for symbol in batch_symbols],
+            "items": [
+                {
+                    "symbol": symbol,
+                    "name": f"公司{symbol}",
+                    "metric": metric,
+                    "period_basis": arguments["period_basis"],
+                    "fiscal_year": arguments.get("fiscal_year"),
+                    "financial_value": values[metric](int(symbol)),
+                    "value_unit": "percent" if metric == "debt_ratio" else "cny",
+                    "report_date": ("2026-03-31" if metric == "debt_ratio" else "2025-12-31"),
+                }
+                for symbol in batch_symbols
+            ],
             "source": "typed-test-source",
             "data_time": "2026-07-28T10:00:00",
         }
 
     async def run() -> str:
-        with _unified_pipeline(chat_mod, plan, resolved), \
-             patch.object(chat_mod._registry, "execute", side_effect=execute), \
-             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+        with (
+            _unified_pipeline(chat_mod, plan, resolved),
+            patch.object(chat_mod._registry, "execute", side_effect=execute),
+            patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value),
+            patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
+        ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
-                [{
-                    "role": "user",
-                    "content": (
-                        "剔除其中归母净利润为负，去年营收低于5亿，"
-                        "负债率高于70%的股票"
-                    ),
-                }],
+                [
+                    {
+                        "role": "user",
+                        "content": ("剔除其中归母净利润为负，去年营收低于5亿，" "负债率高于70%的股票"),
+                    }
+                ],
                 {
                     "model": "test",
                     "api_base": "",
@@ -1585,12 +1648,7 @@ def test_original_three_condition_request_executes_all_35_candidates() -> None:
     answer = asyncio.run(run())
     assert len(seen) == 6
     for metric in ("net_profit", "revenue", "debt_ratio"):
-        covered = [
-            symbol
-            for call in seen
-            if call["metric"] == metric
-            for symbol in call["symbols"].split(",")
-        ]
+        covered = [symbol for call in seen if call["metric"] == metric for symbol in call["symbols"].split(",")]
         assert len(covered) == len(symbols)
         assert set(covered) == set(symbols)
     assert "全部条件均完整覆盖 **35 只**" in answer
@@ -1603,14 +1661,16 @@ def test_production_previous_year_revenue_follow_up_runs_every_batch() -> None:
     symbols = tuple(f"{index:06d}" for index in range(47))
     candidate = _task(
         StandardTaskKind.COLLECTION_FINANCIAL_FILTER,
-        parameters=_financial_conditions({
-            "metric": "revenue",
-            "period_basis": "previous_fiscal_year",
-            "operator": "lt",
-            "threshold": 5,
-            "threshold_unit": "yi_cny",
-            "action": "exclude_matching",
-        }),
+        parameters=_financial_conditions(
+            {
+                "metric": "revenue",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 5,
+                "threshold_unit": "yi_cny",
+                "action": "exclude_matching",
+            }
+        ),
     )
     plan = TaskPlan(tasks=[candidate])
     resolved = [ResolvedTask(candidate=candidate, symbols=symbols)]
@@ -1643,11 +1703,13 @@ def test_production_previous_year_revenue_follow_up_runs_every_batch() -> None:
         }
 
     async def run() -> str:
-        with _unified_pipeline(chat_mod, plan, resolved), \
-             patch.object(chat_mod._registry, "execute", side_effect=execute), \
-             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+        with (
+            _unified_pipeline(chat_mod, plan, resolved),
+            patch.object(chat_mod._registry, "execute", side_effect=execute),
+            patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value),
+            patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
+        ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
                 [{"role": "user", "content": "继续筛掉股票中去年年营业收入低于5亿的股票"}],
@@ -1673,14 +1735,20 @@ def test_production_compound_collection_filter_returns_exact_intersection() -> N
         task_id="financial_filter",
         parameters=_financial_conditions(
             {
-                "metric": "debt_ratio", "period_basis": "latest_report",
-                "operator": "gt", "threshold": 70,
-                "threshold_unit": "percent", "action": "exclude_matching",
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
             },
             {
-                "metric": "revenue", "period_basis": "previous_fiscal_year",
-                "operator": "lt", "threshold": 5,
-                "threshold_unit": "yi_cny", "action": "exclude_matching",
+                "metric": "revenue",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 5,
+                "threshold_unit": "yi_cny",
+                "action": "exclude_matching",
             },
         ),
     )
@@ -1693,11 +1761,7 @@ def test_production_compound_collection_filter_returns_exact_intersection() -> N
     def execute(name: str, arguments: dict) -> dict:
         assert name == "get_multi_stock_financials"
         is_debt = arguments["metric"] == "debt_ratio"
-        values = (
-            [80.0, 50.0, 80.0, 50.0]
-            if is_debt
-            else [400_000_000.0, 400_000_000.0, 800_000_000.0, 800_000_000.0]
-        )
+        values = [80.0, 50.0, 80.0, 50.0] if is_debt else [400_000_000.0, 400_000_000.0, 800_000_000.0, 800_000_000.0]
         return {
             "success": True,
             "items": [
@@ -1717,11 +1781,13 @@ def test_production_compound_collection_filter_returns_exact_intersection() -> N
         }
 
     async def run() -> str:
-        with _unified_pipeline(chat_mod, plan, resolved), \
-             patch.object(chat_mod._registry, "execute", side_effect=execute), \
-             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+        with (
+            _unified_pipeline(chat_mod, plan, resolved),
+            patch.object(chat_mod._registry, "execute", side_effect=execute),
+            patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value),
+            patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
+        ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
                 [{"role": "user", "content": "上面股票去掉负债率大于70%，去年营收小于5亿的"}],
@@ -1755,19 +1821,29 @@ def test_production_domain_discovery_feeds_same_turn_financial_filters() -> None
         task_id="financial_filter",
         parameters=_financial_conditions(
             {
-                "metric": "debt_ratio", "period_basis": "latest_report",
-                "operator": "gt", "threshold": 70,
-                "threshold_unit": "percent", "action": "exclude_matching",
+                "metric": "debt_ratio",
+                "period_basis": "latest_report",
+                "operator": "gt",
+                "threshold": 70,
+                "threshold_unit": "percent",
+                "action": "exclude_matching",
             },
             {
-                "metric": "net_profit", "period_basis": "previous_fiscal_year",
-                "operator": "lt", "threshold": 0,
-                "threshold_unit": "cny", "action": "exclude_matching",
+                "metric": "net_profit",
+                "period_basis": "previous_fiscal_year",
+                "operator": "lt",
+                "threshold": 0,
+                "threshold_unit": "cny",
+                "action": "exclude_matching",
             },
             {
-                "metric": "revenue", "period_basis": "fiscal_year",
-                "fiscal_year": 2025, "operator": "lt", "threshold": 5,
-                "threshold_unit": "yi_cny", "action": "exclude_matching",
+                "metric": "revenue",
+                "period_basis": "fiscal_year",
+                "fiscal_year": 2025,
+                "operator": "lt",
+                "threshold": 5,
+                "threshold_unit": "yi_cny",
+                "action": "exclude_matching",
             },
         ),
         depends_on=["domain_candidates"],
@@ -1787,14 +1863,16 @@ def test_production_domain_discovery_feeds_same_turn_financial_filters() -> None
             {"symbol": "000002", "name": "乙公司"},
             {"symbol": "000003", "name": "丙公司"},
         ],
-        "domain_results": [{
-            "domain": "灵巧手",
-            "success": True,
-            "items": [
-                {"symbol": "000001", "name": "甲公司"},
-                {"symbol": "000002", "name": "乙公司"},
-            ],
-        }],
+        "domain_results": [
+            {
+                "domain": "灵巧手",
+                "success": True,
+                "items": [
+                    {"symbol": "000001", "name": "甲公司"},
+                    {"symbol": "000002", "name": "乙公司"},
+                ],
+            }
+        ],
     }
 
     def execute(name: str, arguments: dict) -> dict:
@@ -1829,12 +1907,14 @@ def test_production_domain_discovery_feeds_same_turn_financial_filters() -> None
         }
 
     async def run() -> str:
-        with _unified_pipeline(chat_mod, plan, resolved), \
-             patch.object(chat_mod._registry, "execute", side_effect=execute), \
-             patch.object(chat_mod, "execute_tool_isolated", return_value=domain_result), \
-             patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value), \
-             patch.object(chat_mod, "_flush_substreams", new=AsyncMock()):
+        with (
+            _unified_pipeline(chat_mod, plan, resolved),
+            patch.object(chat_mod._registry, "execute", side_effect=execute),
+            patch.object(chat_mod, "execute_tool_isolated", return_value=domain_result),
+            patch.object(chat_mod, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(chat_mod, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value),
+            patch.object(chat_mod, "_flush_substreams", new=AsyncMock()),
+        ):
             return await chat_mod._run_standard_task_pipeline(
                 controller,
                 [{"role": "user", "content": "找第一梯队并剔除负债率大于70%、净利润为负、2025年度营收低于5亿的股票"}],
@@ -1849,7 +1929,9 @@ def test_production_domain_discovery_feeds_same_turn_financial_filters() -> None
         "get_multi_stock_financials",
     ]
     assert {call["metric"] for call in financial_calls} == {
-        "debt_ratio", "net_profit", "revenue",
+        "debt_ratio",
+        "net_profit",
+        "revenue",
     }
     assert all(call["symbols"] == "000001,000002,000003" for call in financial_calls)
     assert "本轮同时执行 **3 项**财务条件" in answer
@@ -1859,13 +1941,15 @@ def test_production_domain_discovery_feeds_same_turn_financial_filters() -> None
 def test_standard_task_answer_validator_rejects_unsupported_codes_and_ratios() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 
-    evidence = [{
-        "tool": "search_research_library",
-        "result": {
-            "success": True,
-            "items": [{"title": "人形机器人产业研究", "summary": "核心零部件仍需跟踪"}],
-        },
-    }]
+    evidence = [
+        {
+            "tool": "search_research_library",
+            "result": {
+                "success": True,
+                "items": [{"title": "人形机器人产业研究", "summary": "核心零部件仍需跟踪"}],
+            },
+        }
+    ]
     issues = chat_mod._standard_task_answer_issues(
         "上游价值量约60-70%，代表公司绿的谐波（688017）。",
         evidence,

@@ -22,11 +22,18 @@ def _execute(symbol: str, count: int = 60, use_cache: bool = True) -> dict[str, 
 TOOL = ToolSpec(
     name="get_kline",
     description=KLINE_DESCRIPTION,
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "股票代码或名称"},
-        "count": {"type": "integer", "minimum": 20, "maximum": 500, "default": 60, "description": "最近日线数量"},
-        "use_cache": {"type": "boolean", "default": True, "description": "默认使用本地缓存；仅怀疑数据陈旧时设为 false"},
-    }, ["symbol"]),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "股票代码或名称"},
+            "count": {"type": "integer", "minimum": 20, "maximum": 500, "default": 60, "description": "最近日线数量"},
+            "use_cache": {
+                "type": "boolean",
+                "default": True,
+                "description": "默认使用本地缓存；仅怀疑数据陈旧时设为 false",
+            },
+        },
+        ["symbol"],
+    ),
     executor=_execute,
     category="data",
 )

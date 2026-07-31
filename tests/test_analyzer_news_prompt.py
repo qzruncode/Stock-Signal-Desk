@@ -28,10 +28,12 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
 
     def test_infer_trend_direction_does_not_classify_prose(self) -> None:
         self.assertEqual(
-            _infer_trend_direction({
-                "trend_status": "不是空头而是多头排列",
-                "ma_alignment": "MA5 > MA10 > MA20",
-            }),
+            _infer_trend_direction(
+                {
+                    "trend_status": "不是空头而是多头排列",
+                    "ma_alignment": "MA5 > MA10 > MA20",
+                }
+            ),
             "neutral",
         )
 

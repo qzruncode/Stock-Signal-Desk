@@ -20,8 +20,10 @@ def client():
 def disable_auth():
     """Keep macro route tests independent from local auth env state."""
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -30,8 +32,12 @@ def test_macro_index_route_is_a_thin_tool_adapter(client, monkeypatch):
     """The HTTP route must delegate business logic to the registered tool."""
     today = datetime.now().strftime("%Y-%m-%d")
     payload = {
-        "index_code": "000001", "days": 5, "data_time": today,
-        "is_stale": False, "success": True, "history": [],
+        "index_code": "000001",
+        "days": 5,
+        "data_time": today,
+        "is_stale": False,
+        "success": True,
+        "history": [],
     }
     called = {}
 

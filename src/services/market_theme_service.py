@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -53,11 +54,7 @@ def _model_report_is_ready(payload: Optional[dict[str, Any]]) -> bool:
         payload
         and not payload.get("report_pending")
         and payload.get("as_of_date")
-        and (
-            payload.get("current_mainlines")
-            or payload.get("candidate_mainlines")
-            or payload.get("future_mainlines")
-        )
+        and (payload.get("current_mainlines") or payload.get("candidate_mainlines") or payload.get("future_mainlines"))
     )
 
 
@@ -71,10 +68,7 @@ def _task_snapshot(task: Any) -> dict[str, Any] | None:
         "status": str(status_value or ""),
         "progress": int(getattr(task, "progress", 0) or 0),
         "message": str(getattr(task, "message", "") or ""),
-        "error": (
-            str(getattr(task, "error", "") or "")
-            or None
-        ),
+        "error": (str(getattr(task, "error", "") or "") or None),
     }
 
 
@@ -143,9 +137,7 @@ class MarketThemeService:
                         getattr(generation_task, "task_id", None),
                     )
                 except Exception:
-                    logger.exception(
-                        "[MarketTheme] Failed to ensure report generation"
-                    )
+                    logger.exception("[MarketTheme] Failed to ensure report generation")
 
         payload = build_minimal_model_report()
         payload["_cached"] = False
@@ -171,11 +163,7 @@ class MarketThemeService:
         if _model_report_is_ready(initial):
             return initial
 
-        task_payload = (
-            initial.get("generation_task")
-            if isinstance(initial.get("generation_task"), dict)
-            else {}
-        )
+        task_payload = initial.get("generation_task") if isinstance(initial.get("generation_task"), dict) else {}
         task_id = str(task_payload.get("task_id") or "")
         latest_task_payload = dict(task_payload)
 
@@ -216,9 +204,7 @@ class MarketThemeService:
                     "report_pending": True,
                     "generation_task": latest_task_payload,
                     "generation_failed": True,
-                    "generation_error": (
-                        "市场主线生成任务已结束，但未持久化可用报告"
-                    ),
+                    "generation_error": ("市场主线生成任务已结束，但未持久化可用报告"),
                 }
             time.sleep(max(0.05, float(poll_interval_seconds)))
 
@@ -280,19 +266,20 @@ class MarketThemeService:
                 (
                     task
                     for task in task_queue.list_pending_tasks()
-                    if task.stock_code == "MARKET_MAINLINE"
-                    and task.report_type == "market_mainline_report"
+                    if task.stock_code == "MARKET_MAINLINE" and task.report_type == "market_mainline_report"
                 ),
                 None,
             )
             if active is not None:
                 return active
 
-            task_id = __import__("uuid").uuid4().hex
+            task_id = uuid.uuid4().hex
 
             def _run_task() -> dict[str, Any]:
                 return generate_model_report_stream(
-                    force=force, task_queue=task_queue, task_id=task_id,
+                    force=force,
+                    task_queue=task_queue,
+                    task_id=task_id,
                 )
 
             return task_queue.submit_background_task(

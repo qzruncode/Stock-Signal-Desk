@@ -33,11 +33,14 @@ def read_analysis_report(record_id: str, include_markdown: bool = True, include_
 TOOL = ToolSpec(
     name="read_analysis_report",
     description="读取指定历史分析报告的结构化结论、完整 Markdown 和关联资讯。record_id 来自历史搜索或任务结果。",
-    parameters=object_schema({
-        "record_id": {"type": "string", "description": "历史记录主键 ID 或 query/task ID"},
-        "include_markdown": {"type": "boolean", "default": True},
-        "include_news": {"type": "boolean", "default": True},
-    }, required=("record_id",)),
+    parameters=object_schema(
+        {
+            "record_id": {"type": "string", "description": "历史记录主键 ID 或 query/task ID"},
+            "include_markdown": {"type": "boolean", "default": True},
+            "include_news": {"type": "boolean", "default": True},
+        },
+        required=("record_id",),
+    ),
     executor=read_analysis_report,
     category="analysis",
 )

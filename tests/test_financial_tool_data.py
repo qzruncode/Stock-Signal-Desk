@@ -12,15 +12,17 @@ from src.tools.get_income_statement import get_income_statement
 
 
 def test_balance_sheet_keeps_bank_fields_distinct_and_uses_period_end_basis() -> None:
-    item = data._normalize_balance({
-        "REPORT_DATE": "2026-03-31 00:00:00",
-        "TOTAL_ASSETS": 1_000.0,
-        "TOTAL_LIABILITIES": 900.0,
-        "TOTAL_EQUITY": 100.0,
-        "CASH_DEPOSIT_PBC": 120.0,
-        "LOAN_ADVANCE": 650.0,
-        "ACCEPT_DEPOSIT": 700.0,
-    })
+    item = data._normalize_balance(
+        {
+            "REPORT_DATE": "2026-03-31 00:00:00",
+            "TOTAL_ASSETS": 1_000.0,
+            "TOTAL_LIABILITIES": 900.0,
+            "TOTAL_EQUITY": 100.0,
+            "CASH_DEPOSIT_PBC": 120.0,
+            "LOAN_ADVANCE": 650.0,
+            "ACCEPT_DEPOSIT": 700.0,
+        }
+    )
 
     assert item["basis"] == "period_end"
     assert item["cash_and_central_bank_deposits"] == 120.0
@@ -31,15 +33,17 @@ def test_balance_sheet_keeps_bank_fields_distinct_and_uses_period_end_basis() ->
 
 
 def test_balance_sheet_keeps_zero_numerators_instead_of_treating_them_as_missing() -> None:
-    item = data._normalize_balance({
-        "REPORT_DATE": "2026-03-31",
-        "TOTAL_ASSETS": 1_000.0,
-        "TOTAL_LIABILITIES": 0.0,
-        "TOTAL_EQUITY": 1_000.0,
-        "TOTAL_CURRENT_ASSETS": 0.0,
-        "TOTAL_CURRENT_LIAB": 100.0,
-        "INVENTORY": 0.0,
-    })
+    item = data._normalize_balance(
+        {
+            "REPORT_DATE": "2026-03-31",
+            "TOTAL_ASSETS": 1_000.0,
+            "TOTAL_LIABILITIES": 0.0,
+            "TOTAL_EQUITY": 1_000.0,
+            "TOTAL_CURRENT_ASSETS": 0.0,
+            "TOTAL_CURRENT_LIAB": 100.0,
+            "INVENTORY": 0.0,
+        }
+    )
 
     assert item["debt_ratio"] == 0.0
     assert item["current_ratio"] == 0.0
@@ -47,17 +51,21 @@ def test_balance_sheet_keeps_zero_numerators_instead_of_treating_them_as_missing
 
 
 def test_income_and_cashflow_are_single_quarter_not_ytd() -> None:
-    income = data._normalize_income({
-        "REPORT_DATE": "2026-06-30",
-        "TOTAL_OPERATE_INCOME": 100.0,
-        "OPERATE_COST": 60.0,
-        "PARENT_NETPROFIT": 20.0,
-    })
-    cashflow = data._normalize_cashflow({
-        "REPORT_DATE": "2026-06-30",
-        "NETCASH_OPERATE": 30.0,
-        "CONSTRUCT_LONG_ASSET": 8.0,
-    })
+    income = data._normalize_income(
+        {
+            "REPORT_DATE": "2026-06-30",
+            "TOTAL_OPERATE_INCOME": 100.0,
+            "OPERATE_COST": 60.0,
+            "PARENT_NETPROFIT": 20.0,
+        }
+    )
+    cashflow = data._normalize_cashflow(
+        {
+            "REPORT_DATE": "2026-06-30",
+            "NETCASH_OPERATE": 30.0,
+            "CONSTRUCT_LONG_ASSET": 8.0,
+        }
+    )
 
     assert income["basis"] == "single_quarter"
     assert income["gross_margin"] == 40.0
@@ -82,7 +90,10 @@ def _section_payload(section: str) -> dict:
 
 
 def test_statement_specific_tools_request_only_their_own_statement() -> None:
-    with patch("src.tools._financial_statements.get_financial_section", side_effect=lambda _, section, __, **___: _section_payload(section)) as fetch:
+    with patch(
+        "src.tools._financial_statements.get_financial_section",
+        side_effect=lambda _, section, __, **___: _section_payload(section),
+    ) as fetch:
         balance = get_balance_sheet("600519")
         income = get_income_statement("600519")
         cashflow = get_cashflow("600519")
@@ -102,13 +113,19 @@ def test_section_result_has_explicit_units_freshness_and_source(monkeypatch) -> 
     monkeypatch.setattr(
         data,
         "_fetch_section",
-        lambda _, __, section, ___: [{
-            "REPORT_DATE": "2026-03-31",
-            "NOTICE_DATE": "2026-04-20",
-            "TOTAL_OPERATE_INCOME": 100.0,
-            "OPERATE_COST": 60.0,
-            "PARENT_NETPROFIT": 20.0,
-        }] if section == "income_statement" else [],
+        lambda _, __, section, ___: (
+            [
+                {
+                    "REPORT_DATE": "2026-03-31",
+                    "NOTICE_DATE": "2026-04-20",
+                    "TOTAL_OPERATE_INCOME": 100.0,
+                    "OPERATE_COST": 60.0,
+                    "PARENT_NETPROFIT": 20.0,
+                }
+            ]
+            if section == "income_statement"
+            else []
+        ),
     )
 
     result = data.get_financial_section("600519", "income_statement", 4, use_cache=False)
@@ -127,12 +144,18 @@ def test_financial_bundle_treats_one_available_statement_as_partial_success(monk
     monkeypatch.setattr(
         data,
         "_fetch_section",
-        lambda _, __, section, ___: [{
-            "REPORT_DATE": "2026-03-31",
-            "TOTAL_OPERATE_INCOME": 100.0,
-            "OPERATE_COST": 60.0,
-            "PARENT_NETPROFIT": 20.0,
-        }] if section == "income_statement" else [],
+        lambda _, __, section, ___: (
+            [
+                {
+                    "REPORT_DATE": "2026-03-31",
+                    "TOTAL_OPERATE_INCOME": 100.0,
+                    "OPERATE_COST": 60.0,
+                    "PARENT_NETPROFIT": 20.0,
+                }
+            ]
+            if section == "income_statement"
+            else []
+        ),
     )
 
     result = data.get_financial_bundle("600519", 4, use_cache=False)

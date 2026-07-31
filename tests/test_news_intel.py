@@ -59,7 +59,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
             snippet="公司发布新品...",
             url="https://news.example.com/a",
             source="example.com",
-            published_date="2025-01-02"
+            published_date="2025-01-02",
         )
         response = self._build_response([result])
 
@@ -80,7 +80,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
             dimension="latest_news",
             query=response.query,
             response=response,
-            query_context=query_context
+            query_context=query_context,
         )
         saved_second = self.db.save_news_intel(
             code="600519",
@@ -88,7 +88,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
             dimension="latest_news",
             query=response.query,
             response=response,
-            query_context=query_context
+            query_context=query_context,
         )
 
         self.assertEqual(saved_first, 1)
@@ -106,27 +106,15 @@ class NewsIntelStorageTestCase(unittest.TestCase):
     def test_save_news_intel_without_url_fallback_key(self) -> None:
         """无 URL 时使用兜底键去重"""
         result = SearchResult(
-            title="茅台业绩预告",
-            snippet="业绩大幅增长...",
-            url="",
-            source="example.com",
-            published_date="2025-01-03"
+            title="茅台业绩预告", snippet="业绩大幅增长...", url="", source="example.com", published_date="2025-01-03"
         )
         response = self._build_response([result])
 
         saved_first = self.db.save_news_intel(
-            code="600519",
-            name="贵州茅台",
-            dimension="earnings",
-            query=response.query,
-            response=response
+            code="600519", name="贵州茅台", dimension="earnings", query=response.query, response=response
         )
         saved_second = self.db.save_news_intel(
-            code="600519",
-            name="贵州茅台",
-            dimension="earnings",
-            query=response.query,
-            response=response
+            code="600519", name="贵州茅台", dimension="earnings", query=response.query, response=response
         )
 
         self.assertEqual(saved_first, 1)
@@ -146,19 +134,14 @@ class NewsIntelStorageTestCase(unittest.TestCase):
             snippet="盘中波动较大...",
             url="https://news.example.com/b",
             source="example.com",
-            published_date=now
+            published_date=now,
         )
         response = self._build_response([result])
 
         self.db.save_news_intel(
-            code="600519",
-            name="贵州茅台",
-            dimension="market_analysis",
-            query=response.query,
-            response=response
+            code="600519", name="贵州茅台", dimension="market_analysis", query=response.query, response=response
         )
 
         recent_news = self.db.get_recent_news(code="600519", days=7, limit=10)
         self.assertEqual(len(recent_news), 1)
         self.assertEqual(recent_news[0].title, "茅台股价震荡")
-

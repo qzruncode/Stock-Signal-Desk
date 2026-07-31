@@ -43,11 +43,7 @@ def _coerce_schema_scalar(value: Any, schema: dict[str, Any]) -> Any:
     if expected == "string" and isinstance(value, str) and schema.get("enum"):
         by_lower = {str(item).lower(): item for item in schema["enum"]}
         value = by_lower.get(value.strip().lower(), value)
-    if (
-        expected == "string"
-        and isinstance(value, str)
-        and schema.get("pattern") == "^[0-9]{8}$"
-    ):
+    if expected == "string" and isinstance(value, str) and schema.get("pattern") == "^[0-9]{8}$":
         compact_date = re.sub(r"[^0-9]", "", value)
         if len(compact_date) == 8:
             value = compact_date
@@ -77,6 +73,7 @@ def _bound_model_type(annotation: Any) -> type[BaseModel] | None:
         if model is not None:
             return model
     return None
+
 
 TOOL_MODULES: tuple[str, ...] = (
     # Local universe and user portfolio operations
@@ -167,9 +164,7 @@ class ToolRegistry:
             if not isinstance(tool, ToolSpec):
                 raise TypeError(f"src.tools.{module_name} must export TOOL: ToolSpec")
             if tool.name != module_name:
-                raise ValueError(
-                    f"tool/module name mismatch: module={module_name}, tool={tool.name}"
-                )
+                raise ValueError(f"tool/module name mismatch: module={module_name}, tool={tool.name}")
             if tool.name in self._tools:
                 raise ValueError(f"duplicate tool: {tool.name}")
             self._tools[tool.name] = tool
@@ -233,19 +228,13 @@ class ToolRegistry:
             raise KeyError(f"Tool not found: {name}")
         field = tool.args_model.model_fields.get(parameter)
         if field is None:
-            raise ValueError(
-                f"{name} has no bindable parameter {parameter}"
-            )
+            raise ValueError(f"{name} has no bindable parameter {parameter}")
         projected = value
         model_type = _bound_model_type(field.annotation)
         if isinstance(value, dict) and parameter in value:
             projected = value[parameter]
         elif model_type is not None and isinstance(value, dict):
-            projected = {
-                key: value[key]
-                for key in model_type.model_fields
-                if key in value
-            }
+            projected = {key: value[key] for key in model_type.model_fields if key in value}
         validated = TypeAdapter(field.annotation).validate_python(projected)
         if isinstance(validated, BaseModel):
             return validated.model_dump(
@@ -284,9 +273,7 @@ class ToolRegistry:
         if tool is None:
             raise KeyError(f"Tool not found: {name}")
         if tool.guard_blocked_result is None:
-            raise ValueError(
-                f"{name} has no result projector for a blocked execution guard"
-            )
+            raise ValueError(f"{name} has no result projector for a blocked execution guard")
         normalized = self.validate_arguments(name, arguments)
         payload = enforce_result_contract(
             name,

@@ -120,9 +120,7 @@ class BatchRunState:
         self.completed = self.success + self.failed
         self.current_stock: Optional[str] = None
         self.current_message: str = (
-            f"已恢复 {self.completed}/{self.total}，准备续跑..."
-            if self.completed > 0
-            else "准备中..."
+            f"已恢复 {self.completed}/{self.total}，准备续跑..." if self.completed > 0 else "准备中..."
         )
         self.status = "running"
         self.active_stocks: Dict[str, str] = {}
@@ -289,12 +287,20 @@ class BatchRunner:
 
         logger.info(
             "Batch run started: run_id=%s stocks=%d template=%s mode=%s",
-            run_id, len(stock_codes), template_name, analysis_mode,
+            run_id,
+            len(stock_codes),
+            template_name,
+            analysis_mode,
         )
 
         # Save initial batch record
         _save_batch_run_start(
-            run_id, triggered_by, template_id, template_name, stock_codes, analysis_mode,
+            run_id,
+            triggered_by,
+            template_id,
+            template_name,
+            stock_codes,
+            analysis_mode,
         )
 
         return self._execute(
@@ -328,9 +334,7 @@ class BatchRunner:
         """Resume an existing interrupted batch run without re-running completed stocks."""
         stock_code_set = set(stock_codes)
         existing_results = {
-            code: result
-            for code, result in _normalize_results(existing_results).items()
-            if code in stock_code_set
+            code: result for code, result in _normalize_results(existing_results).items() if code in stock_code_set
         }
         completed_codes = set(existing_results)
         pending_stock_codes = [code for code in stock_codes if code not in completed_codes]
@@ -423,8 +427,13 @@ class BatchRunner:
                     stock_name = _lookup_stock_name(code)
                     future = pool.submit(
                         self._analyze_one,
-                        analyzer, system_prompt, code, stock_name, state,
-                        analysis_mode, force_refresh,
+                        analyzer,
+                        system_prompt,
+                        code,
+                        stock_name,
+                        state,
+                        analysis_mode,
+                        force_refresh,
                     )
                     futures[future] = code
 
@@ -451,7 +460,11 @@ class BatchRunner:
 
         # Generate aggregated MD
         report_path = _write_aggregated_report(
-            run_id, state, template_name, started_at, analysis_mode=analysis_mode,
+            run_id,
+            state,
+            template_name,
+            started_at,
+            analysis_mode=analysis_mode,
         )
 
         # Save final batch record
@@ -459,12 +472,18 @@ class BatchRunner:
 
         # Send notification
         _send_batch_notification(
-            run_id, state, template_name, report_path, analysis_mode=analysis_mode,
+            run_id,
+            state,
+            template_name,
+            report_path,
+            analysis_mode=analysis_mode,
         )
 
         logger.info(
             "Batch run complete: run_id=%s ok=%d fail=%d",
-            run_id, state.completed, state.failed,
+            run_id,
+            state.completed,
+            state.failed,
         )
         return state
 
@@ -482,7 +501,10 @@ class BatchRunner:
         with self._semaphore:
             if analysis_mode == "buy_criteria":
                 return self._analyze_one_criteria(
-                    stock_code, stock_name, state, force_refresh,
+                    stock_code,
+                    stock_name,
+                    state,
+                    force_refresh,
                 )
             try:
                 state.start_stock(stock_code, stock_name)
@@ -491,9 +513,7 @@ class BatchRunner:
                     _with_batch_decision_schema(system_prompt),
                     stock_code,
                     stock_name,
-                    stream_progress_callback=lambda chars: state.update_stock_progress(
-                        stock_code, stock_name, chars
-                    ),
+                    stream_progress_callback=lambda chars: state.update_stock_progress(stock_code, stock_name, chars),
                 )
                 return True, text, model, _extract_structured_decision(text)
             except Exception as exc:
@@ -513,7 +533,8 @@ class BatchRunner:
             from src.services.buy_criteria.orchestrator import CriterionOrchestrator
 
             summary = CriterionOrchestrator().analyze_for_batch(
-                stock_code, reuse_cache=not force_refresh,
+                stock_code,
+                reuse_cache=not force_refresh,
             )
             text = _format_criteria_detail(stock_code, stock_name, summary)
             return True, text, "buy_criteria", _criteria_decision_meta(summary)
@@ -525,6 +546,7 @@ class BatchRunner:
 def _lookup_stock_name(code: str) -> str:
     try:
         from src.data.stock_mapping import STOCK_NAME_MAP
+
         return STOCK_NAME_MAP.get(code, code)
     except Exception:
         return code
@@ -557,9 +579,7 @@ def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
     decision = (
         "buy"
         if summary.get("gate_pass_complete") is True
-        else "unknown"
-        if int(summary.get("insufficient_count") or 0) > 0
-        else "reject"
+        else "unknown" if int(summary.get("insufficient_count") or 0) > 0 else "reject"
     )
     total = summary.get("total", 8)
     passed = summary.get("passed_count", 0)
@@ -568,8 +588,7 @@ def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
     not_evaluated = summary.get("not_evaluated_count", 0)
     reason = (
         f"通过{passed}/{total}；不通过{failed}、取证未完成{insufficient}、"
-        f"后续未执行{not_evaluated}。"
-        + _one_line(summary.get("stopped_verdict") or "", limit=90)
+        f"后续未执行{not_evaluated}。" + _one_line(summary.get("stopped_verdict") or "", limit=90)
     )
 
     if summary.get("from_cache"):
@@ -585,11 +604,7 @@ def _criteria_decision_meta(summary: Dict) -> Dict[str, str]:
 
 def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> str:
     """Build the readable professional checklist detail for the batch view."""
-    label = (
-        f"{stock_name}({stock_code})"
-        if stock_name and stock_name != stock_code
-        else stock_code
-    )
+    label = f"{stock_name}({stock_code})" if stock_name and stock_name != stock_code else stock_code
     final = summary.get("final_decision") or "关键取证未完成，暂停判断"
     passed = summary.get("passed_count", 0)
     failed = summary.get("failed_count", 0)
@@ -601,10 +616,7 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
         f"# {label} 八维专业买入分析",
         "",
         f"**最终结论**: {final}{cache_mark}",
-        (
-            f"✅ 通过 {passed}/8 / ❌ 不通过 {failed} / "
-            f"? 取证未完成 {insufficient} / 未执行 {not_evaluated}"
-        ),
+        (f"✅ 通过 {passed}/8 / ❌ 不通过 {failed} / " f"? 取证未完成 {insufficient} / 未执行 {not_evaluated}"),
         f"**首个停止项**: {summary.get('stopped_at_name') or '八维全部通过'}",
         "",
         "## 逐项结果",
@@ -612,11 +624,7 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
     ]
     for c in summary.get("criteria", []):
         idx = c.get("index")
-        num = (
-            _CRITERIA_NUM_LABELS[idx]
-            if isinstance(idx, int) and 0 <= idx < len(_CRITERIA_NUM_LABELS)
-            else "-"
-        )
+        num = _CRITERIA_NUM_LABELS[idx] if isinstance(idx, int) and 0 <= idx < len(_CRITERIA_NUM_LABELS) else "-"
         mark = {
             "pass": "✅ 通过",
             "fail": "❌ 不通过",
@@ -629,10 +637,12 @@ def _format_criteria_detail(stock_code: str, stock_name: str, summary: Dict) -> 
             line += f" — {verdict}"
         lines.append(line)
     if not_evaluated:
-        lines.extend([
-            "",
-            f"> 首个阻断后，后续 {not_evaluated} 维按布尔状态机未执行。",
-        ])
+        lines.extend(
+            [
+                "",
+                f"> 首个阻断后，后续 {not_evaluated} 维按布尔状态机未执行。",
+            ]
+        )
 
     return "\n".join(lines)
 
@@ -709,28 +719,28 @@ def _build_template_report_content(
 
     lines.extend(["## 筛选通过股票", ""])
     if passed_items:
-        lines.extend([
-            "| 股票 | 结论 | 摘要理由 | 模型 |",
-            "| --- | --- | --- | --- |",
-        ])
+        lines.extend(
+            [
+                "| 股票 | 结论 | 摘要理由 | 模型 |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
         for item in passed_items:
-            lines.append(
-                f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |"
-            )
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |")
     else:
         lines.append("本次跑批没有识别到明确筛选通过的股票。")
     lines.append("")
 
     if unknown_items:
         lines.extend(["## 待人工确认", ""])
-        lines.extend([
-            "| 股票 | 识别到的结论 | 摘要理由 | 模型 |",
-            "| --- | --- | --- | --- |",
-        ])
+        lines.extend(
+            [
+                "| 股票 | 识别到的结论 | 摘要理由 | 模型 |",
+                "| --- | --- | --- | --- |",
+            ]
+        )
         for item in unknown_items:
-            lines.append(
-                f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |"
-            )
+            lines.append(f"| {item['code']} | {item['label']} | {item['reason']} | `{item['model']}` |")
         lines.append("")
 
     if failed_items:
@@ -790,10 +800,12 @@ def _build_criteria_report_content(
 
     lines.extend(["## 筛选通过股票", ""])
     if passed_items:
-        lines.extend([
-            "| 股票 | 结论 | 摘要 |",
-            "| --- | --- | --- |",
-        ])
+        lines.extend(
+            [
+                "| 股票 | 结论 | 摘要 |",
+                "| --- | --- | --- |",
+            ]
+        )
         for item in passed_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
     else:
@@ -802,10 +814,12 @@ def _build_criteria_report_content(
 
     if rejected_items:
         lines.extend(["## 未通过股票", ""])
-        lines.extend([
-            "| 股票 | 结论 | 卡点与理由 |",
-            "| --- | --- | --- |",
-        ])
+        lines.extend(
+            [
+                "| 股票 | 结论 | 卡点与理由 |",
+                "| --- | --- | --- |",
+            ]
+        )
         for item in rejected_items:
             lines.append(f"| {item['code']} | {item['label']} | {item['reason']} |")
         lines.append("")
@@ -821,11 +835,7 @@ def _build_criteria_report_content(
 
 
 def _get_result_items(state: BatchRunState) -> List[tuple[str, dict]]:
-    return [
-        (code, result)
-        for code, result in state.results.items()
-        if code != "__all__" and isinstance(result, dict)
-    ]
+    return [(code, result) for code, result in state.results.items() if code != "__all__" and isinstance(result, dict)]
 
 
 def _one_line(text: str, limit: int = 80) -> str:
@@ -914,14 +924,16 @@ def _get_stock_decision_summaries(result_items: List[tuple[str, dict]]) -> List[
         if not result.get("success"):
             continue
         decision_meta = _get_result_decision(result)
-        summaries.append({
-            "code": _escape_table_cell(code),
-            "decision": decision_meta["decision"],
-            "label": _one_line(decision_meta["decision_label"], limit=28),
-            "reason": _one_line(decision_meta["decision_reason"], limit=90),
-            "source": _escape_table_cell(decision_meta["decision_source"]),
-            "model": _escape_table_cell(result.get("model") or "-"),
-        })
+        summaries.append(
+            {
+                "code": _escape_table_cell(code),
+                "decision": decision_meta["decision"],
+                "label": _one_line(decision_meta["decision_label"], limit=28),
+                "reason": _one_line(decision_meta["decision_reason"], limit=90),
+                "source": _escape_table_cell(decision_meta["decision_source"]),
+                "model": _escape_table_cell(result.get("model") or "-"),
+            }
+        )
     return summaries
 
 
@@ -937,7 +949,11 @@ def _send_batch_notification(
         from src.notification import get_notification_service
 
         content = _build_batch_notification_content(
-            run_id, state, template_name, report_path, analysis_mode=analysis_mode,
+            run_id,
+            state,
+            template_name,
+            report_path,
+            analysis_mode=analysis_mode,
         )
         service = get_notification_service()
         service.send(content)

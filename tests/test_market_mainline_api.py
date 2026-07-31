@@ -36,40 +36,46 @@ def _valid_market_mainline_payload() -> dict:
             "label": "结构性行情",
             "description": "多条产业主线并行。",
         },
-        "current_mainlines": [{
-            "name": "机器人",
-            "lifecycle": "confirmed",
-            "stage": "兑现期",
-            "reason": "产业订单正在落地。",
-            "branches": ["机器人"],
-            "focus": "订单兑现",
-            "risks": ["订单低于预期"],
-            "evidence_refs": ["evidence-1"],
-        }],
-        "candidate_mainlines": [{
-            "name": "商业航天",
-            "lifecycle": "emerging",
-            "stage_hint": "观察期",
-            "reason": "产业政策逐步落地。",
-            "branches": ["商业航天"],
-            "expected_horizon": "one_to_six_months",
-            "evidence_axes": [
-                {
-                    "axis": "policy",
-                    "evidence_refs": ["evidence-2"],
-                },
-                {
-                    "axis": "supply_demand",
-                    "evidence_refs": ["evidence-3"],
-                },
-            ],
-            "trigger_assessments": [{
-                "description": "订单确认",
-                "status": "partial",
-                "evidence_refs": ["evidence-2"],
-            }],
-            "evidence_refs": ["evidence-2", "evidence-3"],
-        }],
+        "current_mainlines": [
+            {
+                "name": "机器人",
+                "lifecycle": "confirmed",
+                "stage": "兑现期",
+                "reason": "产业订单正在落地。",
+                "branches": ["机器人"],
+                "focus": "订单兑现",
+                "risks": ["订单低于预期"],
+                "evidence_refs": ["evidence-1"],
+            }
+        ],
+        "candidate_mainlines": [
+            {
+                "name": "商业航天",
+                "lifecycle": "emerging",
+                "stage_hint": "观察期",
+                "reason": "产业政策逐步落地。",
+                "branches": ["商业航天"],
+                "expected_horizon": "one_to_six_months",
+                "evidence_axes": [
+                    {
+                        "axis": "policy",
+                        "evidence_refs": ["evidence-2"],
+                    },
+                    {
+                        "axis": "supply_demand",
+                        "evidence_refs": ["evidence-3"],
+                    },
+                ],
+                "trigger_assessments": [
+                    {
+                        "description": "订单确认",
+                        "status": "partial",
+                        "evidence_refs": ["evidence-2"],
+                    }
+                ],
+                "evidence_refs": ["evidence-2", "evidence-3"],
+            }
+        ],
         "action_summary": ["跟踪订单兑现"],
         "evidence_digest": {
             "policy": ["政策支持"],
@@ -88,8 +94,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -178,10 +186,7 @@ def test_legacy_market_mainline_report_is_not_reused(monkeypatch):
     )
 
     assert get_latest_report("market_mainline") is None
-    assert (
-        build_minimal_model_report()["contract_version"]
-        == MARKET_MAINLINE_REPORT_CONTRACT
-    )
+    assert build_minimal_model_report()["contract_version"] == MARKET_MAINLINE_REPORT_CONTRACT
 
 
 def test_market_mainline_context_never_collects_capital_flow(monkeypatch):
@@ -192,12 +197,14 @@ def test_market_mainline_context_never_collects_capital_flow(monkeypatch):
         sectors,
         "get_sector_list",
         lambda type, force=False: {
-            "items": [{
-                "name": f"{type}-board",
-                "code": "BK001",
-                "change_pct": 9.9,
-                "net_flow": 1_000_000,
-            }],
+            "items": [
+                {
+                    "name": f"{type}-board",
+                    "code": "BK001",
+                    "change_pct": 9.9,
+                    "net_flow": 1_000_000,
+                }
+            ],
             "data_time": "2026-07-27",
             "errors": [],
         },
@@ -209,40 +216,47 @@ def test_market_mainline_context_never_collects_capital_flow(monkeypatch):
     assert "industry_flow" not in snapshot
     assert "concept_flow" not in snapshot
     assert "market_breadth" not in snapshot
-    assert snapshot["industry_sectors"] == [{
-        "name": "industry-board",
-        "code": "BK001",
-        "data_source": None,
-    }]
+    assert snapshot["industry_sectors"] == [
+        {
+            "name": "industry-board",
+            "code": "BK001",
+            "data_source": None,
+        }
+    ]
     assert "change_pct" not in snapshot["industry_sectors"][0]
     assert "net_flow" not in snapshot["industry_sectors"][0]
 
 
 def test_market_mainline_evidence_uses_board_catalog_only_for_mapping() -> None:
-    packet = build_report_evidence_pack({
-        "generated_at": "2026-07-27T10:00:00+08:00",
-        "source_snapshot": {
-            "market_status": {"data_time": "2026-07-27"},
-            "industry_sectors": [{"name": "机器人", "code": "BK001"}],
-            "concept_sectors": [{"name": "人形机器人", "code": "BK002"}],
-            "rss": {
-                "strategy_reports": {
-                    "items": [{
-                        "title": "中期策略",
-                        "summary": "产业资本开支持续",
-                        "link": "https://example.com/report",
-                    }],
+    packet = build_report_evidence_pack(
+        {
+            "generated_at": "2026-07-27T10:00:00+08:00",
+            "source_snapshot": {
+                "market_status": {"data_time": "2026-07-27"},
+                "industry_sectors": [{"name": "机器人", "code": "BK001"}],
+                "concept_sectors": [{"name": "人形机器人", "code": "BK002"}],
+                "rss": {
+                    "strategy_reports": {
+                        "items": [
+                            {
+                                "title": "中期策略",
+                                "summary": "产业资本开支持续",
+                                "link": "https://example.com/report",
+                            }
+                        ],
+                    },
                 },
+                "source_catalog": [],
             },
-            "source_catalog": [],
-        },
-    })
+        }
+    )
 
     assert packet["board_catalog"]["industry"][0]["name"] == "机器人"
     assert "industry_flow" not in packet
     assert "concept_flow" not in packet
     assert all(
-        value["section"] not in {
+        value["section"]
+        not in {
             "industry_sector",
             "concept_sector",
             "industry_flow",
@@ -286,9 +300,7 @@ def test_candidate_mainline_keeps_structured_branch_and_trigger_progress() -> No
         "status": "partial",
         "evidence_refs": ["evidence-2"],
     }
-    assert validated["future_mainlines"] == validated[
-        "candidate_mainlines"
-    ]
+    assert validated["future_mainlines"] == validated["candidate_mainlines"]
 
 
 def test_buy_criteria_never_promotes_legacy_market_evidence_to_mainline(monkeypatch):
@@ -308,14 +320,16 @@ def test_buy_criteria_never_promotes_legacy_market_evidence_to_mainline(monkeypa
             "generated_at": "2026-07-21 10:00:00 CST",
             "data_time": "2026-07-21",
             "market_stage": {"label": "主线扩散期"},
-            "current_themes": [{
-                "name": "科技成长",
-                "rank_label": "主线",
-                "stage": "发酵期",
-                "components": ["机器人"],
-                "thesis": "产业与资金共振",
-                "evidence": ["机器人板块走强"],
-            }],
+            "current_themes": [
+                {
+                    "name": "科技成长",
+                    "rank_label": "主线",
+                    "stage": "发酵期",
+                    "components": ["机器人"],
+                    "thesis": "产业与资金共振",
+                    "evidence": ["机器人板块走强"],
+                }
+            ],
             "next_themes": [],
         },
     )
@@ -334,23 +348,27 @@ def test_report_evidence_pack_uses_the_public_feed_summarizer() -> None:
             "market_status": {"data_time": "2026-07-21"},
             "rss": {
                 "market_news": {
-                    "items": [{
-                        "title": "人形机器人产业进展",
-                        "summary": "<p>核心零部件进入验证阶段</p>",
-                        "published": "2026-07-21",
-                    }],
+                    "items": [
+                        {
+                            "title": "人形机器人产业进展",
+                            "summary": "<p>核心零部件进入验证阶段</p>",
+                            "published": "2026-07-21",
+                        }
+                    ],
                 },
             },
         },
     }
     packed = build_report_evidence_pack(context)
-    assert packed["market_news"] == [{
-        "evidence_id": "market_news:0",
-        "title": "人形机器人产业进展",
-        "summary": "核心零部件进入验证阶段",
-        "published": "2026-07-21",
-        "link": "",
-    }]
+    assert packed["market_news"] == [
+        {
+            "evidence_id": "market_news:0",
+            "title": "人形机器人产业进展",
+            "summary": "核心零部件进入验证阶段",
+            "published": "2026-07-21",
+            "link": "",
+        }
+    ]
 
 
 def test_model_report_read_does_not_spawn_background_work_by_default(monkeypatch) -> None:
@@ -414,18 +432,20 @@ def test_ensure_model_report_waits_for_a_real_persisted_report(monkeypatch) -> N
         error=None,
     )
     queue = SimpleNamespace(get_task=lambda _task_id: task)
-    calls = iter([
-        None,
-        {
-            "contract_version": MARKET_MAINLINE_REPORT_CONTRACT,
-            "generated_at": "2026-07-27T22:00:00+08:00",
-            "as_of_date": "2026-07-27",
-            "overview": "市场主线已经形成",
-            "current_mainlines": [{"name": "国产算力"}],
-            "report_pending": False,
-            "llm_used": True,
-        },
-    ])
+    calls = iter(
+        [
+            None,
+            {
+                "contract_version": MARKET_MAINLINE_REPORT_CONTRACT,
+                "generated_at": "2026-07-27T22:00:00+08:00",
+                "as_of_date": "2026-07-27",
+                "overview": "市场主线已经形成",
+                "current_mainlines": [{"name": "国产算力"}],
+                "report_pending": False,
+                "llm_used": True,
+            },
+        ]
+    )
     monkeypatch.setattr(
         service,
         "get_model_report",
@@ -488,67 +508,69 @@ def test_market_mainline_request_streams_forced_schema_without_local_timeout(
 
     async def fake_completion(**kwargs):
         captured.update(kwargs)
-        return AsyncStream([
-            SimpleNamespace(
-                model="test-model",
-                choices=[
-                    SimpleNamespace(
-                        delta=SimpleNamespace(
-                            content=None,
-                            reasoning_content="先核对证据。",
-                            tool_calls=None,
+        return AsyncStream(
+            [
+                SimpleNamespace(
+                    model="test-model",
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning_content="先核对证据。",
+                                tool_calls=None,
+                            ),
                         ),
-                    ),
-                ],
-                usage=None,
-            ),
-            SimpleNamespace(
-                model="test-model",
-                choices=[
-                    SimpleNamespace(
-                        delta=SimpleNamespace(
-                            content=None,
-                            reasoning_content=None,
-                            tool_calls=[
-                                SimpleNamespace(
-                                    index=0,
-                                    function=SimpleNamespace(
-                                        name="submit_market_mainline_report",
-                                        arguments=serialized_payload[:80],
-                                    ),
-                                ),
-                            ],
-                        ),
-                    ),
-                ],
-                usage=None,
-            ),
-            SimpleNamespace(
-                model="test-model",
-                choices=[
-                    SimpleNamespace(
-                        delta=SimpleNamespace(
-                            content=None,
-                            reasoning_content=None,
-                            tool_calls=[
-                                SimpleNamespace(
-                                    index=0,
-                                    function=SimpleNamespace(
-                                        name=None,
-                                        arguments=serialized_payload[80:],
-                                    ),
-                                ),
-                            ],
-                        ),
-                    ),
-                ],
-                usage=SimpleNamespace(
-                    prompt_tokens=10,
-                    completion_tokens=5,
-                    total_tokens=15,
+                    ],
+                    usage=None,
                 ),
-            ),
-        ])
+                SimpleNamespace(
+                    model="test-model",
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning_content=None,
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        index=0,
+                                        function=SimpleNamespace(
+                                            name="submit_market_mainline_report",
+                                            arguments=serialized_payload[:80],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                    usage=None,
+                ),
+                SimpleNamespace(
+                    model="test-model",
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning_content=None,
+                                tool_calls=[
+                                    SimpleNamespace(
+                                        index=0,
+                                        function=SimpleNamespace(
+                                            name=None,
+                                            arguments=serialized_payload[80:],
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                    usage=SimpleNamespace(
+                        prompt_tokens=10,
+                        completion_tokens=5,
+                        total_tokens=15,
+                    ),
+                ),
+            ]
+        )
 
     monkeypatch.setattr(
         "src.services.market_theme._streaming.resolve_anthropic_gateway_config",
@@ -563,14 +585,12 @@ def test_market_mainline_request_streams_forced_schema_without_local_timeout(
         fake_completion,
     )
 
-    raw, content, model, _usage = (
-        stream_market_mainline_report_via_litellm(
-            system_prompt="system",
-            user_prompt="user",
-            temperature=0.2,
-            max_tokens=4096,
-            on_reasoning=reasoning.append,
-        )
+    raw, content, model, _usage = stream_market_mainline_report_via_litellm(
+        system_prompt="system",
+        user_prompt="user",
+        temperature=0.2,
+        max_tokens=4096,
+        on_reasoning=reasoning.append,
     )
 
     assert __import__("json").loads(raw) == payload
@@ -578,12 +598,8 @@ def test_market_mainline_request_streams_forced_schema_without_local_timeout(
     assert model == "test-model"
     assert captured["stream"] is True
     assert "timeout" not in captured
-    assert captured["tool_choice"]["function"]["name"] == (
-        "submit_market_mainline_report"
-    )
-    assert captured["tools"][0]["function"]["name"] == (
-        "submit_market_mainline_report"
-    )
+    assert captured["tool_choice"]["function"]["name"] == ("submit_market_mainline_report")
+    assert captured["tools"][0]["function"]["name"] == ("submit_market_mainline_report")
     assert captured.get("extra_body") != {
         "thinking": {"type": "disabled"},
         "reasoning_effort": "none",
@@ -615,39 +631,47 @@ def test_market_mainline_missing_forced_call_gets_one_targeted_repair(
     async def fake_completion(**kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
-            return AsyncStream([
-                SimpleNamespace(
-                    model="test-model",
-                    choices=[SimpleNamespace(
-                        finish_reason="length",
-                        delta=SimpleNamespace(
-                            content=None,
-                            reasoning_content="完整但未提交的市场分析过程",
-                            tool_calls=None,
+            return AsyncStream(
+                [
+                    SimpleNamespace(
+                        model="test-model",
+                        choices=[
+                            SimpleNamespace(
+                                finish_reason="length",
+                                delta=SimpleNamespace(
+                                    content=None,
+                                    reasoning_content="完整但未提交的市场分析过程",
+                                    tool_calls=None,
+                                ),
+                            )
+                        ],
+                        usage=SimpleNamespace(
+                            prompt_tokens=10,
+                            completion_tokens=20,
+                            total_tokens=30,
                         ),
-                    )],
-                    usage=SimpleNamespace(
-                        prompt_tokens=10,
-                        completion_tokens=20,
-                        total_tokens=30,
                     ),
-                ),
-            ])
+                ]
+            )
         return SimpleNamespace(
             model="test-model",
-            choices=[SimpleNamespace(
-                finish_reason="tool_calls",
-                message=SimpleNamespace(
-                    content=None,
-                    reasoning_content=None,
-                    tool_calls=[SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="submit_market_mainline_report",
-                            arguments=serialized,
-                        ),
-                    )],
-                ),
-            )],
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    message=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="submit_market_mainline_report",
+                                    arguments=serialized,
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ],
             usage=SimpleNamespace(
                 prompt_tokens=5,
                 completion_tokens=8,
@@ -668,14 +692,12 @@ def test_market_mainline_missing_forced_call_gets_one_targeted_repair(
         fake_completion,
     )
 
-    raw, _content, _model, usage = (
-        stream_market_mainline_report_via_litellm(
-            system_prompt="system",
-            user_prompt="user",
-            temperature=0.2,
-            max_tokens=4096,
-            on_reasoning=reasoning.append,
-        )
+    raw, _content, _model, usage = stream_market_mainline_report_via_litellm(
+        system_prompt="system",
+        user_prompt="user",
+        temperature=0.2,
+        max_tokens=4096,
+        on_reasoning=reasoning.append,
     )
 
     assert __import__("json").loads(raw) == payload
@@ -687,17 +709,10 @@ def test_market_mainline_missing_forced_call_gets_one_targeted_repair(
         "thinking": {"type": "disabled"},
         "reasoning_effort": "none",
     }
-    repair = __import__("json").loads(
-        calls[1]["messages"][-1]["content"]
-    )["targeted_repair"]
+    repair = __import__("json").loads(calls[1]["messages"][-1]["content"])["targeted_repair"]
     assert repair["invalid_payload"]["finish_reason"] == "length"
-    assert (
-        repair["invalid_payload"]["reasoning_content"]
-        == "完整但未提交的市场分析过程"
-    )
-    assert repair["issues"][0]["pointer"] == (
-        "/choices/0/message/tool_calls"
-    )
+    assert repair["invalid_payload"]["reasoning_content"] == "完整但未提交的市场分析过程"
+    assert repair["issues"][0]["pointer"] == ("/choices/0/message/tool_calls")
     assert repair["issues"][0]["code"] == "forced_tool_call_missing"
     assert usage["prompt_tokens"] == 15
     assert usage["completion_tokens"] == 28
@@ -727,23 +742,27 @@ def test_market_mainline_schema_repair_reports_exact_field_pointer(
             self._sent = True
             return SimpleNamespace(
                 model="test-model",
-                choices=[SimpleNamespace(
-                    finish_reason="tool_calls",
-                    delta=SimpleNamespace(
-                        content=None,
-                        reasoning_content=None,
-                        tool_calls=[SimpleNamespace(
-                            index=0,
-                            function=SimpleNamespace(
-                                name="submit_market_mainline_report",
-                                arguments=__import__("json").dumps(
-                                    self._payload,
-                                    ensure_ascii=False,
-                                ),
-                            ),
-                        )],
-                    ),
-                )],
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="tool_calls",
+                        delta=SimpleNamespace(
+                            content=None,
+                            reasoning_content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    function=SimpleNamespace(
+                                        name="submit_market_mainline_report",
+                                        arguments=__import__("json").dumps(
+                                            self._payload,
+                                            ensure_ascii=False,
+                                        ),
+                                    ),
+                                )
+                            ],
+                        ),
+                    )
+                ],
                 usage=None,
             )
 
@@ -754,22 +773,26 @@ def test_market_mainline_schema_repair_reports_exact_field_pointer(
             return AsyncStream(payload)
         return SimpleNamespace(
             model="test-model",
-            choices=[SimpleNamespace(
-                finish_reason="tool_calls",
-                message=SimpleNamespace(
-                    content=None,
-                    reasoning_content=None,
-                    tool_calls=[SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="submit_market_mainline_report",
-                            arguments=__import__("json").dumps(
-                                payload,
-                                ensure_ascii=False,
-                            ),
-                        ),
-                    )],
-                ),
-            )],
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    message=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="submit_market_mainline_report",
+                                    arguments=__import__("json").dumps(
+                                        payload,
+                                        ensure_ascii=False,
+                                    ),
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ],
             usage=None,
         )
 
@@ -786,18 +809,14 @@ def test_market_mainline_schema_repair_reports_exact_field_pointer(
         fake_completion,
     )
 
-    _raw, _content, _model, usage = (
-        stream_market_mainline_report_via_litellm(
-            system_prompt="system",
-            user_prompt="user",
-            temperature=0.2,
-            max_tokens=4096,
-        )
+    _raw, _content, _model, usage = stream_market_mainline_report_via_litellm(
+        system_prompt="system",
+        user_prompt="user",
+        temperature=0.2,
+        max_tokens=4096,
     )
 
-    repair = __import__("json").loads(
-        calls[1]["messages"][-1]["content"]
-    )["targeted_repair"]
+    repair = __import__("json").loads(calls[1]["messages"][-1]["content"])["targeted_repair"]
     assert calls[1]["stream"] is False
     assert repair["invalid_payload"] == invalid
     assert repair["issues"][0]["pointer"] == "/full_report"
@@ -827,23 +846,27 @@ def test_market_mainline_value_error_context_is_json_safe_for_repair(
             self._sent = True
             return SimpleNamespace(
                 model="test-model",
-                choices=[SimpleNamespace(
-                    finish_reason="tool_calls",
-                    delta=SimpleNamespace(
-                        content=None,
-                        reasoning_content=None,
-                        tool_calls=[SimpleNamespace(
-                            index=0,
-                            function=SimpleNamespace(
-                                name="submit_market_mainline_report",
-                                arguments=__import__("json").dumps(
-                                    self._payload,
-                                    ensure_ascii=False,
-                                ),
-                            ),
-                        )],
-                    ),
-                )],
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="tool_calls",
+                        delta=SimpleNamespace(
+                            content=None,
+                            reasoning_content=None,
+                            tool_calls=[
+                                SimpleNamespace(
+                                    index=0,
+                                    function=SimpleNamespace(
+                                        name="submit_market_mainline_report",
+                                        arguments=__import__("json").dumps(
+                                            self._payload,
+                                            ensure_ascii=False,
+                                        ),
+                                    ),
+                                )
+                            ],
+                        ),
+                    )
+                ],
                 usage=None,
             )
 
@@ -853,22 +876,26 @@ def test_market_mainline_value_error_context_is_json_safe_for_repair(
             return AsyncStream(invalid)
         return SimpleNamespace(
             model="test-model",
-            choices=[SimpleNamespace(
-                finish_reason="tool_calls",
-                message=SimpleNamespace(
-                    content=None,
-                    reasoning_content=None,
-                    tool_calls=[SimpleNamespace(
-                        function=SimpleNamespace(
-                            name="submit_market_mainline_report",
-                            arguments=__import__("json").dumps(
-                                repaired,
-                                ensure_ascii=False,
-                            ),
-                        ),
-                    )],
-                ),
-            )],
+            choices=[
+                SimpleNamespace(
+                    finish_reason="tool_calls",
+                    message=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="submit_market_mainline_report",
+                                    arguments=__import__("json").dumps(
+                                        repaired,
+                                        ensure_ascii=False,
+                                    ),
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            ],
             usage=None,
         )
 
@@ -885,26 +912,20 @@ def test_market_mainline_value_error_context_is_json_safe_for_repair(
         fake_completion,
     )
 
-    raw, _content, _model, usage = (
-        stream_market_mainline_report_via_litellm(
-            system_prompt="system",
-            user_prompt="user",
-            temperature=0.2,
-            max_tokens=4096,
-        )
+    raw, _content, _model, usage = stream_market_mainline_report_via_litellm(
+        system_prompt="system",
+        user_prompt="user",
+        temperature=0.2,
+        max_tokens=4096,
     )
 
-    repair = __import__("json").loads(
-        calls[1]["messages"][-1]["content"]
-    )["targeted_repair"]
+    repair = __import__("json").loads(calls[1]["messages"][-1]["content"])["targeted_repair"]
     assert __import__("json").loads(raw) == repaired
     assert repair["invalid_payload"] == invalid
     assert repair["issues"][0]["pointer"] == "/current_mainlines/0"
     assert repair["issues"][0]["code"] == "value_error"
     assert repair["issues"][0]["allowed"] == {
-        "error": (
-            "current mainline lifecycle must be confirmed, expanding or fading"
-        ),
+        "error": ("current mainline lifecycle must be confirmed, expanding or fading"),
     }
     assert usage["repair_record"]["succeeded"] is True
 

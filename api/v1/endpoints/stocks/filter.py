@@ -27,21 +27,21 @@ def _compute_ttm_value(
     field: str,
 ) -> float | None:
     """Compute TTM value from financial statements."""
-    for section in ('income_statement', 'cashflow', 'balance_sheet'):
+    for section in ("income_statement", "cashflow", "balance_sheet"):
         items = statements.get(section) or []
         if not items:
             continue
 
         sorted_items = sorted(
             items,
-            key=lambda x: x.get('report_date') or '',
+            key=lambda x: x.get("report_date") or "",
             reverse=True,
         )
 
         latest = sorted_items[0]
-        latest_date = latest.get('report_date') or ''
+        latest_date = latest.get("report_date") or ""
 
-        if latest_date.endswith('12-31'):
+        if latest_date.endswith("12-31"):
             val = latest.get(field)
             if val is not None:
                 return float(val)
@@ -70,22 +70,19 @@ def _safe_float(value) -> float | None:
 
 
 def _compute_abstract_ttm(rows, metric_name: str) -> float | None:
-    metric_rows = [
-        row for row in rows
-        if str(row.get('metric_name') or '') == metric_name
-    ]
+    metric_rows = [row for row in rows if str(row.get("metric_name") or "") == metric_name]
     if not metric_rows:
         return None
-    metric_rows = sorted(metric_rows, key=lambda row: row.get('report_date') or '', reverse=True)
+    metric_rows = sorted(metric_rows, key=lambda row: row.get("report_date") or "", reverse=True)
     latest = metric_rows[0]
-    latest_date = str(latest.get('report_date') or '')
-    latest_value = _safe_float(latest.get('value'))
-    if latest_date.endswith('12-31'):
+    latest_date = str(latest.get("report_date") or "")
+    latest_value = _safe_float(latest.get("value"))
+    if latest_date.endswith("12-31"):
         return latest_value
 
     single_values = []
     for row in metric_rows[:4]:
-        value = _safe_float(row.get('single'))
+        value = _safe_float(row.get("single"))
         if value is not None:
             single_values.append(value)
     if len(single_values) >= 4:
@@ -96,7 +93,8 @@ def _compute_abstract_ttm(rows, metric_name: str) -> float | None:
 def _fetch_abstract_fundamentals(code: str) -> dict | None:
     try:
         import akshare as ak
-        df = ak.stock_financial_abstract_new_ths(symbol=code, indicator='按报告期')
+
+        df = ak.stock_financial_abstract_new_ths(symbol=code, indicator="按报告期")
     except Exception as exc:
         logger.warning(f"[fundamental-filter] THS abstract failed for {code}: {exc}")
         return None
@@ -104,46 +102,41 @@ def _fetch_abstract_fundamentals(code: str) -> dict | None:
     if df is None or df.empty:
         return None
 
-    rows = df.to_dict('records')
-    report_dates = [str(row.get('report_date') or '')[:10] for row in rows if row.get('report_date')]
+    rows = df.to_dict("records")
+    report_dates = [str(row.get("report_date") or "")[:10] for row in rows if row.get("report_date")]
     latest_report = max(report_dates) if report_dates else None
 
     latest_debt_ratio = None
-    debt_rows = [
-        row for row in rows
-        if str(row.get('metric_name') or '') == 'assets_debt_ratio'
-    ]
+    debt_rows = [row for row in rows if str(row.get("metric_name") or "") == "assets_debt_ratio"]
     if debt_rows:
-        debt_rows = sorted(debt_rows, key=lambda row: row.get('report_date') or '', reverse=True)
-        latest_debt_ratio = _safe_float(debt_rows[0].get('value'))
+        debt_rows = sorted(debt_rows, key=lambda row: row.get("report_date") or "", reverse=True)
+        latest_debt_ratio = _safe_float(debt_rows[0].get("value"))
 
     return {
-        'revenue_latest': _compute_abstract_ttm(rows, 'operating_income_total'),
-        'net_profit_latest': _compute_abstract_ttm(rows, 'parent_holder_net_profit'),
-        'operating_cf_latest': None,
-        'debt_ratio': latest_debt_ratio,
-        'report_date': latest_report,
+        "revenue_latest": _compute_abstract_ttm(rows, "operating_income_total"),
+        "net_profit_latest": _compute_abstract_ttm(rows, "parent_holder_net_profit"),
+        "operating_cf_latest": None,
+        "debt_ratio": latest_debt_ratio,
+        "report_date": latest_report,
     }
 
 
 def _write_fundamentals(code: str, db: DatabaseManager, computed: dict) -> bool:
     key_fields_complete = (
-        computed.get('revenue_latest') is not None
-        and computed.get('net_profit_latest') is not None
-        and computed.get('debt_ratio') is not None
+        computed.get("revenue_latest") is not None
+        and computed.get("net_profit_latest") is not None
+        and computed.get("debt_ratio") is not None
     )
     now = datetime.now()
 
     def _write(session):
-        existing = session.execute(
-            sa_select(StockMeta).where(StockMeta.code == code)
-        ).scalars().first()
+        existing = session.execute(sa_select(StockMeta).where(StockMeta.code == code)).scalars().first()
         if existing:
-            existing.revenue_latest = computed.get('revenue_latest')
-            existing.net_profit_latest = computed.get('net_profit_latest')
-            existing.operating_cf_latest = computed.get('operating_cf_latest')
-            existing.debt_ratio = computed.get('debt_ratio')
-            existing.report_date = computed.get('report_date')
+            existing.revenue_latest = computed.get("revenue_latest")
+            existing.net_profit_latest = computed.get("net_profit_latest")
+            existing.operating_cf_latest = computed.get("operating_cf_latest")
+            existing.debt_ratio = computed.get("debt_ratio")
+            existing.report_date = computed.get("report_date")
             if key_fields_complete:
                 existing.financial_fetched_at = now
         else:
@@ -172,9 +165,9 @@ def _fetch_and_compute_fundamentals(
         logger.warning(f"[fundamental-filter] Cannot import financials module for {code}")
         return None
 
-    normalize_symbol = getattr(fin_mod, '_normalize_symbol', None) or (lambda s: s.strip())
-    fetch_ths_triple = getattr(fin_mod, '_fetch_from_ths_triple', None)
-    fetch_em_statements = getattr(fin_mod, '_fetch_financial_statements_em', None)
+    normalize_symbol = getattr(fin_mod, "_normalize_symbol", None) or (lambda s: s.strip())
+    fetch_ths_triple = getattr(fin_mod, "_fetch_from_ths_triple", None)
+    fetch_em_statements = getattr(fin_mod, "_fetch_financial_statements_em", None)
 
     if fetch_ths_triple is None:
         logger.warning(f"[fundamental-filter] _fetch_from_ths_triple not available for {code}")
@@ -199,10 +192,10 @@ def _fetch_and_compute_fundamentals(
             return computed
         return None
 
-    bs_items = (statements.get('balance_sheet') or [])
+    bs_items = statements.get("balance_sheet") or []
     latest_bs = None
-    for item in sorted(bs_items, key=lambda x: x.get('report_date') or '', reverse=True):
-        if item.get('total_assets') and item.get('total_assets') > 0:
+    for item in sorted(bs_items, key=lambda x: x.get("report_date") or "", reverse=True):
+        if item.get("total_assets") and item.get("total_assets") > 0:
             latest_bs = item
             break
 
@@ -212,39 +205,39 @@ def _fetch_and_compute_fundamentals(
             return computed
         return None
 
-    total_assets = latest_bs.get('total_assets', 0)
-    total_liabilities = latest_bs.get('total_liabilities', 0)
-    monetary_funds = latest_bs.get('monetary_funds') or 0
+    total_assets = latest_bs.get("total_assets", 0)
+    total_liabilities = latest_bs.get("total_liabilities", 0)
+    monetary_funds = latest_bs.get("monetary_funds") or 0
     interest_bearing_debt = sum(
         value or 0
         for value in (
-            latest_bs.get('short_loan'),
-            latest_bs.get('long_loan'),
-            latest_bs.get('noncurrent_liab_1year'),
-            latest_bs.get('lease_liab'),
+            latest_bs.get("short_loan"),
+            latest_bs.get("long_loan"),
+            latest_bs.get("noncurrent_liab_1year"),
+            latest_bs.get("lease_liab"),
         )
     )
 
     debt_ratio = (total_liabilities / total_assets * 100) if total_assets else None
 
-    revenue_latest = _compute_ttm_value(statements, 'revenue')
-    net_profit_latest = _compute_ttm_value(statements, 'net_profit')
-    operating_cf_latest = _compute_ttm_value(statements, 'operating_cf')
+    revenue_latest = _compute_ttm_value(statements, "revenue")
+    net_profit_latest = _compute_ttm_value(statements, "net_profit")
+    operating_cf_latest = _compute_ttm_value(statements, "operating_cf")
 
     all_dates = []
-    for section in ('balance_sheet', 'income_statement'):
-        for item in (statements.get(section) or []):
-            d = item.get('report_date')
+    for section in ("balance_sheet", "income_statement"):
+        for item in statements.get(section) or []:
+            d = item.get("report_date")
             if d:
                 all_dates.append(d)
     latest_report = max(all_dates) if all_dates else None
 
     computed = {
-        'revenue_latest': revenue_latest,
-        'net_profit_latest': net_profit_latest,
-        'operating_cf_latest': operating_cf_latest,
-        'debt_ratio': debt_ratio,
-        'report_date': latest_report,
+        "revenue_latest": revenue_latest,
+        "net_profit_latest": net_profit_latest,
+        "operating_cf_latest": operating_cf_latest,
+        "debt_ratio": debt_ratio,
+        "report_date": latest_report,
     }
     if not _write_fundamentals(code, db, computed):
         return None
@@ -278,9 +271,7 @@ def fundamental_filter(body: dict):
     codes_to_fetch: list[str] = []
 
     with db.get_session() as session:
-        rows = session.execute(
-            sa_select(StockMeta).where(StockMeta.code.in_(codes))
-        ).scalars().all()
+        rows = session.execute(sa_select(StockMeta).where(StockMeta.code.in_(codes))).scalars().all()
 
         meta_map: dict[str, StockMeta] = {r.code: r for r in rows}
 
@@ -288,11 +279,11 @@ def fundamental_filter(body: dict):
         meta = meta_map.get(code)
         if meta and meta.financial_fetched_at and meta.financial_fetched_at >= ttl_cutoff:
             data[code] = {
-                'revenue_latest': meta.revenue_latest,
-                'net_profit_latest': meta.net_profit_latest,
-                'operating_cf_latest': meta.operating_cf_latest,
-                'debt_ratio': meta.debt_ratio,
-                'report_date': meta.report_date,
+                "revenue_latest": meta.revenue_latest,
+                "net_profit_latest": meta.net_profit_latest,
+                "operating_cf_latest": meta.operating_cf_latest,
+                "debt_ratio": meta.debt_ratio,
+                "report_date": meta.report_date,
             }
         else:
             codes_to_fetch.append(code)
@@ -308,7 +299,7 @@ def fundamental_filter(body: dict):
                 data[code] = {}
             break
 
-        batch = codes_to_fetch[idx:idx + _FUNDAMENTAL_BATCH_SIZE]
+        batch = codes_to_fetch[idx : idx + _FUNDAMENTAL_BATCH_SIZE]
         idx += _FUNDAMENTAL_BATCH_SIZE
 
         for code in batch:

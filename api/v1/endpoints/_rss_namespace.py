@@ -34,16 +34,36 @@ FETCH_TIMEOUT = 20.0
 # in the `finance` category is kept (forex, commodities, macro, central bank all
 # move markets). New upstream crypto namespaces won't auto-match; revisit if needed.
 CRYPTO_NAMESPACES = {
-    "binance", "bitget", "okx", "coindesk", "cointelegraph", "cryptoslate",
-    "decrypt", "forklog", "hyperdash", "jinse", "paradigm", "polymarket",
-    "techflowpost", "theblock", "theblockbeats", "tokeninsight",
+    "binance",
+    "bitget",
+    "okx",
+    "coindesk",
+    "cointelegraph",
+    "cryptoslate",
+    "decrypt",
+    "forklog",
+    "hyperdash",
+    "jinse",
+    "paradigm",
+    "polymarket",
+    "techflowpost",
+    "theblock",
+    "theblockbeats",
+    "tokeninsight",
 }
 
 # Fields kept per route when flattening (drop the heavy markdown description by
 # default — frontend can fetch detail lazily if ever needed).
 _ROUTE_FIELDS = (
-    "path", "name", "url", "example", "categories",
-    "description", "parameters", "features", "maintainers",
+    "path",
+    "name",
+    "url",
+    "example",
+    "categories",
+    "description",
+    "parameters",
+    "features",
+    "maintainers",
 )
 
 
@@ -70,8 +90,8 @@ def _fetch_json(url: str) -> Optional[dict]:
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36",
         }
         resp = requests.get(url, headers=headers, timeout=FETCH_TIMEOUT)
         resp.raise_for_status()
@@ -208,9 +228,9 @@ def get_namespaces_flat(force: bool = False, finance_only: bool = False) -> Dict
     routes = _flatten_routes(data)
     if finance_only:
         routes = [
-            r for r in routes
-            if "finance" in (r.get("categories") or [])
-            and r.get("namespace") not in CRYPTO_NAMESPACES
+            r
+            for r in routes
+            if "finance" in (r.get("categories") or []) and r.get("namespace") not in CRYPTO_NAMESPACES
         ]
     # Apply the explore-visibility filter (broken / English-only / unuseful)
     # so the backend serves the curated catalog directly — single source of

@@ -64,14 +64,17 @@ TOOL = ToolSpec(
         "通过设置页已配置的企业微信发送正式报告、批量报告或用户指定内容。只有用户明确说发送/通知且目标内容清晰时"
         "才能调用并传 confirmed=true；生成报告、分析或推荐本身不代表同意发送。优先传报告 ID，避免重新拼写报告。"
     ),
-    parameters=object_schema({
-        "content_type": {"type": "string", "enum": ["analysis_report", "batch_report", "custom"]},
-        "message": {"type": "string", "description": "custom 时的正文"},
-        "record_id": {"type": "string", "description": "analysis_report 的历史记录 ID"},
-        "batch_run_id": {"type": "string", "description": "batch_report 的批次 ID"},
-        "title": {"type": "string"},
-        "confirmed": {"type": "boolean", "description": "用户本轮是否明确要求发送", "default": False},
-    }, required=("content_type", "confirmed")),
+    parameters=object_schema(
+        {
+            "content_type": {"type": "string", "enum": ["analysis_report", "batch_report", "custom"]},
+            "message": {"type": "string", "description": "custom 时的正文"},
+            "record_id": {"type": "string", "description": "analysis_report 的历史记录 ID"},
+            "batch_run_id": {"type": "string", "description": "batch_report 的批次 ID"},
+            "title": {"type": "string"},
+            "confirmed": {"type": "boolean", "description": "用户本轮是否明确要求发送", "default": False},
+        },
+        required=("content_type", "confirmed"),
+    ),
     executor=send_notification,
     category="action",
 )

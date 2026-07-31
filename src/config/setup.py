@@ -17,6 +17,7 @@ def setup_env(override: bool = False):
     """
     # Import here to avoid circular import
     from src.config.config_dataclass import Config
+
     Config._capture_bootstrap_runtime_env_overrides()
     env_path = Config._resolve_env_path()
     load_dotenv(dotenv_path=env_path, override=override)

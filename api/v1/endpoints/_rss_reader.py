@@ -124,16 +124,18 @@ def _trim_feed(feed: Dict[str, Any], limit: int) -> Dict[str, Any]:
         summary = re.sub(r"\s+", " ", summary).strip()
         if len(summary) > ITEM_SUMMARY_CAP:
             summary = summary[:ITEM_SUMMARY_CAP].rstrip() + "…"
-        trimmed_items.append({
-            "id": item.get("id", ""),
-            "title": item.get("title", ""),
-            "link": item.get("link", ""),
-            "summary": summary,
-            "published": item.get("published"),
-            "author": item.get("author", ""),
-            "image": item.get("image", ""),
-            "source": _source_from_namespace(item) or item.get("author", ""),
-        })
+        trimmed_items.append(
+            {
+                "id": item.get("id", ""),
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "summary": summary,
+                "published": item.get("published"),
+                "author": item.get("author", ""),
+                "image": item.get("image", ""),
+                "source": _source_from_namespace(item) or item.get("author", ""),
+            }
+        )
     return {
         "feed_title": feed.get("feed_title", ""),
         "feed_link": feed.get("feed_link", ""),
@@ -231,7 +233,8 @@ def read_item(
     items = result.get("items") or []
     selected = next(
         (
-            item for item in items
+            item
+            for item in items
             if (item_id and item.get("id") == item_id)
             or (link and item.get("link") == link)
             or (title and item.get("title") == title)
@@ -278,9 +281,7 @@ def read_item(
         if not str(selected.get("summary") or "").strip() and list_summary:
             selected["summary"] = list_summary
 
-    content_text = _html_to_text(
-        selected.get("content_html") or selected.get("summary") or ""
-    )
+    content_text = _html_to_text(selected.get("content_html") or selected.get("summary") or "")
     return _pack_item_text(
         title=str(selected.get("title") or title or ""),
         link=str(selected.get("link") or link or ""),
@@ -331,7 +332,7 @@ def _fulltext_lost_content(list_html: str, new_html: str) -> bool:
     if len(list_txt) < 16:
         return list_txt not in new_txt
     n = 8
-    grams = [list_txt[i:i + n] for i in range(0, len(list_txt) - n + 1, n)]
+    grams = [list_txt[i : i + n] for i in range(0, len(list_txt) - n + 1, n)]
     if not grams:
         return list_txt not in new_txt
     hit = sum(1 for g in grams if g in new_txt)

@@ -51,10 +51,8 @@ class TestSlackFieldsRegistered(unittest.TestCase):
         pushover = get_field_definition("PUSHOVER_USER_KEY")
         for key in self._SLACK_KEYS:
             order = get_field_definition(key)["display_order"]
-            self.assertGreater(order, discord["display_order"],
-                               f"{key} should appear after Discord")
-            self.assertLess(order, pushover["display_order"],
-                            f"{key} should appear before Pushover")
+            self.assertGreater(order, discord["display_order"], f"{key} should appear after Discord")
+            self.assertLess(order, pushover["display_order"], f"{key} should appear before Pushover")
 
 
 class TestFeishuWebhookFieldsRegistered(unittest.TestCase):
@@ -164,11 +162,7 @@ class TestSettingsHelpMetadata(unittest.TestCase):
 
     def test_schema_response_includes_help_metadata(self):
         schema = build_schema_response()
-        fields = {
-            field["key"]: field
-            for category in schema["categories"]
-            for field in category["fields"]
-        }
+        fields = {field["key"]: field for category in schema["categories"] for field in category["fields"]}
 
         self.assertEqual(fields["STOCK_LIST"]["help_key"], "settings.base.STOCK_LIST")
         self.assertIn("docs/full-guide.md", fields["STOCK_LIST"]["docs"][0]["href"])
@@ -205,6 +199,7 @@ class TestSettingsHelpContract(unittest.TestCase):
         content = cls._SETTINGS_HELP_FILE.read_text(encoding="utf-8")
         return set(re.findall(r"^\s*'([^']+)'\s*:\s*\{", content, flags=re.MULTILINE))
 
+
 class TestSensitiveFieldsUsePasswordControl(unittest.TestCase):
     """Every is_sensitive field must use ui_control='password' to avoid
     leaking secrets in the Web settings page."""
@@ -216,8 +211,7 @@ class TestSensitiveFieldsUsePasswordControl(unittest.TestCase):
             for field in cat["fields"]:
                 if field.get("is_sensitive") and field.get("ui_control") != "password":
                     violations.append(field["key"])
-        self.assertEqual(violations, [],
-                         f"Sensitive fields with non-password ui_control: {violations}")
+        self.assertEqual(violations, [], f"Sensitive fields with non-password ui_control: {violations}")
 
 
 class TestDiscordInteractionPublicKeyField(unittest.TestCase):
@@ -282,6 +276,7 @@ class TestNotificationNoiseFieldsRegistered(unittest.TestCase):
         for key in self._NOISE_KEYS:
             self.assertIn(key, field_keys, f"{key} missing from schema response")
 
+
 class TestReportDisplayFieldsRegistered(unittest.TestCase):
     """Report display toggles should be visible in settings schema."""
 
@@ -306,4 +301,3 @@ class TestReportDisplayFieldsRegistered(unittest.TestCase):
 
 class TestMarketReviewFieldsRegistered(unittest.TestCase):
     """Market review behavior toggles should be visible in settings schema."""
-

@@ -24,11 +24,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
     def test_each_registered_tool_has_same_named_module(self) -> None:
         tools_dir = Path(__file__).parents[1] / "src" / "tools"
-        missing = [
-            name
-            for name in ToolRegistry().get_tool_names()
-            if not (tools_dir / f"{name}.py").is_file()
-        ]
+        missing = [name for name in ToolRegistry().get_tool_names() if not (tools_dir / f"{name}.py").is_file()]
         self.assertEqual(missing, [])
 
     def test_every_schema_property_is_accepted_by_its_executor(self) -> None:
@@ -37,8 +33,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         for tool in registry._tools.values():
             signature = inspect.signature(tool.executor)
             accepts_kwargs = any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in signature.parameters.values()
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
             )
             if accepts_kwargs:
                 continue
@@ -55,16 +50,20 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
         original = registry._tools["search_research_library"]
         registry._tools["search_research_library"] = replace(
-            original, executor=fake_search_research_library,
+            original,
+            executor=fake_search_research_library,
         )
 
-        registry.execute("search_research_library", {
-            "query": "精密减速器",
-            "category": "industry",
-            "subjects": ["精密减速器"],
-            "includeContent": "true",
-            "days": "1095",
-        })
+        registry.execute(
+            "search_research_library",
+            {
+                "query": "精密减速器",
+                "category": "industry",
+                "subjects": ["精密减速器"],
+                "includeContent": "true",
+                "days": "1095",
+            },
+        )
 
         self.assertIs(captured["include_content"], True)
         self.assertEqual(captured["days"], 1095)
@@ -88,22 +87,28 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
     def test_registry_repairs_iso_dates_for_compact_date_schema(self) -> None:
         registry = ToolRegistry()
-        normalized = registry.normalize_arguments("get_history_data", {
-            "symbol": "600519",
-            "startDate": "2026-01-01",
-            "endDate": "2026/07/17",
-        })
+        normalized = registry.normalize_arguments(
+            "get_history_data",
+            {
+                "symbol": "600519",
+                "startDate": "2026-01-01",
+                "endDate": "2026/07/17",
+            },
+        )
 
         self.assertEqual(normalized["start_date"], "20260101")
         self.assertEqual(normalized["end_date"], "20260717")
 
     def test_registry_does_not_guess_human_readable_sector_flow_enums(self) -> None:
         registry = ToolRegistry()
-        normalized = registry.normalize_arguments("get_sector_flow", {
-            "type": "行业板块",
-            "period": "近5日",
-            "top_n": "10",
-        })
+        normalized = registry.normalize_arguments(
+            "get_sector_flow",
+            {
+                "type": "行业板块",
+                "period": "近5日",
+                "top_n": "10",
+            },
+        )
 
         self.assertEqual(normalized["type"], "行业板块")
         self.assertEqual(normalized["period"], "近5日")
@@ -120,9 +125,14 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
     def test_get_stock_info_resolves_name_before_data_calls(self) -> None:
         registry = ToolRegistry()
 
-        with patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"), \
-             patch("src.tools.get_stock_info._fetch_cninfo", return_value={"A股简称": "贵州茅台"}), \
-             patch("src.tools.get_stock_info._fetch_eastmoney_capital", return_value={"symbol": "600519", "market_code": "sh"}):
+        with (
+            patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"),
+            patch("src.tools.get_stock_info._fetch_cninfo", return_value={"A股简称": "贵州茅台"}),
+            patch(
+                "src.tools.get_stock_info._fetch_eastmoney_capital",
+                return_value={"symbol": "600519", "market_code": "sh"},
+            ),
+        ):
             result = registry.execute("get_stock_info", {"symbol": "贵州茅台"})
 
         self.assertEqual(result["symbol"], "600519")
@@ -140,8 +150,10 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         def resolver(value: str) -> str:
             return {"贵州茅台": "600519", "宁德时代": "300750"}.get(value, value)
 
-        with patch("src.tools.get_realtime_quotes.get_realtime_quotes", side_effect=fake_get_realtime_quotes), \
-             patch("src.services.name_to_code_resolver.resolve_name_to_code", side_effect=resolver):
+        with (
+            patch("src.tools.get_realtime_quotes.get_realtime_quotes", side_effect=fake_get_realtime_quotes),
+            patch("src.services.name_to_code_resolver.resolve_name_to_code", side_effect=resolver),
+        ):
             result = registry.execute("get_realtime_quotes", {"symbols": "贵州茅台,宁德时代"})
 
         self.assertEqual(calls, [["600519", "300750"]])
@@ -149,10 +161,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
     def test_schema_defaults_are_tightened_for_heavy_tools(self) -> None:
         registry = ToolRegistry()
-        schemas = {
-            item["function"]["name"]: item["function"]["parameters"]
-            for item in registry.get_all_schemas()
-        }
+        schemas = {item["function"]["name"]: item["function"]["parameters"] for item in registry.get_all_schemas()}
 
         self.assertEqual(schemas["get_kline"]["properties"]["count"]["default"], 60)
         self.assertEqual(schemas["get_financials"]["properties"]["periods"]["default"], 6)
@@ -203,8 +212,11 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
     def test_professional_stock_tools_are_registered(self) -> None:
         names = set(ToolRegistry().get_tool_names())
         expected = {
-            "get_business_segments", "get_consensus_estimates", "get_peer_comparison",
-            "get_stock_capital_flow", "get_technical_indicators",
+            "get_business_segments",
+            "get_consensus_estimates",
+            "get_peer_comparison",
+            "get_stock_capital_flow",
+            "get_technical_indicators",
         }
         self.assertTrue(expected.issubset(names))
 
@@ -263,10 +275,13 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             return_value={"success": True, "partial": False, "items": [{"code": "600519"}]},
         ):
             quote = registry.execute("get_realtime_quotes", {"symbols": "600519"})
-        with patch(
-            "src.tools._kline.fetch_and_persist_kline",
-            return_value=([{"date": "2026-07-16", "close": 1500.0}], "eastmoney"),
-        ), patch("src.tools._kline._expected_latest_kline_date", return_value=datetime(2026, 7, 16).date()):
+        with (
+            patch(
+                "src.tools._kline.fetch_and_persist_kline",
+                return_value=([{"date": "2026-07-16", "close": 1500.0}], "eastmoney"),
+            ),
+            patch("src.tools._kline._expected_latest_kline_date", return_value=datetime(2026, 7, 16).date()),
+        ):
             kline = registry.execute("get_kline", {"symbol": "600519", "count": 20})
         with patch(
             "src.tools.get_sector_list.get_sector_flow",

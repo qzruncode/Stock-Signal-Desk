@@ -210,9 +210,7 @@ class TestSearXNGSearchProvider(unittest.TestCase):
             self._response(json_payload={"results": [{"title": "OK", "url": "https://ok.example", "content": "done"}]}),
         ]
 
-        provider = self._create_provider(
-            ["https://searx-a.example.org", "https://searx-b.example.org"]
-        )
+        provider = self._create_provider(["https://searx-a.example.org", "https://searx-b.example.org"])
         resp = provider.search("query", max_results=5)
 
         self.assertTrue(resp.success)
@@ -313,8 +311,7 @@ class TestSearXNGSearchProvider(unittest.TestCase):
     @patch("src.search_service.requests.get")
     def test_public_mode_limits_failover_to_max_attempts_instances(self, mock_get):
         feed_urls = [
-            f"https://public-{i}.example/"
-            for i in range(1, SearXNGSearchProvider.PUBLIC_INSTANCES_MAX_ATTEMPTS + 2)
+            f"https://public-{i}.example/" for i in range(1, SearXNGSearchProvider.PUBLIC_INSTANCES_MAX_ATTEMPTS + 2)
         ]
         max_attempts = SearXNGSearchProvider.PUBLIC_INSTANCES_MAX_ATTEMPTS
         mock_get.side_effect = [
@@ -399,9 +396,7 @@ class TestSearXNGSearchProvider(unittest.TestCase):
     def test_public_instance_refresh_failure_reuses_stale_cache(self, mock_get, mock_time):
         import requests as req_module
 
-        fallback_time = (
-            1000.0 + SearXNGSearchProvider.PUBLIC_INSTANCES_CACHE_TTL_SECONDS + 2
-        )
+        fallback_time = 1000.0 + SearXNGSearchProvider.PUBLIC_INSTANCES_CACHE_TTL_SECONDS + 2
         time_values = iter(
             [
                 1000.0,

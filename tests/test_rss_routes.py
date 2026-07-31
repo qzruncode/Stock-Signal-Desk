@@ -18,12 +18,8 @@ from api.v1.endpoints._pdf_proxy import _acw_cookie_from_challenge, _allowed_hos
 def test_rsshub_route_templates_cover_finance_sources():
     assert _build_feed_url("wallstreetcn").endswith("/wallstreetcn/news/global")
     assert _build_feed_url("cls").endswith("/cls/telegraph")
-    assert _build_feed_url("sina_finance", category="stock/usstock").endswith(
-        "/sina/finance/stock/usstock"
-    )
-    assert _build_feed_url("36kr", category="information/web_news").endswith(
-        "/36kr/information/web_news"
-    )
+    assert _build_feed_url("sina_finance", category="stock/usstock").endswith("/sina/finance/stock/usstock")
+    assert _build_feed_url("36kr", category="information/web_news").endswith("/36kr/information/web_news")
     assert _build_feed_url("eastmoney_search", keyword="贵州茅台").endswith(
         "/eastmoney/search/%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0"
     )
@@ -85,8 +81,8 @@ def test_rss_drops_only_truncated_items_without_a_resolvable_article():
 
 
 def test_rss_html_is_normalized_without_losing_message_text():
-    html = '&lt;p&gt;监管部门核实，消息不属实。&lt;/p&gt;'
-    assert _normalize_content_html(html) == '<p>监管部门核实，消息不属实。</p>'
+    html = "&lt;p&gt;监管部门核实，消息不属实。&lt;/p&gt;"
+    assert _normalize_content_html(html) == "<p>监管部门核实，消息不属实。</p>"
     assert _html_to_text('<p><a href="https://example.com">希音</a>已获备案。</p>') == "希音已获备案。"
     long_text = "重要消息" * 200
     assert _html_to_text(f"<p>{long_text}</p>") == long_text
@@ -114,12 +110,14 @@ def test_detail_uses_list_item_when_fulltext_upstream_fails(monkeypatch):
     monkeypatch.setattr(rss, "_fetch_rss_feed_json", lambda *_args, **_kwargs: failed)
     monkeypatch.setattr(rss, "_fetch_rss_feed", lambda *_args, **_kwargs: failed)
 
-    item = rss.get_rss_feed_item_detail(rss.FeedItemDetailRequest(
-        route_path="/example/news",
-        title="可读消息",
-        link="https://example.com/news/1",
-        content_html="<p>列表中已有完整正文。</p>",
-    ))
+    item = rss.get_rss_feed_item_detail(
+        rss.FeedItemDetailRequest(
+            route_path="/example/news",
+            title="可读消息",
+            link="https://example.com/news/1",
+            content_html="<p>列表中已有完整正文。</p>",
+        )
+    )
 
     assert item["title"] == "可读消息"
     assert item["content_html"] == "<p>列表中已有完整正文。</p>"

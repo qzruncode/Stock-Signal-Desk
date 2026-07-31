@@ -34,9 +34,7 @@ class EvaluateMarketMainlineGateArgs(BaseModel):
 
     thesis: str = ""
     thesis_context: InvestmentThesisContext | None = None
-    mainline_strategy: MainlineStrategyProfile = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    )
+    mainline_strategy: MainlineStrategyProfile = MainlineStrategyProfile.CONFIRMED_MAINLINE
     # The immutable workflow binds this resource after preflight, so the
     # static call shape permits omission while the executor enforces it.
     market_mainline_snapshot: MarketMainlineSnapshotArgs | None = None
@@ -54,9 +52,7 @@ class EvaluateMarketMainlineGateResult(TypedToolResult):
 def evaluate_market_mainline_gate(
     thesis: str = "",
     thesis_context: dict[str, Any] | None = None,
-    mainline_strategy: MainlineStrategyProfile | str = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    ),
+    mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
     market_mainline_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if market_mainline_snapshot is None:
@@ -65,9 +61,7 @@ def evaluate_market_mainline_gate(
         "正在绑定本批次的产业方向与市场主线快照",
         progress=10,
     )
-    snapshot = MarketMainlineSnapshotArgs.model_validate(
-        market_mainline_snapshot
-    ).model_dump(mode="python")
+    snapshot = MarketMainlineSnapshotArgs.model_validate(market_mainline_snapshot).model_dump(mode="python")
     effective_thesis = resolve_investment_thesis(thesis, thesis_context)
     strategy_profile = normalize_mainline_strategy(mainline_strategy)
     report_tool_progress(
@@ -90,17 +84,12 @@ def evaluate_market_mainline_gate(
         public_buy_analysis_error(model_error)
         if model_error
         else (
-            "analysis_source_unavailable：市场主线关键来源未完成，"
-            "本批次未形成市场主线结论"
+            "analysis_source_unavailable：市场主线关键来源未完成，" "本批次未形成市场主线结论"
             if source_unavailable
             else ""
         )
     )
-    warnings = (
-        ["市场主线分析未完成；系统不会把取证故障解释为市场事实。"]
-        if source_unavailable
-        else []
-    )
+    warnings = ["市场主线分析未完成；系统不会把取证故障解释为市场事实。"] if source_unavailable else []
     report_tool_progress(
         (
             f"批次共享第一关已完成：{assessment.headline}"

@@ -1,4 +1,5 @@
 """Evaluator ②: 景气上行周期 — Is the industry in an upward cycle?"""
+
 from __future__ import annotations
 
 import logging
@@ -43,7 +44,9 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
     criterion_name = "景气上行周期"
     index = 3
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
+    def collect_data(
+        self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None
+    ) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -116,9 +119,7 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
         lines.append("## 财务数据（最近8个季度）")
         if fin_items:
             for item in fin_items:
-                kvs = ", ".join(
-                    f"{FIELD_LABELS.get(k, k)}: {_fmt_raw(item.get(k))}" for k in FIN_FIELDS
-                )
+                kvs = ", ".join(f"{FIELD_LABELS.get(k, k)}: {_fmt_raw(item.get(k))}" for k in FIN_FIELDS)
                 lines.append(f"- {kvs}")
         else:
             lines.append("- null")
@@ -146,14 +147,18 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
         # ---- PMI：只取最新值和趋势 ----
         lines.append("## 宏观PMI（辅助参考）")
         pmi_val = pmi_latest.get("value") or pmi_latest.get("current") or pmi_latest.get("pmi")
-        lines.append(f"- 最新值: {_fmt_raw(pmi_val)}, 趋势: {_fmt_raw(pmi.get('trend'))}, 日期: {_fmt_raw(pmi.get('data_time'))}")
-        lines.extend([
-            "",
-            "## 判断约束",
-            "- 只使用本轮结构化产业方向检索结果；不得把法定大行业、无关公司的供需信息套到真实细分业务。",
-            "- 公司总营收可用于验证兑现，但新业务尚未形成单独报表时，不能仅因公司总营收受旧业务拖累就否定细分行业景气。",
-            "- 股价、板块资金和宏观PMI都只是辅助信息，不能代替订单、出货、价格、库存、产能利用率或资本开支等供需证据。",
-        ])
+        lines.append(
+            f"- 最新值: {_fmt_raw(pmi_val)}, 趋势: {_fmt_raw(pmi.get('trend'))}, 日期: {_fmt_raw(pmi.get('data_time'))}"
+        )
+        lines.extend(
+            [
+                "",
+                "## 判断约束",
+                "- 只使用本轮结构化产业方向检索结果；不得把法定大行业、无关公司的供需信息套到真实细分业务。",
+                "- 公司总营收可用于验证兑现，但新业务尚未形成单独报表时，不能仅因公司总营收受旧业务拖累就否定细分行业景气。",
+                "- 股价、板块资金和宏观PMI都只是辅助信息，不能代替订单、出货、价格、库存、产能利用率或资本开支等供需证据。",
+            ]
+        )
         lines.append("")
 
         summary = "\n".join(lines)
@@ -163,8 +168,8 @@ class ProsperityCycleEvaluator(BaseCriterionEvaluator):
         return PROSPERITY_CYCLE
 
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
-        items = ((evidence.raw_data.get("financials") or {}).get("items") or [])
-        industry_items = ((evidence.raw_data.get("industry_evidence") or {}).get("items") or [])
+        items = (evidence.raw_data.get("financials") or {}).get("items") or []
+        industry_items = (evidence.raw_data.get("industry_evidence") or {}).get("items") or []
         if len(items) < 3 and not industry_items:
             return "连续财务与细分产业供需证据均不足，无法验证景气趋势"
         return None

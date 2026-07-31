@@ -20,9 +20,7 @@ logger = logging.getLogger(__name__)
 class NotificationsMixin:
     """Run notification channel test pings without persisting submitted values."""
 
-    _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = (
-        "wechat",
-    )
+    _NOTIFICATION_TEST_CHANNELS: Tuple[str, ...] = ("wechat",)
     _NOTIFICATION_TEST_KEY_MAP: Dict[str, Tuple[str, str]] = {
         "WECHAT_WEBHOOK_URL": ("wechat_webhook_url", "string"),
         "WECHAT_MSG_TYPE": ("wechat_msg_type", "string"),
@@ -325,8 +323,7 @@ class NotificationsMixin:
             return ""
         source_key_upper = (source_key or "").upper()
         sensitive_source = any(
-            marker in source_key_upper
-            for marker in ("TOKEN", "PASSWORD", "SECRET", "SENDKEY", "USER_KEY", "API_KEY")
+            marker in source_key_upper for marker in ("TOKEN", "PASSWORD", "SECRET", "SENDKEY", "USER_KEY", "API_KEY")
         )
         parsed = urlparse(value)
         if not parsed.scheme or not parsed.netloc:
@@ -350,13 +347,13 @@ class NotificationsMixin:
             lower = segment.lower()
             looks_secret = (
                 (source_key_upper == "NTFY_URL" and index == last_non_empty_index)
-                or
-                len(segment) >= 16
+                or len(segment) >= 16
                 or lower.startswith("bot")
                 or "token" in lower
                 or "sendkey" in lower
                 or "secret" in lower
-                or re.search(r"[a-zA-Z].*\d|\d.*[a-zA-Z]", segment) is not None and len(segment) >= 10
+                or re.search(r"[a-zA-Z].*\d|\d.*[a-zA-Z]", segment) is not None
+                and len(segment) >= 10
             )
             if looks_secret:
                 safe_segments.append("***")
@@ -366,9 +363,7 @@ class NotificationsMixin:
         query = ""
         if parsed.query:
             query = "&".join(
-                f"{part.split('=', 1)[0]}=***" if "=" in part else "***"
-                for part in parsed.query.split("&")
-                if part
+                f"{part.split('=', 1)[0]}=***" if "=" in part else "***" for part in parsed.query.split("&") if part
             )
         return urlunparse(parsed._replace(netloc=safe_netloc, path="/".join(safe_segments), query=query, fragment=""))
 

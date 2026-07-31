@@ -84,9 +84,7 @@ def _build_analysis_report(result: dict, db_manager: DatabaseManager) -> Analysi
         context_snapshot = {}
 
     report_language = normalize_report_language(
-        result.get("report_language")
-        or raw_result.get("report_language")
-        or context_snapshot.get("report_language")
+        result.get("report_language") or raw_result.get("report_language") or context_snapshot.get("report_language")
     )
 
     stock_name = get_localized_stock_name(

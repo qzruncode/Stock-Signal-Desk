@@ -36,8 +36,7 @@ DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
 MAX_REDIRECTS = 8
 _CHROME_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
 )
 _HONEST_UA = "opencode"
 _SKIP_TAGS = ["script", "style", "noscript", "iframe", "object", "embed", "template"]
@@ -109,8 +108,7 @@ def _validate_public_url(url: str) -> None:
 
     try:
         addresses = {
-            item[4][0]
-            for item in socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+            item[4][0] for item in socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
         }
     except socket.gaierror as exc:
         raise ValueError(f"域名解析失败: {host}") from exc
@@ -342,7 +340,7 @@ def _challenge_reason(content: str, content_type: str) -> str | None:
         # A declared HTML response made almost entirely of encoded characters
         # is commonly an encrypted bot challenge even without a known marker.
         compact = re.sub(r"\s+", "", text[:12_000])
-        encoded = sum(ch.isalnum() or ch in "+/=_-{}\":," for ch in compact)
+        encoded = sum(ch.isalnum() or ch in '+/=_-{}":,' for ch in compact)
         if len(compact) > 800 and encoded / len(compact) > 0.97 and "<html" not in compact[:1000].lower():
             return "页面返回了疑似加密反爬载荷而非 HTML 正文"
     return None
@@ -394,9 +392,7 @@ def _document_extension(url: str, mime: str) -> str | None:
 def _convert_document(body: bytes, extension: str, fmt: str, url: str) -> tuple[str, str]:
     from markitdown import MarkItDown
 
-    result = MarkItDown(enable_plugins=False).convert_stream(
-        io.BytesIO(body), file_extension=extension, url=url
-    )
+    result = MarkItDown(enable_plugins=False).convert_stream(io.BytesIO(body), file_extension=extension, url=url)
     markdown = str(result.text_content or "").strip()
     if not markdown:
         raise ValueError("文档解析结果为空")
@@ -429,16 +425,16 @@ def _html_result(
     challenge = _challenge_reason(raw, "text/html")
     if challenge:
         return _timed_result(
-            provider, started, success=False, skipped=False, error=challenge,
-            failure_kind="challenge", final_url=final_url,
+            provider,
+            started,
+            success=False,
+            skipped=False,
+            error=challenge,
+            failure_kind="challenge",
+            final_url=final_url,
         )
     content, extraction, metadata = _extract_html(raw, fmt)
-    if (
-        rendered_text
-        and fmt != "html"
-        and extraction == "full_page_fallback"
-        and len(rendered_text.strip()) >= 80
-    ):
+    if rendered_text and fmt != "html" and extraction == "full_page_fallback" and len(rendered_text.strip()) >= 80:
         # Browser innerText excludes hidden menus/templates that can inflate
         # full-DOM Markdown by tens of thousands of characters and push the
         # actual live dashboard data outside the agent's content window.
@@ -446,8 +442,13 @@ def _html_result(
         extraction = "rendered_visible_text"
     if not content.strip():
         return _timed_result(
-            provider, started, success=False, skipped=False, error="网页正文为空",
-            failure_kind="empty", final_url=final_url,
+            provider,
+            started,
+            success=False,
+            skipped=False,
+            error="网页正文为空",
+            failure_kind="empty",
+            final_url=final_url,
         )
     return _timed_result(
         provider,
@@ -513,9 +514,17 @@ def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
                 "url": f"data:{mime};base64,{base64.b64encode(body).decode('ascii')}",
             }
             return _timed_result(
-                "http", started, success=True, skipped=False, error=None,
-                content="Image fetched successfully", attachments=[attachment], final_url=final_url,
-                title=title, content_type=content_type, extraction_method="direct_http_attachment",
+                "http",
+                started,
+                success=True,
+                skipped=False,
+                error=None,
+                content="Image fetched successfully",
+                attachments=[attachment],
+                final_url=final_url,
+                title=title,
+                content_type=content_type,
+                extraction_method="direct_http_attachment",
             )
 
         extension = _document_extension(final_url, mime)
@@ -524,9 +533,18 @@ def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
                 raise ValueError(f"无法识别文档格式: {mime}")
             content, method = _convert_document(body, extension, fmt, final_url)
             return _timed_result(
-                "http", started, success=True, skipped=False, error=None, content=content,
-                attachments=None, final_url=final_url, title=title, content_type=content_type,
-                extraction_method=method, quality_warning=_quality_warning(content, fmt),
+                "http",
+                started,
+                success=True,
+                skipped=False,
+                error=None,
+                content=content,
+                attachments=None,
+                final_url=final_url,
+                title=title,
+                content_type=content_type,
+                extraction_method=method,
+                quality_warning=_quality_warning(content, fmt),
             )
 
         is_text = mime.startswith("text/") or mime in _TEXT_APPLICATION_MIMES or not mime
@@ -537,9 +555,17 @@ def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
                 "url": f"data:{mime or 'application/octet-stream'};base64,{base64.b64encode(body).decode('ascii')}",
             }
             return _timed_result(
-                "http", started, success=True, skipped=False, error=None,
-                content="Binary file fetched successfully", attachments=[attachment], final_url=final_url,
-                title=title, content_type=content_type, extraction_method="direct_http_attachment",
+                "http",
+                started,
+                success=True,
+                skipped=False,
+                error=None,
+                content="Binary file fetched successfully",
+                attachments=[attachment],
+                final_url=final_url,
+                title=title,
+                content_type=content_type,
+                extraction_method="direct_http_attachment",
             )
 
         raw = _decode_text(body, response.encoding)
@@ -552,10 +578,19 @@ def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
 
         challenge = _challenge_reason(raw, content_type)
         return _timed_result(
-            "http", started, success=challenge is None, skipped=False, error=challenge,
-            failure_kind="challenge" if challenge else None, content=raw, attachments=None,
-            final_url=final_url, title=title, content_type=content_type,
-            extraction_method="direct_http_text", quality_warning=None,
+            "http",
+            started,
+            success=challenge is None,
+            skipped=False,
+            error=challenge,
+            failure_kind="challenge" if challenge else None,
+            content=raw,
+            attachments=None,
+            final_url=final_url,
+            title=title,
+            content_type=content_type,
+            extraction_method="direct_http_text",
+            quality_warning=None,
         )
     except Exception as exc:
         return _timed_result("http", started, success=False, skipped=False, error=str(exc), failure_kind="transport")
@@ -609,7 +644,11 @@ def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict
             from scrapling.fetchers import Fetcher
 
             page = Fetcher.get(
-                url, timeout=timeout, retries=2, impersonate="chrome", follow_redirects="safe",
+                url,
+                timeout=timeout,
+                retries=2,
+                impersonate="chrome",
+                follow_redirects="safe",
             )
             status = int(getattr(page, "status", None) or getattr(page, "status_code", None) or 200)
             if status >= 400:
@@ -624,18 +663,31 @@ def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict
             rendered_text = None
         _validate_public_url(final_url)
         return _html_result(
-            provider, started, raw, fmt, final_url,
+            provider,
+            started,
+            raw,
+            fmt,
+            final_url,
             "patchright_browser" if browser else "scrapling_http",
             rendered_text=rendered_text,
         )
     except ImportError:
         return _timed_result(
-            provider, started, success=False, skipped=True, error="Scrapling/Patchright 未安装",
+            provider,
+            started,
+            success=False,
+            skipped=True,
+            error="Scrapling/Patchright 未安装",
             failure_kind="runtime",
         )
     except Exception as exc:
         return _timed_result(
-            provider, started, success=False, skipped=False, error=str(exc), failure_kind="transport",
+            provider,
+            started,
+            success=False,
+            skipped=False,
+            error=str(exc),
+            failure_kind="transport",
         )
 
 
@@ -644,7 +696,11 @@ def _firecrawl_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
     config = firecrawl_rest_config()
     if config is None:
         return _timed_result(
-            "firecrawl", started, success=False, skipped=True, error="项目内置 Firecrawl 不可用",
+            "firecrawl",
+            started,
+            success=False,
+            skipped=True,
+            error="项目内置 Firecrawl 不可用",
             failure_kind="runtime",
         )
     base_url, headers, auth_mode = config
@@ -654,7 +710,9 @@ def _firecrawl_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
             f"{base_url}/v2/scrape",
             headers=headers,
             json={
-                "url": url, "formats": [requested_format], "onlyMainContent": True,
+                "url": url,
+                "formats": [requested_format],
+                "onlyMainContent": True,
                 "timeout": timeout * 1000,
             },
             timeout=timeout + 5,
@@ -670,8 +728,13 @@ def _firecrawl_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
         challenge = _challenge_reason(raw, content_type)
         if challenge:
             return _timed_result(
-                "firecrawl", started, success=False, skipped=False, error=challenge,
-                failure_kind="challenge", auth_mode=auth_mode,
+                "firecrawl",
+                started,
+                success=False,
+                skipped=False,
+                error=challenge,
+                failure_kind="challenge",
+                auth_mode=auth_mode,
             )
         content = raw
         extraction = "firecrawl_main_content"
@@ -681,16 +744,30 @@ def _firecrawl_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
             if not metadata.get("title"):
                 metadata["title"] = nested_metadata.get("title")
         return _timed_result(
-            "firecrawl", started, success=bool(content.strip()), skipped=False,
-            error=None if content.strip() else "网页正文为空", content=content, attachments=None,
-            final_url=final_url, title=str(metadata.get("title") or ""), content_type=content_type,
-            extraction_method=extraction, quality_warning=_quality_warning(content, fmt),
-            content_time=metadata.get("publishedTime") or metadata.get("modifiedTime"), auth_mode=auth_mode,
+            "firecrawl",
+            started,
+            success=bool(content.strip()),
+            skipped=False,
+            error=None if content.strip() else "网页正文为空",
+            content=content,
+            attachments=None,
+            final_url=final_url,
+            title=str(metadata.get("title") or ""),
+            content_type=content_type,
+            extraction_method=extraction,
+            quality_warning=_quality_warning(content, fmt),
+            content_time=metadata.get("publishedTime") or metadata.get("modifiedTime"),
+            auth_mode=auth_mode,
         )
     except Exception as exc:
         return _timed_result(
-            "firecrawl", started, success=False, skipped=False, error=str(exc),
-            failure_kind="transport", auth_mode=auth_mode,
+            "firecrawl",
+            started,
+            success=False,
+            skipped=False,
+            error=str(exc),
+            failure_kind="transport",
+            auth_mode=auth_mode,
         )
 
 
@@ -766,8 +843,7 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
                     continue
                 if (
                     degraded_result is not None
-                    and len(str(current.get("content") or ""))
-                    < len(str(degraded_result.get("content") or "")) * 0.4
+                    and len(str(current.get("content") or "")) < len(str(degraded_result.get("content") or "")) * 0.4
                 ):
                     # A provider without a warning is not automatically better
                     # when it discarded most of a previously fetched page.
@@ -779,18 +855,28 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
         result = degraded_result
 
     now = datetime.now().astimezone().isoformat()
-    failures = [
-        str(item["error"])
-        for item in attempts
-        if item.get("error") and not item.get("skipped")
-    ]
+    failures = [str(item["error"]) for item in attempts if item.get("error") and not item.get("skipped")]
     if result is None:
         return {
-            "url": url, "final_url": url, "format": fmt, "content_type": "", "title": "",
-            "content": "", "attachments": None, "success": False, "provider": "none",
-            "attempts": attempts, "data_time": now, "content_time": None,
-            "fallback_used": False, "is_stale": None, "freshness_unknown": True,
-            "extraction_method": None, "_truncated": False, "errors": failures, "warnings": [],
+            "url": url,
+            "final_url": url,
+            "format": fmt,
+            "content_type": "",
+            "title": "",
+            "content": "",
+            "attachments": None,
+            "success": False,
+            "provider": "none",
+            "attempts": attempts,
+            "data_time": now,
+            "content_time": None,
+            "fallback_used": False,
+            "is_stale": None,
+            "freshness_unknown": True,
+            "extraction_method": None,
+            "_truncated": False,
+            "errors": failures,
+            "warnings": [],
         }
 
     provider = str(result.get("provider") or "unknown")

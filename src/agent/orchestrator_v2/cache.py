@@ -16,15 +16,17 @@ from src.agent.orchestrator_v2.runtime import CompiledTaskV2
 from src.agent.task_workflows import WorkflowCall
 
 
-_SENSITIVE_MODEL_KEYS = frozenset({
-    "api_key",
-    "apikey",
-    "authorization",
-    "cookie",
-    "password",
-    "secret",
-    "token",
-})
+_SENSITIVE_MODEL_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+    }
+)
 
 
 def _cache_safe_model_config(value: Any) -> Any:
@@ -33,13 +35,9 @@ def _cache_safe_model_config(value: Any) -> Any:
             str(key): _cache_safe_model_config(item)
             for key, item in value.items()
             if (
-                str(key).replace("-", "_").lower()
-                not in _SENSITIVE_MODEL_KEYS
+                str(key).replace("-", "_").lower() not in _SENSITIVE_MODEL_KEYS
                 and not any(
-                    str(key).replace("-", "_").lower().endswith(
-                        f"_{suffix}"
-                    )
-                    for suffix in _SENSITIVE_MODEL_KEYS
+                    str(key).replace("-", "_").lower().endswith(f"_{suffix}") for suffix in _SENSITIVE_MODEL_KEYS
                 )
             )
         }
@@ -56,24 +54,21 @@ def execution_cache_key_v2(
     model_config: Mapping[str, Any],
 ) -> str | None:
     policy = task.freshness_policy
-    if (
-        policy.reuse_scope != CacheReuseScope.CROSS_RUN
-        or policy.max_age_seconds is None
-    ):
+    if policy.reuse_scope != CacheReuseScope.CROSS_RUN or policy.max_age_seconds is None:
         return None
-    fingerprint = stable_fingerprint({
-        "cache_contract": "agent-orchestrator-v2",
-        "capability": task.capability.value,
-        "capability_version": task.capability_version,
-        "intent_schema_version": task.intent_schema_version,
-        "resource_fingerprint": task.resource_fingerprint,
-        "step_id": call.step_id,
-        "arguments": dict(arguments),
-        "model_config_fingerprint": stable_fingerprint(
-            _cache_safe_model_config(model_config)
-        ),
-        "freshness_policy": policy.model_dump(mode="json"),
-    })
+    fingerprint = stable_fingerprint(
+        {
+            "cache_contract": "agent-orchestrator-v2",
+            "capability": task.capability.value,
+            "capability_version": task.capability_version,
+            "intent_schema_version": task.intent_schema_version,
+            "resource_fingerprint": task.resource_fingerprint,
+            "step_id": call.step_id,
+            "arguments": dict(arguments),
+            "model_config_fingerprint": stable_fingerprint(_cache_safe_model_config(model_config)),
+            "freshness_policy": policy.model_dump(mode="json"),
+        }
+    )
     return f"agent_v2:{fingerprint}"
 
 

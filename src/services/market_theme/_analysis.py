@@ -7,6 +7,7 @@ import json
 import logging
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 from src.ai_caller import current_shanghai_timestamp
@@ -20,32 +21,20 @@ _JSON_MARKER = "__MARKET_THEME_JSON__="
 
 
 def _model_report_view(report: dict[str, Any]) -> dict[str, Any]:
-    current = [
-        item for item in report.get("current_mainlines") or []
-        if isinstance(item, dict)
-    ]
+    current = [item for item in report.get("current_mainlines") or [] if isinstance(item, dict)]
     future = [
-        item for item in (
-            report.get("candidate_mainlines")
-            or report.get("future_mainlines")
-            or []
-        )
+        item
+        for item in (report.get("candidate_mainlines") or report.get("future_mainlines") or [])
         if isinstance(item, dict)
     ]
     return {
         "generated_at": report.get("generated_at") or current_shanghai_timestamp(),
         "headline": str(report.get("overview") or "市场主线动态研判已完成。"),
-        "market_regime": str(
-            (report.get("market_stage") or {}).get("label") or "动态语义研判"
-        ),
+        "market_regime": str((report.get("market_stage") or {}).get("label") or "动态语义研判"),
         "market_stage": report.get("market_stage") or empty_market_stage(),
         "primary_judgement": str(report.get("full_report") or report.get("overview") or ""),
-        "investment_takeaway": "；".join(
-            str(item) for item in report.get("action_summary") or [] if str(item).strip()
-        ),
-        "policy_watchlist": [
-            str(item) for item in report.get("policy_watchlist") or [] if str(item).strip()
-        ],
+        "investment_takeaway": "；".join(str(item) for item in report.get("action_summary") or [] if str(item).strip()),
+        "policy_watchlist": [str(item) for item in report.get("policy_watchlist") or [] if str(item).strip()],
         "current_themes": current,
         "next_themes": future,
         "current_mainlines": current,
@@ -111,8 +100,7 @@ def build_response(
             "market_regime": "未研判",
             "market_stage": empty_market_stage(),
             "primary_judgement": (
-                "系统不再使用关键词目录、固定叙事或阈值公式代替策略研判。"
-                "模型未完成时只返回原始证据。"
+                "系统不再使用关键词目录、固定叙事或阈值公式代替策略研判。" "模型未完成时只返回原始证据。"
             ),
             "investment_takeaway": "本轮不生成未经语义研判的主题结论。",
             "policy_watchlist": [],
@@ -125,16 +113,18 @@ def build_response(
             "model_used": None,
             "semantic_status": "unavailable",
         }
-    result.update({
-        "source_notes": [
-            "政策方向、产业供需、技术路线、资本开支和机构策略共识",
-            "行业与概念板块目录仅用于标准名称映射，不作为主线证据",
-            "交易所与官方公开信息",
-            "公共资讯与公开研究资料",
-        ],
-        "source_summary": _summarize_sources(snapshot),
-        "source_snapshot": snapshot,
-    })
+    result.update(
+        {
+            "source_notes": [
+                "政策方向、产业供需、技术路线、资本开支和机构策略共识",
+                "行业与概念板块目录仅用于标准名称映射，不作为主线证据",
+                "交易所与官方公开信息",
+                "公共资讯与公开研究资料",
+            ],
+            "source_summary": _summarize_sources(snapshot),
+            "source_snapshot": snapshot,
+        }
+    )
     return result
 
 
@@ -159,17 +149,14 @@ def build_evidence_response(context: dict[str, Any]) -> dict[str, Any]:
 
 def build_insight_response(evidence: dict[str, Any]) -> dict[str, Any]:
     current = [
-        item for item in (
-            evidence.get("current_mainlines") or evidence.get("current_themes") or []
-        )
+        item
+        for item in (evidence.get("current_mainlines") or evidence.get("current_themes") or [])
         if isinstance(item, dict)
     ]
     future = [
-        item for item in (
-            evidence.get("candidate_mainlines")
-            or evidence.get("future_mainlines")
-            or evidence.get("next_themes")
-            or []
+        item
+        for item in (
+            evidence.get("candidate_mainlines") or evidence.get("future_mainlines") or evidence.get("next_themes") or []
         )
         if isinstance(item, dict)
     ]
@@ -196,17 +183,15 @@ def build_insight_response(evidence: dict[str, Any]) -> dict[str, Any]:
         "generated_at": evidence.get("generated_at") or current_shanghai_timestamp(),
         "overview": str(
             evidence.get("overview")
-            or (
-                "动态主线研判已完成。"
-                if current
-                else "原始证据已收集，动态主线研判尚未完成。"
-            )
+            or ("动态主线研判已完成。" if current else "原始证据已收集，动态主线研判尚未完成。")
         ),
         "market_stage": market_stage,
         "lifecycle_notes": lifecycle_notes,
         "future_outlook": future_outlook,
         "deep_summary": build_deep_summary(
-            market_stage, lifecycle_notes, future_outlook,
+            market_stage,
+            lifecycle_notes,
+            future_outlook,
         ),
         "llm_used": bool(evidence.get("llm_used")),
         "model_used": evidence.get("model_used"),
@@ -222,7 +207,7 @@ def run_isolated(*, force: bool, layer: str) -> Optional[dict]:
     try:
         completed = subprocess.run(
             cmd,
-            cwd=str(__import__("pathlib").Path(__file__).resolve().parents[3]),
+            cwd=str(Path(__file__).resolve().parents[3]),
             capture_output=True,
             text=True,
             check=False,
@@ -244,7 +229,7 @@ def run_isolated(*, force: bool, layer: str) -> Optional[dict]:
         )
         return None
     try:
-        payload = json.loads(payload_line[len(_JSON_MARKER):])
+        payload = json.loads(payload_line[len(_JSON_MARKER) :])
         return payload if isinstance(payload, dict) else None
     except Exception:
         logger.exception("market theme isolated runner returned invalid json")

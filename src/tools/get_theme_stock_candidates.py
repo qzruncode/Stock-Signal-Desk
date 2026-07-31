@@ -57,10 +57,7 @@ def _load_complete_constituent_cache(
         if not isinstance(cached, dict):
             return None
         updated_at = cached.get("updated_at")
-        if (
-            not isinstance(updated_at, datetime)
-            or datetime.now() - updated_at > _CACHE_MAX_AGE
-        ):
+        if not isinstance(updated_at, datetime) or datetime.now() - updated_at > _CACHE_MAX_AGE:
             return None
         payload = json.loads(bytes(cached["payload"]).decode("utf-8"))
         items = payload.get("items") if isinstance(payload, dict) else None
@@ -68,9 +65,7 @@ def _load_complete_constituent_cache(
         if not isinstance(items, list) or not isinstance(boards, list):
             return None
         if not any(
-            isinstance(board, dict)
-            and board.get("coverage") == "full"
-            and board.get("primary_theme") is True
+            isinstance(board, dict) and board.get("coverage") == "full" and board.get("primary_theme") is True
             for board in boards
         ):
             return None
@@ -103,16 +98,22 @@ def _load_local_universe() -> dict[str, dict[str, Any]]:
 
     db = DatabaseManager.get_instance()
     with db.get_session() as session:
-        rows = session.query(
-            StockMeta.code,
-            StockMeta.name,
-            StockMeta.sector,
-            StockMeta.revenue_latest,
-            StockMeta.net_profit_latest,
-            StockMeta.report_date,
-        ).filter(StockMeta.status == "active").all()
+        rows = (
+            session.query(
+                StockMeta.code,
+                StockMeta.name,
+                StockMeta.sector,
+                StockMeta.revenue_latest,
+                StockMeta.net_profit_latest,
+                StockMeta.report_date,
+            )
+            .filter(StockMeta.status == "active")
+            .all()
+        )
     return {
-        str(code).strip().zfill(6): {
+        str(code)
+        .strip()
+        .zfill(6): {
             "symbol": str(code).strip().zfill(6),
             "name": str(name or "").strip(),
             "sector": str(sector or "").strip(),
@@ -143,23 +144,27 @@ def _fetch_sina_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dic
     for board_name, label in matched:
         try:
             frame = ak.stock_sector_detail(sector=label)
-            boards.append({
-                "name": board_name,
-                "source": "新浪概念板块",
-                "constituent_count": int(len(frame)),
-                "primary_theme": True,
-                "coverage": "full",
-                "url": f"http://vip.stock.finance.sina.com.cn/mkt/#{label}",
-            })
-            for _, row in frame.iterrows():
-                items.append({
-                    "symbol": str(row.get("code") or "").split(".")[0].strip().zfill(6),
-                    "source_name": str(row.get("name") or "").strip(),
-                    "board": board_name,
-                    "primary_theme": True,
+            boards.append(
+                {
+                    "name": board_name,
                     "source": "新浪概念板块",
-                    "source_url": f"http://vip.stock.finance.sina.com.cn/mkt/#{label}",
-                })
+                    "constituent_count": int(len(frame)),
+                    "primary_theme": True,
+                    "coverage": "full",
+                    "url": f"http://vip.stock.finance.sina.com.cn/mkt/#{label}",
+                }
+            )
+            for _, row in frame.iterrows():
+                items.append(
+                    {
+                        "symbol": str(row.get("code") or "").split(".")[0].strip().zfill(6),
+                        "source_name": str(row.get("name") or "").strip(),
+                        "board": board_name,
+                        "primary_theme": True,
+                        "source": "新浪概念板块",
+                        "source_url": f"http://vip.stock.finance.sina.com.cn/mkt/#{label}",
+                    }
+                )
         except Exception as exc:
             errors.append(f"新浪板块 {board_name} 成分股获取失败: {type(exc).__name__}: {exc}")
     return items, boards, errors
@@ -192,8 +197,13 @@ def _fetch_eastmoney_constituents(
     endpoint = "https://push2delay.eastmoney.com/api/qt/clist/get"
     headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
     common = {
-        "po": "1", "np": "1", "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-        "fltt": "2", "invt": "2", "fid": "f12", "fields": "f12,f14",
+        "po": "1",
+        "np": "1",
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f12",
+        "fields": "f12,f14",
     }
 
     def fetch_page(fs: str, page: int) -> tuple[int, list[dict[str, Any]]]:
@@ -208,18 +218,12 @@ def _fetch_eastmoney_constituents(
                 )
                 response.raise_for_status()
                 data = response.json().get("data") or {}
-                return int(data.get("total") or 0), [
-                    item
-                    for item in data.get("diff") or []
-                    if isinstance(item, dict)
-                ]
+                return int(data.get("total") or 0), [item for item in data.get("diff") or [] if isinstance(item, dict)]
             except Exception as exc:
                 last_error = exc
                 if attempt == 0:
                     time.sleep(0.3)
-        raise RuntimeError(
-            f"东方财富第 {page} 页连续失败: {last_error}"
-        )
+        raise RuntimeError(f"东方财富第 {page} 页连续失败: {last_error}")
 
     if board_code:
         matched = [(theme, str(board_code).strip())]
@@ -256,29 +260,31 @@ def _fetch_eastmoney_constituents(
                     records.extend(page_records)
                 except Exception as exc:
                     failed_pages.append(page)
-                    errors.append(
-                        f"东方财富板块 {board_name} 第 {page} 页获取失败: {type(exc).__name__}: {exc}"
-                    )
-            boards.append({
-                "name": board_name,
-                "source": "东方财富概念板块",
-                "constituent_count": constituent_total,
-                "returned_count": len(records),
-                "page_count": max(1, math.ceil(constituent_total / 100)),
-                "failed_pages": failed_pages,
-                "primary_theme": True,
-                "coverage": "full" if not failed_pages and len(records) >= constituent_total else "partial_pages",
-                "url": source_url,
-            })
-            for row in records:
-                items.append({
-                    "symbol": str(row.get("f12") or "").strip().zfill(6),
-                    "source_name": str(row.get("f14") or "").strip(),
-                    "board": board_name,
-                    "primary_theme": True,
+                    errors.append(f"东方财富板块 {board_name} 第 {page} 页获取失败: {type(exc).__name__}: {exc}")
+            boards.append(
+                {
+                    "name": board_name,
                     "source": "东方财富概念板块",
-                    "source_url": source_url,
-                })
+                    "constituent_count": constituent_total,
+                    "returned_count": len(records),
+                    "page_count": max(1, math.ceil(constituent_total / 100)),
+                    "failed_pages": failed_pages,
+                    "primary_theme": True,
+                    "coverage": "full" if not failed_pages and len(records) >= constituent_total else "partial_pages",
+                    "url": source_url,
+                }
+            )
+            for row in records:
+                items.append(
+                    {
+                        "symbol": str(row.get("f12") or "").strip().zfill(6),
+                        "source_name": str(row.get("f14") or "").strip(),
+                        "board": board_name,
+                        "primary_theme": True,
+                        "source": "东方财富概念板块",
+                        "source_url": source_url,
+                    }
+                )
         except Exception as exc:
             errors.append(f"东方财富板块 {board_name} 成分股获取失败: {type(exc).__name__}: {exc}")
     return items, boards, errors
@@ -291,11 +297,7 @@ def _fetch_ths_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dict
 
     board_map = _ths_board_map()
     matched = sorted(
-        (
-            (name, code)
-            for name, code in board_map.items()
-            if _same_catalog_identifier(name, theme)
-        ),
+        ((name, code) for name, code in board_map.items() if _same_catalog_identifier(name, theme)),
         key=lambda item: item[0],
     )
     items: list[dict[str, Any]] = []
@@ -348,8 +350,7 @@ def _fetch_ths_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dict
                         except Exception as exc:
                             failed_pages.append(page)
                             errors.append(
-                                f"同花顺板块 {board_name} 第 {page} 页获取失败: "
-                                f"{type(exc).__name__}: {exc}"
+                                f"同花顺板块 {board_name} 第 {page} 页获取失败: " f"{type(exc).__name__}: {exc}"
                             )
             if page_count > public_page_count:
                 failed_pages.extend(range(public_page_count + 1, page_count + 1))
@@ -360,28 +361,32 @@ def _fetch_ths_constituents(theme: str) -> tuple[list[dict[str, Any]], list[dict
 
             frames = [page_frames[page] for page in sorted(page_frames)]
             constituent_count = sum(len(frame) for frame in frames)
-            boards.append({
-                "name": board_name,
-                "source": "同花顺概念板块",
-                "constituent_count": constituent_count,
-                "returned_count": constituent_count,
-                "page_count": page_count,
-                "fetched_page_count": len(page_frames),
-                "failed_pages": sorted(failed_pages),
-                "primary_theme": True,
-                "coverage": "full" if not failed_pages else "partial_pages",
-                "url": source_url,
-            })
+            boards.append(
+                {
+                    "name": board_name,
+                    "source": "同花顺概念板块",
+                    "constituent_count": constituent_count,
+                    "returned_count": constituent_count,
+                    "page_count": page_count,
+                    "fetched_page_count": len(page_frames),
+                    "failed_pages": sorted(failed_pages),
+                    "primary_theme": True,
+                    "coverage": "full" if not failed_pages else "partial_pages",
+                    "url": source_url,
+                }
+            )
             for frame in frames:
                 for _, row in frame.iterrows():
-                    items.append({
-                        "symbol": str(row.get("代码") or "").split(".")[0].strip().zfill(6),
-                        "source_name": str(row.get("名称") or "").strip(),
-                        "board": board_name,
-                        "primary_theme": True,
-                        "source": "同花顺概念板块",
-                        "source_url": source_url,
-                    })
+                    items.append(
+                        {
+                            "symbol": str(row.get("代码") or "").split(".")[0].strip().zfill(6),
+                            "source_name": str(row.get("名称") or "").strip(),
+                            "board": board_name,
+                            "primary_theme": True,
+                            "source": "同花顺概念板块",
+                            "source_url": source_url,
+                        }
+                    )
         except Exception as exc:
             errors.append(f"同花顺板块 {board_name} 成分股获取失败: {type(exc).__name__}: {exc}")
     return items, boards, errors
@@ -426,9 +431,7 @@ def get_theme_stock_candidates(
             warnings.append(f"{fetcher_name} 失败: {type(exc).__name__}: {exc}")
 
     coverage_complete = any(
-        isinstance(board, dict)
-        and board.get("coverage") == "full"
-        and board.get("primary_theme") is True
+        isinstance(board, dict) and board.get("coverage") == "full" and board.get("primary_theme") is True
         for board in boards
     )
     if not coverage_complete:
@@ -459,12 +462,15 @@ def get_theme_stock_candidates(
         authoritative = local.get(symbol)
         if authoritative is None:
             continue
-        item = merged.setdefault(symbol, {
-            **authoritative,
-            "boards": [],
-            "sources": [],
-            "primary_theme_membership": False,
-        })
+        item = merged.setdefault(
+            symbol,
+            {
+                **authoritative,
+                "boards": [],
+                "sources": [],
+                "primary_theme_membership": False,
+            },
+        )
         board_name = str(raw.get("board") or "")
         if board_name and board_name not in item["boards"]:
             item["boards"].append(board_name)
@@ -483,8 +489,7 @@ def get_theme_stock_candidates(
         item["board_count"] = len(item["boards"])
         item["evidence_level"] = "L1"
         item["evidence_basis"] = (
-            "主题板块成分股且代码已由本地 stock_meta 核验；"
-            "仅用于候选召回，不证明相关订单、客户验证或收入。"
+            "主题板块成分股且代码已由本地 stock_meta 核验；" "仅用于候选召回，不证明相关订单、客户验证或收入。"
         )
         item["company_evidence_required"] = True
 
@@ -522,5 +527,6 @@ def get_theme_stock_candidates(
         "warnings": warnings,
         "errors": [] if success else list(warnings),
     }
+
 
 __all__ = ["get_theme_stock_candidates"]

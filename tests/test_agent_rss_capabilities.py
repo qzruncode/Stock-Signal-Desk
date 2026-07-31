@@ -65,8 +65,12 @@ def test_list_and_inspect_financial_sources_preserve_route_contract() -> None:
     assert listed["items"][0]["route_path"] == "/cls/telegraph/:category?"
 
     dynamic = {"subjects": [{"subjectId": "1000", "name": "机器人"}], "_fetched_at": "2026-07-19T09:01:00+08:00"}
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG), patch(
-        "src.tools.inspect_financial_source._dynamic_options", return_value=dynamic,
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG),
+        patch(
+            "src.tools.inspect_financial_source._dynamic_options",
+            return_value=dynamic,
+        ),
     ):
         inspected = inspect_financial_source("/cls/subject/:id?")
 
@@ -95,24 +99,30 @@ def test_source_keyword_ai_does_not_match_pinyin_substrings() -> None:
 def test_read_financial_feed_forwards_options_and_returns_reader_items() -> None:
     payload = {
         "feed_title": "财联社电报",
-        "items": [{
-            "id": "1",
-            "title": "测试消息",
-            "link": "https://example.com/1",
-            "summary": "摘要",
-            "published": "2026-07-19T09:00:00+08:00",
-            "author": "财联社",
-            "tags": [],
-            "content_html": "<p>正文</p>",
-            "attachments": [],
-        }],
+        "items": [
+            {
+                "id": "1",
+                "title": "测试消息",
+                "link": "https://example.com/1",
+                "summary": "摘要",
+                "published": "2026-07-19T09:00:00+08:00",
+                "author": "财联社",
+                "tags": [],
+                "content_html": "<p>正文</p>",
+                "attachments": [],
+            }
+        ],
         "errors": [],
         "_fetched_at": "2026-07-19T09:02:00+08:00",
         "_cached": False,
     }
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG), patch(
-        "api.v1.endpoints.rss.get_rss_feeds_by_spec", return_value=payload,
-    ) as endpoint:
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG),
+        patch(
+            "api.v1.endpoints.rss.get_rss_feeds_by_spec",
+            return_value=payload,
+        ) as endpoint,
+    ):
         result = read_financial_feed(
             "/cls/telegraph/:category?",
             options={"filter_title": "机器人", "sorted": True},
@@ -137,9 +147,13 @@ def test_read_financial_article_segments_full_text_without_hidden_truncation() -
         "content_html": body,
         "attachments": [{"url": "https://example.com/report.pdf", "mime_type": "application/pdf"}],
     }
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG), patch(
-        "api.v1.endpoints.rss.get_rss_feed_item_detail", return_value=payload,
-    ) as endpoint:
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG),
+        patch(
+            "api.v1.endpoints.rss.get_rss_feed_item_detail",
+            return_value=payload,
+        ) as endpoint,
+    ):
         first = read_financial_article(
             "/cls/telegraph/:category?",
             "长消息",
@@ -152,7 +166,10 @@ def test_read_financial_article_segments_full_text_without_hidden_truncation() -
             max_chars=1000,
         )
         second = read_financial_article(
-            "/cls/telegraph/:category?", "长消息", offset=first["next_offset"], max_chars=1000,
+            "/cls/telegraph/:category?",
+            "长消息",
+            offset=first["next_offset"],
+            max_chars=1000,
         )
 
     request = endpoint.call_args_list[0].args[0]
@@ -202,30 +219,44 @@ def test_transform_and_export_feed_keep_assistant_reader_contract() -> None:
 
     with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG):
         exported = export_financial_feed(
-            "/cls/telegraph/:category?", options={"filter": "机器人"}, format="json", limit=17,
+            "/cls/telegraph/:category?",
+            options={"filter": "机器人"},
+            format="json",
+            limit=17,
         )
     assert exported["download_ready"] is True
     assert exported["available_formats"] == ["rss", "atom", "json", "rss3"]
     assert exported["options"]["limit"] == 17
     assert exported["limit"] == 17
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG), pytest.raises(ValueError, match="不支持的导出格式"):
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG),
+        pytest.raises(ValueError, match="不支持的导出格式"),
+    ):
         export_financial_feed("/cls/telegraph/:category?", format="csv")
 
-    with patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG), pytest.raises(ValueError, match="47 个股市资讯源"):
+    with (
+        patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG),
+        pytest.raises(ValueError, match="47 个股市资讯源"),
+    ):
         export_financial_feed("/not-curated", format="rss")
 
 
 def test_semantic_news_compaction_keeps_article_reader_coordinates() -> None:
-    compact = _compact_tool_result("search_financial_news", {
-        "success": True,
-        "items": [{
-            "id": "entry-1",
-            "title": "机器人消息",
-            "link": "https://example.com/a",
-            "rss_route": "/cls/telegraph",
-            "rss_params": {"route_path": "/cls/telegraph", "params": {}, "options": {}},
-        }],
-    })
+    compact = _compact_tool_result(
+        "search_financial_news",
+        {
+            "success": True,
+            "items": [
+                {
+                    "id": "entry-1",
+                    "title": "机器人消息",
+                    "link": "https://example.com/a",
+                    "rss_route": "/cls/telegraph",
+                    "rss_params": {"route_path": "/cls/telegraph", "params": {}, "options": {}},
+                }
+            ],
+        },
+    )
 
     assert compact["items"][0]["id"] == "entry-1"
     assert compact["items"][0]["rss_params"]["route_path"] == "/cls/telegraph"

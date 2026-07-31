@@ -50,8 +50,8 @@ def _fetch_json(url: str) -> Optional[dict]:
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36",
         }
         resp = requests.get(url, headers=headers, timeout=FETCH_TIMEOUT)
         resp.raise_for_status()
@@ -143,8 +143,7 @@ def get_subjects(force: bool = False, keyword: Optional[str] = None) -> Dict[str
     kw = (keyword or "").strip().lower()
     if kw:
         subjects = [
-            s for s in subjects
-            if kw in (str(s.get("name") or "").lower() + " " + str(s.get("summary") or "").lower())
+            s for s in subjects if kw in (str(s.get("name") or "").lower() + " " + str(s.get("summary") or "").lower())
         ]
 
     return {

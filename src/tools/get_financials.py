@@ -41,25 +41,47 @@ def _build(symbol: str, periods: int) -> dict[str, Any]:
             report_date = row.get("report_date")
             if not report_date:
                 continue
-            item = by_date.setdefault(report_date, {
-                "report_date": report_date,
-                "report_period": row.get("report_period"),
-            })
+            item = by_date.setdefault(
+                report_date,
+                {
+                    "report_date": report_date,
+                    "report_period": row.get("report_period"),
+                },
+            )
             if section == "income_statement":
                 fields = (
-                    "revenue", "revenue_yoy", "parent_net_profit", "parent_net_profit_yoy",
-                    "deducted_net_profit", "deducted_net_profit_yoy", "basic_eps", "gross_margin", "net_margin",
-                    "research_expense", "asset_impairment_loss",
+                    "revenue",
+                    "revenue_yoy",
+                    "parent_net_profit",
+                    "parent_net_profit_yoy",
+                    "deducted_net_profit",
+                    "deducted_net_profit_yoy",
+                    "basic_eps",
+                    "gross_margin",
+                    "net_margin",
+                    "research_expense",
+                    "asset_impairment_loss",
                 )
             elif section == "balance_sheet":
                 fields = (
-                    "total_assets", "total_liabilities", "parent_equity", "monetary_funds",
-                    "accounts_receivable", "inventory", "contract_liabilities", "debt_ratio",
-                    "current_ratio", "quick_ratio", "loans_and_advances", "customer_deposits",
+                    "total_assets",
+                    "total_liabilities",
+                    "parent_equity",
+                    "monetary_funds",
+                    "accounts_receivable",
+                    "inventory",
+                    "contract_liabilities",
+                    "debt_ratio",
+                    "current_ratio",
+                    "quick_ratio",
+                    "loans_and_advances",
+                    "customer_deposits",
                 )
             else:
                 fields = (
-                    "operating_cash_flow", "capital_expenditure_cash_paid", "free_cash_flow",
+                    "operating_cash_flow",
+                    "capital_expenditure_cash_paid",
+                    "free_cash_flow",
                     "cash_conversion_ratio",
                 )
             for field in fields:
@@ -113,8 +135,10 @@ def get_financials(symbol: str, periods: int = 6, *, use_cache: bool = True) -> 
     if not use_cache:
         return _build(code, periods)
     result, cached = cached_call(
-        f"core_financials:v3:{code}:{periods}", lambda: _build(code, periods),
-        ttl_seconds=6 * 3600, attempts=2,
+        f"core_financials:v3:{code}:{periods}",
+        lambda: _build(code, periods),
+        ttl_seconds=6 * 3600,
+        attempts=2,
     )
     result = dict(result)
     result["_cached"] = cached
@@ -127,10 +151,13 @@ TOOL = ToolSpec(
         "获取最近报告期的核心财务指标：单季度收入、归母及扣非净利润、现金流、增长率、利润率、"
         "ROE、偿债能力、营运资产和每股指标；明确区分单季度流量与期末存量。"
     ),
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "股票代码或名称"},
-        "periods": {"type": "integer", "minimum": 2, "maximum": 20, "default": 6, "description": "最近报告期数量"},
-    }, ["symbol"]),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "股票代码或名称"},
+            "periods": {"type": "integer", "minimum": 2, "maximum": 20, "default": 6, "description": "最近报告期数量"},
+        },
+        ["symbol"],
+    ),
     executor=get_financials,
     category="financials",
 )

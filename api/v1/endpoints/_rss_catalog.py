@@ -52,6 +52,7 @@ def _is_fresh(blob: Optional[dict], ttl: int = CATALOG_TTL_SECONDS) -> bool:
     if not fetched:
         return True
     from datetime import datetime, timedelta
+
     try:
         ts = datetime.fromisoformat(str(fetched))
     except Exception:
@@ -106,7 +107,13 @@ def _merge_param_hints(
     is_picker = route_path in _REMOTE_PICKER_ROUTES
     out: List[Dict[str, Any]] = []
     for p in params:
-        entry: Dict[str, Any] = {"name": p["name"], "required": p["required"], "hint": "", "default": None, "options": []}
+        entry: Dict[str, Any] = {
+            "name": p["name"],
+            "required": p["required"],
+            "hint": "",
+            "default": None,
+            "options": [],
+        }
         meta = _resolve(p["name"])
         if isinstance(meta, str):
             entry["hint"] = meta.strip()
@@ -118,7 +125,8 @@ def _merge_param_hints(
             if isinstance(opts, list):
                 entry["options"] = [
                     {"value": str(o.get("value")), "label": str(o.get("label") or o.get("value"))}
-                    for o in opts if isinstance(o, dict) and o.get("value") is not None
+                    for o in opts
+                    if isinstance(o, dict) and o.get("value") is not None
                 ]
         if is_picker:
             picker_hint = "需选择具体值，可通过 inspect_financial_source 获取可选项"
@@ -154,11 +162,7 @@ def _build_catalog_entry(route: Dict[str, Any]) -> Dict[str, Any]:
     params = _merge_param_hints(_path_params(route_path), route.get("parameters") or {}, route_path)
     # The finance category is a single bucket; derive a sub-category hint from
     # the namespace for the model to filter by (e.g. wallstreetcn/cls/xueqiu).
-    features = {
-        str(key): bool(value)
-        for key, value in (route.get("features") or {}).items()
-        if value
-    }
+    features = {str(key): bool(value) for key, value in (route.get("features") or {}).items() if value}
     return {
         "route_path": route_path,
         "name": str(route.get("name") or ""),
@@ -220,19 +224,24 @@ def list_catalog_routes(
     cat_filter = (category or "").strip().lower()
     out: List[Dict[str, Any]] = []
     for r in routes:
-        if cat_filter and cat_filter not in str(r.get("namespace") or "").lower() \
-                and cat_filter not in str(r.get("namespace_name") or "").lower():
+        if (
+            cat_filter
+            and cat_filter not in str(r.get("namespace") or "").lower()
+            and cat_filter not in str(r.get("namespace_name") or "").lower()
+        ):
             continue
         if kw:
             hay = f"{r.get('route_path','')} {r.get('name','')} {r.get('namespace_name','')} {r.get('description','')}".lower()
             if kw not in hay:
                 continue
-        out.append({
-            "route_path": r.get("route_path"),
-            "name": r.get("name"),
-            "namespace": r.get("namespace"),
-            "description": r.get("description"),
-            "example": r.get("example"),
-            "params": r.get("params"),
-        })
+        out.append(
+            {
+                "route_path": r.get("route_path"),
+                "name": r.get("name"),
+                "namespace": r.get("namespace"),
+                "description": r.get("description"),
+                "example": r.get("example"),
+                "params": r.get("params"),
+            }
+        )
     return out

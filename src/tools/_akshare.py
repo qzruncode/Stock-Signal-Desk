@@ -97,10 +97,7 @@ def json_value(value: Any) -> Any:
 def frame_records(frame: pd.DataFrame | None) -> list[dict[str, Any]]:
     if frame is None or frame.empty:
         return []
-    return [
-        {str(key): json_value(value) for key, value in row.items()}
-        for row in frame.to_dict(orient="records")
-    ]
+    return [{str(key): json_value(value) for key, value in row.items()} for row in frame.to_dict(orient="records")]
 
 
 def cached_call(

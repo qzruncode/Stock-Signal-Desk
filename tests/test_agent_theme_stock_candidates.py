@@ -15,10 +15,13 @@ from src.tools.get_theme_stock_candidates import (
 def test_catalog_identifier_normalizes_format_only_not_business_language() -> None:
     assert _same_catalog_identifier("人形机器人", "人形机器人") is True
     assert _same_catalog_identifier("AI·手机", "AI手机") is True
-    assert _same_catalog_identifier(
-        "人形机器人",
-        "人形机器人上游核心零部件方向",
-    ) is False
+    assert (
+        _same_catalog_identifier(
+            "人形机器人",
+            "人形机器人上游核心零部件方向",
+        )
+        is False
+    )
     assert _same_catalog_identifier("机器人概念", "人形机器人") is False
 
 
@@ -39,27 +42,30 @@ def test_eastmoney_fetches_every_page_of_the_exact_board() -> None:
         page = int(params["pn"])
         fs = params["fs"]
         if fs == "m:90 t:3 f:!50":
-            return Response({
-                "data": {
-                    "total": 2,
-                    "diff": [
-                        {"f12": "BK1184", "f14": "人形机器人"},
-                        {"f12": "BK0001", "f14": "机器人概念"},
-                    ],
-                },
-            })
+            return Response(
+                {
+                    "data": {
+                        "total": 2,
+                        "diff": [
+                            {"f12": "BK1184", "f14": "人形机器人"},
+                            {"f12": "BK0001", "f14": "机器人概念"},
+                        ],
+                    },
+                }
+            )
         requested_pages.append(page)
         start = (page - 1) * 100
         size = min(100, 205 - start)
-        return Response({
-            "data": {
-                "total": 205,
-                "diff": [
-                    {"f12": f"{index:06d}", "f14": f"公司{index}"}
-                    for index in range(start + 1, start + size + 1)
-                ],
-            },
-        })
+        return Response(
+            {
+                "data": {
+                    "total": 205,
+                    "diff": [
+                        {"f12": f"{index:06d}", "f14": f"公司{index}"} for index in range(start + 1, start + size + 1)
+                    ],
+                },
+            }
+        )
 
     with patch("requests.get", side_effect=fake_get):
         items, boards, errors = _fetch_eastmoney_constituents("人形机器人")
@@ -102,21 +108,27 @@ def test_theme_candidates_intersect_exact_constituents_with_local_universe() -> 
             "source_url": "https://example.test/board",
         },
     ]
-    board = [{
-        "name": "人形机器人",
-        "coverage": "full",
-        "primary_theme": True,
-    }]
+    board = [
+        {
+            "name": "人形机器人",
+            "coverage": "full",
+            "primary_theme": True,
+        }
+    ]
 
-    with patch(
-        "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
-        return_value=(exact_items, board, []),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
-        return_value=([], [], []),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
-        return_value=([], [], []),
+    with (
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
+            return_value=(exact_items, board, []),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
+            return_value=([], [], []),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
+            return_value=([], [], []),
+        ),
     ):
         result = get_theme_stock_candidates(
             "人形机器人",
@@ -131,15 +143,19 @@ def test_theme_candidates_intersect_exact_constituents_with_local_universe() -> 
 
 
 def test_free_form_phrase_does_not_expand_to_a_catalog_alias() -> None:
-    with patch(
-        "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
-        return_value=([], [], []),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
-        return_value=([], [], []),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
-        return_value=([], [], []),
+    with (
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
+            return_value=([], [], []),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
+            return_value=([], [], []),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
+            return_value=([], [], []),
+        ),
     ):
         result = get_theme_stock_candidates(
             "只梳理精确的人形机器人主题A股候选",
@@ -152,31 +168,40 @@ def test_free_form_phrase_does_not_expand_to_a_catalog_alias() -> None:
 
 
 def test_theme_candidates_reuse_last_complete_cache_when_live_sources_fail() -> None:
-    cached_items = [{
-        "symbol": "000001",
-        "source_name": "公司一",
-        "board": "实际主题板块",
-        "primary_theme": True,
-        "source": "东方财富概念板块",
-        "source_url": "https://example.test/board",
-    }]
-    cached_boards = [{
-        "name": "实际主题板块",
-        "coverage": "full",
-        "primary_theme": True,
-    }]
-    with patch(
-        "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
-        return_value=([], [], ["实时源失败"]),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
-        return_value=([], [], []),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
-        return_value=([], [], []),
-    ), patch(
-        "src.tools.get_theme_stock_candidates._load_complete_constituent_cache",
-        return_value=(cached_items, cached_boards, datetime(2026, 7, 24, 10, 0)),
+    cached_items = [
+        {
+            "symbol": "000001",
+            "source_name": "公司一",
+            "board": "实际主题板块",
+            "primary_theme": True,
+            "source": "东方财富概念板块",
+            "source_url": "https://example.test/board",
+        }
+    ]
+    cached_boards = [
+        {
+            "name": "实际主题板块",
+            "coverage": "full",
+            "primary_theme": True,
+        }
+    ]
+    with (
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_eastmoney_constituents",
+            return_value=([], [], ["实时源失败"]),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_sina_constituents",
+            return_value=([], [], []),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._fetch_ths_constituents",
+            return_value=([], [], []),
+        ),
+        patch(
+            "src.tools.get_theme_stock_candidates._load_complete_constituent_cache",
+            return_value=(cached_items, cached_boards, datetime(2026, 7, 24, 10, 0)),
+        ),
     ):
         result = get_theme_stock_candidates(
             "实际主题板块",

@@ -79,15 +79,17 @@ def _normalize_summary(rows: list[dict[str, Any]], metric: str) -> list[dict[str
         year_value = _number(row.get("年度"))
         if year_value is None:
             continue
-        items.append({
-            "year": int(year_value),
-            "coverage_count": int(_number(row.get("预测机构数")) or 0),
-            "low": _number(row.get("最小值")),
-            "mean": _number(row.get("均值")),
-            "high": _number(row.get("最大值")),
-            "industry_mean": _number(row.get("行业平均数")),
-            "unit": unit,
-        })
+        items.append(
+            {
+                "year": int(year_value),
+                "coverage_count": int(_number(row.get("预测机构数")) or 0),
+                "low": _number(row.get("最小值")),
+                "mean": _number(row.get("均值")),
+                "high": _number(row.get("最大值")),
+                "industry_mean": _number(row.get("行业平均数")),
+                "unit": unit,
+            }
+        )
     return sorted(items, key=lambda item: item["year"])
 
 
@@ -117,15 +119,17 @@ def _normalize_institutions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         institution = str(row.get("机构名称") or "").strip()
         if not institution and not forecasts:
             continue
-        items.append({
-            "institution": institution or None,
-            "analysts": str(row.get("研究员") or "").strip() or None,
-            "report_date": report_date,
-            "forecasts": [
-                {"year": year, **forecasts[year], "eps_unit": "元/股", "net_profit_unit": "亿元"}
-                for year in sorted(forecasts)
-            ],
-        })
+        items.append(
+            {
+                "institution": institution or None,
+                "analysts": str(row.get("研究员") or "").strip() or None,
+                "report_date": report_date,
+                "forecasts": [
+                    {"year": year, **forecasts[year], "eps_unit": "元/股", "net_profit_unit": "亿元"}
+                    for year in sorted(forecasts)
+                ],
+            }
+        )
     return sorted(items, key=lambda item: item.get("report_date") or "", reverse=True)
 
 
@@ -210,11 +214,7 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
     latest_report_date = max(report_dates) if report_dates else None
     source_query_complete = all(name in completed_summary_queries for name in requested)
     coverage_status = (
-        "covered"
-        if estimates
-        else "no_sell_side_coverage"
-        if source_query_complete
-        else "source_unavailable"
+        "covered" if estimates else "no_sell_side_coverage" if source_query_complete else "source_unavailable"
     )
     # A completed query with zero analyst rows is valid negative evidence, not
     # a failed tool call. It means the company has no sell-side consensus
@@ -223,7 +223,8 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
     freshness_unknown = latest_report_date is None
     stale = (
         datetime.fromisoformat(latest_report_date).date() < (now.date() - timedelta(days=180))
-        if latest_report_date else None
+        if latest_report_date
+        else None
     )
     return {
         "symbol": code,

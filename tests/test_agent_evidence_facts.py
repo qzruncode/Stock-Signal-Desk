@@ -37,58 +37,66 @@ def test_semantic_evidence_binding_keeps_grounded_topic_fact_and_drops_unrelated
 
     async def completion(**kwargs):
         captured.update(kwargs)
-        return _response([
-            {
-                "company_name": "全志科技",
-                "company_mention": "全志科技",
-                "symbol": "300458",
-                "stage": "L3",
-                "theme_relevance": "direct",
-                "thesis_fit": "exact",
-                "commercialization_signal": "batch_delivery",
-                "relationship": "算力芯片",
-                "fact": "AI芯片已经量产",
-                "support_quote": "全志科技A733 AI芯片已实现量产",
-                "source_id": "s1",
-                "confidence": 0.97,
-            },
-            {
-                "company_name": "盟固利",
-                "company_mention": "盟固利",
-                "symbol": "301487",
-                "stage": "L3",
-                "theme_relevance": "unrelated",
-                "thesis_fit": "outside",
-                "commercialization_signal": "batch_delivery",
-                "relationship": "人形机器人电池材料",
-                "fact": "NCA材料批量供货",
-                "support_quote": "盟固利NCA材料在人形机器人用电池领域实现批量供货",
-                "source_id": "s1",
-                "confidence": 0.99,
-            },
-        ])
+        return _response(
+            [
+                {
+                    "company_name": "全志科技",
+                    "company_mention": "全志科技",
+                    "symbol": "300458",
+                    "stage": "L3",
+                    "theme_relevance": "direct",
+                    "thesis_fit": "exact",
+                    "commercialization_signal": "batch_delivery",
+                    "relationship": "算力芯片",
+                    "fact": "AI芯片已经量产",
+                    "support_quote": "全志科技A733 AI芯片已实现量产",
+                    "source_id": "s1",
+                    "confidence": 0.97,
+                },
+                {
+                    "company_name": "盟固利",
+                    "company_mention": "盟固利",
+                    "symbol": "301487",
+                    "stage": "L3",
+                    "theme_relevance": "unrelated",
+                    "thesis_fit": "outside",
+                    "commercialization_signal": "batch_delivery",
+                    "relationship": "人形机器人电池材料",
+                    "fact": "NCA材料批量供货",
+                    "support_quote": "盟固利NCA材料在人形机器人用电池领域实现批量供货",
+                    "source_id": "s1",
+                    "confidence": 0.99,
+                },
+            ]
+        )
 
-    facts = asyncio.run(bind_company_evidence(
-        [{
-            "tool": "websearch",
-            "result": {
-                "success": True,
-                "retrieved_at": "2026-07-18T12:00:00",
-                "results": [{
-                    "title": "多家公司业务进展",
-                    "content_text": (
-                        "全志科技A733 AI芯片已实现量产。"
-                        "盟固利NCA材料在人形机器人用电池领域实现批量供货。"
-                    ),
-                    "url": "https://example.com/mixed",
-                    "source": "测试财经",
-                }],
-            },
-        }],
-        _intent(),
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "websearch",
+                    "result": {
+                        "success": True,
+                        "retrieved_at": "2026-07-18T12:00:00",
+                        "results": [
+                            {
+                                "title": "多家公司业务进展",
+                                "content_text": (
+                                    "全志科技A733 AI芯片已实现量产。"
+                                    "盟固利NCA材料在人形机器人用电池领域实现批量供货。"
+                                ),
+                                "url": "https://example.com/mixed",
+                                "source": "测试财经",
+                            }
+                        ],
+                    },
+                }
+            ],
+            _intent(),
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert len(facts) == 1
     assert facts[0].company_name == "全志科技"
@@ -100,39 +108,49 @@ def test_semantic_evidence_binding_keeps_grounded_topic_fact_and_drops_unrelated
 
 def test_semantic_evidence_binding_rejects_quote_not_present_in_source() -> None:
     async def completion(**_kwargs):
-        return _response([{
-            "company_name": "寒武纪",
-            "company_mention": "寒武纪",
-            "symbol": "688256",
-            "stage": "L3",
-            "theme_relevance": "direct",
-            "thesis_fit": "exact",
-            "commercialization_signal": "order",
-            "relationship": "训练芯片",
-            "fact": "取得大额订单",
-            "support_quote": "寒武纪取得100亿元AI芯片订单",
-            "source_id": "s1",
-            "confidence": 0.99,
-        }])
+        return _response(
+            [
+                {
+                    "company_name": "寒武纪",
+                    "company_mention": "寒武纪",
+                    "symbol": "688256",
+                    "stage": "L3",
+                    "theme_relevance": "direct",
+                    "thesis_fit": "exact",
+                    "commercialization_signal": "order",
+                    "relationship": "训练芯片",
+                    "fact": "取得大额订单",
+                    "support_quote": "寒武纪取得100亿元AI芯片订单",
+                    "source_id": "s1",
+                    "confidence": 0.99,
+                }
+            ]
+        )
 
-    facts = asyncio.run(bind_company_evidence(
-        [{
-            "tool": "search_financial_news",
-            "result": {
-                "success": True,
-                "retrieved_at": "2026-07-18T12:00:00",
-                "items": [{
-                    "title": "寒武纪发布新产品",
-                    "summary": "寒武纪展示新一代训练芯片，尚未披露订单。",
-                    "link": "https://example.com/cambricon",
-                    "source": "测试财经",
-                }],
-            },
-        }],
-        _intent(),
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "search_financial_news",
+                    "result": {
+                        "success": True,
+                        "retrieved_at": "2026-07-18T12:00:00",
+                        "items": [
+                            {
+                                "title": "寒武纪发布新产品",
+                                "summary": "寒武纪展示新一代训练芯片，尚未披露订单。",
+                                "link": "https://example.com/cambricon",
+                                "source": "测试财经",
+                            }
+                        ],
+                    },
+                }
+            ],
+            _intent(),
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert facts == []
 
@@ -142,44 +160,54 @@ def test_semantic_evidence_binding_rejects_security_name_inside_another_company_
 
     async def completion(**kwargs):
         captured_request.update(json.loads(kwargs["messages"][1]["content"]))
-        return _response([{
-            "company_name": "机器人",
-            "company_mention": "机器人",
-            "symbol": "300024",
-            "stage": "L2",
-            "theme_relevance": "direct",
-            "thesis_fit": "exact",
-            "commercialization_signal": "customer_validation",
-            "relationship": "灵巧手供应商",
-            "fact": "灵巧手供应商之一，是因时机器人",
-            "support_quote": "灵巧手供应商之一，是因时机器人",
-            "source_id": "s1",
-            "confidence": 0.96,
-        }])
+        return _response(
+            [
+                {
+                    "company_name": "机器人",
+                    "company_mention": "机器人",
+                    "symbol": "300024",
+                    "stage": "L2",
+                    "theme_relevance": "direct",
+                    "thesis_fit": "exact",
+                    "commercialization_signal": "customer_validation",
+                    "relationship": "灵巧手供应商",
+                    "fact": "灵巧手供应商之一，是因时机器人",
+                    "support_quote": "灵巧手供应商之一，是因时机器人",
+                    "source_id": "s1",
+                    "confidence": 0.96,
+                }
+            ]
+        )
 
-    facts = asyncio.run(bind_company_evidence(
-        [{
-            "tool": "search_financial_news",
-            "result": {
-                "success": True,
-                "retrieved_at": "2026-07-25T12:00:00",
-                "items": [{
-                    "title": "灵巧手供应商进展",
-                    "summary": "灵巧手供应商之一，是因时机器人",
-                    "link": "https://example.com/dexterous-hand",
-                    "source": "测试财经",
-                    "published": "2026-07-25",
-                }],
-            },
-        }],
-        MappingSelectionContext(
-            topic="灵巧手",
-            objective="核验灵巧手领域的 A 股公司",
-            selection_mode="ranked_shortlist",
-        ),
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "search_financial_news",
+                    "result": {
+                        "success": True,
+                        "retrieved_at": "2026-07-25T12:00:00",
+                        "items": [
+                            {
+                                "title": "灵巧手供应商进展",
+                                "summary": "灵巧手供应商之一，是因时机器人",
+                                "link": "https://example.com/dexterous-hand",
+                                "source": "测试财经",
+                                "published": "2026-07-25",
+                            }
+                        ],
+                    },
+                }
+            ],
+            MappingSelectionContext(
+                topic="灵巧手",
+                objective="核验灵巧手领域的 A 股公司",
+                selection_mode="ranked_shortlist",
+            ),
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert facts == []
     assert captured_request["sources"][0]["candidate_securities"] == []
@@ -193,40 +221,50 @@ def test_semantic_evidence_binding_retries_uncovered_source_candidate() -> None:
         requests.append(request)
         if "candidate_to_evaluate" not in request:
             return _response([])
-        return _response([{
-            "company_name": "全志科技",
-            "company_mention": "全志科技",
-            "symbol": "300458",
-            "stage": "L1",
-            "theme_relevance": "direct",
-            "thesis_fit": "exact",
-            "commercialization_signal": "product_layout",
-            "relationship": "AI 芯片产品布局",
-            "fact": "全志科技布局 AI 芯片产品",
-            "support_quote": "全志科技布局AI芯片产品",
-            "source_id": "s1",
-            "confidence": 0.94,
-        }])
+        return _response(
+            [
+                {
+                    "company_name": "全志科技",
+                    "company_mention": "全志科技",
+                    "symbol": "300458",
+                    "stage": "L1",
+                    "theme_relevance": "direct",
+                    "thesis_fit": "exact",
+                    "commercialization_signal": "product_layout",
+                    "relationship": "AI 芯片产品布局",
+                    "fact": "全志科技布局 AI 芯片产品",
+                    "support_quote": "全志科技布局AI芯片产品",
+                    "source_id": "s1",
+                    "confidence": 0.94,
+                }
+            ]
+        )
 
-    facts = asyncio.run(bind_company_evidence(
-        [{
-            "tool": "search_financial_news",
-            "result": {
-                "success": True,
-                "retrieved_at": "2026-07-25T12:00:00",
-                "items": [{
-                    "title": "全志科技AI芯片业务进展",
-                    "summary": "全志科技布局AI芯片产品",
-                    "link": "https://example.com/allwinner-ai",
-                    "source": "测试财经",
-                    "published": "2026-07-25",
-                }],
-            },
-        }],
-        _intent(),
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "search_financial_news",
+                    "result": {
+                        "success": True,
+                        "retrieved_at": "2026-07-25T12:00:00",
+                        "items": [
+                            {
+                                "title": "全志科技AI芯片业务进展",
+                                "summary": "全志科技布局AI芯片产品",
+                                "link": "https://example.com/allwinner-ai",
+                                "source": "测试财经",
+                                "published": "2026-07-25",
+                            }
+                        ],
+                    },
+                }
+            ],
+            _intent(),
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert len(requests) == 2
     assert requests[1]["candidate_to_evaluate"] == {
@@ -240,35 +278,48 @@ def test_semantic_evidence_binding_retries_uncovered_source_candidate() -> None:
 
 def test_commercial_application_without_delivery_is_not_l3() -> None:
     async def completion(**_kwargs):
-        return _response([{
-            "company_name": "云天励飞",
-            "company_mention": "云天励飞",
-            "symbol": "688343",
-            "stage": "L3",
-            "theme_relevance": "supporting",
-            "thesis_fit": "partial",
-            "commercialization_signal": "commercial_application",
-            "relationship": "边缘AI推理芯片",
-            "fact": "已商业化应用",
-            "support_quote": "云天励飞推理芯片已商业化应用于机器人、边缘网关和服务器",
-            "source_id": "s1",
-            "confidence": 0.95,
-        }])
+        return _response(
+            [
+                {
+                    "company_name": "云天励飞",
+                    "company_mention": "云天励飞",
+                    "symbol": "688343",
+                    "stage": "L3",
+                    "theme_relevance": "supporting",
+                    "thesis_fit": "partial",
+                    "commercialization_signal": "commercial_application",
+                    "relationship": "边缘AI推理芯片",
+                    "fact": "已商业化应用",
+                    "support_quote": "云天励飞推理芯片已商业化应用于机器人、边缘网关和服务器",
+                    "source_id": "s1",
+                    "confidence": 0.95,
+                }
+            ]
+        )
 
-    facts = asyncio.run(bind_company_evidence(
-        [{"tool": "websearch", "result": {
-            "retrieved_at": "2026-07-18T12:00:00",
-            "results": [{
-                "title": "云天励飞推理芯片应用进展",
-                "content_text": "云天励飞推理芯片已商业化应用于机器人、边缘网关和服务器",
-                "url": "https://example.com/yuntianlifei",
-                "published": "2026-07-18",
-            }],
-        }}],
-        _intent(),
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "websearch",
+                    "result": {
+                        "retrieved_at": "2026-07-18T12:00:00",
+                        "results": [
+                            {
+                                "title": "云天励飞推理芯片应用进展",
+                                "content_text": "云天励飞推理芯片已商业化应用于机器人、边缘网关和服务器",
+                                "url": "https://example.com/yuntianlifei",
+                                "published": "2026-07-18",
+                            }
+                        ],
+                    },
+                }
+            ],
+            _intent(),
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert len(facts) == 1
     assert facts[0].stage == "L1"
@@ -280,36 +331,38 @@ def test_semantic_facts_choose_strongest_company_fact_without_keyword_reordering
 
     async def completion(**kwargs):
         captured_request.update(json.loads(kwargs["messages"][1]["content"]))
-        return _response([
-            {
-                "company_name": "安凯微",
-                "company_mention": "安凯微",
-                "symbol": "688620",
-                "stage": "L2",
-                "theme_relevance": "direct",
-                "thesis_fit": "partial",
-                "commercialization_signal": "customer_validation",
-                "relationship": "机器视觉芯片",
-                "fact": "收获客户订单",
-                "support_quote": "安凯微AK2659机器视觉芯片收获客户订单",
-                "source_id": "s1",
-                "confidence": 0.9,
-            },
-            {
-                "company_name": "安凯微",
-                "company_mention": "安凯微",
-                "symbol": "688620",
-                "stage": "L3",
-                "theme_relevance": "direct",
-                "thesis_fit": "exact",
-                "commercialization_signal": "batch_delivery",
-                "relationship": "消费级AI眼镜SoC",
-                "fact": "AI眼镜SoC批量交付",
-                "support_quote": "安凯微AI眼镜SoC芯片已量产，2025年四季度实现批量交付",
-                "source_id": "s1",
-                "confidence": 0.98,
-            },
-        ])
+        return _response(
+            [
+                {
+                    "company_name": "安凯微",
+                    "company_mention": "安凯微",
+                    "symbol": "688620",
+                    "stage": "L2",
+                    "theme_relevance": "direct",
+                    "thesis_fit": "partial",
+                    "commercialization_signal": "customer_validation",
+                    "relationship": "机器视觉芯片",
+                    "fact": "收获客户订单",
+                    "support_quote": "安凯微AK2659机器视觉芯片收获客户订单",
+                    "source_id": "s1",
+                    "confidence": 0.9,
+                },
+                {
+                    "company_name": "安凯微",
+                    "company_mention": "安凯微",
+                    "symbol": "688620",
+                    "stage": "L3",
+                    "theme_relevance": "direct",
+                    "thesis_fit": "exact",
+                    "commercialization_signal": "batch_delivery",
+                    "relationship": "消费级AI眼镜SoC",
+                    "fact": "AI眼镜SoC批量交付",
+                    "support_quote": "安凯微AI眼镜SoC芯片已量产，2025年四季度实现批量交付",
+                    "source_id": "s1",
+                    "confidence": 0.98,
+                },
+            ]
+        )
 
     intent = MappingSelectionContext(
         kind="theme_company_mapping",
@@ -321,24 +374,34 @@ def test_semantic_facts_choose_strongest_company_fact_without_keyword_reordering
         thesis_requirements=["消费级终端", "端侧AI SoC", "量产、订单或收入兑现"],
         objective="找出最符合命题的A股公司",
     )
-    facts = asyncio.run(bind_company_evidence(
-        [{"tool": "websearch", "result": {
-            "retrieved_at": "2026-07-18T12:00:00",
-            "results": [{
-                "title": "安凯微端侧AI业务进展",
-                "content_text": (
-                    "安凯微介绍端侧AI产品布局。" + "普通业务介绍。" * 200
-                    + "安凯微AK2659机器视觉芯片收获客户订单。"
-                    + "安凯微AI眼镜SoC芯片已量产，2025年四季度实现批量交付。"
-                ),
-                "url": "https://example.com/ankermicro",
-                "published": "2026-07-16",
-            }],
-        }}],
-        intent,
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "websearch",
+                    "result": {
+                        "retrieved_at": "2026-07-18T12:00:00",
+                        "results": [
+                            {
+                                "title": "安凯微端侧AI业务进展",
+                                "content_text": (
+                                    "安凯微介绍端侧AI产品布局。"
+                                    + "普通业务介绍。" * 200
+                                    + "安凯微AK2659机器视觉芯片收获客户订单。"
+                                    + "安凯微AI眼镜SoC芯片已量产，2025年四季度实现批量交付。"
+                                ),
+                                "url": "https://example.com/ankermicro",
+                                "published": "2026-07-16",
+                            }
+                        ],
+                    },
+                }
+            ],
+            intent,
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     source_text = captured_request["sources"][0]["text"]
     assert "【量产、订单与收入重点片段】" not in source_text
@@ -363,19 +426,28 @@ def test_ranked_shortlist_does_not_use_lexical_fact_recovery_when_semantic_resul
         thesis_requirements=["消费级终端", "端侧AI SoC", "量产、订单或收入兑现"],
         objective="找出最符合命题的A股公司",
     )
-    facts = asyncio.run(bind_company_evidence(
-        [{"tool": "websearch", "result": {
-            "retrieved_at": "2026-07-18T12:00:00",
-            "results": [{
-                "title": "安凯微端侧AI业务进展",
-                "content_text": "安凯微AI眼镜SoC芯片已量产，2025年四季度实现批量交付。",
-                "url": "https://example.com/ankermicro",
-                "published": "2026-07-16",
-            }],
-        }}],
-        intent,
-        {"model": "test-model"},
-        completion=completion,
-    ))
+    facts = asyncio.run(
+        bind_company_evidence(
+            [
+                {
+                    "tool": "websearch",
+                    "result": {
+                        "retrieved_at": "2026-07-18T12:00:00",
+                        "results": [
+                            {
+                                "title": "安凯微端侧AI业务进展",
+                                "content_text": "安凯微AI眼镜SoC芯片已量产，2025年四季度实现批量交付。",
+                                "url": "https://example.com/ankermicro",
+                                "published": "2026-07-16",
+                            }
+                        ],
+                    },
+                }
+            ],
+            intent,
+            {"model": "test-model"},
+            completion=completion,
+        )
+    )
 
     assert facts == []

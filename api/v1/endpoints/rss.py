@@ -50,6 +50,7 @@ router = APIRouter()
 
 # ── 路由发现（namespace discovery）───────────────────────────────────────
 
+
 @router.get(
     "/namespaces",
     summary="获取 RSSHub 全量路由（扁平化）",
@@ -264,6 +265,7 @@ def get_futunn_topics_route(
 
 # ── 通用 Feed 取数（POST /feeds）─────────────────────────────────────────
 
+
 class FeedSpecRequest(BaseModel):
     route_path: str = Field(..., description="RSSHub 路由模板，如 /wallstreetcn/news/:category?")
     params: Dict[str, Any] = Field(default_factory=dict, description="路径参数值")
@@ -298,7 +300,10 @@ def get_rss_feeds_by_spec(body: FeedSpecRequest):
             feed_url = _build_html_transform_url_from_params(body.params, effective_options, effective_limit)
         else:
             feed_url = _build_feed_url_generic(
-                body.route_path, body.params, effective_options, namespace=body.namespace,
+                body.route_path,
+                body.params,
+                effective_options,
+                namespace=body.namespace,
             )
     except ValueError as exc:
         raise HTTPException(
@@ -372,12 +377,14 @@ def _build_detail_fallback(body: "FeedItemDetailRequest") -> Optional[Dict[str, 
     the list item's title/link/body/metadata so the detail view renders the
     already-available content instead of a dead-end error.
     """
-    has_body = any([
-        (body.content_html or "").strip(),
-        (body.summary or "").strip(),
-        (body.image or "").strip(),
-        bool(body.attachments),
-    ])
+    has_body = any(
+        [
+            (body.content_html or "").strip(),
+            (body.summary or "").strip(),
+            (body.image or "").strip(),
+            bool(body.attachments),
+        ]
+    )
     if not has_body:
         return None
     return {
@@ -419,7 +426,7 @@ def _fulltext_lost_content(list_html: str, new_html: str) -> bool:
     if len(list_txt) < 16:
         return list_txt not in new_txt
     n = 8
-    grams = [list_txt[i:i + n] for i in range(0, len(list_txt) - n + 1, n)]
+    grams = [list_txt[i : i + n] for i in range(0, len(list_txt) - n + 1, n)]
     if not grams:
         return list_txt not in new_txt
     hit = sum(1 for g in grams if g in new_txt)
@@ -442,10 +449,12 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
     detail_limit = 30
     detail_options = dict(body.options or {})
     detail_options.pop("brief", None)
-    detail_options.update({
-        "mode": "fulltext",
-        "limit": detail_limit,
-    })
+    detail_options.update(
+        {
+            "mode": "fulltext",
+            "limit": detail_limit,
+        }
+    )
     if body.title:
         detail_options["filter_title"] = f"^{re.escape(body.title)}$"
 
@@ -497,7 +506,8 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
     # list-mode feeds, and a dead-end 404 is more honest than a wrong article.
     selected = next(
         (
-            item for item in items
+            item
+            for item in items
             if (body.item_id and item.get("id") == body.item_id)
             or (body.link and item.get("link") == body.link)
             or (body.title and item.get("title") == body.title)
@@ -584,7 +594,10 @@ def get_rss_feeds_raw(body: RawFeedRequest):
         opts["format"] = fmt
         opts.setdefault("limit", body.limit)
         feed_url = _build_feed_url_generic(
-            body.route_path, body.params, opts, namespace=body.namespace,
+            body.route_path,
+            body.params,
+            opts,
+            namespace=body.namespace,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -594,10 +607,11 @@ def get_rss_feeds_raw(body: RawFeedRequest):
 
     try:
         import requests as _requests
+
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36",
         }
         resp = _requests.get(feed_url, headers=headers, timeout=30.0)
         resp.raise_for_status()
@@ -611,6 +625,7 @@ def get_rss_feeds_raw(body: RawFeedRequest):
 
 
 # ── HTML→RSS 万能转换器───────────────────────────────────────────────────
+
 
 class HtmlTransformRequest(BaseModel):
     url: str = Field(..., description="目标网页 URL")
@@ -637,11 +652,17 @@ def _build_html_transform_url(body: "HtmlTransformRequest") -> str:
 
     route_params: Dict[str, str] = {}
     field_map = {
-        "title": body.title, "item": body.item, "itemTitle": body.item_title,
-        "itemTitleAttr": body.item_title_attr, "itemLink": body.item_link,
-        "itemLinkAttr": body.item_link_attr, "itemDesc": body.item_desc,
-        "itemDescAttr": body.item_desc_attr, "itemPubDate": body.item_pubdate,
-        "itemPubDateAttr": body.item_pubdate_attr, "itemContent": body.item_content,
+        "title": body.title,
+        "item": body.item,
+        "itemTitle": body.item_title,
+        "itemTitleAttr": body.item_title_attr,
+        "itemLink": body.item_link,
+        "itemLinkAttr": body.item_link_attr,
+        "itemDesc": body.item_desc,
+        "itemDescAttr": body.item_desc_attr,
+        "itemPubDate": body.item_pubdate,
+        "itemPubDateAttr": body.item_pubdate_attr,
+        "itemContent": body.item_content,
         "encoding": body.encoding,
     }
     for k, v in field_map.items():
@@ -661,8 +682,19 @@ def _build_html_transform_url(body: "HtmlTransformRequest") -> str:
 
 # camelCase → param key map for the persisted (subscription) form.
 _HTML_PARAM_KEYS = {
-    "url", "title", "item", "itemTitle", "itemTitleAttr", "itemLink", "itemLinkAttr",
-    "itemDesc", "itemDescAttr", "itemPubDate", "itemPubDateAttr", "itemContent", "encoding",
+    "url",
+    "title",
+    "item",
+    "itemTitle",
+    "itemTitleAttr",
+    "itemLink",
+    "itemLinkAttr",
+    "itemDesc",
+    "itemDescAttr",
+    "itemPubDate",
+    "itemPubDateAttr",
+    "itemContent",
+    "encoding",
 }
 
 
@@ -750,6 +782,7 @@ def transform_html(body: HtmlTransformRequest):
 # 管理员写入 services/rsshub/app/.env 并重启实例，页面无法直接配置。这里只提供
 # "测试当前实例配置的 Cookie 是否生效"——实际请求一次 xueqiu/timeline 看能否取到内容。
 
+
 def _rsshub_env_path() -> Path:
     """RSSHub 实例 .env 路径（项目根/services/rsshub/app/.env）。"""
     return Path(__file__).resolve().parent.parent.parent.parent / "services" / "rsshub" / "app" / ".env"
@@ -817,6 +850,7 @@ def test_xueqiu_cookie():
 
 
 # ── PDF 代理（供前端 PDF.js 同源渲染）─────────────────────────────────────
+
 
 @router.get(
     "/pdf/proxy",

@@ -15,36 +15,48 @@ def _stmt(section, items):
 
 
 def test_compute_ttm_returns_annual_value_when_dec31():
-    statements = _stmt("income_statement", [
-        {"report_date": "2025-12-31", "revenue": 1000.0},
-    ])
+    statements = _stmt(
+        "income_statement",
+        [
+            {"report_date": "2025-12-31", "revenue": 1000.0},
+        ],
+    )
     assert _compute_ttm_value(statements, "revenue") == 1000.0
 
 
 def test_compute_ttm_sums_last_four_quarters_when_not_annual():
-    statements = _stmt("cashflow", [
-        {"report_date": "2026-03-31", "amount": 100.0},
-        {"report_date": "2025-12-31", "amount": 200.0},
-        {"report_date": "2025-09-30", "amount": 300.0},
-        {"report_date": "2025-06-30", "amount": 400.0},
-    ])
+    statements = _stmt(
+        "cashflow",
+        [
+            {"report_date": "2026-03-31", "amount": 100.0},
+            {"report_date": "2025-12-31", "amount": 200.0},
+            {"report_date": "2025-09-30", "amount": 300.0},
+            {"report_date": "2025-06-30", "amount": 400.0},
+        ],
+    )
     assert _compute_ttm_value(statements, "amount") == 1000.0
 
 
 def test_compute_ttm_returns_none_when_fewer_than_four_quarters():
-    statements = _stmt("balance_sheet", [
-        {"report_date": "2026-03-31", "amount": 100.0},
-    ])
+    statements = _stmt(
+        "balance_sheet",
+        [
+            {"report_date": "2026-03-31", "amount": 100.0},
+        ],
+    )
     assert _compute_ttm_value(statements, "amount") is None
 
 
 def test_compute_ttm_skips_none_values():
-    statements = _stmt("income_statement", [
-        {"report_date": "2026-03-31", "amount": None},
-        {"report_date": "2025-12-31", "amount": 200.0},
-        {"report_date": "2025-09-30", "amount": 300.0},
-        {"report_date": "2025-06-30", "amount": 400.0},
-    ])
+    statements = _stmt(
+        "income_statement",
+        [
+            {"report_date": "2026-03-31", "amount": None},
+            {"report_date": "2025-12-31", "amount": 200.0},
+            {"report_date": "2025-09-30", "amount": 300.0},
+            {"report_date": "2025-06-30", "amount": 400.0},
+        ],
+    )
     # only 3 non-None values -> cannot sum 4 -> None
     assert _compute_ttm_value(statements, "amount") is None
 

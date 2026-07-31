@@ -9,17 +9,20 @@ from pydantic import BaseModel, Field
 
 class CriteriaAnalyzeRequest(BaseModel):
     """Request body for starting a criteria analysis."""
+
     symbol: str = Field(..., description="股票代码")
 
 
 class CriterionEvidence(BaseModel):
     """Evidence collected for a single criterion."""
+
     raw_data: dict[str, Any] = Field(default_factory=dict, description="采集的原始数据")
     data_summary: str = Field(default="", description="数据摘要（给人看的）")
 
 
 class CriterionResultPayload(BaseModel):
     """Result of a single criterion evaluation."""
+
     criterion_id: str = Field(..., description="准则ID")
     criterion_name: str = Field(..., description="准则名称")
     index: int = Field(..., ge=0, le=8, description="准则序号 0-8")
@@ -31,6 +34,7 @@ class CriterionResultPayload(BaseModel):
 
 class AnalysisCompletePayload(BaseModel):
     """Final summary when analysis completes."""
+
     final_decision: str = Field(..., description="可买入 | 不可买入")
     passed_count: int = Field(..., ge=0, le=9)
     failed_count: int = Field(..., ge=0, le=9)
@@ -41,6 +45,7 @@ class AnalysisCompletePayload(BaseModel):
 
 class CriterionStartPayload(BaseModel):
     """Emitted when a criterion starts evaluation."""
+
     criterion_id: str
     criterion_name: str
     index: int
@@ -48,5 +53,6 @@ class CriterionStartPayload(BaseModel):
 
 class ErrorPayload(BaseModel):
     """Emitted when a criterion encounters an error."""
+
     criterion_id: str
     message: str

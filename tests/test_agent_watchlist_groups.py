@@ -22,12 +22,14 @@ def test_filter_watchlist_by_theme_returns_only_collection_intersection() -> Non
     group_payload = {
         "success": True,
         "partial": False,
-        "groups": [{
-            "id": "default",
-            "name": "我的自选股",
-            "codes": ["300750", "002230", "603662", "未上市/无代码"],
-            "is_default": True,
-        }],
+        "groups": [
+            {
+                "id": "default",
+                "name": "我的自选股",
+                "codes": ["300750", "002230", "603662", "未上市/无代码"],
+                "is_default": True,
+            }
+        ],
         "warnings": [],
     }
 
@@ -73,12 +75,15 @@ def test_filter_watchlist_by_theme_returns_only_collection_intersection() -> Non
         for label in ("人工智能", "机器人")
     ]
 
-    with patch(
-        "src.tools.filter_watchlist_by_theme.manage_watchlist_groups",
-        return_value=group_payload,
-    ), patch(
-        "src.tools.filter_watchlist_by_theme.get_domain_stock_candidates",
-        return_value=domain_result,
+    with (
+        patch(
+            "src.tools.filter_watchlist_by_theme.manage_watchlist_groups",
+            return_value=group_payload,
+        ),
+        patch(
+            "src.tools.filter_watchlist_by_theme.get_domain_stock_candidates",
+            return_value=domain_result,
+        ),
     ):
         result = filter_watchlist_by_theme(domains)
 
@@ -88,20 +93,26 @@ def test_filter_watchlist_by_theme_returns_only_collection_intersection() -> Non
     assert "000977" not in {item["symbol"] for item in result["items"]}
     assert result["invalid_entries"] == ["未上市/无代码"]
 
+
 def test_list_watchlist_groups_includes_default_and_custom_groups() -> None:
     db = MagicMock()
-    db.list_watchlist_groups.return_value = [{
-        "id": 3,
-        "name": "新能源",
-        "codes": ["300750"],
-        "source": "manual",
-    }]
-    with patch(
-        "src.tools.manage_watchlist_groups.DatabaseManager.get_instance",
-        return_value=db,
-    ), patch(
-        "src.tools.manage_watchlist_groups._manage_default_watchlist",
-        return_value={"codes": ["600519"], "count": 1, "changed": []},
+    db.list_watchlist_groups.return_value = [
+        {
+            "id": 3,
+            "name": "新能源",
+            "codes": ["300750"],
+            "source": "manual",
+        }
+    ]
+    with (
+        patch(
+            "src.tools.manage_watchlist_groups.DatabaseManager.get_instance",
+            return_value=db,
+        ),
+        patch(
+            "src.tools.manage_watchlist_groups._manage_default_watchlist",
+            return_value={"codes": ["600519"], "count": 1, "changed": []},
+        ),
     ):
         result = manage_watchlist_groups("list")
 
@@ -119,26 +130,32 @@ def test_list_watchlist_groups_includes_default_and_custom_groups() -> None:
 
 def test_add_to_custom_group_also_keeps_default_watchlist_in_sync() -> None:
     db = MagicMock()
-    db.list_watchlist_groups.return_value = [{
-        "id": 3,
-        "name": "新能源",
-        "codes": ["300750"],
-    }]
+    db.list_watchlist_groups.return_value = [
+        {
+            "id": 3,
+            "name": "新能源",
+            "codes": ["300750"],
+        }
+    ]
     db.update_watchlist_group.return_value = {
         "id": 3,
         "name": "新能源",
         "codes": ["300750", "002594"],
     }
-    with patch(
-        "src.tools.manage_watchlist_groups.DatabaseManager.get_instance",
-        return_value=db,
-    ), patch(
-        "src.tools.manage_watchlist_groups.resolve_securities_csv",
-        return_value=([{"symbol": "002594", "name": "比亚迪"}], []),
-    ), patch(
-        "src.tools.manage_watchlist_groups._manage_default_watchlist",
-        return_value={"codes": ["300750", "002594"], "count": 2, "changed": ["002594"]},
-    ) as manage_default:
+    with (
+        patch(
+            "src.tools.manage_watchlist_groups.DatabaseManager.get_instance",
+            return_value=db,
+        ),
+        patch(
+            "src.tools.manage_watchlist_groups.resolve_securities_csv",
+            return_value=([{"symbol": "002594", "name": "比亚迪"}], []),
+        ),
+        patch(
+            "src.tools.manage_watchlist_groups._manage_default_watchlist",
+            return_value={"codes": ["300750", "002594"], "count": 2, "changed": ["002594"]},
+        ) as manage_default,
+    ):
         result = manage_watchlist_groups("add", group="新能源", symbols="比亚迪")
 
     manage_default.assert_called_once_with("add", ["002594"])
@@ -173,12 +190,15 @@ def test_full_market_screen_can_save_all_matches_as_a_group() -> None:
         "name": "高波动股",
         "codes": ["000001", "000002"],
     }
-    with patch(
-        "src.tools.screen_atr_volatility_stocks.run_atr_volatility_screen",
-        return_value=screen_result,
-    ) as run_screen, patch(
-        "src.tools.screen_atr_volatility_stocks.DatabaseManager.get_instance",
-        return_value=db,
+    with (
+        patch(
+            "src.tools.screen_atr_volatility_stocks.run_atr_volatility_screen",
+            return_value=screen_result,
+        ) as run_screen,
+        patch(
+            "src.tools.screen_atr_volatility_stocks.DatabaseManager.get_instance",
+            return_value=db,
+        ),
     ):
         result = screen_atr_volatility_stocks(
             {"version": "1.0"},
@@ -201,20 +221,26 @@ def test_full_market_screen_can_save_all_matches_as_a_group() -> None:
 
 def test_batch_analysis_accepts_a_named_watchlist_group() -> None:
     db = MagicMock()
-    db.list_watchlist_groups.return_value = [{
-        "id": 4,
-        "name": "核心观察",
-        "codes": ["600519", "000858"],
-    }]
-    with patch(
-        "src.tools.run_batch_analysis.DatabaseManager.get_instance",
-        return_value=db,
-    ), patch(
-        "api.v1.endpoints.batches.run.trigger_batch_run",
-        new=lambda _request: None,
-    ), patch(
-        "src.tools.run_batch_analysis.run_async",
-        return_value={"batch_id": "batch-1", "status": "pending"},
+    db.list_watchlist_groups.return_value = [
+        {
+            "id": 4,
+            "name": "核心观察",
+            "codes": ["600519", "000858"],
+        }
+    ]
+    with (
+        patch(
+            "src.tools.run_batch_analysis.DatabaseManager.get_instance",
+            return_value=db,
+        ),
+        patch(
+            "api.v1.endpoints.batches.run.trigger_batch_run",
+            new=lambda _request: None,
+        ),
+        patch(
+            "src.tools.run_batch_analysis.run_async",
+            return_value={"batch_id": "batch-1", "status": "pending"},
+        ),
     ):
         result = run_batch_analysis(
             scope="group",

@@ -23,6 +23,7 @@ class TestSelectionSourceConstants:
     def test_selection_source_pattern_regex(self):
         """Test that SELECTION_SOURCE_PATTERN is a valid regex"""
         import re
+
         # Should be able to compile as regex
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
         assert pattern is not None
@@ -30,6 +31,7 @@ class TestSelectionSourceConstants:
     def test_selection_source_pattern_valid_sources(self):
         """Test that regex pattern matches all valid selection sources"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         for source in SELECTION_SOURCES:
@@ -38,6 +40,7 @@ class TestSelectionSourceConstants:
     def test_selection_source_pattern_invalid_sources(self):
         """Test that regex pattern rejects invalid selection sources"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         invalid_sources = [
@@ -64,6 +67,7 @@ class TestSelectionSourcePatternEdgeCases:
     def test_pattern_partial_match(self):
         """Test that regex pattern does not do partial matching"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         # Partial matches should fail
@@ -74,6 +78,7 @@ class TestSelectionSourcePatternEdgeCases:
     def test_pattern_case_sensitive(self):
         """Test that regex pattern is case-sensitive"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         # Uppercase forms should fail
@@ -84,6 +89,7 @@ class TestSelectionSourcePatternEdgeCases:
     def test_pattern_whitespace(self):
         """Test that regex pattern rejects inputs with spaces"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         assert pattern.fullmatch(" manual") is None
@@ -93,6 +99,7 @@ class TestSelectionSourcePatternEdgeCases:
     def test_pattern_special_characters(self):
         """Test that regex pattern rejects special characters"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         special_cases = [
@@ -110,6 +117,7 @@ class TestSelectionSourcePatternEdgeCases:
     def test_pattern_unicode(self):
         """Test that regex pattern handles Unicode characters"""
         import re
+
         pattern = re.compile(SELECTION_SOURCE_PATTERN)
 
         # Chinese characters should fail
@@ -168,6 +176,7 @@ class TestSelectionSourceIntegration:
 
         # Invalid values should fail
         from pydantic import ValidationError
+
         with pytest.raises(ValidationError):
             TestModel(source="invalid")
 

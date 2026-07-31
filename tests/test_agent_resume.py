@@ -32,8 +32,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -75,24 +77,29 @@ class _AsyncChunkStream:
 
 def _slow_async_completion(chunks, delay=0.2):
     """每个 chunk 之间延迟,模拟流式生成(给续流留出窗口)。"""
+
     async def _fake(**kwargs):
         async def _delayed():
             for c in chunks:
                 await asyncio.sleep(delay)
                 yield c
+
         return _delayed()
+
     return _fake
 
 
 async def _emit_kline_tool_chunks(broadcaster: RunBroadcaster) -> None:
     tool = await broadcaster.add_tool_call("get_kline", "call_kline")
     tool.append_args_text('{"symbol":"601318","count":60}')
-    tool.set_response({
-        "symbol": "601318",
-        "name": "中国平安",
-        "recent": [],
-        "latest": {"close": 49.1},
-    })
+    tool.set_response(
+        {
+            "symbol": "601318",
+            "name": "中国平安",
+            "recent": [],
+            "latest": {"close": 49.1},
+        }
+    )
 
 
 def test_resume_returns_inactive_when_no_run(client):
@@ -117,12 +124,17 @@ def test_chat_returns_409_when_run_in_progress(client):
         broadcaster=RunBroadcaster(),
         status="running",
     )
-    with patch("api.v1.endpoints.agent.chat._get_llm_config",
-               return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}):
-        resp = client.post("/api/v1/agent/chat", json={
-            "messages": [{"role": "user", "content": "hi"}],
-            "conversation_id": cid,
-        })
+    with patch(
+        "api.v1.endpoints.agent.chat._get_llm_config",
+        return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None},
+    ):
+        resp = client.post(
+            "/api/v1/agent/chat",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "conversation_id": cid,
+            },
+        )
     assert resp.status_code == 409
     assert resp.json()["error"] == "run_in_progress"
 
@@ -141,14 +153,20 @@ def test_chat_resume_existing_replays_retained_run(client):
         status="completed",
     )
 
-    with patch("api.v1.endpoints.agent.chat._get_llm_config",
-               return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}):
-        with client.stream("POST", "/api/v1/agent/chat", json={
-            "messages": [{"role": "user", "content": "hi"}],
-            "conversation_id": cid,
-            "resume_existing": True,
-            "after_chunk_index": 0,
-        }) as resp:
+    with patch(
+        "api.v1.endpoints.agent.chat._get_llm_config",
+        return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None},
+    ):
+        with client.stream(
+            "POST",
+            "/api/v1/agent/chat",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "conversation_id": cid,
+                "resume_existing": True,
+                "after_chunk_index": 0,
+            },
+        ) as resp:
             body = b"".join(resp.iter_bytes()).decode("utf-8")
 
     assert resp.status_code == 200
@@ -164,15 +182,22 @@ def test_chat_resume_existing_without_run_returns_409(client):
     created = client.post("/api/v1/agent/conversations").json()
     cid = created["id"]
 
-    with patch("api.v1.endpoints.agent.chat._get_llm_config",
-               return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
-         patch("api.v1.endpoints.agent.chat.litellm") as llm:
-        resp = client.post("/api/v1/agent/chat", json={
-            "messages": [{"role": "user", "content": "hi"}],
-            "conversation_id": cid,
-            "resume_existing": True,
-            "after_chunk_index": 0,
-        })
+    with (
+        patch(
+            "api.v1.endpoints.agent.chat._get_llm_config",
+            return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None},
+        ),
+        patch("api.v1.endpoints.agent.chat.litellm") as llm,
+    ):
+        resp = client.post(
+            "/api/v1/agent/chat",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "conversation_id": cid,
+                "resume_existing": True,
+                "after_chunk_index": 0,
+            },
+        )
 
     assert resp.status_code == 409
     assert resp.json()["error"] == "run_not_active"
@@ -226,22 +251,26 @@ def test_history_persisted_at_generation_start(client):
     snapshot_calls: list = []
 
     real_snapshot = chat_mod.ChatSessionService.save_conversation_snapshot
-    plan = chat_mod.TaskPlan.model_validate({
-        "tasks": [{
-            "task_id": "answer",
-            "kind": "general_response",
-            "objective": "回复用户",
-            "entity_scope": "none",
-            "entities": [],
-            "parameters": {},
-            "depends_on": [],
-            "output_requirements": [],
-            "confirmation": "not_required",
-            "confidence": 1.0,
-        }],
-        "needs_clarification": False,
-        "clarification_question": None,
-    })
+    plan = chat_mod.TaskPlan.model_validate(
+        {
+            "tasks": [
+                {
+                    "task_id": "answer",
+                    "kind": "general_response",
+                    "objective": "回复用户",
+                    "entity_scope": "none",
+                    "entities": [],
+                    "parameters": {},
+                    "depends_on": [],
+                    "output_requirements": [],
+                    "confirmation": "not_required",
+                    "confidence": 1.0,
+                }
+            ],
+            "needs_clarification": False,
+            "clarification_question": None,
+        }
+    )
 
     def spy_snapshot(
         self,
@@ -251,11 +280,13 @@ def test_history_persisted_at_generation_start(client):
         agent_context=None,
         skip_title=False,
     ):
-        snapshot_calls.append({
-            "conversation_id": conversation_id,
-            "messages": list(messages) if messages else [],
-            "skip_title": skip_title,
-        })
+        snapshot_calls.append(
+            {
+                "conversation_id": conversation_id,
+                "messages": list(messages) if messages else [],
+                "skip_title": skip_title,
+            }
+        )
         return real_snapshot(
             self,
             conversation_id,
@@ -268,20 +299,18 @@ def test_history_persisted_at_generation_start(client):
     final_completion = _slow_async_completion([_chunk("回复")], delay=0.01)
 
     async def dispatch_completion(**kwargs):
-        function_name = (
-            kwargs.get("tool_choice", {})
-            .get("function", {})
-            .get("name")
-        )
+        function_name = kwargs.get("tool_choice", {}).get("function", {}).get("name")
         if function_name == "submit_intent_outline_v2":
             payload = {
-                "nodes": [{
-                    "node_id": "answer",
-                    "capability": "general_response",
-                    "objective": "回复用户",
-                    "input_refs": [],
-                    "result_selection": None,
-                }],
+                "nodes": [
+                    {
+                        "node_id": "answer",
+                        "capability": "general_response",
+                        "objective": "回复用户",
+                        "input_refs": [],
+                        "result_selection": None,
+                    }
+                ],
                 "needs_clarification": False,
                 "clarification_question": None,
             }
@@ -290,28 +319,35 @@ def test_history_persisted_at_generation_start(client):
         else:
             return await final_completion(**kwargs)
         return {
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "function": {
-                            "name": function_name,
-                            "arguments": json.dumps(payload),
-                        },
-                    }],
-                },
-            }],
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": function_name,
+                                    "arguments": json.dumps(payload),
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
         }
 
-    with patch("api.v1.endpoints.agent.chat._get_llm_config",
-               return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None}), \
-         patch("api.v1.endpoints.agent.chat.litellm") as llm, \
-         patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()), \
-         patch("src.services.agent_prompt_service.AgentPromptService") as PS, \
-         patch.object(chat_mod.ChatSessionService, "save_conversation_snapshot", spy_snapshot):
+    with (
+        patch(
+            "api.v1.endpoints.agent.chat._get_llm_config",
+            return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None},
+        ),
+        patch("api.v1.endpoints.agent.chat.litellm") as llm,
+        patch("api.v1.endpoints.agent.chat._flush_substreams", new=AsyncMock()),
+        patch("src.services.agent_prompt_service.AgentPromptService") as PS,
+        patch.object(chat_mod.ChatSessionService, "save_conversation_snapshot", spy_snapshot),
+    ):
         PS.return_value.get_active_system_prompt.return_value = ("sys", False)
         llm.acompletion = dispatch_completion
-        with client.stream("POST", "/api/v1/agent/chat",
-                            json={"messages": [user_msg], "conversation_id": cid}) as resp:
+        with client.stream("POST", "/api/v1/agent/chat", json={"messages": [user_msg], "conversation_id": cid}) as resp:
             body = b""
             for chunk in resp.iter_bytes():
                 body += chunk

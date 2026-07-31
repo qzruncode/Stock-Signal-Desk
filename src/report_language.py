@@ -326,6 +326,7 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
     },
 }
 
+
 def normalize_report_language(value: Optional[str], default: str = "zh") -> str:
     """Normalize report language to a supported short code."""
     candidate = (value or default).strip().lower().replace(" ", "_")

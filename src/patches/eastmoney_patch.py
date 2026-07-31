@@ -76,6 +76,7 @@ def _get_nid(user_agent):
     # 使用线程锁确保并发安全
     with _cache.lock:
         try:
+
             def generate_uuid_md5():
                 """
                 生成 UUID 并对其进行 MD5 哈希处理
@@ -84,7 +85,7 @@ def _get_nid(user_agent):
                 # 生成 UUID
                 unique_id = str(uuid.uuid4())
                 # 对 UUID 进行 MD5 哈希
-                md5_hash = hashlib.md5(unique_id.encode('utf-8')).hexdigest()
+                md5_hash = hashlib.md5(unique_id.encode("utf-8")).hexdigest()
                 return md5_hash
 
             def generate_st_nvi():
@@ -101,7 +102,7 @@ def _get_nid(user_agent):
                     :return: 随机字符串
                     """
                     charset = "useandom-26T198340PX75pxJACKVERYMINDBUSHWOLF_GQZbfghjklqvwyzrict"
-                    return ''.join(secrets.choice(charset) for _ in range(length))
+                    return "".join(secrets.choice(charset) for _ in range(length))
 
                 def sha256(input_str):
                     """
@@ -109,7 +110,7 @@ def _get_nid(user_agent):
                     :param input_str: 输入字符串
                     :return: 哈希值（十六进制）
                     """
-                    return hashlib.sha256(input_str.encode('utf-8')).hexdigest()
+                    return hashlib.sha256(input_str.encode("utf-8")).hexdigest()
 
                 random_str = generate_random_string()
                 hash_prefix = sha256(random_str)[:HASH_LENGTH]
@@ -117,32 +118,31 @@ def _get_nid(user_agent):
 
             url = "https://anonflow2.eastmoney.com/backend/api/webreport"
             # 随机选择屏幕分辨率，增加请求的真实性
-            screen_resolution = random.choice(['1920X1080', '2560X1440', '3840X2160'])
-            payload = json.dumps({
-                "osPlatform": "Windows",
-                "sourceType": "WEB",
-                "osversion": "Windows 10.0",
-                "language": "zh-CN",
-                "timezone": "Asia/Shanghai",
-                "webDeviceInfo": {
-                    "screenResolution": screen_resolution,
-                    "userAgent": user_agent,
-                    "canvasKey": generate_uuid_md5(),
-                    "webglKey": generate_uuid_md5(),
-                    "fontKey": generate_uuid_md5(),
-                    "audioKey": generate_uuid_md5()
+            screen_resolution = random.choice(["1920X1080", "2560X1440", "3840X2160"])
+            payload = json.dumps(
+                {
+                    "osPlatform": "Windows",
+                    "sourceType": "WEB",
+                    "osversion": "Windows 10.0",
+                    "language": "zh-CN",
+                    "timezone": "Asia/Shanghai",
+                    "webDeviceInfo": {
+                        "screenResolution": screen_resolution,
+                        "userAgent": user_agent,
+                        "canvasKey": generate_uuid_md5(),
+                        "webglKey": generate_uuid_md5(),
+                        "fontKey": generate_uuid_md5(),
+                        "audioKey": generate_uuid_md5(),
+                    },
                 }
-            })
-            headers = {
-                'Cookie': f'st_nvi={generate_st_nvi()}',
-                'Content-Type': 'application/json'
-            }
+            )
+            headers = {"Cookie": f"st_nvi={generate_st_nvi()}", "Content-Type": "application/json"}
             # 增加超时，防止无限等待
             response = requests.request("POST", url, headers=headers, data=payload, timeout=30)
             response.raise_for_status()  # 对 4xx/5xx 响应抛出 HTTPError
 
             data = response.json()
-            nid = data['data']['nid']
+            nid = data["data"]["nid"]
 
             _cache.data = nid
             _cache.expire_at = now + _cache.ttl

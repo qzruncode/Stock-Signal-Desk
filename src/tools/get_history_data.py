@@ -27,12 +27,15 @@ def _execute(symbol: str, start_date: str, end_date: str, use_cache: bool = True
 TOOL = ToolSpec(
     name="get_history_data",
     description=KLINE_HISTORY_DESCRIPTION,
-    parameters=object_schema({
-        "symbol": {"type": "string", "description": "股票代码或名称"},
-        "start_date": {"type": "string", "pattern": "^[0-9]{8}$", "description": "起始日期 YYYYMMDD"},
-        "end_date": {"type": "string", "pattern": "^[0-9]{8}$", "description": "结束日期 YYYYMMDD"},
-        "use_cache": {"type": "boolean", "default": True, "description": "是否使用本地缓存"},
-    }, ["symbol", "start_date", "end_date"]),
+    parameters=object_schema(
+        {
+            "symbol": {"type": "string", "description": "股票代码或名称"},
+            "start_date": {"type": "string", "pattern": "^[0-9]{8}$", "description": "起始日期 YYYYMMDD"},
+            "end_date": {"type": "string", "pattern": "^[0-9]{8}$", "description": "结束日期 YYYYMMDD"},
+            "use_cache": {"type": "boolean", "default": True, "description": "是否使用本地缓存"},
+        },
+        ["symbol", "start_date", "end_date"],
+    ),
     executor=_execute,
     category="data",
 )

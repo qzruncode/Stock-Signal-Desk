@@ -254,6 +254,7 @@ class SearchServiceConcurrencyTestCase(unittest.TestCase):
 
         with patch("src.search_service.SearchService", side_effect=build_service) as mock_cls:
             with patch("src.config.get_config", return_value=config):
+
                 def worker():
                     try:
                         barrier.wait(timeout=1)

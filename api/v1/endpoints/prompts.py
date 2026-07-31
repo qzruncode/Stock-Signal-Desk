@@ -43,9 +43,7 @@ class UpdatePromptTemplateRequest(BaseModel):
 async def list_prompt_templates():
     store = get_prompt_template_store()
     templates = store.load_all()
-    return PromptTemplateListResponse(
-        templates=[PromptTemplateItem(**t) for t in templates]
-    )
+    return PromptTemplateListResponse(templates=[PromptTemplateItem(**t) for t in templates])
 
 
 @router.get("/{template_id}", response_model=PromptTemplateItem)

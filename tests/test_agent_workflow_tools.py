@@ -33,8 +33,11 @@ WORKFLOW_NAMES = {
 def test_registry_exposes_dashboard_workflows_as_same_named_tools() -> None:
     assert WORKFLOW_NAMES <= set(ToolRegistry().get_tool_names())
     assert {
-        "run_stock_analysis", "get_analysis_status", "run_batch_analysis",
-        "manage_batch_run", "manage_analysis_schedule",
+        "run_stock_analysis",
+        "get_analysis_status",
+        "run_batch_analysis",
+        "manage_batch_run",
+        "manage_analysis_schedule",
     } <= STATEFUL_TOOL_NAMES
 
 
@@ -47,8 +50,12 @@ def test_run_stock_analysis_submits_persistent_queue_task_without_implicit_notif
         message="任务已加入队列",
     )
     queue = SimpleNamespace(submit_tasks_batch=lambda *args, **kwargs: ([task], []))
-    with patch("api.v1.endpoints.analysis.trigger._resolve_and_normalize_input", return_value="002015"), patch(
-        "src.tools.run_stock_analysis.get_task_queue", return_value=queue,
+    with (
+        patch("api.v1.endpoints.analysis.trigger._resolve_and_normalize_input", return_value="002015"),
+        patch(
+            "src.tools.run_stock_analysis.get_task_queue",
+            return_value=queue,
+        ),
     ):
         result = run_stock_analysis("新强联")
 
@@ -77,13 +84,15 @@ def test_destructive_and_external_actions_require_explicit_confirmation() -> Non
 
 def test_notification_status_is_redacted() -> None:
     config = {
-        "items": [{
-            "key": "WECHAT_WEBHOOK_URL",
-            "value": "******",
-            "raw_value_exists": True,
-            "is_masked": True,
-            "schema": {"category": "notification"},
-        }],
+        "items": [
+            {
+                "key": "WECHAT_WEBHOOK_URL",
+                "value": "******",
+                "raw_value_exists": True,
+                "is_masked": True,
+                "schema": {"category": "notification"},
+            }
+        ],
     }
     with patch("src.tools.get_notification_status.SystemConfigService.get_config", return_value=config):
         result = get_notification_status()

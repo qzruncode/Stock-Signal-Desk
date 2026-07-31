@@ -38,6 +38,7 @@ def reset_registry():
 
 def _drain(queue: asyncio.Queue, count: int, timeout: float = 1.0):
     """同步收集 queue 中最多 count 个 chunk(测试辅助)。"""
+
     async def _collect():
         out = []
         for _ in range(count):
@@ -46,11 +47,13 @@ def _drain(queue: asyncio.Queue, count: int, timeout: float = 1.0):
             except asyncio.TimeoutError:
                 break
         return out
+
     return asyncio.get_event_loop().run_until_complete(_collect())
 
 
 def test_broadcast_to_multiple_subscribers():
     """两个订阅者都收到相同的 emit chunk。"""
+
     async def run():
         b = RunBroadcaster()
         q1 = b.subscribe()
@@ -71,6 +74,7 @@ def test_broadcast_to_multiple_subscribers():
 
 def test_unsubscribe_stops_receiving():
     """unsubscribe 后不再收到后续 chunk(但不影响已 emit 的)。"""
+
     async def run():
         b = RunBroadcaster()
         q = b.subscribe()
@@ -86,15 +90,18 @@ def test_unsubscribe_stops_receiving():
 
 def test_durable_broadcaster_batches_before_publishing():
     """Durable subscribers never observe an event before its batch commits."""
+
     async def run():
         persisted: list[tuple[str, int, list[str]]] = []
 
         def sink(run_id, start_sequence, chunks):
-            persisted.append((
-                run_id,
-                start_sequence,
-                [chunk.text_delta for chunk in chunks],
-            ))
+            persisted.append(
+                (
+                    run_id,
+                    start_sequence,
+                    [chunk.text_delta for chunk in chunks],
+                )
+            )
 
         broadcaster = RunBroadcaster(
             run_id="run-batch",
@@ -107,10 +114,7 @@ def test_durable_broadcaster_batches_before_publishing():
 
         await broadcaster.drain()
         assert persisted == [("run-batch", 0, ["a", "b", "c"])]
-        assert [
-            queue.get_nowait().text_delta
-            for _ in range(3)
-        ] == ["a", "b", "c"]
+        assert [queue.get_nowait().text_delta for _ in range(3)] == ["a", "b", "c"]
 
         broadcaster.mark_finished()
         await broadcaster.drain()
@@ -121,6 +125,7 @@ def test_durable_broadcaster_batches_before_publishing():
 
 def test_slow_subscriber_is_disconnected_instead_of_losing_events():
     """Queue 溢出必须断开订阅，不能静默拼接一个缺少中间事件的流。"""
+
     async def run():
         b = RunBroadcaster()
         q = b.subscribe()
@@ -137,6 +142,7 @@ def test_slow_subscriber_is_disconnected_instead_of_losing_events():
 
 def test_replay_subscriber_keeps_full_history_beyond_live_queue_limit():
     """续流 replay 不能沿用 live queue 的 drop-oldest,否则回答会从中间开始。"""
+
     async def run():
         b = RunBroadcaster()
         for i in range(300):
@@ -160,6 +166,7 @@ def test_replay_subscriber_keeps_full_history_beyond_live_queue_limit():
 
 def test_trimmed_history_keeps_monotonic_resume_cursor(monkeypatch):
     """裁剪旧 chunk 后游标仍是全局递增值，续流只回放保留窗口。"""
+
     async def run():
         monkeypatch.setattr(run_registry_module, "_RUN_HISTORY_MAX_CHUNKS", 3)
         b = RunBroadcaster()
@@ -191,6 +198,7 @@ def test_registry_is_active_and_reuse(reset_registry):
         async def _noop():
             await asyncio.sleep(0.05)
             await registry.mark_done("c1", "completed", final_text="done")
+
         return asyncio.create_task(_noop())
 
     async def run():
@@ -216,6 +224,7 @@ def test_cancel_stops_running_task_and_removes_run(reset_registry):
                 await asyncio.Event().wait()
             finally:
                 broadcaster.append_text("cancelled")
+
         return asyncio.create_task(_wait_forever())
 
     async def run():
@@ -249,6 +258,7 @@ def test_subscriber_disconnect_does_not_kill_generation(reset_registry):
                 completion_log.append("generation_done")
             finally:
                 await registry.mark_done("c2", "completed", final_text="ok")
+
         return asyncio.create_task(_generate())
 
     async def run():

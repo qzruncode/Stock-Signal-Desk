@@ -25,12 +25,14 @@ def _theme_result(theme: str) -> dict:
                 "evidence_level": "L1",
             },
         ],
-        "减速器": [{
-            "symbol": "688017",
-            "name": "绿的谐波",
-            "boards": ["减速器"],
-            "evidence_level": "L1",
-        }],
+        "减速器": [
+            {
+                "symbol": "688017",
+                "name": "绿的谐波",
+                "boards": ["减速器"],
+                "evidence_level": "L1",
+            }
+        ],
     }
     return {
         "success": True,
@@ -39,11 +41,13 @@ def _theme_result(theme: str) -> dict:
         "theme": theme,
         "local_universe_count": 5879,
         "items": items_by_theme.get(theme, []),
-        "matched_boards": [{
-            "name": theme,
-            "coverage": "full",
-            "primary_theme": True,
-        }],
+        "matched_boards": [
+            {
+                "name": theme,
+                "coverage": "full",
+                "primary_theme": True,
+            }
+        ],
         "warnings": [],
         "errors": [],
     }
@@ -82,29 +86,31 @@ def test_multi_domain_tool_fetches_each_catalog_board_once_and_merges_union() ->
 
     maintenance, universe, candidate_fetch, board_codes = _patch_runtime(fetch)
     with maintenance, universe, candidate_fetch, board_codes:
-        result = get_domain_stock_candidates([
-            {
-                "label": "行星滚柱丝杠",
-                "board_queries": ["机器人执行器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "模型从本轮实时目录绑定",
-                "unresolved_parts": [],
-            },
-            {
-                "label": "减速器",
-                "board_queries": ["减速器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "模型从本轮实时目录绑定",
-                "unresolved_parts": [],
-            },
-            {
-                "label": "空心杯电机",
-                "board_queries": ["机器人执行器"],
-                "mapping_type": "catalog_binding",
-                "rationale": "模型从本轮实时目录绑定",
-                "unresolved_parts": [],
-            },
-        ])
+        result = get_domain_stock_candidates(
+            [
+                {
+                    "label": "行星滚柱丝杠",
+                    "board_queries": ["机器人执行器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "模型从本轮实时目录绑定",
+                    "unresolved_parts": [],
+                },
+                {
+                    "label": "减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "模型从本轮实时目录绑定",
+                    "unresolved_parts": [],
+                },
+                {
+                    "label": "空心杯电机",
+                    "board_queries": ["机器人执行器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "模型从本轮实时目录绑定",
+                    "unresolved_parts": [],
+                },
+            ]
+        )
 
     assert sorted(calls) == ["减速器", "机器人执行器"]
     assert [item["domain"] for item in result["domain_results"]] == [
@@ -113,9 +119,7 @@ def test_multi_domain_tool_fetches_each_catalog_board_once_and_merges_union() ->
         "空心杯电机",
     ]
     assert result["candidate_count"] == 2
-    green = next(
-        item for item in result["items"] if item["symbol"] == "688017"
-    )
+    green = next(item for item in result["items"] if item["symbol"] == "688017")
     assert green["matched_domains"] == [
         "行星滚柱丝杠",
         "减速器",
@@ -133,13 +137,17 @@ def test_unresolved_domain_does_not_guess_or_fetch_a_proxy_board() -> None:
 
     maintenance, universe, candidate_fetch, board_codes = _patch_runtime(fetch)
     with maintenance, universe, candidate_fetch, board_codes:
-        result = get_domain_stock_candidates([{
-            "label": "不存在于目录的精密部件",
-            "board_queries": [],
-            "mapping_type": "unresolved",
-            "rationale": "本轮实时目录中没有可验证板块",
-            "unresolved_parts": ["不存在于目录的精密部件"],
-        }])
+        result = get_domain_stock_candidates(
+            [
+                {
+                    "label": "不存在于目录的精密部件",
+                    "board_queries": [],
+                    "mapping_type": "unresolved",
+                    "rationale": "本轮实时目录中没有可验证板块",
+                    "unresolved_parts": ["不存在于目录的精密部件"],
+                }
+            ]
+        )
 
     assert calls == []
     assert result["success"] is False
@@ -160,27 +168,35 @@ def test_incomplete_exact_board_fetch_is_rejected_without_fallback() -> None:
             "success": True,
             "partial": True,
             "coverage_complete": False,
-            "items": [{
-                "symbol": "002459",
-                "name": "晶澳科技",
-                "boards": ["其他板块"],
-            }],
-            "matched_boards": [{
-                "name": "其他板块",
-                "coverage": "partial_pages",
-            }],
+            "items": [
+                {
+                    "symbol": "002459",
+                    "name": "晶澳科技",
+                    "boards": ["其他板块"],
+                }
+            ],
+            "matched_boards": [
+                {
+                    "name": "其他板块",
+                    "coverage": "partial_pages",
+                }
+            ],
             "warnings": ["精确板块未完成全量抓取"],
         }
 
     maintenance, universe, candidate_fetch, board_codes = _patch_runtime(fetch)
     with maintenance, universe, candidate_fetch, board_codes:
-        result = get_domain_stock_candidates([{
-            "label": "电池",
-            "board_queries": ["电池"],
-            "mapping_type": "catalog_binding",
-            "rationale": "模型从本轮实时目录绑定",
-            "unresolved_parts": [],
-        }])
+        result = get_domain_stock_candidates(
+            [
+                {
+                    "label": "电池",
+                    "board_queries": ["电池"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "模型从本轮实时目录绑定",
+                    "unresolved_parts": [],
+                }
+            ]
+        )
 
     assert calls == ["电池"]
     assert result["success"] is False
@@ -222,18 +238,22 @@ def test_v2_board_identity_is_passed_directly_to_constituent_tool() -> None:
             },
         ),
     ):
-        result = get_domain_stock_candidates([{
-            "label": "减速器",
-            "catalog_snapshot_id": "catalog_snapshot",
-            "board_id": "BK1100",
-            "board_name": "减速器",
-            "role_id": "harmonic_reducer",
-            "role_label": "谐波减速器",
-            "board_queries": ["减速器"],
-            "mapping_type": "catalog_binding",
-            "rationale": "减速器对应谐波减速器环节",
-            "unresolved_parts": [],
-        }])
+        result = get_domain_stock_candidates(
+            [
+                {
+                    "label": "减速器",
+                    "catalog_snapshot_id": "catalog_snapshot",
+                    "board_id": "BK1100",
+                    "board_name": "减速器",
+                    "role_id": "harmonic_reducer",
+                    "role_label": "谐波减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "减速器对应谐波减速器环节",
+                    "unresolved_parts": [],
+                }
+            ]
+        )
 
     assert calls == [("减速器", "BK1100")]
     assert result["success"] is True
@@ -271,18 +291,22 @@ def test_v2_board_identity_rejects_changed_catalog_snapshot_without_fetch() -> N
             },
         ),
     ):
-        result = get_domain_stock_candidates([{
-            "label": "减速器",
-            "catalog_snapshot_id": "old_snapshot",
-            "board_id": "BK1100",
-            "board_name": "减速器",
-            "role_id": "harmonic_reducer",
-            "role_label": "谐波减速器",
-            "board_queries": ["减速器"],
-            "mapping_type": "catalog_binding",
-            "rationale": "减速器对应谐波减速器环节",
-            "unresolved_parts": [],
-        }])
+        result = get_domain_stock_candidates(
+            [
+                {
+                    "label": "减速器",
+                    "catalog_snapshot_id": "old_snapshot",
+                    "board_id": "BK1100",
+                    "board_name": "减速器",
+                    "role_id": "harmonic_reducer",
+                    "role_label": "谐波减速器",
+                    "board_queries": ["减速器"],
+                    "mapping_type": "catalog_binding",
+                    "rationale": "减速器对应谐波减速器环节",
+                    "unresolved_parts": [],
+                }
+            ]
+        )
 
     assert calls == []
     assert result["success"] is False

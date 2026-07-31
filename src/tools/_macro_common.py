@@ -58,7 +58,9 @@ def period_date(value: Any) -> date | None:
     for fmt in ("%Y%m%d", "%Y%m", "%Y-%m"):
         try:
             parsed = datetime.strptime(text, fmt).date()
-            return date(parsed.year, parsed.month, monthrange(parsed.year, parsed.month)[1]) if fmt != "%Y%m%d" else parsed
+            return (
+                date(parsed.year, parsed.month, monthrange(parsed.year, parsed.month)[1]) if fmt != "%Y%m%d" else parsed
+            )
         except ValueError:
             continue
     return None

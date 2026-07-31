@@ -4,6 +4,7 @@ The conversational ``能否买入`` workflow uses the user-required eight Boolea
 dimensions. Data collection is program-owned, while the model judges each
 dimension in order. The first non-pass result stops subsequent model analysis.
 """
+
 from __future__ import annotations
 
 import json
@@ -154,15 +155,14 @@ class ForcedSchemaResponseError(ValueError):
     ) -> None:
         super().__init__(message)
         self.payload = payload
-        self.issues = issues or [{
-            "pointer": "/choices/0/message/tool_calls",
-            "code": "forced_schema_missing",
-            "expected": (
-                "exactly one forced tool call whose arguments match the "
-                "supplied schema"
-            ),
-            "allowed": [],
-        }]
+        self.issues = issues or [
+            {
+                "pointer": "/choices/0/message/tool_calls",
+                "code": "forced_schema_missing",
+                "expected": ("exactly one forced tool call whose arguments match the " "supplied schema"),
+                "allowed": [],
+            }
+        ]
 
 
 def _structured_thesis_labels(
@@ -215,9 +215,7 @@ class ProfessionalAssessment(BaseModel):
     def _validate_dimension_order(self) -> "ProfessionalAssessment":
         actual = tuple(item.dimension_id for item in self.dimensions)
         if actual != DIMENSION_IDS:
-            raise ValueError(
-                "dimensions must contain the exact eight dimensions in contract order"
-            )
+            raise ValueError("dimensions must contain the exact eight dimensions in contract order")
         return self
 
 
@@ -293,8 +291,7 @@ def _bounded_text(value: Any, limit: int = 8_000) -> str:
 
 
 _NUMERIC_CLAIM_RE = re.compile(
-    r"(?P<value>\d+(?:\.\d+)?)\s*"
-    r"(?P<unit>%|亿元|万元|元|倍|MW|GW|个月|季度|年|月|日|家|只)",
+    r"(?P<value>\d+(?:\.\d+)?)\s*" r"(?P<unit>%|亿元|万元|元|倍|MW|GW|个月|季度|年|月|日|家|只)",
     re.IGNORECASE,
 )
 _NUMERIC_RANGE_RE = re.compile(
@@ -303,12 +300,9 @@ _NUMERIC_RANGE_RE = re.compile(
     r"(?P<unit>%|亿元|万元|元|倍|MW|GW|个月|季度|年|月|日|家|只)",
     re.IGNORECASE,
 )
-_ISO_DATE_RE = re.compile(
-    r"(?P<year>20\d{2})-(?P<month>\d{1,2})-(?P<day>\d{1,2})"
-)
+_ISO_DATE_RE = re.compile(r"(?P<year>20\d{2})-(?P<month>\d{1,2})-(?P<day>\d{1,2})")
 _BARE_DECIMAL_RE = re.compile(
-    r"(?<![\d./:-])(?P<value>\d+\.\d+)(?![\d])"
-    r"(?!\s*(?:%|亿元|万元|元|倍|MW|GW|个月|季度|年|月|日|家|只))",
+    r"(?<![\d./:-])(?P<value>\d+\.\d+)(?![\d])" r"(?!\s*(?:%|亿元|万元|元|倍|MW|GW|个月|季度|年|月|日|家|只))",
     re.IGNORECASE,
 )
 
@@ -347,18 +341,17 @@ def _unsupported_numeric_claims(
         evidence_values.setdefault(unit, []).append(float(match.group("value")))
     for match in _NUMERIC_RANGE_RE.finditer(evidence_text):
         unit = match.group("unit").lower()
-        evidence_values.setdefault(unit, []).extend([
-            float(match.group("start")),
-            float(match.group("end")),
-        ])
+        evidence_values.setdefault(unit, []).extend(
+            [
+                float(match.group("start")),
+                float(match.group("end")),
+            ]
+        )
     for match in _ISO_DATE_RE.finditer(evidence_text):
         evidence_values.setdefault("年", []).append(float(match.group("year")))
         evidence_values.setdefault("月", []).append(float(match.group("month")))
         evidence_values.setdefault("日", []).append(float(match.group("day")))
-    evidence_bare_decimals = [
-        float(match.group("value"))
-        for match in _BARE_DECIMAL_RE.finditer(evidence_text)
-    ]
+    evidence_bare_decimals = [float(match.group("value")) for match in _BARE_DECIMAL_RE.finditer(evidence_text)]
 
     output_text = json.dumps(assessment.model_dump(), ensure_ascii=False)
     unsupported: list[str] = []
@@ -369,18 +362,12 @@ def _unsupported_numeric_claims(
         if unit == "%":
             matched = any(abs(value - candidate) <= 0.6 for candidate in candidates)
         elif unit in {"亿元", "万元", "元", "倍", "mw", "gw"}:
-            matched = any(
-                abs(value - candidate) <= max(0.1, abs(candidate) * 0.015)
-                for candidate in candidates
-            )
+            matched = any(abs(value - candidate) <= max(0.1, abs(candidate) * 0.015) for candidate in candidates)
         else:
             matched = any(value == candidate for candidate in candidates)
         if not matched and structured_values:
             if unit == "%":
-                matched = any(
-                    abs(value - candidate) <= 0.6
-                    for candidate in structured_values
-                )
+                matched = any(abs(value - candidate) <= 0.6 for candidate in structured_values)
             elif unit in {"亿元", "万元", "元", "倍", "mw", "gw"}:
                 scale = {
                     "亿元": 100_000_000,
@@ -388,15 +375,8 @@ def _unsupported_numeric_claims(
                     "元": 1,
                 }.get(unit)
                 matched = any(
-                    (
-                        abs(value - candidate)
-                        <= max(0.1, abs(candidate) * 0.015)
-                    )
-                    or (
-                        scale is not None
-                        and abs(value * scale - candidate)
-                        <= max(1, abs(candidate) * 0.015)
-                    )
+                    (abs(value - candidate) <= max(0.1, abs(candidate) * 0.015))
+                    or (scale is not None and abs(value * scale - candidate) <= max(1, abs(candidate) * 0.015))
                     for candidate in structured_values
                 )
             else:
@@ -425,19 +405,12 @@ def _redact_unsupported_numeric_claims(
         if isinstance(value, str):
             segments = re.split(r"(?<=[。！？；\n])", value)
             return "".join(
-                segment
-                for segment in segments
-                if not any(claim in segment for claim in unsupported)
+                segment for segment in segments if not any(claim in segment for claim in unsupported)
             ).strip()
         if isinstance(value, list):
             cleaned_items = [clean(item) for item in value]
             return [
-                (
-                    redacted_item_text
-                    if isinstance(item, str) and not item.strip()
-                    else item
-                )
-                for item in cleaned_items
+                (redacted_item_text if isinstance(item, str) and not item.strip() else item) for item in cleaned_items
             ]
         if isinstance(value, dict):
             return {key: clean(item) for key, item in value.items()}
@@ -472,9 +445,7 @@ def _redact_unsupported_numeric_claims(
     return type(assessment).model_validate(payload)
 
 
-_DANGLING_HEADLINE_RE = re.compile(
-    r"(?:为|是|包括|来自|由于|因为|但|且|及|与|和|或|：|:|，|,)$"
-)
+_DANGLING_HEADLINE_RE = re.compile(r"(?:为|是|包括|来自|由于|因为|但|且|及|与|和|或|：|:|，|,)$")
 
 
 def _repair_incomplete_dimension_headline(
@@ -485,24 +456,15 @@ def _repair_incomplete_dimension_headline(
     if len(headline) >= 8 and not _DANGLING_HEADLINE_RE.search(headline):
         return assessment
     candidates = [
-        value.strip(" 【】[]")
-        for value in re.split(r"[。\n；]", assessment.analysis)
-        if value.strip(" 【】[]")
+        value.strip(" 【】[]") for value in re.split(r"[。\n；]", assessment.analysis) if value.strip(" 【】[]")
     ]
     replacement = next(
-        (
-            value
-            for value in candidates
-            if len(value) >= 8
-            and not _DANGLING_HEADLINE_RE.search(value)
-        ),
+        (value for value in candidates if len(value) >= 8 and not _DANGLING_HEADLINE_RE.search(value)),
         "",
     )
     if not replacement:
         return assessment
-    return assessment.model_copy(
-        update={"headline": replacement[:120].rstrip("，,：:")}
-    )
+    return assessment.model_copy(update={"headline": replacement[:120].rstrip("，,：:")})
 
 
 def _stock_info(symbol: str) -> dict[str, Any]:
@@ -571,26 +533,14 @@ def _target_dimension_context(
             )
             if report.get(key) is not None
         }
-        context["snapshot_source"] = raw.get(
-            "market_mainline_snapshot_source"
-        )
+        context["snapshot_source"] = raw.get("market_mainline_snapshot_source")
         context["snapshot_id"] = raw.get("market_mainline_snapshot_id")
         board_catalog = raw.get("board_catalog")
-        board_catalog = (
-            board_catalog if isinstance(board_catalog, dict) else {}
-        )
+        board_catalog = board_catalog if isinstance(board_catalog, dict) else {}
         context["direction_board_mapping"] = {
-            sector_type: [{
-                key: item.get(key)
-                for key in ("name", "code", "data_source")
-                if item.get(key) is not None
-            }
-                for item in (
-                    (board_catalog.get(sector_type) or {}).get(
-                        "matched_items"
-                    )
-                    or []
-                )
+            sector_type: [
+                {key: item.get(key) for key in ("name", "code", "data_source") if item.get(key) is not None}
+                for item in ((board_catalog.get(sector_type) or {}).get("matched_items") or [])
                 if isinstance(item, dict)
             ][:12]
             for sector_type in ("industry", "concept")
@@ -619,15 +569,12 @@ def _target_dimension_context(
                 for item in formal.get("items") or []
                 if isinstance(item, dict)
             ][:8],
-            "documents": [
-                item for item in formal.get("documents") or []
-                if isinstance(item, dict)
-            ][:3],
+            "documents": [item for item in formal.get("documents") or [] if isinstance(item, dict)][:3],
         }
         context["business_segments"] = [
-            item for item in segments.get("items") or []
-            if isinstance(item, dict)
-            and str(item.get("category") or "").lower() in {"product", "industry"}
+            item
+            for item in segments.get("items") or []
+            if isinstance(item, dict) and str(item.get("category") or "").lower() in {"product", "industry"}
         ][:16]
     return context
 
@@ -685,8 +632,14 @@ def _collect_source_links(value: Any, *, limit: int = 24) -> list[dict[str, str]
                 **{
                     key: node.get(key)
                     for key in (
-                        "title", "name", "source", "org", "publish_date",
-                        "publish_time", "date", "report_date",
+                        "title",
+                        "name",
+                        "source",
+                        "org",
+                        "publish_date",
+                        "publish_time",
+                        "date",
+                        "report_date",
                     )
                     if node.get(key)
                 },
@@ -698,27 +651,25 @@ def _collect_source_links(value: Any, *, limit: int = 24) -> list[dict[str, str]
                 if not re.match(r"^https?://", url, re.I) or url in seen:
                     continue
                 seen.add(url)
-                found.append({
-                    "title": str(
-                        merged_context.get("title")
-                        or merged_context.get("name")
-                        or merged_context.get("source")
-                        or "原始资料"
-                    )[:160],
-                    "source": str(
-                        merged_context.get("source")
-                        or merged_context.get("org")
-                        or "公开来源"
-                    )[:80],
-                    "date": str(
-                        merged_context.get("publish_date")
-                        or merged_context.get("publish_time")
-                        or merged_context.get("report_date")
-                        or merged_context.get("date")
-                        or ""
-                    )[:32],
-                    "url": url,
-                })
+                found.append(
+                    {
+                        "title": str(
+                            merged_context.get("title")
+                            or merged_context.get("name")
+                            or merged_context.get("source")
+                            or "原始资料"
+                        )[:160],
+                        "source": str(merged_context.get("source") or merged_context.get("org") or "公开来源")[:80],
+                        "date": str(
+                            merged_context.get("publish_date")
+                            or merged_context.get("publish_time")
+                            or merged_context.get("report_date")
+                            or merged_context.get("date")
+                            or ""
+                        )[:32],
+                        "url": url,
+                    }
+                )
             for child in node.values():
                 visit(child, merged_context)
         elif isinstance(node, (list, tuple)):
@@ -775,19 +726,16 @@ def _merge_public_research(
         "attempts": list(attempts_by_key.values()),
         "items": items,
         "lens_status": lens_status,
-        "retrieved_source_count": len({
-            str(item.get("url") or "")
-            for item in items
-            if item.get("url")
-        }),
-        "retrieval_complete": all(
-            status != "retrieval_failed"
-            for status in lens_status.values()
+        "retrieved_source_count": len({str(item.get("url") or "") for item in items if item.get("url")}),
+        "retrieval_complete": all(status != "retrieval_failed" for status in lens_status.values()),
+        "errors": list(
+            dict.fromkeys(
+                [
+                    *[str(value) for value in current.get("errors") or []],
+                    *[str(value) for value in incoming.get("errors") or []],
+                ]
+            )
         ),
-        "errors": list(dict.fromkeys([
-            *[str(value) for value in current.get("errors") or []],
-            *[str(value) for value in incoming.get("errors") or []],
-        ])),
     }
 
 
@@ -795,16 +743,19 @@ def _source_failure_code(value: Any) -> str:
     text = str(value or "").lower()
     if any(marker in text for marker in ("timeout", "timed out", "超时", "504")):
         return "timeout"
-    if any(marker in text for marker in (
-        "connection",
-        "connecterror",
-        "remoteprotocolerror",
-        "connection reset",
-        "connection aborted",
-        "broken pipe",
-        "ssl",
-        "连接",
-    )):
+    if any(
+        marker in text
+        for marker in (
+            "connection",
+            "connecterror",
+            "remoteprotocolerror",
+            "connection reset",
+            "connection aborted",
+            "broken pipe",
+            "ssl",
+            "连接",
+        )
+    ):
         return "connection"
     return "unavailable"
 
@@ -856,17 +807,11 @@ def _collect_source_failures(
         for key, error in raw_data.items():
             if str(key).endswith("_error") and error:
                 append(str(section), str(key)[:-6], error)
-            elif (
-                isinstance(error, dict)
-                and error.get("success") is False
-            ):
+            elif isinstance(error, dict) and error.get("success") is False:
                 append(
                     str(section),
                     str(key),
-                    "；".join(
-                        str(value)
-                        for value in error.get("errors") or []
-                    ) or "unavailable",
+                    "；".join(str(value) for value in error.get("errors") or []) or "unavailable",
                 )
 
     lens_status = enrichment.get("lens_status")
@@ -898,18 +843,13 @@ def _refresh_professional_evidence_metadata(evidence: dict[str, Any]) -> None:
         base_meta,
     )
     evidence["public_disclosure_limits"] = [
-        f"{attempt.get('lens')}/{attempt.get('subject') or '全市场'}: "
-        "已完成检索，但公开来源未返回匹配材料"
+        f"{attempt.get('lens')}/{attempt.get('subject') or '全市场'}: " "已完成检索，但公开来源未返回匹配材料"
         for attempt in enrichment.get("attempts") or []
-        if isinstance(attempt, dict)
-        and attempt.get("status") == "no_matching_public_material"
+        if isinstance(attempt, dict) and attempt.get("status") == "no_matching_public_material"
     ]
     evidence["evidence_gaps"] = [
         *evidence["capability_gaps"],
-        *[
-            item["summary"]
-            for item in evidence["source_failures"]
-        ],
+        *[item["summary"] for item in evidence["source_failures"]],
         *evidence["public_disclosure_limits"],
     ]
     evidence["source_links"] = _collect_source_links(evidence)
@@ -923,29 +863,18 @@ def _collect_professional_sections(
 ) -> None:
     sections = evidence.setdefault("dimension_evidence", {})
     requested = [
-        section for section in dict.fromkeys(requested_sections)
-        if section in DIMENSION_IDS and section not in sections
+        section for section in dict.fromkeys(requested_sections) if section in DIMENSION_IDS and section not in sections
     ]
     if not requested:
         return
     symbol = str(evidence.get("symbol") or "")
     stock_info = evidence.get("stock_info")
     stock_info = stock_info if isinstance(stock_info, dict) else {}
-    collector_sections = [
-        section for section in requested
-        if section != "valuation_odds"
-    ]
-    required_lenses = set().union(*(
-        PUBLIC_RESEARCH_LENSES_BY_DIMENSION.get(section, set())
-        for section in requested
-    ))
-    existing_lenses = set(
-        (evidence.get("public_research") or {}).get("lens_status") or {}
-    )
+    collector_sections = [section for section in requested if section != "valuation_odds"]
+    required_lenses = set().union(*(PUBLIC_RESEARCH_LENSES_BY_DIMENSION.get(section, set()) for section in requested))
+    existing_lenses = set((evidence.get("public_research") or {}).get("lens_status") or {})
     lenses = required_lenses - existing_lenses
-    enrichment: dict[str, Any] = _empty_public_research(
-        evidence.get("research_scope") or {}
-    )
+    enrichment: dict[str, Any] = _empty_public_research(evidence.get("research_scope") or {})
     worker_count = len(collector_sections) + bool(lenses)
     if worker_count:
         with ThreadPoolExecutor(max_workers=max(1, worker_count)) as pool:
@@ -982,16 +911,10 @@ def _collect_professional_sections(
                         exc,
                     )
                     enrichment = {
-                        **_empty_public_research(
-                            evidence.get("research_scope") or {}
-                        ),
-                        "lens_status": {
-                            lens: "retrieval_failed" for lens in lenses
-                        },
+                        **_empty_public_research(evidence.get("research_scope") or {}),
+                        "lens_status": {lens: "retrieval_failed" for lens in lenses},
                         "retrieval_complete": False,
-                        "errors": [
-                            f"{type(exc).__name__}: {str(exc)[:240]}"
-                        ],
+                        "errors": [f"{type(exc).__name__}: {str(exc)[:240]}"],
                     }
 
     evidence["public_research"] = _merge_public_research(
@@ -1023,16 +946,12 @@ def _collect_professional_sections(
             **raw_data,
             "public_research": {
                 "lens_status": {
-                    lens: (
-                        combined_research.get("lens_status") or {}
-                    ).get(lens)
-                    for lens in section_lenses
+                    lens: (combined_research.get("lens_status") or {}).get(lens) for lens in section_lenses
                 },
                 "items": [
                     item
                     for item in combined_research.get("items") or []
-                    if isinstance(item, dict)
-                    and item.get("lens") in section_lenses
+                    if isinstance(item, dict) and item.get("lens") in section_lenses
                 ],
             },
         }
@@ -1048,16 +967,11 @@ def _collect_professional_sections(
             "financials": base_item.get("financials") or {},
         }
         valuation_sources_ok = any(
-            isinstance(value, dict) and value.get("success") is not False
-            for value in valuation_packet.values()
+            isinstance(value, dict) and value.get("success") is not False for value in valuation_packet.values()
         )
         sections["valuation_odds"] = {
             "success": valuation_sources_ok,
-            "evidence_gap": (
-                None
-                if valuation_sources_ok
-                else "本轮估值、预期、同行与行情来源均未取得有效数据"
-            ),
+            "evidence_gap": (None if valuation_sources_ok else "本轮估值、预期、同行与行情来源均未取得有效数据"),
             "summary": _bounded_text(
                 json.dumps(
                     valuation_packet,
@@ -1078,9 +992,7 @@ def collect_professional_evidence(
     *,
     thesis: str = "",
     thesis_context: dict[str, Any] | None = None,
-    mainline_strategy: MainlineStrategyProfile | str = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    ),
+    mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
     pre_fetched_data: dict[str, Any] | None = None,
     requested_sections: Iterable[str] | None = None,
 ) -> dict[str, Any]:
@@ -1098,11 +1010,7 @@ def collect_professional_evidence(
 
     base_packet = get_multi_stock_decision_evidence(symbol, effective_thesis)
     base_item = next(
-        (
-            item
-            for item in base_packet.get("items") or []
-            if isinstance(item, dict)
-        ),
+        (item for item in base_packet.get("items") or [] if isinstance(item, dict)),
         {},
     )
     research_scope = derive_research_scope(stock_info, base_item)
@@ -1213,9 +1121,7 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
                 section_limits.get(section, 2_500),
             ),
             "structured_context": payload.get("structured_context") or {},
-            "deterministic_entry_context": payload.get(
-                "deterministic_entry_context"
-            ),
+            "deterministic_entry_context": payload.get("deterministic_entry_context"),
         }
     return {
         "contract_version": evidence.get("contract_version"),
@@ -1227,12 +1133,8 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
         "mainline_strategy": evidence.get("mainline_strategy"),
         "research_scope": evidence.get("research_scope"),
         "public_research_coverage": {
-            "lens_status": (
-                evidence.get("public_research") or {}
-            ).get("lens_status"),
-            "retrieved_source_count": (
-                evidence.get("public_research") or {}
-            ).get("retrieved_source_count"),
+            "lens_status": (evidence.get("public_research") or {}).get("lens_status"),
+            "retrieved_source_count": (evidence.get("public_research") or {}).get("retrieved_source_count"),
         },
         "public_research_evidence": [
             {
@@ -1248,28 +1150,20 @@ def _prompt_evidence_view(evidence: dict[str, Any]) -> dict[str, Any]:
                     "url",
                 )
                 if item.get(key) is not None
-            } | {
+            }
+            | {
                 "snippet": _bounded_text(item.get("snippet"), 420),
             }
-            for item in (
-                (evidence.get("public_research") or {}).get("items") or []
-            )
+            for item in ((evidence.get("public_research") or {}).get("items") or [])
             if isinstance(item, dict)
         ][:40],
-        "company_packet": _compact_base_company_packet(
-            evidence.get("base_company_packet")
-        ),
+        "company_packet": _compact_base_company_packet(evidence.get("base_company_packet")),
         "dimension_evidence": sections,
         "evidence_gaps": evidence.get("evidence_gaps") or [],
         "capability_gaps": evidence.get("capability_gaps") or [],
         "source_failures": evidence.get("source_failures") or [],
-        "public_disclosure_limits": (
-            evidence.get("public_disclosure_limits") or []
-        ),
-        "required_dimension_order": [
-            {"dimension_id": key, "title": title}
-            for key, title in DIMENSION_DEFINITIONS
-        ],
+        "public_disclosure_limits": (evidence.get("public_disclosure_limits") or []),
+        "required_dimension_order": [{"dimension_id": key, "title": title} for key, title in DIMENSION_DEFINITIONS],
     }
 
 
@@ -1279,33 +1173,36 @@ def _compact_base_company_packet(value: Any) -> dict[str, Any]:
 
     def pick(source: Any, keys: tuple[str, ...]) -> dict[str, Any]:
         source = source if isinstance(source, dict) else {}
-        return {
-            key: source.get(key)
-            for key in keys
-            if source.get(key) is not None
-        }
+        return {key: source.get(key) for key in keys if source.get(key) is not None}
 
     snapshot = item.get("snapshot") if isinstance(item.get("snapshot"), dict) else {}
-    technical = (
-        snapshot.get("technical")
-        if isinstance(snapshot.get("technical"), dict)
-        else {}
-    )
-    financials = (
-        item.get("financials")
-        if isinstance(item.get("financials"), dict)
-        else {}
-    )
+    technical = snapshot.get("technical") if isinstance(snapshot.get("technical"), dict) else {}
+    financials = item.get("financials") if isinstance(item.get("financials"), dict) else {}
     periods = [
-        pick(period, (
-            "report_date", "report_period", "revenue", "revenue_yoy",
-            "parent_net_profit", "parent_net_profit_yoy",
-            "deducted_net_profit", "deducted_net_profit_yoy",
-            "gross_margin", "net_margin", "roe", "operating_cash_flow",
-            "free_cash_flow", "cash_conversion_ratio", "debt_ratio",
-            "accounts_receivable", "inventory", "contract_liabilities",
-            "flow_basis",
-        ))
+        pick(
+            period,
+            (
+                "report_date",
+                "report_period",
+                "revenue",
+                "revenue_yoy",
+                "parent_net_profit",
+                "parent_net_profit_yoy",
+                "deducted_net_profit",
+                "deducted_net_profit_yoy",
+                "gross_margin",
+                "net_margin",
+                "roe",
+                "operating_cash_flow",
+                "free_cash_flow",
+                "cash_conversion_ratio",
+                "debt_ratio",
+                "accounts_receivable",
+                "inventory",
+                "contract_liabilities",
+                "flow_basis",
+            ),
+        )
         for period in (financials.get("items") or [])[-10:]
         if isinstance(period, dict)
     ]
@@ -1318,20 +1215,50 @@ def _compact_base_company_packet(value: Any) -> dict[str, Any]:
     announcements = item.get("announcements")
     announcements = announcements if isinstance(announcements, dict) else {}
     return {
-        "profile": pick(item.get("profile"), (
-            "short_name", "company_name", "industry", "industry_eastmoney",
-            "listing_date", "main_business", "company_profile",
-        )),
-        "quote": pick(snapshot.get("quote"), (
-            "price", "change_pct", "volume", "amount", "turnover_rate",
-            "pe_dynamic", "pb", "data_time", "is_stale",
-        )),
+        "profile": pick(
+            item.get("profile"),
+            (
+                "short_name",
+                "company_name",
+                "industry",
+                "industry_eastmoney",
+                "listing_date",
+                "main_business",
+                "company_profile",
+            ),
+        ),
+        "quote": pick(
+            snapshot.get("quote"),
+            (
+                "price",
+                "change_pct",
+                "volume",
+                "amount",
+                "turnover_rate",
+                "pe_dynamic",
+                "pb",
+                "data_time",
+                "is_stale",
+            ),
+        ),
         "technical": {
-            "indicators": pick(technical.get("indicators"), (
-                "close", "ma20", "ma60", "rsi14", "atr14_pct",
-                "return_5d_pct", "return_20d_pct", "return_60d_pct",
-                "high_20d", "low_20d", "high_60d", "low_60d",
-            )),
+            "indicators": pick(
+                technical.get("indicators"),
+                (
+                    "close",
+                    "ma20",
+                    "ma60",
+                    "rsi14",
+                    "atr14_pct",
+                    "return_5d_pct",
+                    "return_20d_pct",
+                    "return_60d_pct",
+                    "high_20d",
+                    "low_20d",
+                    "high_60d",
+                    "low_60d",
+                ),
+            ),
             **pick(technical, ("data_time", "is_stale", "source")),
         },
         "financials": {
@@ -1341,43 +1268,81 @@ def _compact_base_company_packet(value: Any) -> dict[str, Any]:
         "business_segments": {
             **pick(segments, ("latest_report_date", "source_url")),
             "items": [
-                pick(segment, (
-                    "report_date", "category", "segment_name", "revenue",
-                    "revenue_share_pct", "gross_profit_share_pct",
-                    "gross_margin_pct",
-                ))
+                pick(
+                    segment,
+                    (
+                        "report_date",
+                        "category",
+                        "segment_name",
+                        "revenue",
+                        "revenue_share_pct",
+                        "gross_profit_share_pct",
+                        "gross_margin_pct",
+                    ),
+                )
                 for segment in (segments.get("items") or [])[:6]
                 if isinstance(segment, dict)
             ],
         },
-        "valuation": pick(item.get("valuation"), (
-            "trade_date", "current_price", "pe_ttm", "pe_static",
-            "pb_mrq", "ps_ttm", "pcf_ttm", "peg_trailing", "peg_forward",
-            "forward_pe", "dividend_yield", "history_statistics",
-            "positive_pe_percentile", "industry_average", "data_time",
-        )),
+        "valuation": pick(
+            item.get("valuation"),
+            (
+                "trade_date",
+                "current_price",
+                "pe_ttm",
+                "pe_static",
+                "pb_mrq",
+                "ps_ttm",
+                "pcf_ttm",
+                "peg_trailing",
+                "peg_forward",
+                "forward_pe",
+                "dividend_yield",
+                "history_statistics",
+                "positive_pe_percentile",
+                "industry_average",
+                "data_time",
+            ),
+        ),
         "consensus": {
-            **pick(consensus, (
-                "coverage_available", "coverage_count_latest",
-                "coverage_status", "latest_institution_report_date",
-                "forecast_warning", "data_time",
-            )),
+            **pick(
+                consensus,
+                (
+                    "coverage_available",
+                    "coverage_count_latest",
+                    "coverage_status",
+                    "latest_institution_report_date",
+                    "forecast_warning",
+                    "data_time",
+                ),
+            ),
             "estimates": consensus.get("estimates") or [],
             "actuals": consensus.get("actuals") or [],
         },
         "peer_comparison": item.get("peer_comparison") or {},
         "risk_events": {
-            **pick(risks, (
-                "has_risk_events", "analysis", "data_time",
-                "freshness_unknown",
-            )),
+            **pick(
+                risks,
+                (
+                    "has_risk_events",
+                    "analysis",
+                    "data_time",
+                    "freshness_unknown",
+                ),
+            ),
             "items": risks.get("items") or [],
         },
         "announcements": {
-            **pick(announcements, (
-                "has_announcements", "analysis", "coverage_start",
-                "coverage_end", "data_time",
-            )),
+            **pick(
+                announcements,
+                (
+                    "has_announcements",
+                    "analysis",
+                    "coverage_start",
+                    "coverage_end",
+                    "data_time",
+                ),
+            ),
             "items": announcements.get("items") or [],
         },
         "capital_flow": item.get("capital_flow") or {},
@@ -1412,22 +1377,14 @@ def _dimension_company_context(
     }
     financials = packet.get("financials")
     financials = financials if isinstance(financials, dict) else {}
-    periods = [
-        item
-        for item in financials.get("items") or []
-        if isinstance(item, dict)
-    ]
+    periods = [item for item in financials.get("items") or [] if isinstance(item, dict)]
     period_rows = [
         {
             "report_date": item.get("report_date"),
             "report_period": item.get("report_period"),
             "reported_period_revenue_yoy_pct": item.get("revenue_yoy"),
-            "reported_period_parent_net_profit_yoy_pct": item.get(
-                "parent_net_profit_yoy"
-            ),
-            "reported_period_deducted_net_profit_yoy_pct": item.get(
-                "deducted_net_profit_yoy"
-            ),
+            "reported_period_parent_net_profit_yoy_pct": item.get("parent_net_profit_yoy"),
+            "reported_period_deducted_net_profit_yoy_pct": item.get("deducted_net_profit_yoy"),
             "reported_growth_basis": (
                 "公司披露的截至该报告期同比；一季报等同单季同比，"
                 "中报和三季报通常为年初至报告期累计同比，年报为全年同比"
@@ -1459,17 +1416,10 @@ def _dimension_company_context(
     complete_years = sorted(
         year
         for year, items in periods_by_year.items()
-        if len({
-            str(item.get("report_period") or item.get("report_date") or "")
-            for item in items
-        }) == 4
+        if len({str(item.get("report_period") or item.get("report_date") or "") for item in items}) == 4
     )
     latest_full_year = complete_years[-1] if complete_years else None
-    latest_full_year_items = (
-        periods_by_year.get(latest_full_year, [])
-        if latest_full_year is not None
-        else []
-    )
+    latest_full_year_items = periods_by_year.get(latest_full_year, []) if latest_full_year is not None else []
     annual_summary: dict[str, Any] = {}
     if len(latest_full_year_items) == 4:
         flow_fields = {
@@ -1480,10 +1430,7 @@ def _dimension_company_context(
             "free_cash_flow_亿元": "free_cash_flow",
         }
         annual_summary = {
-            output: money(sum(
-                float(item.get(source) or 0)
-                for item in latest_full_year_items
-            ))
+            output: money(sum(float(item.get(source) or 0) for item in latest_full_year_items))
             for output, source in flow_fields.items()
         }
         previous_year_items = periods_by_year.get(
@@ -1492,19 +1439,11 @@ def _dimension_company_context(
         )
         if len(previous_year_items) == 4:
             for output, source in flow_fields.items():
-                current_value = sum(
-                    float(item.get(source) or 0)
-                    for item in latest_full_year_items
-                )
-                previous_value = sum(
-                    float(item.get(source) or 0)
-                    for item in previous_year_items
-                )
+                current_value = sum(float(item.get(source) or 0) for item in latest_full_year_items)
+                previous_value = sum(float(item.get(source) or 0) for item in previous_year_items)
                 annual_summary[output.replace("_亿元", "_yoy_pct")] = (
                     round(
-                        (current_value - previous_value)
-                        / abs(previous_value)
-                        * 100,
+                        (current_value - previous_value) / abs(previous_value) * 100,
                         4,
                     )
                     if previous_value
@@ -1518,14 +1457,14 @@ def _dimension_company_context(
             else None
         )
         latest_year_end = latest_full_year_items[-1]
-        annual_summary.update({
-            "year": latest_full_year,
-            "year_end_accounts_receivable_亿元": money(
-                latest_year_end.get("accounts_receivable")
-            ),
-            "year_end_inventory_亿元": money(latest_year_end.get("inventory")),
-            "year_end_debt_ratio_pct": latest_year_end.get("debt_ratio"),
-        })
+        annual_summary.update(
+            {
+                "year": latest_full_year,
+                "year_end_accounts_receivable_亿元": money(latest_year_end.get("accounts_receivable")),
+                "year_end_inventory_亿元": money(latest_year_end.get("inventory")),
+                "year_end_debt_ratio_pct": latest_year_end.get("debt_ratio"),
+            }
+        )
 
     financial_context = {
         "basis": (
@@ -1543,21 +1482,9 @@ def _dimension_company_context(
         "latest_quarters": period_rows[-2:],
     }
     quote = packet.get("quote") if isinstance(packet.get("quote"), dict) else {}
-    valuation = (
-        packet.get("valuation")
-        if isinstance(packet.get("valuation"), dict)
-        else {}
-    )
-    peers = (
-        packet.get("peer_comparison")
-        if isinstance(packet.get("peer_comparison"), dict)
-        else {}
-    )
-    peer_dimensions = (
-        peers.get("dimensions")
-        if isinstance(peers.get("dimensions"), dict)
-        else {}
-    )
+    valuation = packet.get("valuation") if isinstance(packet.get("valuation"), dict) else {}
+    peers = packet.get("peer_comparison") if isinstance(packet.get("peer_comparison"), dict) else {}
+    peer_dimensions = peers.get("dimensions") if isinstance(peers.get("dimensions"), dict) else {}
 
     def compact_peer(name: str, fields: tuple[str, ...]) -> dict[str, Any]:
         source = peer_dimensions.get(name)
@@ -1591,81 +1518,120 @@ def _dimension_company_context(
             "industry_median": pick(source.get("industry_median")),
         }
 
-    peer_growth = compact_peer("growth", (
-        "symbol", "name", "eps_growth_3y_cagr_pct",
-        "eps_growth_report_year_pct", "eps_growth_ttm_pct",
-        "revenue_growth_3y_cagr_pct", "revenue_growth_report_year_pct",
-        "revenue_growth_ttm_pct", "net_profit_growth_3y_cagr_pct",
-        "net_profit_growth_report_year_pct", "net_profit_growth_ttm_pct",
-        "rank",
-    ))
-    peer_profitability = compact_peer("profitability", (
-        "symbol", "name", "roe_3y_average_pct",
-        "net_margin_3y_average_pct", "asset_turnover_3y_average",
-        "equity_multiplier_3y_average", "rank",
-    ))
-    peer_valuation = compact_peer("valuation", (
-        "symbol", "name", "peg_forward", "pe_ttm", "forward_pe",
-        "ps_ttm", "forward_ps", "pb_mrq", "pcf_ttm",
-        "ev_ebitda_report_year", "rank",
-    ))
+    peer_growth = compact_peer(
+        "growth",
+        (
+            "symbol",
+            "name",
+            "eps_growth_3y_cagr_pct",
+            "eps_growth_report_year_pct",
+            "eps_growth_ttm_pct",
+            "revenue_growth_3y_cagr_pct",
+            "revenue_growth_report_year_pct",
+            "revenue_growth_ttm_pct",
+            "net_profit_growth_3y_cagr_pct",
+            "net_profit_growth_report_year_pct",
+            "net_profit_growth_ttm_pct",
+            "rank",
+        ),
+    )
+    peer_profitability = compact_peer(
+        "profitability",
+        (
+            "symbol",
+            "name",
+            "roe_3y_average_pct",
+            "net_margin_3y_average_pct",
+            "asset_turnover_3y_average",
+            "equity_multiplier_3y_average",
+            "rank",
+        ),
+    )
+    peer_valuation = compact_peer(
+        "valuation",
+        (
+            "symbol",
+            "name",
+            "peg_forward",
+            "pe_ttm",
+            "forward_pe",
+            "ps_ttm",
+            "forward_ps",
+            "pb_mrq",
+            "pcf_ttm",
+            "ev_ebitda_report_year",
+            "rank",
+        ),
+    )
 
     base: dict[str, Any] = {"profile": compact_profile}
     if dimension_id == "market_mainline":
         pass
     elif dimension_id == "industrial_competitiveness":
-        base.update({
-            "financials": recent_financial_context,
-            "business_segments": packet.get("business_segments") or {},
-            "peer_growth": peer_growth,
-            "peer_profitability": peer_profitability,
-        })
+        base.update(
+            {
+                "financials": recent_financial_context,
+                "business_segments": packet.get("business_segments") or {},
+                "peer_growth": peer_growth,
+                "peer_profitability": peer_profitability,
+            }
+        )
     elif dimension_id == "industry_cycle":
-        base.update({
-            "financials": financial_context,
-            "business_segments": packet.get("business_segments") or {},
-        })
+        base.update(
+            {
+                "financials": financial_context,
+                "business_segments": packet.get("business_segments") or {},
+            }
+        )
     elif dimension_id == "competition_quality":
-        base.update({
-            "financials": recent_financial_context,
-            "business_segments": packet.get("business_segments") or {},
-            "peer_profitability": peer_profitability,
-        })
+        base.update(
+            {
+                "financials": recent_financial_context,
+                "business_segments": packet.get("business_segments") or {},
+                "peer_profitability": peer_profitability,
+            }
+        )
     elif dimension_id == "growth_drivers":
-        base.update({
-            "financials": financial_context,
-            "business_segments": packet.get("business_segments") or {},
-        })
+        base.update(
+            {
+                "financials": financial_context,
+                "business_segments": packet.get("business_segments") or {},
+            }
+        )
     elif dimension_id == "forward_catalysts":
-        base.update({
-            "announcements": packet.get("announcements") or {},
-            "risk_events": packet.get("risk_events") or {},
-        })
+        base.update(
+            {
+                "announcements": packet.get("announcements") or {},
+                "risk_events": packet.get("risk_events") or {},
+            }
+        )
     elif dimension_id == "valuation_odds":
-        base.update({
-            "quote": quote,
-            "valuation": valuation,
-            "peer_valuation": peer_valuation,
-            "peer_growth": peer_growth,
-            "financials": recent_financial_context,
-        })
+        base.update(
+            {
+                "quote": quote,
+                "valuation": valuation,
+                "peer_valuation": peer_valuation,
+                "peer_growth": peer_growth,
+                "financials": recent_financial_context,
+            }
+        )
     elif dimension_id == "major_risks":
-        base.update({
-            "financials": recent_financial_context,
-            "risk_events": packet.get("risk_events") or {},
-            "announcements": packet.get("announcements") or {},
-        })
+        base.update(
+            {
+                "financials": recent_financial_context,
+                "risk_events": packet.get("risk_events") or {},
+                "announcements": packet.get("announcements") or {},
+            }
+        )
     return base
 
 
 def _mainline_report_from_evidence(
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
-    section = (
-        evidence.get("dimension_evidence")
-        if isinstance(evidence.get("dimension_evidence"), dict)
-        else {}
-    ).get("market_mainline")
+    section = (evidence.get("dimension_evidence") if isinstance(evidence.get("dimension_evidence"), dict) else {}).get(
+        "market_mainline"
+    )
     section = section if isinstance(section, dict) else {}
     raw = section.get("raw_data")
     raw = raw if isinstance(raw, dict) else {}
@@ -1683,12 +1649,9 @@ def _mainline_row_by_name(
     target = str(name or "").strip()
     if not target or not isinstance(rows, list):
         return None
-    return next((
-        item
-        for item in rows
-        if isinstance(item, dict)
-        and str(item.get("name") or "").strip() == target
-    ), None)
+    return next(
+        (item for item in rows if isinstance(item, dict) and str(item.get("name") or "").strip() == target), None
+    )
 
 
 def _early_candidate_eligibility(
@@ -1698,14 +1661,8 @@ def _early_candidate_eligibility(
     """Apply only program-verifiable constraints for an emerging direction."""
 
     missing: list[str] = []
-    branches = {
-        str(value).strip()
-        for value in row.get("branches") or []
-        if str(value).strip()
-    }
-    relation = MainlineDirectionRelation(
-        classification.direction_relation
-    )
+    branches = {str(value).strip() for value in row.get("branches") or [] if str(value).strip()}
+    relation = MainlineDirectionRelation(classification.direction_relation)
     if relation == MainlineDirectionRelation.EMERGING_BRANCH:
         branch = str(classification.matched_branch or "").strip()
         if not branch or branch not in branches:
@@ -1718,9 +1675,7 @@ def _early_candidate_eligibility(
     evidence_axes = {
         str(value.get("axis") or "").strip()
         for value in row.get("evidence_axes") or []
-        if isinstance(value, dict)
-        and str(value.get("axis") or "").strip()
-        and bool(value.get("evidence_refs"))
+        if isinstance(value, dict) and str(value.get("axis") or "").strip() and bool(value.get("evidence_refs"))
     }
     axis_evidence_refs = {
         str(ref).strip()
@@ -1731,26 +1686,15 @@ def _early_candidate_eligibility(
     }
     if len(evidence_axes) < 2 or len(axis_evidence_refs) < 2:
         missing.append("至少两类独立中期证据")
-    trigger_assessments = [
-        item
-        for item in row.get("trigger_assessments") or []
-        if isinstance(item, dict)
-    ]
-    if not any(
-        str(item.get("status") or "") in {"met", "partial"}
-        for item in trigger_assessments
-    ):
+    trigger_assessments = [item for item in row.get("trigger_assessments") or [] if isinstance(item, dict)]
+    if not any(str(item.get("status") or "") in {"met", "partial"} for item in trigger_assessments):
         missing.append("至少一个已满足或部分满足的触发条件")
-    if MainlineTriggerProgress(
-        classification.trigger_progress
-    ) not in {
+    if MainlineTriggerProgress(classification.trigger_progress) not in {
         MainlineTriggerProgress.MET,
         MainlineTriggerProgress.PARTIAL,
     }:
         missing.append("可核验的触发进度")
-    classified_lifecycle = MainlineLifecycle(
-        classification.lifecycle
-    )
+    classified_lifecycle = MainlineLifecycle(classification.lifecycle)
     if classified_lifecycle not in {
         MainlineLifecycle.EMERGING,
         MainlineLifecycle.VALIDATING,
@@ -1767,50 +1711,39 @@ def _enforce_mainline_gate_policy(
 ) -> DimensionAssessment:
     """Enforce strategy boundaries without replacing the semantic judgment."""
 
-    profile = normalize_mainline_strategy(
-        evidence.get("mainline_strategy")
-    )
+    profile = normalize_mainline_strategy(evidence.get("mainline_strategy"))
     classification = result.mainline_classification
     if classification is None:
         raise ForcedSchemaResponseError(
             "market_mainline requires mainline_classification",
             result.model_dump(mode="json"),
-            issues=[{
-                "pointer": "/mainline_classification",
-                "code": "mainline_classification_required",
-                "expected": (
-                    "one typed classification for the requested mainline "
-                    "strategy"
-                ),
-                "allowed": [],
-            }],
+            issues=[
+                {
+                    "pointer": "/mainline_classification",
+                    "code": "mainline_classification_required",
+                    "expected": ("one typed classification for the requested mainline " "strategy"),
+                    "allowed": [],
+                }
+            ],
         )
-    if normalize_mainline_strategy(
-        classification.strategy_profile
-    ) != profile:
+    if normalize_mainline_strategy(classification.strategy_profile) != profile:
         raise ForcedSchemaResponseError(
             "mainline_classification.strategy_profile does not match request",
             result.model_dump(mode="json"),
-            issues=[{
-                "pointer": (
-                    "/mainline_classification/strategy_profile"
-                ),
-                "code": "mainline_strategy_mismatch",
-                "expected": profile.value,
-                "allowed": [profile.value],
-            }],
+            issues=[
+                {
+                    "pointer": ("/mainline_classification/strategy_profile"),
+                    "code": "mainline_strategy_mismatch",
+                    "expected": profile.value,
+                    "allowed": [profile.value],
+                }
+            ],
         )
 
     report = _mainline_report_from_evidence(evidence)
     current_rows = report.get("current_mainlines") or []
-    candidate_rows = (
-        report.get("candidate_mainlines")
-        or report.get("future_mainlines")
-        or []
-    )
-    relation = MainlineDirectionRelation(
-        classification.direction_relation
-    )
+    candidate_rows = report.get("candidate_mainlines") or report.get("future_mainlines") or []
+    relation = MainlineDirectionRelation(classification.direction_relation)
     matched_current = _mainline_row_by_name(
         current_rows,
         classification.matched_mainline,
@@ -1825,94 +1758,71 @@ def _enforce_mainline_gate_policy(
         MainlineDirectionRelation.ACTIVE_BRANCH,
         MainlineDirectionRelation.EMERGING_BRANCH,
     }:
-        expected_rows = (
-            current_rows
-            if relation == MainlineDirectionRelation.ACTIVE_BRANCH
-            else candidate_rows
-        )
-        matched_row = (
-            matched_current
-            if relation == MainlineDirectionRelation.ACTIVE_BRANCH
-            else matched_candidate
-        )
+        expected_rows = current_rows if relation == MainlineDirectionRelation.ACTIVE_BRANCH else candidate_rows
+        matched_row = matched_current if relation == MainlineDirectionRelation.ACTIVE_BRANCH else matched_candidate
         expected_names = [
             str(item.get("name") or "").strip()
             for item in expected_rows
-            if isinstance(item, dict)
-            and str(item.get("name") or "").strip()
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
         ]
         if matched_row is None:
-            binding_issues.append({
-                "pointer": "/mainline_classification/matched_mainline",
-                "code": "mainline_resource_binding_invalid",
-                "expected": (
-                    "one exact mainline name copied from the corresponding "
-                    "structured report section"
-                ),
-                "allowed": expected_names,
-            })
+            binding_issues.append(
+                {
+                    "pointer": "/mainline_classification/matched_mainline",
+                    "code": "mainline_resource_binding_invalid",
+                    "expected": ("one exact mainline name copied from the corresponding " "structured report section"),
+                    "allowed": expected_names,
+                }
+            )
         else:
             expected_branches = [
-                str(value).strip()
-                for value in matched_row.get("branches") or []
-                if str(value).strip()
+                str(value).strip() for value in matched_row.get("branches") or [] if str(value).strip()
             ]
-            if (
-                str(classification.matched_branch or "").strip()
-                not in expected_branches
-            ):
-                binding_issues.append({
-                    "pointer": "/mainline_classification/matched_branch",
-                    "code": "mainline_branch_binding_invalid",
-                    "expected": (
-                        "one exact branch name copied from the matched "
-                        "structured mainline"
-                    ),
-                    "allowed": expected_branches,
-                })
-            expected_lifecycle = str(
-                matched_row.get("lifecycle") or ""
-            ).strip()
-            if (
-                str(classification.lifecycle or "").strip()
-                != expected_lifecycle
-            ):
-                binding_issues.append({
-                    "pointer": "/mainline_classification/lifecycle",
-                    "code": "mainline_lifecycle_binding_invalid",
-                    "expected": expected_lifecycle,
-                    "allowed": [expected_lifecycle],
-                })
+            if str(classification.matched_branch or "").strip() not in expected_branches:
+                binding_issues.append(
+                    {
+                        "pointer": "/mainline_classification/matched_branch",
+                        "code": "mainline_branch_binding_invalid",
+                        "expected": ("one exact branch name copied from the matched " "structured mainline"),
+                        "allowed": expected_branches,
+                    }
+                )
+            expected_lifecycle = str(matched_row.get("lifecycle") or "").strip()
+            if str(classification.lifecycle or "").strip() != expected_lifecycle:
+                binding_issues.append(
+                    {
+                        "pointer": "/mainline_classification/lifecycle",
+                        "code": "mainline_lifecycle_binding_invalid",
+                        "expected": expected_lifecycle,
+                        "allowed": [expected_lifecycle],
+                    }
+                )
     elif relation == MainlineDirectionRelation.CORE:
         matched_row = matched_current or matched_candidate
         if matched_row is None:
-            binding_issues.append({
-                "pointer": "/mainline_classification/matched_mainline",
-                "code": "mainline_resource_binding_invalid",
-                "expected": (
-                    "one exact mainline name copied from the structured report"
-                ),
-                "allowed": [
-                    str(item.get("name") or "").strip()
-                    for item in [*current_rows, *candidate_rows]
-                    if isinstance(item, dict)
-                    and str(item.get("name") or "").strip()
-                ],
-            })
+            binding_issues.append(
+                {
+                    "pointer": "/mainline_classification/matched_mainline",
+                    "code": "mainline_resource_binding_invalid",
+                    "expected": ("one exact mainline name copied from the structured report"),
+                    "allowed": [
+                        str(item.get("name") or "").strip()
+                        for item in [*current_rows, *candidate_rows]
+                        if isinstance(item, dict) and str(item.get("name") or "").strip()
+                    ],
+                }
+            )
         else:
-            expected_lifecycle = str(
-                matched_row.get("lifecycle") or ""
-            ).strip()
-            if (
-                str(classification.lifecycle or "").strip()
-                != expected_lifecycle
-            ):
-                binding_issues.append({
-                    "pointer": "/mainline_classification/lifecycle",
-                    "code": "mainline_lifecycle_binding_invalid",
-                    "expected": expected_lifecycle,
-                    "allowed": [expected_lifecycle],
-                })
+            expected_lifecycle = str(matched_row.get("lifecycle") or "").strip()
+            if str(classification.lifecycle or "").strip() != expected_lifecycle:
+                binding_issues.append(
+                    {
+                        "pointer": "/mainline_classification/lifecycle",
+                        "code": "mainline_lifecycle_binding_invalid",
+                        "expected": expected_lifecycle,
+                        "allowed": [expected_lifecycle],
+                    }
+                )
     if binding_issues:
         raise ForcedSchemaResponseError(
             "mainline classification failed structured resource binding",
@@ -1922,24 +1832,13 @@ def _enforce_mainline_gate_policy(
 
     if result.status == "pass":
         current_branches = {
-            str(value).strip()
-            for value in (matched_current or {}).get("branches") or []
-            if str(value).strip()
+            str(value).strip() for value in (matched_current or {}).get("branches") or [] if str(value).strip()
         }
-        current_lifecycle = str(
-            (matched_current or {}).get("lifecycle") or ""
-        )
-        classified_lifecycle = str(
-            classification.lifecycle or ""
-        )
-        current_relation_bound = (
-            relation == MainlineDirectionRelation.CORE
-            or (
-                relation == MainlineDirectionRelation.ACTIVE_BRANCH
-                and str(
-                    classification.matched_branch or ""
-                ).strip() in current_branches
-            )
+        current_lifecycle = str((matched_current or {}).get("lifecycle") or "")
+        classified_lifecycle = str(classification.lifecycle or "")
+        current_relation_bound = relation == MainlineDirectionRelation.CORE or (
+            relation == MainlineDirectionRelation.ACTIVE_BRANCH
+            and str(classification.matched_branch or "").strip() in current_branches
         )
         current_eligible = (
             matched_current is not None
@@ -1953,58 +1852,51 @@ def _enforce_mainline_gate_policy(
         )
         missing: list[str] = []
         early_eligible = False
-        if (
-            profile == MainlineStrategyProfile.EARLY_POSITIONING
-            and matched_candidate is not None
-        ):
+        if profile == MainlineStrategyProfile.EARLY_POSITIONING and matched_candidate is not None:
             early_eligible, missing = _early_candidate_eligibility(
                 matched_candidate,
                 classification,
             )
         if not current_eligible and not early_eligible:
-            candidate_name = str(
-                classification.matched_mainline or "该方向"
-            )
+            candidate_name = str(classification.matched_mainline or "该方向")
             conditions = "、".join(missing) or "所选策略的结构化准入条件"
-            return result.model_copy(update={
-                "status": "fail",
-                "headline": (
-                    f"{candidate_name}未达到"
-                    f"{mainline_strategy_label(profile)}准入条件"
-                )[:120],
-                "analysis": (
-                    f"产业归属或候选关系可以成立，但程序复核发现尚未满足：{conditions}。"
-                    "本次只否定所选买入策略下的准入资格，不否定该产业方向本身。"
-                ),
-                "counter_evidence": list(dict.fromkeys([
-                    *result.counter_evidence,
-                    *missing,
-                ]))[:4],
-            })
+            return result.model_copy(
+                update={
+                    "status": "fail",
+                    "headline": (f"{candidate_name}未达到" f"{mainline_strategy_label(profile)}准入条件")[:120],
+                    "analysis": (
+                        f"产业归属或候选关系可以成立，但程序复核发现尚未满足：{conditions}。"
+                        "本次只否定所选买入策略下的准入资格，不否定该产业方向本身。"
+                    ),
+                    "counter_evidence": list(
+                        dict.fromkeys(
+                            [
+                                *result.counter_evidence,
+                                *missing,
+                            ]
+                        )
+                    )[:4],
+                }
+            )
 
     if (
         result.status == "fail"
         and relation == MainlineDirectionRelation.EMERGING_BRANCH
         and matched_candidate is not None
     ):
-        candidate_name = str(
-            classification.matched_mainline or "候选主线"
-        )
-        branch_name = str(
-            classification.matched_branch or "本轮产业方向"
-        )
+        candidate_name = str(classification.matched_mainline or "候选主线")
+        branch_name = str(classification.matched_branch or "本轮产业方向")
         if profile == MainlineStrategyProfile.CONFIRMED_MAINLINE:
-            return result.model_copy(update={
-                "headline": (
-                    f"{branch_name}属于{candidate_name}候选分支，"
-                    "但未通过确认型主线门槛"
-                )[:120],
-                "analysis": (
-                    f"{branch_name}与{candidate_name}的产业归属成立。"
-                    "当前失败只表示该候选方向尚未升级为未来1—6个月已确认主导叙事，"
-                    "不表示该产业不存在或与上位主题无关。"
-                ),
-            })
+            return result.model_copy(
+                update={
+                    "headline": (f"{branch_name}属于{candidate_name}候选分支，" "但未通过确认型主线门槛")[:120],
+                    "analysis": (
+                        f"{branch_name}与{candidate_name}的产业归属成立。"
+                        "当前失败只表示该候选方向尚未升级为未来1—6个月已确认主导叙事，"
+                        "不表示该产业不存在或与上位主题无关。"
+                    ),
+                }
+            )
     return result
 
 
@@ -2048,14 +1940,14 @@ def _call_professional_model(
             raise ForcedSchemaResponseError(
                 "professional analysis response has no choices",
                 payload,
-                issues=[{
-                    "pointer": "/choices",
-                    "code": "choices_missing",
-                    "expected": (
-                        "one response choice containing the forced tool call"
-                    ),
-                    "allowed": [tool_name],
-                }],
+                issues=[
+                    {
+                        "pointer": "/choices",
+                        "code": "choices_missing",
+                        "expected": ("one response choice containing the forced tool call"),
+                        "allowed": [tool_name],
+                    }
+                ],
             )
         choice = choices[0]
         message = field(choice, "message")
@@ -2066,11 +1958,7 @@ def _call_professional_model(
                 continue
             arguments = field(function, "arguments")
             try:
-                payload = (
-                    json.loads(arguments)
-                    if isinstance(arguments, str)
-                    else arguments
-                )
+                payload = json.loads(arguments) if isinstance(arguments, str) else arguments
             except json.JSONDecodeError as exc:
                 raise ForcedSchemaResponseError(
                     "professional analysis tool arguments are not valid JSON",
@@ -2078,12 +1966,14 @@ def _call_professional_model(
                         "tool_name": tool_name,
                         "arguments": arguments,
                     },
-                    issues=[{
-                        "pointer": "/arguments",
-                        "code": "json_invalid",
-                        "expected": "one valid JSON object matching the schema",
-                        "allowed": [],
-                    }],
+                    issues=[
+                        {
+                            "pointer": "/arguments",
+                            "code": "json_invalid",
+                            "expected": "one valid JSON object matching the schema",
+                            "allowed": [],
+                        }
+                    ],
                 ) from exc
             if not isinstance(payload, dict):
                 raise ForcedSchemaResponseError(
@@ -2092,12 +1982,14 @@ def _call_professional_model(
                         "tool_name": tool_name,
                         "arguments": payload,
                     },
-                    issues=[{
-                        "pointer": "/arguments",
-                        "code": "object_type_required",
-                        "expected": "JSON object",
-                        "allowed": [],
-                    }],
+                    issues=[
+                        {
+                            "pointer": "/arguments",
+                            "code": "object_type_required",
+                            "expected": "JSON object",
+                            "allowed": [],
+                        }
+                    ],
                 )
             return payload
         # Compatibility fallback for gateways that return forced JSON as text.
@@ -2116,43 +2008,34 @@ def _call_professional_model(
                 f" reasoning_chars={len(reasoning) if isinstance(reasoning, str) else 0})"
             ),
             failure_payload,
-            issues=[{
-                "pointer": "/choices/0/message/tool_calls",
-                "code": "forced_schema_missing",
-                "expected": (
-                    f"exactly one {tool_name} tool call whose arguments "
-                    "match the supplied schema"
-                ),
-                "allowed": [tool_name],
-            }],
+            issues=[
+                {
+                    "pointer": "/choices/0/message/tool_calls",
+                    "code": "forced_schema_missing",
+                    "expected": (f"exactly one {tool_name} tool call whose arguments " "match the supplied schema"),
+                    "allowed": [tool_name],
+                }
+            ],
         )
 
     def validation_issues(exc: ValidationError) -> list[dict[str, Any]]:
         issues: list[dict[str, Any]] = []
         for error in exc.errors(include_url=False):
             location = error.get("loc") or ()
-            pointer = "/" + "/".join(
-                str(value).replace("~", "~0").replace("/", "~1")
-                for value in location
+            pointer = "/" + "/".join(str(value).replace("~", "~0").replace("/", "~1") for value in location)
+            issues.append(
+                {
+                    "pointer": pointer or "/",
+                    "code": str(error.get("type") or "schema_invalid"),
+                    "expected": str(error.get("msg") or "value matching schema"),
+                    "allowed": (error.get("ctx") if isinstance(error.get("ctx"), dict) else []),
+                }
             )
-            issues.append({
-                "pointer": pointer or "/",
-                "code": str(error.get("type") or "schema_invalid"),
-                "expected": str(error.get("msg") or "value matching schema"),
-                "allowed": (
-                    error.get("ctx")
-                    if isinstance(error.get("ctx"), dict)
-                    else []
-                ),
-            })
         return issues
 
     def normalized_usage(response: Any) -> dict[str, int]:
         usage = field(response, "usage")
-        return {
-            key: int(field(usage, key) or 0)
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-        }
+        return {key: int(field(usage, key) or 0) for key in ("prompt_tokens", "completion_tokens", "total_tokens")}
 
     def collect_streamed_response(response_stream: Any) -> dict[str, Any]:
         tool_arguments: dict[int, list[str]] = {}
@@ -2185,11 +2068,7 @@ def _call_professional_model(
             if isinstance(model_extra, dict):
                 for name in ("reasoning_content", "reasoning"):
                     value = model_extra.get(name)
-                    if (
-                        isinstance(value, str)
-                        and value
-                        and value not in reasoning_values
-                    ):
+                    if isinstance(value, str) and value and value not in reasoning_values:
                         reasoning_values.append(value)
             reasoning_delta = "".join(reasoning_values)
             if reasoning_delta:
@@ -2206,32 +2085,30 @@ def _call_professional_model(
                 name = field(function, "name")
                 if isinstance(name, str) and name:
                     current_name = tool_names.get(index, "")
-                    tool_names[index] = (
-                        name
-                        if not current_name or current_name == name
-                        else current_name + name
-                    )
+                    tool_names[index] = name if not current_name or current_name == name else current_name + name
                 arguments = field(function, "arguments")
                 if isinstance(arguments, str) and arguments:
                     tool_arguments.setdefault(index, []).append(arguments)
         return {
             "model": model_used,
-            "choices": [{
-                "finish_reason": finish_reason,
-                "message": {
-                    "content": "".join(content_parts),
-                    "reasoning_content": "".join(reasoning_parts),
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": tool_names.get(index),
-                                "arguments": "".join(parts),
-                            },
-                        }
-                        for index, parts in sorted(tool_arguments.items())
-                    ],
-                },
-            }],
+            "choices": [
+                {
+                    "finish_reason": finish_reason,
+                    "message": {
+                        "content": "".join(content_parts),
+                        "reasoning_content": "".join(reasoning_parts),
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": tool_names.get(index),
+                                    "arguments": "".join(parts),
+                                },
+                            }
+                            for index, parts in sorted(tool_arguments.items())
+                        ],
+                    },
+                }
+            ],
             "usage": usage,
         }
 
@@ -2297,9 +2174,7 @@ def _call_professional_model(
         return parsed
 
     evidence_view = _prompt_evidence_view(evidence)
-    strategy_profile = normalize_mainline_strategy(
-        evidence_view.get("mainline_strategy")
-    )
+    strategy_profile = normalize_mainline_strategy(evidence_view.get("mainline_strategy"))
     stock_info = evidence_view.get("stock_info")
     stock_info = stock_info if isinstance(stock_info, dict) else {}
     compact_stock_info = {
@@ -2315,9 +2190,7 @@ def _call_professional_model(
         if stock_info.get(key)
     }
 
-    adjacent_evidence = {
-        dimension_id: set() for dimension_id in DIMENSION_IDS
-    }
+    adjacent_evidence = {dimension_id: set() for dimension_id in DIMENSION_IDS}
     dimension_instructions = {
         "market_mainline": (
             "先识别未来1—6个月A股占主导的产业叙事，再说明本轮结构化产业方向"
@@ -2461,11 +2334,7 @@ def _call_professional_model(
             if key in section_names and isinstance(value, dict)
         }
         company_context = _dimension_company_context(
-            (
-                evidence_view.get("company_packet")
-                if isinstance(evidence_view.get("company_packet"), dict)
-                else {}
-            ),
+            (evidence_view.get("company_packet") if isinstance(evidence_view.get("company_packet"), dict) else {}),
             dimension_id,
         )
         if retry and dimension_id == "major_risks":
@@ -2487,18 +2356,14 @@ def _call_professional_model(
             "thesis_context": evidence_view.get("thesis_context"),
             "mainline_strategy": strategy_profile.value,
             "required_scope_confirmation": {
-                "subjects": _structured_thesis_labels(
-                    evidence_view.get("thesis_context")
-                ),
+                "subjects": _structured_thesis_labels(evidence_view.get("thesis_context")),
                 "instruction": (
                     "evaluated_subjects 必须逐字复制本轮实际判断的结构化产业方向；"
                     "不得用公司法定行业或公开搜索自行替换。"
                 ),
             },
             "research_scope": evidence_view.get("research_scope"),
-            "public_research_coverage": evidence_view.get(
-                "public_research_coverage"
-            ),
+            "public_research_coverage": evidence_view.get("public_research_coverage"),
             "public_research": [
                 item
                 for item in evidence_view.get("public_research_evidence") or []
@@ -2518,11 +2383,7 @@ def _call_professional_model(
                     "使用本轮证据完成本维度的支持、反证与边界分析。",
                 ),
             },
-            "prior_dimensions": [
-                item.model_dump(mode="json")
-                for item in dimensions
-                if item.status != "not_evaluated"
-            ],
+            "prior_dimensions": [item.model_dump(mode="json") for item in dimensions if item.status != "not_evaluated"],
             "dimension_evidence": sections,
             "capability_gaps": [
                 gap
@@ -2546,10 +2407,7 @@ def _call_professional_model(
                     )
                 )
             ][:8],
-            "public_disclosure_limits": [
-                gap
-                for gap in evidence_view.get("public_disclosure_limits") or []
-            ][:6],
+            "public_disclosure_limits": [gap for gap in evidence_view.get("public_disclosure_limits") or []][:6],
         }
         if retry and repair_error is not None:
             invalid_payload = (
@@ -2562,15 +2420,17 @@ def _call_professional_model(
                 "issues": (
                     repair_error.issues
                     if isinstance(repair_error, ForcedSchemaResponseError)
-                    else [{
-                        "pointer": "/choices/0/message/tool_calls",
-                        "code": "forced_schema_missing",
-                        "expected": (
-                            "exactly one submit_dimension_assessment tool call "
-                            "whose arguments match the supplied schema"
-                        ),
-                        "allowed": ["submit_dimension_assessment"],
-                    }]
+                    else [
+                        {
+                            "pointer": "/choices/0/message/tool_calls",
+                            "code": "forced_schema_missing",
+                            "expected": (
+                                "exactly one submit_dimension_assessment tool call "
+                                "whose arguments match the supplied schema"
+                            ),
+                            "allowed": ["submit_dimension_assessment"],
+                        }
+                    ]
                 ),
                 "instruction": (
                     "只修复上述结构化输出错误；保持同一维度、同一证据和同一 JSON Schema，"
@@ -2585,15 +2445,8 @@ def _call_professional_model(
             "thesis_context": evidence.get("thesis_context"),
             "base_company_packet": evidence.get("base_company_packet"),
             "public_research": request.get("public_research") or [],
-            "structured_context": {
-                key: sections[key].get("structured_context") or {}
-                for key in sections
-            },
-            "dimension_evidence": {
-                key: raw_sections.get(key)
-                for key in section_names
-                if key in raw_sections
-            },
+            "structured_context": {key: sections[key].get("structured_context") or {} for key in sections},
+            "dimension_evidence": {key: raw_sections.get(key) for key in section_names if key in raw_sections},
         }
         active_system_prompt = dimension_system_prompt + (
             "这是同一失败维度的定点恢复调用。上一次完整非法 payload 和字段错误已附在"
@@ -2617,39 +2470,28 @@ def _call_professional_model(
             raise ValueError("dimension response has unexpected type")
         result = DimensionAssessment.model_validate(result.model_dump())
         if result.dimension_id != dimension_id:
-            raise ValueError(
-                f"模型返回维度 {result.dimension_id}，预期 {dimension_id}"
-            )
+            raise ValueError(f"模型返回维度 {result.dimension_id}，预期 {dimension_id}")
         if result.status == "not_evaluated":
-            raise ValueError(
-                "模型不得把当前已执行维度标记为 not_evaluated"
-            )
+            raise ValueError("模型不得把当前已执行维度标记为 not_evaluated")
         if dimension_id == "market_mainline":
             result = _enforce_mainline_gate_policy(result, evidence)
         elif result.mainline_classification is not None:
             raise ForcedSchemaResponseError(
                 "mainline_classification is only valid for market_mainline",
                 result.model_dump(mode="json"),
-                issues=[{
-                    "pointer": "/mainline_classification",
-                    "code": "field_not_allowed_for_dimension",
-                    "expected": "null",
-                    "allowed": [None],
-                }],
+                issues=[
+                    {
+                        "pointer": "/mainline_classification",
+                        "code": "field_not_allowed_for_dimension",
+                        "expected": "null",
+                        "allowed": [None],
+                    }
+                ],
             )
-        required_subjects = _structured_thesis_labels(
-            evidence_view.get("thesis_context")
-        )
-        confirmed_subjects = {
-            str(value).strip() for value in result.evaluated_subjects
-            if str(value).strip()
-        }
-        if required_subjects and not set(required_subjects).intersection(
-            confirmed_subjects
-        ):
-            raise ValueError(
-                "模型没有确认本轮结构化产业方向，拒绝接受脱离主题的维度判断"
-            )
+        required_subjects = _structured_thesis_labels(evidence_view.get("thesis_context"))
+        confirmed_subjects = {str(value).strip() for value in result.evaluated_subjects if str(value).strip()}
+        if required_subjects and not set(required_subjects).intersection(confirmed_subjects):
+            raise ValueError("模型没有确认本轮结构化产业方向，拒绝接受脱离主题的维度判断")
         unsupported_claims = _unsupported_numeric_claims(
             result,
             validation_evidence,
@@ -2668,63 +2510,47 @@ def _call_professional_model(
         return _repair_incomplete_dimension_headline(result)
 
     dimensions = [
-        (
-            item
-            if isinstance(item, DimensionAssessment)
-            else DimensionAssessment.model_validate(item)
-        )
+        (item if isinstance(item, DimensionAssessment) else DimensionAssessment.model_validate(item))
         for item in precomputed_dimensions
     ]
     if len(dimensions) > len(DIMENSION_IDS):
         raise ValueError("precomputed dimensions exceed the eight-gate contract")
-    if tuple(item.dimension_id for item in dimensions) != DIMENSION_IDS[
-        :len(dimensions)
-    ]:
-        raise ValueError(
-            "precomputed dimensions must be an exact prefix of the eight gates"
-        )
+    if tuple(item.dimension_id for item in dimensions) != DIMENSION_IDS[: len(dimensions)]:
+        raise ValueError("precomputed dimensions must be an exact prefix of the eight gates")
     model_errors: list[str] = []
     blocked = bool(dimensions and dimensions[-1].status != "pass")
     evaluated_in_call = 0
-    for dimension_id, title in DIMENSION_DEFINITIONS[len(dimensions):]:
+    for dimension_id, title in DIMENSION_DEFINITIONS[len(dimensions) :]:
         if blocked:
-            dimensions.append(DimensionAssessment(
-                dimension_id=dimension_id,
-                status="not_evaluated",
-                evaluated_subjects=_structured_thesis_labels(
-                    evidence_view.get("thesis_context")
-                ),
-                headline="前序布尔闸门已关闭",
-                analysis="前一维度未通过，本维度按固定状态机不再执行，不能用于抵消首个阻断项。",
-                key_evidence=[],
-                counter_evidence=[],
-                monitoring_points=[],
-            ))
+            dimensions.append(
+                DimensionAssessment(
+                    dimension_id=dimension_id,
+                    status="not_evaluated",
+                    evaluated_subjects=_structured_thesis_labels(evidence_view.get("thesis_context")),
+                    headline="前序布尔闸门已关闭",
+                    analysis="前一维度未通过，本维度按固定状态机不再执行，不能用于抵消首个阻断项。",
+                    key_evidence=[],
+                    counter_evidence=[],
+                    monitoring_points=[],
+                )
+            )
             continue
-        if (
-            evaluation_limit is not None
-            and evaluated_in_call >= evaluation_limit
-        ):
-            dimensions.append(DimensionAssessment(
-                dimension_id=dimension_id,
-                status="not_evaluated",
-                evaluated_subjects=_structured_thesis_labels(
-                    evidence_view.get("thesis_context")
-                ),
-                headline="当前共享评估范围不包含本维度",
-                analysis=(
-                    "本次只生成批次共享的市场主线结论；公司级维度将在逐股流程中继续执行。"
-                ),
-                key_evidence=[],
-                counter_evidence=[],
-                monitoring_points=[],
-            ))
+        if evaluation_limit is not None and evaluated_in_call >= evaluation_limit:
+            dimensions.append(
+                DimensionAssessment(
+                    dimension_id=dimension_id,
+                    status="not_evaluated",
+                    evaluated_subjects=_structured_thesis_labels(evidence_view.get("thesis_context")),
+                    headline="当前共享评估范围不包含本维度",
+                    analysis=("本次只生成批次共享的市场主线结论；公司级维度将在逐股流程中继续执行。"),
+                    key_evidence=[],
+                    counter_evidence=[],
+                    monitoring_points=[],
+                )
+            )
             continue
 
-        if (
-            dimension_id not in evidence.get("dimension_evidence", {})
-            and dimension_loader is not None
-        ):
+        if dimension_id not in evidence.get("dimension_evidence", {}) and dimension_loader is not None:
             try:
                 dimension_loader(dimension_id)
             except Exception as exc:
@@ -2736,37 +2562,22 @@ def _call_professional_model(
                 )
                 evidence.setdefault("dimension_evidence", {})[dimension_id] = {
                     "success": False,
-                    "evidence_gap": (
-                        f"{type(exc).__name__}: {str(exc)[:240]}"
-                    ),
+                    "evidence_gap": (f"{type(exc).__name__}: {str(exc)[:240]}"),
                     "summary": "该证据维度按需获取失败。",
                     "raw_data": {},
                     "structured_context": {},
                 }
             evidence_view = _prompt_evidence_view(evidence)
 
-        current_section = (
-            evidence_view.get("dimension_evidence") or {}
-        ).get(dimension_id)
-        if (
-            not isinstance(current_section, dict)
-            or current_section.get("success") is False
-        ):
-            gap = str(
-                (current_section or {}).get("evidence_gap")
-                or "当前维度关键证据未取得"
-            )
+        current_section = (evidence_view.get("dimension_evidence") or {}).get(dimension_id)
+        if not isinstance(current_section, dict) or current_section.get("success") is False:
+            gap = str((current_section or {}).get("evidence_gap") or "当前维度关键证据未取得")
             result = DimensionAssessment(
                 dimension_id=dimension_id,
                 status="insufficient",
-                evaluated_subjects=_structured_thesis_labels(
-                    evidence_view.get("thesis_context")
-                ),
+                evaluated_subjects=_structured_thesis_labels(evidence_view.get("thesis_context")),
                 headline=f"{title}的关键取证未完成",
-                analysis=(
-                    f"{gap}。程序将本轮标记为分析未完成并关闭后续闸门，"
-                    "不会把取证失败写成公司的事实性结论。"
-                ),
+                analysis=(f"{gap}。程序将本轮标记为分析未完成并关闭后续闸门，" "不会把取证失败写成公司的事实性结论。"),
                 key_evidence=[],
                 counter_evidence=[],
                 monitoring_points=[f"重新取得“{title}”的关键证据"],
@@ -2785,10 +2596,7 @@ def _call_professional_model(
                     repair_error=first_error,
                 )
             except Exception as retry_error:
-                error = (
-                    f"{title}: {type(retry_error).__name__}: "
-                    f"{str(retry_error)[:180]}"
-                )
+                error = f"{title}: {type(retry_error).__name__}: " f"{str(retry_error)[:180]}"
                 model_errors.append(error)
                 logger.warning(
                     "professional buy %s failed for %s; first=%s",
@@ -2799,14 +2607,9 @@ def _call_professional_model(
                 result = DimensionAssessment(
                     dimension_id=dimension_id,
                     status="insufficient",
-                    evaluated_subjects=_structured_thesis_labels(
-                        evidence_view.get("thesis_context")
-                    ),
+                    evaluated_subjects=_structured_thesis_labels(evidence_view.get("thesis_context")),
                     headline="当前维度的专业复核未完成",
-                    analysis=(
-                        f"模型没有返回“{title}”的有效结构化判断，"
-                        "程序将本轮标记为分析未完成并关闭后续闸门。"
-                    ),
+                    analysis=(f"模型没有返回“{title}”的有效结构化判断，" "程序将本轮标记为分析未完成并关闭后续闸门。"),
                     key_evidence=[],
                     counter_evidence=[],
                     monitoring_points=[f"重新核验“{title}”"],
@@ -2816,15 +2619,16 @@ def _call_professional_model(
         if result.status != "pass":
             blocked = True
 
-    if blocked or any(
-        item.status == "not_evaluated" for item in dimensions
-    ):
+    if blocked or any(item.status == "not_evaluated" for item in dimensions):
         error = "；".join(model_errors)
-        return _derive_overall_from_dimensions(
-            dimensions,
-            compact_stock_info,
-            model_errors,
-        ), error
+        return (
+            _derive_overall_from_dimensions(
+                dimensions,
+                compact_stock_info,
+                model_errors,
+            ),
+            error,
+        )
 
     compact_dimensions = [
         {
@@ -2868,9 +2672,7 @@ def _call_professional_model(
             overall,
             {
                 "request": overall_request,
-                "validated_dimensions": [
-                    item.model_dump() for item in dimensions
-                ],
+                "validated_dimensions": [item.model_dump() for item in dimensions],
             },
         )
         if unsupported_overall_claims:
@@ -2888,17 +2690,23 @@ def _call_professional_model(
     except Exception as exc:
         error = f"综合结论: {type(exc).__name__}: {str(exc)[:240]}"
         logger.warning("professional buy overall failed for %s: %s", evidence.get("symbol"), error)
-        return _derive_overall_from_dimensions(
-            dimensions,
-            compact_stock_info,
-            [error],
-        ), error
+        return (
+            _derive_overall_from_dimensions(
+                dimensions,
+                compact_stock_info,
+                [error],
+            ),
+            error,
+        )
 
     try:
-        return ProfessionalAssessment(
-            **overall.model_dump(),
-            dimensions=dimensions,
-        ), ""
+        return (
+            ProfessionalAssessment(
+                **overall.model_dump(),
+                dimensions=dimensions,
+            ),
+            "",
+        )
     except Exception as exc:
         return None, f"ProfessionalAssessment: {type(exc).__name__}: {str(exc)[:240]}"
 
@@ -2913,25 +2721,11 @@ def _derive_overall_from_dimensions(
         status: sum(1 for item in dimensions if item.status == status)
         for status in ("pass", "fail", "insufficient", "not_evaluated")
     }
-    name = str(
-        stock_info.get("name")
-        or stock_info.get("short_name")
-        or stock_info.get("symbol")
-        or "该公司"
-    )
-    executed = [
-        item for item in dimensions
-        if item.status != "not_evaluated"
-    ]
-    supportive = [
-        item for item in executed
-        if item.status == "pass"
-    ]
+    name = str(stock_info.get("name") or stock_info.get("short_name") or stock_info.get("symbol") or "该公司")
+    executed = [item for item in dimensions if item.status != "not_evaluated"]
+    supportive = [item for item in executed if item.status == "pass"]
     blocking = next(
-        (
-            item for item in executed
-            if item.status in {"fail", "insufficient"}
-        ),
+        (item for item in executed if item.status in {"fail", "insufficient"}),
         None,
     )
     incomplete_scope = len(executed) < len(DIMENSION_IDS)
@@ -2949,16 +2743,14 @@ def _derive_overall_from_dimensions(
     if blocking and blocking.status == "insufficient":
         recommendation_code: RecommendationCode = "analysis_unavailable"
         recommendation_reason = (
-            f"“{DIMENSION_TITLES[blocking.dimension_id]}”的关键来源或分析服务未完成，"
-            "本轮不对公司形成买入结论。"
+            f"“{DIMENSION_TITLES[blocking.dimension_id]}”的关键来源或分析服务未完成，" "本轮不对公司形成买入结论。"
         )
     elif (
         blocking
         and blocking.dimension_id == "market_mainline"
         and blocking.mainline_classification is not None
-        and MainlineDirectionRelation(
-            blocking.mainline_classification.direction_relation
-        ) == MainlineDirectionRelation.EMERGING_BRANCH
+        and MainlineDirectionRelation(blocking.mainline_classification.direction_relation)
+        == MainlineDirectionRelation.EMERGING_BRANCH
     ):
         recommendation_code = "watchlist"
         recommendation_reason = (
@@ -2968,31 +2760,20 @@ def _derive_overall_from_dimensions(
     elif blocking:
         recommendation_code = "wait"
         recommendation_reason = (
-            f"“{DIMENSION_TITLES[blocking.dimension_id]}”未通过，"
-            "后续维度不再执行，当前不可进入买入计划。"
+            f"“{DIMENSION_TITLES[blocking.dimension_id]}”未通过，" "后续维度不再执行，当前不可进入买入计划。"
         )
     elif incomplete_scope:
         recommendation_code = "watchlist"
-        recommendation_reason = (
-            f"本次只完成前{len(executed)}个共享维度，"
-            "其余公司级维度将在逐股流程中继续执行。"
-        )
+        recommendation_reason = f"本次只完成前{len(executed)}个共享维度，" "其余公司级维度将在逐股流程中继续执行。"
     else:
         recommendation_code = "conditional_buy"
         recommendation_reason = "八个布尔闸门均已通过，可以进入有纪律的买入计划。"
 
     positive_headlines = [item.headline for item in supportive[:4]]
-    risk_headlines = [
-        item.headline
-        for item in ([blocking] if blocking else [])
-        if item is not None
+    risk_headlines = [item.headline for item in ([blocking] if blocking else []) if item is not None]
+    monitoring_points = list(dict.fromkeys(point for item in dimensions for point in item.monitoring_points if point))[
+        :6
     ]
-    monitoring_points = list(dict.fromkeys(
-        point
-        for item in dimensions
-        for point in item.monitoring_points
-        if point
-    ))[:6]
     while len(monitoring_points) < 3:
         monitoring_points.append("下一期财报后重新核验八维证据")
 
@@ -3002,24 +2783,14 @@ def _derive_overall_from_dimensions(
             f"不通过{counts['fail']}项、取证未完成{counts['insufficient']}项、"
             f"未执行{counts['not_evaluated']}项"
         ),
-        overall_summary=(
-            f"{name}本轮执行到第{len(executed)}维。{recommendation_reason}"
-        ),
+        overall_summary=(f"{name}本轮执行到第{len(executed)}维。{recommendation_reason}"),
         core_thesis=" → ".join(positive_headlines) or "本轮尚未形成可验证的核心看多逻辑",
         biggest_issue=biggest.headline,
         recommendation_code=recommendation_code,
         recommendation_reason=recommendation_reason,
         dimensions=dimensions,
-        bull_case_chain=(
-            " → ".join(positive_headlines)
-            if positive_headlines
-            else "本轮未形成可验证的支持链条"
-        ),
-        risk_chain=(
-            " → ".join(risk_headlines)
-            if risk_headlines
-            else "当前未识别硬性失败，但仍需持续核验经营兑现"
-        ),
+        bull_case_chain=(" → ".join(positive_headlines) if positive_headlines else "本轮未形成可验证的支持链条"),
+        risk_chain=(" → ".join(risk_headlines) if risk_headlines else "当前未识别硬性失败，但仍需持续核验经营兑现"),
         monitoring_points=monitoring_points,
         evidence_gaps=list(dict.fromkeys(errors))[:8],
     )
@@ -3029,17 +2800,9 @@ def _fallback_assessment(error: str) -> ProfessionalAssessment:
     dimensions = [
         DimensionAssessment(
             dimension_id=dimension_id,
-            status=(
-                "insufficient"
-                if index == 0
-                else "not_evaluated"
-            ),
+            status=("insufficient" if index == 0 else "not_evaluated"),
             evaluated_subjects=[],
-            headline=(
-                "首个维度的专业复核未完成"
-                if index == 0
-                else "前序布尔闸门已关闭"
-            ),
+            headline=("首个维度的专业复核未完成" if index == 0 else "前序布尔闸门已关闭"),
             analysis=(
                 "本轮未能取得首个维度的有效结构化判断，程序按分析未完成关闭后续闸门。"
                 if index == 0
@@ -3047,11 +2810,7 @@ def _fallback_assessment(error: str) -> ProfessionalAssessment:
             ),
             key_evidence=[],
             counter_evidence=[],
-            monitoring_points=(
-                ["待分析服务恢复后基于同一证据包重新评估"]
-                if index == 0
-                else []
-            ),
+            monitoring_points=(["待分析服务恢复后基于同一证据包重新评估"] if index == 0 else []),
         )
         for index, dimension_id in enumerate(DIMENSION_IDS)
     ]
@@ -3092,18 +2851,10 @@ def _inline_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"unresolved local JSON schema reference: {ref}")
             merged = {
                 **expand(target),
-                **{
-                    key: expand(item)
-                    for key, item in value.items()
-                    if key != "$ref"
-                },
+                **{key: expand(item) for key, item in value.items() if key != "$ref"},
             }
             return merged
-        return {
-            key: expand(item)
-            for key, item in value.items()
-            if key != "$defs"
-        }
+        return {key: expand(item) for key, item in value.items() if key != "$defs"}
 
     result = expand(schema)
     if not isinstance(result, dict):
@@ -3152,33 +2903,19 @@ def analyze_professional_buy(
     *,
     thesis: str = "",
     thesis_context: dict[str, Any] | None = None,
-    mainline_strategy: MainlineStrategyProfile | str = (
-        MainlineStrategyProfile.CONFIRMED_MAINLINE
-    ),
+    mainline_strategy: MainlineStrategyProfile | str = (MainlineStrategyProfile.CONFIRMED_MAINLINE),
     pre_fetched_data: dict[str, Any] | None = None,
     on_reasoning: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Collect evidence, evaluate the eight gates in order and normalize them."""
     effective_thesis = resolve_investment_thesis(thesis, thesis_context)
     strategy_profile = normalize_mainline_strategy(mainline_strategy)
-    prefetched = (
-        pre_fetched_data
-        if isinstance(pre_fetched_data, dict)
-        else {}
-    )
+    prefetched = pre_fetched_data if isinstance(pre_fetched_data, dict) else {}
     raw_shared_gate = prefetched.get("market_mainline_assessment")
-    shared_gate = (
-        DimensionAssessment.model_validate(raw_shared_gate)
-        if raw_shared_gate is not None
-        else None
-    )
-    shared_model_error = str(
-        prefetched.get("market_mainline_model_error") or ""
-    ).strip()
+    shared_gate = DimensionAssessment.model_validate(raw_shared_gate) if raw_shared_gate is not None else None
+    shared_model_error = str(prefetched.get("market_mainline_model_error") or "").strip()
     if shared_gate is not None and shared_gate.dimension_id != "market_mainline":
-        raise ValueError(
-            "shared market mainline assessment must be the first dimension"
-        )
+        raise ValueError("shared market mainline assessment must be the first dimension")
     if shared_gate is not None and shared_gate.status != "pass":
         evidence = {
             "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
@@ -3216,11 +2953,7 @@ def analyze_professional_buy(
             thesis_context=thesis_context,
             mainline_strategy=strategy_profile,
             pre_fetched_data=pre_fetched_data,
-            requested_sections=(
-                ()
-                if shared_gate is not None
-                else ("market_mainline",)
-            ),
+            requested_sections=(() if shared_gate is not None else ("market_mainline",)),
         )
 
     def load_dimension(dimension_id: str) -> None:
@@ -3233,18 +2966,10 @@ def analyze_professional_buy(
     assessment, model_error = _call_professional_model(
         evidence,
         dimension_loader=load_dimension,
-        precomputed_dimensions=(
-            (shared_gate,)
-            if shared_gate is not None
-            else ()
-        ),
+        precomputed_dimensions=((shared_gate,) if shared_gate is not None else ()),
         on_reasoning=on_reasoning,
     )
-    model_error = "；".join(
-        value
-        for value in (shared_model_error, model_error)
-        if value
-    )
+    model_error = "；".join(value for value in (shared_model_error, model_error) if value)
     if assessment is None:
         assessment = _fallback_assessment(model_error)
 
@@ -3254,10 +2979,7 @@ def analyze_professional_buy(
         for status in ("pass", "fail", "insufficient", "not_evaluated")
     }
     blocking = next(
-        (
-            item for item in dimensions
-            if item["status"] in {"fail", "insufficient"}
-        ),
+        (item for item in dimensions if item["status"] in {"fail", "insufficient"}),
         None,
     )
     all_passed = counts["pass"] == len(DIMENSION_IDS)
@@ -3269,7 +2991,8 @@ def analyze_professional_buy(
     else:
         recommendation = (
             assessment.recommendation_code
-            if assessment.recommendation_code in {
+            if assessment.recommendation_code
+            in {
                 "watchlist",
                 "wait",
                 "avoid",
@@ -3297,11 +3020,7 @@ def analyze_professional_buy(
         "contract_version": PROFESSIONAL_BUY_CONTRACT_VERSION,
         "analysis_mode": PROFESSIONAL_BUY_ANALYSIS_MODE,
         "symbol": symbol,
-        "name": (
-            stock_info.get("name")
-            or stock_info.get("short_name")
-            or symbol
-        ),
+        "name": (stock_info.get("name") or stock_info.get("short_name") or symbol),
         "thesis": effective_thesis or None,
         "thesis_context": thesis_context,
         "mainline_strategy": strategy_profile.value,
@@ -3318,24 +3037,20 @@ def analyze_professional_buy(
         "dimensions": dimensions,
         "executed_count": len(DIMENSION_IDS) - counts["not_evaluated"],
         "not_evaluated_count": counts["not_evaluated"],
-        "stopped_at": (
-            blocking.get("dimension_id")
-            if blocking
-            else None
-        ),
-        "stopped_at_name": (
-            DIMENSION_TITLES.get(str(blocking.get("dimension_id") or ""))
-            if blocking
-            else None
-        ),
+        "stopped_at": (blocking.get("dimension_id") if blocking else None),
+        "stopped_at_name": (DIMENSION_TITLES.get(str(blocking.get("dimension_id") or "")) if blocking else None),
         "gate_pass_complete": all_passed,
         "bull_case_chain": assessment.bull_case_chain,
         "risk_chain": assessment.risk_chain,
         "monitoring_points": assessment.monitoring_points,
-        "evidence_gaps": list(dict.fromkeys([
-            *assessment.evidence_gaps,
-            *(evidence.get("evidence_gaps") or []),
-        ]))[:12],
+        "evidence_gaps": list(
+            dict.fromkeys(
+                [
+                    *assessment.evidence_gaps,
+                    *(evidence.get("evidence_gaps") or []),
+                ]
+            )
+        )[:12],
         "source_links": evidence.get("source_links") or [],
         "data_time": base_meta.get("data_time") or evidence.get("requested_at"),
         "quote_basis": base_meta.get("quote_basis"),

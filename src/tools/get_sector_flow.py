@@ -129,11 +129,23 @@ def _request_page(params: dict[str, Any], page: int) -> tuple[list[dict[str, Any
 def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
     config = _PERIODS[period]
     fields = {
-        "f2", "f12", "f14", "f124",
-        config["change"], config["main"], config["main_pct"],
-        config["super"], config["super_pct"], config["large"], config["large_pct"],
-        config["medium"], config["medium_pct"], config["small"], config["small_pct"],
-        config["leader"], config["leader_code"],
+        "f2",
+        "f12",
+        "f14",
+        "f124",
+        config["change"],
+        config["main"],
+        config["main_pct"],
+        config["super"],
+        config["super_pct"],
+        config["large"],
+        config["large_pct"],
+        config["medium"],
+        config["medium_pct"],
+        config["small"],
+        config["small_pct"],
+        config["leader"],
+        config["leader_code"],
     }
     params = {
         "pz": 100,
@@ -171,28 +183,33 @@ def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
             continue
         seen.add(code)
         timestamp = _number(raw.get("f124"))
-        records.append({
-            "sector_code": code,
-            "name": name,
-            "period": period,
-            "period_label": config["label"],
-            "sector_index": _number(raw.get("f2")),
-            "pct_chg": _number(raw.get(config["change"])),
-            "main_net_inflow": _number(raw.get(config["main"])),
-            "main_net_inflow_pct": _number(raw.get(config["main_pct"])),
-            "super_large_net_inflow": _number(raw.get(config["super"])),
-            "super_large_net_inflow_pct": _number(raw.get(config["super_pct"])),
-            "large_net_inflow": _number(raw.get(config["large"])),
-            "large_net_inflow_pct": _number(raw.get(config["large_pct"])),
-            "medium_net_inflow": _number(raw.get(config["medium"])),
-            "medium_net_inflow_pct": _number(raw.get(config["medium_pct"])),
-            "small_net_inflow": _number(raw.get(config["small"])),
-            "small_net_inflow_pct": _number(raw.get(config["small_pct"])),
-            "leading_stock": str(raw.get(config["leader"]) or "").strip() or None,
-            "leading_stock_code": str(raw.get(config["leader_code"]) or "").strip() or None,
-            "data_time": datetime.fromtimestamp(timestamp).astimezone().isoformat() if timestamp else None,
-        })
-    records.sort(key=lambda item: item.get("main_net_inflow") if item.get("main_net_inflow") is not None else -math.inf, reverse=True)
+        records.append(
+            {
+                "sector_code": code,
+                "name": name,
+                "period": period,
+                "period_label": config["label"],
+                "sector_index": _number(raw.get("f2")),
+                "pct_chg": _number(raw.get(config["change"])),
+                "main_net_inflow": _number(raw.get(config["main"])),
+                "main_net_inflow_pct": _number(raw.get(config["main_pct"])),
+                "super_large_net_inflow": _number(raw.get(config["super"])),
+                "super_large_net_inflow_pct": _number(raw.get(config["super_pct"])),
+                "large_net_inflow": _number(raw.get(config["large"])),
+                "large_net_inflow_pct": _number(raw.get(config["large_pct"])),
+                "medium_net_inflow": _number(raw.get(config["medium"])),
+                "medium_net_inflow_pct": _number(raw.get(config["medium_pct"])),
+                "small_net_inflow": _number(raw.get(config["small"])),
+                "small_net_inflow_pct": _number(raw.get(config["small_pct"])),
+                "leading_stock": str(raw.get(config["leader"]) or "").strip() or None,
+                "leading_stock_code": str(raw.get(config["leader_code"]) or "").strip() or None,
+                "data_time": datetime.fromtimestamp(timestamp).astimezone().isoformat() if timestamp else None,
+            }
+        )
+    records.sort(
+        key=lambda item: item.get("main_net_inflow") if item.get("main_net_inflow") is not None else -math.inf,
+        reverse=True,
+    )
     for rank, record in enumerate(records, 1):
         record["main_flow_rank"] = rank
     return records
@@ -289,11 +306,29 @@ TOOL = ToolSpec(
         "获取A股行业或概念板块在今日、近5日或近10日的真实资金流排名，返回主力、"
         "超大单、大单、中单和小单净流入及占比、板块涨跌幅和领涨股。"
     ),
-    parameters=object_schema({
-        "type": {"type": "string", "enum": ["industry", "concept"], "default": "industry", "description": "板块类型"},
-        "period": {"type": "string", "enum": ["today", "5d", "10d"], "default": "today", "description": "资金流统计周期"},
-        "top_n": {"type": "integer", "minimum": 1, "maximum": 30, "default": 10, "description": "净流入和净流出各返回数量"},
-    }),
+    parameters=object_schema(
+        {
+            "type": {
+                "type": "string",
+                "enum": ["industry", "concept"],
+                "default": "industry",
+                "description": "板块类型",
+            },
+            "period": {
+                "type": "string",
+                "enum": ["today", "5d", "10d"],
+                "default": "today",
+                "description": "资金流统计周期",
+            },
+            "top_n": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 10,
+                "description": "净流入和净流出各返回数量",
+            },
+        }
+    ),
     executor=get_sector_flow,
     category="market",
 )

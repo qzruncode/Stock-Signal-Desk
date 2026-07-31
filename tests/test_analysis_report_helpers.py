@@ -20,6 +20,7 @@ from api.v1.endpoints.analysis.report import (
 # _stringify_report_strategy_value
 # ---------------------------------------------------------------------------
 
+
 def test_stringify_none_returns_none():
     assert _stringify_report_strategy_value(None) is None
 
@@ -35,6 +36,7 @@ def test_stringify_non_string_coerced():
 # ---------------------------------------------------------------------------
 # _build_single_stock_push_content
 # ---------------------------------------------------------------------------
+
 
 def test_push_content_conversation_form_includes_response_text():
     report_data = {
@@ -100,6 +102,7 @@ def test_push_content_uses_stock_code_when_name_missing():
 # ---------------------------------------------------------------------------
 # _build_conversation_report
 # ---------------------------------------------------------------------------
+
 
 def test_build_conversation_report_normal_response():
     conversation = {

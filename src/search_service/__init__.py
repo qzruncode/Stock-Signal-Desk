@@ -37,9 +37,7 @@ _SEARCH_TRANSIENT_EXCEPTIONS = (
     retry=retry_if_exception_type(_SEARCH_TRANSIENT_EXCEPTIONS),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
-def _post_with_retry(
-    url: str, *, headers: Dict[str, str], json: Dict[str, Any], timeout: int
-) -> requests.Response:
+def _post_with_retry(url: str, *, headers: Dict[str, str], json: Dict[str, Any], timeout: int) -> requests.Response:
     """POST with retry on transient SSL/network errors."""
     return requests.post(url, headers=headers, json=json, timeout=timeout)
 
@@ -51,9 +49,7 @@ def _post_with_retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
-def _get_with_retry(
-    url: str, *, headers: Dict[str, str], params: Dict[str, Any], timeout: int
-) -> requests.Response:
+def _get_with_retry(url: str, *, headers: Dict[str, str], params: Dict[str, Any], timeout: int) -> requests.Response:
     """GET with retry on transient SSL/network errors."""
     return requests.get(url, headers=headers, params=params, timeout=timeout)
 

@@ -79,9 +79,7 @@ def _validated_detector(
     detector = _as_dict(value)
     items = _list_of_dicts(detector.get("checklist"))
     by_id = {
-        _normalize_text(item.get("criterion_id")): item
-        for item in items
-        if _normalize_text(item.get("criterion_id"))
+        _normalize_text(item.get("criterion_id")): item for item in items if _normalize_text(item.get("criterion_id"))
     }
     missing = [criterion_id for criterion_id in expected_ids if criterion_id not in by_id]
     extra = [criterion_id for criterion_id in by_id if criterion_id not in expected_ids]
@@ -90,16 +88,11 @@ def _validated_detector(
         return {
             "passed": False,
             "conclusion": "",
-            "failed_reason": (
-                f"{label}结构不完整；missing={missing} extra={extra}。"
-                "未使用关键词或固定分数补判。"
-            ),
+            "failed_reason": (f"{label}结构不完整；missing={missing} extra={extra}。" "未使用关键词或固定分数补判。"),
             "checklist": ordered,
         }
     return {
-        "passed": bool(detector.get("passed")) and all(
-            bool(item.get("passed")) for item in ordered
-        ),
+        "passed": bool(detector.get("passed")) and all(bool(item.get("passed")) for item in ordered),
         "conclusion": _normalize_text(detector.get("conclusion")),
         "failed_reason": detector.get("failed_reason"),
         "checklist": ordered,
@@ -265,7 +258,7 @@ class IndustryCycleService:
             {
                 "phase": "collecting",
                 "stream_text": "【证据采集中】\n" + "\n".join(collection_logs),
-            "report_draft": {
+                "report_draft": {
                     "symbol": symbol,
                     "as_of_date": _current_report_as_of_date(),
                     "industry_cycle": {
@@ -273,46 +266,94 @@ class IndustryCycleService:
                         "industry_name": str(evidence_pack.get("industry_name") or ""),
                         "analysis_status": "观察",
                         "beneficiary_level": None,
-                        "beneficiary_reason": _normalize_text(_as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")).get("focus_view")),
+                        "beneficiary_reason": _normalize_text(
+                            _as_dict(
+                                _as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")
+                            ).get("focus_view")
+                        ),
                         "cycle_phase": None,
                         "cycle_phase_reason": "",
                         "prosperity_score": 0,
                         "prosperity_judgement": "",
-                        "core_logic": _normalize_text(_as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")).get("focus_view")),
+                        "core_logic": _normalize_text(
+                            _as_dict(
+                                _as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")
+                            ).get("focus_view")
+                        ),
                         "killer_reason": None,
                         "observation_window": "未来 6-12 个月",
                         "catalysts": [],
                         "risks": [],
                         "observation_points": [],
-                        "mainline_detector": {"passed": False, "conclusion": "", "failed_reason": None, "checklist": []},
-                        "industry_beta_detector": {"passed": False, "conclusion": "", "failed_reason": None, "checklist": []},
+                        "mainline_detector": {
+                            "passed": False,
+                            "conclusion": "",
+                            "failed_reason": None,
+                            "checklist": [],
+                        },
+                        "industry_beta_detector": {
+                            "passed": False,
+                            "conclusion": "",
+                            "failed_reason": None,
+                            "checklist": [],
+                        },
                         "evidence": {
-                            "stock_focus_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")),
+                            "stock_focus_snapshot": _as_dict(
+                                _as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")
+                            ),
                             "market_mainline": {
-                                "report_pending": bool(_as_dict(evidence_pack.get("mainline_context")).get("report_pending")),
-                                "market_stage": _as_dict(_as_dict(evidence_pack.get("mainline_context")).get("market_stage")),
-                                "report_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
-                                "report_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                                "report_pending": bool(
+                                    _as_dict(evidence_pack.get("mainline_context")).get("report_pending")
+                                ),
+                                "market_stage": _as_dict(
+                                    _as_dict(evidence_pack.get("mainline_context")).get("market_stage")
+                                ),
+                                "report_current_mainlines": _list_of_dicts(
+                                    _as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")
+                                ),
+                                "report_future_mainlines": _list_of_dicts(
+                                    _as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")
+                                ),
                                 "matched_current_mainlines": [],
                                 "matched_future_mainlines": [],
-                                "current_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("current_theme_evidence")),
-                                "future_theme_detail": _first_dict(_as_dict(evidence_pack.get("mainline_context")).get("future_theme_evidence")),
+                                "current_theme_detail": _first_dict(
+                                    _as_dict(evidence_pack.get("mainline_context")).get("current_theme_evidence")
+                                ),
+                                "future_theme_detail": _first_dict(
+                                    _as_dict(evidence_pack.get("mainline_context")).get("future_theme_evidence")
+                                ),
                             },
-                            "sector_snapshot": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("sector_snapshot")),
-                            "fund_flow": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("fund_flow_snapshot")),
-                            "peer_group": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("peer_snapshot")),
-                            "financial_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("financial_snapshot")),
+                            "sector_snapshot": _as_dict(
+                                _as_dict(evidence_pack.get("industry_beta_evidence")).get("sector_snapshot")
+                            ),
+                            "fund_flow": _as_dict(
+                                _as_dict(evidence_pack.get("industry_beta_evidence")).get("fund_flow_snapshot")
+                            ),
+                            "peer_group": _as_dict(
+                                _as_dict(evidence_pack.get("industry_beta_evidence")).get("peer_snapshot")
+                            ),
+                            "financial_snapshot": _as_dict(
+                                _as_dict(evidence_pack.get("company_specific_evidence")).get("financial_snapshot")
+                            ),
                             "valuation_snapshot": {},
-                            "sentiment_snapshot": _as_dict(_as_dict(evidence_pack.get("supporting_judgement")).get("coverage_snapshot")),
-                            "risk_snapshot": _as_dict(_as_dict(evidence_pack.get("supporting_judgement")).get("risk_snapshot")),
-                            "data_quality": _as_dict(_as_dict(evidence_pack.get("supporting_judgement")).get("data_quality")),
-                            "driver_signals": _as_dict(_as_dict(evidence_pack.get("supporting_judgement")).get("driver_clues")),
+                            "sentiment_snapshot": _as_dict(
+                                _as_dict(evidence_pack.get("supporting_judgement")).get("coverage_snapshot")
+                            ),
+                            "risk_snapshot": _as_dict(
+                                _as_dict(evidence_pack.get("supporting_judgement")).get("risk_snapshot")
+                            ),
+                            "data_quality": _as_dict(
+                                _as_dict(evidence_pack.get("supporting_judgement")).get("data_quality")
+                            ),
+                            "driver_signals": _as_dict(
+                                _as_dict(evidence_pack.get("supporting_judgement")).get("driver_clues")
+                            ),
                         },
                     },
-                "report_pending": True,
-                "llm_used": False,
-                "raw_stream_output": "【证据采集中】\n" + "\n".join(collection_logs),
-                "raw_response": "【证据采集中】\n" + "\n".join(collection_logs),
+                    "report_pending": True,
+                    "llm_used": False,
+                    "raw_stream_output": "【证据采集中】\n" + "\n".join(collection_logs),
+                    "raw_response": "【证据采集中】\n" + "\n".join(collection_logs),
                     "debug_input": {
                         "system_prompt": system_prompt,
                         "user_prompt": user_prompt,
@@ -332,7 +373,8 @@ class IndustryCycleService:
         if not evidence_gate.get("passed"):
             return {
                 "phase": "completed",
-                "stream_text": "【证据闸门未通过】\n" + "\n".join(f"- {item}" for item in _as_list(evidence_gate.get("blocking_reasons"))),
+                "stream_text": "【证据闸门未通过】\n"
+                + "\n".join(f"- {item}" for item in _as_list(evidence_gate.get("blocking_reasons"))),
                 "report": _build_evidence_insufficient_report(
                     symbol=symbol,
                     evidence_pack=evidence_pack,
@@ -455,16 +497,18 @@ class IndustryCycleService:
             {
                 "stock_name": stock_name,
                 "industry_name": industry_name,
-                "stock_info": _prune_none({
-                    "name": stock_name,
-                    "industry": industry_name,
-                    "market": stock_info.get("market"),
-                    "listing_date": stock_info.get("listing_date"),
-                    "main_business": main_business,
-                    "product_type": stock_info.get("product_type"),
-                    "product_name": stock_info.get("product_name"),
-                    "profile": stock_info.get("profile"),
-                }),
+                "stock_info": _prune_none(
+                    {
+                        "name": stock_name,
+                        "industry": industry_name,
+                        "market": stock_info.get("market"),
+                        "listing_date": stock_info.get("listing_date"),
+                        "main_business": main_business,
+                        "product_type": stock_info.get("product_type"),
+                        "product_name": stock_info.get("product_name"),
+                        "profile": stock_info.get("profile"),
+                    }
+                ),
             }
         )
         _emit(10, "已获取公司资料与主营业务", dict(evidence_pack))
@@ -506,70 +550,76 @@ class IndustryCycleService:
         financials_data = _as_dict(get_financials(symbol=symbol, periods=4, force=force))
         evidence_pack["financial_items"] = _list_of_dicts(financials_data.get("items"))[:4]
         latest_financial = _first_dict(evidence_pack["financial_items"])
-        evidence_pack["financial_snapshot"] = _prune_none({
-            "latest_report_date": latest_financial.get("report_date"),
-            "revenue": latest_financial.get("revenue"),
-            "revenue_yoy": latest_financial.get("revenue_yoy"),
-            "net_profit": latest_financial.get("net_profit"),
-            "net_profit_yoy": latest_financial.get("net_profit_yoy"),
-            "roe": latest_financial.get("roe"),
-            "gross_margin": latest_financial.get("gross_margin"),
-            "debt_ratio": latest_financial.get("debt_ratio"),
-            "eps": latest_financial.get("eps"),
-        })
+        evidence_pack["financial_snapshot"] = _prune_none(
+            {
+                "latest_report_date": latest_financial.get("report_date"),
+                "revenue": latest_financial.get("revenue"),
+                "revenue_yoy": latest_financial.get("revenue_yoy"),
+                "net_profit": latest_financial.get("net_profit"),
+                "net_profit_yoy": latest_financial.get("net_profit_yoy"),
+                "roe": latest_financial.get("roe"),
+                "gross_margin": latest_financial.get("gross_margin"),
+                "debt_ratio": latest_financial.get("debt_ratio"),
+                "eps": latest_financial.get("eps"),
+            }
+        )
         _emit(26, "已汇总核心财务摘要", dict(evidence_pack))
 
         financial_statements = _as_dict(get_financial_statements(symbol=symbol, periods=8, force=force))
         latest_balance = _first_dict(financial_statements.get("balance_sheet"))
         latest_income = _first_dict(financial_statements.get("income_statement"))
         latest_cashflow = _first_dict(financial_statements.get("cashflow"))
-        evidence_pack["financial_statements_snapshot"] = _prune_none({
-            "source": financial_statements.get("source"),
-            "balance_sheet": {
-                "report_date": latest_balance.get("report_date"),
-                "contract_liabilities": latest_balance.get("contract_liabilities"),
-                "inventory": latest_balance.get("inventory"),
-                "accounts_receivable": latest_balance.get("accounts_receivable"),
-                "fixed_asset": latest_balance.get("fixed_asset"),
-                "short_loan": latest_balance.get("short_loan"),
-                "long_loan": latest_balance.get("long_loan"),
-                "debt_ratio": latest_balance.get("debt_ratio"),
-            },
-            "income_statement": {
-                "report_date": latest_income.get("report_date"),
-                "revenue": latest_income.get("revenue"),
-                "revenue_yoy": latest_income.get("revenue_yoy"),
-                "parent_net_profit": latest_income.get("parent_net_profit"),
-                "parent_net_profit_yoy": latest_income.get("parent_net_profit_yoy"),
-                "deducted_net_profit": latest_income.get("deducted_net_profit"),
-                "deducted_net_profit_yoy": latest_income.get("deducted_net_profit_yoy"),
-                "gross_margin": latest_income.get("gross_margin"),
-                "research_expense": latest_income.get("research_expense"),
-                "asset_impairment_loss": latest_income.get("asset_impairment_loss"),
-            },
-            "cashflow": {
-                "report_date": latest_cashflow.get("report_date"),
-                "operating_cf": latest_cashflow.get("operating_cf"),
-                "investing_cf": latest_cashflow.get("investing_cf"),
-                "financing_cf": latest_cashflow.get("financing_cf"),
-                "capex": latest_cashflow.get("capex"),
-                "free_cashflow": latest_cashflow.get("free_cashflow"),
-                "cf_quality": latest_cashflow.get("cf_quality"),
-            },
-        })
+        evidence_pack["financial_statements_snapshot"] = _prune_none(
+            {
+                "source": financial_statements.get("source"),
+                "balance_sheet": {
+                    "report_date": latest_balance.get("report_date"),
+                    "contract_liabilities": latest_balance.get("contract_liabilities"),
+                    "inventory": latest_balance.get("inventory"),
+                    "accounts_receivable": latest_balance.get("accounts_receivable"),
+                    "fixed_asset": latest_balance.get("fixed_asset"),
+                    "short_loan": latest_balance.get("short_loan"),
+                    "long_loan": latest_balance.get("long_loan"),
+                    "debt_ratio": latest_balance.get("debt_ratio"),
+                },
+                "income_statement": {
+                    "report_date": latest_income.get("report_date"),
+                    "revenue": latest_income.get("revenue"),
+                    "revenue_yoy": latest_income.get("revenue_yoy"),
+                    "parent_net_profit": latest_income.get("parent_net_profit"),
+                    "parent_net_profit_yoy": latest_income.get("parent_net_profit_yoy"),
+                    "deducted_net_profit": latest_income.get("deducted_net_profit"),
+                    "deducted_net_profit_yoy": latest_income.get("deducted_net_profit_yoy"),
+                    "gross_margin": latest_income.get("gross_margin"),
+                    "research_expense": latest_income.get("research_expense"),
+                    "asset_impairment_loss": latest_income.get("asset_impairment_loss"),
+                },
+                "cashflow": {
+                    "report_date": latest_cashflow.get("report_date"),
+                    "operating_cf": latest_cashflow.get("operating_cf"),
+                    "investing_cf": latest_cashflow.get("investing_cf"),
+                    "financing_cf": latest_cashflow.get("financing_cf"),
+                    "capex": latest_cashflow.get("capex"),
+                    "free_cashflow": latest_cashflow.get("free_cashflow"),
+                    "cf_quality": latest_cashflow.get("cf_quality"),
+                },
+            }
+        )
         _emit(28, "已汇总三大财报明细摘要", dict(evidence_pack))
 
         shareholder_data = _as_dict(get_shareholder_structure(symbol=symbol, force=force))
-        evidence_pack["shareholder_snapshot"] = _prune_none({
-            "actual_controller": shareholder_data.get("actual_controller"),
-            "holder_count": shareholder_data.get("holder_count"),
-            "holder_count_change_pct": shareholder_data.get("holder_count_change_pct"),
-            "institution_holding_pct": shareholder_data.get("institution_holding_pct"),
-            "top10_holders": _list_of_dicts(shareholder_data.get("top10_holders"))[:5],
-            "major_holder_changes": _list_of_dicts(shareholder_data.get("major_holder_changes"))[:6],
-            "source_chain": _as_list(shareholder_data.get("source_chain")),
-            "errors": _as_list(shareholder_data.get("errors")),
-        })
+        evidence_pack["shareholder_snapshot"] = _prune_none(
+            {
+                "actual_controller": shareholder_data.get("actual_controller"),
+                "holder_count": shareholder_data.get("holder_count"),
+                "holder_count_change_pct": shareholder_data.get("holder_count_change_pct"),
+                "institution_holding_pct": shareholder_data.get("institution_holding_pct"),
+                "top10_holders": _list_of_dicts(shareholder_data.get("top10_holders"))[:5],
+                "major_holder_changes": _list_of_dicts(shareholder_data.get("major_holder_changes"))[:6],
+                "source_chain": _as_list(shareholder_data.get("source_chain")),
+                "errors": _as_list(shareholder_data.get("errors")),
+            }
+        )
         _emit(29, "已汇总股东结构与重要股东变动", dict(evidence_pack))
 
         lhb_snapshot = _fetch_lhb_snapshot(symbol)
@@ -655,88 +705,95 @@ class IndustryCycleService:
 
         valuation_signal = (valuation_data or {}).get("price_overdraft_signal") or {}
         industry_average = (valuation_data or {}).get("industry_average") or {}
-        sentiment_snapshot = _prune_none({
-            "news_count": len(news_data.get("items") or []),
-            "research_count": len(research_data.get("items") or []),
-            "discussion_count": _safe_int(social_data.get("total_discussion")) or 0,
-            "semantic_status": "model_required",
-        })
-        risk_snapshot = _prune_none({
-            "item_count": len(_list_of_dicts(risk_data.get("items"))),
-            "semantic_status": "model_required",
-        })
+        sentiment_snapshot = _prune_none(
+            {
+                "news_count": len(news_data.get("items") or []),
+                "research_count": len(research_data.get("items") or []),
+                "discussion_count": _safe_int(social_data.get("total_discussion")) or 0,
+                "semantic_status": "model_required",
+            }
+        )
+        risk_snapshot = _prune_none(
+            {
+                "item_count": len(_list_of_dicts(risk_data.get("items"))),
+                "semantic_status": "model_required",
+            }
+        )
         evidence_pack["sentiment_snapshot"] = sentiment_snapshot
         evidence_pack["risk_snapshot"] = risk_snapshot
         _emit(31, "已完成舆情、社交情绪和风险摘要", dict(evidence_pack))
 
-        sector_snapshot = _prune_none({
-            "rank": board_rank,
-            "total": board_total,
-            "name": (board_item or {}).get("name"),
-            "code": (board_item or {}).get("code"),
-            "change_pct": _safe_float((board_item or {}).get("change_pct")),
-            "leading_stock": (board_item or {}).get("lead_stock"),
-            "leading_stock_price": _safe_float((board_item or {}).get("lead_stock_price")),
-            "leading_stock_change_pct": _safe_float((board_item or {}).get("lead_stock_change_pct")),
-            "up_count": _safe_int((board_item or {}).get("up_count")),
-            "down_count": _safe_int((board_item or {}).get("down_count")),
-            "total_amount": _safe_float((board_item or {}).get("total_amount")),
-            "net_flow": _safe_float((board_item or {}).get("net_flow")),
-            "fallback_from_flow": bool((board_item or {}).get("_fallback_from_flow")),
-            "source": (board_item or {}).get("_source") or ("ths_industry_summary" if ths_board_summary else "sector_endpoint"),
-        })
-        fund_flow_source = (
-            (flow_item or {}).get("_source")
-            or ("macro_sector_flow" if flow_item else ("ths_industry_summary" if ths_board_summary else "macro_sector_flow"))
+        sector_snapshot = _prune_none(
+            {
+                "rank": board_rank,
+                "total": board_total,
+                "name": (board_item or {}).get("name"),
+                "code": (board_item or {}).get("code"),
+                "change_pct": _safe_float((board_item or {}).get("change_pct")),
+                "leading_stock": (board_item or {}).get("lead_stock"),
+                "leading_stock_price": _safe_float((board_item or {}).get("lead_stock_price")),
+                "leading_stock_change_pct": _safe_float((board_item or {}).get("lead_stock_change_pct")),
+                "up_count": _safe_int((board_item or {}).get("up_count")),
+                "down_count": _safe_int((board_item or {}).get("down_count")),
+                "total_amount": _safe_float((board_item or {}).get("total_amount")),
+                "net_flow": _safe_float((board_item or {}).get("net_flow")),
+                "fallback_from_flow": bool((board_item or {}).get("_fallback_from_flow")),
+                "source": (board_item or {}).get("_source")
+                or ("ths_industry_summary" if ths_board_summary else "sector_endpoint"),
+            }
         )
-        fund_flow_snapshot = _prune_none({
-            "rank": flow_rank,
-            "total": flow_total,
-            "name": (flow_item or {}).get("name"),
-            "change_pct": _safe_float((flow_item or {}).get("pct_chg")),
-            "net_flow": (
-                _safe_float((flow_item or {}).get("main_net_inflow"))
-                or _safe_float((flow_item or {}).get("net_flow"))
-                or _safe_float((board_item or {}).get("net_flow"))
-            ),
-            "super_large_net_inflow": _safe_float((flow_item or {}).get("super_large_net_inflow")),
-            "large_net_inflow": _safe_float((flow_item or {}).get("large_net_inflow")),
-            "total_amount": _safe_float((flow_item or {}).get("total_amount")) or _safe_float((board_item or {}).get("total_amount")),
-            "up_count": _safe_int((flow_item or {}).get("up_count")),
-            "down_count": _safe_int((flow_item or {}).get("down_count")),
-            "leading_stock": (flow_item or {}).get("leading_stock") or (board_item or {}).get("lead_stock"),
-            "source": fund_flow_source,
-        })
+        fund_flow_source = (flow_item or {}).get("_source") or (
+            "macro_sector_flow" if flow_item else ("ths_industry_summary" if ths_board_summary else "macro_sector_flow")
+        )
+        fund_flow_snapshot = _prune_none(
+            {
+                "rank": flow_rank,
+                "total": flow_total,
+                "name": (flow_item or {}).get("name"),
+                "change_pct": _safe_float((flow_item or {}).get("pct_chg")),
+                "net_flow": (
+                    _safe_float((flow_item or {}).get("main_net_inflow"))
+                    or _safe_float((flow_item or {}).get("net_flow"))
+                    or _safe_float((board_item or {}).get("net_flow"))
+                ),
+                "super_large_net_inflow": _safe_float((flow_item or {}).get("super_large_net_inflow")),
+                "large_net_inflow": _safe_float((flow_item or {}).get("large_net_inflow")),
+                "total_amount": _safe_float((flow_item or {}).get("total_amount"))
+                or _safe_float((board_item or {}).get("total_amount")),
+                "up_count": _safe_int((flow_item or {}).get("up_count")),
+                "down_count": _safe_int((flow_item or {}).get("down_count")),
+                "leading_stock": (flow_item or {}).get("leading_stock") or (board_item or {}).get("lead_stock"),
+                "source": fund_flow_source,
+            }
+        )
         evidence_pack["sector_snapshot"] = sector_snapshot
         evidence_pack["fund_flow"] = fund_flow_snapshot
         evidence_pack["peer_group"] = peer_snapshot
         _emit(33, "已完成行业板块、资金流和同行样本整理", dict(evidence_pack))
 
-        valuation_snapshot = _prune_none({
-            "pe_ttm": _safe_float((valuation_data or {}).get("pe_ttm")),
-            "pb": _safe_float((valuation_data or {}).get("pb")),
-            "industry_name": industry_average.get("industry"),
-            "industry_pe": _safe_float(industry_average.get("pe")),
-            "industry_pb": _safe_float(industry_average.get("pb")),
-            "industry_sample_size": _safe_int(industry_average.get("sample_size")),
-            "pe_premium_vs_industry_pct": _safe_float(
-                (valuation_signal.get("metrics") or {}).get(
-                    "pe_premium_vs_industry_pct"
-                )
-            ),
-            "pb_premium_vs_industry_pct": _safe_float(
-                (valuation_signal.get("metrics") or {}).get(
-                    "pb_premium_vs_industry_pct"
-                )
-            ),
-            "forward_pe_change_vs_ttm_pct": _safe_float(
-                (valuation_signal.get("metrics") or {}).get(
-                    "forward_pe_change_vs_ttm_pct"
-                )
-            ),
-            "semantic_status": "model_required",
-        })
-        if _safe_int(peer_snapshot.get("sample_size")) in (0, None) and _safe_int(industry_average.get("sample_size")) not in (0, None):
+        valuation_snapshot = _prune_none(
+            {
+                "pe_ttm": _safe_float((valuation_data or {}).get("pe_ttm")),
+                "pb": _safe_float((valuation_data or {}).get("pb")),
+                "industry_name": industry_average.get("industry"),
+                "industry_pe": _safe_float(industry_average.get("pe")),
+                "industry_pb": _safe_float(industry_average.get("pb")),
+                "industry_sample_size": _safe_int(industry_average.get("sample_size")),
+                "pe_premium_vs_industry_pct": _safe_float(
+                    (valuation_signal.get("metrics") or {}).get("pe_premium_vs_industry_pct")
+                ),
+                "pb_premium_vs_industry_pct": _safe_float(
+                    (valuation_signal.get("metrics") or {}).get("pb_premium_vs_industry_pct")
+                ),
+                "forward_pe_change_vs_ttm_pct": _safe_float(
+                    (valuation_signal.get("metrics") or {}).get("forward_pe_change_vs_ttm_pct")
+                ),
+                "semantic_status": "model_required",
+            }
+        )
+        if _safe_int(peer_snapshot.get("sample_size")) in (0, None) and _safe_int(
+            industry_average.get("sample_size")
+        ) not in (0, None):
             peer_snapshot = {
                 **peer_snapshot,
                 "sample_size": _safe_int(industry_average.get("sample_size")),
@@ -749,7 +806,9 @@ class IndustryCycleService:
             research_count=len(_as_list(research_data.get("items"))),
             discussion_count=_safe_int(social_data.get("total_discussion")) or 0,
             peer_sample_size=_safe_int(peer_snapshot.get("sample_size")),
-            board_source_ok=bool(sector_data.get("items")) or flow_item is not None or bool(ths_industry_summary.get("source_ok")),
+            board_source_ok=bool(sector_data.get("items"))
+            or flow_item is not None
+            or bool(ths_industry_summary.get("source_ok")),
             peer_source_ok=bool(peer_snapshot.get("source_ok", True)),
             financial_statements_available=bool(
                 financial_statements.get("balance_sheet")
@@ -767,7 +826,9 @@ class IndustryCycleService:
             "stock_info_cninfo_ok": bool(stock_info.get("_cninfo_ok")),
             "stock_info_em_ok": bool(stock_info.get("_em_ok")),
             "stock_info_ths_business_ok": bool(stock_info.get("_ths_business_ok")),
-            "sector_board_available": bool(sector_data.get("items")) or bool(ths_industry_summary.get("source_ok")) or sector_snapshot.get("rank") is not None,
+            "sector_board_available": bool(sector_data.get("items"))
+            or bool(ths_industry_summary.get("source_ok"))
+            or sector_snapshot.get("rank") is not None,
             "ths_industry_summary_ok": bool(ths_industry_summary.get("source_ok")),
             "ths_industry_name": ths_industry_summary.get("matched_name"),
             "ths_industry_code": ths_industry_summary.get("matched_code"),
@@ -816,100 +877,104 @@ class IndustryCycleService:
             "research_errors": list(_as_list(research_data.get("errors"))),
             "social_errors": list(_as_list(social_data.get("errors"))),
         }
-        evidence_pack = _prune_none({
-            "symbol": symbol,
-            "stock_name": stock_name,
-            "industry_name": industry_name,
-            "generated_at": generated_at,
-            "analysis_framework": {
-                "analysis_status_options": ["主线", "分支主线", "观察", "退潮", "非主线"],
-                "mainline_detector_items": [
-                    {"criterion_id": "market_mainline_membership", "question": "当前是否属于市场主线或分支主线"},
-                    {"criterion_id": "market_attention", "question": "是否具有足够市场与机构跟踪证据"},
-                    {"criterion_id": "substantive_business_link", "question": "是否不是单纯概念映射"},
-                    {"criterion_id": "actual_business_benefit", "question": "主营业务是否能够实际受益"},
-                    {"criterion_id": "structural_drivers", "question": "是否存在政策、技术、需求或供给变化驱动"},
-                    {"criterion_id": "medium_term_catalysts", "question": "未来6至12个月是否仍有可验证催化"},
-                ],
-                "industry_beta_detector_items": [
-                    {"criterion_id": "industry_upcycle", "question": "行业是否处于上升周期"},
-                    {"criterion_id": "three_year_space", "question": "未来三年空间是否明确"},
-                    {"criterion_id": "competition_quality", "question": "是否不存在严重价格战或内卷"},
-                    {"criterion_id": "structural_drivers", "question": "是否存在政策、技术、需求或供给变化驱动"},
-                ],
-            },
-            "stock_profile": {
-                "name": stock_name,
-                "industry": industry_name,
-                "market": stock_info.get("market"),
-                "listing_date": stock_info.get("listing_date"),
-                "main_business": main_business,
-                "product_type": stock_info.get("product_type"),
-                "product_name": stock_info.get("product_name"),
-                "profile": stock_info.get("profile"),
-            },
-            "mainline_context": {
-                "report_pending": bool(market_report.get("report_pending")),
-                "market_stage": market_evidence.get("market_stage") or market_report.get("market_stage") or {},
-                "current_mainlines": _list_of_dicts(market_report.get("current_mainlines"))[:4],
-                "future_mainlines": _list_of_dicts(market_report.get("future_mainlines"))[:4],
-                "current_theme_evidence": _list_of_dicts(market_evidence.get("current_themes"))[:4],
-                "future_theme_evidence": _list_of_dicts(market_evidence.get("next_themes"))[:4],
-                "policy_watchlist": _as_list(market_evidence.get("policy_watchlist"))[:8],
-            },
-            "company_specific_evidence": {
-                "announcements": _summarize_text_items(_list_of_dicts(announcements_data.get("items")), summary_key="content", limit=6),
-                "news": _summarize_text_items(_list_of_dicts(news_data.get("items")), limit=6),
-                "research": [
-                    {
-                        "title": _normalize_text(item.get("title")),
-                        "rating": _normalize_text(item.get("rating")),
-                        "industry": _normalize_text(item.get("industry")),
-                    }
-                    for item in _list_of_dicts(research_data.get("items"))[:6]
-                    if _normalize_text(item.get("title"))
-                ],
-                "risk_events": [
-                    {
-                        "title": _normalize_text(item.get("title")),
-                        "summary": _normalize_text(item.get("summary")),
-                        "date": _normalize_text(item.get("date")),
-                        "source_type": _normalize_text(item.get("source_type")),
-                    }
-                    for item in _list_of_dicts(risk_data.get("items"))[:6]
-                    if _normalize_text(item.get("title")) or _normalize_text(item.get("summary"))
-                ],
-                "financial_snapshot": evidence_pack.get("financial_snapshot"),
-                "financial_statements_snapshot": evidence_pack.get("financial_statements_snapshot"),
-                "shareholder_snapshot": evidence_pack.get("shareholder_snapshot"),
-                "product_type": stock_info.get("product_type"),
-                "product_name": stock_info.get("product_name"),
-                "trading_snapshot": lhb_snapshot,
-                "market_trading_snapshot": trading_snapshot,
-                "trading_signal_snapshot": trading_signal_snapshot,
-                "stock_flow_snapshot": stock_flow_snapshot,
-                "stock_focus_snapshot": stock_focus_snapshot,
-            },
-            "industry_beta_evidence": {
-                "sector_snapshot": sector_snapshot,
-                "fund_flow_snapshot": fund_flow_snapshot,
-                "peer_snapshot": peer_snapshot,
-            },
-            "supporting_judgement": {
-                "driver_clues": driver_clues,
-                "competition_clues": competition_clues,
-                "coverage_snapshot": {
-                    "announcement_count": len(_list_of_dicts(announcements_data.get("items"))),
-                    "news_count": len(_list_of_dicts(news_data.get("items"))),
-                    "research_count": len(_list_of_dicts(research_data.get("items"))),
-                    "positive_research_count": sentiment_snapshot.get("positive_research_count"),
-                    "discussion_count": sentiment_snapshot.get("discussion_count"),
+        evidence_pack = _prune_none(
+            {
+                "symbol": symbol,
+                "stock_name": stock_name,
+                "industry_name": industry_name,
+                "generated_at": generated_at,
+                "analysis_framework": {
+                    "analysis_status_options": ["主线", "分支主线", "观察", "退潮", "非主线"],
+                    "mainline_detector_items": [
+                        {"criterion_id": "market_mainline_membership", "question": "当前是否属于市场主线或分支主线"},
+                        {"criterion_id": "market_attention", "question": "是否具有足够市场与机构跟踪证据"},
+                        {"criterion_id": "substantive_business_link", "question": "是否不是单纯概念映射"},
+                        {"criterion_id": "actual_business_benefit", "question": "主营业务是否能够实际受益"},
+                        {"criterion_id": "structural_drivers", "question": "是否存在政策、技术、需求或供给变化驱动"},
+                        {"criterion_id": "medium_term_catalysts", "question": "未来6至12个月是否仍有可验证催化"},
+                    ],
+                    "industry_beta_detector_items": [
+                        {"criterion_id": "industry_upcycle", "question": "行业是否处于上升周期"},
+                        {"criterion_id": "three_year_space", "question": "未来三年空间是否明确"},
+                        {"criterion_id": "competition_quality", "question": "是否不存在严重价格战或内卷"},
+                        {"criterion_id": "structural_drivers", "question": "是否存在政策、技术、需求或供给变化驱动"},
+                    ],
                 },
-                "risk_snapshot": risk_snapshot,
-                "data_quality": data_quality,
-                "source_health": source_health,
-            },
-        })
+                "stock_profile": {
+                    "name": stock_name,
+                    "industry": industry_name,
+                    "market": stock_info.get("market"),
+                    "listing_date": stock_info.get("listing_date"),
+                    "main_business": main_business,
+                    "product_type": stock_info.get("product_type"),
+                    "product_name": stock_info.get("product_name"),
+                    "profile": stock_info.get("profile"),
+                },
+                "mainline_context": {
+                    "report_pending": bool(market_report.get("report_pending")),
+                    "market_stage": market_evidence.get("market_stage") or market_report.get("market_stage") or {},
+                    "current_mainlines": _list_of_dicts(market_report.get("current_mainlines"))[:4],
+                    "future_mainlines": _list_of_dicts(market_report.get("future_mainlines"))[:4],
+                    "current_theme_evidence": _list_of_dicts(market_evidence.get("current_themes"))[:4],
+                    "future_theme_evidence": _list_of_dicts(market_evidence.get("next_themes"))[:4],
+                    "policy_watchlist": _as_list(market_evidence.get("policy_watchlist"))[:8],
+                },
+                "company_specific_evidence": {
+                    "announcements": _summarize_text_items(
+                        _list_of_dicts(announcements_data.get("items")), summary_key="content", limit=6
+                    ),
+                    "news": _summarize_text_items(_list_of_dicts(news_data.get("items")), limit=6),
+                    "research": [
+                        {
+                            "title": _normalize_text(item.get("title")),
+                            "rating": _normalize_text(item.get("rating")),
+                            "industry": _normalize_text(item.get("industry")),
+                        }
+                        for item in _list_of_dicts(research_data.get("items"))[:6]
+                        if _normalize_text(item.get("title"))
+                    ],
+                    "risk_events": [
+                        {
+                            "title": _normalize_text(item.get("title")),
+                            "summary": _normalize_text(item.get("summary")),
+                            "date": _normalize_text(item.get("date")),
+                            "source_type": _normalize_text(item.get("source_type")),
+                        }
+                        for item in _list_of_dicts(risk_data.get("items"))[:6]
+                        if _normalize_text(item.get("title")) or _normalize_text(item.get("summary"))
+                    ],
+                    "financial_snapshot": evidence_pack.get("financial_snapshot"),
+                    "financial_statements_snapshot": evidence_pack.get("financial_statements_snapshot"),
+                    "shareholder_snapshot": evidence_pack.get("shareholder_snapshot"),
+                    "product_type": stock_info.get("product_type"),
+                    "product_name": stock_info.get("product_name"),
+                    "trading_snapshot": lhb_snapshot,
+                    "market_trading_snapshot": trading_snapshot,
+                    "trading_signal_snapshot": trading_signal_snapshot,
+                    "stock_flow_snapshot": stock_flow_snapshot,
+                    "stock_focus_snapshot": stock_focus_snapshot,
+                },
+                "industry_beta_evidence": {
+                    "sector_snapshot": sector_snapshot,
+                    "fund_flow_snapshot": fund_flow_snapshot,
+                    "peer_snapshot": peer_snapshot,
+                },
+                "supporting_judgement": {
+                    "driver_clues": driver_clues,
+                    "competition_clues": competition_clues,
+                    "coverage_snapshot": {
+                        "announcement_count": len(_list_of_dicts(announcements_data.get("items"))),
+                        "news_count": len(_list_of_dicts(news_data.get("items"))),
+                        "research_count": len(_list_of_dicts(research_data.get("items"))),
+                        "positive_research_count": sentiment_snapshot.get("positive_research_count"),
+                        "discussion_count": sentiment_snapshot.get("discussion_count"),
+                    },
+                    "risk_snapshot": risk_snapshot,
+                    "data_quality": data_quality,
+                    "source_health": source_health,
+                },
+            }
+        )
         _emit(35, "已完成估值背景与行业对比整理", dict(evidence_pack))
 
         return {
@@ -1027,10 +1092,7 @@ class IndustryCycleService:
             nonlocal last_emitted_length
             nonlocal accumulated_text
             accumulated_text = full_text
-            if on_text and (
-                len(full_text) - last_emitted_length >= 180
-                or len(full_text) < 180
-            ):
+            if on_text and (len(full_text) - last_emitted_length >= 180 or len(full_text) < 180):
                 last_emitted_length = len(full_text)
                 on_text(
                     full_text,
@@ -1070,45 +1132,66 @@ class IndustryCycleService:
                     "industry_name": evidence_pack.get("industry_name") or "",
                     "analysis_status": draft_cycle.get("analysis_status") or "观察",
                     "beneficiary_level": draft_cycle.get("beneficiary_level"),
-                    "beneficiary_reason": draft_cycle.get("beneficiary_reason") or "模型返回了非标准 JSON，已保留原始输出供人工核查。",
+                    "beneficiary_reason": draft_cycle.get("beneficiary_reason")
+                    or "模型返回了非标准 JSON，已保留原始输出供人工核查。",
                     "cycle_phase": draft_cycle.get("cycle_phase"),
-                    "cycle_phase_reason": draft_cycle.get("cycle_phase_reason") or "模型输出格式异常，周期阶段需结合原始输出复核。",
+                    "cycle_phase_reason": draft_cycle.get("cycle_phase_reason")
+                    or "模型输出格式异常，周期阶段需结合原始输出复核。",
                     "prosperity_score": draft_cycle.get("prosperity_score") or 0,
-                    "prosperity_judgement": draft_cycle.get("prosperity_judgement") or "模型已返回文本，但结构化解析失败，请结合原始输出查看。",
-                    "core_logic": draft_cycle.get("core_logic") or "模型原始输出已保留，当前降级为仅展示证据包和原始流式结果。",
+                    "prosperity_judgement": draft_cycle.get("prosperity_judgement")
+                    or "模型已返回文本，但结构化解析失败，请结合原始输出查看。",
+                    "core_logic": draft_cycle.get("core_logic")
+                    or "模型原始输出已保留，当前降级为仅展示证据包和原始流式结果。",
                     "killer_reason": "模型输出格式异常，未能稳定解析为 JSON。",
                     "observation_window": draft_cycle.get("observation_window") or "未来 6-12 个月",
                     "catalysts": _as_list(draft_cycle.get("catalysts")),
                     "risks": _as_list(draft_cycle.get("risks")),
                     "observation_points": _as_list(draft_cycle.get("observation_points")),
-                    "mainline_detector": _as_dict(draft_cycle.get("mainline_detector")) or {
+                    "mainline_detector": _as_dict(draft_cycle.get("mainline_detector"))
+                    or {
                         "passed": False,
                         "conclusion": "",
                         "failed_reason": "模型输出格式异常，未能稳定解析。",
                         "checklist": [],
                     },
-                    "industry_beta_detector": _as_dict(draft_cycle.get("industry_beta_detector")) or {
+                    "industry_beta_detector": _as_dict(draft_cycle.get("industry_beta_detector"))
+                    or {
                         "passed": False,
                         "conclusion": "",
                         "failed_reason": "模型输出格式异常，未能稳定解析。",
                         "checklist": [],
                     },
-                    "evidence": _as_dict(draft_cycle.get("evidence")) or {
-                        "stock_focus_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")),
+                    "evidence": _as_dict(draft_cycle.get("evidence"))
+                    or {
+                        "stock_focus_snapshot": _as_dict(
+                            _as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")
+                        ),
                         "market_mainline": {
                             "report_pending": True,
                             "market_stage": {},
-                            "report_current_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")),
-                            "report_future_mainlines": _list_of_dicts(_as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")),
+                            "report_current_mainlines": _list_of_dicts(
+                                _as_dict(evidence_pack.get("mainline_context")).get("current_mainlines")
+                            ),
+                            "report_future_mainlines": _list_of_dicts(
+                                _as_dict(evidence_pack.get("mainline_context")).get("future_mainlines")
+                            ),
                             "matched_current_mainlines": [],
                             "matched_future_mainlines": [],
                             "current_theme_detail": {},
                             "future_theme_detail": {},
                         },
-                        "sector_snapshot": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("sector_snapshot")),
-                        "fund_flow": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("fund_flow_snapshot")),
-                        "peer_group": _as_dict(_as_dict(evidence_pack.get("industry_beta_evidence")).get("peer_snapshot")),
-                        "financial_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("financial_snapshot")),
+                        "sector_snapshot": _as_dict(
+                            _as_dict(evidence_pack.get("industry_beta_evidence")).get("sector_snapshot")
+                        ),
+                        "fund_flow": _as_dict(
+                            _as_dict(evidence_pack.get("industry_beta_evidence")).get("fund_flow_snapshot")
+                        ),
+                        "peer_group": _as_dict(
+                            _as_dict(evidence_pack.get("industry_beta_evidence")).get("peer_snapshot")
+                        ),
+                        "financial_snapshot": _as_dict(
+                            _as_dict(evidence_pack.get("company_specific_evidence")).get("financial_snapshot")
+                        ),
                         "valuation_snapshot": _as_dict(evidence_bundle.get("valuation_snapshot")),
                         "sentiment_snapshot": _as_dict(evidence_bundle.get("sentiment_snapshot")),
                         "risk_snapshot": _as_dict(evidence_bundle.get("risk_snapshot")),
@@ -1164,17 +1247,23 @@ class IndustryCycleService:
                 "industry_name": evidence_pack.get("industry_name") or "",
                 "analysis_status": _normalize_text(parsed.get("analysis_status")) or "观察",
                 "beneficiary_level": _normalize_text(parsed.get("beneficiary_level")) or "待验证",
-                "beneficiary_reason": _normalize_text(parsed.get("beneficiary_reason")) or "模型输出格式异常，主营受益路径需结合原始输出复核。",
+                "beneficiary_reason": _normalize_text(parsed.get("beneficiary_reason"))
+                or "模型输出格式异常，主营受益路径需结合原始输出复核。",
                 "cycle_phase": _normalize_text(parsed.get("cycle_phase")) or "观察期",
-                "cycle_phase_reason": _normalize_text(parsed.get("cycle_phase_reason")) or "模型输出格式异常，周期阶段需结合原始输出复核。",
+                "cycle_phase_reason": _normalize_text(parsed.get("cycle_phase_reason"))
+                or "模型输出格式异常，周期阶段需结合原始输出复核。",
                 "prosperity_score": parsed.get("prosperity_score") or 0,
-                "prosperity_judgement": _normalize_text(parsed.get("prosperity_judgement")) or "模型已返回文本，但结构化解析不完整，请结合原始输出查看。",
-                "core_logic": _normalize_text(parsed.get("core_logic")) or "模型输出格式异常，当前降级为仅展示证据包和原始输出。",
+                "prosperity_judgement": _normalize_text(parsed.get("prosperity_judgement"))
+                or "模型已返回文本，但结构化解析不完整，请结合原始输出查看。",
+                "core_logic": _normalize_text(parsed.get("core_logic"))
+                or "模型输出格式异常，当前降级为仅展示证据包和原始输出。",
                 "killer_reason": parsed.get("killer_reason") or (format_error_reason if parsed_incomplete else None),
                 "observation_window": parsed.get("observation_window") or "未来 6-12 个月",
                 "catalysts": [str(item) for item in _as_list(parsed.get("catalysts")) if str(item).strip()],
                 "risks": [str(item) for item in _as_list(parsed.get("risks")) if str(item).strip()],
-                "observation_points": [str(item) for item in _as_list(parsed.get("observation_points")) if str(item).strip()],
+                "observation_points": [
+                    str(item) for item in _as_list(parsed.get("observation_points")) if str(item).strip()
+                ],
                 "mainline_detector": {
                     "passed": bool(mainline_detector.get("passed")),
                     "conclusion": str(mainline_detector.get("conclusion") or ""),
@@ -1188,14 +1277,20 @@ class IndustryCycleService:
                     "checklist": _list_of_dicts(industry_beta_detector.get("checklist")),
                 },
                 "evidence": {
-                    "stock_focus_snapshot": _as_dict(_as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")),
+                    "stock_focus_snapshot": _as_dict(
+                        _as_dict(evidence_pack.get("company_specific_evidence")).get("stock_focus_snapshot")
+                    ),
                     "market_mainline": {
                         "report_pending": bool(market_report.get("report_pending")),
                         "market_stage": _as_dict(market_evidence.get("market_stage")),
                         "report_current_mainlines": _list_of_dicts(market_report.get("current_mainlines")),
                         "report_future_mainlines": _list_of_dicts(market_report.get("future_mainlines")),
-                        "matched_current_mainlines": _list_of_dicts(parsed_market_mainline.get("matched_current_mainlines")),
-                        "matched_future_mainlines": _list_of_dicts(parsed_market_mainline.get("matched_future_mainlines")),
+                        "matched_current_mainlines": _list_of_dicts(
+                            parsed_market_mainline.get("matched_current_mainlines")
+                        ),
+                        "matched_future_mainlines": _list_of_dicts(
+                            parsed_market_mainline.get("matched_future_mainlines")
+                        ),
                         "current_theme_detail": current_theme_detail,
                         "future_theme_detail": future_theme_detail,
                     },
@@ -1221,7 +1316,8 @@ class IndustryCycleService:
             },
             "_fetched_at": datetime.now().isoformat(),
             "_cached": False,
-            "fallback_used": bool((evidence_bundle.get("market_report") or {}).get("report_pending")) or parsed_incomplete,
+            "fallback_used": bool((evidence_bundle.get("market_report") or {}).get("report_pending"))
+            or parsed_incomplete,
         }
         if on_text and raw_text and len(raw_text) != last_emitted_length:
             on_text(

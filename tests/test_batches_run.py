@@ -32,8 +32,10 @@ def client():
 @pytest.fixture(autouse=True)
 def disable_auth():
     auth._auth_enabled = None
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+    ):
         yield
     auth._auth_enabled = None
 
@@ -52,6 +54,7 @@ def reset_running_batch():
 # trigger_batch_run
 # ---------------------------------------------------------------------------
 
+
 def test_trigger_run_rejects_empty_stock_list(client):
     with patch("api.v1.endpoints.batches.run.get_config") as gc:
         gc.return_value = type("C", (), {"stock_list": []})()
@@ -69,9 +72,11 @@ def test_trigger_run_buy_criteria_starts_without_template(client):
         state = run_factory(lambda s: None)
         h._running_batch = {"running": True, "state": state.to_dict() if state else None}
 
-    with patch("api.v1.endpoints.batches.run._start_batch_thread", side_effect=_fake_start), \
-         patch("api.v1.endpoints.batches.run.BatchRunner") as runner_cls, \
-         patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False):
+    with (
+        patch("api.v1.endpoints.batches.run._start_batch_thread", side_effect=_fake_start),
+        patch("api.v1.endpoints.batches.run.BatchRunner") as runner_cls,
+        patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False),
+    ):
         runner = MagicMock()
         state = MagicMock()
         state.to_dict.return_value = {"run_id": "r1", "completed": 0}
@@ -89,8 +94,10 @@ def test_trigger_run_buy_criteria_starts_without_template(client):
 
 
 def test_trigger_run_template_mode_requires_existing_template(client):
-    with patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False), \
-         patch("api.v1.endpoints.batches.run.get_prompt_template_store") as store_fn:
+    with (
+        patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False),
+        patch("api.v1.endpoints.batches.run.get_prompt_template_store") as store_fn,
+    ):
         store = MagicMock()
         store.get.return_value = None
         store_fn.return_value = store
@@ -115,6 +122,7 @@ def test_trigger_run_rejects_when_batch_already_running(client):
 # ---------------------------------------------------------------------------
 # get_current_batch_status
 # ---------------------------------------------------------------------------
+
 
 def test_current_status_idle_when_no_state(client):
     resp = client.get("/api/v1/batch/runs/current")
@@ -151,6 +159,7 @@ def test_current_status_finished_returns_terminal_state(client):
 # pause / resume / stop
 # ---------------------------------------------------------------------------
 
+
 def test_pause_returns_404_when_no_running_batch(client):
     resp = client.post("/api/v1/batch/runs/current/pause")
     assert resp.status_code == 404
@@ -159,9 +168,7 @@ def test_pause_returns_404_when_no_running_batch(client):
 def test_resume_returns_404_when_no_running_batch(client):
     # /runs/current/resume matches /runs/{run_id}/resume with run_id="current",
     # so it needs the BatchRunResumeRequest body; control is None -> 404.
-    resp = client.post(
-        "/api/v1/batch/runs/current/resume", json={"stock_codes": []}
-    )
+    resp = client.post("/api/v1/batch/runs/current/resume", json={"stock_codes": []})
     assert resp.status_code == 404
 
 
@@ -194,6 +201,7 @@ def test_stop_invokes_control_and_persists(client):
 # get_batch_run_detail
 # ---------------------------------------------------------------------------
 
+
 def test_get_run_detail_404_when_missing(client):
     with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
         db = MagicMock()
@@ -205,11 +213,21 @@ def test_get_run_detail_404_when_missing(client):
 
 def test_get_run_detail_returns_run_item(client):
     run = {
-        "id": 1, "run_id": "r1", "triggered_by": "manual", "template_id": "t1",
-        "template_name": "T", "stock_count": 2, "success_count": 1, "fail_count": 1,
-        "started_at": "2026-06-01T00:00:00", "completed_at": "2026-06-01T01:00:00",
-        "report_path": None, "results_json": "{}", "stock_codes_json": "[]",
-        "status": "completed", "analysis_mode": "template",
+        "id": 1,
+        "run_id": "r1",
+        "triggered_by": "manual",
+        "template_id": "t1",
+        "template_name": "T",
+        "stock_count": 2,
+        "success_count": 1,
+        "fail_count": 1,
+        "started_at": "2026-06-01T00:00:00",
+        "completed_at": "2026-06-01T01:00:00",
+        "report_path": None,
+        "results_json": "{}",
+        "stock_codes_json": "[]",
+        "status": "completed",
+        "analysis_mode": "template",
     }
     with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
         db = MagicMock()
@@ -224,33 +242,32 @@ def test_get_run_detail_returns_run_item(client):
 # resume_batch_run
 # ---------------------------------------------------------------------------
 
+
 def test_resume_completed_run_rejected(client):
-    with patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False), \
-         patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+    with (
+        patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False),
+        patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls,
+    ):
         db = MagicMock()
         db.get_batch_run.return_value = {"completed_at": "2026-06-01T00:00:00"}
         db_cls.get_instance.return_value = db
-        resp = client.post(
-            "/api/v1/batch/runs/r1/resume", json={"stock_codes": ["000001"]}
-        )
+        resp = client.post("/api/v1/batch/runs/r1/resume", json={"stock_codes": ["000001"]})
     assert resp.status_code == 400
 
 
 def test_resume_missing_run_404(client):
-    with patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False), \
-         patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+    with (
+        patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False),
+        patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls,
+    ):
         db = MagicMock()
         db.get_batch_run.return_value = None
         db_cls.get_instance.return_value = db
-        resp = client.post(
-            "/api/v1/batch/runs/r1/resume", json={"stock_codes": ["000001"]}
-        )
+        resp = client.post("/api/v1/batch/runs/r1/resume", json={"stock_codes": ["000001"]})
     assert resp.status_code == 404
 
 
 def test_resume_rejects_when_batch_running(client):
     with patch("api.v1.endpoints.batches.run._is_batch_running", return_value=True):
-        resp = client.post(
-            "/api/v1/batch/runs/r1/resume", json={"stock_codes": ["000001"]}
-        )
+        resp = client.post("/api/v1/batch/runs/r1/resume", json={"stock_codes": ["000001"]})
     assert resp.status_code == 409

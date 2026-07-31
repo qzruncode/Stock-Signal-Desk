@@ -98,16 +98,18 @@ def _summary(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         ranked = sorted(rows, key=lambda row: row.get("revenue") or float("-inf"), reverse=True)
         positive_profit = sorted(rows, key=lambda row: row.get("gross_profit") or float("-inf"), reverse=True)
         shares = [row.get("revenue_share_pct") for row in ranked]
-        summaries.append({
-            "report_date": report_date,
-            "flow_basis": _flow_basis(report_date),
-            "category": category,
-            "segment_count": len(rows),
-            "largest_revenue_segment": ranked[0]["segment_name"] if ranked else None,
-            "largest_revenue_share_pct": shares[0] if shares else None,
-            "top3_revenue_share_pct": round(sum(value for value in shares[:3] if value is not None), 6),
-            "largest_gross_profit_segment": positive_profit[0]["segment_name"] if positive_profit else None,
-        })
+        summaries.append(
+            {
+                "report_date": report_date,
+                "flow_basis": _flow_basis(report_date),
+                "category": category,
+                "segment_count": len(rows),
+                "largest_revenue_segment": ranked[0]["segment_name"] if ranked else None,
+                "largest_revenue_share_pct": shares[0] if shares else None,
+                "top3_revenue_share_pct": round(sum(value for value in shares[:3] if value is not None), 6),
+                "largest_gross_profit_segment": positive_profit[0]["segment_name"] if positive_profit else None,
+            }
+        )
     return summaries
 
 
@@ -156,24 +158,18 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
     except Exception as exc:
         return _empty(code, category, f"主营构成数据获取失败: {exc}", fetched_at=now.isoformat())
 
-    normalized = [
-        item for item in (_normalize_row(row, code) for row in frame_records(frame))
-        if item is not None
-    ]
+    normalized = [item for item in (_normalize_row(row, code) for row in frame_records(frame)) if item is not None]
     if category != "all":
         normalized = [item for item in normalized if item["category"] == category]
     available_periods = sorted({item["report_date"] for item in normalized}, reverse=True)
     selected_periods = available_periods[:periods]
     selected = [item for item in normalized if item["report_date"] in selected_periods]
-    selected.sort(key=lambda item: (
-        item["report_date"], item["category"], item.get("revenue") or float("-inf")
-    ), reverse=True)
+    selected.sort(
+        key=lambda item: (item["report_date"], item["category"], item.get("revenue") or float("-inf")), reverse=True
+    )
 
     latest_report = selected_periods[0] if selected_periods else None
-    source_url = (
-        "https://emweb.securities.eastmoney.com/PC_HSF10/BusinessAnalysis/"
-        f"Index?type=web&code={prefixed}"
-    )
+    source_url = "https://emweb.securities.eastmoney.com/PC_HSF10/BusinessAnalysis/" f"Index?type=web&code={prefixed}"
     errors = [] if selected else [f"没有找到 category={category} 的主营构成披露"]
     return {
         "symbol": code,
@@ -195,7 +191,8 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
         "data_time": latest_report,
         "is_stale": (
             datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
-            if latest_report else None
+            if latest_report
+            else None
         ),
         "freshness_unknown": latest_report is None,
         "fallback_used": False,
@@ -216,7 +213,13 @@ TOOL = ToolSpec(
                 "default": "all",
                 "description": "主营分类：all 全部、product 产品、industry 行业、region 地区",
             },
-            "periods": {"type": "integer", "minimum": 1, "maximum": 8, "default": 2, "description": "返回最近报告期数量"},
+            "periods": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8,
+                "default": 2,
+                "description": "返回最近报告期数量",
+            },
         },
         ["symbol"],
     ),

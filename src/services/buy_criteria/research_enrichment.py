@@ -6,6 +6,7 @@ Public search then covers the same fixed analyst questions for every company:
 structural trend, cycle/supply-demand, competition, company position and the
 current A-share narrative.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -102,9 +103,7 @@ def _is_current_market_consensus(item: dict[str, Any]) -> bool:
     timestamp = _published_timestamp(item.get("published_date"))
     if timestamp <= 0:
         return True
-    age_days = (
-        datetime.now(timezone.utc).timestamp() - timestamp
-    ) / 86_400
+    age_days = (datetime.now(timezone.utc).timestamp() - timestamp) / 86_400
     return age_days <= _MARKET_CONSENSUS_MAX_AGE_DAYS
 
 
@@ -116,14 +115,9 @@ def _requested_subjects(stock_info: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(domain, dict):
             continue
         values.append((_clean_label(domain.get("label")), "structured_domain"))
-        values.extend(
-            (_clean_label(item), "resolved_board")
-            for item in domain.get("board_queries") or []
-        )
+        values.extend((_clean_label(item), "resolved_board") for item in domain.get("board_queries") or [])
     values.append((_clean_label(context.get("summary")), "thesis_summary"))
-    values.append(
-        (_clean_label(stock_info.get("_investment_thesis")), "user_thesis")
-    )
+    values.append((_clean_label(stock_info.get("_investment_thesis")), "user_thesis"))
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for label, basis in values:
@@ -143,11 +137,7 @@ def derive_research_scope(
     packet = company_packet if isinstance(company_packet, dict) else {}
     segments = packet.get("business_segments")
     segments = segments if isinstance(segments, dict) else {}
-    rows = [
-        item
-        for item in segments.get("items") or []
-        if isinstance(item, dict)
-    ]
+    rows = [item for item in segments.get("items") or [] if isinstance(item, dict)]
     latest_report = max(
         (str(item.get("report_date") or "") for item in rows),
         default="",
@@ -160,23 +150,22 @@ def derive_research_scope(
             continue
         if latest_report and str(item.get("report_date") or "") != latest_report:
             continue
-        if (
-            len(label) < 2
-            or label.lower().startswith(_GENERIC_SEGMENT_PREFIXES)
-        ):
+        if len(label) < 2 or label.lower().startswith(_GENERIC_SEGMENT_PREFIXES):
             continue
         share = item.get("revenue_share_pct")
         try:
             share_value = float(share) if share is not None else None
         except (TypeError, ValueError):
             share_value = None
-        ranked.append({
-            "label": label[:100],
-            "basis": f"official_{category}_segment",
-            "report_date": str(item.get("report_date") or "") or None,
-            "revenue_share_pct": share_value,
-            "source_url": segments.get("source_url"),
-        })
+        ranked.append(
+            {
+                "label": label[:100],
+                "basis": f"official_{category}_segment",
+                "report_date": str(item.get("report_date") or "") or None,
+                "revenue_share_pct": share_value,
+                "source_url": segments.get("source_url"),
+            }
+        )
     ranked.sort(
         key=lambda item: (
             item.get("revenue_share_pct") is not None,
@@ -212,14 +201,8 @@ def derive_research_scope(
                 break
 
     requested = _requested_subjects(stock_info)
-    requested_domains = [
-        item for item in requested
-        if item.get("basis") != "thesis_summary"
-    ]
-    thesis_summaries = [
-        item for item in requested
-        if item.get("basis") == "thesis_summary"
-    ]
+    requested_domains = [item for item in requested if item.get("basis") != "thesis_summary"]
+    thesis_summaries = [item for item in requested if item.get("basis") == "thesis_summary"]
     primary: list[dict[str, Any]] = []
     primary_seen: set[str] = set()
     for item in [*requested_domains, *business_subjects, *thesis_summaries]:
@@ -237,9 +220,7 @@ def derive_research_scope(
         "primary_subjects": primary,
         "primary_labels": [str(item["label"]) for item in primary],
         "latest_segment_report": latest_report or None,
-        "derivation": (
-            "structured_user_thesis_then_latest_official_material_segments"
-        ),
+        "derivation": ("structured_user_thesis_then_latest_official_material_segments"),
     }
 
 
@@ -269,13 +250,9 @@ def _search_one(
 
     year = datetime.now().astimezone().year
     if lens == "company_position":
-        query = (
-            f"{company_name} {subject} {year} 市场地位 技术 产品 客户 产能"
-        )
+        query = f"{company_name} {subject} {year} 市场地位 技术 产品 客户 产能"
     elif lens == "market_consensus":
-        query = focus or (
-            f"{year} A股 近三个月 中期市场主线 主导产业趋势 当前市场叙事"
-        )
+        query = focus or (f"{year} A股 近三个月 中期市场主线 主导产业趋势 当前市场叙事")
     else:
         query = f"{subject} {year} {focus}"
     result = websearch(
@@ -307,11 +284,7 @@ def _search_one(
         "subject": subject or None,
         "query": query,
         "status": (
-            "retrieved"
-            if items
-            else "retrieval_failed"
-            if result.get("errors")
-            else "no_matching_public_material"
+            "retrieved" if items else "retrieval_failed" if result.get("errors") else "no_matching_public_material"
         ),
         "items": items,
         "provider": result.get("provider"),
@@ -329,16 +302,8 @@ def collect_public_research(
     """Fill predictable research blind spots before any analyst judgment."""
     scope = stock_info.get("_derived_research_scope")
     scope = scope if isinstance(scope, dict) else {}
-    subjects = [
-        str(item or "").strip()
-        for item in scope.get("primary_labels") or []
-        if str(item or "").strip()
-    ][:2]
-    company_name = _clean_label(
-        stock_info.get("name")
-        or stock_info.get("short_name")
-        or stock_info.get("symbol")
-    )
+    subjects = [str(item or "").strip() for item in scope.get("primary_labels") or [] if str(item or "").strip()][:2]
+    company_name = _clean_label(stock_info.get("name") or stock_info.get("short_name") or stock_info.get("symbol"))
     now = datetime.now().astimezone()
     active_lenses = requested_lenses or {
         "market_consensus",
@@ -349,70 +314,62 @@ def collect_public_research(
     }
     requests: list[tuple[str, str, str, str]] = []
     if "market_consensus" in active_lenses:
-        requests.extend([
-            (
-                "market_consensus",
-                "机构策略",
-                f"{now:%Y年%m月} A股 近三个月 券商策略 市场主线 机构观点",
-                company_name,
-            ),
-            (
-                "market_consensus",
-                "市场复盘",
-                f"{now:%Y年%m月%d日} A股 市场复盘 热点主线 成交结构",
-                company_name,
-            ),
-            (
-                "market_consensus",
-                "中期主线细分",
-                f"{now:%Y年%m月} A股 中期主线 产业方向 券商策略",
-                company_name,
-            ),
-        ])
+        requests.extend(
+            [
+                (
+                    "market_consensus",
+                    "机构策略",
+                    f"{now:%Y年%m月} A股 近三个月 券商策略 市场主线 机构观点",
+                    company_name,
+                ),
+                (
+                    "market_consensus",
+                    "市场复盘",
+                    f"{now:%Y年%m月%d日} A股 市场复盘 热点主线 成交结构",
+                    company_name,
+                ),
+                (
+                    "market_consensus",
+                    "中期主线细分",
+                    f"{now:%Y年%m月} A股 中期主线 产业方向 券商策略",
+                    company_name,
+                ),
+            ]
+        )
     for subject in subjects:
         requests.extend(
-            (lens, subject, focus, company_name)
-            for lens, focus in _RESEARCH_LENSES
-            if lens in active_lenses
+            (lens, subject, focus, company_name) for lens, focus in _RESEARCH_LENSES if lens in active_lenses
         )
         if "company_position" in active_lenses:
-            requests.append(
-                ("company_position", subject, "", company_name)
-            )
+            requests.append(("company_position", subject, "", company_name))
 
     attempts: list[dict[str, Any]] = []
     if requests:
         with ThreadPoolExecutor(max_workers=min(6, len(requests))) as pool:
-            futures = {
-                pool.submit(_search_one, *request): request
-                for request in requests
-            }
+            futures = {pool.submit(_search_one, *request): request for request in requests}
             for future in as_completed(futures):
                 request = futures[future]
                 try:
                     attempts.append(future.result())
                 except Exception as exc:
-                    attempts.append({
-                        "lens": request[0],
-                        "subject": request[1] or None,
-                        "query": "",
-                        "status": "retrieval_failed",
-                        "items": [],
-                        "errors": [f"{type(exc).__name__}: {str(exc)[:240]}"],
-                        "warnings": [],
-                    })
+                    attempts.append(
+                        {
+                            "lens": request[0],
+                            "subject": request[1] or None,
+                            "query": "",
+                            "status": "retrieval_failed",
+                            "items": [],
+                            "errors": [f"{type(exc).__name__}: {str(exc)[:240]}"],
+                            "warnings": [],
+                        }
+                    )
     attempts.sort(
         key=lambda item: (
             str(item.get("lens") or ""),
             str(item.get("subject") or ""),
         )
     )
-    items = [
-        item
-        for attempt in attempts
-        for item in attempt.get("items") or []
-        if isinstance(item, dict)
-    ]
+    items = [item for attempt in attempts for item in attempt.get("items") or [] if isinstance(item, dict)]
     lens_status: dict[str, str] = {}
     for lens in (
         "market_consensus",
@@ -423,9 +380,7 @@ def collect_public_research(
     ):
         if lens not in active_lenses:
             continue
-        relevant = [
-            item for item in attempts if item.get("lens") == lens
-        ]
+        relevant = [item for item in attempts if item.get("lens") == lens]
         if any(item.get("status") == "retrieved" for item in relevant):
             lens_status[lens] = "retrieved"
         elif any(item.get("status") == "retrieval_failed" for item in relevant):
@@ -445,11 +400,7 @@ def collect_public_research(
         candidates = [
             candidate
             for candidate in items
-            if candidate.get("lens") == lens
-            and (
-                lens != "market_consensus"
-                or _is_current_market_consensus(candidate)
-            )
+            if candidate.get("lens") == lens and (lens != "market_consensus" or _is_current_market_consensus(candidate))
         ]
         candidates.sort(
             key=lambda item: (
@@ -467,15 +418,8 @@ def collect_public_research(
         "attempts": attempts,
         "items": balanced_items,
         "lens_status": lens_status,
-        "retrieved_source_count": len({
-            str(item.get("url") or "")
-            for item in items
-            if item.get("url")
-        }),
-        "retrieval_complete": all(
-            status != "retrieval_failed"
-            for status in lens_status.values()
-        ),
+        "retrieved_source_count": len({str(item.get("url") or "") for item in items if item.get("url")}),
+        "retrieval_complete": all(status != "retrieval_failed" for status in lens_status.values()),
         "method": "data_driven_scope_with_multi_source_public_search",
     }
 
@@ -495,11 +439,7 @@ def research_summary_for_lenses(
     ]
     for lens in sorted(lenses):
         lines.append(f"- {lens} 检索状态：{statuses.get(lens) or 'not_requested'}")
-    selected = [
-        item
-        for item in enrichment.get("items") or []
-        if isinstance(item, dict) and item.get("lens") in lenses
-    ]
+    selected = [item for item in enrichment.get("items") or [] if isinstance(item, dict) and item.get("lens") in lenses]
     for item in selected[:18]:
         lines.append(
             f"- [{item.get('lens')}] [{item.get('subject') or '全市场'}] "

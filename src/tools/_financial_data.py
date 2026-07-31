@@ -157,6 +157,7 @@ def _request_json(path: str, params: dict[str, Any]) -> dict[str, Any]:
             last_error = exc
             if attempt == 0:
                 import time
+
                 time.sleep(0.35)
     raise RuntimeError(f"东方财富财报接口失败: {last_error}")
 
@@ -183,7 +184,7 @@ def _fetch_section(prefixed: str, company_type: str, section: str, periods: int)
 
     rows: list[dict[str, Any]] = []
     for offset in range(0, len(date_values), 5):
-        batch = date_values[offset:offset + 5]
+        batch = date_values[offset : offset + 5]
         payload = _request_json(
             f"{stem}AjaxNew",
             {
@@ -222,15 +223,9 @@ def _normalize_balance(row: dict[str, Any]) -> dict[str, Any]:
     # Zero is valid financial data, not a missing-value marker.  Only reject a
     # ratio when its denominator is absent or zero; keep zero numerators as 0.
     item["debt_ratio"] = (
-        round(liabilities / assets * 100, 4)
-        if liabilities is not None and assets not in (None, 0)
-        else None
+        round(liabilities / assets * 100, 4) if liabilities is not None and assets not in (None, 0) else None
     )
-    item["equity_multiplier"] = (
-        round(assets / equity, 4)
-        if assets is not None and equity not in (None, 0)
-        else None
-    )
+    item["equity_multiplier"] = round(assets / equity, 4) if assets is not None and equity not in (None, 0) else None
     item["current_ratio"] = (
         round(current_assets / current_liabilities, 4)
         if current_assets is not None and current_liabilities not in (None, 0)
@@ -251,7 +246,9 @@ def _normalize_income(row: dict[str, Any]) -> dict[str, Any]:
     operating_cost = item.get("operating_cost")
     parent_profit = item.get("parent_net_profit") or item.get("net_profit")
     item["gross_profit"] = revenue - operating_cost if revenue is not None and operating_cost is not None else None
-    item["gross_margin"] = round((revenue - operating_cost) / revenue * 100, 4) if revenue and operating_cost is not None else None
+    item["gross_margin"] = (
+        round((revenue - operating_cost) / revenue * 100, 4) if revenue and operating_cost is not None else None
+    )
     item["net_margin"] = round(parent_profit / revenue * 100, 4) if revenue and parent_profit is not None else None
     return item
 
@@ -313,19 +310,17 @@ def _bundle(symbol: str, periods: int) -> dict[str, Any]:
         net_profit = income.get("parent_net_profit") or income.get("net_profit")
         item["net_profit"] = net_profit
         operating = item.get("operating_cash_flow")
-        item["cash_conversion_ratio"] = round(operating / net_profit, 4) if operating is not None and net_profit else None
+        item["cash_conversion_ratio"] = (
+            round(operating / net_profit, 4) if operating is not None and net_profit else None
+        )
 
     report_dates = [
-        item["report_date"]
-        for section in normalized.values()
-        for item in section
-        if item.get("report_date")
+        item["report_date"] for section in normalized.values() for item in section if item.get("report_date")
     ]
     latest_report = max(report_dates) if report_dates else None
     now = datetime.now().astimezone()
     stale = (
-        datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
-        if latest_report else None
+        datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date()) if latest_report else None
     )
     complete = all(normalized[section] for section in normalized)
     success = any(normalized[section] for section in normalized)
@@ -397,7 +392,8 @@ def _section_result(symbol: str, section: str, periods: int) -> dict[str, Any]:
         "data_time": latest_report,
         "is_stale": (
             datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
-            if latest_report else None
+            if latest_report
+            else None
         ),
         "fallback_used": False,
         "_cached": False,

@@ -46,6 +46,7 @@ def _get_fetcher() -> AkshareFetcher:
     if _fetcher is None:
         from src.config import get_config
         from src.patches.eastmoney_patch import eastmoney_patch
+
         if get_config().enable_eastmoney_patch:
             eastmoney_patch()
         _fetcher = AkshareFetcher()
@@ -91,11 +92,7 @@ def _mark_quote_freshness(items: list[dict], *, trading: bool, fallback_used: bo
         item["data_time"] = data_time
         item["is_stale"] = is_stale
         item["quote_mode"] = "live" if trading else "latest_trading_day_snapshot"
-        item["quote_mode_label"] = (
-            "交易时段实时行情"
-            if trading
-            else "非交易时段的最近交易日快照，不是当前时刻实时成交"
-        )
+        item["quote_mode_label"] = "交易时段实时行情" if trading else "非交易时段的最近交易日快照，不是当前时刻实时成交"
         source = str(item.get("source") or "")
         item["fallback_used"] = source != "eastmoney_push" if source else fallback_used
     return items
@@ -138,11 +135,7 @@ def _build_response(
         "freshness_unknown": is_stale is None,
         "is_trading_session": trading,
         "quote_mode": "live" if trading else "latest_trading_day_snapshot",
-        "quote_mode_label": (
-            "交易时段实时行情"
-            if trading
-            else "非交易时段的最近交易日快照，不是当前时刻实时成交"
-        ),
+        "quote_mode_label": ("交易时段实时行情" if trading else "非交易时段的最近交易日快照，不是当前时刻实时成交"),
         "fallback_used": any(item.get("fallback_used") for item in marked),
         "_cached": bool(marked) and all(item.get("_cached") for item in marked),
         "source": sorted({str(item.get("source")) for item in marked if item.get("source")}),
@@ -176,6 +169,7 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
     symbols = valid
 
     from src.storage import DatabaseManager
+
     db = DatabaseManager.get_instance()
     trading = _is_trading_hours()
 
@@ -185,10 +179,7 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
         if cached:
             cached_symbols = set(cached.keys())
             missing = [s for s in symbols if s not in cached_symbols]
-            results = [
-                {**cached[code], '_cached': True}
-                for code in symbols if code in cached
-            ]
+            results = [{**cached[code], "_cached": True} for code in symbols if code in cached]
             if missing:
                 logger.info(f"[行情缓存] 缓存命中 {len(cached)} 只, 需拉取 {len(missing)} 只")
             else:
@@ -215,8 +206,8 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
                 continue
             if quote and quote.has_basic_data():
                 data = quote.to_dict()
-                data['_fetched_at'] = now_ts
-                data['_cached'] = False
+                data["_fetched_at"] = now_ts
+                data["_cached"] = False
                 fetch_results_by_symbol[sym] = data
                 db.save_quote_snapshot(sym, json.dumps(data, ensure_ascii=False))
     fetch_results = [fetch_results_by_symbol[symbol] for symbol in symbols if symbol in fetch_results_by_symbol]
@@ -241,9 +232,12 @@ def _execute(symbols: str) -> dict[str, Any]:
 TOOL = ToolSpec(
     name="get_realtime_quotes",
     description=REALTIME_QUOTES_DESCRIPTION,
-    parameters=object_schema({
-        "symbols": {"type": "string", "description": "股票代码或名称，多个用逗号分隔，如 600519,000001"},
-    }, ["symbols"]),
+    parameters=object_schema(
+        {
+            "symbols": {"type": "string", "description": "股票代码或名称，多个用逗号分隔，如 600519,000001"},
+        },
+        ["symbols"],
+    ),
     executor=_execute,
     category="data",
 )

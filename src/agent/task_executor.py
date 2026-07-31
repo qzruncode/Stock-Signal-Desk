@@ -114,22 +114,15 @@ class PlanExecutionResult:
         collection_results = {
             result.task.task_id: result
             for result in self.tasks
-            if TaskResource.SECURITY_COLLECTION
-            in workflow_for(result.task.kind).output_resources
-            and result.success
+            if TaskResource.SECURITY_COLLECTION in workflow_for(result.task.kind).output_resources and result.success
         }
         consumed_dependencies = {
             dependency_id
             for result in self.tasks
-            if TaskResource.SECURITY_COLLECTION
-            in workflow_for(result.task.kind).input_resources
+            if TaskResource.SECURITY_COLLECTION in workflow_for(result.task.kind).input_resources
             for dependency_id in result.task.candidate.depends_on
         }
-        return [
-            result
-            for task_id, result in collection_results.items()
-            if task_id not in consumed_dependencies
-        ]
+        return [result for task_id, result in collection_results.items() if task_id not in consumed_dependencies]
 
     @property
     def has_final_collection(self) -> bool:
@@ -167,9 +160,7 @@ def action_fingerprint(task: ResolvedTask) -> str:
             "kind": task.kind.value,
             "parameters": task.parameters,
             "result_selection": (
-                task.result_selection.model_dump(mode="json")
-                if task.result_selection is not None
-                else None
+                task.result_selection.model_dump(mode="json") if task.result_selection is not None else None
             ),
             "symbols": list(task.symbols),
         },
@@ -200,10 +191,7 @@ class WorkflowPolicyValidator:
         if not spec.enabled:
             machine = " → ".join(spec.state_machine) if spec.state_machine else "未配置"
             raise WorkflowUnavailable(f"{spec.title}当前不可执行；固定状态机：{machine}")
-        if (
-            spec.max_input_entities is not None
-            and len(task.symbols) > spec.max_input_entities
-        ):
+        if spec.max_input_entities is not None and len(task.symbols) > spec.max_input_entities:
             raise PolicyViolation(
                 f"{task.task_id} received {len(task.symbols)} entities, exceeding "
                 f"its declared input capacity {spec.max_input_entities}"
@@ -212,8 +200,7 @@ class WorkflowPolicyValidator:
         action = str(task.parameters.get("action") or "")
         fingerprint = action_fingerprint(task)
         if spec.requires_confirmation(task.parameters) and (
-            task.candidate.confirmation != ConfirmationState.EXPLICIT
-            or fingerprint not in self.approved_actions
+            task.candidate.confirmation != ConfirmationState.EXPLICIT or fingerprint not in self.approved_actions
         ):
             raise ConfirmationRequired(
                 task.task_id,
@@ -222,32 +209,19 @@ class WorkflowPolicyValidator:
         if (
             task.kind.value == "batch_analysis"
             and len(task.symbols) > 10
-            and (
-                task.candidate.confirmation != ConfirmationState.EXPLICIT
-                or fingerprint not in self.approved_actions
-            )
+            and (task.candidate.confirmation != ConfirmationState.EXPLICIT or fingerprint not in self.approved_actions)
         ):
             raise ConfirmationRequired(task.task_id, "run_more_than_10_symbols")
 
         calls = compile_task(task)
         policy = self.execution_policies.get(task.task_id)
-        call_budget = (
-            int(policy.max_calls)
-            if policy is not None
-            else spec.max_tool_calls
-        )
+        call_budget = int(policy.max_calls) if policy is not None else spec.max_tool_calls
         if policy is not None and str(policy.effect.value) != spec.effect.value:
-            raise PolicyViolation(
-                f"{task.task_id} execution policy effect does not match workflow"
-            )
-        if policy is not None and policy.confirmation_required and (
-            fingerprint not in self.approved_actions
-        ):
+            raise PolicyViolation(f"{task.task_id} execution policy effect does not match workflow")
+        if policy is not None and policy.confirmation_required and (fingerprint not in self.approved_actions):
             raise ConfirmationRequired(task.task_id, task.kind.value)
         if len(calls) > call_budget:
-            raise PolicyViolation(
-                f"{task.task_id} exceeds workflow call budget {call_budget}"
-            )
+            raise PolicyViolation(f"{task.task_id} exceeds workflow call budget {call_budget}")
         known_steps = {call.step_id for call in calls}
         if len(known_steps) != len(calls):
             raise PolicyViolation(f"{task.task_id} has duplicate workflow step ids")
@@ -255,56 +229,35 @@ class WorkflowPolicyValidator:
         validated: list[ValidatedCall] = []
         for call in calls:
             if call.tool_name not in spec.tool_whitelist:
-                raise PolicyViolation(
-                    f"{call.tool_name} does not belong to {task.kind.value}"
-                )
+                raise PolicyViolation(f"{call.tool_name} does not belong to {task.kind.value}")
             predecessors = set(call.depends_on_steps) | set(call.after_steps)
             missing_predecessors = predecessors - known_steps
             if missing_predecessors:
-                raise PolicyViolation(
-                    f"{call.step_id} has unknown predecessors {sorted(missing_predecessors)}"
-                )
-            binding_sources = {
-                source_step
-                for _parameter, source_step in call.result_bindings
-            }
+                raise PolicyViolation(f"{call.step_id} has unknown predecessors {sorted(missing_predecessors)}")
+            binding_sources = {source_step for _parameter, source_step in call.result_bindings}
             if not binding_sources <= set(call.depends_on_steps):
-                raise PolicyViolation(
-                    f"{call.step_id} result bindings must reference successful "
-                    "depends_on steps"
-                )
-            binding_parameters = [
-                parameter for parameter, _source_step in call.result_bindings
-            ]
+                raise PolicyViolation(f"{call.step_id} result bindings must reference successful " "depends_on steps")
+            binding_parameters = [parameter for parameter, _source_step in call.result_bindings]
             if len(binding_parameters) != len(set(binding_parameters)):
-                raise PolicyViolation(
-                    f"{call.step_id} has duplicate result binding parameters"
-                )
+                raise PolicyViolation(f"{call.step_id} has duplicate result binding parameters")
             if set(binding_parameters) & set(call.arguments):
-                raise PolicyViolation(
-                    f"{call.step_id} result bindings overwrite static arguments"
-                )
+                raise PolicyViolation(f"{call.step_id} result bindings overwrite static arguments")
             guard = call.execution_guard
             if guard is not None:
                 if guard.source_step not in known_steps:
                     raise PolicyViolation(
-                        f"{call.step_id} execution guard references unknown "
-                        f"step {guard.source_step}"
+                        f"{call.step_id} execution guard references unknown " f"step {guard.source_step}"
                     )
                 if guard.source_step not in call.depends_on_steps:
                     raise PolicyViolation(
-                        f"{call.step_id} execution guard must reference a "
-                        "successful depends_on step"
+                        f"{call.step_id} execution guard must reference a " "successful depends_on step"
                     )
                 if not guard.result_path or not guard.allowed_values:
-                    raise PolicyViolation(
-                        f"{call.step_id} execution guard has an empty contract"
-                    )
+                    raise PolicyViolation(f"{call.step_id} execution guard has an empty contract")
                 tool = self.registry.get_tool(call.tool_name)
                 if tool is None or tool.guard_blocked_result is None:
                     raise PolicyViolation(
-                        f"{call.tool_name} cannot project a typed result when "
-                        "its execution guard blocks"
+                        f"{call.tool_name} cannot project a typed result when " "its execution guard blocks"
                     )
             arguments = self.registry.validate_arguments(call.tool_name, call.arguments)
             validated.append(ValidatedCall(call=call, arguments=arguments))
@@ -313,12 +266,7 @@ class WorkflowPolicyValidator:
 
     @staticmethod
     def _assert_step_dag(calls: Iterable[ValidatedCall]) -> None:
-        graph = {
-            item.call.step_id: (
-                set(item.call.depends_on_steps) | set(item.call.after_steps)
-            )
-            for item in calls
-        }
+        graph = {item.call.step_id: (set(item.call.depends_on_steps) | set(item.call.after_steps)) for item in calls}
         visiting: set[str] = set()
         visited: set[str] = set()
 
@@ -403,9 +351,7 @@ class WorkflowExecutor:
             effects = [task for task in ready if workflow_for(task.kind).effect != EffectClass.READ]
 
             if reads:
-                read_results = await asyncio.gather(
-                    *(self._execute_task(task) for task in reads)
-                )
+                read_results = await asyncio.gather(*(self._execute_task(task) for task in reads))
                 for result in read_results:
                     results[result.task.task_id] = result
                     pending.remove(result.task.task_id)
@@ -447,9 +393,7 @@ class WorkflowExecutor:
         if parameters_changed:
             bound = replace(
                 bound,
-                candidate=bound.candidate.model_copy(
-                    update={"execution_parameters": parameters}
-                ),
+                candidate=bound.candidate.model_copy(update={"execution_parameters": parameters}),
             )
 
         if TaskResource.SECURITY_COLLECTION not in spec.input_resources:
@@ -528,9 +472,7 @@ class WorkflowExecutor:
             ready = [
                 item
                 for item in pending.values()
-                if (
-                    set(item.call.depends_on_steps) | set(item.call.after_steps)
-                ) <= set(completed)
+                if (set(item.call.depends_on_steps) | set(item.call.after_steps)) <= set(completed)
             ]
             if not ready:
                 if pending:
@@ -538,9 +480,7 @@ class WorkflowExecutor:
                 break
             execution_policy = self.execution_policies.get(task.task_id)
             step_limit = (
-                int(execution_policy.max_parallelism)
-                if execution_policy is not None
-                else spec.max_parallel_steps
+                int(execution_policy.max_parallelism) if execution_policy is not None else spec.max_parallel_steps
             )
             semaphore = asyncio.Semaphore(step_limit)
 
@@ -551,16 +491,11 @@ class WorkflowExecutor:
                         for parameter, source_step in item.call.result_bindings:
                             source = completed.get(source_step)
                             if source is None or not source.success:
-                                raise PolicyViolation(
-                                    f"{item.call.step_id} cannot bind failed "
-                                    f"step {source_step}"
-                                )
-                            runtime_arguments[parameter] = (
-                                self.registry.project_bound_argument(
-                                    item.call.tool_name,
-                                    parameter,
-                                    source.result,
-                                )
+                                raise PolicyViolation(f"{item.call.step_id} cannot bind failed " f"step {source_step}")
+                            runtime_arguments[parameter] = self.registry.project_bound_argument(
+                                item.call.tool_name,
+                                parameter,
+                                source.result,
                             )
                         runtime_item = ValidatedCall(
                             call=item.call,
@@ -577,10 +512,7 @@ class WorkflowExecutor:
                             arguments=dict(item.arguments),
                             result={
                                 "success": False,
-                                "errors": [
-                                    "前置步骤结果绑定失败："
-                                    f"{type(exc).__name__}: {exc}"
-                                ],
+                                "errors": ["前置步骤结果绑定失败：" f"{type(exc).__name__}: {exc}"],
                                 "partial": False,
                             },
                             executed=False,
@@ -599,10 +531,7 @@ class WorkflowExecutor:
                                 source.result,
                                 guard.result_path,
                             )
-                            guard_allows_execution = any(
-                                guard_value == allowed
-                                for allowed in guard.allowed_values
-                            )
+                            guard_allows_execution = any(guard_value == allowed for allowed in guard.allowed_values)
                             if not guard_allows_execution:
                                 projected_result = await asyncio.to_thread(
                                     self.registry.project_guard_blocked_result,
@@ -626,10 +555,7 @@ class WorkflowExecutor:
                                 arguments=runtime_item.arguments,
                                 result={
                                     "success": False,
-                                    "errors": [
-                                        "执行守卫未能形成确定性终态："
-                                        f"{type(exc).__name__}: {exc}"
-                                    ],
+                                    "errors": ["执行守卫未能形成确定性终态：" f"{type(exc).__name__}: {exc}"],
                                     "partial": False,
                                 },
                                 executed=False,
@@ -637,10 +563,7 @@ class WorkflowExecutor:
                             )
                     return await self._execute_or_reuse(task, runtime_item)
 
-            active = [
-                asyncio.create_task(execute_ready(item))
-                for item in ready
-            ]
+            active = [asyncio.create_task(execute_ready(item)) for item in ready]
             try:
                 for future in asyncio.as_completed(active):
                     outcome = await future
@@ -670,42 +593,23 @@ class WorkflowExecutor:
                     await asyncio.gather(*unfinished, return_exceptions=True)
 
         if dependency_blocked_steps:
-            errors.append(
-                f"{dependency_blocked_steps} 个后续步骤因前置步骤失败未执行。"
-            )
+            errors.append(f"{dependency_blocked_steps} 个后续步骤因前置步骤失败未执行。")
 
-        outcome_order = {
-            item.call.step_id: index
-            for index, item in enumerate(validated)
-        }
+        outcome_order = {item.call.step_id: index for index, item in enumerate(validated)}
         outcomes.sort(key=lambda item: outcome_order.get(item.step_id, len(outcome_order)))
 
         successful_outcomes = [item for item in outcomes if item.success]
         failed_outcomes = [item for item in outcomes if not item.success]
         partial_sources_accepted = (
-            spec.allow_partial_tool_failures
-            and bool(successful_outcomes)
-            and bool(failed_outcomes)
+            spec.allow_partial_tool_failures and bool(successful_outcomes) and bool(failed_outcomes)
         )
-        status = (
-            "completed"
-            if (
-                not errors
-                and (
-                    not failed_outcomes
-                    or partial_sources_accepted
-                )
-            )
-            else "failed"
-        )
+        status = "completed" if (not errors and (not failed_outcomes or partial_sources_accepted)) else "failed"
         derived_results: list[dict[str, Any]] = []
         resource_outputs: dict[str, Any] = {}
         if status == "completed" and spec.result_processor:
             if self.processor_runner is None:
                 status = "failed"
-                errors.append(
-                    f"标准任务缺少已声明的结果处理器：{spec.result_processor}"
-                )
+                errors.append(f"标准任务缺少已声明的结果处理器：{spec.result_processor}")
             else:
                 try:
                     processor_result = await self.processor_runner(
@@ -724,29 +628,20 @@ class WorkflowExecutor:
                         status = "failed"
                         errors.extend(
                             str(value)
-                            for value in processor_result.get("errors") or [
-                                f"{spec.result_processor} failed"
-                            ]
+                            for value in processor_result.get("errors") or [f"{spec.result_processor} failed"]
                         )
                     raw_resources = processor_result.get("resource_outputs")
                     if isinstance(raw_resources, Mapping):
-                        resource_outputs.update({
-                            str(key): value
-                            for key, value in raw_resources.items()
-                        })
+                        resource_outputs.update({str(key): value for key, value in raw_resources.items()})
                 except Exception as exc:
                     status = "failed"
-                    errors.append(
-                        f"标准任务结果处理失败：{type(exc).__name__}: {exc}"
-                    )
+                    errors.append(f"标准任务结果处理失败：{type(exc).__name__}: {exc}")
 
         result_context = [
             *(outcome.evidence() for outcome in outcomes),
             *derived_results,
         ]
-        authoritative_security = resource_outputs.get(
-            TaskResource.SECURITY_COLLECTION.value
-        )
+        authoritative_security = resource_outputs.get(TaskResource.SECURITY_COLLECTION.value)
         output_entities = (
             (
                 _security_entities_from_resource(authoritative_security)
@@ -757,11 +652,7 @@ class WorkflowExecutor:
             else ()
         )
         max_output_entities = spec.max_output_entities
-        if (
-            status == "completed"
-            and max_output_entities is not None
-            and len(output_entities) > max_output_entities
-        ):
+        if status == "completed" and max_output_entities is not None and len(output_entities) > max_output_entities:
             status = "failed"
             errors.append(
                 f"标准任务产出 {len(output_entities)} 个证券对象，超过资源契约容量 "
@@ -775,20 +666,14 @@ class WorkflowExecutor:
                     resource_outputs[resource.value] = value
             if TaskResource.SECURITY_COLLECTION in spec.output_resources:
                 resource_outputs[TaskResource.SECURITY_COLLECTION.value] = [
-                    {"symbol": entity.symbol, "name": entity.name}
-                    for entity in output_entities
+                    {"symbol": entity.symbol, "name": entity.name} for entity in output_entities
                 ]
             missing_resources = [
-                resource.value
-                for resource in spec.output_resources
-                if resource.value not in resource_outputs
+                resource.value for resource in spec.output_resources if resource.value not in resource_outputs
             ]
             if missing_resources:
                 status = "failed"
-                errors.append(
-                    "标准任务没有发布声明的资源："
-                    + "、".join(missing_resources)
-                )
+                errors.append("标准任务没有发布声明的资源：" + "、".join(missing_resources))
                 output_entities = ()
                 resource_outputs = {}
         return TaskExecutionResult(
@@ -877,10 +762,7 @@ def _result_path_value(
     value: Any = result
     for field in path:
         if not isinstance(value, Mapping) or field not in value:
-            raise PolicyViolation(
-                "execution guard result path is missing: "
-                + "/".join(path)
-            )
+            raise PolicyViolation("execution guard result path is missing: " + "/".join(path))
         value = value[field]
     return value
 

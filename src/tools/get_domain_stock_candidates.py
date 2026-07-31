@@ -77,17 +77,9 @@ def _live_board_catalog() -> dict[str, Any]:
             and str(item.get("sector_code") or "").strip()
         ]
         return {
-            "catalog_snapshot_id": str(
-                catalog.get("catalog_snapshot_id") or ""
-            ).strip(),
-            "by_name": {
-                board_name: board_id
-                for board_id, board_name in identities
-            },
-            "by_id": {
-                board_id: board_name
-                for board_id, board_name in identities
-            },
+            "catalog_snapshot_id": str(catalog.get("catalog_snapshot_id") or "").strip(),
+            "by_name": {board_name: board_id for board_id, board_name in identities},
+            "by_id": {board_id: board_name for board_id, board_name in identities},
         }
     except Exception:
         return {
@@ -119,21 +111,9 @@ def get_domain_stock_candidates(
     local_universe = _load_local_universe()
     has_v2_identity = any(spec.board_id for spec in domain_specs)
     live_catalog = _live_board_catalog() if has_v2_identity else None
-    live_snapshot_id = (
-        str(live_catalog.get("catalog_snapshot_id") or "")
-        if live_catalog is not None
-        else ""
-    )
-    board_codes = (
-        dict(live_catalog.get("by_name") or {})
-        if live_catalog is not None
-        else _live_board_codes()
-    )
-    board_names_by_id = (
-        dict(live_catalog.get("by_id") or {})
-        if live_catalog is not None
-        else {}
-    )
+    live_snapshot_id = str(live_catalog.get("catalog_snapshot_id") or "") if live_catalog is not None else ""
+    board_codes = dict(live_catalog.get("by_name") or {}) if live_catalog is not None else _live_board_codes()
+    board_names_by_id = dict(live_catalog.get("by_id") or {}) if live_catalog is not None else {}
     resolved_themes: dict[int, list[str]] = {}
     identity_errors: dict[int, list[str]] = {}
     lookup_board_codes: dict[str, str | None] = {}
@@ -141,27 +121,17 @@ def get_domain_stock_candidates(
         errors: list[str] = []
         themes: list[str] = []
         if spec.board_id:
-            if (
-                spec.catalog_snapshot_id
-                and spec.catalog_snapshot_id != live_snapshot_id
-            ):
-                errors.append(
-                    "板块目录快照已变化，拒绝使用历史 board_id 绑定。"
-                )
+            if spec.catalog_snapshot_id and spec.catalog_snapshot_id != live_snapshot_id:
+                errors.append("板块目录快照已变化，拒绝使用历史 board_id 绑定。")
             live_name = board_names_by_id.get(spec.board_id)
             if not live_name:
-                errors.append(
-                    f"实时目录不存在板块 ID {spec.board_id}。"
-                )
+                errors.append(f"实时目录不存在板块 ID {spec.board_id}。")
             elif live_name != spec.board_name:
                 errors.append(
-                    f"板块 ID {spec.board_id} 当前名称为“{live_name}”，"
-                    f"与绑定名称“{spec.board_name}”不一致。"
+                    f"板块 ID {spec.board_id} 当前名称为“{live_name}”，" f"与绑定名称“{spec.board_name}”不一致。"
                 )
             elif spec.board_queries != [spec.board_name]:
-                errors.append(
-                    "强类型板块绑定必须只查询其 board_name。"
-                )
+                errors.append("强类型板块绑定必须只查询其 board_name。")
             elif not errors:
                 themes.append(spec.board_name)
                 lookup_board_codes[spec.board_name] = spec.board_id
@@ -216,21 +186,15 @@ def get_domain_stock_candidates(
         domain_warnings: list[str] = []
         domain_errors: list[str] = list(identity_errors[domain_index])
         coverage_complete = (
-            domain_spec.mapping_type != "unresolved"
-            and not domain_spec.unresolved_parts
-            and not domain_errors
+            domain_spec.mapping_type != "unresolved" and not domain_spec.unresolved_parts and not domain_errors
         )
         successful_theme_count = 0
 
         if domain_spec.unresolved_parts:
-            domain_warnings.append(
-                "未解析子领域：" + "、".join(domain_spec.unresolved_parts)
-            )
+            domain_warnings.append("未解析子领域：" + "、".join(domain_spec.unresolved_parts))
         if not themes:
             coverage_complete = False
-            domain_errors.append(
-                "当前完整板块目录中没有可执行的结构化召回路径。"
-            )
+            domain_errors.append("当前完整板块目录中没有可执行的结构化召回路径。")
 
         for theme in themes:
             result = fetched[theme]
@@ -238,41 +202,35 @@ def get_domain_stock_candidates(
                 local_universe_count,
                 int(result.get("local_universe_count") or 0),
             )
-            exact_theme_complete = bool(
-                result.get("success") and result.get("coverage_complete")
-            )
+            exact_theme_complete = bool(result.get("success") and result.get("coverage_complete"))
             if exact_theme_complete:
                 successful_theme_count += 1
             coverage_complete = coverage_complete and exact_theme_complete
             domain_warnings.extend(str(item) for item in result.get("warnings") or [] if item)
             domain_errors.extend(str(item) for item in result.get("errors") or [] if item)
             if not exact_theme_complete:
-                rejected_boards.extend(
-                    board for board in result.get("matched_boards") or [] if isinstance(board, dict)
-                )
-                domain_errors.append(
-                    f"查询板块“{theme}”未取得完整精确板块成分，"
-                    "已拒绝近似或跨行业板块候选。"
-                )
+                rejected_boards.extend(board for board in result.get("matched_boards") or [] if isinstance(board, dict))
+                domain_errors.append(f"查询板块“{theme}”未取得完整精确板块成分，" "已拒绝近似或跨行业板块候选。")
                 continue
-            matched_boards.extend(
-                board for board in result.get("matched_boards") or [] if isinstance(board, dict)
-            )
+            matched_boards.extend(board for board in result.get("matched_boards") or [] if isinstance(board, dict))
             for item in result.get("items") or []:
                 if not isinstance(item, dict):
                     continue
                 symbol = str(item.get("symbol") or "")
                 if len(symbol) != 6 or not symbol.isdigit():
                     continue
-                merged = by_symbol.setdefault(symbol, {
-                    **item,
-                    "matched_domains": [domain],
-                    "lookup_themes": [],
-                    "boards": [],
-                    "sources": [],
-                    "evidence_level": "L1",
-                    "company_evidence_required": True,
-                })
+                merged = by_symbol.setdefault(
+                    symbol,
+                    {
+                        **item,
+                        "matched_domains": [domain],
+                        "lookup_themes": [],
+                        "boards": [],
+                        "sources": [],
+                        "evidence_level": "L1",
+                        "company_evidence_required": True,
+                    },
+                )
                 if theme not in merged["lookup_themes"]:
                     merged["lookup_themes"].append(theme)
                 for board in item.get("boards") or []:
@@ -296,11 +254,7 @@ def get_domain_stock_candidates(
             "membership_is_business_proof": False,
             "success": bool(items),
             "partial": bool(items) and (not coverage_complete or bool(domain_warnings or domain_errors)),
-            "coverage_complete": (
-                coverage_complete
-                and bool(themes)
-                and successful_theme_count == len(themes)
-            ),
+            "coverage_complete": (coverage_complete and bool(themes) and successful_theme_count == len(themes)),
             "candidate_count": len(items),
             "items": items,
             "matched_boards": matched_boards,
@@ -314,13 +268,16 @@ def get_domain_stock_candidates(
 
         for item in items:
             symbol = item["symbol"]
-            merged = union.setdefault(symbol, {
-                **item,
-                "matched_domains": [],
-                "lookup_themes": [],
-                "boards": [],
-                "sources": [],
-            })
+            merged = union.setdefault(
+                symbol,
+                {
+                    **item,
+                    "matched_domains": [],
+                    "lookup_themes": [],
+                    "boards": [],
+                    "sources": [],
+                },
+            )
             for key in ("matched_domains", "lookup_themes", "boards"):
                 for value in item.get(key) or []:
                     if value not in merged[key]:

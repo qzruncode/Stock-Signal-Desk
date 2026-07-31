@@ -79,9 +79,7 @@ def test_large_user_message_still_fails_closed(monkeypatch):
     monkeypatch.setenv("AGENT_MAX_REQUEST_CHARS", "10000")
 
     with pytest.raises(AgentRequestValidationError) as exc_info:
-        validate_chat_request_body(
-            {"messages": [{"role": "user", "content": "u" * 2000}]}
-        )
+        validate_chat_request_body({"messages": [{"role": "user", "content": "u" * 2000}]})
 
     assert exc_info.value.code == "message_too_large"
 
@@ -93,12 +91,14 @@ def test_ai_sdk_tool_history_may_carry_call_id_inside_content():
                 {"role": "user", "content": "continue"},
                 {
                     "role": "tool",
-                    "content": [{
-                        "type": "tool-result",
-                        "toolCallId": "call_1",
-                        "toolName": "get_kline",
-                        "result": {"success": True},
-                    }],
+                    "content": [
+                        {
+                            "type": "tool-result",
+                            "toolCallId": "call_1",
+                            "toolName": "get_kline",
+                            "result": {"success": True},
+                        }
+                    ],
                 },
             ]
         }

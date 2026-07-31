@@ -12,6 +12,7 @@ import pytest
 from unittest.mock import patch
 from src.services.name_to_code_resolver import resolve_name_to_code
 
+
 class TestSearchPerformance:
     """Benchmark tests for stock search resolution."""
 
@@ -19,9 +20,15 @@ class TestSearchPerformance:
     def test_resolve_name_to_code_fast_path_throughput(self):
         """Benchmark the common fast paths without typo/fuzzy fallbacks dominating runtime."""
         inputs = [
-            "600519", "00700", "AAPL", "TSLA",
-            "贵州茅台", "腾讯控股", "阿里巴巴",
-            "aaaaaaa", "1234567",
+            "600519",
+            "00700",
+            "AAPL",
+            "TSLA",
+            "贵州茅台",
+            "腾讯控股",
+            "阿里巴巴",
+            "aaaaaaa",
+            "1234567",
         ]
 
         # Warm caches/import paths before timing.
@@ -71,18 +78,18 @@ class TestSearchPerformance:
         # Simulate 5000 stocks from AkShare
         fake_market = {f"股票_{i}": f"{i:06d}" for i in range(5000)}
         mock_akshare.return_value = fake_market
-        
-        query = "股票_4999" # Worst case or near worst case for fuzzy matching
-        
+
+        query = "股票_4999"  # Worst case or near worst case for fuzzy matching
+
         start_time = time.time()
         iterations = 20
         for _ in range(iterations):
             resolve_name_to_code(query)
-        
+
         duration = time.time() - start_time
         avg_ms = (duration / iterations) * 1000
-        
+
         print(f"\nFuzzy match (5000 stocks) avg time: {avg_ms:.2f}ms")
-        # Fuzzy matching 5000 strings is CPU intensive. 
+        # Fuzzy matching 5000 strings is CPU intensive.
         # Aiming for < 100ms per request on a standard CI environment.
         assert avg_ms < 200, f"Fuzzy matching too slow: {avg_ms:.2f}ms"

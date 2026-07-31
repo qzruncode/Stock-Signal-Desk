@@ -11,9 +11,7 @@ from fastapi.responses import FileResponse
 from api.v1.endpoints.agent import router
 
 EXPORT_DIR = Path(__file__).resolve().parents[4] / "data" / "exports" / "stock-screening"
-FILE_ID_RE = re.compile(
-    r"^(?:stock-screen|atr-volatility)-\d{8}-\d{6}-[0-9a-f]{8}\.csv$"
-)
+FILE_ID_RE = re.compile(r"^(?:stock-screen|atr-volatility)-\d{8}-\d{6}-[0-9a-f]{8}\.csv$")
 
 
 @router.get("/agent/exports/{file_id}")

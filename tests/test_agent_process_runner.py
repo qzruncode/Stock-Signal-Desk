@@ -60,22 +60,30 @@ def test_isolated_runner_forwards_a_stable_scoped_idempotency_key():
 
 
 def test_process_worker_exposes_and_resets_idempotency_context():
-    request_stream = StringIO(json.dumps({
-        "name": "get_market_status",
-        "arguments": {},
-        "idempotency_key": "worker-key",
-    }))
+    request_stream = StringIO(
+        json.dumps(
+            {
+                "name": "get_market_status",
+                "arguments": {},
+                "idempotency_key": "worker-key",
+            }
+        )
+    )
     response_stream = StringIO()
 
-    with patch("src.tools.process_worker.sys.stdin", request_stream), patch(
-        "src.tools.process_worker.sys.stdout",
-        response_stream,
-    ), patch(
-        "src.tools.registry.ToolRegistry.execute",
-        side_effect=lambda *_args, **_kwargs: {
-            "success": True,
-            "key": current_tool_idempotency_key(),
-        },
+    with (
+        patch("src.tools.process_worker.sys.stdin", request_stream),
+        patch(
+            "src.tools.process_worker.sys.stdout",
+            response_stream,
+        ),
+        patch(
+            "src.tools.registry.ToolRegistry.execute",
+            side_effect=lambda *_args, **_kwargs: {
+                "success": True,
+                "key": current_tool_idempotency_key(),
+            },
+        ),
     ):
         assert process_worker_main() == 0
 
@@ -101,13 +109,17 @@ def test_isolated_runner_turns_native_abort_into_regular_error():
 def test_one_shot_worker_exits_without_interpreter_thread_finalization():
     stdout = MagicMock()
     stderr = MagicMock()
-    with patch("src.tools.process_worker.sys.stdout", stdout), patch(
-        "src.tools.process_worker.sys.stderr",
-        stderr,
-    ), patch(
-        "src.tools.process_worker.os._exit",
-        side_effect=SystemExit(7),
-    ) as immediate_exit:
+    with (
+        patch("src.tools.process_worker.sys.stdout", stdout),
+        patch(
+            "src.tools.process_worker.sys.stderr",
+            stderr,
+        ),
+        patch(
+            "src.tools.process_worker.os._exit",
+            side_effect=SystemExit(7),
+        ) as immediate_exit,
+    ):
         with pytest.raises(SystemExit) as captured:
             _exit_after_result(7)
 
@@ -140,10 +152,13 @@ def test_isolated_runner_terminates_process_group_when_cancelled():
     timer = threading.Timer(0.03, cancel_event.set)
     timer.start()
     try:
-        with patch(
-            "src.tools.process_runner.subprocess.Popen",
-            return_value=BlockingProcess(),
-        ), patch("src.tools.process_runner.os.killpg") as kill_group:
+        with (
+            patch(
+                "src.tools.process_runner.subprocess.Popen",
+                return_value=BlockingProcess(),
+            ),
+            patch("src.tools.process_runner.os.killpg") as kill_group,
+        ):
             with pytest.raises(RuntimeError, match="已取消"):
                 execute_tool_isolated(
                     "get_market_status",
@@ -170,13 +185,16 @@ def test_cancel_aware_runner_transports_large_request_and_result_without_pipes()
             assert request["arguments"]["blob"] == request_blob
             stdout.write(
                 "__DSA_TOOL_RESULT__="
-                + json.dumps({
-                    "ok": True,
-                    "result": {
-                        "success": True,
-                        "blob": result_blob,
+                + json.dumps(
+                    {
+                        "ok": True,
+                        "result": {
+                            "success": True,
+                            "blob": result_blob,
+                        },
                     },
-                }, ensure_ascii=False)
+                    ensure_ascii=False,
+                )
                 + "\n"
             )
             stdout.flush()
@@ -211,8 +229,7 @@ def test_professional_evidence_is_split_into_parallel_two_stock_shards():
         with lock:
             calls.append(symbols)
         items = [
-            {"symbol": symbol, "name": symbol, "evidence_coverage": {"complete": True}}
-            for symbol in symbols.split(",")
+            {"symbol": symbol, "name": symbol, "evidence_coverage": {"complete": True}} for symbol in symbols.split(",")
         ]
         return {
             "success": True,
@@ -233,7 +250,11 @@ def test_professional_evidence_is_split_into_parallel_two_stock_shards():
 
     assert sorted(calls) == ["000001,000002", "000003,000004", "000005"]
     assert [item["symbol"] for item in result["items"]] == [
-        "000001", "000002", "000003", "000004", "000005",
+        "000001",
+        "000002",
+        "000003",
+        "000004",
+        "000005",
     ]
     assert result["total"] == 5
     assert result["partial"] is False
@@ -251,10 +272,7 @@ def test_professional_evidence_keeps_snapshot_when_one_shard_fails():
                     {"symbol": symbol, "name": symbol, "quote": {"price": 10}}
                     for symbol in arguments["symbols"].split(",")
                 ],
-                "resolved_entities": [
-                    {"symbol": symbol, "name": symbol}
-                    for symbol in arguments["symbols"].split(",")
-                ],
+                "resolved_entities": [{"symbol": symbol, "name": symbol} for symbol in arguments["symbols"].split(",")],
                 "unresolved_entities": [],
             }
         items = [
@@ -282,7 +300,10 @@ def test_professional_evidence_keeps_snapshot_when_one_shard_fails():
     assert result["partial"] is True
     assert result["fallback_used"] is True
     assert [item["symbol"] for item in result["items"]] == [
-        "000001", "000002", "000003", "000004",
+        "000001",
+        "000002",
+        "000003",
+        "000004",
     ]
     fallback_items = [item for item in result["items"] if item["symbol"] in {"000003", "000004"}]
     assert all(item["snapshot"]["quote"]["price"] == 10 for item in fallback_items)
@@ -298,8 +319,7 @@ def test_two_stock_professional_evidence_falls_back_after_real_failure():
         return {
             "success": True,
             "items": [
-                {"symbol": symbol, "name": symbol, "quote": {"price": 10}}
-                for symbol in arguments["symbols"].split(",")
+                {"symbol": symbol, "name": symbol, "quote": {"price": 10}} for symbol in arguments["symbols"].split(",")
             ],
             "resolved_entities": [],
             "unresolved_entities": [],
@@ -333,26 +353,28 @@ def test_professional_buy_analysis_isolates_each_stock_preserves_order_and_failu
             "success": True,
             "partial": False,
             "playbook": "professional_eight_dimension_boolean_gate",
-            "items": [{
-                "symbol": symbol,
-                "name": symbol,
-                "analysis_mode": "professional_eight_dimension_boolean_gate",
-                "decision_code": "buy",
-                "decision": "可买入",
-                "dimensions": [
-                    {"id": dimension, "status": "pass"}
-                    for dimension in (
-                        "market_mainline",
-                        "industrial_competitiveness",
-                        "industry_cycle",
-                        "competition_quality",
-                        "growth_drivers",
-                        "forward_catalysts",
-                        "valuation_odds",
-                        "major_risks",
-                    )
-                ],
-            }],
+            "items": [
+                {
+                    "symbol": symbol,
+                    "name": symbol,
+                    "analysis_mode": "professional_eight_dimension_boolean_gate",
+                    "decision_code": "buy",
+                    "decision": "可买入",
+                    "dimensions": [
+                        {"id": dimension, "status": "pass"}
+                        for dimension in (
+                            "market_mainline",
+                            "industrial_competitiveness",
+                            "industry_cycle",
+                            "competition_quality",
+                            "growth_drivers",
+                            "forward_catalysts",
+                            "valuation_odds",
+                            "major_risks",
+                        )
+                    ],
+                }
+            ],
             "resolved_entities": [{"symbol": symbol, "name": symbol}],
             "unresolved_entities": [],
             "requested_count": 1,

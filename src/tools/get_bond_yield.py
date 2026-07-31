@@ -204,11 +204,13 @@ TOOL = ToolSpec(
         "获取中国或美国2年、5年、10年、30年国债收益率历史，并用同一交易日的10年和2年数据计算期限利差。"
         "缓存命中不等于降级；返回百分比单位、利差日期和陈旧状态。"
     ),
-    parameters=object_schema({
-        "country": {"type": "string", "enum": list(COUNTRIES), "default": "cn"},
-        "term": {"type": "string", "enum": list(TERMS), "default": "10y"},
-        "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 30},
-    }),
+    parameters=object_schema(
+        {
+            "country": {"type": "string", "enum": list(COUNTRIES), "default": "cn"},
+            "term": {"type": "string", "enum": list(TERMS), "default": "10y"},
+            "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 30},
+        }
+    ),
     executor=get_bond_yield,
     category="macro",
 )

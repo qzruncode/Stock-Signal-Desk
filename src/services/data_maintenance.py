@@ -33,9 +33,11 @@ def _public_maintenance_warning(error: str | None) -> str:
 def _universe_snapshot() -> dict[str, Any]:
     db = DatabaseManager.get_instance()
     with db.get_session() as session:
-        total, last_sync = session.query(
-            func.count(StockMeta.id), func.min(StockMeta.last_sync_at)
-        ).filter(StockMeta.status == "active").one()
+        total, last_sync = (
+            session.query(func.count(StockMeta.id), func.min(StockMeta.last_sync_at))
+            .filter(StockMeta.status == "active")
+            .one()
+        )
     stale = not last_sync or last_sync.date() < date.today()
     return {
         "total": int(total or 0),
@@ -48,11 +50,15 @@ def _claim_job(dataset: str, target_data_time: str, trigger: str) -> tuple[str, 
     job_id = str(uuid.uuid4())
     db = DatabaseManager.get_instance()
     with db.get_session() as session:
-        existing = session.query(DataMaintenanceJob).filter(
-            DataMaintenanceJob.dataset == dataset,
-            DataMaintenanceJob.scope_key == "all",
-            DataMaintenanceJob.target_data_time == target_data_time,
-        ).one_or_none()
+        existing = (
+            session.query(DataMaintenanceJob)
+            .filter(
+                DataMaintenanceJob.dataset == dataset,
+                DataMaintenanceJob.scope_key == "all",
+                DataMaintenanceJob.target_data_time == target_data_time,
+            )
+            .one_or_none()
+        )
         if existing is not None:
             if existing.status == "running":
                 heartbeat_at = existing.updated_at or existing.started_at or existing.created_at
@@ -84,24 +90,30 @@ def _claim_job(dataset: str, target_data_time: str, trigger: str) -> tuple[str, 
                 return existing.id, True
             return existing.id, False
         try:
-            session.add(DataMaintenanceJob(
-                id=job_id,
-                dataset=dataset,
-                scope_key="all",
-                target_data_time=target_data_time,
-                trigger=trigger,
-                status="running",
-                started_at=datetime.now(),
-            ))
+            session.add(
+                DataMaintenanceJob(
+                    id=job_id,
+                    dataset=dataset,
+                    scope_key="all",
+                    target_data_time=target_data_time,
+                    trigger=trigger,
+                    status="running",
+                    started_at=datetime.now(),
+                )
+            )
             session.commit()
             return job_id, True
         except IntegrityError:
             session.rollback()
-            existing = session.query(DataMaintenanceJob).filter(
-                DataMaintenanceJob.dataset == dataset,
-                DataMaintenanceJob.scope_key == "all",
-                DataMaintenanceJob.target_data_time == target_data_time,
-            ).one()
+            existing = (
+                session.query(DataMaintenanceJob)
+                .filter(
+                    DataMaintenanceJob.dataset == dataset,
+                    DataMaintenanceJob.scope_key == "all",
+                    DataMaintenanceJob.target_data_time == target_data_time,
+                )
+                .one()
+            )
             return existing.id, False
 
 
@@ -138,6 +150,7 @@ def _update_job(job_id: str, **values: Any) -> None:
 
 def run_stock_universe_maintenance_job(job_id: str) -> dict[str, Any]:
     """Execute one already-claimed refresh and persist its terminal state."""
+
     def progress(processed: int, total: int, message: str) -> None:
         _update_job(job_id, progress=processed, total=total, message=message)
 
@@ -280,22 +293,25 @@ def get_data_health() -> dict[str, Any]:
     db = DatabaseManager.get_instance()
     with db.get_session() as session:
         universe = _universe_snapshot()
-        kline_codes, latest_kline = session.query(
-            func.count(func.distinct(StockDaily.code)), func.max(StockDaily.date)
-        ).join(StockMeta, StockMeta.code == StockDaily.code).filter(
-            StockMeta.status == "active"
-        ).one()
-        financial_codes, latest_report, latest_financial_fetch = session.query(
-            func.count(StockMeta.id),
-            func.max(StockMeta.report_date),
-            func.max(StockMeta.financial_fetched_at),
-        ).filter(
-            StockMeta.status == "active",
-            StockMeta.financial_fetched_at.isnot(None),
-        ).one()
-        jobs = session.query(DataMaintenanceJob).order_by(
-            DataMaintenanceJob.created_at.desc()
-        ).limit(10).all()
+        kline_codes, latest_kline = (
+            session.query(func.count(func.distinct(StockDaily.code)), func.max(StockDaily.date))
+            .join(StockMeta, StockMeta.code == StockDaily.code)
+            .filter(StockMeta.status == "active")
+            .one()
+        )
+        financial_codes, latest_report, latest_financial_fetch = (
+            session.query(
+                func.count(StockMeta.id),
+                func.max(StockMeta.report_date),
+                func.max(StockMeta.financial_fetched_at),
+            )
+            .filter(
+                StockMeta.status == "active",
+                StockMeta.financial_fetched_at.isnot(None),
+            )
+            .one()
+        )
+        jobs = session.query(DataMaintenanceJob).order_by(DataMaintenanceJob.created_at.desc()).limit(10).all()
     total = universe["total"]
     return {
         "stock_universe": universe,

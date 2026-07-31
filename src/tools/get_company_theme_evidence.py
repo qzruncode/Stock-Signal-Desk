@@ -30,9 +30,7 @@ def _clean(value: Any, limit: int = 2_000) -> str:
 
 def _json_line(value: dict[str, Any], fields: tuple[str, ...]) -> str:
     return "；".join(
-        f"{field}={_clean(value.get(field), 500)}"
-        for field in fields
-        if value.get(field) not in (None, "", [], {})
+        f"{field}={_clean(value.get(field), 500)}" for field in fields if value.get(field) not in (None, "", [], {})
     )
 
 
@@ -54,16 +52,18 @@ def _append_document(
     normalized_text = _clean(text, min(6_000, max(0, remaining)))
     if not normalized_text:
         return
-    documents.append({
-        "source_id": f"s{len(documents) + 1}",
-        "source_type": source_type,
-        "title": _clean(title, 300),
-        "text": normalized_text,
-        "source_name": _clean(source_name, 120),
-        "source_url": str(source_url or "").strip(),
-        "source_date": str(source_date or "").strip()[:10],
-        "official": bool(official),
-    })
+    documents.append(
+        {
+            "source_id": f"s{len(documents) + 1}",
+            "source_type": source_type,
+            "title": _clean(title, 300),
+            "text": normalized_text,
+            "source_name": _clean(source_name, 120),
+            "source_url": str(source_url or "").strip(),
+            "source_date": str(source_date or "").strip()[:10],
+            "official": bool(official),
+        }
+    )
 
 
 def _profile_documents(
@@ -157,17 +157,11 @@ def _item_documents(
             continue
         title = _clean(item.get("title"), 300)
         body = _clean(
-            item.get("summary")
-            or item.get("content_text")
-            or item.get("content"),
+            item.get("summary") or item.get("content_text") or item.get("content"),
             2_500,
         )
         forecasts = item.get("profit_forecasts")
-        forecast_text = (
-            json.dumps(forecasts, ensure_ascii=False, default=str)
-            if forecasts
-            else ""
-        )
+        forecast_text = json.dumps(forecasts, ensure_ascii=False, default=str) if forecasts else ""
         text = "\n".join(
             value
             for value in (
@@ -189,12 +183,7 @@ def _item_documents(
             text=text,
             source_name=str(item.get("source") or result.get("source") or source_type),
             source_url=str(item.get("url") or item.get("link") or ""),
-            source_date=str(
-                item.get("publish_date")
-                or item.get("published")
-                or result.get("data_time")
-                or ""
-            ),
+            source_date=str(item.get("publish_date") or item.get("published") or result.get("data_time") or ""),
             official=official,
         )
     return documents
@@ -241,16 +230,8 @@ def get_company_theme_evidence(
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为单个 6 位 A 股代码")
-    clean_topics = list(dict.fromkeys(
-        _clean(value, 120)
-        for value in target_topics or []
-        if _clean(value, 120)
-    ))
-    clean_domains = list(dict.fromkeys(
-        _clean(value, 120)
-        for value in domains or []
-        if _clean(value, 120)
-    ))
+    clean_topics = list(dict.fromkeys(_clean(value, 120) for value in target_topics or [] if _clean(value, 120)))
+    clean_domains = list(dict.fromkeys(_clean(value, 120) for value in domains or [] if _clean(value, 120)))
     days = max(30, min(int(days), 730))
 
     from src.data.stock_index_loader import get_index_stock_name
@@ -260,10 +241,14 @@ def get_company_theme_evidence(
     from src.tools.get_stock_info import get_stock_info
     from src.tools.search_news import search_news
 
-    resolved_name = _clean(company_name, 120) or _clean(
-        get_index_stock_name(code),
-        120,
-    ) or code
+    resolved_name = (
+        _clean(company_name, 120)
+        or _clean(
+            get_index_stock_name(code),
+            120,
+        )
+        or code
+    )
     source_calls: dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any]]] = {
         "company_profile": (get_stock_info, {"symbol": code}),
         "business_segments": (
@@ -293,10 +278,14 @@ def get_company_theme_evidence(
             source_type = futures[future]
             try:
                 value = future.result()
-                results[source_type] = value if isinstance(value, dict) else {
-                    "success": False,
-                    "errors": ["项目工具返回值不是对象"],
-                }
+                results[source_type] = (
+                    value
+                    if isinstance(value, dict)
+                    else {
+                        "success": False,
+                        "errors": ["项目工具返回值不是对象"],
+                    }
+                )
             except Exception as exc:
                 results[source_type] = {
                     "success": False,
@@ -304,35 +293,45 @@ def get_company_theme_evidence(
                 }
 
     documents: list[dict[str, Any]] = []
-    documents.extend(_profile_documents(
-        results.get("company_profile") or {},
-        resolved_name,
-    ))
-    documents.extend(_segment_documents(
-        results.get("business_segments") or {},
-        resolved_name,
-    ))
-    documents.extend(_item_documents(
-        results.get("announcements") or {},
-        source_type="announcement",
-        name=resolved_name,
-        official=True,
-        max_items=30,
-    ))
-    documents.extend(_item_documents(
-        results.get("company_news") or {},
-        source_type="company_news",
-        name=resolved_name,
-        official=False,
-        max_items=30,
-    ))
-    documents.extend(_item_documents(
-        results.get("stock_research") or {},
-        source_type="stock_research",
-        name=resolved_name,
-        official=False,
-        max_items=18,
-    ))
+    documents.extend(
+        _profile_documents(
+            results.get("company_profile") or {},
+            resolved_name,
+        )
+    )
+    documents.extend(
+        _segment_documents(
+            results.get("business_segments") or {},
+            resolved_name,
+        )
+    )
+    documents.extend(
+        _item_documents(
+            results.get("announcements") or {},
+            source_type="announcement",
+            name=resolved_name,
+            official=True,
+            max_items=30,
+        )
+    )
+    documents.extend(
+        _item_documents(
+            results.get("company_news") or {},
+            source_type="company_news",
+            name=resolved_name,
+            official=False,
+            max_items=30,
+        )
+    )
+    documents.extend(
+        _item_documents(
+            results.get("stock_research") or {},
+            source_type="stock_research",
+            name=resolved_name,
+            official=False,
+            max_items=18,
+        )
+    )
 
     fallback_attempted = not bool(documents)
     fallback_used = False
@@ -358,11 +357,7 @@ def get_company_theme_evidence(
             fallback_documents = _fallback_documents(fallback, resolved_name)
             documents.extend(fallback_documents)
             fallback_used = bool(fallback_documents)
-            fallback_errors.extend(
-                str(error)
-                for error in fallback.get("errors") or []
-                if error
-            )
+            fallback_errors.extend(str(error) for error in fallback.get("errors") or [] if error)
         except Exception as exc:
             fallback_errors.append(f"{type(exc).__name__}: {exc}")
 
@@ -372,25 +367,13 @@ def get_company_theme_evidence(
             "success": value.get("success") is True,
             "partial": bool(value.get("partial")),
             "item_count": int(value.get("item_count") or 0),
-            "errors": [
-                str(error)
-                for error in value.get("errors") or []
-                if error
-            ][:5],
+            "errors": [str(error) for error in value.get("errors") or [] if error][:5],
         }
         for source_type, value in results.items()
     }
-    failed_sources = [
-        source_type
-        for source_type, status in source_status.items()
-        if not status["success"]
-    ]
+    failed_sources = [source_type for source_type, status in source_status.items() if not status["success"]]
     now = datetime.now().astimezone().isoformat()
-    errors = [
-        f"{source_type}: {error}"
-        for source_type, status in source_status.items()
-        for error in status["errors"]
-    ]
+    errors = [f"{source_type}: {error}" for source_type, status in source_status.items() for error in status["errors"]]
     errors.extend(f"public_web_fallback: {error}" for error in fallback_errors)
     return {
         "success": True,
@@ -409,11 +392,7 @@ def get_company_theme_evidence(
         "fallback_used": fallback_used,
         "source_status": source_status,
         "errors": list(dict.fromkeys(errors))[:20],
-        "warnings": (
-            ["项目内公司资料全部未形成可分析文本，已按该公司单独使用公开网络兜底"]
-            if fallback_used
-            else []
-        ),
+        "warnings": (["项目内公司资料全部未形成可分析文本，已按该公司单独使用公开网络兜底"] if fallback_used else []),
         "data_time": now if documents else None,
         "is_stale": False if documents else None,
         "freshness_unknown": not bool(documents),

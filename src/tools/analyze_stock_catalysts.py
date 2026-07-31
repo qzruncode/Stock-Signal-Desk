@@ -92,44 +92,48 @@ def analyze_stock_catalysts(symbols: str) -> dict[str, Any]:
             coverage = _source_coverage(raw)
             if not coverage["complete"]:
                 warnings.append(f"{name}({symbol})部分催化证据源获取失败")
-            items.append({
-                "symbol": symbol,
-                "name": name,
-                "horizon": "未来6—12个月",
-                "passed": result.passed,
-                "verdict": result.verdict,
-                "catalysts": result.details.get("catalysts") or [],
-                "missing_evidence": result.details.get("missing_evidence") or [],
-                "source_coverage": coverage,
-                "retrieved_evidence": {
-                    "announcements": raw.get("announcement_events") or [],
-                    "formal_documents": raw.get("document_events") or [],
-                    "report_schedule": raw.get("schedule_events") or [],
-                    "news": raw.get("news_events") or [],
-                    "research": raw.get("research_events") or [],
-                },
-                "analyzed_at": result.analyzed_at,
-            })
+            items.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "horizon": "未来6—12个月",
+                    "passed": result.passed,
+                    "verdict": result.verdict,
+                    "catalysts": result.details.get("catalysts") or [],
+                    "missing_evidence": result.details.get("missing_evidence") or [],
+                    "source_coverage": coverage,
+                    "retrieved_evidence": {
+                        "announcements": raw.get("announcement_events") or [],
+                        "formal_documents": raw.get("document_events") or [],
+                        "report_schedule": raw.get("schedule_events") or [],
+                        "news": raw.get("news_events") or [],
+                        "research": raw.get("research_events") or [],
+                    },
+                    "analyzed_at": result.analyzed_at,
+                }
+            )
         except Exception as exc:
             message = f"{name}({symbol})催化研究失败：{type(exc).__name__}: {str(exc)[:240]}"
             errors.append(message)
-            items.append({
-                "symbol": symbol,
-                "name": name,
-                "horizon": "未来6—12个月",
-                "passed": False,
-                "verdict": message,
-                "catalysts": [],
-                "missing_evidence": ["本轮催化研究未完成"],
-                "source_coverage": {
-                    "dimensions": {},
-                    "available_count": 0,
-                    "required_count": 5,
-                    "complete": False,
-                },
-                "retrieved_evidence": {},
-                "analyzed_at": datetime.now().astimezone().isoformat(),
-            })
+            items.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "horizon": "未来6—12个月",
+                    "passed": False,
+                    "verdict": message,
+                    "catalysts": [],
+                    "missing_evidence": ["本轮催化研究未完成"],
+                    "source_coverage": {
+                        "dimensions": {},
+                        "available_count": 0,
+                        "required_count": 5,
+                        "complete": False,
+                    },
+                    "retrieved_evidence": {},
+                    "analyzed_at": datetime.now().astimezone().isoformat(),
+                }
+            )
 
     if unresolved:
         errors.append("无法解析：" + "、".join(unresolved))

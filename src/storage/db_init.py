@@ -34,6 +34,7 @@ def create_db_engine(db_url: Optional[str] = None):
 
 def configure_sqlite_pragma(engine, sqlite_wal_enabled: bool = True):
     """Install SQLite pragma handler on the engine."""
+
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
@@ -66,6 +67,7 @@ def get_or_create_engine(db_url_arg: Optional[str] = None):
         if _engine is not None:
             return _engine, _SessionLocal
         from src.config import get_config
+
         _engine, _db_url = create_db_engine(db_url_arg)
         config = get_config()
         if config.sqlite_wal_enabled and str(_engine.url).startswith("sqlite:"):

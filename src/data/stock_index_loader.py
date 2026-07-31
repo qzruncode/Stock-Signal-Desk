@@ -66,9 +66,7 @@ def _load_stock_index_file(index_path: Path) -> Dict[str, str]:
         raw_items = json.load(fh)
 
     if not isinstance(raw_items, list):
-        raise ValueError(
-            f"Unexpected {_STOCK_INDEX_FILENAME} payload type: {type(raw_items).__name__}"
-        )
+        raise ValueError(f"Unexpected {_STOCK_INDEX_FILENAME} payload type: {type(raw_items).__name__}")
 
     stock_name_map: Dict[str, str] = {}
     for item in raw_items:

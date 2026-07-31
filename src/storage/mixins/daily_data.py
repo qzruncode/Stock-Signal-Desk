@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Mixin: daily stock data operations."""
+import logging
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from src.storage.models import StockDaily
 
-logger = __import__('logging').getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class DailyDataMixin:
@@ -37,21 +38,12 @@ class DailyDataMixin:
 
         with self.get_session() as session:
             result = session.execute(
-                select(StockDaily).where(
-                    and_(
-                        StockDaily.code == code,
-                        StockDaily.date == target_date
-                    )
-                )
+                select(StockDaily).where(and_(StockDaily.code == code, StockDaily.date == target_date))
             ).scalar_one_or_none()
 
             return result is not None
 
-    def get_latest_data(
-        self,
-        code: str,
-        days: int = 2
-    ) -> List[StockDaily]:
+    def get_latest_data(self, code: str, days: int = 2) -> List[StockDaily]:
         """
         获取最近 N 天的数据
 
@@ -65,39 +57,32 @@ class DailyDataMixin:
             StockDaily 对象列表（按日期降序）
         """
         with self.get_session() as session:
-            results = session.execute(
-                select(StockDaily)
-                .where(StockDaily.code == code)
-                .order_by(desc(StockDaily.date))
-                .limit(days)
-            ).scalars().all()
+            results = (
+                session.execute(
+                    select(StockDaily).where(StockDaily.code == code).order_by(desc(StockDaily.date)).limit(days)
+                )
+                .scalars()
+                .all()
+            )
 
             return list(results)
 
     def get_latest_daily_date(self, code: str) -> Optional[date]:
         """获取某只股票在 StockDaily 表中的最新日期。"""
         from datetime import date as date_type
+
         with self.get_session() as session:
-            result = session.execute(
-                select(func.max(StockDaily.date)).where(StockDaily.code == code)
-            ).scalar()
+            result = session.execute(select(func.max(StockDaily.date)).where(StockDaily.code == code)).scalar()
             return result if isinstance(result, date_type) else None
 
     def delete_stock_daily(self, code: str) -> int:
         """删除某只股票的全部 StockDaily 日线数据。"""
         with self.get_session() as session:
-            result = session.execute(
-                delete(StockDaily).where(StockDaily.code == code)
-            )
+            result = session.execute(delete(StockDaily).where(StockDaily.code == code))
             session.commit()
             return result.rowcount
 
-    def save_daily_data(
-        self,
-        df: pd.DataFrame,
-        code: str,
-        data_source: str = "Unknown"
-    ) -> int:
+    def save_daily_data(self, df: pd.DataFrame, code: str, data_source: str = "Unknown") -> int:
         """
         保存日线数据到数据库
 
@@ -120,25 +105,25 @@ class DailyDataMixin:
 
         now = datetime.now()
         records_by_date: Dict[date, Dict[str, Any]] = {}
-        for row in df.to_dict(orient='records'):
-            row_date = self._normalize_daily_date(row.get('date'))
+        for row in df.to_dict(orient="records"):
+            row_date = self._normalize_daily_date(row.get("date"))
             records_by_date[row_date] = {
-                'code': code,
-                'date': row_date,
-                'open': self._normalize_sql_value(row.get('open')),
-                'high': self._normalize_sql_value(row.get('high')),
-                'low': self._normalize_sql_value(row.get('low')),
-                'close': self._normalize_sql_value(row.get('close')),
-                'volume': self._normalize_sql_value(row.get('volume')),
-                'amount': self._normalize_sql_value(row.get('amount')),
-                'pct_chg': self._normalize_sql_value(row.get('pct_chg')),
-                'ma5': self._normalize_sql_value(row.get('ma5')),
-                'ma10': self._normalize_sql_value(row.get('ma10')),
-                'ma20': self._normalize_sql_value(row.get('ma20')),
-                'volume_ratio': self._normalize_sql_value(row.get('volume_ratio')),
-                'data_source': data_source,
-                'created_at': now,
-                'updated_at': now,
+                "code": code,
+                "date": row_date,
+                "open": self._normalize_sql_value(row.get("open")),
+                "high": self._normalize_sql_value(row.get("high")),
+                "low": self._normalize_sql_value(row.get("low")),
+                "close": self._normalize_sql_value(row.get("close")),
+                "volume": self._normalize_sql_value(row.get("volume")),
+                "amount": self._normalize_sql_value(row.get("amount")),
+                "pct_chg": self._normalize_sql_value(row.get("pct_chg")),
+                "ma5": self._normalize_sql_value(row.get("ma5")),
+                "ma10": self._normalize_sql_value(row.get("ma10")),
+                "ma20": self._normalize_sql_value(row.get("ma20")),
+                "volume_ratio": self._normalize_sql_value(row.get("volume_ratio")),
+                "data_source": data_source,
+                "created_at": now,
+                "updated_at": now,
             }
 
         if not records_by_date:
@@ -158,7 +143,7 @@ class DailyDataMixin:
                 existing_dates = set()
                 _COUNT_CHUNK = 500
                 for j in range(0, len(batch_dates), _COUNT_CHUNK):
-                    chunk_dates = batch_dates[j: j + _COUNT_CHUNK]
+                    chunk_dates = batch_dates[j : j + _COUNT_CHUNK]
                     if not chunk_dates:
                         continue
                     existing_dates.update(
@@ -169,32 +154,32 @@ class DailyDataMixin:
                                     StockDaily.date.in_(chunk_dates),
                                 )
                             )
-                        ).scalars().all()
+                        )
+                        .scalars()
+                        .all()
                     )
-                new_records = [
-                    record for record in records if record['date'] not in existing_dates
-                ]
+                new_records = [record for record in records if record["date"] not in existing_dates]
                 for i in range(0, len(records), _SQLITE_CHUNK):
-                    chunk = records[i: i + _SQLITE_CHUNK]
+                    chunk = records[i : i + _SQLITE_CHUNK]
                     stmt = sqlite_insert(StockDaily).values(chunk)
                     excluded = stmt.excluded
                     session.execute(
                         stmt.on_conflict_do_update(
-                            index_elements=['code', 'date'],
+                            index_elements=["code", "date"],
                             set_={
-                                'open': excluded.open,
-                                'high': excluded.high,
-                                'low': excluded.low,
-                                'close': excluded.close,
-                                'volume': excluded.volume,
-                                'amount': excluded.amount,
-                                'pct_chg': excluded.pct_chg,
-                                'ma5': excluded.ma5,
-                                'ma10': excluded.ma10,
-                                'ma20': excluded.ma20,
-                                'volume_ratio': excluded.volume_ratio,
-                                'data_source': excluded.data_source,
-                                'updated_at': excluded.updated_at,
+                                "open": excluded.open,
+                                "high": excluded.high,
+                                "low": excluded.low,
+                                "close": excluded.close,
+                                "volume": excluded.volume,
+                                "amount": excluded.amount,
+                                "pct_chg": excluded.pct_chg,
+                                "ma5": excluded.ma5,
+                                "ma10": excluded.ma10,
+                                "ma20": excluded.ma20,
+                                "volume_ratio": excluded.volume_ratio,
+                                "data_source": excluded.data_source,
+                                "updated_at": excluded.updated_at,
                             },
                         )
                     )
@@ -209,28 +194,30 @@ class DailyDataMixin:
                                 StockDaily.date.in_(batch_dates),
                             )
                         )
-                    ).scalars().all()
+                    )
+                    .scalars()
+                    .all()
                 }
                 new_count = 0
                 for record in records:
-                    existing = existing_rows.get(record['date'])
+                    existing = existing_rows.get(record["date"])
                     if existing is None:
                         session.add(StockDaily(**record))
                         new_count += 1
                         continue
-                    existing.open = record['open']
-                    existing.high = record['high']
-                    existing.low = record['low']
-                    existing.close = record['close']
-                    existing.volume = record['volume']
-                    existing.amount = record['amount']
-                    existing.pct_chg = record['pct_chg']
-                    existing.ma5 = record['ma5']
-                    existing.ma10 = record['ma10']
-                    existing.ma20 = record['ma20']
-                    existing.volume_ratio = record['volume_ratio']
-                    existing.data_source = record['data_source']
-                    existing.updated_at = record['updated_at']
+                    existing.open = record["open"]
+                    existing.high = record["high"]
+                    existing.low = record["low"]
+                    existing.close = record["close"]
+                    existing.volume = record["volume"]
+                    existing.amount = record["amount"]
+                    existing.pct_chg = record["pct_chg"]
+                    existing.ma5 = record["ma5"]
+                    existing.ma10 = record["ma10"]
+                    existing.ma20 = record["ma20"]
+                    existing.volume_ratio = record["volume_ratio"]
+                    existing.data_source = record["data_source"]
+                    existing.updated_at = record["updated_at"]
                 return new_count
 
         try:
@@ -244,12 +231,7 @@ class DailyDataMixin:
             logger.error(f"保存 {code} 数据失败: {e}")
             raise
 
-    def get_data_range(
-        self,
-        code: str,
-        start_date: date,
-        end_date: date
-    ) -> List[StockDaily]:
+    def get_data_range(self, code: str, start_date: date, end_date: date) -> List[StockDaily]:
         """
         获取指定日期范围的数据
 
@@ -262,25 +244,19 @@ class DailyDataMixin:
             StockDaily 对象列表
         """
         with self.get_session() as session:
-            results = session.execute(
-                select(StockDaily)
-                .where(
-                    and_(
-                        StockDaily.code == code,
-                        StockDaily.date >= start_date,
-                        StockDaily.date <= end_date
-                    )
+            results = (
+                session.execute(
+                    select(StockDaily)
+                    .where(and_(StockDaily.code == code, StockDaily.date >= start_date, StockDaily.date <= end_date))
+                    .order_by(StockDaily.date)
                 )
-                .order_by(StockDaily.date)
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
             return list(results)
 
-    def get_analysis_context(
-        self,
-        code: str,
-        target_date: Optional[date] = None
-    ) -> Optional[Dict[str, Any]]:
+    def get_analysis_context(self, code: str, target_date: Optional[date] = None) -> Optional[Dict[str, Any]]:
         """
         获取分析所需的上下文数据
 
@@ -311,27 +287,25 @@ class DailyDataMixin:
         yesterday_data = recent_data[1] if len(recent_data) > 1 else None
 
         context = {
-            'code': code,
-            'date': today_data.date.isoformat(),
-            'today': today_data.to_dict(),
+            "code": code,
+            "date": today_data.date.isoformat(),
+            "today": today_data.to_dict(),
         }
 
         if yesterday_data:
-            context['yesterday'] = yesterday_data.to_dict()
+            context["yesterday"] = yesterday_data.to_dict()
 
             # 计算相比昨日的变化
             if yesterday_data.volume and yesterday_data.volume > 0:
-                context['volume_change_ratio'] = round(
-                    today_data.volume / yesterday_data.volume, 2
-                )
+                context["volume_change_ratio"] = round(today_data.volume / yesterday_data.volume, 2)
 
             if yesterday_data.close and yesterday_data.close > 0:
-                context['price_change_ratio'] = round(
+                context["price_change_ratio"] = round(
                     (today_data.close - yesterday_data.close) / yesterday_data.close * 100, 2
                 )
 
             # 均线形态判断
-            context['ma_status'] = self._analyze_ma_status(today_data)
+            context["ma_status"] = self._analyze_ma_status(today_data)
 
         return context
 

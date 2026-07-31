@@ -60,9 +60,7 @@ class ChatMixin:
     ) -> Optional[ChatConversation]:
         """按 ID 查询单个对话会话。"""
         with self.get_session() as session:
-            statement = select(ChatConversation).where(
-                ChatConversation.id == conversation_id
-            )
+            statement = select(ChatConversation).where(ChatConversation.id == conversation_id)
             if tenant_id is not None:
                 statement = statement.where(ChatConversation.tenant_id == tenant_id)
             if owner_id is not None:
@@ -93,12 +91,15 @@ class ChatMixin:
                 total_statement = total_statement.where(*predicate)
                 list_statement = list_statement.where(*predicate)
             total = session.execute(total_statement).scalar() or 0
-            records = session.execute(
-                list_statement
-                .order_by(desc(ChatConversation.updated_at), desc(ChatConversation.created_at))
-                .offset(offset)
-                .limit(limit)
-            ).scalars().all()
+            records = (
+                session.execute(
+                    list_statement.order_by(desc(ChatConversation.updated_at), desc(ChatConversation.created_at))
+                    .offset(offset)
+                    .limit(limit)
+                )
+                .scalars()
+                .all()
+            )
             for record in records:
                 session.expunge(record)
             return list(records), total
@@ -114,9 +115,11 @@ class ChatMixin:
     ) -> Optional[ChatConversation]:
         """更新对话会话元数据。"""
         with self.session_scope() as session:
-            record = session.execute(
-                select(ChatConversation).where(ChatConversation.id == conversation_id)
-            ).scalars().first()
+            record = (
+                session.execute(select(ChatConversation).where(ChatConversation.id == conversation_id))
+                .scalars()
+                .first()
+            )
             if not record:
                 return None
 
@@ -135,53 +138,29 @@ class ChatMixin:
     def delete_chat_conversation(self, conversation_id: str) -> int:
         """删除对话会话及其消息。"""
         with self.session_scope() as session:
-            run_ids = select(AgentRun.id).where(
-                AgentRun.conversation_id == conversation_id
-            )
-            session.execute(
-                delete(AgentRunEvent).where(AgentRunEvent.run_id.in_(run_ids))
-            )
-            session.execute(
-                delete(AgentStepExecution).where(
-                    AgentStepExecution.run_id.in_(run_ids)
-                )
-            )
-            session.execute(
-                delete(AgentEffectOutbox).where(
-                    AgentEffectOutbox.run_id.in_(run_ids)
-                )
-            )
-            session.execute(
-                delete(AgentRun).where(
-                    AgentRun.conversation_id == conversation_id
-                )
-            )
-            session.execute(
-                delete(AgentArtifact).where(
-                    AgentArtifact.conversation_id == conversation_id
-                )
-            )
-            session.execute(
-                delete(AgentRunTrace).where(
-                    AgentRunTrace.conversation_id == conversation_id
-                )
-            )
-            session.execute(
-                delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
-            )
-            result = session.execute(
-                delete(ChatConversation).where(ChatConversation.id == conversation_id)
-            )
+            run_ids = select(AgentRun.id).where(AgentRun.conversation_id == conversation_id)
+            session.execute(delete(AgentRunEvent).where(AgentRunEvent.run_id.in_(run_ids)))
+            session.execute(delete(AgentStepExecution).where(AgentStepExecution.run_id.in_(run_ids)))
+            session.execute(delete(AgentEffectOutbox).where(AgentEffectOutbox.run_id.in_(run_ids)))
+            session.execute(delete(AgentRun).where(AgentRun.conversation_id == conversation_id))
+            session.execute(delete(AgentArtifact).where(AgentArtifact.conversation_id == conversation_id))
+            session.execute(delete(AgentRunTrace).where(AgentRunTrace.conversation_id == conversation_id))
+            session.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
+            result = session.execute(delete(ChatConversation).where(ChatConversation.id == conversation_id))
             return result.rowcount or 0
 
     def get_chat_messages(self, conversation_id: str) -> List[ChatMessage]:
         """查询对话消息列表。"""
         with self.get_session() as session:
-            records = session.execute(
-                select(ChatMessage)
-                .where(ChatMessage.conversation_id == conversation_id)
-                .order_by(ChatMessage.sequence.asc(), ChatMessage.created_at.asc())
-            ).scalars().all()
+            records = (
+                session.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.conversation_id == conversation_id)
+                    .order_by(ChatMessage.sequence.asc(), ChatMessage.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
             for record in records:
                 session.expunge(record)
             return list(records)
@@ -224,17 +203,17 @@ class ChatMixin:
             )
 
         with self.session_scope() as session:
-            session.execute(
-                delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
-            )
+            session.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
             for index, message in enumerate(messages):
                 if not isinstance(message, dict):
                     continue
                 session.add(_normalize_message(message, index))
 
-            record = session.execute(
-                select(ChatConversation).where(ChatConversation.id == conversation_id)
-            ).scalars().first()
+            record = (
+                session.execute(select(ChatConversation).where(ChatConversation.id == conversation_id))
+                .scalars()
+                .first()
+            )
             if record:
                 record.preview_text = preview_text[:200] if preview_text else None
                 if thread_state_json is not None:
@@ -253,9 +232,11 @@ class ChatMixin:
     ) -> None:
         """Update presentation and optional server context without replacing messages."""
         with self.session_scope() as session:
-            record = session.execute(
-                select(ChatConversation).where(ChatConversation.id == conversation_id)
-            ).scalars().first()
+            record = (
+                session.execute(select(ChatConversation).where(ChatConversation.id == conversation_id))
+                .scalars()
+                .first()
+            )
             if record:
                 record.thread_state_json = thread_state_json
                 if agent_context_json is not None:
@@ -271,9 +252,11 @@ class ChatMixin:
     ) -> None:
         """Update only server-owned semantic context."""
         with self.session_scope() as session:
-            record = session.execute(
-                select(ChatConversation).where(ChatConversation.id == conversation_id)
-            ).scalars().first()
+            record = (
+                session.execute(select(ChatConversation).where(ChatConversation.id == conversation_id))
+                .scalars()
+                .first()
+            )
             if record:
                 record.agent_context_json = agent_context_json
                 record.updated_at = updated_at or datetime.now()
@@ -292,20 +275,22 @@ class ChatMixin:
         safe_id = message_id[:64]
         timestamp = datetime.now()
         with self.session_scope() as session:
-            existing = session.execute(
-                select(ChatMessage).where(ChatMessage.id == safe_id)
-            ).scalars().first()
+            existing = session.execute(select(ChatMessage).where(ChatMessage.id == safe_id)).scalars().first()
             if existing is not None:
                 existing.content = content
                 existing.created_at = timestamp
                 return
             # 追加:sequence 取当前最大值 + 1
-            max_seq = session.execute(
-                select(ChatMessage.sequence)
-                .where(ChatMessage.conversation_id == conversation_id)
-                .order_by(ChatMessage.sequence.desc())
-                .limit(1)
-            ).scalars().first()
+            max_seq = (
+                session.execute(
+                    select(ChatMessage.sequence)
+                    .where(ChatMessage.conversation_id == conversation_id)
+                    .order_by(ChatMessage.sequence.desc())
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
             session.add(
                 ChatMessage(
                     id=safe_id,
@@ -336,9 +321,12 @@ class ChatMixin:
         获取 Agent 对话历史
         """
         with self.session_scope() as session:
-            stmt = select(ConversationMessage).filter(
-                ConversationMessage.session_id == session_id
-            ).order_by(ConversationMessage.created_at.desc()).limit(limit)
+            stmt = (
+                select(ConversationMessage)
+                .filter(ConversationMessage.session_id == session_id)
+                .order_by(ConversationMessage.created_at.desc())
+                .limit(limit)
+            )
             messages = session.execute(stmt).scalars().all()
 
             # 倒序返回，保证时间顺序
@@ -347,11 +335,7 @@ class ChatMixin:
     def conversation_session_exists(self, session_id: str) -> bool:
         """Return True when at least one message exists for the given session."""
         with self.session_scope() as session:
-            stmt = (
-                select(ConversationMessage.id)
-                .where(ConversationMessage.session_id == session_id)
-                .limit(1)
-            )
+            stmt = select(ConversationMessage.id).where(ConversationMessage.session_id == session_id).limit(1)
             return session.execute(stmt).scalar() is not None
 
     def get_chat_sessions(
@@ -381,13 +365,11 @@ class ChatMixin:
             exact_ids = [sid for sid in (extra_session_ids or []) if sid]
 
             # 聚合每个 session 的消息数和最后活跃时间
-            base = (
-                select(
-                    ConversationMessage.session_id,
-                    func.count(ConversationMessage.id).label("message_count"),
-                    func.min(ConversationMessage.created_at).label("created_at"),
-                    func.max(ConversationMessage.created_at).label("last_active"),
-                )
+            base = select(
+                ConversationMessage.session_id,
+                func.count(ConversationMessage.id).label("message_count"),
+                func.min(ConversationMessage.created_at).label("created_at"),
+                func.max(ConversationMessage.created_at).label("last_active"),
             )
             conditions = []
             if normalized_prefix:
@@ -397,8 +379,7 @@ class ChatMixin:
             if conditions:
                 base = base.where(or_(*conditions))
             stmt = (
-                base
-                .group_by(ConversationMessage.session_id)
+                base.group_by(ConversationMessage.session_id)
                 .order_by(desc(func.max(ConversationMessage.created_at)))
                 .limit(limit)
             )
@@ -420,13 +401,15 @@ class ChatMixin:
                 ).scalar()
                 title = (first_user_msg or "新对话")[:60]
 
-                results.append({
-                    "session_id": sid,
-                    "title": title,
-                    "message_count": row.message_count,
-                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                    "last_active": row.last_active.isoformat() if row.last_active else None,
-                })
+                results.append(
+                    {
+                        "session_id": sid,
+                        "title": title,
+                        "message_count": row.message_count,
+                        "created_at": row.created_at.isoformat() if row.created_at else None,
+                        "last_active": row.last_active.isoformat() if row.last_active else None,
+                    }
+                )
             return results
 
     def get_conversation_messages(self, session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -459,11 +442,7 @@ class ChatMixin:
             删除的消息数
         """
         with self.session_scope() as session:
-            result = session.execute(
-                delete(ConversationMessage).where(
-                    ConversationMessage.session_id == session_id
-                )
-            )
+            result = session.execute(delete(ConversationMessage).where(ConversationMessage.session_id == session_id))
             return result.rowcount
 
     # ------------------------------------------------------------------
@@ -542,11 +521,7 @@ class ChatMixin:
             "total_calls": totals.calls,
             "total_tokens": totals.tokens,
             "by_call_type": [
-                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens}
-                for r in by_type_rows
+                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens} for r in by_type_rows
             ],
-            "by_model": [
-                {"model": r.model, "calls": r.calls, "total_tokens": r.tokens}
-                for r in by_model_rows
-            ],
+            "by_model": [{"model": r.model, "calls": r.calls, "total_tokens": r.tokens} for r in by_model_rows],
         }

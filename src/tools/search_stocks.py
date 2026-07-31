@@ -63,12 +63,14 @@ TOOL = ToolSpec(
         "搜索自动维护的A股证券库，可按代码、名称、市场和行业查询。"
         "当股票基础库为空或过期时会自动刷新，不需要用户手动同步。"
     ),
-    parameters=object_schema({
-        "query": {"type": "string", "description": "股票代码或名称；留空表示浏览"},
-        "market": {"type": "string", "enum": ["all", "sh", "sz", "cyb", "kcb", "bj"], "default": "all"},
-        "sector": {"type": "string", "description": "行业关键词，可留空"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
-    }),
+    parameters=object_schema(
+        {
+            "query": {"type": "string", "description": "股票代码或名称；留空表示浏览"},
+            "market": {"type": "string", "enum": ["all", "sh", "sz", "cyb", "kcb", "bj"], "default": "all"},
+            "sector": {"type": "string", "description": "行业关键词，可留空"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+        }
+    ),
     executor=search_stocks,
     category="data",
 )

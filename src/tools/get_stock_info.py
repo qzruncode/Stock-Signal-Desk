@@ -137,16 +137,20 @@ def _normalized_profile(code: str, profile: dict[str, Any], capital: dict[str, A
         "main_business": _text(profile.get("主营业务")),
         "business_scope": _text(profile.get("经营范围")),
         "company_profile": _text(profile.get("机构简介")),
-        "capital_snapshot": {
-            "latest_price": capital.get("latest_price"),
-            "total_shares": capital.get("total_shares"),
-            "circulating_shares": capital.get("circulating_shares"),
-            "total_market_cap": capital.get("total_market_cap"),
-            "circulating_market_cap": capital.get("circulating_market_cap"),
-            "price_unit": "人民币元",
-            "share_unit": "股",
-            "market_cap_unit": "元",
-        } if capital else None,
+        "capital_snapshot": (
+            {
+                "latest_price": capital.get("latest_price"),
+                "total_shares": capital.get("total_shares"),
+                "circulating_shares": capital.get("circulating_shares"),
+                "total_market_cap": capital.get("total_market_cap"),
+                "circulating_market_cap": capital.get("circulating_market_cap"),
+                "price_unit": "人民币元",
+                "share_unit": "股",
+                "market_cap_unit": "元",
+            }
+            if capital
+            else None
+        ),
     }
 
 
@@ -163,7 +167,10 @@ def get_stock_info(symbol: str, *, use_cache: bool = True) -> dict[str, Any]:
     try:
         if use_cache:
             profile, profile_cached = cached_call(
-                f"stock_info:cninfo:v3:{code}", lambda: _fetch_cninfo(code), ttl_seconds=24 * 60 * 60, attempts=2,
+                f"stock_info:cninfo:v3:{code}",
+                lambda: _fetch_cninfo(code),
+                ttl_seconds=24 * 60 * 60,
+                attempts=2,
             )
         else:
             profile = _fetch_cninfo(code)
@@ -174,7 +181,10 @@ def get_stock_info(symbol: str, *, use_cache: bool = True) -> dict[str, Any]:
         ttl = 120 if is_trading_time(now) else 30 * 60
         if use_cache:
             capital, capital_cached = cached_call(
-                f"stock_info:eastmoney:v3:{code}", lambda: _fetch_eastmoney_capital(code), ttl_seconds=ttl, attempts=2,
+                f"stock_info:eastmoney:v3:{code}",
+                lambda: _fetch_eastmoney_capital(code),
+                ttl_seconds=ttl,
+                attempts=2,
             )
         else:
             capital = _fetch_eastmoney_capital(code)
@@ -185,23 +195,36 @@ def get_stock_info(symbol: str, *, use_cache: bool = True) -> dict[str, Any]:
     profile_available = bool(profile)
     capital_available = bool(capital)
     success = profile_available or capital_available
-    data.update({
-        "profile_available": profile_available,
-        "capital_snapshot_available": capital_available,
-        "sources": [source for source, available in (("巨潮资讯/AKShare", profile_available), ("东方财富", capital_available)) if available],
-        "source": " + ".join([source for source, available in (("巨潮资讯/AKShare", profile_available), ("东方财富", capital_available)) if available]) or "none",
-        "success": success,
-        "errors": errors,
-        "warnings": ["公司概况不完整"] if success and not profile_available else [],
-        "data_time": now.isoformat() if success else None,
-        "data_time_inferred": success,
-        "is_stale": False if success else None,
-        "freshness_unknown": not success,
-        "fallback_used": not profile_available and capital_available,
-        "_cached": profile_cached and (capital_cached if capital_available else True),
-        "cache_detail": {"profile": profile_cached, "capital_snapshot": capital_cached},
-        "_fetched_at": now.isoformat(),
-    })
+    data.update(
+        {
+            "profile_available": profile_available,
+            "capital_snapshot_available": capital_available,
+            "sources": [
+                source
+                for source, available in (("巨潮资讯/AKShare", profile_available), ("东方财富", capital_available))
+                if available
+            ],
+            "source": " + ".join(
+                [
+                    source
+                    for source, available in (("巨潮资讯/AKShare", profile_available), ("东方财富", capital_available))
+                    if available
+                ]
+            )
+            or "none",
+            "success": success,
+            "errors": errors,
+            "warnings": ["公司概况不完整"] if success and not profile_available else [],
+            "data_time": now.isoformat() if success else None,
+            "data_time_inferred": success,
+            "is_stale": False if success else None,
+            "freshness_unknown": not success,
+            "fallback_used": not profile_available and capital_available,
+            "_cached": profile_cached and (capital_cached if capital_available else True),
+            "cache_detail": {"profile": profile_cached, "capital_snapshot": capital_cached},
+            "_fetched_at": now.isoformat(),
+        }
+    )
     return data
 
 
@@ -211,7 +234,9 @@ TOOL = ToolSpec(
         "获取A股公司标准化基础资料：公司名称、市场与行业、成立和上市日期、主营业务、"
         "经营范围、联系方式、注册地址，以及当前股本和市值快照。股票估值请调用 get_valuation_ratios。"
     ),
-    parameters=object_schema({"symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"}}, ["symbol"]),
+    parameters=object_schema(
+        {"symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"}}, ["symbol"]
+    ),
     executor=get_stock_info,
     category="data",
 )

@@ -15,9 +15,7 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
         Config.reset_instance()
 
     @patch("src.config.setup_env")
-    def test_load_from_env_uses_stable_fundamental_timeout_defaults(
-        self, _mock_setup_env
-    ):
+    def test_load_from_env_uses_stable_fundamental_timeout_defaults(self, _mock_setup_env):
         with patch.dict(
             os.environ,
             {

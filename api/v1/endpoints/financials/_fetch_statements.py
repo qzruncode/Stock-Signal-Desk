@@ -20,7 +20,7 @@ def _pick_quarters(df, periods: int):
     """
     if df is None or df.empty:
         return df
-    for col in ['REPORT_DATE', '报告期', '报告日']:
+    for col in ["REPORT_DATE", "报告期", "报告日"]:
         if col in df.columns:
             df = df.sort_values(col)
             break

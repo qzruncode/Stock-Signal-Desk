@@ -19,13 +19,15 @@ import src.auth as auth
 def test_agent_readiness_reports_model_database_runtime_and_tools():
     auth._auth_enabled = None
     app = create_app()
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False), \
-         patch(
-             "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
-             return_value={"model": "verified-model"},
-         ), \
-         patch("api.v1.endpoints.agent.health.agent_production_issues", return_value=[]):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+        patch(
+            "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
+            return_value={"model": "verified-model"},
+        ),
+        patch("api.v1.endpoints.agent.health.agent_production_issues", return_value=[]),
+    ):
         response = TestClient(app).get("/api/v1/agent/readiness")
 
     auth._auth_enabled = None
@@ -41,13 +43,15 @@ def test_agent_readiness_reports_model_database_runtime_and_tools():
 def test_agent_readiness_fails_closed_when_model_is_unavailable():
     auth._auth_enabled = None
     app = create_app()
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False), \
-         patch(
-             "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
-             side_effect=RuntimeError("model unavailable"),
-         ), \
-         patch("api.v1.endpoints.agent.health.agent_production_issues", return_value=[]):
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+        patch(
+            "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
+            side_effect=RuntimeError("model unavailable"),
+        ),
+        patch("api.v1.endpoints.agent.health.agent_production_issues", return_value=[]),
+    ):
         response = TestClient(app).get("/api/v1/agent/readiness")
 
     auth._auth_enabled = None
@@ -58,25 +62,27 @@ def test_agent_readiness_fails_closed_when_model_is_unavailable():
 def test_agent_readiness_only_calls_live_dependencies_when_requested():
     auth._auth_enabled = None
     app = create_app()
-    with patch("api.middlewares.auth.is_auth_enabled", return_value=False), \
-         patch("src.auth.is_auth_enabled", return_value=False), \
-         patch(
-             "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
-             return_value={"model": "verified-model"},
-         ), \
-         patch(
-             "api.v1.endpoints.agent.health.agent_production_issues",
-             return_value=[],
-         ), \
-         patch(
-             "api.v1.endpoints.agent.health._live_dependency_probe",
-             return_value={
-                 "ok": True,
-                 "cached": False,
-                 "checks": {},
-                 "probed_at": "2026-07-30T00:00:00+08:00",
-             },
-         ) as live_probe:
+    with (
+        patch("api.middlewares.auth.is_auth_enabled", return_value=False),
+        patch("src.auth.is_auth_enabled", return_value=False),
+        patch(
+            "src.llm.anthropic_gateway.resolve_anthropic_gateway_config",
+            return_value={"model": "verified-model"},
+        ),
+        patch(
+            "api.v1.endpoints.agent.health.agent_production_issues",
+            return_value=[],
+        ),
+        patch(
+            "api.v1.endpoints.agent.health._live_dependency_probe",
+            return_value={
+                "ok": True,
+                "cached": False,
+                "checks": {},
+                "probed_at": "2026-07-30T00:00:00+08:00",
+            },
+        ) as live_probe,
+    ):
         shallow = TestClient(app).get("/api/v1/agent/readiness")
         deep = TestClient(app).get("/api/v1/agent/readiness?deep=true")
 
@@ -99,14 +105,18 @@ def test_tool_probe_preserves_normalized_arguments_and_payload_failure():
     request = ToolExecuteRequest(tool_name="search_financial_news", arguments={"days": "7"})
 
     async def run():
-        with patch.object(tool_registry_meta, "_registry", registry), \
-             patch.object(
-                 tool_registry_meta,
-                 "execute_tool_isolated",
-                 side_effect=lambda name, arguments, **_kwargs: registry.execute(name, arguments),
-             ), \
-             patch.object(tool_registry_meta, "_compact_tool_result", side_effect=lambda _name, value: value), \
-             patch.object(tool_registry_meta, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value):
+        with (
+            patch.object(tool_registry_meta, "_registry", registry),
+            patch.object(
+                tool_registry_meta,
+                "execute_tool_isolated",
+                side_effect=lambda name, arguments, **_kwargs: registry.execute(name, arguments),
+            ),
+            patch.object(tool_registry_meta, "_compact_tool_result", side_effect=lambda _name, value: value),
+            patch.object(
+                tool_registry_meta, "_maybe_attach_search_fallback", side_effect=lambda _name, _args, value: value
+            ),
+        ):
             return await tool_registry_meta.execute_tool(request)
 
     response = asyncio.run(run())
@@ -123,17 +133,19 @@ def test_tool_probe_does_not_install_an_application_deadline():
     request = ToolExecuteRequest(tool_name="slow_tool", arguments={})
 
     async def run():
-        with patch.object(tool_registry_meta, "_registry", registry), \
-             patch.object(
-                 tool_registry_meta,
-                 "execute_tool_isolated",
-                 side_effect=lambda name, arguments, **_kwargs: registry.execute(name, arguments),
-             ), \
-             patch.object(
-                 tool_registry_meta.asyncio,
-                 "wait_for",
-                 side_effect=AssertionError("tool probe must not use wait_for"),
-             ):
+        with (
+            patch.object(tool_registry_meta, "_registry", registry),
+            patch.object(
+                tool_registry_meta,
+                "execute_tool_isolated",
+                side_effect=lambda name, arguments, **_kwargs: registry.execute(name, arguments),
+            ),
+            patch.object(
+                tool_registry_meta.asyncio,
+                "wait_for",
+                side_effect=AssertionError("tool probe must not use wait_for"),
+            ),
+        ):
             return await tool_registry_meta.execute_tool(request)
 
     response = asyncio.run(run())
@@ -148,7 +160,9 @@ def test_workflow_contract_has_no_timeout_or_retry_fields():
 
 
 def test_tool_registry_keeps_specialized_categories():
-    tools = {tool.name: tool_registry_meta._build_tool_meta(tool) for tool in tool_registry_meta._registry._tools.values()}
+    tools = {
+        tool.name: tool_registry_meta._build_tool_meta(tool) for tool in tool_registry_meta._registry._tools.values()
+    }
     assert tools["get_domain_stock_candidates"].category == "research"
     assert "get_theme_stock_candidates" not in tools
     assert tools["get_regulatory_updates"].category == "regulatory"

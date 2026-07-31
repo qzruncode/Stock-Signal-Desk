@@ -95,13 +95,7 @@ def _domain_labels(task: ResolvedTask) -> list[str]:
         return []
     labels: list[str] = []
     for value in values:
-        label = (
-            value
-            if isinstance(value, str)
-            else value.get("label")
-            if isinstance(value, Mapping)
-            else ""
-        )
+        label = value if isinstance(value, str) else value.get("label") if isinstance(value, Mapping) else ""
         text = str(label or "").strip()
         if text and text not in labels:
             labels.append(text)
@@ -136,13 +130,8 @@ def _cache_key(
         "version": INDUSTRY_CATALOG_SELECTION_VERSION,
         "model": str(llm_cfg.get("model") or ""),
         "snapshot_id": snapshot_id,
-        "topic": _normalized_text(
-            str(task.parameters.get("query") or task.candidate.objective)
-        ),
-        "root_topics": [
-            _normalized_text(value)
-            for value in _domain_labels(task)
-        ],
+        "topic": _normalized_text(str(task.parameters.get("query") or task.candidate.objective)),
+        "root_topics": [_normalized_text(value) for value in _domain_labels(task)],
         "result_selection": _selection_payload(selection),
     }
     digest = hashlib.sha256(
@@ -153,10 +142,7 @@ def _cache_key(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    return (
-        f"industry_catalog_selection:"
-        f"{INDUSTRY_CATALOG_SELECTION_VERSION}:{digest}"
-    )
+    return f"industry_catalog_selection:" f"{INDUSTRY_CATALOG_SELECTION_VERSION}:{digest}"
 
 
 def _load_cache(
@@ -257,9 +243,7 @@ def _normalized_boards(
                 AgentErrorCode.RESOURCE_UNAVAILABLE,
                 f"项目实时板块目录第 {index + 1} 项不是结构化对象。",
             )
-        board_id = str(
-            raw.get("sector_code") or raw.get("board_id") or ""
-        ).strip()
+        board_id = str(raw.get("sector_code") or raw.get("board_id") or "").strip()
         name = str(raw.get("name") or "").strip()
         if not board_id or not name:
             raise OrchestratorV2Error(
@@ -275,19 +259,20 @@ def _normalized_boards(
         if previous_name is not None:
             continue
         by_id[board_id] = name
-        boards.append({
-            "board_id": board_id,
-            "name": name,
-            "main_flow_rank": _integer(raw.get("main_flow_rank")),
-            "main_net_inflow": _number(raw.get("main_net_inflow")),
-            "main_net_inflow_pct": _number(raw.get("main_net_inflow_pct")),
-            "pct_chg": _number(raw.get("pct_chg")),
-        })
+        boards.append(
+            {
+                "board_id": board_id,
+                "name": name,
+                "main_flow_rank": _integer(raw.get("main_flow_rank")),
+                "main_net_inflow": _number(raw.get("main_net_inflow")),
+                "main_net_inflow_pct": _number(raw.get("main_net_inflow_pct")),
+                "pct_chg": _number(raw.get("pct_chg")),
+            }
+        )
     boards.sort(key=lambda item: (item["board_id"], item["name"]))
-    computed_snapshot = domain_board_catalog_snapshot_id([
-        {"sector_code": item["board_id"], "name": item["name"]}
-        for item in boards
-    ])
+    computed_snapshot = domain_board_catalog_snapshot_id(
+        [{"sector_code": item["board_id"], "name": item["name"]} for item in boards]
+    )
     supplied_snapshot = str(catalog.get("catalog_snapshot_id") or "").strip()
     if supplied_snapshot and supplied_snapshot != computed_snapshot:
         raise OrchestratorV2Error(
@@ -310,12 +295,16 @@ async def _report(
     if progress is None:
         return
     try:
-        await progress(completed, total, {
-            "stage": stage,
-            "status": status,
-            "summary": summary,
-            "error_code": error_code,
-        })
+        await progress(
+            completed,
+            total,
+            {
+                "stage": stage,
+                "status": status,
+                "summary": summary,
+                "error_code": error_code,
+            },
+        )
     except Exception:
         logger.warning(
             "[IndustryCatalogSelectionV2] progress callback failed",
@@ -336,66 +325,72 @@ def _selection_issues(
     for index, item in enumerate(value.items):
         previous_index = first_board_index.get(item.board_id)
         if previous_index is not None:
-            issues.append(RepairIssueV2(
-                pointer=f"/items/{index}/board_id",
-                code="duplicate_board_id",
-                expected=(
-                    f"delete the entire /items/{index} object and keep "
-                    f"/items/{previous_index}; do not invent a replacement "
-                    "board_id"
-                ),
-                message=(
-                    f"remove /items/{index} because board_id {item.board_id} "
-                    f"duplicates /items/{previous_index}/board_id"
-                ),
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/items/{index}/board_id",
+                    code="duplicate_board_id",
+                    expected=(
+                        f"delete the entire /items/{index} object and keep "
+                        f"/items/{previous_index}; do not invent a replacement "
+                        "board_id"
+                    ),
+                    message=(
+                        f"remove /items/{index} because board_id {item.board_id} "
+                        f"duplicates /items/{previous_index}/board_id"
+                    ),
+                )
+            )
         else:
             first_board_index[item.board_id] = index
         if item.board_id not in board_ids:
-            issues.append(RepairIssueV2(
-                pointer=f"/items/{index}/board_id",
-                code="unknown_board_id",
-                expected="one of project_boards[].board_id",
-                message=f"unknown board_id: {item.board_id}",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/items/{index}/board_id",
+                    code="unknown_board_id",
+                    expected="one of project_boards[].board_id",
+                    message=f"unknown board_id: {item.board_id}",
+                )
+            )
         role = roles.get(item.role_id)
         if role is None:
-            issues.append(RepairIssueV2(
-                pointer=f"/items/{index}/role_id",
-                code="unknown_role_id",
-                expected="one of benefit_outline.roles[].role_id",
-                allowed=tuple(roles),
-                message=f"unknown role_id: {item.role_id}",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/items/{index}/role_id",
+                    code="unknown_role_id",
+                    expected="one of benefit_outline.roles[].role_id",
+                    allowed=tuple(roles),
+                    message=f"unknown role_id: {item.role_id}",
+                )
+            )
         elif item.tier != role.tier:
-            issues.append(RepairIssueV2(
-                pointer=f"/items/{index}/tier",
-                code="role_tier_mismatch",
-                expected=f"integer equal to role tier {role.tier}",
-                allowed=(role.tier,),
-                message=(
-                    f"tier {item.tier} does not match "
-                    f"{item.role_id}.tier={role.tier}"
-                ),
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/items/{index}/tier",
+                    code="role_tier_mismatch",
+                    expected=f"integer equal to role tier {role.tier}",
+                    allowed=(role.tier,),
+                    message=(f"tier {item.tier} does not match " f"{item.role_id}.tier={role.tier}"),
+                )
+            )
     count = len(value.items)
     if selection.mode == ResultSelectionMode.BEST_ONE and count != 1:
-        issues.append(RepairIssueV2(
-            pointer="/items",
-            code="selection_cardinality",
-            expected="exactly one item",
-            message=f"best_one returned {count} items",
-        ))
-    if (
-        selection.mode == ResultSelectionMode.TOP_K
-        and count > int(selection.max_items or 0)
-    ):
-        issues.append(RepairIssueV2(
-            pointer="/items",
-            code="selection_cardinality",
-            expected=f"at most {selection.max_items} items",
-            message=f"top_k returned {count} items",
-        ))
+        issues.append(
+            RepairIssueV2(
+                pointer="/items",
+                code="selection_cardinality",
+                expected="exactly one item",
+                message=f"best_one returned {count} items",
+            )
+        )
+    if selection.mode == ResultSelectionMode.TOP_K and count > int(selection.max_items or 0):
+        issues.append(
+            RepairIssueV2(
+                pointer="/items",
+                code="selection_cardinality",
+                expected=f"at most {selection.max_items} items",
+                message=f"top_k returned {count} items",
+            )
+        )
     if issues:
         raise ExactContractValidationError(tuple(issues))
 
@@ -408,29 +403,27 @@ def _outline_issues(value: BaseModel) -> None:
     for index, role in enumerate(value.roles):
         previous_role = first_role_index.get(role.role_id)
         if previous_role is not None:
-            issues.append(RepairIssueV2(
-                pointer=f"/roles/{index}/role_id",
-                code="duplicate_role_id",
-                expected="a role_id not already used in roles",
-                message=(
-                    f"role_id {role.role_id} duplicates "
-                    f"/roles/{previous_role}/role_id"
-                ),
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/roles/{index}/role_id",
+                    code="duplicate_role_id",
+                    expected="a role_id not already used in roles",
+                    message=(f"role_id {role.role_id} duplicates " f"/roles/{previous_role}/role_id"),
+                )
+            )
         else:
             first_role_index[role.role_id] = index
         label_key = role.label.casefold()
         previous_label = first_label_index.get(label_key)
         if previous_label is not None:
-            issues.append(RepairIssueV2(
-                pointer=f"/roles/{index}/label",
-                code="duplicate_role_label",
-                expected="a role label not already used in roles",
-                message=(
-                    f"role label {role.label} duplicates "
-                    f"/roles/{previous_label}/label"
-                ),
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/roles/{index}/label",
+                    code="duplicate_role_label",
+                    expected="a role label not already used in roles",
+                    message=(f"role label {role.label} duplicates " f"/roles/{previous_label}/label"),
+                )
+            )
         else:
             first_label_index[label_key] = index
     if issues:
@@ -478,10 +471,7 @@ def _failure_result(
 
 def _public_error_summary(error: OrchestratorV2Error) -> str:
     if error.code == AgentErrorCode.PLANNER_SCHEMA_INVALID:
-        return (
-            "目录选择模型未返回完整结构化结果，单次定点修复仍未通过；"
-            "本轮已停止且未发布部分集合"
-        )
+        return "目录选择模型未返回完整结构化结果，单次定点修复仍未通过；" "本轮已停止且未发布部分集合"
     if error.code == AgentErrorCode.SYNTHESIS_FAILED:
         return "上游模型调用失败；本轮已停止且未发布部分集合"
     if error.code == AgentErrorCode.RESOURCE_UNAVAILABLE:
@@ -547,9 +537,7 @@ async def rank_project_board_domains_v2(
         )
         return cached
 
-    requested_topic = str(
-        task.parameters.get("query") or task.candidate.objective
-    ).strip()
+    requested_topic = str(task.parameters.get("query") or task.candidate.objective).strip()
     root_topics = _domain_labels(task)
     repairs: list[dict[str, Any]] = []
 
@@ -647,48 +635,43 @@ async def rank_project_board_domains_v2(
             summary=f"模型仍在完整目录中选择板块 ID，已等待 {elapsed} 秒",
         )
 
-    role_by_id = {
-        role.role_id: role
-        for role in outline_value.roles
-    }
+    role_by_id = {role.role_id: role for role in outline_value.roles}
     try:
-        selection_value, _raw_selection, selection_repair = (
-            await call_model_exact_v2(
-                llm_cfg=llm_cfg,
-                completion=completion,
-                function_name="submit_domain_catalog_selection_v2",
-                description="从完整实时目录提交紧凑板块 ID 绑定。",
-                model=DomainCatalogSelectionV2,
-                system_prompt=_CATALOG_SELECTION_PROMPT,
-                semantic_context={
-                    "requested_topic": requested_topic,
-                    "benefit_outline": outline_value.model_dump(mode="json"),
-                    "result_selection": _selection_payload(selection),
-                    "catalog_snapshot_id": snapshot_id,
-                    "project_boards": [
-                        {
-                            "board_id": item["board_id"],
-                            "name": item["name"],
-                        }
-                        for item in boards
-                    ],
-                },
-                node_id=task.task_id,
-                value_validator=lambda value: _selection_issues(
-                    value,
-                    board_ids=set(board_by_id),
-                    roles=role_by_id,
-                    selection=selection,
-                ),
-                progress_observer=mapping_heartbeat,
-                provider_error_code=AgentErrorCode.SYNTHESIS_FAILED,
-                schema_error_code=AgentErrorCode.PLANNER_SCHEMA_INVALID,
-                # The provider may count visible analysis tokens against the
-                # same output budget as the strict tool payload. Scale only
-                # from the program-owned cardinality contract.
-                max_tokens=_selection_output_budget(selection),
-                contract_transport="json_content",
-            )
+        selection_value, _raw_selection, selection_repair = await call_model_exact_v2(
+            llm_cfg=llm_cfg,
+            completion=completion,
+            function_name="submit_domain_catalog_selection_v2",
+            description="从完整实时目录提交紧凑板块 ID 绑定。",
+            model=DomainCatalogSelectionV2,
+            system_prompt=_CATALOG_SELECTION_PROMPT,
+            semantic_context={
+                "requested_topic": requested_topic,
+                "benefit_outline": outline_value.model_dump(mode="json"),
+                "result_selection": _selection_payload(selection),
+                "catalog_snapshot_id": snapshot_id,
+                "project_boards": [
+                    {
+                        "board_id": item["board_id"],
+                        "name": item["name"],
+                    }
+                    for item in boards
+                ],
+            },
+            node_id=task.task_id,
+            value_validator=lambda value: _selection_issues(
+                value,
+                board_ids=set(board_by_id),
+                roles=role_by_id,
+                selection=selection,
+            ),
+            progress_observer=mapping_heartbeat,
+            provider_error_code=AgentErrorCode.SYNTHESIS_FAILED,
+            schema_error_code=AgentErrorCode.PLANNER_SCHEMA_INVALID,
+            # The provider may count visible analysis tokens against the
+            # same output budget as the strict tool payload. Scale only
+            # from the program-owned cardinality contract.
+            max_tokens=_selection_output_budget(selection),
+            contract_transport="json_content",
         )
         assert isinstance(selection_value, DomainCatalogSelectionV2)
         if selection_repair is not None:
@@ -733,10 +716,7 @@ async def rank_project_board_domains_v2(
         summary="正在校验目录快照、板块 ID、受益角色和结果数量",
     )
 
-    role_order = {
-        role.role_id: index
-        for index, role in enumerate(outline_value.roles)
-    }
+    role_order = {role.role_id: index for index, role in enumerate(outline_value.roles)}
     selected_items = sorted(
         selection_value.items,
         key=lambda item: (
@@ -754,10 +734,7 @@ async def rank_project_board_domains_v2(
     for selected in selected_items:
         board = board_by_id[selected.board_id]
         role = role_by_id[selected.role_id]
-        rationale = (
-            f"{board['name']}对应“{role.label}”环节；"
-            f"{role.benefit_mechanism}"
-        )
+        rationale = f"{board['name']}对应“{role.label}”环节；" f"{role.benefit_mechanism}"
         binding = DomainBoardBindingV2(
             board_id=selected.board_id,
             board_name=board["name"],
@@ -771,41 +748,35 @@ async def rank_project_board_domains_v2(
             pct_chg=board["pct_chg"],
         )
         bindings.append(binding)
-        legacy_items.append({
-            "label": binding.board_name,
-            "board_name": binding.board_name,
-            "board_code": binding.board_id,
-            "board_queries": [binding.board_name],
-            "mapping_type": "catalog_binding",
-            "unresolved_parts": [],
-            "role_id": binding.role_id,
-            "role_label": binding.role_label,
-            "tier": binding.tier,
-            "rationale": binding.rationale,
-            "main_flow_rank": binding.main_flow_rank,
-            "main_net_inflow": binding.main_net_inflow,
-            "main_net_inflow_pct": binding.main_net_inflow_pct,
-            "pct_chg": binding.pct_chg,
-            "source_name": str(
-                catalog.get("source") or "项目实时板块目录"
-            ),
-            "source_date": str(catalog.get("data_time") or ""),
-            "selection_basis": "complete_catalog_id_binding_v2",
-        })
+        legacy_items.append(
+            {
+                "label": binding.board_name,
+                "board_name": binding.board_name,
+                "board_code": binding.board_id,
+                "board_queries": [binding.board_name],
+                "mapping_type": "catalog_binding",
+                "unresolved_parts": [],
+                "role_id": binding.role_id,
+                "role_label": binding.role_label,
+                "tier": binding.tier,
+                "rationale": binding.rationale,
+                "main_flow_rank": binding.main_flow_rank,
+                "main_net_inflow": binding.main_net_inflow,
+                "main_net_inflow_pct": binding.main_net_inflow_pct,
+                "pct_chg": binding.pct_chg,
+                "source_name": str(catalog.get("source") or "项目实时板块目录"),
+                "source_date": str(catalog.get("data_time") or ""),
+                "selection_basis": "complete_catalog_id_binding_v2",
+            }
+        )
 
     raw_assumptions = task.parameters.get("_assumptions")
     assumptions = tuple(
         DomainSelectionAssumptionV2.model_validate(value)
-        for value in (
-            raw_assumptions
-            if isinstance(raw_assumptions, list)
-            else []
-        )
+        for value in (raw_assumptions if isinstance(raw_assumptions, list) else [])
         if isinstance(value, Mapping)
     )
-    result_selection = DomainResultSelectionV2.model_validate(
-        _selection_payload(selection)
-    )
+    result_selection = DomainResultSelectionV2.model_validate(_selection_payload(selection))
     collection = DomainCollectionV2(
         catalog_snapshot_id=snapshot_id,
         requested_topic=requested_topic,

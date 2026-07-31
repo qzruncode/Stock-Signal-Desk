@@ -61,10 +61,7 @@ class ToolDispatcher:
                     request.tool_name,
                     arguments,
                 )
-            elif (
-                request.tool_name in ISOLATED_TOOL_NAMES
-                or request.force_isolation
-            ):
+            elif request.tool_name in ISOLATED_TOOL_NAMES or request.force_isolation:
                 raw_result = self._isolated_executor(
                     request.tool_name,
                     arguments,
@@ -83,12 +80,16 @@ class ToolDispatcher:
             arguments,
             compacted,
         )
-        return result if isinstance(result, dict) else {
-            "success": True,
-            "result": result,
-            "errors": [],
-            "partial": False,
-        }
+        return (
+            result
+            if isinstance(result, dict)
+            else {
+                "success": True,
+                "result": result,
+                "errors": [],
+                "partial": False,
+            }
+        )
 
 
 __all__ = [

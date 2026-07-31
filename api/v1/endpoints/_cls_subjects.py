@@ -91,8 +91,8 @@ def _fetch_article_subjects(subject_id: str, page: int) -> List[Dict[str, Any]]:
     url = f"{ROOT_URL}/api/subject/{subject_id}/article"
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                      "Chrome/120.0.0.0 Safari/537.36",
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36",
     }
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=FETCH_TIMEOUT)
@@ -117,11 +117,13 @@ def _fetch_article_subjects(subject_id: str, page: int) -> List[Dict[str, Any]]:
             name = subj.get("subject_name")
             if sid is None or not name:
                 continue
-            harvested.append({
-                "subjectId": sid,
-                "name": str(name).strip(),
-                "attention_num": int(subj.get("attention_num") or 0),
-            })
+            harvested.append(
+                {
+                    "subjectId": sid,
+                    "name": str(name).strip(),
+                    "attention_num": int(subj.get("attention_num") or 0),
+                }
+            )
     return harvested
 
 

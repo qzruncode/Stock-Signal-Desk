@@ -51,9 +51,15 @@ def make_spec(**updates) -> QuantitativeScreenSpec:
         ],
         "sort": {"field": "qualified_ratio_pct", "order": "desc"},
         "output_fields": [
-            "current_atr_pct", "long_term_mean_pct", "dynamic_warning_pct",
-            "qualified_days", "qualified_ratio_pct", "revenue_ttm",
-            "financial_report_period", "financial_source", "latest_trade_date",
+            "current_atr_pct",
+            "long_term_mean_pct",
+            "dynamic_warning_pct",
+            "qualified_days",
+            "qualified_ratio_pct",
+            "revenue_ttm",
+            "financial_report_period",
+            "financial_source",
+            "latest_trade_date",
         ],
         "preview_limit": 10,
     }
@@ -84,10 +90,17 @@ def test_calculate_atr_changes_when_user_changes_average_and_threshold() -> None
         for i, width in enumerate(ranges, 1)
     ]
     sma = calculate_atr_screen_metrics(bars, make_rule(lookback_days=4, min_qualified_days=0))
-    ema = calculate_atr_screen_metrics(bars, make_rule(
-        atr_average="ema", baseline_average="ema", threshold_operator="multiply",
-        threshold_value=1.1, lookback_days=4, min_qualified_days=0,
-    ))
+    ema = calculate_atr_screen_metrics(
+        bars,
+        make_rule(
+            atr_average="ema",
+            baseline_average="ema",
+            threshold_operator="multiply",
+            threshold_value=1.1,
+            lookback_days=4,
+            min_qualified_days=0,
+        ),
+    )
 
     assert sma is not None and ema is not None
     assert ema["current_atr_pct"] != pytest.approx(sma["current_atr_pct"])
@@ -96,7 +109,9 @@ def test_calculate_atr_changes_when_user_changes_average_and_threshold() -> None
 
 def test_ema_result_is_not_changed_when_provider_returns_extra_history() -> None:
     rule = make_rule(
-        atr_average="ema", baseline_average="ema", lookback_days=4,
+        atr_average="ema",
+        baseline_average="ema",
+        lookback_days=4,
         min_qualified_days=0,
     )
     required = rule.atr_period + rule.baseline_period + rule.lookback_days - 1
@@ -166,9 +181,7 @@ def test_build_ttm_financials_keeps_available_fields_independently(monkeypatch) 
 def test_sina_fallback_builds_ttm_only_from_four_consecutive_quarters(monkeypatch) -> None:
     import importlib
 
-    financial_fetcher = importlib.import_module(
-        "api.v1.endpoints.financials._fetch_financials"
-    )
+    financial_fetcher = importlib.import_module("api.v1.endpoints.financials._fetch_financials")
 
     rows = [
         {"report_date": "2025-03-31", "revenue": 10, "deducted_profit": 1, "debt_ratio": 41},
@@ -191,7 +204,8 @@ def test_sina_fallback_builds_ttm_only_from_four_consecutive_quarters(monkeypatc
 
 def test_secondary_financial_fallback_uses_sina_after_ths_failure(monkeypatch) -> None:
     monkeypatch.setattr(
-        screener, "_fetch_ths_ttm_financial",
+        screener,
+        "_fetch_ths_ttm_financial",
         lambda _code: (_ for _ in ()).throw(ConnectionError("ths down")),
     )
     monkeypatch.setattr(
@@ -206,9 +220,7 @@ def test_secondary_financial_fallback_uses_sina_after_ths_failure(monkeypatch) -
         },
     )
 
-    result = screener._fetch_secondary_ttm_financial(
-        "000001", {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}
-    )
+    result = screener._fetch_secondary_ttm_financial("000001", {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"})
 
     assert result is not None
     assert result["financial_source"] == "新浪财经财务摘要补源"
@@ -216,17 +228,34 @@ def test_secondary_financial_fallback_uses_sina_after_ths_failure(monkeypatch) -
 
 def test_export_headers_follow_caller_periods_and_requested_fields(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(screener, "EXPORT_DIR", tmp_path)
-    spec = make_spec(technical_rule=make_rule(
-        baseline_period=3, lookback_days=4, min_qualified_days=2, min_qualified_ratio_pct=50,
-    ).model_dump(mode="json"))
+    spec = make_spec(
+        technical_rule=make_rule(
+            baseline_period=3,
+            lookback_days=4,
+            min_qualified_days=2,
+            min_qualified_ratio_pct=50,
+        ).model_dump(mode="json")
+    )
     columns = screener._column_defs(spec)
-    file_id, url = screener._write_export([{
-        "code": "000001", "name": "平安银行", "current_atr_pct": 1.2,
-        "long_term_mean_pct": 1.3, "dynamic_warning_pct": 1.02,
-        "qualified_days": 3, "qualified_ratio_pct": 75,
-        "revenue_ttm": 1_000_000_000, "financial_report_period": "2026-03-31",
-        "financial_source": "东方财富财务主指标", "latest_trade_date": "2026-07-17",
-    }], columns, "abcdef1234567890")
+    file_id, url = screener._write_export(
+        [
+            {
+                "code": "000001",
+                "name": "平安银行",
+                "current_atr_pct": 1.2,
+                "long_term_mean_pct": 1.3,
+                "dynamic_warning_pct": 1.02,
+                "qualified_days": 3,
+                "qualified_ratio_pct": 75,
+                "revenue_ttm": 1_000_000_000,
+                "financial_report_period": "2026-03-31",
+                "financial_source": "东方财富财务主指标",
+                "latest_trade_date": "2026-07-17",
+            }
+        ],
+        columns,
+        "abcdef1234567890",
+    )
 
     assert url == f"/api/v1/agent/exports/{file_id}"
     with (tmp_path / file_id).open(encoding="utf-8-sig") as handle:
@@ -250,14 +279,17 @@ def test_export_headers_follow_caller_periods_and_requested_fields(tmp_path, mon
     ],
 )
 def test_export_cell_value_preserves_six_digit_stock_codes(
-    field: str, value: str, expected: str,
+    field: str,
+    value: str,
+    expected: str,
 ) -> None:
     assert screener._export_cell_value(field, value) == expected
 
 
 def test_executor_rejects_missing_screen_spec_without_running_sources(monkeypatch) -> None:
     monkeypatch.setattr(
-        screener, "_build_ttm_financials",
+        screener,
+        "_build_ttm_financials",
         lambda: pytest.fail("invalid spec must fail before data access"),
     )
     result = screener.run_atr_volatility_screen(
@@ -307,7 +339,8 @@ def _install_fake_market(monkeypatch, financials: dict[str, dict]) -> None:
     monkeypatch.setattr(screener, "_persist_financials", lambda *_args: None)
     monkeypatch.setattr(screener, "_fetch_tencent_bars", lambda *_args: [])
     monkeypatch.setattr(
-        screener, "_fetch_adjusted_bars",
+        screener,
+        "_fetch_adjusted_bars",
         lambda code, _count, _allow: (code, bars, None, "测试行情源"),
     )
 
@@ -326,7 +359,9 @@ def test_kline_fetch_retries_transient_source_error(monkeypatch) -> None:
 
     monkeypatch.setattr(screener, "_fetch_tencent_bars", transient)
     monkeypatch.setattr(
-        screener, "_fetch_sina_bars", lambda *_args: pytest.fail("retry should recover first source"),
+        screener,
+        "_fetch_sina_bars",
+        lambda *_args: pytest.fail("retry should recover first source"),
     )
     monkeypatch.setattr(screener.time, "sleep", lambda *_args: None)
 
@@ -340,25 +375,31 @@ def test_kline_fetch_retries_transient_source_error(monkeypatch) -> None:
 def test_executor_applies_changed_financial_threshold_instead_of_example_default(monkeypatch) -> None:
     financials = {
         "000001": {
-            "revenue_ttm": 600_000_000, "financial_report_period": "2025-12-31",
+            "revenue_ttm": 600_000_000,
+            "financial_report_period": "2025-12-31",
             "financial_source": "测试源",
         },
         "000002": {
-            "revenue_ttm": 1_200_000_000, "financial_report_period": "2025-12-31",
+            "revenue_ttm": 1_200_000_000,
+            "financial_report_period": "2025-12-31",
             "financial_source": "测试源",
         },
     }
     _install_fake_market(monkeypatch, financials)
     base = make_spec()
-    changed = make_spec(financial_filters=[
-        {"field": "revenue_ttm", "operator": "gt", "value": 1_000_000_000},
-    ])
+    changed = make_spec(
+        financial_filters=[
+            {"field": "revenue_ttm", "operator": "gt", "value": 1_000_000_000},
+        ]
+    )
 
     base_result = screener.run_atr_volatility_screen(
-        screen_spec=base.model_dump(mode="json"), refresh_if_stale=True,
+        screen_spec=base.model_dump(mode="json"),
+        refresh_if_stale=True,
     )
     changed_result = screener.run_atr_volatility_screen(
-        screen_spec=changed.model_dump(mode="json"), refresh_if_stale=True,
+        screen_spec=changed.model_dump(mode="json"),
+        refresh_if_stale=True,
     )
 
     assert base_result["success"] is True and base_result["total"] == 2
@@ -382,9 +423,7 @@ def test_executor_recovers_small_transient_kline_tail_on_second_pass(monkeypatch
     _install_fake_market(monkeypatch, financials)
     bars = [
         {"date": f"2026-01-{index:02d}", "open": 10, "close": 10, "high": high, "low": low}
-        for index, (high, low) in enumerate(
-            [(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1
-        )
+        for index, (high, low) in enumerate([(11, 9), (11, 9), (12, 8), (13, 7), (14, 6), (15, 5)], 1)
     ]
     attempts: dict[str, int] = {}
 
@@ -398,7 +437,8 @@ def test_executor_recovers_small_transient_kline_tail_on_second_pass(monkeypatch
     monkeypatch.setattr(screener.time, "sleep", lambda *_args: None)
 
     result = screener.run_atr_volatility_screen(
-        screen_spec=make_spec().model_dump(mode="json"), refresh_if_stale=True,
+        screen_spec=make_spec().model_dump(mode="json"),
+        refresh_if_stale=True,
     )
 
     assert result["success"] is True
@@ -410,18 +450,23 @@ def test_executor_recovers_small_transient_kline_tail_on_second_pass(monkeypatch
 def test_executor_does_not_fetch_unused_financial_data(monkeypatch) -> None:
     _install_fake_market(monkeypatch, {})
     monkeypatch.setattr(
-        screener, "_build_ttm_financials",
+        screener,
+        "_build_ttm_financials",
         lambda: pytest.fail("technical-only screen must not fetch financial data"),
     )
     spec = make_spec(
         financial_filters=[],
         output_fields=[
-            "current_atr_pct", "qualified_days", "qualified_ratio_pct", "latest_trade_date",
+            "current_atr_pct",
+            "qualified_days",
+            "qualified_ratio_pct",
+            "latest_trade_date",
         ],
     )
 
     result = screener.run_atr_volatility_screen(
-        screen_spec=spec.model_dump(mode="json"), refresh_if_stale=True,
+        screen_spec=spec.model_dump(mode="json"),
+        refresh_if_stale=True,
     )
 
     assert result["success"] is True
@@ -444,15 +489,19 @@ def test_executor_switches_to_same_day_financial_snapshot_when_primary_fails(mon
     }
     _install_fake_market(monkeypatch, {})
     monkeypatch.setattr(
-        screener, "_build_ttm_financials",
+        screener,
+        "_build_ttm_financials",
         lambda: (_ for _ in ()).throw(ConnectionError("primary reset")),
     )
     monkeypatch.setattr(
-        screener, "_load_fresh_cached_financials", lambda _codes: (cached, "2026-03-31"),
+        screener,
+        "_load_fresh_cached_financials",
+        lambda _codes: (cached, "2026-03-31"),
     )
 
     result = screener.run_atr_volatility_screen(
-        screen_spec=make_spec().model_dump(mode="json"), refresh_if_stale=True,
+        screen_spec=make_spec().model_dump(mode="json"),
+        refresh_if_stale=True,
     )
 
     assert result["success"] is True
@@ -466,19 +515,24 @@ def test_executor_fails_closed_when_primary_and_same_day_snapshot_lack_coverage(
     _install_fake_market(monkeypatch, {})
     monkeypatch.setattr(screener, "MAX_SECONDARY_FINANCIAL_FALLBACKS", 1)
     monkeypatch.setattr(
-        screener, "_build_ttm_financials",
+        screener,
+        "_build_ttm_financials",
         lambda: (_ for _ in ()).throw(ConnectionError("primary reset")),
     )
     monkeypatch.setattr(
-        screener, "_load_fresh_cached_financials", lambda _codes: ({}, None),
+        screener,
+        "_load_fresh_cached_financials",
+        lambda _codes: ({}, None),
     )
     monkeypatch.setattr(
-        screener, "_fetch_secondary_ttm_financial",
+        screener,
+        "_fetch_secondary_ttm_financial",
         lambda _code: pytest.fail("cold-cache bulk outage must not fan out per-company calls"),
     )
 
     result = screener.run_atr_volatility_screen(
-        screen_spec=make_spec().model_dump(mode="json"), refresh_if_stale=True,
+        screen_spec=make_spec().model_dump(mode="json"),
+        refresh_if_stale=True,
     )
 
     assert result["success"] is False

@@ -17,8 +17,7 @@ def _matches_keyword(route: dict[str, Any], keyword: str) -> bool:
     if not keyword:
         return True
     searchable = " ".join(
-        str(route.get(key) or "")
-        for key in ("route_path", "name", "namespace", "namespace_name", "description")
+        str(route.get(key) or "") for key in ("route_path", "name", "namespace", "namespace_name", "description")
     ).lower()
     query_tokens = _ASCII_TOKEN_RE.findall(keyword)
     if keyword.isascii() and query_tokens and any(len(token) <= 3 for token in query_tokens):
@@ -52,20 +51,22 @@ def list_financial_sources(
             continue
         if not _matches_keyword(route, keyword_lower):
             continue
-        items.append({
-            "route_path": path,
-            "name": route.get("name"),
-            "namespace": route.get("namespace"),
-            "namespace_name": route.get("namespace_name"),
-            "description": route.get("description"),
-            "example": route.get("example"),
-            "params": route.get("params") or [],
-            "capabilities": capabilities,
-            "categories": route.get("categories") or [],
-            "features": route.get("features") or {},
-            "maintainers": route.get("maintainers") or [],
-            "requires_configuration": bool(route.get("requires_configuration")),
-        })
+        items.append(
+            {
+                "route_path": path,
+                "name": route.get("name"),
+                "namespace": route.get("namespace"),
+                "namespace_name": route.get("namespace_name"),
+                "description": route.get("description"),
+                "example": route.get("example"),
+                "params": route.get("params") or [],
+                "capabilities": capabilities,
+                "categories": route.get("categories") or [],
+                "features": route.get("features") or {},
+                "maintainers": route.get("maintainers") or [],
+                "requires_configuration": bool(route.get("requires_configuration")),
+            }
+        )
     returned = items[:bounded]
     data_time = catalog.get("_fetched_at")
     stale = bool(catalog.get("_stale"))
@@ -101,23 +102,37 @@ TOOL = ToolSpec(
         "keyword 只筛选来源目录元数据，不搜索资讯正文。"
         "仅当用户明确询问来源、指定来源或需要原始 Feed 时调用；普通资讯问题直接调用 search_financial_news。"
     ),
-    parameters=object_schema({
-        "keyword": {
-            "type": "string",
-            "description": "仅筛选来源名称、命名空间、路由或用途，不搜索资讯内容；留空返回全部来源",
-        },
-        "namespace": {"type": "string", "description": "来源命名空间或中文来源名，可留空"},
-        "capability": {
-            "type": "string",
-            "enum": [
-                "all", "market", "company", "announcement", "research", "macro", "industry",
-                "social", "regulatory", "realtime", "monetary_policy", "project", "ranking", "listing",
-            ],
-            "default": "all",
-        },
-        "force": {"type": "boolean", "default": False, "description": "是否强制刷新来源目录"},
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
-    }),
+    parameters=object_schema(
+        {
+            "keyword": {
+                "type": "string",
+                "description": "仅筛选来源名称、命名空间、路由或用途，不搜索资讯内容；留空返回全部来源",
+            },
+            "namespace": {"type": "string", "description": "来源命名空间或中文来源名，可留空"},
+            "capability": {
+                "type": "string",
+                "enum": [
+                    "all",
+                    "market",
+                    "company",
+                    "announcement",
+                    "research",
+                    "macro",
+                    "industry",
+                    "social",
+                    "regulatory",
+                    "realtime",
+                    "monetary_policy",
+                    "project",
+                    "ranking",
+                    "listing",
+                ],
+                "default": "all",
+            },
+            "force": {"type": "boolean", "default": False, "description": "是否强制刷新来源目录"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+        }
+    ),
     executor=list_financial_sources,
     category="sentiment",
 )

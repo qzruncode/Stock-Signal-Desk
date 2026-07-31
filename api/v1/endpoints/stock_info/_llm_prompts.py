@@ -20,7 +20,7 @@ def _build_environment_prompt(
     peer_lines = []
     for p in peer_data[:5]:
         peer_lines.append(f"  - {p.get('name', '-')} ({p.get('code', '-')})")
-    peer_text = '\n'.join(peer_lines) if peer_lines else "暂无同业数据"
+    peer_text = "\n".join(peer_lines) if peer_lines else "暂无同业数据"
 
     def _fmt_macro(records: list[dict]) -> str:
         if not records:
@@ -32,9 +32,9 @@ def _build_environment_prompt(
             lines.append(f"  - {date}: {value}")
         return "\n".join(lines)
 
-    pmi_text = _fmt_macro(macro_data.get('pmi', []))
-    cpi_text = _fmt_macro(macro_data.get('cpi', []))
-    ppi_text = _fmt_macro(macro_data.get('ppi', []))
+    pmi_text = _fmt_macro(macro_data.get("pmi", []))
+    cpi_text = _fmt_macro(macro_data.get("cpi", []))
+    ppi_text = _fmt_macro(macro_data.get("ppi", []))
 
     system = (
         "你是一个股票基本面分析专家，擅长以下分析：\n"
@@ -71,23 +71,25 @@ def _build_track_quality_prompt(
     financial_summary: dict,
     peer_data: list[dict],
 ) -> tuple[str, str]:
-    comp_text = '\n'.join(
-        f"  - {c['business_name']}: 收入占比{c['revenue_pct']:.1%}"
-        for c in composition[:5]
-        if c.get('revenue_pct') is not None
-    ) if composition else "暂无业务构成数据"
+    comp_text = (
+        "\n".join(
+            f"  - {c['business_name']}: 收入占比{c['revenue_pct']:.1%}"
+            for c in composition[:5]
+            if c.get("revenue_pct") is not None
+        )
+        if composition
+        else "暂无业务构成数据"
+    )
 
     fin_text = _build_growth_text(financial_summary)
 
-    peer_text = '\n'.join(
-        f"  - {p.get('name', '-')}: 市值{p.get('market_cap', 'N/A')}亿"
-        for p in peer_data[:3]
-    ) if peer_data else "暂无同业数据"
-
-    system = (
-        "你是一个深度价值投资者，擅长评估企业护城河和经营质量。\n"
-        "请基于数据给出客观评估。"
+    peer_text = (
+        "\n".join(f"  - {p.get('name', '-')}: 市值{p.get('market_cap', 'N/A')}亿" for p in peer_data[:3])
+        if peer_data
+        else "暂无同业数据"
     )
+
+    system = "你是一个深度价值投资者，擅长评估企业护城河和经营质量。\n" "请基于数据给出客观评估。"
 
     user = (
         f"请评估 {symbol} 的经营质量和护城河：\n\n"
@@ -113,21 +115,18 @@ def _build_catalyst_prompt(
     events: dict,
     financial_summary: dict,
 ) -> tuple[str, str]:
-    news_text = '\n'.join(
+    news_text = "\n".join(
         f"  - [{n.get('time', '')}] [{n.get('source', '')}] {n.get('title', '')}"
-        for n in (events.get('news') or [])[:8]
+        for n in (events.get("news") or [])[:8]
     )
 
-    ann_text = '\n'.join(
-        f"  - [{a.get('date', '')}] {a.get('title', '')}"
-        for a in (events.get('announcements') or [])[:8]
+    ann_text = "\n".join(
+        f"  - [{a.get('date', '')}] {a.get('title', '')}" for a in (events.get("announcements") or [])[:8]
     )
 
     fin_text = _build_growth_text(financial_summary)
 
-    system = (
-        "你是一个事件驱动分析专家，擅长识别和评估催化剂事件。"
-    )
+    system = "你是一个事件驱动分析专家，擅长识别和评估催化剂事件。"
 
     user = (
         f"请分析 {symbol}({industry}) 近期催化因素：\n\n"
@@ -151,27 +150,31 @@ def _build_business_prompt(
     financial_summary: dict,
     events: dict,
 ) -> tuple[str, str, str]:
-    announcements_text = '\n'.join(
-        f"  - [{a['date']}] [{a['type']}] {a['title']}"
-        for a in events.get('announcements', [])[:15]
+    announcements_text = "\n".join(
+        f"  - [{a['date']}] [{a['type']}] {a['title']}" for a in events.get("announcements", [])[:15]
     )
-    news_text = '\n'.join(
-        f"  - [{n['time']}] [{n['source']}] {n['title']}" + (f"\n    {n['content'][:120]}" if n.get('content') else "")
-        for n in events.get('news', [])[:10]
+    news_text = "\n".join(
+        f"  - [{n['time']}] [{n['source']}] {n['title']}" + (f"\n    {n['content'][:120]}" if n.get("content") else "")
+        for n in events.get("news", [])[:10]
     )
 
-    composition_text = '\n'.join(
-        f"  - {c['business_name']}: 收入占比{(c['revenue_pct']*100):.1f}%" + (f", 毛利率{(c['gross_margin']*100):.1f}%" if c.get('gross_margin') is not None else "")
+    composition_text = "\n".join(
+        f"  - {c['business_name']}: 收入占比{(c['revenue_pct']*100):.1f}%"
+        + (f", 毛利率{(c['gross_margin']*100):.1f}%" if c.get("gross_margin") is not None else "")
         for c in composition
-        if c.get('category_type') == '按产品分类' and c.get('revenue_pct') is not None
+        if c.get("category_type") == "按产品分类" and c.get("revenue_pct") is not None
     )[:500]
 
-    forecast_text = '\n'.join(
-        f"  - {f['analyst']}({f['researcher']}): 2026E EPS={f['eps_2026']}, 2027E={f['eps_2027']}, 2028E={f['eps_2028']}"
-        for f in profit_forecast[:8]
-    ) if profit_forecast else '暂无预测数据'
+    forecast_text = (
+        "\n".join(
+            f"  - {f['analyst']}({f['researcher']}): 2026E EPS={f['eps_2026']}, 2027E={f['eps_2027']}, 2028E={f['eps_2028']}"
+            for f in profit_forecast[:8]
+        )
+        if profit_forecast
+        else "暂无预测数据"
+    )
 
-    summary_text = ''
+    summary_text = ""
     if isinstance(financial_summary, list) and financial_summary:
         r = financial_summary[-1]
         summary_text = (
@@ -179,10 +182,7 @@ def _build_business_prompt(
             f"每股收益: {r.get('eps', 'N/A')} | 净资产: {r.get('equity', 'N/A')}"
         )
 
-    system = (
-        "你是一个专业股票分析师，擅长通过多维度数据分析公司价值。"
-        "请基于提供的信息给出客观、深入的分析。"
-    )
+    system = "你是一个专业股票分析师，擅长通过多维度数据分析公司价值。" "请基于提供的信息给出客观、深入的分析。"
 
     user = (
         f"请对 {symbol} 进行全面的业务分析：\n\n"

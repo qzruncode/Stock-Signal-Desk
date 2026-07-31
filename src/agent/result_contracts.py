@@ -22,14 +22,8 @@ class AnalysisPlaybook:
     output_contract: tuple[str, ...]
 
     def system_instruction(self) -> str:
-        evidence = "\n".join(
-            f"{index}. {item}"
-            for index, item in enumerate(self.evidence_standard, 1)
-        )
-        output = "\n".join(
-            f"{index}. {item}"
-            for index, item in enumerate(self.output_contract, 1)
-        )
+        evidence = "\n".join(f"{index}. {item}" for index, item in enumerate(self.evidence_standard, 1))
+        output = "\n".join(f"{index}. {item}" for index, item in enumerate(self.output_contract, 1))
         return (
             f"## 结果验收标准：{self.title}（{self.id}）\n"
             "本标准只约束已执行结果的写作与验收，不能创建任务或调用工具。\n\n"
@@ -134,9 +128,7 @@ class FinancialFilterCondition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     metric: Literal["debt_ratio", "revenue", "net_profit", "deducted_net_profit"]
-    period_basis: Literal[
-        "latest_report", "ttm", "previous_fiscal_year", "fiscal_year"
-    ]
+    period_basis: Literal["latest_report", "ttm", "previous_fiscal_year", "fiscal_year"]
     fiscal_year: int | None = Field(default=None, ge=1990, le=2100)
     operator: Literal["gt", "gte", "lt", "lte", "eq"]
     threshold: float
@@ -227,14 +219,8 @@ def _financial_filter_spec_for_projection(
             "threshold_unit",
             "action",
         }
-        legacy = {
-            key: value
-            for key, value in parameters.items()
-            if key in legacy_keys
-        }
-        return CollectionFinancialFilterSpec(
-            conditions=[FinancialFilterCondition.model_validate(legacy)]
-        )
+        legacy = {key: value for key, value in parameters.items() if key in legacy_keys}
+        return CollectionFinancialFilterSpec(conditions=[FinancialFilterCondition.model_validate(legacy)])
 
 
 def project_collection_financial_filter_entities(
@@ -260,31 +246,22 @@ def project_collection_financial_filter_entities(
     rows_by_condition: dict[
         tuple[str, str, int | None],
         dict[str, Mapping[str, Any]],
-    ] = {
-        condition.identity: {}
-        for condition in spec.conditions
-    }
+    ] = {condition.identity: {} for condition in spec.conditions}
     for packet in result_context:
         if not isinstance(packet, Mapping):
             continue
-        arguments = (
-            packet.get("arguments")
-            if isinstance(packet.get("arguments"), Mapping)
-            else {}
-        )
-        result = (
-            packet.get("result")
-            if isinstance(packet.get("result"), Mapping)
-            else packet
-        )
+        arguments = packet.get("arguments") if isinstance(packet.get("arguments"), Mapping) else {}
+        result = packet.get("result") if isinstance(packet.get("result"), Mapping) else packet
         if not isinstance(result, Mapping) or result.get("success") is False:
             continue
         for condition in spec.conditions:
-            if arguments and any((
-                arguments.get("metric") != condition.metric,
-                arguments.get("period_basis") != condition.period_basis,
-                arguments.get("fiscal_year") != condition.fiscal_year,
-            )):
+            if arguments and any(
+                (
+                    arguments.get("metric") != condition.metric,
+                    arguments.get("period_basis") != condition.period_basis,
+                    arguments.get("fiscal_year") != condition.fiscal_year,
+                )
+            ):
                 continue
             rows = rows_by_condition[condition.identity]
             for item in result.get("items") or []:
@@ -311,19 +288,17 @@ def project_collection_financial_filter_entities(
     retained: list[dict[str, str]] = []
     for entity in ordered:
         if not all(
-            condition.keeps(float(
-                rows_by_condition[condition.identity][entity["symbol"]][
-                    "financial_value"
-                ]
-            ))
+            condition.keeps(float(rows_by_condition[condition.identity][entity["symbol"]]["financial_value"]))
             for condition in spec.conditions
         ):
             continue
         first_row = rows_by_condition[spec.conditions[0].identity][entity["symbol"]]
-        retained.append({
-            "symbol": entity["symbol"],
-            "name": str(first_row.get("name") or entity["name"]).strip(),
-        })
+        retained.append(
+            {
+                "symbol": entity["symbol"],
+                "name": str(first_row.get("name") or entity["name"]).strip(),
+            }
+        )
     return retained
 
 
@@ -346,22 +321,15 @@ def project_task_output_entities(
 
     def visit(value: Any) -> None:
         if isinstance(value, Mapping):
-            symbol = str(
-                value.get("symbol")
-                or value.get("code")
-                or value.get("stock_code")
-                or ""
-            ).strip()
+            symbol = str(value.get("symbol") or value.get("code") or value.get("stock_code") or "").strip()
             if len(symbol) == 6 and symbol.isdigit() and symbol not in seen:
                 seen.add(symbol)
-                found.append({
-                    "symbol": symbol,
-                    "name": str(
-                        value.get("name")
-                        or value.get("stock_name")
-                        or symbol
-                    ).strip(),
-                })
+                found.append(
+                    {
+                        "symbol": symbol,
+                        "name": str(value.get("name") or value.get("stock_name") or symbol).strip(),
+                    }
+                )
             for child in value.values():
                 visit(child)
         elif isinstance(value, (list, tuple)):
@@ -410,25 +378,17 @@ class DomainBoardQuerySpec(BaseModel):
 
     @model_validator(mode="after")
     def _validate_resolution(self) -> "DomainBoardQuerySpec":
-        self.board_queries = list(dict.fromkeys(
-            value.strip() for value in self.board_queries if value.strip()
-        ))
-        self.unresolved_parts = list(dict.fromkeys(
-            value.strip() for value in self.unresolved_parts if value.strip()
-        ))
+        self.board_queries = list(dict.fromkeys(value.strip() for value in self.board_queries if value.strip()))
+        self.unresolved_parts = list(dict.fromkeys(value.strip() for value in self.unresolved_parts if value.strip()))
         if self.mapping_type == "unresolved":
             if self.board_queries or self.board_id or self.board_name:
-                raise ValueError(
-                    "unresolved domains cannot contain bound board identity"
-                )
+                raise ValueError("unresolved domains cannot contain bound board identity")
             if not self.unresolved_parts:
                 self.unresolved_parts = [self.label]
         elif not self.board_queries:
             raise ValueError("resolved domains require at least one board_query")
         if bool(self.board_id) != bool(self.board_name):
-            raise ValueError(
-                "board_id and board_name must be supplied together"
-            )
+            raise ValueError("board_id and board_name must be supplied together")
         return self
 
 
@@ -535,15 +495,10 @@ class DomainCollectionCoverageV2(BaseModel):
     def _consistent_coverage(self) -> "DomainCollectionCoverageV2":
         if self.catalog_supplied > self.catalog_total:
             raise ValueError("catalog_supplied cannot exceed catalog_total")
-        expected = (
-            self.catalog_total > 0
-            and self.catalog_supplied == self.catalog_total
-            and self.selected_count > 0
-        )
+        expected = self.catalog_total > 0 and self.catalog_supplied == self.catalog_total and self.selected_count > 0
         if self.binding_complete != expected:
             raise ValueError(
-                "binding_complete must reflect complete catalog supply and "
-                "a non-empty validated selection"
+                "binding_complete must reflect complete catalog supply and " "a non-empty validated selection"
             )
         return self
 
@@ -625,9 +580,7 @@ class ThemeEvidenceContext(BaseModel):
 
     @model_validator(mode="after")
     def _dedupe_context(self) -> "ThemeEvidenceContext":
-        self.target_topics = list(dict.fromkeys(
-            value.strip() for value in self.target_topics if value.strip()
-        ))
+        self.target_topics = list(dict.fromkeys(value.strip() for value in self.target_topics if value.strip()))
         if not self.target_topics:
             raise ValueError("target_topics must contain at least one topic")
         by_label: dict[str, ThemeDomainThesis] = {}
@@ -637,11 +590,7 @@ class ThemeEvidenceContext(BaseModel):
         return self
 
     def thesis_for(self, label: str) -> ThemeDomainThesis | None:
-        return next((
-            thesis
-            for thesis in self.domain_theses
-            if thesis.label == label
-        ), None)
+        return next((thesis for thesis in self.domain_theses if thesis.label == label), None)
 
 
 class MappingSelectionContext(BaseModel):

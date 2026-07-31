@@ -51,9 +51,7 @@ class TurnSummaryV2(StrictModel):
         default_factory=tuple,
         max_length=32,
     )
-    completed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ConversationContextV2(StrictModel):
@@ -72,10 +70,7 @@ class ConversationContextV2(StrictModel):
         cls,
         value: Any,
     ) -> "ConversationContextV2":
-        if (
-            not isinstance(value, Mapping)
-            or str(value.get("version") or "") != CONVERSATION_CONTEXT_V2_VERSION
-        ):
+        if not isinstance(value, Mapping) or str(value.get("version") or "") != CONVERSATION_CONTEXT_V2_VERSION:
             return cls()
         try:
             return cls.model_validate(value)
@@ -83,9 +78,11 @@ class ConversationContextV2(StrictModel):
             return cls()
 
     def append(self, turn: TurnSummaryV2) -> "ConversationContextV2":
-        return self.model_copy(update={
-            "turns": (*self.turns, turn)[-MAX_V2_TURNS:],
-        })
+        return self.model_copy(
+            update={
+                "turns": (*self.turns, turn)[-MAX_V2_TURNS:],
+            }
+        )
 
     def planner_payload(
         self,
@@ -103,10 +100,7 @@ class ConversationContextV2(StrictModel):
                 # become competing candidate inputs for the planner.
                 continue
             latest_by_request[key or f"__turn_{index}"] = (index, turn)
-        relevant_turns = tuple(
-            turn
-            for _index, turn in sorted(latest_by_request.values())
-        )
+        relevant_turns = tuple(turn for _index, turn in sorted(latest_by_request.values()))
         return self.model_copy(
             update={"turns": relevant_turns},
         ).model_dump(mode="json")
@@ -120,10 +114,7 @@ class ConversationContextV2(StrictModel):
         values = self.turns[-1].terminal_artifacts
         if resource_type is None:
             return values
-        return tuple(
-            item for item in values
-            if item.resource_type == resource_type
-        )
+        return tuple(item for item in values if item.resource_type == resource_type)
 
     def pending_action_fingerprints(self) -> frozenset[str]:
         if not self.turns:
@@ -149,10 +140,12 @@ class ConversationContextV2(StrictModel):
             text = content.strip() if isinstance(content, str) else ""
             if not text:
                 continue
-            user_messages.append((
-                str(message.get("id") or "").strip(),
-                text[:2_000],
-            ))
+            user_messages.append(
+                (
+                    str(message.get("id") or "").strip(),
+                    text[:2_000],
+                )
+            )
         ids = {message_id for message_id, _ in user_messages if message_id}
         retained: list[TurnSummaryV2] = []
         search_start = 0
@@ -164,9 +157,13 @@ class ConversationContextV2(StrictModel):
             for index in range(search_start, len(user_messages)):
                 if user_messages[index][1] != turn.request_summary:
                     continue
-                retained.append(turn.model_copy(update={
-                    "request_message_id": user_messages[index][0] or None,
-                }))
+                retained.append(
+                    turn.model_copy(
+                        update={
+                            "request_message_id": user_messages[index][0] or None,
+                        }
+                    )
+                )
                 search_start = index + 1
                 break
         return self.model_copy(update={"turns": tuple(retained)})
@@ -178,22 +175,23 @@ def migrate_legacy_context(
     conversation_id: str,
 ) -> tuple[ConversationContextV2, tuple[AgentArtifactV2, ...]]:
     """One-way read adapter; never parses Markdown or stores legacy result bodies."""
-    legacy = (
-        value
-        if isinstance(value, ConversationContext)
-        else ConversationContext.from_value(value)
-    )
+    legacy = value if isinstance(value, ConversationContext) else ConversationContext.from_value(value)
     if not legacy.turns:
         return ConversationContextV2(), ()
 
     artifacts: list[AgentArtifactV2] = []
     turns: list[TurnSummaryV2] = []
     for turn_index, turn in enumerate(legacy.turns):
-        run_id = "migration_" + stable_fingerprint({
-            "conversation_id": conversation_id,
-            "turn_index": turn_index,
-            "request": turn.request,
-        })[:24]
+        run_id = (
+            "migration_"
+            + stable_fingerprint(
+                {
+                    "conversation_id": conversation_id,
+                    "turn_index": turn_index,
+                    "request": turn.request,
+                }
+            )[:24]
+        )
         terminal_refs: list[ArtifactReferenceV2] = []
         refs_by_producer: dict[str, list[ArtifactReferenceV2]] = {}
 
@@ -204,14 +202,21 @@ def migrate_legacy_context(
             payload: Any,
             item_count: int,
         ) -> None:
-            fingerprint = stable_fingerprint({
-                "resource_type": resource_type.value,
-                "payload": payload,
-            })
-            artifact_id = "artifact_" + stable_fingerprint({
-                "conversation_id": conversation_id,
-                "fingerprint": fingerprint,
-            })[:32]
+            fingerprint = stable_fingerprint(
+                {
+                    "resource_type": resource_type.value,
+                    "payload": payload,
+                }
+            )
+            artifact_id = (
+                "artifact_"
+                + stable_fingerprint(
+                    {
+                        "conversation_id": conversation_id,
+                        "fingerprint": fingerprint,
+                    }
+                )[:32]
+            )
             coverage = CoverageV2(
                 requested=item_count,
                 covered=item_count,
@@ -226,10 +231,12 @@ def migrate_legacy_context(
                 producer_node_id=producer,
                 resource_type=resource_type,
                 coverage=coverage,
-                sources=(EvidenceV2(
-                    source="structured_context_migration",
-                    summary="从旧版已验证结构化状态迁移；未解析回答文本。",
-                ),),
+                sources=(
+                    EvidenceV2(
+                        source="structured_context_migration",
+                        summary="从旧版已验证结构化状态迁移；未解析回答文本。",
+                    ),
+                ),
                 produced_at=datetime.now(timezone.utc),
                 fingerprint=fingerprint,
                 lineage=(),
@@ -247,11 +254,7 @@ def migrate_legacy_context(
 
         entities = [item.model_dump() for item in turn.entities]
         if entities:
-            producer = (
-                turn.tasks[-1].task_id
-                if turn.tasks
-                else f"legacy_turn_{turn_index}"
-            )
+            producer = turn.tasks[-1].task_id if turn.tasks else f"legacy_turn_{turn_index}"
             append_artifact(
                 producer=producer,
                 resource_type=ResourceType.SECURITY_COLLECTION,
@@ -263,13 +266,10 @@ def migrate_legacy_context(
             if task.status != "completed":
                 continue
             for semantic in task.semantic_artifacts:
-                if (
-                    not isinstance(semantic, Mapping)
-                    or semantic.get("type") not in {
-                        "domain_collection_v2",
-                        "ranked_domains",
-                    }
-                ):
+                if not isinstance(semantic, Mapping) or semantic.get("type") not in {
+                    "domain_collection_v2",
+                    "ranked_domains",
+                }:
                     continue
                 domains: list[dict[str, Any]] = []
                 seen: set[str] = set()
@@ -281,14 +281,16 @@ def migrate_legacy_context(
                         if not label or label in seen:
                             continue
                         seen.add(label)
-                        domains.append({
-                            "label": label,
-                            "board_queries": [label],
-                            "mapping_type": "catalog_binding",
-                            "rationale": str(value.get("rationale") or ""),
-                            "unresolved_parts": [],
-                            "tier": value.get("tier"),
-                        })
+                        domains.append(
+                            {
+                                "label": label,
+                                "board_queries": [label],
+                                "mapping_type": "catalog_binding",
+                                "rationale": str(value.get("rationale") or ""),
+                                "unresolved_parts": [],
+                                "tier": value.get("tier"),
+                            }
+                        )
                 else:
                     for group in semantic.get("groups") or []:
                         if not isinstance(group, Mapping):
@@ -312,8 +314,7 @@ def migrate_legacy_context(
                             "domains": domains,
                             (
                                 "domain_collection_v2"
-                                if semantic.get("type")
-                                == "domain_collection_v2"
+                                if semantic.get("type") == "domain_collection_v2"
                                 else "ranked_domains"
                             ): dict(semantic),
                         },
@@ -326,10 +327,7 @@ def migrate_legacy_context(
                 capability=task.kind,
                 objective=task.objective,
                 status=task.status,
-                artifact_refs=tuple(
-                    ref.artifact_id
-                    for ref in refs_by_producer.get(task.task_id, ())
-                ),
+                artifact_refs=tuple(ref.artifact_id for ref in refs_by_producer.get(task.task_id, ())),
                 coverage=(
                     next(
                         artifact.coverage
@@ -347,13 +345,15 @@ def migrate_legacy_context(
             )
             for task in turn.tasks
         )
-        turns.append(TurnSummaryV2(
-            run_id=run_id,
-            request_message_id=turn.request_message_id,
-            request_summary=turn.request,
-            tasks=task_summaries,
-            terminal_artifacts=tuple(terminal_refs),
-        ))
+        turns.append(
+            TurnSummaryV2(
+                run_id=run_id,
+                request_message_id=turn.request_message_id,
+                request_summary=turn.request,
+                tasks=task_summaries,
+                terminal_artifacts=tuple(terminal_refs),
+            )
+        )
     return (
         ConversationContextV2(turns=tuple(turns)),
         tuple(artifacts),

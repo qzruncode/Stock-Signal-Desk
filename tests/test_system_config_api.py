@@ -206,16 +206,8 @@ class SystemConfigApiTestCase(unittest.TestCase):
         ).model_dump()
 
         self.assertTrue(payload["success"])
-        run_warning = next(
-            warning
-            for warning in payload["warnings"]
-            if "RUN_IMMEDIATELY 已写入 .env" in warning
-        )
-        schedule_warning = next(
-            warning
-            for warning in payload["warnings"]
-            if "SCHEDULE_RUN_IMMEDIATELY" in warning
-        )
+        run_warning = next(warning for warning in payload["warnings"] if "RUN_IMMEDIATELY 已写入 .env" in warning)
+        schedule_warning = next(warning for warning in payload["warnings"] if "SCHEDULE_RUN_IMMEDIATELY" in warning)
 
         self.assertIn("非 schedule 模式", run_warning)
         self.assertNotIn("以 schedule 模式", run_warning)

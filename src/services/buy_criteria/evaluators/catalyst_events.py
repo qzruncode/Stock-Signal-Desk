@@ -69,43 +69,43 @@ def normalize_catalyst_details(
         )
         if not event or not concrete_window or not evidence_ids:
             continue
-        normalized.append({
-            "event": event[:200],
-            "time_window": time_window[:80],
-            "event_type": (
-                str(candidate.get("event_type") or "company_milestone").strip()
-                if str(candidate.get("event_type") or "company_milestone").strip() in {
-                    "company_milestone",
-                    "financial_validation",
-                    "sector_mapping",
-                    "conditional_watch",
-                }
-                else "conditional_watch"
-            ),
-            "why_it_matters": str(candidate.get("why_it_matters") or "").strip()[:300],
-            "confidence": str(candidate.get("confidence") or "").strip()[:20],
-            "verification_status": str(candidate.get("verification_status") or "").strip()[:40],
-            "evidence_ids": evidence_ids,
-            "sources": [
-                {
-                    "evidence_id": evidence_id,
-                    "title": evidence_by_id[evidence_id].get("title"),
-                    "date": (
-                        evidence_by_id[evidence_id].get("date")
-                        or evidence_by_id[evidence_id].get("time")
-                    ),
-                    "source": (
-                        evidence_by_id[evidence_id].get("source")
-                        or evidence_by_id[evidence_id].get("org")
-                        or evidence_by_id[evidence_id].get("label")
-                        or "公司公告"
-                    ),
-                    "url": evidence_by_id[evidence_id].get("url"),
-                    "excerpt": evidence_by_id[evidence_id].get("excerpt"),
-                }
-                for evidence_id in evidence_ids
-            ],
-        })
+        normalized.append(
+            {
+                "event": event[:200],
+                "time_window": time_window[:80],
+                "event_type": (
+                    str(candidate.get("event_type") or "company_milestone").strip()
+                    if str(candidate.get("event_type") or "company_milestone").strip()
+                    in {
+                        "company_milestone",
+                        "financial_validation",
+                        "sector_mapping",
+                        "conditional_watch",
+                    }
+                    else "conditional_watch"
+                ),
+                "why_it_matters": str(candidate.get("why_it_matters") or "").strip()[:300],
+                "confidence": str(candidate.get("confidence") or "").strip()[:20],
+                "verification_status": str(candidate.get("verification_status") or "").strip()[:40],
+                "evidence_ids": evidence_ids,
+                "sources": [
+                    {
+                        "evidence_id": evidence_id,
+                        "title": evidence_by_id[evidence_id].get("title"),
+                        "date": (evidence_by_id[evidence_id].get("date") or evidence_by_id[evidence_id].get("time")),
+                        "source": (
+                            evidence_by_id[evidence_id].get("source")
+                            or evidence_by_id[evidence_id].get("org")
+                            or evidence_by_id[evidence_id].get("label")
+                            or "公司公告"
+                        ),
+                        "url": evidence_by_id[evidence_id].get("url"),
+                        "excerpt": evidence_by_id[evidence_id].get("excerpt"),
+                    }
+                    for evidence_id in evidence_ids
+                ],
+            }
+        )
     return normalized
 
 
@@ -119,7 +119,9 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
     # answer without improving evidence coverage.
     max_llm_attempts = 1
 
-    def collect_data(self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None) -> CriterionEvidence:
+    def collect_data(
+        self, symbol: str, stock_info: dict[str, Any], pre_fetched_data: dict[str, Any] | None = None
+    ) -> CriterionEvidence:
         ds = DataService()
         raw: dict[str, Any] = {}
 
@@ -169,9 +171,9 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
             ]
             raw["catalyst_documents"] = _list_of_dicts(document_result.get("documents"))
             if document_result.get("errors"):
-                raw["document_events_error"] = "；".join(
-                    str(error) for error in document_result.get("errors") or []
-                )[:800]
+                raw["document_events_error"] = "；".join(str(error) for error in document_result.get("errors") or [])[
+                    :800
+                ]
         except Exception as exc:
             logger.warning("[catalyst] formal document bodies failed: %s", exc)
             raw["document_events"] = []
@@ -197,9 +199,9 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
                 for index, item in enumerate(schedule_items, 1)
             ]
             if schedule_result.get("errors"):
-                raw["schedule_events_error"] = "；".join(
-                    str(error) for error in schedule_result.get("errors") or []
-                )[:800]
+                raw["schedule_events_error"] = "；".join(str(error) for error in schedule_result.get("errors") or [])[
+                    :800
+                ]
         except Exception as exc:
             logger.warning("[catalyst] report schedule failed: %s", exc)
             raw["schedule_events"] = []
@@ -314,19 +316,21 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
         else:
             lines.append("- 无研报数据")
 
-        lines.extend([
-            "",
-            "## 判断约束",
-            "- 关注未来 6-12 个月内可预见的催化事件（如已知展会、政策窗口、业绩拐点、技术迭代、产品发布）。",
-            "- 已完全消化的事件（利好出尽）不算有效催化。",
-            "- 必须区分四类事件：公司里程碑、财务核验、板块映射、条件观察；板块事件不得冒充公司订单，预约财报本身不得冒充利好。",
-            "- 请基于公告/新闻/研报的实际内容判断，不要因为标题不含关键词就忽略催化信号。",
-            "- 正式报告正文出现明确投产、交付、量产或项目时间窗时，必须读取并判断，不能因最近公告标题未提及而漏掉。",
-            "- 至少一个具体催化才判为通过。",
-            "- 公司公告正文是优先证据；只有研报预测而没有可验证时间窗口时不得乐观通过。",
-            "- 财务核验事件必须写清楚要验证的经营指标；只有披露日期、没有可验证的经营预期时，不得单独据此通过。",
-            "- 数据源失败不能当作零事件；若没有至少一个可回查来源和明确未来时间窗口，必须判为不通过。",
-        ])
+        lines.extend(
+            [
+                "",
+                "## 判断约束",
+                "- 关注未来 6-12 个月内可预见的催化事件（如已知展会、政策窗口、业绩拐点、技术迭代、产品发布）。",
+                "- 已完全消化的事件（利好出尽）不算有效催化。",
+                "- 必须区分四类事件：公司里程碑、财务核验、板块映射、条件观察；板块事件不得冒充公司订单，预约财报本身不得冒充利好。",
+                "- 请基于公告/新闻/研报的实际内容判断，不要因为标题不含关键词就忽略催化信号。",
+                "- 正式报告正文出现明确投产、交付、量产或项目时间窗时，必须读取并判断，不能因最近公告标题未提及而漏掉。",
+                "- 至少一个具体催化才判为通过。",
+                "- 公司公告正文是优先证据；只有研报预测而没有可验证时间窗口时不得乐观通过。",
+                "- 财务核验事件必须写清楚要验证的经营指标；只有披露日期、没有可验证的经营预期时，不得单独据此通过。",
+                "- 数据源失败不能当作零事件；若没有至少一个可回查来源和明确未来时间窗口，必须判为不通过。",
+            ]
+        )
         summary = "\n".join(lines)
         return CriterionEvidence(raw_data=raw, data_summary=summary)
 
@@ -348,12 +352,10 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
         if result.passed and not normalized:
             result.passed = False
             result.verdict = (
-                "模型未返回同时具备明确日历时间窗和可回查证据编号的催化事件，"
-                "因此不能判定未来6—12个月催化条件通过。"
+                "模型未返回同时具备明确日历时间窗和可回查证据编号的催化事件，" "因此不能判定未来6—12个月催化条件通过。"
             )
         elif result.passed and not any(
-            item.get("event_type") in {"company_milestone", "financial_validation"}
-            for item in normalized
+            item.get("event_type") in {"company_milestone", "financial_validation"} for item in normalized
         ):
             result.passed = False
             result.verdict = (
@@ -364,13 +366,16 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
 
     def evidence_failure_reason(self, evidence: CriterionEvidence) -> str | None:
         raw = evidence.raw_data
-        if all(raw.get(key) for key in (
-            "announcement_events_error",
-            "document_events_error",
-            "schedule_events_error",
-            "news_events_error",
-            "research_events_error",
-        )):
+        if all(
+            raw.get(key)
+            for key in (
+                "announcement_events_error",
+                "document_events_error",
+                "schedule_events_error",
+                "news_events_error",
+                "research_events_error",
+            )
+        ):
             return "公告目录、公告正文、财报预约、新闻和研报来源均获取失败，无法验证未来6—12个月催化"
         return None
 

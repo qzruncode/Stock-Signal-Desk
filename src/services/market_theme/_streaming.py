@@ -72,9 +72,7 @@ class CurrentMarketMainlineV3(BaseModel):
             MainlineLifecycle.EXPANDING,
             MainlineLifecycle.FADING,
         }:
-            raise ValueError(
-                "current mainline lifecycle must be confirmed, expanding or fading"
-            )
+            raise ValueError("current mainline lifecycle must be confirmed, expanding or fading")
         return self
 
 
@@ -134,9 +132,7 @@ class CandidateMarketMainlineV3(BaseModel):
             MainlineLifecycle.EMERGING,
             MainlineLifecycle.VALIDATING,
         }:
-            raise ValueError(
-                "candidate mainline lifecycle must be emerging or validating"
-            )
+            raise ValueError("candidate mainline lifecycle must be emerging or validating")
         return self
 
 
@@ -181,17 +177,9 @@ def _inline_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"unresolved local JSON schema reference: {ref}")
             return {
                 **expand(target),
-                **{
-                    key: expand(item)
-                    for key, item in value.items()
-                    if key != "$ref"
-                },
+                **{key: expand(item) for key, item in value.items() if key != "$ref"},
             }
-        return {
-            key: expand(item)
-            for key, item in value.items()
-            if key != "$defs"
-        }
+        return {key: expand(item) for key, item in value.items() if key != "$defs"}
 
     expanded = expand(schema)
     if not isinstance(expanded, dict):
@@ -203,12 +191,8 @@ _MARKET_MAINLINE_REPORT_TOOL = {
     "type": "function",
     "function": {
         "name": _MARKET_MAINLINE_REPORT_TOOL_NAME,
-        "description": (
-            "提交仅基于给定证据包形成的A股市场主线结构化报告"
-        ),
-        "parameters": _inline_json_schema(
-            MarketMainlineReportV3.model_json_schema()
-        ),
+        "description": ("提交仅基于给定证据包形成的A股市场主线结构化报告"),
+        "parameters": _inline_json_schema(MarketMainlineReportV3.model_json_schema()),
     },
 }
 
@@ -238,9 +222,7 @@ def _market_mainline_payload_from_response(response: Any) -> dict[str, Any]:
         payload = json.loads(content)
         if isinstance(payload, dict):
             return payload
-    raise ValueError(
-        "market mainline response did not call the forced schema"
-    )
+    raise ValueError("market mainline response did not call the forced schema")
 
 
 def extract_json_object_from_text(raw_text: str) -> Optional[str]:
@@ -318,11 +300,7 @@ def extract_market_mainline_stream_parts(delta: Any) -> tuple[str, str]:
     if isinstance(model_extra, dict):
         for field_name in ("reasoning_content", "reasoning"):
             reasoning = model_extra.get(field_name)
-            if (
-                isinstance(reasoning, str)
-                and reasoning
-                and reasoning not in reasoning_values
-            ):
+            if isinstance(reasoning, str) and reasoning and reasoning not in reasoning_values:
                 reasoning_values.append(reasoning)
     reasoning_text = "".join(reasoning_values)
 
@@ -352,10 +330,7 @@ def _json_safe_contract_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return _json_safe_contract_value(value.value)
     if isinstance(value, Mapping):
-        return {
-            str(key): _json_safe_contract_value(item)
-            for key, item in value.items()
-        }
+        return {str(key): _json_safe_contract_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_json_safe_contract_value(item) for item in value]
     if isinstance(value, BaseException):
@@ -367,20 +342,15 @@ def _validation_issues(exc: ValidationError) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for error in exc.errors(include_url=False):
         location = error.get("loc") or ()
-        pointer = "/" + "/".join(
-            str(value).replace("~", "~0").replace("/", "~1")
-            for value in location
+        pointer = "/" + "/".join(str(value).replace("~", "~0").replace("/", "~1") for value in location)
+        issues.append(
+            {
+                "pointer": pointer or "/",
+                "code": str(error.get("type") or "schema_invalid"),
+                "expected": str(error.get("msg") or "value matching schema"),
+                "allowed": (_json_safe_contract_value(error.get("ctx")) if isinstance(error.get("ctx"), dict) else []),
+            }
         )
-        issues.append({
-            "pointer": pointer or "/",
-            "code": str(error.get("type") or "schema_invalid"),
-            "expected": str(error.get("msg") or "value matching schema"),
-            "allowed": (
-                _json_safe_contract_value(error.get("ctx"))
-                if isinstance(error.get("ctx"), dict)
-                else []
-            ),
-        })
     return issues
 
 
@@ -402,9 +372,7 @@ def stream_market_mainline_report_via_litellm(
     max_tokens: int,
     on_text: Optional[Callable[[str, str], None]] = None,
     on_reasoning: Optional[Callable[[str], None]] = None,
-    payload_validator: Optional[
-        Callable[[dict[str, Any]], dict[str, Any]]
-    ] = None,
+    payload_validator: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
     llm_cfg = resolve_anthropic_gateway_config()
 
@@ -427,9 +395,7 @@ def stream_market_mainline_report_via_litellm(
             finish_reason: Any = None
             async for chunk in response_stream:
                 model_used = str(_field(chunk, "model") or model_used)
-                chunk_usage = normalize_market_mainline_usage(
-                    _field(chunk, "usage")
-                )
+                chunk_usage = normalize_market_mainline_usage(_field(chunk, "usage"))
                 if chunk_usage:
                     usage = chunk_usage
                 choices = _field(chunk, "choices") or []
@@ -438,13 +404,11 @@ def stream_market_mainline_report_via_litellm(
                 choice = choices[0]
                 finish_reason = _field(choice, "finish_reason") or finish_reason
                 delta = _field(choice, "delta")
-                raw_delta, content_delta = (
-                    extract_market_mainline_stream_parts(delta)
-                )
+                raw_delta, content_delta = extract_market_mainline_stream_parts(delta)
                 if content_delta:
                     content_parts.append(content_delta)
                 reasoning_delta = (
-                    raw_delta[:-len(content_delta)]
+                    raw_delta[: -len(content_delta)]
                     if content_delta and raw_delta.endswith(content_delta)
                     else raw_delta
                 )
@@ -505,27 +469,17 @@ def stream_market_mainline_report_via_litellm(
         ]:
             """Consume the one-shot typed projection used for targeted repair."""
             response = await litellm.acompletion(**call_kwargs)
-            model_used = str(
-                _field(response, "model") or llm_cfg["model"]
-            )
-            usage = normalize_market_mainline_usage(
-                _field(response, "usage")
-            )
+            model_used = str(_field(response, "model") or llm_cfg["model"])
+            usage = normalize_market_mainline_usage(_field(response, "usage"))
             choices = _field(response, "choices") or []
             choice = choices[0] if choices else None
             finish_reason = _field(choice, "finish_reason")
             message = _field(choice, "message")
             content = _field(message, "content")
-            reasoning_content = (
-                _field(message, "reasoning_content")
-                or _field(message, "reasoning")
-                or ""
-            )
+            reasoning_content = _field(message, "reasoning_content") or _field(message, "reasoning") or ""
             tool_calls: list[dict[str, Any]] = []
             response_text = ""
-            for index, tool_call in enumerate(
-                _field(message, "tool_calls") or []
-            ):
+            for index, tool_call in enumerate(_field(message, "tool_calls") or []):
                 function = _field(tool_call, "function")
                 name = _field(function, "name")
                 arguments = _field(function, "arguments")
@@ -535,29 +489,22 @@ def stream_market_mainline_report_via_litellm(
                         ensure_ascii=False,
                     )
                 else:
-                    arguments_text = (
-                        arguments if isinstance(arguments, str) else ""
-                    )
-                tool_calls.append({
-                    "index": index,
-                    "name": name,
-                    "arguments": arguments_text,
-                })
-                if (
-                    not response_text
-                    and name == _MARKET_MAINLINE_REPORT_TOOL_NAME
-                ):
+                    arguments_text = arguments if isinstance(arguments, str) else ""
+                tool_calls.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "arguments": arguments_text,
+                    }
+                )
+                if not response_text and name == _MARKET_MAINLINE_REPORT_TOOL_NAME:
                     response_text = arguments_text
             if not response_text and isinstance(content, str):
                 response_text = content.strip()
             invalid_payload = {
                 "finish_reason": finish_reason,
                 "content": content if isinstance(content, str) else "",
-                "reasoning_content": (
-                    reasoning_content
-                    if isinstance(reasoning_content, str)
-                    else ""
-                ),
+                "reasoning_content": (reasoning_content if isinstance(reasoning_content, str) else ""),
                 "tool_calls": tool_calls,
                 "model": model_used,
                 "usage": usage,
@@ -572,15 +519,16 @@ def stream_market_mainline_report_via_litellm(
                 raise MarketMainlineSchemaError(
                     "market mainline response did not call the forced schema",
                     payload=invalid_payload,
-                    issues=[{
-                        "pointer": "/choices/0/message/tool_calls",
-                        "code": "forced_tool_call_missing",
-                        "expected": (
-                            "exactly one submit_market_mainline_report tool "
-                            "call matching the supplied schema"
-                        ),
-                        "allowed": [_MARKET_MAINLINE_REPORT_TOOL_NAME],
-                    }],
+                    issues=[
+                        {
+                            "pointer": "/choices/0/message/tool_calls",
+                            "code": "forced_tool_call_missing",
+                            "expected": (
+                                "exactly one submit_market_mainline_report tool " "call matching the supplied schema"
+                            ),
+                            "allowed": [_MARKET_MAINLINE_REPORT_TOOL_NAME],
+                        }
+                    ],
                 )
             try:
                 raw_payload = json.loads(response_text)
@@ -591,28 +539,30 @@ def stream_market_mainline_report_via_litellm(
                         **invalid_payload,
                         "candidate_arguments": response_text,
                     },
-                    issues=[{
-                        "pointer": "/choices/0/message/tool_calls/0/function/arguments",
-                        "code": "json_invalid",
-                        "expected": "one complete JSON object",
-                        "allowed": [],
-                    }],
+                    issues=[
+                        {
+                            "pointer": "/choices/0/message/tool_calls/0/function/arguments",
+                            "code": "json_invalid",
+                            "expected": "one complete JSON object",
+                            "allowed": [],
+                        }
+                    ],
                 ) from exc
             if not isinstance(raw_payload, dict):
                 raise MarketMainlineSchemaError(
                     "market mainline payload is not an object",
                     payload={"candidate_arguments": raw_payload},
-                    issues=[{
-                        "pointer": "/",
-                        "code": "object_type_required",
-                        "expected": "JSON object",
-                        "allowed": [],
-                    }],
+                    issues=[
+                        {
+                            "pointer": "/",
+                            "code": "object_type_required",
+                            "expected": "JSON object",
+                            "allowed": [],
+                        }
+                    ],
                 )
             try:
-                typed_payload = MarketMainlineReportV3.model_validate(
-                    raw_payload
-                ).model_dump(mode="json")
+                typed_payload = MarketMainlineReportV3.model_validate(raw_payload).model_dump(mode="json")
             except ValidationError as exc:
                 raise MarketMainlineSchemaError(
                     "market mainline payload failed exact schema validation",
@@ -626,15 +576,17 @@ def stream_market_mainline_report_via_litellm(
                     raise MarketMainlineSchemaError(
                         "market mainline payload failed evidence binding",
                         payload=typed_payload,
-                        issues=[{
-                            "pointer": "/current_mainlines",
-                            "code": "evidence_binding_invalid",
-                            "expected": (
-                                "at least one current or candidate mainline "
-                                "with valid board names and evidence references"
-                            ),
-                            "allowed": [],
-                        }],
+                        issues=[
+                            {
+                                "pointer": "/current_mainlines",
+                                "code": "evidence_binding_invalid",
+                                "expected": (
+                                    "at least one current or candidate mainline "
+                                    "with valid board names and evidence references"
+                                ),
+                                "allowed": [],
+                            }
+                        ],
                     ) from exc
             return typed_payload
 
@@ -699,9 +651,7 @@ def stream_market_mainline_report_via_litellm(
                 tools=[_MARKET_MAINLINE_REPORT_TOOL],
                 tool_choice={
                     "type": "function",
-                    "function": {
-                        "name": _MARKET_MAINLINE_REPORT_TOOL_NAME
-                    },
+                    "function": {"name": _MARKET_MAINLINE_REPORT_TOOL_NAME},
                 },
                 max_tokens=max(8192, max_tokens),
                 extra_body={
@@ -731,8 +681,7 @@ def stream_market_mainline_report_via_litellm(
                 repair_record["succeeded"] = False
                 repair_record["final_issues"] = second_error.issues
                 raise MarketMainlineSchemaError(
-                    "market mainline output remained invalid after one "
-                    "targeted repair",
+                    "market mainline output remained invalid after one " "targeted repair",
                     payload=second_error.payload,
                     issues=second_error.issues,
                 ) from second_error
@@ -777,7 +726,9 @@ def generate_model_report_stream(
             "phase": "collecting",
             "stream_text": "",
             "report_draft": {
-                "as_of_date": str((context.get("source_snapshot") or {}).get("market_status", {}).get("data_time") or ""),
+                "as_of_date": str(
+                    (context.get("source_snapshot") or {}).get("market_status", {}).get("data_time") or ""
+                ),
             },
             "debug_input": {
                 "system_prompt": system_prompt,
@@ -923,10 +874,7 @@ def build_llm_model_report_streaming(
         }
         DatabaseManager.get_instance().save_market_mainline_report(
             report_key="market_mainline",
-            as_of_date=str(
-                parsed.get("as_of_date")
-                or evidence_pack["as_of_date"]
-            ),
+            as_of_date=str(parsed.get("as_of_date") or evidence_pack["as_of_date"]),
             mode="llm",
             payload=parsed,
             raw_response=raw_response_text,
@@ -944,9 +892,7 @@ def build_llm_model_report_streaming(
 def generate_model_report_inline(
     *,
     force: bool,
-    on_progress: Optional[
-        Callable[[int, str, Optional[str]], None]
-    ] = None,
+    on_progress: Optional[Callable[[int, str, Optional[str]], None]] = None,
 ) -> dict[str, Any]:
     """Generate the shared snapshot inside the owning Workflow lifecycle."""
 

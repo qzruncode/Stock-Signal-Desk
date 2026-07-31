@@ -36,10 +36,7 @@ class _DummyResponse:
 
 
 def _make_sina_payload() -> str:
-    fields = [
-        "大秦铁路", "5.100", "5.000", "5.190", "5.200", "5.050", "5.180", "5.190",
-        "123456", "789012"
-    ]
+    fields = ["大秦铁路", "5.100", "5.000", "5.190", "5.200", "5.050", "5.180", "5.190", "123456", "789012"]
     fields.extend(["0"] * 20)
     fields.extend(["2026-03-08", "15:00:00"])
     return f'var hq_str_sh601006="{",".join(fields)}";'
@@ -165,7 +162,14 @@ def test_hot_stocks_uses_eastmoney_hot_ranking_when_available(monkeypatch, aksha
     monkeypatch.setattr(
         "data_provider.fetchers.market._get_eastmoney_hot_stocks",
         lambda _ak, n, *a, **kw: [
-            {"rank": 1, "code": "SZ000066", "name": "中国长城", "price": 21.8, "change_pct": 9.99, "source": "东方财富人气榜"},
+            {
+                "rank": 1,
+                "code": "SZ000066",
+                "name": "中国长城",
+                "price": 21.8,
+                "change_pct": 9.99,
+                "source": "东方财富人气榜",
+            },
         ],
     )
 
@@ -189,7 +193,16 @@ def test_hot_stocks_falls_back_to_xueqiu_when_primary_sources_empty(monkeypatch,
     def _xueqiu(_ak, n, *a, **kw):
         call_order.append("xueqiu")
 
-        return [{"rank": 1, "code": "SH600004", "name": "华夏银行", "price": 7.21, "change_pct": None, "source": "雪球关注榜"}]
+        return [
+            {
+                "rank": 1,
+                "code": "SH600004",
+                "name": "华夏银行",
+                "price": 7.21,
+                "change_pct": None,
+                "source": "雪球关注榜",
+            }
+        ]
 
     monkeypatch.setattr("data_provider.fetchers.market._get_eastmoney_hot_stocks", _eastmoney)
     monkeypatch.setattr("data_provider.fetchers.market._get_eastmoney_hot_up_stocks", _up)
@@ -198,18 +211,59 @@ def test_hot_stocks_falls_back_to_xueqiu_when_primary_sources_empty(monkeypatch,
     result = akshare_fetcher.get_hot_stocks(5)
 
     assert call_order == ["eastmoney_hot", "eastmoney_hot_up", "xueqiu"]
-    assert result == [{"rank": 1, "code": "SH600004", "name": "华夏银行", "price": 7.21, "change_pct": None, "source": "雪球关注榜"}]
+    assert result == [
+        {"rank": 1, "code": "SH600004", "name": "华夏银行", "price": 7.21, "change_pct": None, "source": "雪球关注榜"}
+    ]
 
 
 def test_limit_up_pool_zero_pads_first_seal_times_before_sorting(monkeypatch, akshare_fetcher):
     df = pd.DataFrame(
         [
-            {"代码": "000002", "名称": "午后股", "涨跌幅": 10.0, "最新价": 12.3, "成交额": 1, "换手率": 2, "封板资金": 3,
-             "首次封板时间": 141354, "最后封板时间": 141500, "炸板次数": 0, "涨停统计": "1/1", "连板数": 1, "所属行业": "地产"},
-            {"代码": "000001", "名称": "竞价股", "涨跌幅": 10.0, "最新价": 10.0, "成交额": 1, "换手率": 2, "封板资金": 3,
-             "首次封板时间": 92500, "最后封板时间": 93000, "炸板次数": 0, "涨停统计": "1/1", "连板数": 1, "所属行业": "计算机"},
-            {"代码": "000003", "名称": "早盘股", "涨跌幅": 10.0, "最新价": 11.0, "成交额": 1, "换手率": 2, "封板资金": 3,
-             "首次封板时间": 101500, "最后封板时间": 102000, "炸板次数": 0, "涨停统计": "1/1", "连板数": 1, "所属行业": "电子"},
+            {
+                "代码": "000002",
+                "名称": "午后股",
+                "涨跌幅": 10.0,
+                "最新价": 12.3,
+                "成交额": 1,
+                "换手率": 2,
+                "封板资金": 3,
+                "首次封板时间": 141354,
+                "最后封板时间": 141500,
+                "炸板次数": 0,
+                "涨停统计": "1/1",
+                "连板数": 1,
+                "所属行业": "地产",
+            },
+            {
+                "代码": "000001",
+                "名称": "竞价股",
+                "涨跌幅": 10.0,
+                "最新价": 10.0,
+                "成交额": 1,
+                "换手率": 2,
+                "封板资金": 3,
+                "首次封板时间": 92500,
+                "最后封板时间": 93000,
+                "炸板次数": 0,
+                "涨停统计": "1/1",
+                "连板数": 1,
+                "所属行业": "计算机",
+            },
+            {
+                "代码": "000003",
+                "名称": "早盘股",
+                "涨跌幅": 10.0,
+                "最新价": 11.0,
+                "成交额": 1,
+                "换手率": 2,
+                "封板资金": 3,
+                "首次封板时间": 101500,
+                "最后封板时间": 102000,
+                "炸板次数": 0,
+                "涨停统计": "1/1",
+                "连板数": 1,
+                "所属行业": "电子",
+            },
         ]
     )
     fake_akshare = SimpleNamespace(stock_zt_pool_em=lambda date: df)

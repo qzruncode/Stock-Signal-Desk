@@ -81,10 +81,7 @@ class CompanyThemeAnalysisCandidate(BaseModel):
     verdict: str = Field(pattern=r"^(pass|fail|insufficient)$")
     theme_fit: str = Field(pattern=r"^(exact|adjacent|none)$")
     development_level: str = Field(
-        pattern=(
-            r"^(none|layout|investment|customer_validation|order|"
-            r"mass_production|revenue)$"
-        )
+        pattern=(r"^(none|layout|investment|customer_validation|order|" r"mass_production|revenue)$")
     )
     matched_domains: list[str] = Field(default_factory=list, max_length=16)
     reason: str = Field(min_length=1, max_length=600)
@@ -249,13 +246,7 @@ def _domain_labels(task: ResolvedTask) -> list[str]:
         return []
     labels: list[str] = []
     for value in values:
-        label = (
-            value
-            if isinstance(value, str)
-            else value.get("label")
-            if isinstance(value, Mapping)
-            else ""
-        )
+        label = value if isinstance(value, str) else value.get("label") if isinstance(value, Mapping) else ""
         text = str(label or "").strip()
         if text and text not in labels:
             labels.append(text)
@@ -265,9 +256,7 @@ def _domain_labels(task: ResolvedTask) -> list[str]:
 def _result_selection(task: ResolvedTask) -> ResultSelectionSpec:
     selection = task.result_selection
     if selection is None:
-        raise ValueError(
-            f"{task.kind.value} result processor requires result_selection"
-        )
+        raise ValueError(f"{task.kind.value} result processor requires result_selection")
     return selection
 
 
@@ -336,13 +325,8 @@ def _project_board_cache_key(
         "version": PROJECT_BOARD_CACHE_VERSION,
         "model": str(llm_cfg.get("model") or ""),
         "snapshot_id": snapshot_id,
-        "topic": _normalized_text(
-            str(task.parameters.get("query") or task.candidate.objective)
-        ),
-        "root_topics": [
-            _normalized_text(value)
-            for value in _domain_labels(task)
-        ],
+        "topic": _normalized_text(str(task.parameters.get("query") or task.candidate.objective)),
+        "root_topics": [_normalized_text(value) for value in _domain_labels(task)],
         "result_selection": _selection_payload(_result_selection(task)),
     }
     digest = hashlib.sha256(
@@ -478,9 +462,7 @@ async def _rank_project_board_domains_v1(
 
     async def request_ranking() -> list[RankedProjectBoard]:
         request = {
-            "requested_topic": str(
-                task.parameters.get("query") or task.candidate.objective
-            ),
+            "requested_topic": str(task.parameters.get("query") or task.candidate.objective),
             "root_topics": _domain_labels(task),
             "result_selection": _selection_payload(selection),
             "project_boards": [board["name"] for board in boards],
@@ -511,20 +493,14 @@ async def _rank_project_board_domains_v1(
                 candidate = RankedProjectBoard.model_validate(raw)
             except ValidationError:
                 continue
-            if (
-                candidate.board_name in by_name
-                and candidate.confidence >= 0.55
-            ):
+            if candidate.board_name in by_name and candidate.confidence >= 0.55:
                 ranked.append(candidate)
         return ranked
 
     ranked_candidates: list[RankedProjectBoard] | None = None
     model_failure: BaseException | None = None
     logger.info(
-        (
-            "[ResultProcessor] project-board direct model request "
-            "snapshot=%s catalog_count=%s payload_count=%s"
-        ),
+        ("[ResultProcessor] project-board direct model request " "snapshot=%s catalog_count=%s payload_count=%s"),
         snapshot_id,
         len(boards),
         len(boards),
@@ -536,10 +512,7 @@ async def _rank_project_board_domains_v1(
     except BaseException as exc:
         model_failure = exc
         logger.warning(
-            (
-                "[ResultProcessor] project-board direct model request failed "
-                "snapshot=%s error_code=%s"
-            ),
+            ("[ResultProcessor] project-board direct model request failed " "snapshot=%s error_code=%s"),
             snapshot_id,
             _semantic_failure_code(exc),
             exc_info=(type(exc), exc, exc.__traceback__),
@@ -609,11 +582,13 @@ async def _rank_project_board_domains_v1(
     failed_batches = (
         []
         if model_failure is None
-        else [{
-            "batch": 1,
-            "error_code": _semantic_failure_code(model_failure),
-            "error_type": type(model_failure).__name__,
-        }]
+        else [
+            {
+                "batch": 1,
+                "error_code": _semantic_failure_code(model_failure),
+                "error_type": type(model_failure).__name__,
+            }
+        ]
     )
     diagnostics = {
         "source_scope": "project_live_board_catalog",
@@ -635,9 +610,7 @@ async def _rank_project_board_domains_v1(
                 "完整实时板块目录已经一次性交给模型，但本次模型调用未能"
                 "返回有效结构化判断；因此没有发布可供后续找股使用的领域集合。"
             ],
-            "warnings": [
-                f"完整目录模型判断 {_semantic_failure_code(model_failure)}"
-            ],
+            "warnings": [f"完整目录模型判断 {_semantic_failure_code(model_failure)}"],
             "items": items,
             "semantic_artifacts": [],
             "resource_outputs": {},
@@ -716,9 +689,7 @@ async def _rank_project_board_domains_v1(
 
 
 def _industry_catalog_mapping_mode() -> str:
-    value = str(
-        os.getenv("AGENT_INDUSTRY_CATALOG_MAPPING_MODE", "v2")
-    ).strip().lower()
+    value = str(os.getenv("AGENT_INDUSTRY_CATALOG_MAPPING_MODE", "v2")).strip().lower()
     return "v1" if value == "v1" else "v2"
 
 
@@ -763,10 +734,7 @@ async def _rank_public_industry_domains(
             "semantic_artifacts": [],
             "resource_outputs": {"domain_collection": []},
         }
-    source_batches = [
-        sources[index:index + 2]
-        for index in range(0, len(sources), 2)
-    ]
+    source_batches = [sources[index : index + 2] for index in range(0, len(sources), 2)]
 
     async def rank_batch(batch: list[dict[str, Any]]) -> list[Any]:
         request = {
@@ -800,10 +768,7 @@ async def _rank_public_industry_domains(
             raise ValueError("ranked domain response is not a list")
         return domains
 
-    tasks = [
-        asyncio.create_task(rank_batch(batch))
-        for batch in source_batches
-    ]
+    tasks = [asyncio.create_task(rank_batch(batch)) for batch in source_batches]
     batch_results = await asyncio.gather(*tasks, return_exceptions=True)
     raw_domains: list[Any] = []
     failures: list[BaseException] = []
@@ -857,11 +822,7 @@ async def _rank_public_industry_domains(
             "partial": False,
             "errors": [
                 "来源中没有通过原文校验的受益领域排序。"
-                + (
-                    f" {len(failures) + len(pending)} 个语义批次未完成。"
-                    if failures or pending
-                    else ""
-                )
+                + (f" {len(failures) + len(pending)} 个语义批次未完成。" if failures or pending else "")
             ],
             "items": [],
             "semantic_artifacts": [],
@@ -891,11 +852,7 @@ async def _rank_public_industry_domains(
     return {
         "success": True,
         "partial": bool(failures or pending),
-        "errors": (
-            [f"{len(failures) + len(pending)} 个语义批次未完成。"]
-            if failures or pending
-            else []
-        ),
+        "errors": ([f"{len(failures) + len(pending)} 个语义批次未完成。"] if failures or pending else []),
         "items": items,
         "result_selection": _selection_payload(selection),
         "semantic_artifacts": [artifact],
@@ -932,10 +889,7 @@ async def _rank_industry_domains(
         "success": False,
         "partial": False,
         "error_code": "resource_unavailable",
-        "errors": [
-            "产业研究没有取得项目实时板块目录；"
-            "程序未改用公开来源生成另一套不可复用的领域结果。"
-        ],
+        "errors": ["产业研究没有取得项目实时板块目录；" "程序未改用公开来源生成另一套不可复用的领域结果。"],
         "warnings": [],
         "items": [],
         "semantic_artifacts": [],
@@ -964,11 +918,7 @@ def _deterministic_evidence_quote(
     text = str(document.get("text") or "").strip()
     if not text:
         return ""
-    chunks = [
-        chunk.strip()
-        for chunk in re.split(r"(?<=[。！？!?；;])|\n+", text)
-        if chunk.strip()
-    ]
+    chunks = [chunk.strip() for chunk in re.split(r"(?<=[。！？!?；;])|\n+", text) if chunk.strip()]
     if not chunks:
         return text[:800]
     development_terms = (
@@ -990,16 +940,8 @@ def _deterministic_evidence_quote(
 
     def score(chunk: str) -> tuple[int, int]:
         normalized = _normalized_text(chunk)
-        label_score = sum(
-            5
-            for label in labels
-            if _normalized_text(label) in normalized
-        )
-        term_score = sum(
-            1
-            for term in development_terms
-            if _normalized_text(term) in normalized
-        )
+        label_score = sum(5 for label in labels if _normalized_text(label) in normalized)
+        term_score = sum(1 for term in development_terms if _normalized_text(term) in normalized)
         return label_score + term_score, -len(chunk)
 
     quote = max(chunks, key=score)
@@ -1042,9 +984,7 @@ def _validated_company_theme_result(
         }
 
     source_map = {
-        str(document.get("source_id") or ""): document
-        for document in documents
-        if isinstance(document, Mapping)
+        str(document.get("source_id") or ""): document for document in documents if isinstance(document, Mapping)
     }
     valid_evidence: list[dict[str, Any]] = []
     for reference in candidate.evidence:
@@ -1054,38 +994,30 @@ def _validated_company_theme_result(
         quote = _deterministic_evidence_quote(source, labels=labels)
         if not quote:
             continue
-        valid_evidence.append({
-            "source_id": reference.source_id,
-            "domain": reference.domain,
-            "support_quote": quote,
-            "source_type": str(source.get("source_type") or ""),
-            "source_name": str(source.get("source_name") or "项目数据源"),
-            "source_url": str(source.get("source_url") or ""),
-            "source_date": str(source.get("source_date") or ""),
-            "official": bool(source.get("official")),
-        })
+        valid_evidence.append(
+            {
+                "source_id": reference.source_id,
+                "domain": reference.domain,
+                "support_quote": quote,
+                "source_type": str(source.get("source_type") or ""),
+                "source_name": str(source.get("source_name") or "项目数据源"),
+                "source_url": str(source.get("source_url") or ""),
+                "source_date": str(source.get("source_date") or ""),
+                "official": bool(source.get("official")),
+            }
+        )
 
-    matched_domains = [
-        label
-        for label in candidate.matched_domains
-        if label in labels
-    ]
+    matched_domains = [label for label in candidate.matched_domains if label in labels]
     verdict = candidate.verdict
     reason = candidate.reason
-    if (
-        verdict == "pass"
-        and (
-            candidate.theme_fit != "exact"
-            or candidate.development_level == "none"
-            or not valid_evidence
-            or not matched_domains
-        )
+    if verdict == "pass" and (
+        candidate.theme_fit != "exact"
+        or candidate.development_level == "none"
+        or not valid_evidence
+        or not matched_domains
     ):
         verdict = "insufficient"
-        reason = (
-            "模型给出通过结论，但没有同时满足精确主题、发展阶段、"
-            "子领域和逐字证据校验，程序已降级为证据不足。"
-        )
+        reason = "模型给出通过结论，但没有同时满足精确主题、发展阶段、" "子领域和逐字证据校验，程序已降级为证据不足。"
     return {
         "symbol": symbol,
         "company_name": name,
@@ -1110,107 +1042,125 @@ def _validate_company_theme_contract(
     candidate = CompanyThemeAnalysisCandidate.model_validate(value)
     issues: list[RepairIssueV2] = []
     if candidate.symbol != symbol:
-        issues.append(RepairIssueV2(
-            pointer="/symbol",
-            code="company_symbol_mismatch",
-            expected=f"const={symbol}",
-            allowed=(symbol,),
-            message="symbol must match requested_company.symbol",
-        ))
+        issues.append(
+            RepairIssueV2(
+                pointer="/symbol",
+                code="company_symbol_mismatch",
+                expected=f"const={symbol}",
+                allowed=(symbol,),
+                message="symbol must match requested_company.symbol",
+            )
+        )
     if candidate.company_name != name:
-        issues.append(RepairIssueV2(
-            pointer="/company_name",
-            code="company_name_mismatch",
-            expected=f"const={name}",
-            allowed=(name,),
-            message="company_name must match requested_company.name",
-        ))
+        issues.append(
+            RepairIssueV2(
+                pointer="/company_name",
+                code="company_name_mismatch",
+                expected=f"const={name}",
+                allowed=(name,),
+                message="company_name must match requested_company.name",
+            )
+        )
 
     for index, domain in enumerate(candidate.matched_domains):
         if domain not in labels:
-            issues.append(RepairIssueV2(
-                pointer=f"/matched_domains/{index}",
-                code="unknown_domain",
-                expected="one supplied domain",
-                allowed=tuple(labels),
-                message="matched domain was not supplied by the program",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/matched_domains/{index}",
+                    code="unknown_domain",
+                    expected="one supplied domain",
+                    allowed=tuple(labels),
+                    message="matched domain was not supplied by the program",
+                )
+            )
 
     source_map = {
-        str(document.get("source_id") or ""): document
-        for document in documents
-        if isinstance(document, Mapping)
+        str(document.get("source_id") or ""): document for document in documents if isinstance(document, Mapping)
     }
     valid_evidence_count = 0
     for index, reference in enumerate(candidate.evidence):
         source = source_map.get(reference.source_id)
         if source is None:
-            issues.append(RepairIssueV2(
-                pointer=f"/evidence/{index}/source_id",
-                code="unknown_source",
-                expected="source_id from evidence_documents",
-                allowed=tuple(source_map),
-                message="evidence source was not supplied by the program",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/evidence/{index}/source_id",
+                    code="unknown_source",
+                    expected="source_id from evidence_documents",
+                    allowed=tuple(source_map),
+                    message="evidence source was not supplied by the program",
+                )
+            )
             continue
         if reference.domain not in labels:
-            issues.append(RepairIssueV2(
-                pointer=f"/evidence/{index}/domain",
-                code="unknown_domain",
-                expected="one supplied domain",
-                allowed=tuple(labels),
-                message="evidence domain was not supplied by the program",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/evidence/{index}/domain",
+                    code="unknown_domain",
+                    expected="one supplied domain",
+                    allowed=tuple(labels),
+                    message="evidence domain was not supplied by the program",
+                )
+            )
             continue
         if not str(source.get("text") or "").strip():
-            issues.append(RepairIssueV2(
-                pointer=f"/evidence/{index}/source_id",
-                code="empty_source",
-                expected="a source containing non-empty evidence text",
-                message="selected evidence source contains no usable text",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer=f"/evidence/{index}/source_id",
+                    code="empty_source",
+                    expected="a source containing non-empty evidence text",
+                    message="selected evidence source contains no usable text",
+                )
+            )
             continue
         valid_evidence_count += 1
 
     if candidate.verdict == "pass":
         if candidate.theme_fit != "exact":
-            issues.append(RepairIssueV2(
-                pointer="/theme_fit",
-                code="pass_requires_exact_theme",
-                expected="const=exact",
-                allowed=("exact",),
-                message="pass requires exact theme fit",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer="/theme_fit",
+                    code="pass_requires_exact_theme",
+                    expected="const=exact",
+                    allowed=("exact",),
+                    message="pass requires exact theme fit",
+                )
+            )
         if candidate.development_level == "none":
-            issues.append(RepairIssueV2(
-                pointer="/development_level",
-                code="pass_requires_development",
-                expected="a proven development stage other than none",
-                allowed=(
-                    "layout",
-                    "investment",
-                    "customer_validation",
-                    "order",
-                    "mass_production",
-                    "revenue",
-                ),
-                message="pass requires a proven development stage",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer="/development_level",
+                    code="pass_requires_development",
+                    expected="a proven development stage other than none",
+                    allowed=(
+                        "layout",
+                        "investment",
+                        "customer_validation",
+                        "order",
+                        "mass_production",
+                        "revenue",
+                    ),
+                    message="pass requires a proven development stage",
+                )
+            )
         if not candidate.matched_domains:
-            issues.append(RepairIssueV2(
-                pointer="/matched_domains",
-                code="pass_requires_domain",
-                expected="at least one supplied domain",
-                allowed=tuple(labels),
-                message="pass requires a matched supplied domain",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer="/matched_domains",
+                    code="pass_requires_domain",
+                    expected="at least one supplied domain",
+                    allowed=tuple(labels),
+                    message="pass requires a matched supplied domain",
+                )
+            )
         if valid_evidence_count == 0:
-            issues.append(RepairIssueV2(
-                pointer="/evidence",
-                code="pass_requires_bound_evidence",
-                expected="at least one valid program-bound evidence source",
-                message="pass requires program-verifiable source binding",
-            ))
+            issues.append(
+                RepairIssueV2(
+                    pointer="/evidence",
+                    code="pass_requires_bound_evidence",
+                    expected="at least one valid program-bound evidence source",
+                    message="pass requires program-verifiable source binding",
+                )
+            )
 
     if issues:
         raise ExactContractValidationError(tuple(issues))
@@ -1246,14 +1196,10 @@ async def _analyze_candidate_companies(
         {
             "label": label,
             "rationale": (
-                evidence_context.thesis_for(label).rationale
-                if evidence_context.thesis_for(label) is not None
-                else ""
+                evidence_context.thesis_for(label).rationale if evidence_context.thesis_for(label) is not None else ""
             ),
             "tier": (
-                evidence_context.thesis_for(label).tier
-                if evidence_context.thesis_for(label) is not None
-                else None
+                evidence_context.thesis_for(label).tier if evidence_context.thesis_for(label) is not None else None
             ),
         }
         for label in labels
@@ -1279,22 +1225,14 @@ async def _analyze_candidate_companies(
             }
         result = dict(packet["result"])
         documents = [
-            dict(document)
-            for document in result.get("evidence_documents") or []
-            if isinstance(document, Mapping)
+            dict(document) for document in result.get("evidence_documents") or [] if isinstance(document, Mapping)
         ]
         base = {
             "source_status": result.get("source_status") or {},
-            "project_source_coverage_complete": bool(
-                result.get("project_source_coverage_complete")
-            ),
+            "project_source_coverage_complete": bool(result.get("project_source_coverage_complete")),
             "fallback_attempted": bool(result.get("fallback_attempted")),
             "fallback_used": bool(result.get("fallback_used")),
-            "tool_errors": [
-                str(error)
-                for error in result.get("errors") or []
-                if error
-            ],
+            "tool_errors": [str(error) for error in result.get("errors") or [] if error],
         }
         if not documents:
             return {
@@ -1322,12 +1260,8 @@ async def _analyze_candidate_companies(
             "evidence_documents": documents,
             "source_coverage": {
                 "project_source_count": result.get("project_source_count"),
-                "project_source_success_count": result.get(
-                    "project_source_success_count"
-                ),
-                "project_source_coverage_complete": result.get(
-                    "project_source_coverage_complete"
-                ),
+                "project_source_success_count": result.get("project_source_success_count"),
+                "project_source_coverage_complete": result.get("project_source_coverage_complete"),
                 "fallback_used": result.get("fallback_used"),
             },
         }
@@ -1337,10 +1271,7 @@ async def _analyze_candidate_companies(
                     llm_cfg=llm_cfg,
                     completion=completion,
                     function_name="submit_company_theme_analysis",
-                    description=(
-                        "Submit the independent theme-development verdict "
-                        "for exactly one company."
-                    ),
+                    description=("Submit the independent theme-development verdict " "for exactly one company."),
                     model=CompanyThemeAnalysisCandidate,
                     system_prompt=_COMPANY_THEME_ANALYSIS_SYSTEM_PROMPT,
                     semantic_context=request,
@@ -1395,43 +1326,21 @@ async def _analyze_candidate_companies(
                 await progress(completed_count, len(task.symbols), result)
         return result
 
-    company_results = await asyncio.gather(
-        *(analyze_with_progress(symbol) for symbol in task.symbols)
-    )
+    company_results = await asyncio.gather(*(analyze_with_progress(symbol) for symbol in task.symbols))
     counts = {
-        status: sum(
-            1
-            for item in company_results
-            if item.get("verdict") == status
-        )
+        status: sum(1 for item in company_results if item.get("verdict") == status)
         for status in ("pass", "fail", "insufficient", "error")
     }
-    passed = [
-        item
-        for item in company_results
-        if item.get("verdict") == "pass"
-    ]
-    missing_symbols = [
-        symbol
-        for symbol in task.symbols
-        if symbol not in packets_by_symbol
-    ]
+    passed = [item for item in company_results if item.get("verdict") == "pass"]
+    missing_symbols = [symbol for symbol in task.symbols if symbol not in packets_by_symbol]
     analyzed_count = len(company_results)
     candidate_count = len(task.symbols)
-    coverage_complete = (
-        analyzed_count == candidate_count
-        and not missing_symbols
-        and not duplicate_packets
-    )
+    coverage_complete = analyzed_count == candidate_count and not missing_symbols and not duplicate_packets
     domain_results = [
         {
             "domain": label,
             "analyzed_company_count": candidate_count,
-            "passed_company_count": sum(
-                1
-                for item in passed
-                if label in item.get("matched_domains", [])
-            ),
+            "passed_company_count": sum(1 for item in passed if label in item.get("matched_domains", [])),
         }
         for label in labels
     ]
@@ -1444,17 +1353,11 @@ async def _analyze_candidate_companies(
     ]
     warnings: list[str] = []
     if counts["insufficient"]:
-        warnings.append(
-            f"{counts['insufficient']} 家完成了独立分析但证据不足，未纳入通过名单。"
-        )
+        warnings.append(f"{counts['insufficient']} 家完成了独立分析但证据不足，未纳入通过名单。")
     if counts["error"]:
-        warnings.append(
-            f"{counts['error']} 家单股分析发生错误，未静默计入排除结果。"
-        )
+        warnings.append(f"{counts['error']} 家单股分析发生错误，未静默计入排除结果。")
     if duplicate_packets:
-        warnings.append(
-            "检测到重复单股证据任务：" + "、".join(sorted(duplicate_packets))
-        )
+        warnings.append("检测到重复单股证据任务：" + "、".join(sorted(duplicate_packets)))
     artifact = {
         "type": "per_security_theme_analysis",
         "target_topics": evidence_context.target_topics,
@@ -1467,16 +1370,9 @@ async def _analyze_candidate_companies(
     }
     return {
         "success": coverage_complete,
-        "partial": (
-            not coverage_complete
-            or counts["insufficient"] > 0
-            or counts["error"] > 0
-        ),
+        "partial": (not coverage_complete or counts["insufficient"] > 0 or counts["error"] > 0),
         "errors": (
-            [
-                f"缺少 {len(missing_symbols)} 家候选公司的单股证据任务："
-                + "、".join(missing_symbols[:20])
-            ]
+            [f"缺少 {len(missing_symbols)} 家候选公司的单股证据任务：" + "、".join(missing_symbols[:20])]
             if missing_symbols
             else []
         ),
@@ -1506,18 +1402,10 @@ async def _bind_theme_companies(
     progress: ProcessorProgress | None = None,
 ) -> dict[str, Any]:
     labels = _domain_labels(task)
-    candidate_scope = str(
-        task.parameters.get("candidate_scope") or ""
-    ).strip()
-    allowed_symbols = {
-        str(symbol).strip()
-        for symbol in task.symbols
-        if str(symbol).strip()
-    }
+    candidate_scope = str(task.parameters.get("candidate_scope") or "").strip()
+    allowed_symbols = {str(symbol).strip() for symbol in task.symbols if str(symbol).strip()}
     try:
-        evidence_context = ThemeEvidenceContext.model_validate(
-            task.parameters.get("evidence_context")
-        )
+        evidence_context = ThemeEvidenceContext.model_validate(task.parameters.get("evidence_context"))
     except ValidationError as exc:
         return {
             "success": False,
@@ -1531,8 +1419,7 @@ async def _bind_theme_companies(
     source_warnings = [
         str(error)
         for packet in evidence
-        if isinstance(packet.get("result"), Mapping)
-        and packet["result"].get("success") is False
+        if isinstance(packet.get("result"), Mapping) and packet["result"].get("success") is False
         for error in packet["result"].get("errors") or ["部分公开来源查询失败"]
         if error
     ]
@@ -1590,7 +1477,8 @@ async def _bind_theme_companies(
         packets = [
             packet
             for packet in evidence
-            if label in [
+            if label
+            in [
                 str(value or "").strip()
                 for value in (
                     packet.get("arguments", {}).get("subjects") or []
@@ -1604,10 +1492,12 @@ async def _bind_theme_companies(
         source_count_by_domain[label] = len(sources)
         observed: set[str] = set()
         for source in sources:
-            source_text = "\n".join((
-                str(source.get("title") or ""),
-                str(source.get("text") or ""),
-            ))
+            source_text = "\n".join(
+                (
+                    str(source.get("title") or ""),
+                    str(source.get("text") or ""),
+                )
+            )
             observed.update(
                 str(item.get("symbol") or "")
                 for item in find_securities_in_text(source_text, limit=100)
@@ -1620,11 +1510,7 @@ async def _bind_theme_companies(
     async def bind_domain(label: str) -> tuple[str, list[Any]]:
         packets = packets_by_domain[label]
         domain_thesis = evidence_context.thesis_for(label)
-        rationale = (
-            domain_thesis.rationale
-            if domain_thesis is not None
-            else ""
-        )
+        rationale = domain_thesis.rationale if domain_thesis is not None else ""
         thesis_requirements = [
             (
                 f"原文事实必须支持公司正在参与上位产业“{target_topic}”中的"
@@ -1634,16 +1520,13 @@ async def _bind_theme_companies(
             f"公司主体必须是“{label}”相关产品或业务的研发、生产、销售或应用方",
         ]
         if rationale:
-            thesis_requirements.append(
-                f"公司事实必须符合该板块的受益逻辑：{rationale}"
-            )
+            thesis_requirements.append(f"公司事实必须符合该板块的受益逻辑：{rationale}")
         intent = MappingSelectionContext(
             topic=f"{target_topic}中的{label}",
             objective=(
                 task.candidate.objective
                 + (
-                    f"；只核验程序已绑定的 {len(allowed_symbols)} 家候选公司，"
-                    "不得从公开来源扩大候选范围"
+                    f"；只核验程序已绑定的 {len(allowed_symbols)} 家候选公司，" "不得从公开来源扩大候选范围"
                     if candidate_scope == "candidate_collection"
                     else "；项目结构化板块无法覆盖，本轮允许从公开来源发现公司"
                 )
@@ -1689,14 +1572,16 @@ async def _bind_theme_companies(
         source_observed_symbols.update(domain_observed)
         if isinstance(binding, BaseException):
             errors.append(f"{label}：{binding}")
-            domain_results.append({
-                "domain": label,
-                "success": False,
-                "company_count": 0,
-                "source_item_count": source_count_by_domain.get(label, 0),
-                "source_observed_candidate_count": len(domain_observed),
-                "errors": [str(binding)],
-            })
+            domain_results.append(
+                {
+                    "domain": label,
+                    "success": False,
+                    "company_count": 0,
+                    "source_item_count": source_count_by_domain.get(label, 0),
+                    "source_observed_candidate_count": len(domain_observed),
+                    "errors": [str(binding)],
+                }
+            )
             continue
         _resolved_label, facts = binding
         accepted = 0
@@ -1707,10 +1592,7 @@ async def _bind_theme_companies(
                 "domain": label,
                 "matched_domains": [label],
             }
-            if (
-                candidate_scope == "candidate_collection"
-                and fact.symbol not in allowed_symbols
-            ):
+            if candidate_scope == "candidate_collection" and fact.symbol not in allowed_symbols:
                 rejected += 1
                 rejected_outside_candidate_count += 1
                 continue
@@ -1719,32 +1601,35 @@ async def _bind_theme_companies(
                 continue
             positive_items.append(item)
             accepted += 1
-        domain_results.append({
-            "domain": label,
-            "success": True,
-            "company_count": accepted,
-            "source_item_count": source_count_by_domain.get(label, 0),
-            "source_observed_candidate_count": len(domain_observed),
-            "rejected_outside_candidate_count": rejected,
-            "errors": [],
-        })
+        domain_results.append(
+            {
+                "domain": label,
+                "success": True,
+                "company_count": accepted,
+                "source_item_count": source_count_by_domain.get(label, 0),
+                "source_observed_candidate_count": len(domain_observed),
+                "rejected_outside_candidate_count": rejected,
+                "errors": [],
+            }
+        )
 
     stage_rank = {"L3": 3, "L2": 2, "L1": 1}
     companies: dict[str, dict[str, Any]] = {}
     for item in positive_items:
         symbol = str(item.get("symbol") or "")
-        company = companies.setdefault(symbol, {
-            "symbol": symbol,
-            "name": str(item.get("company_name") or symbol),
-            "matched_domains": [],
-            "strongest_stage": "L1",
-        })
+        company = companies.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "name": str(item.get("company_name") or symbol),
+                "matched_domains": [],
+                "strongest_stage": "L1",
+            },
+        )
         for domain in item.get("matched_domains") or []:
             if domain not in company["matched_domains"]:
                 company["matched_domains"].append(domain)
-        if stage_rank.get(str(item.get("stage")), 0) > stage_rank.get(
-            str(company["strongest_stage"]), 0
-        ):
+        if stage_rank.get(str(item.get("stage")), 0) > stage_rank.get(str(company["strongest_stage"]), 0):
             company["strongest_stage"] = item["stage"]
     security_collection = sorted(
         companies.values(),
@@ -1764,8 +1649,7 @@ async def _bind_theme_companies(
     candidate_count = len(allowed_symbols)
     source_observed_candidate_count = len(source_observed_symbols)
     candidate_coverage_complete = (
-        candidate_scope != "candidate_collection"
-        or source_observed_candidate_count == candidate_count
+        candidate_scope != "candidate_collection" or source_observed_candidate_count == candidate_count
     )
     coverage_warning = (
         (
@@ -1773,22 +1657,21 @@ async def _bind_theme_companies(
             f"{candidate_count} 家；当前结果是证据命中 shortlist，"
             "不是完整候选筛选后的唯一剩余公司。"
         )
-        if candidate_scope == "candidate_collection"
-        and not candidate_coverage_complete
+        if candidate_scope == "candidate_collection" and not candidate_coverage_complete
         else ""
     )
     return {
         "success": bool(positive_items) or not errors,
-        "partial": bool(
-            errors
-            or source_warnings
-            or not candidate_coverage_complete
-        ),
+        "partial": bool(errors or source_warnings or not candidate_coverage_complete),
         "errors": errors,
-        "warnings": list(dict.fromkeys([
-            *source_warnings,
-            *([coverage_warning] if coverage_warning else []),
-        ])),
+        "warnings": list(
+            dict.fromkeys(
+                [
+                    *source_warnings,
+                    *([coverage_warning] if coverage_warning else []),
+                ]
+            )
+        ),
         "candidate_scope": candidate_scope,
         "screening_mode": "source_hit_shortlist",
         "candidate_count": candidate_count,
@@ -1805,10 +1688,7 @@ async def _bind_theme_companies(
         "domain_results": domain_results,
         "semantic_artifacts": [artifact],
         "resource_outputs": {
-            "security_collection": [
-                {"symbol": item["symbol"], "name": item["name"]}
-                for item in security_collection
-            ],
+            "security_collection": [{"symbol": item["symbol"], "name": item["name"]} for item in security_collection],
         },
     }
 

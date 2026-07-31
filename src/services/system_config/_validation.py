@@ -25,8 +25,10 @@ class ValidationMixin:
 
         token_value = (effective_map.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat_id_value = (effective_map.get("TELEGRAM_CHAT_ID") or "").strip()
-        if token_value and not chat_id_value and (
-            "TELEGRAM_BOT_TOKEN" in updated_keys or "TELEGRAM_CHAT_ID" in updated_keys
+        if (
+            token_value
+            and not chat_id_value
+            and ("TELEGRAM_BOT_TOKEN" in updated_keys or "TELEGRAM_CHAT_ID" in updated_keys)
         ):
             issues.append(
                 {
@@ -53,17 +55,8 @@ class ValidationMixin:
         has_feishu_app_credentials = has_feishu_app_id or has_feishu_app_secret
         has_feishu_webhook = bool((effective_map.get("FEISHU_WEBHOOK_URL") or "").strip())
         has_feishu_folder_token = bool((effective_map.get("FEISHU_FOLDER_TOKEN") or "").strip())
-        has_feishu_full_cloud_doc_credentials = (
-            has_feishu_app_id
-            and has_feishu_app_secret
-            and has_feishu_folder_token
-        )
-        feishu_stream_enabled = (
-            (effective_map.get("FEISHU_STREAM_ENABLED") or "false")
-            .strip()
-            .lower()
-            == "true"
-        )
+        has_feishu_full_cloud_doc_credentials = has_feishu_app_id and has_feishu_app_secret and has_feishu_folder_token
+        feishu_stream_enabled = (effective_map.get("FEISHU_STREAM_ENABLED") or "false").strip().lower() == "true"
         if (
             has_feishu_app_credentials
             and not has_feishu_full_cloud_doc_credentials
@@ -215,7 +208,6 @@ class ValidationMixin:
                     }
                 )
 
-
         if "enum" in validation and value and value not in validation["enum"]:
             issues.append(
                 {
@@ -255,11 +247,12 @@ class ValidationMixin:
 
         if validation.get("item_type") == "url":
             delimiter = validation.get("delimiter", ",")
-            values = [item.strip() for item in value.split(delimiter)] if validation.get("multi_value") else [value.strip()]
+            values = (
+                [item.strip() for item in value.split(delimiter)] if validation.get("multi_value") else [value.strip()]
+            )
             allowed_schemes = tuple(validation.get("allowed_schemes", ["http", "https"]))
             invalid_values = [
-                item for item in values
-                if item and not cls._is_valid_url(item, allowed_schemes=allowed_schemes)
+                item for item in values if item and not cls._is_valid_url(item, allowed_schemes=allowed_schemes)
             ]
             if invalid_values:
                 issues.append(

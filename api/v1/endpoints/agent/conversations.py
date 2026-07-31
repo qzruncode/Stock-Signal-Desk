@@ -64,39 +64,28 @@ def get_agent_conversation(
     run = active_run_registry.get(conversation_id)
     durable_run = db_manager.get_agent_run(conversation_id=conversation_id)
     durable_status = durable_run.get("status") if durable_run else None
-    durable_event_cursor = (
-        int(durable_run.get("event_cursor") or 0)
-        if durable_run
-        else 0
-    )
+    durable_event_cursor = int(durable_run.get("event_cursor") or 0) if durable_run else 0
     durable_has_tool_events = (
-        db_manager.agent_run_has_tool_events(
-            str(durable_run.get("run_id") or "")
-        )
+        db_manager.agent_run_has_tool_events(str(durable_run.get("run_id") or ""))
         if durable_run and durable_event_cursor
         else False
     )
-    is_generating = (
-        active_run_registry.is_active(conversation_id)
-        or durable_status in {"queued", "running", "recovering"}
-    )
+    is_generating = active_run_registry.is_active(conversation_id) or durable_status in {
+        "queued",
+        "running",
+        "recovering",
+    }
     trace = db_manager.get_latest_agent_run_trace(conversation_id)
     persisted_stage = (
         trace.get("latest_stage")
         if isinstance(trace, dict)
         and (
             (run is None and durable_run is None)
-            or trace.get("run_id") == (
-                run.run_id if run else durable_run.get("run_id")
-            )
+            or trace.get("run_id") == (run.run_id if run else durable_run.get("run_id"))
         )
         else None
     )
-    reconciled_trace_status = (
-        trace.get("status")
-        if isinstance(trace, dict)
-        else None
-    )
+    reconciled_trace_status = trace.get("status") if isinstance(trace, dict) else None
     if (
         run is None
         and not is_generating
@@ -114,47 +103,23 @@ def get_agent_conversation(
         }
     conversation["is_generating"] = is_generating
     conversation["resume_state"] = {
-        "run_id": (
-            run.run_id
-            if run
-            else (durable_run.get("run_id") if durable_run else None)
-        ),
+        "run_id": (run.run_id if run else (durable_run.get("run_id") if durable_run else None)),
         "active": (
-            is_generating
-            or (run is not None and run.broadcaster.history_length > 0)
-            or durable_event_cursor > 0
+            is_generating or (run is not None and run.broadcaster.history_length > 0) or durable_event_cursor > 0
         ),
         "is_generating": is_generating,
-        "status": (
-            run.status
-            if run
-            else (durable_status or reconciled_trace_status)
-        ),
+        "status": (run.status if run else (durable_status or reconciled_trace_status)),
         # The durable event log is the authoritative presentation state.
         # Replaying from zero reconstructs tool cards even if the browser died
         # before its onFinish snapshot.
-        "after_chunk_index": (
-            run.broadcaster.history_length
-            if run and not durable_run
-            else 0
-        ),
-        "event_cursor": (
-            run.broadcaster.history_length
-            if run
-            else durable_event_cursor
-        ),
+        "after_chunk_index": (run.broadcaster.history_length if run and not durable_run else 0),
+        "event_cursor": (run.broadcaster.history_length if run else durable_event_cursor),
         "assistant_text": (
             run.broadcaster.assistant_text_snapshot
             if run
-            else str(durable_run.get("final_text") or "")
-            if durable_run
-            else ""
+            else str(durable_run.get("final_text") or "") if durable_run else ""
         ),
-        "has_tool_events": (
-            run.broadcaster.has_tool_events
-            if run
-            else durable_has_tool_events
-        ),
+        "has_tool_events": (run.broadcaster.has_tool_events if run else durable_has_tool_events),
         "latest_stage": persisted_stage,
     }
     return conversation
@@ -251,17 +216,13 @@ def sync_agent_conversation_snapshot(
 ):
     service = _session_service(request, db_manager)
     raw_messages = payload.get("messages") if "messages" in payload else None
-    messages = raw_messages if isinstance(raw_messages, list) else (
-        [] if raw_messages is not None else None
-    )
+    messages = raw_messages if isinstance(raw_messages, list) else ([] if raw_messages is not None else None)
     thread_state = payload.get("thread_state")
     conversation = service.save_conversation_snapshot(
         conversation_id,
         messages,
         thread_state=thread_state if isinstance(thread_state, dict) else None,
-        prune_agent_context_to_messages=bool(
-            payload.get("prune_agent_context_to_messages")
-        ),
+        prune_agent_context_to_messages=bool(payload.get("prune_agent_context_to_messages")),
     )
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")

@@ -225,9 +225,7 @@ class ResultSelectionV2(StrictModel):
     def _validate_mode(self) -> "ResultSelectionV2":
         if self.mode == SelectionMode.BEST_ONE and self.max_items != 1:
             raise ValueError("best_one requires max_items=1")
-        if self.mode == SelectionMode.TOP_K and (
-            self.max_items is None or self.max_items < 2
-        ):
+        if self.mode == SelectionMode.TOP_K and (self.max_items is None or self.max_items < 2):
             raise ValueError("top_k requires max_items>=2")
         if self.mode == SelectionMode.ALL_RELEVANT and self.max_items is not None:
             raise ValueError("all_relevant requires max_items=null")
@@ -256,9 +254,7 @@ class ClaimRequirementV2(StrictModel):
         if len(self.optional_dimensions) != len(set(self.optional_dimensions)):
             raise ValueError("optional_dimensions must be unique")
         if set(self.required_dimensions) & set(self.optional_dimensions):
-            raise ValueError(
-                "required_dimensions and optional_dimensions cannot overlap"
-            )
+            raise ValueError("required_dimensions and optional_dimensions cannot overlap")
         return self
 
 
@@ -277,18 +273,10 @@ class GoalContractV2(StrictModel):
         claim_ids = [item.claim_id for item in self.claims]
         if len(claim_ids) != len(set(claim_ids)):
             raise ValueError("goal claim_id values must be unique")
-        if (
-            self.question_type == QuestionType.FORECAST
-            and self.uncertainty_mode != UncertaintyMode.SCENARIO
-        ):
+        if self.question_type == QuestionType.FORECAST and self.uncertainty_mode != UncertaintyMode.SCENARIO:
             raise ValueError("forecast goals require scenario uncertainty mode")
-        if (
-            self.question_type == QuestionType.OPERATION
-            and self.uncertainty_mode != UncertaintyMode.NOT_APPLICABLE
-        ):
-            raise ValueError(
-                "operation goals require not_applicable uncertainty mode"
-            )
+        if self.question_type == QuestionType.OPERATION and self.uncertainty_mode != UncertaintyMode.NOT_APPLICABLE:
+            raise ValueError("operation goals require not_applicable uncertainty mode")
         return self
 
 
@@ -324,10 +312,7 @@ class IntentOutlineNodeV2(StrictModel):
         cls,
         value: tuple[InputReferenceV2, ...],
     ) -> tuple[InputReferenceV2, ...]:
-        identities = [
-            (item.source, item.node_id, item.artifact_id, item.resource_type)
-            for item in value
-        ]
+        identities = [(item.source, item.node_id, item.artifact_id, item.resource_type) for item in value]
         if len(identities) != len(set(identities)):
             raise ValueError("input_refs must be unique")
         return value
@@ -351,16 +336,10 @@ class IntentOutlineV2(StrictModel):
         known = set(node_ids)
         graph: dict[str, set[str]] = {}
         for node in self.nodes:
-            dependencies = {
-                ref.node_id
-                for ref in node.input_refs
-                if ref.source == "node" and ref.node_id is not None
-            }
+            dependencies = {ref.node_id for ref in node.input_refs if ref.source == "node" and ref.node_id is not None}
             unknown = dependencies - known
             if unknown:
-                raise ValueError(
-                    f"{node.node_id} references unknown nodes: {sorted(unknown)}"
-                )
+                raise ValueError(f"{node.node_id} references unknown nodes: {sorted(unknown)}")
             if node.node_id in dependencies:
                 raise ValueError(f"{node.node_id} cannot reference itself")
             graph[node.node_id] = dependencies
@@ -407,15 +386,9 @@ class FreshnessPolicy(StrictModel):
 
     @model_validator(mode="after")
     def _validate_scope(self) -> "FreshnessPolicy":
-        if (
-            self.reuse_scope == CacheReuseScope.CROSS_RUN
-            and self.max_age_seconds is None
-        ):
+        if self.reuse_scope == CacheReuseScope.CROSS_RUN and self.max_age_seconds is None:
             raise ValueError("cross-run reuse requires max_age_seconds")
-        if (
-            self.reuse_scope == CacheReuseScope.RUN_ONLY
-            and self.max_age_seconds is not None
-        ):
+        if self.reuse_scope == CacheReuseScope.RUN_ONLY and self.max_age_seconds is not None:
             raise ValueError("run-only reuse cannot declare max_age_seconds")
         return self
 
@@ -510,9 +483,7 @@ class AgentStageEventV2(StrictModel):
     task_id: str | None = None
     error_code: AgentErrorCode | None = None
     summary: str = Field(default="", max_length=500)
-    occurred_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class AgentArtifactV2(StrictModel):
@@ -573,11 +544,7 @@ class PlannerVerificationV2(StrictModel):
 
     @model_validator(mode="after")
     def _accepted_has_no_issues(self) -> "PlannerVerificationV2":
-        has_issues = bool(
-            self.missing_capabilities
-            or self.extraneous_node_ids
-            or self.resource_issues
-        )
+        has_issues = bool(self.missing_capabilities or self.extraneous_node_ids or self.resource_issues)
         # A positive verdict is only valid when every typed diagnostic list is
         # empty.  A negative verdict may still rely on ``rationale`` when the
         # verifier identifies a semantic mismatch that does not fit one of the
@@ -585,9 +552,7 @@ class PlannerVerificationV2(StrictModel):
         # bounded replanning instead of turning a valid semantic veto into a
         # schema failure.
         if self.accepted and has_issues:
-            raise ValueError(
-                "accepted cannot be true when semantic issues exist"
-            )
+            raise ValueError("accepted cannot be true when semantic issues exist")
         return self
 
 
@@ -676,13 +641,8 @@ class GoalEvaluationV2(StrictModel):
 
     @model_validator(mode="after")
     def _validate_disposition(self) -> "GoalEvaluationV2":
-        if (
-            self.disposition == GoalDisposition.EXPAND_READS
-            and not self.proposed_capabilities
-        ):
-            raise ValueError(
-                "expand_reads requires at least one proposed capability"
-            )
+        if self.disposition == GoalDisposition.EXPAND_READS and not self.proposed_capabilities:
+            raise ValueError("expand_reads requires at least one proposed capability")
         if (
             self.disposition
             in {
@@ -724,9 +684,7 @@ class OrchestratorV2Error(RuntimeError):
         super().__init__(message)
         self.code = code
         self.task_id = task_id
-        self.details = details or (
-            ErrorDetailV2(code=code, message=message),
-        )
+        self.details = details or (ErrorDetailV2(code=code, message=message),)
         self.metadata = dict(metadata or {})
 
 
@@ -780,9 +738,7 @@ class CapabilitySpec(Generic[IntentT, ResultT]):
     @property
     def schema_version(self) -> str:
         schema = self.intent_model.model_json_schema()
-        digest = sha256(
-            json.dumps(schema, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:16]
+        digest = sha256(json.dumps(schema, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
         return f"{self.version}:{digest}"
 
 

@@ -22,11 +22,7 @@ def _build_price_overdraft_signal(payload: dict) -> dict:
     pe_ttm = _safe_float(payload.get("pe_ttm"))
     forward_pe = _safe_float(payload.get("forward_pe"))
     pe_dynamic = _safe_float(payload.get("pe_dynamic"))
-    expectation_pe = (
-        forward_pe
-        if forward_pe is not None
-        else pe_dynamic
-    )
+    expectation_pe = forward_pe if forward_pe is not None else pe_dynamic
     pb = _safe_float(payload.get("pb"))
     peg = _safe_float(payload.get("peg"))
     dividend_yield = _safe_float(payload.get("dividend_yield"))
@@ -60,16 +56,8 @@ def _build_price_overdraft_signal(payload: dict) -> dict:
             pe_ttm,
         ),
     }
-    available = [
-        key
-        for key, value in metrics.items()
-        if value is not None
-    ]
-    missing = [
-        key
-        for key, value in metrics.items()
-        if value is None
-    ]
+    available = [key for key, value in metrics.items() if value is not None]
+    missing = [key for key, value in metrics.items() if value is None]
     return {
         "semantic_status": "model_required",
         "status": None,

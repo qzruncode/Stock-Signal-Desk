@@ -25,6 +25,7 @@ from src.services.name_to_code_resolver import (
 # _is_code_like
 # ---------------------------------------------------------------------------
 
+
 class TestIsCodeLike:
     def test_a_share_5_digits(self):
         assert _is_code_like("60051") is True
@@ -61,6 +62,7 @@ class TestIsCodeLike:
 # _normalize_code
 # ---------------------------------------------------------------------------
 
+
 class TestNormalizeCode:
     def test_preserves_valid_a_share(self):
         assert _normalize_code("600519") == "600519"
@@ -92,6 +94,7 @@ class TestNormalizeCode:
 # _build_reverse_map_no_duplicates
 # ---------------------------------------------------------------------------
 
+
 class TestBuildReverseMapNoDuplicates:
     def test_excludes_ambiguous_names(self):
         # "阿里巴巴" maps to both BABA and 09988
@@ -110,6 +113,7 @@ class TestBuildReverseMapNoDuplicates:
 # ---------------------------------------------------------------------------
 # resolve_name_to_code
 # ---------------------------------------------------------------------------
+
 
 class TestResolveNameToCode:
     def test_code_like_input_returned_normalized(self):

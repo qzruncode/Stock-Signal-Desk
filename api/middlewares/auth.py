@@ -20,15 +20,17 @@ from src.auth import COOKIE_NAME, is_auth_enabled, verify_session
 logger = logging.getLogger(__name__)
 _PRINCIPAL_ID = re.compile(r"^[A-Za-z0-9_.:@-]{1,128}$")
 
-EXEMPT_PATHS = frozenset({
-    "/api/v1/auth/login",
-    "/api/v1/auth/status",
-    "/api/health",
-    "/health",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-})
+EXEMPT_PATHS = frozenset(
+    {
+        "/api/v1/auth/login",
+        "/api/v1/auth/status",
+        "/api/health",
+        "/health",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    }
+)
 
 
 def _path_exempt(path: str) -> bool:
@@ -49,26 +51,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path_exempt = _path_exempt(path)
         tenant_id = (os.getenv("DSA_TENANT_ID") or "local").strip()
         owner_id = (os.getenv("DSA_OWNER_ID") or "admin").strip()
-        if not path_exempt and str(
-            os.getenv("TRUSTED_IDENTITY_HEADERS") or ""
-        ).lower() in {
+        if not path_exempt and str(os.getenv("TRUSTED_IDENTITY_HEADERS") or "").lower() in {
             "1",
             "true",
             "yes",
             "on",
         }:
-            expected_secret = (
-                os.getenv("TRUSTED_IDENTITY_SHARED_SECRET") or ""
-            ).strip()
-            supplied_secret = (
-                request.headers.get("x-dsa-identity-secret") or ""
-            ).strip()
-            if (
-                len(expected_secret) < 32
-                or not hmac.compare_digest(
-                    supplied_secret.encode("utf-8"),
-                    expected_secret.encode("utf-8"),
-                )
+            expected_secret = (os.getenv("TRUSTED_IDENTITY_SHARED_SECRET") or "").strip()
+            supplied_secret = (request.headers.get("x-dsa-identity-secret") or "").strip()
+            if len(expected_secret) < 32 or not hmac.compare_digest(
+                supplied_secret.encode("utf-8"),
+                expected_secret.encode("utf-8"),
             ):
                 return JSONResponse(
                     status_code=401,
@@ -79,10 +72,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
             tenant_id = (request.headers.get("x-dsa-tenant-id") or "").strip()
             owner_id = (request.headers.get("x-dsa-user-id") or "").strip()
-            if (
-                not _PRINCIPAL_ID.fullmatch(tenant_id)
-                or not _PRINCIPAL_ID.fullmatch(owner_id)
-            ):
+            if not _PRINCIPAL_ID.fullmatch(tenant_id) or not _PRINCIPAL_ID.fullmatch(owner_id):
                 return JSONResponse(
                     status_code=401,
                     content={

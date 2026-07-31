@@ -26,10 +26,7 @@ def test_temperature_default_only_error_sets_temperature_to_one() -> None:
 
 def test_temperature_default_only_error_uses_named_default_value() -> None:
     recovery = classify_litellm_generation_param_error(
-        RuntimeError(
-            "Unsupported value: 'temperature' does not support 1.0 with this model. "
-            "Only `0.6` is allowed."
-        )
+        RuntimeError("Unsupported value: 'temperature' does not support 1.0 with this model. " "Only `0.6` is allowed.")
     )
 
     assert recovery is not None
