@@ -17,20 +17,16 @@ from src.agent.orchestrator_v2.contracts import StrictModel
 from src.services.buy_criteria.mainline_policy import MainlineStrategyProfile
 from src.services.stock_screening.screen_spec import QuantitativeScreenSpec
 
-
 class OutputRequestV2(StrictModel):
     language: Literal["zh-CN", "en-US"] | None = None
     format: Literal["concise", "detailed", "table", "list"] | None = None
     include_assumptions: bool | None = None
 
-
 class EmptyIntent(StrictModel):
     pass
 
-
 class ConfirmationSignal(StrictModel):
     user_confirmed: bool = False
-
 
 GeneralResponseIntent = EmptyIntent
 RealtimeQuoteIntent = EmptyIntent
@@ -38,7 +34,6 @@ CatalystAnalysisIntent = EmptyIntent
 DataHealthIntent = EmptyIntent
 TradeExecutionIntent = EmptyIntent
 MarketMainlineResearchIntent = EmptyIntent
-
 
 class SecurityLookupIntent(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=120)
@@ -52,11 +47,9 @@ class SecurityLookupIntent(StrictModel):
             raise ValueError("query, market or sector is required")
         return self
 
-
 class RecentPriceRange(StrictModel):
     kind: Literal["recent"]
     count: int = Field(ge=2, le=1000)
-
 
 class ExplicitPriceRange(StrictModel):
     kind: Literal["date_range"]
@@ -69,16 +62,13 @@ class ExplicitPriceRange(StrictModel):
             raise ValueError("start_date must not be after end_date")
         return self
 
-
 PriceRange = Annotated[
     RecentPriceRange | ExplicitPriceRange,
     Field(discriminator="kind"),
 ]
 
-
 class PriceHistoryIntent(StrictModel):
     period: PriceRange | None = None
-
 
 class TechnicalAnalysisIntent(StrictModel):
     """Technical-analysis semantics.
@@ -87,24 +77,19 @@ class TechnicalAnalysisIntent(StrictModel):
     selected by the capability compiler, not a user/model-controlled field.
     """
 
-
 class FundamentalAnalysisIntent(StrictModel):
     periods: int | None = Field(default=None, ge=1, le=20)
     business_category: Literal["industry", "product", "region"] | None = None
-
 
 class ValuationAnalysisIntent(StrictModel):
     include_history: bool | None = None
     consensus_metric: Literal["eps", "revenue", "net_profit"] | None = None
     peer_dimension: Literal["valuation", "growth", "profitability", "quality", "all"] | None = None
 
-
 class FinancialStatementAnalysisIntent(StrictModel):
     periods: int | None = Field(default=None, ge=1, le=20)
 
-
 NewsTopic = Literal["market", "company", "announcement", "research", "macro", "industry", "social"]
-
 
 class NewsAnalysisIntent(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=500)
@@ -118,15 +103,12 @@ class NewsAnalysisIntent(StrictModel):
     def _unique_subjects(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(item.strip() for item in value if item.strip()))
 
-
 class AnnouncementAnalysisIntent(StrictModel):
     days: int | None = Field(default=None, ge=1, le=3650)
     limit: int | None = Field(default=None, ge=1, le=100)
 
-
 RiskAnalysisIntent = AnnouncementAnalysisIntent
 ResearchReportAnalysisIntent = AnnouncementAnalysisIntent
-
 
 class RegulatoryAnalysisIntent(StrictModel):
     keyword: str | None = Field(default=None, min_length=1, max_length=200)
@@ -138,20 +120,16 @@ class RegulatoryAnalysisIntent(StrictModel):
     project_stage: str | None = Field(default=None, min_length=1, max_length=80)
     project_status: str | None = Field(default=None, min_length=1, max_length=80)
 
-
 class SocialSentimentAnalysisIntent(StrictModel):
     days: int | None = Field(default=None, ge=1, le=365)
     limit: int | None = Field(default=None, ge=1, le=200)
-
 
 class StockComparisonIntent(StrictModel):
     dimension: Literal["valuation", "growth", "profitability", "quality", "all"] | None = None
     include_peers: bool | None = None
 
-
 class StockDeepResearchIntent(StrictModel):
     thesis: str | None = Field(default=None, max_length=1000)
-
 
 class InvestmentDecisionIntent(StrictModel):
     thesis: str | None = Field(default=None, max_length=1_000)
@@ -165,12 +143,10 @@ class InvestmentDecisionIntent(StrictModel):
     )
     output: OutputRequestV2 | None = None
 
-
 class MarketOverviewIntent(StrictModel):
     days: int | None = Field(default=None, ge=1, le=365)
     include_index: bool | None = None
     index_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9.]{2,16}$")
-
 
 class SectorAnalysisIntent(StrictModel):
     sector_type: Literal["industry", "concept"] | None = None
@@ -181,13 +157,10 @@ class SectorAnalysisIntent(StrictModel):
     days: int | None = Field(default=None, ge=1, le=3650)
     limit: int | None = Field(default=None, ge=1, le=100)
 
-
 class CapitalFlowAnalysisIntent(StrictModel):
     days: int | None = Field(default=None, ge=1, le=365)
 
-
 MacroIndicator = Literal["PMI", "CPI", "PPI", "GDP", "M2", "社融", "LPR"]
-
 
 class MacroAnalysisIntent(StrictModel):
     indicators: tuple[MacroIndicator, ...] = Field(default_factory=tuple, max_length=5)
@@ -212,7 +185,6 @@ class MacroAnalysisIntent(StrictModel):
             raise ValueError("research_query requires research_subjects")
         return self
 
-
 class IndustryResearchIntent(StrictModel):
     explicit_subjects: tuple[str, ...] = Field(
         min_length=1,
@@ -231,7 +203,6 @@ class IndustryResearchIntent(StrictModel):
         if not normalized:
             raise ValueError("explicit_subjects must contain at least one value")
         return normalized
-
 
 class ThemeStockDiscoveryIntent(StrictModel):
     selection_mode: Literal["named_subset", "all_bound"] = Field(
@@ -255,49 +226,39 @@ class ThemeStockDiscoveryIntent(StrictModel):
             raise ValueError("all_bound requires themes to be empty")
         return self
 
-
 class ThemeBusinessEvidenceIntent(StrictModel):
     focus: str | None = Field(default=None, min_length=1, max_length=500)
     days: int | None = Field(default=None, ge=30, le=730)
     output: OutputRequestV2 | None = None
 
-
 class StockScreeningIntent(StrictModel):
     screen_spec: QuantitativeScreenSpec
     save_group_name: str | None = Field(default=None, min_length=1, max_length=80)
 
-
 class LatestReportPeriod(StrictModel):
     kind: Literal["latest_report"]
-
 
 class TtmPeriod(StrictModel):
     kind: Literal["ttm"]
 
-
 class PreviousFiscalYearPeriod(StrictModel):
     kind: Literal["previous_fiscal_year"]
-
 
 class FiscalYearPeriod(StrictModel):
     kind: Literal["fiscal_year"]
     year: int = Field(ge=1990, le=2100)
-
 
 FinancialPeriod = Annotated[
     LatestReportPeriod | TtmPeriod | PreviousFiscalYearPeriod | FiscalYearPeriod,
     Field(discriminator="kind"),
 ]
 
-
 class MoneyAmount(StrictModel):
     value: float
     unit: Literal["cny", "wan_cny", "yi_cny"]
 
-
 FilterOperator = Literal["gt", "gte", "lt", "lte", "eq"]
 FilterAction = Literal["exclude_matching", "keep_matching"]
-
 
 class DebtRatioPredicate(StrictModel):
     metric: Literal["debt_ratio"]
@@ -306,14 +267,12 @@ class DebtRatioPredicate(StrictModel):
     period: FinancialPeriod | None = None
     action: FilterAction
 
-
 class RevenuePredicate(StrictModel):
     metric: Literal["revenue"]
     operator: FilterOperator
     amount: MoneyAmount
     period: FinancialPeriod | None = None
     action: FilterAction
-
 
 class NetProfitPredicate(StrictModel):
     metric: Literal["net_profit"]
@@ -322,7 +281,6 @@ class NetProfitPredicate(StrictModel):
     period: FinancialPeriod | None = None
     action: FilterAction
 
-
 class DeductedNetProfitPredicate(StrictModel):
     metric: Literal["deducted_net_profit"]
     operator: FilterOperator
@@ -330,12 +288,10 @@ class DeductedNetProfitPredicate(StrictModel):
     period: FinancialPeriod | None = None
     action: FilterAction
 
-
 FinancialPredicate = Annotated[
     DebtRatioPredicate | RevenuePredicate | NetProfitPredicate | DeductedNetProfitPredicate,
     Field(discriminator="metric"),
 ]
-
 
 class CollectionFinancialFilterIntent(StrictModel):
     predicates: tuple[FinancialPredicate, ...] = Field(min_length=1, max_length=16)
@@ -356,15 +312,12 @@ class CollectionFinancialFilterIntent(StrictModel):
             raise ValueError("duplicate financial predicates are not allowed")
         return self
 
-
 class WatchlistQueryIntent(StrictModel):
     themes: tuple[str, ...] = Field(default_factory=tuple, max_length=12)
     group: str | None = Field(default=None, min_length=1, max_length=80)
 
-
 class WatchlistMutationIntent(ConfirmationSignal):
     action: Literal["add", "remove"]
-
 
 class WatchlistGroupManagementIntent(ConfirmationSignal):
     action: Literal["list", "create", "rename", "delete", "add", "remove"]
@@ -379,14 +332,12 @@ class WatchlistGroupManagementIntent(ConfirmationSignal):
             raise ValueError("rename requires group and new_name")
         return self
 
-
 class FormalAnalysisIntent(ConfirmationSignal):
     action: Literal["start", "status"]
     task_id: str | None = Field(default=None, min_length=1, max_length=80)
     status: str | None = Field(default=None, min_length=1, max_length=40)
     limit: int | None = Field(default=None, ge=1, le=100)
     template_id: int | None = Field(default=None, ge=1)
-
 
 class AnalysisHistoryIntent(ConfirmationSignal):
     action: Literal["search", "read", "delete"]
@@ -409,7 +360,6 @@ class AnalysisHistoryIntent(ConfirmationSignal):
             raise ValueError("start_date must not be after end_date")
         return self
 
-
 class AnalysisTemplateManagementIntent(ConfirmationSignal):
     action: Literal["list", "get", "create", "update", "set_default", "delete"]
     template_id: int | None = Field(default=None, ge=1)
@@ -427,7 +377,6 @@ class AnalysisTemplateManagementIntent(ConfirmationSignal):
             raise ValueError("update requires name, content or set_default")
         return self
 
-
 class BatchAnalysisIntent(ConfirmationSignal):
     scope: Literal["symbols", "watchlist", "configured", "group"]
     group_name: str | None = Field(default=None, min_length=1, max_length=80)
@@ -441,7 +390,6 @@ class BatchAnalysisIntent(ConfirmationSignal):
         if self.analysis_mode == "template" and self.template_id is None:
             raise ValueError("template analysis requires template_id")
         return self
-
 
 class BatchRunManagementIntent(ConfirmationSignal):
     action: Literal[
@@ -465,7 +413,6 @@ class BatchRunManagementIntent(ConfirmationSignal):
         if self.action not in {"list", "status"} and not self.run_id:
             raise ValueError(f"{self.action} requires run_id")
         return self
-
 
 class AnalysisScheduleManagementIntent(ConfirmationSignal):
     action: Literal["get", "update"]
@@ -493,7 +440,6 @@ class AnalysisScheduleManagementIntent(ConfirmationSignal):
             raise ValueError("enabling schedule requires times and template_id")
         return self
 
-
 class NotificationIntent(ConfirmationSignal):
     action: Literal["status", "send"]
     content_type: Literal["analysis_report", "batch_report", "custom"] | None = None
@@ -516,7 +462,6 @@ class NotificationIntent(ConfirmationSignal):
             raise ValueError("custom requires message")
         return self
 
-
 class FinancialSourceDiscoveryIntent(StrictModel):
     route_path: str | None = Field(default=None, min_length=1, max_length=500)
     keyword: str | None = Field(default=None, min_length=1, max_length=120)
@@ -524,14 +469,11 @@ class FinancialSourceDiscoveryIntent(StrictModel):
     capability: str | None = Field(default=None, min_length=1, max_length=80)
     limit: int | None = Field(default=None, ge=1, le=100)
 
-
 ScalarValue = str | int | float | bool
-
 
 class NamedScalarInput(StrictModel):
     name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
     value: ScalarValue
-
 
 class FinancialFeedReadIntent(StrictModel):
     route_path: str = Field(min_length=1, max_length=500)
@@ -539,11 +481,9 @@ class FinancialFeedReadIntent(StrictModel):
     namespace: str | None = Field(default=None, min_length=1, max_length=80)
     limit: int | None = Field(default=None, ge=1, le=100)
 
-
 class FinancialArticleReadIntent(StrictModel):
     route_path: str = Field(min_length=1, max_length=500)
     title: str = Field(min_length=1, max_length=500)
-
 
 class WebpageFeedTransformIntent(StrictModel):
     url: str = Field(min_length=8, max_length=2000)
@@ -556,14 +496,12 @@ class WebpageFeedTransformIntent(StrictModel):
     encoding: str | None = Field(default=None, min_length=1, max_length=40)
     limit: int | None = Field(default=None, ge=1, le=100)
 
-
 class FinancialFeedExportIntent(ConfirmationSignal):
     route_path: str = Field(min_length=1, max_length=500)
     inputs: tuple[NamedScalarInput, ...] = Field(default_factory=tuple, max_length=20)
     namespace: str | None = Field(default=None, min_length=1, max_length=80)
     format: Literal["json", "rss", "atom", "csv"] | None = None
     limit: int | None = Field(default=None, ge=1, le=1000)
-
 
 class PublicWebResearchIntent(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=500)
@@ -575,10 +513,8 @@ class PublicWebResearchIntent(StrictModel):
             raise ValueError("provide exactly one of query or url")
         return self
 
-
 def previous_fiscal_year(today: date) -> int:
     return today.year - 1
-
 
 __all__ = [name for name in globals() if name.endswith("Intent")] + [
     "CollectionFinancialFilterIntent",

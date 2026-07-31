@@ -1,0 +1,187 @@
+# -*- coding: utf-8 -*-
+"""Task status, deterministic result contracts, and answer guards."""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Dict, List, Optional
+
+from src.agent.collection_financial_renderers import build_collection_financial_filter_answer as _build_collection_financial_filter_answer
+from src.agent.domain_renderers import (
+    build_domain_candidate_answer as _build_domain_candidate_answer,
+    build_ranked_domain_answer as _build_ranked_domain_answer,
+    build_theme_business_evidence_answer as _build_theme_business_evidence_answer,
+)
+from api.v1.endpoints.agent.chat_decision_renderers import _build_professional_buy_decision_answer
+from api.v1.endpoints.agent.chat_evidence_renderers import _build_quantitative_screen_answer
+from api.v1.endpoints.agent.chat_research_renderers import _build_workflow_evidence_fallback
+from src.agent.result_contracts import CollectionFinancialFilterSpec
+from src.agent.task_executor import PlanExecutionResult
+from src.agent.task_workflows import StandardTaskKind, TaskPlan, workflow_for
+from src.tools.symbols import find_securities_in_text
+
+def _task_status_evidence(
+    plan: TaskPlan,
+    execution: PlanExecutionResult,
+) -> Dict[str, Any]:
+    return {
+        "tool": "runtime_standard_task_status",
+        "arguments": {},
+        "result": {
+            "success": execution.success,
+            "tasks": [
+                {
+                    "task_id": result.task.task_id,
+                    "kind": result.task.kind.value,
+                    "objective": result.task.candidate.objective,
+                    "status": result.status,
+                    "blocked_reason": result.blocked_reason,
+                    "errors": result.errors,
+                    "executed_calls": sum(1 for call in result.calls if call.executed),
+                    "reused_calls": sum(1 for call in result.calls if call.reused),
+                    "derived_result_count": len(result.derived_results),
+                    "output_entities": [
+                        {"symbol": entity.symbol, "name": entity.name} for entity in result.output_entities
+                    ],
+                }
+                for result in execution.tasks
+            ],
+            "dependencies": {task.task_id: task.depends_on for task in plan.tasks},
+            "final_entities": [{"symbol": entity.symbol, "name": entity.name} for entity in execution.final_entities],
+        },
+    }
+
+
+def _blocked_task_answer(execution: PlanExecutionResult) -> Optional[str]:
+    blocked = [task for task in execution.tasks if task.status == "blocked"]
+    completed_with_evidence = any(task.calls for task in execution.tasks if task.status == "completed")
+    if not blocked or completed_with_evidence:
+        return None
+    lines = ["## 本轮执行已由流程校验层停止", ""]
+    for result in blocked:
+        spec = workflow_for(result.task.kind)
+        lines.append(f"- **{spec.title}**：{'；'.join(result.errors) or '不满足执行条件'}")
+    lines.extend(
+        [
+            "",
+            "没有调用任何越权工具，也没有执行账户、删除、通知或其他高影响操作。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _exact_result_contract_answer(
+    plan: TaskPlan,
+    execution: PlanExecutionResult,
+) -> Optional[str]:
+    """Render only workflows whose exhaustive or safety result is machine-owned."""
+    dependency_ids = {dependency_id for task in plan.tasks for dependency_id in task.depends_on}
+    terminal_tasks = [task for task in plan.tasks if task.task_id not in dependency_ids]
+    if len(terminal_tasks) != 1:
+        return None
+    task = terminal_tasks[0]
+    result = next(
+        (item for item in execution.tasks if item.task.task_id == task.task_id),
+        None,
+    )
+    if result is None:
+        return None
+    lineage_ids: set[str] = set()
+    tasks_by_id = {item.task_id: item for item in plan.tasks}
+
+    def include_lineage(task_id: str) -> None:
+        if task_id in lineage_ids:
+            return
+        lineage_ids.add(task_id)
+        for dependency_id in tasks_by_id[task_id].depends_on:
+            include_lineage(dependency_id)
+
+    include_lineage(task.task_id)
+    evidence = [packet for item in execution.tasks if item.task.task_id in lineage_ids for packet in item.evidence]
+    result_contract = workflow_for(task.kind).result_contract
+    if result_contract == "industry_ranked_domains":
+        return _build_ranked_domain_answer(evidence) or (
+            "## 产业受益领域排序未完成\n\n"
+            "结构化领域处理没有成功，因此本轮不再由自由写作模型另行生成一套梯队。"
+            + ("\n\n执行信息：" + "；".join(result.errors) if result.errors else "")
+        )
+    if result_contract == "theme_stock_discovery":
+        return _build_domain_candidate_answer(evidence)
+    if result_contract == "theme_business_evidence":
+        return _build_theme_business_evidence_answer(evidence) or (
+            "## 领域公司核验未完成\n\n"
+            "公司证据绑定没有成功，因此本轮没有用概念板块、网页名单或模型记忆补股票。"
+            + ("\n\n执行信息：" + "；".join(result.errors) if result.errors else "")
+        )
+    if result_contract == "collection_financial_filter":
+        try:
+            spec = CollectionFinancialFilterSpec.model_validate(task.parameters)
+        except Exception:
+            return None
+        return _build_collection_financial_filter_answer(evidence, spec)
+    if result_contract == "stock_screening":
+        return _build_quantitative_screen_answer(evidence)
+    if result_contract == "investment_decision":
+        return _build_professional_buy_decision_answer(evidence) or (
+            "## 专业买入分析未完成\n\n" "本轮没有成功取得八维专业分析结果，因此没有输出任何买入结论。请重试本轮问题。"
+        )
+    if task.kind in {
+        StandardTaskKind.WATCHLIST_QUERY,
+        StandardTaskKind.WATCHLIST_MUTATION,
+        StandardTaskKind.WATCHLIST_GROUP_MANAGEMENT,
+        StandardTaskKind.FORMAL_ANALYSIS,
+        StandardTaskKind.ANALYSIS_HISTORY,
+        StandardTaskKind.ANALYSIS_TEMPLATE_MANAGEMENT,
+        StandardTaskKind.BATCH_ANALYSIS,
+        StandardTaskKind.BATCH_RUN_MANAGEMENT,
+        StandardTaskKind.ANALYSIS_SCHEDULE_MANAGEMENT,
+        StandardTaskKind.NOTIFICATION,
+    }:
+        return _build_workflow_evidence_fallback(evidence)
+    return None
+
+
+def _standard_task_answer_issues(
+    content: str,
+    evidence: Optional[List[Dict[str, Any]]],
+) -> List[str]:
+    """Reject securities and material numeric claims absent from task evidence."""
+    evidence_text = json.dumps(evidence or [], ensure_ascii=False, default=str)
+    issues: List[str] = []
+
+    evidence_codes = set(re.findall(r"(?<!\d)(\d{6})(?!\d)", evidence_text))
+    answer_codes = set(re.findall(r"(?<!\d)(\d{6})(?!\d)", content))
+    unsupported_codes = sorted(answer_codes - evidence_codes)
+    if unsupported_codes:
+        issues.append("最终答案出现本轮证据未提供的证券代码：" + "、".join(unsupported_codes[:12]))
+    evidence_symbols = {
+        item["symbol"] for item in find_securities_in_text(evidence_text, limit=300) if item.get("symbol")
+    }
+    answer_entities = find_securities_in_text(content, limit=300)
+    unsupported_entities = [item for item in answer_entities if item.get("symbol") not in evidence_symbols]
+    if unsupported_entities:
+        issues.append(
+            "最终答案出现本轮证据未提供的证券实体："
+            + "、".join(f"{item.get('name')}({item.get('symbol')})" for item in unsupported_entities[:12])
+        )
+
+    material_claim_pattern = re.compile(
+        r"(?<![\d.])\d+(?:\.\d+)?(?:\s*[-—~至]\s*\d+(?:\.\d+)?)?\s*" r"(?:%|亿元|万元|万台|台|个|倍|家)"
+    )
+    missing_claims: List[str] = []
+    for match in material_claim_pattern.finditer(content):
+        claim = match.group(0)
+        numbers = re.findall(r"\d+(?:\.\d+)?", claim)
+        if all(re.search(rf"(?<![\d.]){re.escape(number)}(?![\d.])", evidence_text) for number in numbers):
+            continue
+        normalized = re.sub(r"\s+", "", claim)
+        if normalized not in missing_claims:
+            missing_claims.append(normalized)
+    if missing_claims:
+        issues.append("最终答案出现本轮证据未提供的数量或比例：" + "、".join(missing_claims[:12]))
+    return issues
+
+
+
+__all__ = ["_task_status_evidence", "_blocked_task_answer", "_exact_result_contract_answer", "_standard_task_answer_issues"]

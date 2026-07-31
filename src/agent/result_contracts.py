@@ -203,152 +203,6 @@ class CollectionFinancialFilterSpec(BaseModel):
     conditions: list[FinancialFilterCondition] = Field(min_length=1, max_length=8)
 
 
-def _financial_filter_spec_for_projection(
-    parameters: Mapping[str, Any],
-) -> CollectionFinancialFilterSpec:
-    """Read current contracts and migrate persisted v1 single-condition state."""
-    try:
-        return CollectionFinancialFilterSpec.model_validate(parameters)
-    except Exception:
-        legacy_keys = {
-            "metric",
-            "period_basis",
-            "fiscal_year",
-            "operator",
-            "threshold",
-            "threshold_unit",
-            "action",
-        }
-        legacy = {key: value for key, value in parameters.items() if key in legacy_keys}
-        return CollectionFinancialFilterSpec(conditions=[FinancialFilterCondition.model_validate(legacy)])
-
-
-def project_collection_financial_filter_entities(
-    input_entities: Iterable[Mapping[str, Any]],
-    result_context: Iterable[Mapping[str, Any]],
-    parameters: Mapping[str, Any],
-) -> list[dict[str, str]]:
-    """Project the exact retained collection from typed financial results.
-
-    The rendered Markdown is deliberately irrelevant here.  A follow-up such
-    as "这些里面哪些能买" must inherit the program-computed output set, not
-    the input set and not a sample copied by the planning model.
-    """
-    spec = _financial_filter_spec_for_projection(parameters)
-    ordered = [
-        {
-            "symbol": str(item.get("symbol") or "").strip(),
-            "name": str(item.get("name") or item.get("symbol") or "").strip(),
-        }
-        for item in input_entities
-        if str(item.get("symbol") or "").strip()
-    ]
-    rows_by_condition: dict[
-        tuple[str, str, int | None],
-        dict[str, Mapping[str, Any]],
-    ] = {condition.identity: {} for condition in spec.conditions}
-    for packet in result_context:
-        if not isinstance(packet, Mapping):
-            continue
-        arguments = packet.get("arguments") if isinstance(packet.get("arguments"), Mapping) else {}
-        result = packet.get("result") if isinstance(packet.get("result"), Mapping) else packet
-        if not isinstance(result, Mapping) or result.get("success") is False:
-            continue
-        for condition in spec.conditions:
-            if arguments and any(
-                (
-                    arguments.get("metric") != condition.metric,
-                    arguments.get("period_basis") != condition.period_basis,
-                    arguments.get("fiscal_year") != condition.fiscal_year,
-                )
-            ):
-                continue
-            rows = rows_by_condition[condition.identity]
-            for item in result.get("items") or []:
-                if not isinstance(item, Mapping):
-                    continue
-                if item.get("metric") not in (None, condition.metric):
-                    continue
-                if item.get("period_basis") not in (None, condition.period_basis):
-                    continue
-                symbol = str(item.get("symbol") or "").strip()
-                if symbol and isinstance(item.get("financial_value"), (int, float)):
-                    rows[symbol] = item
-
-    # An incomplete transform has no authoritative output collection.  Failing
-    # closed here prevents a partial batch from silently becoming the next
-    # conversational universe.
-    if any(
-        entity["symbol"] not in rows_by_condition[condition.identity]
-        for condition in spec.conditions
-        for entity in ordered
-    ):
-        return []
-
-    retained: list[dict[str, str]] = []
-    for entity in ordered:
-        if not all(
-            condition.keeps(float(rows_by_condition[condition.identity][entity["symbol"]]["financial_value"]))
-            for condition in spec.conditions
-        ):
-            continue
-        first_row = rows_by_condition[spec.conditions[0].identity][entity["symbol"]]
-        retained.append(
-            {
-                "symbol": entity["symbol"],
-                "name": str(first_row.get("name") or entity["name"]).strip(),
-            }
-        )
-    return retained
-
-
-def project_task_output_entities(
-    kind: str,
-    input_entities: Iterable[Mapping[str, Any]],
-    result_context: Iterable[Mapping[str, Any]],
-    parameters: Mapping[str, Any],
-) -> list[dict[str, str]]:
-    """Return the task's typed output collection according to its contract."""
-    if kind == "collection_financial_filter":
-        return project_collection_financial_filter_entities(
-            input_entities,
-            result_context,
-            parameters,
-        )
-
-    found: list[dict[str, str]] = []
-    seen: set[str] = set()
-
-    def visit(value: Any) -> None:
-        if isinstance(value, Mapping):
-            symbol = str(value.get("symbol") or value.get("code") or value.get("stock_code") or "").strip()
-            if len(symbol) == 6 and symbol.isdigit() and symbol not in seen:
-                seen.add(symbol)
-                found.append(
-                    {
-                        "symbol": symbol,
-                        "name": str(value.get("name") or value.get("stock_name") or symbol).strip(),
-                    }
-                )
-            for child in value.values():
-                visit(child)
-        elif isinstance(value, (list, tuple)):
-            for child in value:
-                visit(child)
-
-    for result in result_context:
-        visit(result)
-    if found:
-        return found
-    return [
-        {
-            "symbol": str(item.get("symbol") or "").strip(),
-            "name": str(item.get("name") or item.get("symbol") or "").strip(),
-        }
-        for item in input_entities
-        if str(item.get("symbol") or "").strip()
-    ]
-
 
 class DomainBoardQuerySpec(BaseModel):
     """One semantic industry domain resolved against the live board catalog.
@@ -391,7 +245,6 @@ class DomainBoardQuerySpec(BaseModel):
             raise ValueError("board_id and board_name must be supplied together")
         return self
 
-
 class IndustryBenefitRoleV2(BaseModel):
     """One user-relevant value-chain role before it is bound to a board."""
 
@@ -405,7 +258,6 @@ class IndustryBenefitRoleV2(BaseModel):
     label: str = Field(min_length=1, max_length=64)
     benefit_mechanism: str = Field(min_length=1, max_length=240)
     tier: int = Field(ge=1, le=4)
-
 
 class IndustryBenefitOutlineV2(BaseModel):
     """Compact semantic decomposition produced before catalog binding."""
@@ -422,7 +274,6 @@ class IndustryBenefitOutlineV2(BaseModel):
         max_length=16,
     )
     selection_objective: str = Field(min_length=1, max_length=500)
-
 
 class DomainCatalogSelectionItemV2(BaseModel):
     """One compact binding selected from the supplied finite catalog."""
@@ -441,7 +292,6 @@ class DomainCatalogSelectionItemV2(BaseModel):
     role_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_]{0,31}$")
     tier: int = Field(ge=1, le=4)
 
-
 class DomainCatalogSelectionV2(BaseModel):
     """The complete output of finite-set board selection."""
 
@@ -455,7 +305,6 @@ class DomainCatalogSelectionV2(BaseModel):
         min_length=1,
         max_length=512,
     )
-
 
 class DomainResultSelectionV2(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -473,7 +322,6 @@ class DomainResultSelectionV2(BaseModel):
             raise ValueError("all_relevant requires max_items=null")
         return self
 
-
 class DomainSelectionAssumptionV2(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -481,7 +329,6 @@ class DomainSelectionAssumptionV2(BaseModel):
     value: Any
     reason: str = Field(min_length=1, max_length=300)
     source: Literal["program_default"] = "program_default"
-
 
 class DomainCollectionCoverageV2(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -502,7 +349,6 @@ class DomainCollectionCoverageV2(BaseModel):
             )
         return self
 
-
 class DomainBoardBindingV2(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -520,7 +366,6 @@ class DomainBoardBindingV2(BaseModel):
     main_net_inflow: float | None = None
     main_net_inflow_pct: float | None = None
     pct_chg: float | None = None
-
 
 class DomainCollectionV2(BaseModel):
     """Versioned terminal resource published after complete catalog binding."""
@@ -547,7 +392,6 @@ class DomainCollectionV2(BaseModel):
     source_date: str = Field(default="", max_length=80)
     lineage: tuple[str, ...] = Field(min_length=1, max_length=16)
 
-
 class InvestmentThesisContext(BaseModel):
     """Structured thesis evidence reused by professional investment workflows."""
 
@@ -555,7 +399,6 @@ class InvestmentThesisContext(BaseModel):
 
     summary: str = Field(default="", max_length=400)
     domains: list[DomainBoardQuerySpec] = Field(default_factory=list, max_length=512)
-
 
 class ThemeDomainThesis(BaseModel):
     """Why one project board is relevant to the parent investment theme."""
@@ -565,7 +408,6 @@ class ThemeDomainThesis(BaseModel):
     label: str = Field(min_length=1, max_length=64)
     rationale: str = Field(default="", max_length=300)
     tier: int | None = Field(default=None, ge=1, le=4)
-
 
 class ThemeEvidenceContext(BaseModel):
     """Parent thesis retained while company facts are checked per sub-domain."""
@@ -592,7 +434,6 @@ class ThemeEvidenceContext(BaseModel):
     def thesis_for(self, label: str) -> ThemeDomainThesis | None:
         return next((thesis for thesis in self.domain_theses if thesis.label == label), None)
 
-
 class MappingSelectionContext(BaseModel):
     """Semantic writing context; it never selects a workflow or a tool."""
 
@@ -607,7 +448,6 @@ class MappingSelectionContext(BaseModel):
     @property
     def normalized_topic(self) -> str:
         return self.topic.strip()
-
 
 __all__ = [
     "AnalysisPlaybook",
@@ -624,3 +464,21 @@ __all__ = [
     "ThemeEvidenceContext",
     "THEME_COMPANY_MAPPING",
 ]
+
+
+from . import _result_contracts_functions1 as _result_contracts_functions1
+
+
+def _bind_extracted_function(_member):
+    import functools
+    import types
+
+    _bound = types.FunctionType(_member.__code__, globals(), _member.__name__, _member.__defaults__, _member.__closure__)
+    _bound.__kwdefaults__ = _member.__kwdefaults__
+    functools.update_wrapper(_bound, _member)
+    return _bound
+
+
+for _function_module in (_result_contracts_functions1,):
+    for _function_name in _function_module.__all__:
+        globals()[_function_name] = _bind_extracted_function(getattr(_function_module, _function_name))

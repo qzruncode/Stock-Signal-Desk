@@ -1,0 +1,549 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+/* Tailwind v4 strategy: keep theme extensions in tailwind.config.js via @config until a dedicated @theme/@utility migration. */
+
+@keyframes routeViewOut {
+  to {
+    opacity: 0.72;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes routeViewIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root) {
+    animation: 140ms cubic-bezier(0.4, 0, 1, 1) both routeViewOut;
+  }
+
+  ::view-transition-new(root) {
+    animation: 240ms 30ms cubic-bezier(0.22, 1, 0.36, 1) both routeViewIn;
+  }
+}
+
+/* =========================================
+   1. THEME VARIABLES (Base/Classic)
+   ========================================= */
+:root {
+  /* Typography */
+  font-family:
+    "Inter",
+    -apple-system,
+    "SF Pro Display",
+    "Segoe UI",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Microsoft YaHei",
+    system-ui,
+    sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: -0.011em;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* HSL tokens used by Tailwind-based components */
+
+  --background: 150 20% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 160 84% 39%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 150 16% 95%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 150 16% 95%;
+  --muted-foreground: 220 9% 46%;
+  --accent: 150 16% 95%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 150 12% 90%;
+  --input: 150 12% 90%;
+  --ring: 160 84% 39%;
+  --radius: 0.625rem;
+  --elevated: 0 0% 100%;
+  --hover: 150 16% 95%;
+  --secondary-text: 220 9% 32%;
+  --muted-text: 220 9% 46%;
+
+  --color-cyan: hsl(var(--primary));
+  --color-cyan-dim: hsl(var(--primary) / 0.8);
+  --color-cyan-glow: hsl(var(--primary) / 0.12);
+  --color-purple: 173 80% 40%;
+  --color-purple-dim: 173 80% 34%;
+  --color-purple-glow: hsl(173 80% 40% / 0.12);
+  --color-success: 160 84% 39%;
+  --color-warning: 38 92% 45%;
+  --color-danger: 0 72% 51%;
+  --color-danger-alert-text: 0 72% 40%;
+  --color-danger-alert-border: 0 72% 51%;
+  --color-danger-alert-bg: 0 72% 51%;
+  /* Tailwind-compatible accent colors (Light theme) */
+  --color-cyan-400: 160 84% 39%;
+  --color-emerald-400: 160 84% 39%;
+  --color-red-400: 0 72% 51%;
+  --color-amber-400: 38 92% 45%;
+  /* Tailwind aliases (for hsl(var(--success))) */
+  --success: var(--color-success);
+  --warning: var(--color-warning);
+  --danger: var(--color-danger);
+
+  /* Sentiment indicator colors (Fear & Greed Index) - Adjustable via CSS */
+  --sentiment-greed: var(--color-cyan);
+  --sentiment-neutral: var(--color-purple);
+  --sentiment-fear: var(--color-danger);
+
+  /* Sentiment indicator glow effect - Intensity adjustable via CSS */
+  --glow-spread: 6px;
+  --glow-intensity: 0.08;
+  --sentiment-greed-glow: hsl(var(--sentiment-greed) / var(--glow-intensity));
+  --sentiment-neutral-glow: hsl(var(--sentiment-neutral) / var(--glow-intensity));
+  --sentiment-fear-glow: hsl(var(--sentiment-fear) / var(--glow-intensity));
+
+  --bg-base: hsl(var(--background));
+  --bg-card: hsl(var(--card));
+  --bg-elevated: hsl(var(--elevated));
+  --bg-hover: hsl(var(--hover));
+
+  /* New: Design token color sources (Raw HSL values) */
+  --bg-subtle-raw: var(--foreground);
+  --border-dim-raw: var(--foreground);
+  --border-subtle-raw: var(--foreground);
+
+  /* Design tokens (Ready to use HSL strings) */
+  --bg-subtle: hsl(var(--bg-subtle-raw) / 0.03);
+  --border-dim: hsl(var(--border-dim-raw) / 0.05);
+  --border-subtle: hsl(var(--border-subtle-raw) / 0.04);
+  --border-subtle-hover: hsl(var(--border-subtle-raw) / 0.06);
+  --border-default: var(--border-dim);
+  --border-hover: hsl(var(--primary) / 0.24);
+  --border-selected: hsl(var(--primary) / 0.32);
+
+  /* Surface variants */
+  --surface-1: hsl(var(--card));
+  --surface-2: hsl(var(--elevated));
+  --surface-3: hsl(var(--hover));
+
+  /* State overlay colors */
+  --overlay-hover: hsl(var(--foreground) / 0.05);
+  --overlay-selected: hsl(var(--primary) / 0.1);
+
+  /* Compatibility preservation */
+  --border-accent: hsl(var(--primary) / 0.7);
+  --border-purple: hsl(247 84% 66% / 0.24);
+  --border-cyan: hsl(var(--primary));
+  --text-primary: hsl(var(--foreground));
+  --text-secondary-text: hsl(var(--secondary-text));
+  --text-muted-text: hsl(var(--muted-text));
+
+  /* Navigation related (using HSL format) */
+  --nav-active-bg: hsl(var(--primary) / 0.09);
+  --nav-active-border: hsl(var(--primary) / 0.24);
+  --nav-active-shadow: hsl(var(--primary) / 0.04);
+  --nav-hover-bg: hsl(var(--primary) / 0.05);
+  --nav-icon-active: hsl(var(--primary));
+  --nav-item-height: 2.75rem;
+  --nav-item-padding-x: 1rem;
+  --nav-indicator-width: 0.25rem;
+  --nav-indicator-bg: hsl(var(--primary));
+  --nav-indicator-shadow: hsl(var(--primary) / 0.52);
+  --nav-badge-bg: hsl(var(--primary));
+  --nav-brand-shadow: hsl(var(--primary) / 0.2);
+
+  /* Shell Sidebar Custom */
+  --shell-sidebar-border: hsl(193 100% 43% / 0.35);
+
+  /* Home page related (using HSL format) */
+  --home-loading-ring-track: hsl(var(--primary) / 0.2);
+  --home-loading-ring-head: hsl(var(--primary));
+  --page-drawer-overlay-bg: hsl(0 0% 0% / 0.6);
+  --home-mobile-overlay-bg: var(--page-drawer-overlay-bg);
+  --home-action-ai-bg: hsl(var(--primary) / 0.1);
+  --home-action-ai-border: hsl(var(--primary) / 0.2);
+  --home-action-ai-text: hsl(var(--primary));
+  --home-action-ai-hover-bg: hsl(var(--primary) / 0.18);
+  --home-action-report-bg: hsl(247 84% 66% / 0.1);
+  --home-action-report-border: hsl(247 84% 66% / 0.2);
+  --home-action-report-text: hsl(247 84% 66%);
+  --home-action-report-hover-bg: hsl(247 84% 66% / 0.18);
+  --home-accent-bg: hsl(var(--primary) / 0.1);
+  --home-accent-bg-hover: hsl(var(--primary) / 0.16);
+  --home-accent-border: hsl(var(--primary) / 0.2);
+  --home-accent-border-hover: hsl(var(--primary) / 0.28);
+  --home-accent-text: hsl(var(--primary));
+  --home-secondary-accent-text: hsl(247 84% 66%);
+  --home-title-accent: hsl(247 84% 66%);
+  --home-price-up: hsl(0 88% 62%);
+  --home-price-down: hsl(149 100% 42%);
+  --home-strategy-buy: hsl(149 100% 42%);
+  --home-strategy-secondary: hsl(var(--primary));
+  --home-strategy-stop: hsl(346 100% 63%);
+  --home-strategy-take: hsl(38 100% 52%);
+  --home-panel-border: hsl(218 24% 82% / 0.92);
+  --home-panel-border-hover: hsl(193 100% 43% / 0.2);
+  --home-panel-border-selected: hsl(193 100% 43% / 0.34);
+  --home-panel-gradient-start: hsl(193 100% 43% / 0.1);
+  --home-panel-gradient-mid: hsl(247 84% 66% / 0.08);
+  --home-panel-gradient-end: hsl(218 22% 78% / 0.08);
+  --home-panel-selected-shadow:
+    0 0 0 1px hsl(193 100% 43% / 0.06),
+    0 4px 12px hsl(220 24% 36% / 0.05);
+  --home-panel-subtle-bg: hsl(214 32% 98% / 0.98);
+  --home-panel-subtle-bg-hover: hsl(214 36% 96% / 0.99);
+  --home-history-item-bg: hsl(0 0% 100% / 0.82);
+  --home-history-item-hover-bg: hsl(214 34% 96% / 0.99);
+  --home-history-item-selected-bg:
+    linear-gradient(180deg, hsl(193 100% 43% / 0.08), hsl(214 42% 96% / 0.98));
+  --home-divider-border: hsl(218 24% 84% / 0.9);
+  --home-surface-button-bg: hsl(214 36% 97% / 0.98);
+  --home-surface-button-bg-hover: hsl(214 40% 95% / 0.99);
+  --home-surface-button-border: hsl(218 24% 84% / 0.94);
+  --home-surface-button-border-hover: hsl(193 100% 43% / 0.22);
+  --home-state-icon-muted: hsl(var(--muted-text) / 0.85);
+  --home-prose-border: hsl(var(--foreground) / 0.1);
+  --home-prose-border-strong: hsl(var(--foreground) / 0.16);
+  --home-prose-blockquote-border: hsl(247 84% 66% / 0.28);
+  --home-prose-blockquote-bg: hsl(247 84% 66% / 0.08);
+  --home-panel-shadow: 0 1px 2px hsl(220 20% 20% / 0.04), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --home-panel-shadow-hover: 0 4px 12px hsl(220 20% 20% / 0.08), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --home-hero-border: hsl(193 100% 43% / 0.32);
+  --home-hero-gradient-start: hsl(193 100% 43% / 0.24);
+  --home-hero-gradient-mid: hsl(247 84% 66% / 0.14);
+  --home-hero-gradient-end: hsl(218 22% 82% / 0.14);
+  --home-hero-shadow: 0 4px 12px hsl(220 20% 20% / 0.08), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --home-rail-border: hsl(218 24% 82% / 0.9);
+  --home-rail-bg: linear-gradient(180deg, hsl(0 0% 100% / 0.98), hsl(214 36% 97% / 0.98));
+  --home-rail-shadow: 0 1px 2px hsl(220 20% 20% / 0.04), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --home-history-glow: hsl(193 100% 43% / 0.14);
+  --autocomplete-hover-bg: #04d1f6;
+
+  /* Shadows (using HSL format) */
+  --shadow-soft-card: 0 1px 2px hsl(220 20% 20% / 0.04), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --shadow-soft-card-strong: 0 4px 12px hsl(220 20% 20% / 0.08), 0 1px 3px hsl(220 20% 20% / 0.06);
+  --settings-surface: hsl(0 0% 100% / 0.97);
+  --settings-surface-hover: hsl(214 44% 95% / 0.99);
+  --settings-surface-strong: hsl(0 0% 100% / 0.99);
+  --settings-surface-panel: hsl(213 48% 97% / 0.99);
+  --settings-surface-overlay: hsl(214 36% 94% / 0.88);
+  --settings-surface-overlay-soft: hsl(214 34% 95% / 0.94);
+  --settings-surface-overlay-muted: hsl(214 30% 93% / 0.97);
+  --settings-border: hsl(218 24% 78% / 0.94);
+  --settings-border-soft: hsl(218 22% 84% / 0.94);
+  --settings-border-strong: hsl(218 18% 68% / 0.98);
+  --settings-border-overlay: hsl(218 22% 72% / 0.92);
+  --settings-accent-shadow: hsl(190 100% 50% / 0.08);
+  --settings-primary-border: hsl(190 100% 50% / 0.26);
+  --settings-primary-gradient:
+    linear-gradient(135deg, hsl(190 100% 50% / 0.96), hsl(191 100% 40% / 0.96));
+  --settings-primary-text: hsl(205 71% 6%);
+  --settings-primary-shadow: hsl(190 100% 50% / 0.2);
+  --settings-primary-shadow-hover: hsl(190 100% 50% / 0.22);
+  --settings-secondary-border: hsl(218 22% 74% / 0.96);
+  --settings-secondary-bg: hsl(214 36% 95% / 0.98);
+  --settings-secondary-border-hover: hsl(190 100% 50% / 0.38);
+  --settings-secondary-bg-hover: hsl(190 100% 50% / 0.12);
+  --settings-glow-hover: hsl(190 100% 50% / 0.38);
+  --settings-skeleton-strong: hsl(218 20% 84% / 0.92);
+  --settings-skeleton-soft: hsl(218 22% 92% / 0.96);
+  --input-surface-bg: var(--bg-card);
+  --input-surface-border: hsl(218 24% 80% / 0.92);
+  --input-surface-border-hover: hsl(218 20% 70% / 0.92);
+  --input-surface-border-focus: hsl(var(--primary) / 0.38);
+  --input-surface-focus-ring: 0 0 0 4px hsl(var(--primary) / 0.15);
+  --settings-input-rest-border: hsl(218 22% 82% / 0.72);
+  --gradient-primary:
+    linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary) / 0.74));
+
+  /* Chat UI Tokens (Light) */
+  --chat-avatar-user-bg: hsl(var(--primary) / 0.5 );
+  --chat-avatar-user-fg: #041118;
+  --chat-avatar-user-border: hsl(var(--primary) / 0.3);
+  --chat-avatar-ai-bg: hsl(var(--primary) / 0.1);
+  --chat-avatar-ai-fg: hsl(var(--foreground)/ 0.8 );
+  --chat-avatar-ai-border: hsl(var(--primary) / 0.2);
+
+  --chat-bubble-user-bg: hsl(var(--primary) / 0.1);
+  --chat-bubble-user-border: hsl(var(--primary) / 0.2);
+  --chat-bubble-ai-bg: hsl(var(--card) / 0.85);
+  --chat-bubble-ai-border: hsl(var(--foreground) / 0.2);
+
+}
+
+
+/* =========================================
+   2. GLOBAL STYLES (from Classic)
+   ========================================= */
+
+/* ============ Financial Terminal Tokens ============ */
+
+/* ============ Base Styles ============ */
+@layer base {
+  html {
+    height: 100%;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  body {
+    margin: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    min-width: 320px;
+    min-height: 100%;
+    overflow-x: hidden;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
+  .chat-composer-input {
+    font-size: 16px;
+    line-height: 22px;
+  }
+
+  @media (max-width: 639px) {
+    input,
+    textarea,
+    select {
+      font-size: max(16px, 1em);
+    }
+  }
+
+  @media (min-width: 640px) {
+    .chat-composer-input {
+      font-size: 12px;
+      line-height: 18px;
+    }
+  }
+}
+
+@layer components {
+
+  /* ============ Title Styles ============ */
+  .title-gradient {
+    background: linear-gradient(90deg, #ffffff 0%, #a0a0b0 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+}
+/* ============ Circular Gauge ============ */
+.gauge-ring {
+  filter: drop-shadow(0 0 8px var(--color-cyan-glow));
+  transform: translateZ(0);
+}
+
+.gauge-track {
+  stroke: rgba(255, 255, 255, 0.05);
+  fill: none;
+}
+
+.gauge-progress {
+  fill: none;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.8s ease-out;
+}
+
+.gauge-glow {
+  filter: blur(6px);
+  opacity: 0.6;
+}
+
+/* ============ Sentiment-based Gauge Colors ============ */
+/* Data attribute selectors for theme-aware sentiment colors */
+
+/* Greed sentiment (score >= 60) */
+[data-sentiment="greed"] {
+  --current-sentiment: var(--sentiment-greed);
+  --current-sentiment-glow: var(--sentiment-greed-glow);
+}
+
+/* Neutral sentiment (40 <= score < 60) */
+[data-sentiment="neutral"] {
+  --current-sentiment: var(--sentiment-neutral);
+  --current-sentiment-glow: var(--sentiment-neutral-glow);
+}
+
+/* Fear sentiment (score < 40) */
+[data-sentiment="fear"] {
+  --current-sentiment: var(--sentiment-fear);
+  --current-sentiment-glow: var(--sentiment-fear-glow);
+}
+
+/* Apply sentiment colors to gauge elements */
+[data-sentiment-glow="greed"] {
+  filter: drop-shadow(0 0 var(--glow-spread) var(--sentiment-greed-glow)) !important;
+}
+
+[data-sentiment-glow="neutral"] {
+  filter: drop-shadow(0 0 var(--glow-spread) var(--sentiment-neutral-glow)) !important;
+}
+
+[data-sentiment-glow="fear"] {
+  filter: drop-shadow(0 0 var(--glow-spread) var(--sentiment-fear-glow)) !important;
+}
+
+[data-sentiment-stroke="greed"] {
+  stroke: var(--sentiment-greed) !important;
+}
+
+[data-sentiment-stroke="neutral"] {
+  stroke: var(--sentiment-neutral) !important;
+}
+
+[data-sentiment-stroke="fear"] {
+  stroke: var(--sentiment-fear) !important;
+}
+
+/* Apply to gradient stops */
+[data-sentiment-gradient="greed"] stop {
+  stop-color: var(--sentiment-greed);
+}
+
+[data-sentiment-gradient="neutral"] stop {
+  stop-color: var(--sentiment-neutral);
+}
+
+[data-sentiment-gradient="fear"] stop {
+  stop-color: var(--sentiment-fear);
+}
+
+/* Apply to text elements */
+[data-sentiment-text="greed"] {
+  color: var(--sentiment-greed) !important;
+  text-shadow: 0 0 var(--glow-spread) var(--sentiment-greed-glow) !important;
+}
+
+[data-sentiment-text="neutral"] {
+  color: var(--sentiment-neutral) !important;
+  text-shadow: 0 0 var(--glow-spread) var(--sentiment-neutral-glow) !important;
+}
+
+[data-sentiment-text="fear"] {
+  color: var(--sentiment-fear) !important;
+  text-shadow: 0 0 var(--glow-spread) var(--sentiment-fear-glow) !important;
+}
+
+[data-sentiment-label="greed"] {
+  color: var(--sentiment-greed) !important;
+}
+
+[data-sentiment-label="neutral"] {
+  color: var(--sentiment-neutral) !important;
+}
+
+[data-sentiment-label="fear"] {
+  color: var(--sentiment-fear) !important;
+}
+
+/* ============ Input Styles ============ */
+.input-surface {
+  background: var(--input-surface-bg);
+  border-color: var(--input-surface-border);
+  color: var(--input-surface-text, var(--text-primary));
+  caret-color: var(--input-surface-caret, var(--input-surface-text, var(--text-primary)));
+  -webkit-text-fill-color: var(--input-surface-fill, var(--input-surface-text, var(--text-primary)));
+  box-shadow: var(--input-surface-shadow, var(--shadow-soft-card));
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease,
+    color 0.2s ease;
+}
+
+.input-surface::placeholder {
+  color: var(--input-surface-placeholder, var(--text-muted-text));
+  -webkit-text-fill-color: var(--input-surface-placeholder, var(--text-muted-text));
+}
+
+[data-testid="chat-workspace"] textarea.input-surface::placeholder {
+  color: hsl(var(--muted-text) / 0.62);
+  -webkit-text-fill-color: hsl(var(--muted-text) / 0.62);
+}
+
+
+
+.input-surface:hover:not(:focus):not(:disabled) {
+  border-color: var(--input-surface-border-hover);
+}
+
+.input-surface:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.input-focus-glow:focus,
+.input-focus-glow:focus-within {
+  border-color: var(--input-surface-border-focus);
+  box-shadow: var(--input-surface-shadow, var(--shadow-soft-card)), var(--input-surface-focus-ring);
+}
+
+/* ============ Badge Styles ============ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge-cyan {
+  background: rgba(0, 212, 255, 0.15);
+  color: var(--color-cyan);
+  border: 1px solid rgba(0, 212, 255, 0.3);
+}
+
+.badge-purple {
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--color-purple);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.badge-success {
+  background: rgba(0, 255, 136, 0.1);
+  color: var(--color-success);
+}
+
+.badge-danger {
+  background: rgba(255, 68, 102, 0.1);
+  color: var(--color-danger);
+}
+
+/* ============ List Item Styles ============ */
+.list-item {
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.list-item:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-dim);
+}
+
+/* ============ Feed Item Styles ============ */
+.feed-item {
+  padding: 10px 0;
+  border-left: 2px solid var(--border-accent);
+  padding-left: 10px;
+}
+
