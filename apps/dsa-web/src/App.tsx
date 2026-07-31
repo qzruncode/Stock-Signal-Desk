@@ -7,6 +7,7 @@ import { scheduleIdlePreload } from './utils/routePreload';
 import {
   ChatHomePage,
   NotFoundPage,
+  RunExplorerPage,
   SettingPage,
 } from './utils/routePreload';
 import './App.css';
@@ -69,6 +70,7 @@ const AppContent: React.FC = () => {
           <Route path="/tools" element={<Navigate to="/setting?tab=tools" replace />} />
           <Route path="/workflows" element={<Navigate to="/" replace />} />
           <Route path="/setting" element={<SettingPage />} />
+          <Route path="/runs" element={<RunExplorerPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

@@ -404,6 +404,24 @@ def test_domain_discovery_compiles_only_internal_candidate_tool() -> None:
         ],
     }
 
+def test_financial_statement_workflow_passes_one_valid_period_count_to_all_tables() -> None:
+    candidate = _task(
+        StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS,
+        parameters={"periods": 4},
+    )
+    calls = compile_task(
+        ResolvedTask(
+            candidate=candidate,
+            symbols=("300850",),
+        )
+    )
+    assert [call.tool_name for call in calls] == [
+        "get_balance_sheet",
+        "get_income_statement",
+        "get_cashflow",
+    ]
+    assert all(call.arguments == {"symbol": "300850", "periods": 4} for call in calls)
+
 def test_industry_research_always_uses_one_project_catalog_snapshot() -> None:
     project_task = _task(
         StandardTaskKind.INDUSTRY_RESEARCH,

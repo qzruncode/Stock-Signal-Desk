@@ -65,6 +65,9 @@ async def recover_interrupted_agent_runs(
                 owner_id=str(reclaimed.get("owner_id") or "admin"),
             )
             agent_context = request_payload.get("agent_context")
+            explicit_memories = request_payload.get(
+                "explicit_memories"
+            )
 
             async def factory(
                 broadcaster: RunBroadcaster,
@@ -73,6 +76,11 @@ async def recover_interrupted_agent_runs(
                 _messages: List[Dict[str, Any]] = list(messages),
                 _body: Mapping[str, Any] = dict(body),
                 _context: Mapping[str, Any] | None = (agent_context if isinstance(agent_context, Mapping) else None),
+                _memories: List[Mapping[str, Any]] = (
+                    list(explicit_memories)
+                    if isinstance(explicit_memories, list)
+                    else []
+                ),
                 _checkpoint: Mapping[str, Any] | None = (
                     reclaimed.get("context_snapshot")
                     if isinstance(
@@ -94,6 +102,7 @@ async def recover_interrupted_agent_runs(
                         db_manager=db_manager,
                         session_service=session_service,
                         recovery_checkpoint=_checkpoint,
+                        explicit_memories=_memories,
                     )
                 )
 

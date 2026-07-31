@@ -18,10 +18,12 @@ function lazyWithPreload<T extends { default: React.ComponentType }>(factory: ()
 export const ChatHomePage = lazyWithPreload(() => import('../pages/ChatHomePage'));
 export const NotFoundPage = lazyWithPreload(() => import('../pages/NotFoundPage'));
 export const SettingPage = lazyWithPreload(() => import('../pages/SettingPage'));
+export const RunExplorerPage = lazyWithPreload(() => import('../pages/RunExplorerPage'));
 
 const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/': ChatHomePage.preload!,
   '/setting': SettingPage.preload!,
+  '/runs': RunExplorerPage.preload!,
 };
 
 export const preloadRoute = (path: string): void => {

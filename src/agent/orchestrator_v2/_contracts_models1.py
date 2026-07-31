@@ -188,7 +188,6 @@ class ExecutionPolicy(StrictModel):
     confirmation_required: bool = False
     max_calls: int = Field(default=8, ge=0, le=10_000)
     max_parallelism: int = Field(default=4, ge=1, le=64)
-    timeout_seconds: float = Field(default=180.0, ge=1.0, le=3_600.0)
     max_attempts: int = Field(default=2, ge=1, le=5)
     retry_backoff_seconds: float = Field(default=0.5, ge=0.0, le=30.0)
     retry_backoff_multiplier: float = Field(default=2.0, ge=1.0, le=10.0)
@@ -392,7 +391,6 @@ class GoalBudgetV2(StrictModel):
     provider_calls_used: int = Field(default=0, ge=0, le=1_000)
     max_tool_calls: int = Field(default=1_000, ge=0, le=10_000)
     tool_calls_used: int = Field(default=0, ge=0, le=10_000)
-    hard_deadline_seconds: int = Field(default=1_200, ge=30, le=14_400)
 
     @property
     def can_revise(self) -> bool:

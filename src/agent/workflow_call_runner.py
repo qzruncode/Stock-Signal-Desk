@@ -26,6 +26,7 @@ from src.tools.base import ToolProgressUpdate
 from src.tools.process_runner import execute_tool_isolated
 
 logger = logging.getLogger(__name__)
+ACTIVE_STEP_LEASE_SECONDS = 3_600.0
 
 async def run_workflow_call(
     call: WorkflowCall,
@@ -199,7 +200,6 @@ async def run_workflow_call(
                     tool_name=call.tool_name,
                     arguments=typed_arguments,
                     idempotency_key=step_idempotency_key,
-                    timeout_seconds=execution_policy.timeout_seconds,
                     force_isolation=(
                         is_production_environment()
                         or str(os.getenv("AGENT_ISOLATE_ALL_STATELESS") or "").strip().lower()
@@ -219,37 +219,62 @@ async def run_workflow_call(
 
     async def execute_with_heartbeat() -> Dict[str, Any]:
         worker = asyncio.create_task(asyncio.to_thread(execute_sync))
-        deadline_at = time.monotonic() + execution_policy.timeout_seconds
-        while True:
-            remaining = deadline_at - time.monotonic()
-            if remaining <= 0:
+        heartbeat: asyncio.Task[None] | None = None
+        try:
+            while True:
+                heartbeat = asyncio.create_task(
+                    asyncio.sleep(heartbeat_seconds)
+                )
+                done, _pending = await asyncio.wait(
+                    {worker, heartbeat},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if worker in done:
+                    heartbeat.cancel()
+                    await asyncio.gather(
+                        heartbeat,
+                        return_exceptions=True,
+                    )
+                    heartbeat = None
+                    return await worker
+                if db_manager is not None:
+                    renewed = await asyncio.to_thread(
+                        db_manager.renew_agent_step_lease,
+                        step_idempotency_key,
+                        worker_id=active_run_registry.worker_id,
+                        attempt=attempt_number,
+                        lease_seconds=ACTIVE_STEP_LEASE_SECONDS,
+                    )
+                    if not renewed:
+                        isolated_cancel_event.set()
+                        worker.cancel()
+                        raise RuntimeError(
+                            "durable step lease was lost during execution"
+                        )
+                await emit_v2_stage(
+                    AgentStageEventV2(
+                        run_id=active_run_id,
+                        stage=AgentStage.EXECUTION,
+                        status=StageStatus.STARTED,
+                        task_id=call.task_id,
+                        summary=(
+                            f"{call.tool_name}/{call.step_id} 仍在执行，"
+                            f"已运行 {int(time.monotonic() - started_at)} 秒"
+                        ),
+                    )
+                )
+        finally:
+            if heartbeat is not None and not heartbeat.done():
+                heartbeat.cancel()
+                await asyncio.gather(
+                    heartbeat,
+                    return_exceptions=True,
+                )
+            if not worker.done():
                 isolated_cancel_event.set()
                 worker.cancel()
-                raise TimeoutError(
-                    f"{call.tool_name}/{call.step_id} exceeded " f"{execution_policy.timeout_seconds:.1f}s"
-                )
-            done, _pending = await asyncio.wait(
-                {worker},
-                timeout=min(heartbeat_seconds, remaining),
-            )
-            if worker in done:
-                return await worker
-            await emit_v2_stage(
-                AgentStageEventV2(
-                    run_id=active_run_id,
-                    stage=AgentStage.EXECUTION,
-                    status=StageStatus.STARTED,
-                    task_id=call.task_id,
-                    summary=(
-                        f"{call.tool_name}/{call.step_id} 仍在执行，"
-                        f"已运行 {int(time.monotonic() - started_at)} 秒"
-                    ),
-                )
-            )
+                await asyncio.gather(worker, return_exceptions=True)
 
-    retry_wait_deadline = time.monotonic() + (
-        execution_policy.timeout_seconds * max(1, execution_policy.max_attempts) + 30.0
-    )
     attempt_number = 0
     last_exception: Exception | None = None
     while attempt_number < execution_policy.max_attempts:
@@ -269,7 +294,7 @@ async def run_workflow_call(
                 effect=execution_policy.effect.value,
                 arguments=typed_arguments,
                 worker_id=active_run_registry.worker_id,
-                lease_seconds=execution_policy.timeout_seconds + 15.0,
+                lease_seconds=ACTIVE_STEP_LEASE_SECONDS,
                 max_attempts=execution_policy.max_attempts,
             )
         action = str(ledger_claim.get("action") or "execute")
@@ -292,9 +317,6 @@ async def run_workflow_call(
             )
             return result
         if action == "wait":
-            if time.monotonic() >= retry_wait_deadline:
-                last_exception = TimeoutError("timed out waiting for the durable step lease")
-                break
             await asyncio.sleep(0.2)
             continue
         if action == "exhausted":
@@ -345,11 +367,7 @@ async def run_workflow_call(
                 db_manager,
                 resource_name=f"tool:{call.tool_name}",
                 slots=global_slots,
-                lease_seconds=execution_policy.timeout_seconds + 15.0,
-                wait_timeout_seconds=min(
-                    30.0,
-                    execution_policy.timeout_seconds,
-                ),
+                lease_seconds=120.0,
                 run_id=active_run_id,
                 step_id=call.step_id,
             ):

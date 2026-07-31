@@ -75,7 +75,7 @@ async def plan_intent_graph_v2(
     allowed_capabilities: tuple[Capability, ...] | None = None,
     plan_revision: int = 0,
 ) -> PlannedIntentGraphV2:
-    """Produce a frozen V2 graph under bounded provider and total deadlines."""
+    """Produce a frozen V2 graph without an application-owned deadline."""
     active_run_id = run_id or uuid.uuid4().hex
     request = current_user_request(messages)
     if not request:
@@ -438,28 +438,7 @@ async def plan_intent_graph_v2(
         )
 
     try:
-        total_timeout = _runtime_float(
-            "AGENT_PLANNER_TOTAL_TIMEOUT_SECONDS",
-            240.0,
-            minimum=5.0,
-        )
-        async with asyncio.timeout(total_timeout):
-            graph = await execute()
-    except TimeoutError as exc:
-        timeout_error = OrchestratorV2Error(
-            AgentErrorCode.PLANNER_TIMEOUT,
-            "Agent planner exceeded its total deadline",
-            metadata={"timeout_seconds": total_timeout},
-        )
-        await _emit(
-            stage_observer,
-            run_id=active_run_id,
-            stage=(AgentStage.OUTLINE if raw_outline is None else AgentStage.PARAMETERIZATION),
-            status=StageStatus.FAILED,
-            error_code=AgentErrorCode.PLANNER_TIMEOUT,
-            summary=str(timeout_error),
-        )
-        raise timeout_error from exc
+        graph = await execute()
     except OrchestratorV2Error as exc:
         await _emit(
             stage_observer,

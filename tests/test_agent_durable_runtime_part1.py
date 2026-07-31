@@ -16,7 +16,7 @@ from src.services.chat_session_service import ChatSessionService
 from src.agent.model_runtime import GuardedModelRuntime
 from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.storage import DatabaseManager
-from src.storage.models import AgentRun, AgentRunTrace
+from src.storage.models import AgentRun, AgentRunTrace, AgentStepExecution
 
 
 
@@ -400,6 +400,43 @@ def test_step_ledger_reuses_completed_result_and_bounds_retries(database):
     )
     assert reused["action"] == "reuse"
     assert reused["result"] == result
+
+def test_running_step_lease_can_be_renewed_without_ending_the_step(database):
+    conversation_id = _conversation(database, "step-renew")
+    _claim(database, conversation_id, run_id="run-step-renew")
+    claim = database.claim_agent_step(
+        idempotency_key="step-renew-key",
+        run_id="run-step-renew",
+        conversation_id=conversation_id,
+        task_id="task-renew",
+        step_id="slow-analysis",
+        tool_name="get_financial_analysis",
+        effect="read",
+        arguments={"symbol": "300850"},
+        worker_id="worker-a",
+        lease_seconds=5,
+        max_attempts=2,
+    )
+    assert claim["action"] == "execute"
+    assert (
+        database.renew_agent_step_lease(
+            "step-renew-key",
+            worker_id="worker-b",
+            attempt=1,
+            lease_seconds=3_600,
+        )
+        is False
+    )
+    assert database.renew_agent_step_lease(
+        "step-renew-key",
+        worker_id="worker-a",
+        attempt=1,
+        lease_seconds=3_600,
+    )
+    with database.session_scope() as session:
+        record = session.get(AgentStepExecution, "step-renew-key")
+        assert record.status == "running"
+        assert record.lease_expires_at > datetime.now() + timedelta(minutes=50)
 
 def test_step_ledger_fences_stale_workers_and_key_collisions(database):
     conversation_id = _conversation(database, "step-fence")

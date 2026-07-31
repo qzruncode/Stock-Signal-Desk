@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional
 
 from src.agent.collection_financial_renderers import build_collection_financial_filter_answer as _build_collection_financial_filter_answer
@@ -54,9 +56,22 @@ def _task_status_evidence(
 
 
 def _blocked_task_answer(execution: PlanExecutionResult) -> Optional[str]:
-    blocked = [task for task in execution.tasks if task.status == "blocked"]
-    completed_with_evidence = any(task.calls for task in execution.tasks if task.status == "completed")
-    if not blocked or completed_with_evidence:
+    dependency_ids = {
+        dependency_id
+        for task in execution.tasks
+        for dependency_id in task.task.candidate.depends_on
+    }
+    terminal_tasks = [
+        task
+        for task in execution.tasks
+        if task.task.task_id not in dependency_ids
+    ]
+    blocked = [task for task in terminal_tasks if task.status == "blocked"]
+    completed_terminal = any(
+        task.status == "completed" and task.calls
+        for task in terminal_tasks
+    )
+    if not blocked or completed_terminal:
         return None
     lines = ["## 本轮执行已由流程校验层停止", ""]
     for result in blocked:
@@ -69,6 +84,55 @@ def _blocked_task_answer(execution: PlanExecutionResult) -> Optional[str]:
         ]
     )
     return "\n".join(lines)
+
+
+def _numeric_evidence_values(value: Any) -> list[float]:
+    numbers: list[float] = []
+    if isinstance(value, bool) or value is None:
+        return numbers
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if math.isfinite(number):
+            numbers.append(number)
+        return numbers
+    if isinstance(value, dict):
+        for nested in value.values():
+            numbers.extend(_numeric_evidence_values(nested))
+        return numbers
+    if isinstance(value, (list, tuple)):
+        for nested in value:
+            numbers.extend(_numeric_evidence_values(nested))
+    return numbers
+
+
+def _display_number_matches_evidence(
+    number_text: str,
+    unit: str,
+    evidence_numbers: list[float],
+) -> bool:
+    try:
+        displayed = Decimal(number_text.replace(",", ""))
+    except InvalidOperation:
+        return False
+    decimal_places = max(0, -displayed.as_tuple().exponent)
+    quantum = Decimal(1).scaleb(-decimal_places)
+
+    for raw_number in evidence_numbers:
+        raw = Decimal(str(raw_number))
+        candidates = [raw]
+        if unit == "亿元":
+            candidates.append(raw / Decimal("100000000"))
+        elif unit in {"万元", "万台"}:
+            candidates.append(raw / Decimal("10000"))
+        elif unit == "%" and abs(raw) <= 1:
+            candidates.append(raw * Decimal("100"))
+        if any(
+            candidate.quantize(quantum, rounding=ROUND_HALF_UP)
+            == displayed
+            for candidate in candidates
+        ):
+            return True
+    return False
 
 
 def _exact_result_contract_answer(
@@ -166,14 +230,35 @@ def _standard_task_answer_issues(
             + "、".join(f"{item.get('name')}({item.get('symbol')})" for item in unsupported_entities[:12])
         )
 
-    material_claim_pattern = re.compile(
-        r"(?<![\d.])\d+(?:\.\d+)?(?:\s*[-—~至]\s*\d+(?:\.\d+)?)?\s*" r"(?:%|亿元|万元|万台|台|个|倍|家)"
+    display_number_pattern = (
+        r"-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
     )
+    material_claim_pattern = re.compile(
+        rf"(?<![\d.,])(?P<first>{display_number_pattern})"
+        rf"(?:\s*[-—~至]\s*(?P<second>{display_number_pattern}))?\s*"
+        r"(?P<unit>%|亿元|万元|元|万台|台|个|倍|家)"
+    )
+    evidence_numbers = _numeric_evidence_values(evidence or [])
     missing_claims: List[str] = []
     for match in material_claim_pattern.finditer(content):
         claim = match.group(0)
-        numbers = re.findall(r"\d+(?:\.\d+)?", claim)
-        if all(re.search(rf"(?<![\d.]){re.escape(number)}(?![\d.])", evidence_text) for number in numbers):
+        numbers = [
+            number
+            for number in (
+                match.group("first"),
+                match.group("second"),
+            )
+            if number is not None
+        ]
+        unit = match.group("unit")
+        if all(
+            _display_number_matches_evidence(
+                number,
+                unit,
+                evidence_numbers,
+            )
+            for number in numbers
+        ):
             continue
         normalized = re.sub(r"\s+", "", claim)
         if normalized not in missing_claims:

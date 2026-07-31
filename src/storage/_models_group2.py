@@ -78,6 +78,7 @@ class AgentRunTrace(Base):
     compiled_plan_json = Column(Text)
     outcomes_json = Column(Text)
     coverage_json = Column(Text)
+    quality_projection_json = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 

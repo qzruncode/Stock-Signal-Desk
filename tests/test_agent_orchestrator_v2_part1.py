@@ -225,11 +225,38 @@ def test_unified_registry_covers_every_standard_capability_once() -> None:
     assert catalog["theme_stock_discovery"]["supports_result_selection"] is False
     for spec in CAPABILITY_REGISTRY.values():
         policy_fields = type(spec.execution_policy).model_fields
-        assert "timeout_seconds" in policy_fields
+        assert "timeout_seconds" not in policy_fields
         assert "max_attempts" in policy_fields
         assert "retryable_error_codes" in policy_fields
-        assert spec.execution_policy.timeout_seconds > 0
         assert spec.execution_policy.max_attempts >= 1
+
+def test_financial_statement_periods_share_one_validated_contract() -> None:
+    spec = capability_for(Capability.FINANCIAL_STATEMENT_ANALYSIS)
+    with pytest.raises(ValueError):
+        spec.intent_model.model_validate({"periods": 1})
+
+    defaulted = normalize_capability_intent(
+        node_id="financials",
+        objective="查看新强联最新财报",
+        capability=Capability.FINANCIAL_STATEMENT_ANALYSIS,
+        intent={},
+        input_refs=(),
+        result_selection=None,
+        current_year=2026,
+    )
+    assert defaulted.execution_parameters == {"periods": 4}
+    assert defaulted.assumptions[0].field_path == "/periods"
+
+    explicit = normalize_capability_intent(
+        node_id="financials",
+        objective="比较新强联最近两期财报",
+        capability=Capability.FINANCIAL_STATEMENT_ANALYSIS,
+        intent={"periods": 2},
+        input_refs=(),
+        result_selection=None,
+        current_year=2026,
+    )
+    assert explicit.execution_parameters == {"periods": 2}
 
 def test_capability_freshness_is_explicit_and_realtime_never_crosses_runs():
     assert set(CAPABILITY_REGISTRY) == set(Capability)

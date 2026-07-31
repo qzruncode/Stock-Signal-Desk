@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ThreadListSidebar } from './threadlist-sidebar';
 
 describe('ThreadListSidebar', () => {
-  it('keeps settings as the only product-level navigation at the bottom', () => {
+  it('exposes run explorer and settings at the bottom', () => {
     render(
       <MemoryRouter>
         <ThreadListSidebar
@@ -20,6 +20,7 @@ describe('ThreadListSidebar', () => {
     );
 
     expect(screen.getByRole('link', { name: 'AI 助手设置' })).toHaveAttribute('href', '/setting');
+    expect(screen.getByRole('link', { name: '查看运行记录' })).toHaveAttribute('href', '/runs');
     expect(screen.queryByRole('link', { name: '管理自选股' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '工作流编排' })).not.toBeInTheDocument();
   });

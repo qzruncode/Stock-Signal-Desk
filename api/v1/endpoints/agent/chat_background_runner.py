@@ -8,11 +8,11 @@ import logging
 from typing import Any, Dict, List, Mapping
 
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
-from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.agent.orchestrator_v2.contracts import AgentErrorCode, AgentStage, AgentStageEventV2, StageStatus
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
+from src.agent.user_memory import build_explicit_memory_message
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ async def _execute_background_agent_run(
     recovery_checkpoint: Mapping[str, Any] | None = None,
     pipeline_runner: Any,
     terminal_status_mapper: Any,
+    explicit_memories: List[Mapping[str, Any]] | None = None,
 ) -> None:
     """Execute one durable run; safe to call for both first-run and recovery."""
     from src.services.agent_prompt_service import AgentPromptService
@@ -70,21 +71,28 @@ async def _execute_background_agent_run(
 
     final_response_text = ""
     try:
-        async with asyncio.timeout(get_agent_runtime_limits().run_deadline_seconds):
-            final_response_text = await pipeline_runner(
-                controller,
-                messages,
-                dict(llm_cfg),
-                system_prompt,
-                on_progress=on_progress,
-                state=state,
-                conversation_context=agent_context,
-                conversation_id=conversation_id,
-                run_id=run.run_id,
-                run_attempt=run.attempt,
-                recovery_checkpoint=recovery_checkpoint,
-                db_manager=db_manager,
-            )
+        memory_message = build_explicit_memory_message(
+            explicit_memories or []
+        )
+        execution_messages = (
+            [memory_message, *messages]
+            if memory_message is not None
+            else messages
+        )
+        final_response_text = await pipeline_runner(
+            controller,
+            execution_messages,
+            dict(llm_cfg),
+            system_prompt,
+            on_progress=on_progress,
+            state=state,
+            conversation_context=agent_context,
+            conversation_id=conversation_id,
+            run_id=run.run_id,
+            run_attempt=run.attempt,
+            recovery_checkpoint=recovery_checkpoint,
+            db_manager=db_manager,
+        )
 
         terminal_status = terminal_status_mapper(state)
         terminal_error = (
@@ -165,38 +173,6 @@ async def _execute_background_agent_run(
             persist=False,
         )
         raise
-    except TimeoutError as exc:
-        logger.error("[Agent] run deadline exceeded run_id=%s", run.run_id)
-        deadline_stage = AgentStageEventV2(
-            run_id=run.run_id,
-            stage=AgentStage.COMPLETED,
-            status=StageStatus.FAILED,
-            error_code=AgentErrorCode.DEADLINE_EXCEEDED,
-            summary="本轮分析超过统一运行截止时间，已停止未完成工作",
-        )
-        controller.add_data(deadline_stage.model_dump(mode="json"))
-        controller.add_error("Agent run deadline exceeded")
-        partial = str(state.get("assistant_text") or "")
-        try:
-            await terminal_publisher.commit(
-                status="failed",
-                final_text=partial,
-                error_code=AgentErrorCode.DEADLINE_EXCEEDED.value,
-                error_detail=str(exc),
-                latest_stage=deadline_stage,
-            )
-        except Exception:
-            logger.exception(
-                "[Agent] atomic deadline terminal commit failed run_id=%s",
-                run.run_id,
-            )
-        await active_run_registry.mark_done(
-            conversation_id,
-            "failed",
-            final_text=partial,
-            error=AgentErrorCode.DEADLINE_EXCEEDED.value,
-            persist=False,
-        )
     except Exception as exc:
         logger.exception("[Agent] background run failed")
         controller.add_error(str(exc))

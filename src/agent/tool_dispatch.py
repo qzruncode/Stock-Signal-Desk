@@ -24,7 +24,6 @@ class ToolDispatchRequest:
     tool_name: str
     arguments: Mapping[str, Any]
     idempotency_key: str
-    timeout_seconds: float
     force_isolation: bool = False
 
 
@@ -66,7 +65,6 @@ class ToolDispatcher:
                     request.tool_name,
                     arguments,
                     cancel_event=cancel_event,
-                    deadline_seconds=request.timeout_seconds,
                     idempotency_key=request.idempotency_key,
                 )
             else:

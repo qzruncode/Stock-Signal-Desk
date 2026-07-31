@@ -13,6 +13,10 @@ from api.v1.endpoints.agent import health  # noqa: E402, F401
 from api.v1.endpoints.agent import tool_registry_meta  # noqa: E402, F401
 from api.v1.endpoints.agent import prompts  # noqa: E402, F401
 from api.v1.endpoints.agent import exports  # noqa: E402, F401
+from api.v1.endpoints.agent import quality  # noqa: E402, F401
+from api.v1.endpoints.agent import financial_lifecycle  # noqa: E402, F401
+from api.v1.endpoints.agent import governance  # noqa: E402, F401
+from api.v1.endpoints.agent import run_explorer  # noqa: E402, F401
 
 # Re-export internal helpers so tests can import/patch them from the package namespace.
 from api.v1.endpoints.agent.chat import (  # noqa: E402, F401

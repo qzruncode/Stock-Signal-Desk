@@ -279,6 +279,7 @@ class _AgentRuntimeMixinMethods1:
         final_text: str | None,
         agent_context: Mapping[str, Any] | None,
         artifacts: Sequence[Any] = (),
+        conclusions: Sequence[Mapping[str, Any]] = (),
         trace: Mapping[str, Any] | None = None,
         generated_title: str | None = None,
         error_code: str | None = None,
@@ -396,6 +397,15 @@ class _AgentRuntimeMixinMethods1:
                     )
                 )
 
+            self._register_financial_conclusions_in_session(
+                session,
+                run_id=run_id,
+                conversation_id=conversation_id,
+                tenant_id=run.tenant_id,
+                owner_id=run.owner_id,
+                conclusions=conclusions,
+            )
+
             trace_record = (
                 session.execute(
                     select(AgentRunTrace).where(
@@ -424,6 +434,7 @@ class _AgentRuntimeMixinMethods1:
                 "coverage": "coverage_json",
                 "latest_stage": "latest_stage_json",
                 "compiled_plan": "compiled_plan_json",
+                "quality_projection": "quality_projection_json",
             }
             for source_key, target_field in trace_field_map.items():
                 if source_key in trace_payload:
@@ -435,6 +446,39 @@ class _AgentRuntimeMixinMethods1:
                         encoded_value = encode_agent_trace_json(
                             trace_payload[source_key],
                             encrypt=True,
+                        )
+                    elif source_key == "quality_projection":
+                        from src.storage.mixins.agent_run_trace import (
+                            redact_agent_trace,
+                        )
+
+                        current_projection = {}
+                        try:
+                            parsed_projection = json.loads(
+                                trace_record.quality_projection_json
+                                or "{}"
+                            )
+                            if isinstance(parsed_projection, Mapping):
+                                current_projection = dict(
+                                    parsed_projection
+                                )
+                        except (TypeError, ValueError):
+                            current_projection = {}
+                        incoming_projection = trace_payload[source_key]
+                        if not isinstance(
+                            incoming_projection,
+                            Mapping,
+                        ):
+                            raise ValueError(
+                                "quality_projection must be a mapping"
+                            )
+                        encoded_value = _json(
+                            {
+                                **current_projection,
+                                **redact_agent_trace(
+                                    incoming_projection
+                                ),
+                            }
                         )
                     else:
                         encoded_value = _json(trace_payload[source_key])

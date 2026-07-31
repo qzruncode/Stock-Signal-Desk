@@ -190,6 +190,23 @@ async def agent_chat_impl(
             parent_message_id=body.get("history_parent_id"),
         )
     agent_context = session_service.get_agent_context(conv_id)
+    memory_loader = getattr(
+        type(db_manager),
+        "list_agent_user_memories",
+        None,
+    )
+    explicit_memories = (
+        await asyncio.to_thread(
+            db_manager.list_agent_user_memories,
+            tenant_id=tenant_id,
+            owner_id=owner_id,
+            conversation_id=conv_id,
+            enabled_only=True,
+            limit=50,
+        )
+        if callable(memory_loader)
+        else []
+    )
 
     # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
     # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
@@ -205,6 +222,7 @@ async def agent_chat_impl(
                 "messages": list(messages),
                 "conversation_id": conv_id,
                 "agent_context": agent_context,
+                "explicit_memories": explicit_memories,
                 "model": llm_cfg.get("model"),
             },
             tenant_id=tenant_id,
@@ -265,6 +283,7 @@ async def agent_chat_impl(
                 conversation_id=conv_id,
                 db_manager=db_manager,
                 session_service=session_service,
+                explicit_memories=explicit_memories,
             )
         )
 

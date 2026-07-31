@@ -376,6 +376,45 @@ class _AgentRuntimeMixinMethods2:
             return self._run_write_transaction("claim_agent_step", _claim)
         except IntegrityError:
             return {"action": "wait", "attempt": 0}
+
+    def renew_agent_step_lease(
+        self,
+        idempotency_key: str,
+        *,
+        worker_id: str,
+        attempt: int,
+        lease_seconds: float,
+    ) -> bool:
+        """Keep a legitimately running step owned without limiting its duration."""
+        now = datetime.now()
+
+        def _renew(session):
+            statement = select(AgentStepExecution).where(
+                AgentStepExecution.idempotency_key == idempotency_key
+            )
+            if not self._is_sqlite_engine:
+                statement = statement.with_for_update()
+            record = session.execute(statement).scalars().first()
+            if (
+                record is None
+                or record.status not in _RUNNING_STEP_STATUSES
+                or record.worker_id != worker_id
+                or int(record.attempt or 0) != int(attempt)
+            ):
+                return False
+            record.lease_expires_at = now + timedelta(
+                seconds=max(5.0, float(lease_seconds))
+            )
+            record.updated_at = now
+            return True
+
+        return bool(
+            self._run_write_transaction(
+                "renew_agent_step_lease",
+                _renew,
+            )
+        )
+
     def finish_agent_step(
         self,
         idempotency_key: str,

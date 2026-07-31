@@ -13,6 +13,8 @@ import pytest
 
 from src.agent.task_executor import (
     ConfirmationRequired,
+    PlanExecutionResult,
+    TaskExecutionResult,
     WorkflowExecutor,
     WorkflowPolicyValidator,
     action_fingerprint,
@@ -378,3 +380,77 @@ def test_standard_task_answer_validator_rejects_unsupported_codes_and_ratios() -
     )
     assert any("60-70%" in issue for issue in issues)
     assert any("688017" in issue for issue in issues)
+
+def test_standard_task_answer_validator_accepts_evidence_rounding_and_amount_units() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    evidence = [
+        {
+            "tool": "get_balance_sheet",
+            "result": {
+                "success": True,
+                "latest": {
+                    "debt_ratio": 38.6518773168,
+                    "total_assets": 4_588_000_000,
+                    "total_liabilities": 4_628_869_011.10,
+                },
+                "amount_unit": "元",
+                "ratio_unit": "%",
+            },
+        },
+        {
+            "tool": "get_income_statement",
+            "result": {
+                "success": True,
+                "latest": {
+                    "revenue": 886_200_000,
+                },
+                "amount_unit": "元",
+            },
+        },
+    ]
+    issues = chat_mod._standard_task_answer_issues(
+        (
+            "资产负债率38.65%，总资产45.88亿元，"
+            "总负债4,628,869,011.10元，营业收入8.86亿元。"
+        ),
+        evidence,
+    )
+    assert issues == []
+
+def test_terminal_block_is_not_hidden_by_completed_upstream_lookup() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    lookup = ResolvedTask(
+        candidate=_task(
+            StandardTaskKind.SECURITY_LOOKUP,
+            task_id="lookup",
+        )
+    )
+    statements = ResolvedTask(
+        candidate=_task(
+            StandardTaskKind.FINANCIAL_STATEMENT_ANALYSIS,
+            task_id="statements",
+            depends_on=["lookup"],
+        ),
+        symbols=("300850",),
+    )
+    answer = chat_mod._blocked_task_answer(
+        PlanExecutionResult(
+            tasks=[
+                TaskExecutionResult(
+                    task=lookup,
+                    status="completed",
+                ),
+                TaskExecutionResult(
+                    task=statements,
+                    status="blocked",
+                    errors=["periods 必须大于等于 2"],
+                ),
+            ]
+        )
+    )
+    assert answer is not None
+    assert "财报分析" in answer
+    assert "periods 必须大于等于 2" in answer
+    assert "证据缺失" not in answer

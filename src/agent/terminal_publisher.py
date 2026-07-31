@@ -84,6 +84,9 @@ class AgentTerminalPublisher:
                         final_text=final_text,
                         agent_context=(next_context if isinstance(next_context, Mapping) else None),
                         artifacts=tuple(self.state.get("_terminal_artifacts") or ()),
+                        conclusions=tuple(
+                            self.state.get("_terminal_conclusions") or ()
+                        ),
                         trace=trace_payload,
                         generated_title=(
                             self.session_service.generate_title(first_user_text) if first_user_text else None

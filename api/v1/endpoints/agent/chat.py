@@ -518,6 +518,7 @@ async def _execute_background_agent_run(
     db_manager: DatabaseManager,
     session_service: ChatSessionService,
     recovery_checkpoint: Mapping[str, Any] | None = None,
+    explicit_memories: List[Mapping[str, Any]] | None = None,
 ) -> None:
     async def pipeline_runner(*args: Any, **kwargs: Any) -> str:
         kwargs["model_completion"] = litellm.acompletion
@@ -536,6 +537,7 @@ async def _execute_background_agent_run(
         recovery_checkpoint=recovery_checkpoint,
         pipeline_runner=pipeline_runner,
         terminal_status_mapper=_terminal_run_status,
+        explicit_memories=explicit_memories,
     )
 
 

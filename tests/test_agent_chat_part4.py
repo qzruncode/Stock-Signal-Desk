@@ -226,7 +226,7 @@ def test_industry_contract_does_not_discard_safe_answer_for_link_format_only():
         == []
     )
 
-def test_final_synthesis_uses_one_shared_hard_deadline():
+def test_final_synthesis_does_not_install_a_deadline():
     controller = _FakeController()
     complete = (
         "优先级和最受益排序。上游、中游、下游产业链。"
@@ -250,7 +250,9 @@ def test_final_synthesis_uses_one_shared_hard_deadline():
             patch("api.v1.endpoints.agent.chat.litellm") as llm_mod,
             patch(
                 "api.v1.endpoints.agent.chat.asyncio.timeout",
-                wraps=asyncio.timeout,
+                side_effect=AssertionError(
+                    "final synthesis must wait for the model"
+                ),
             ) as timeout_factory,
         ):
             llm_mod.acompletion = fake_acompletion
@@ -261,7 +263,7 @@ def test_final_synthesis_uses_one_shared_hard_deadline():
                 evidence=[],
                 playbook=chat_mod.INDUSTRY_CHAIN,
             )
-            assert timeout_factory.call_count == 1
+            timeout_factory.assert_not_called()
             return result
 
     assert asyncio.run(run()) == complete

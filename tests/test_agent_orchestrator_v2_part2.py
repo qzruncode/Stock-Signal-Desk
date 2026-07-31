@@ -312,7 +312,7 @@ def test_explicit_industry_top_k_count_is_not_clamped_to_the_default() -> None:
     assert task.result_selection.max_items == 40
     assert normalized.assumptions == ()
 
-def test_planner_installs_one_total_deadline() -> None:
+def test_planner_does_not_install_a_total_deadline() -> None:
     calls: list[str] = []
 
     async def completion(**kwargs: Any) -> dict[str, Any]:
@@ -348,10 +348,9 @@ def test_planner_installs_one_total_deadline() -> None:
             )
         raise AssertionError(function_name)
 
-    original_timeout = asyncio.timeout
     with patch(
         "src.agent.orchestrator_v2.planner.asyncio.timeout",
-        wraps=original_timeout,
+        side_effect=AssertionError("planner must wait for the model"),
     ) as timeout_factory:
         graph = asyncio.run(
             plan_intent_graph_v2(
@@ -362,7 +361,7 @@ def test_planner_installs_one_total_deadline() -> None:
             )
         )
 
-    timeout_factory.assert_called_once()
+    timeout_factory.assert_not_called()
     assert graph.nodes[0].outline.capability == Capability.INDUSTRY_RESEARCH
     assert calls == [
         "submit_intent_outline_v2",

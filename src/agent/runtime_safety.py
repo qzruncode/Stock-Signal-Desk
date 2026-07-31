@@ -44,7 +44,6 @@ class AgentRuntimeLimits:
     max_messages: int
     max_message_chars: int
     max_request_chars: int
-    run_deadline_seconds: int
     max_plan_tool_calls: int
     max_provider_calls: int
     max_estimated_tokens: int
@@ -74,12 +73,6 @@ def get_agent_runtime_limits() -> AgentRuntimeLimits:
         # per-user-message, rate and concurrency limits provide tighter abuse
         # controls.
         max_request_chars=_env_int("AGENT_MAX_REQUEST_CHARS", 1_000_000, minimum=10_000, maximum=5_000_000),
-        run_deadline_seconds=_env_int(
-            "AGENT_RUN_DEADLINE_SECONDS",
-            1_200,
-            minimum=30,
-            maximum=14_400,
-        ),
         max_plan_tool_calls=_env_int(
             "AGENT_MAX_PLAN_TOOL_CALLS",
             1_000,

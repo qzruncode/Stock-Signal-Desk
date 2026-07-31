@@ -14,6 +14,9 @@ import litellm
 
 from api.v1.endpoints.agent.chat_reasoning import _agent_stage_reasoning_line, _append_process_reasoning
 from api.v1.endpoints.agent.chat_context_helpers import last_user_text as _last_user_text
+from src.agent.capability_release import (
+    build_capability_release_manifest,
+)
 from src.agent.conversation_compaction import estimate_messages_tokens
 from src.agent.message_normalization import normalize_incoming_messages as _normalize_incoming_messages
 from src.agent.orchestrator_v2.contracts import (
@@ -290,6 +293,27 @@ async def plan_standard_task(
                         for item in compiled_v2.tasks
                     ],
                 },
+                quality_projection={
+                    "capability_registry_fingerprint": (
+                        build_capability_release_manifest()[
+                            "registry_fingerprint"
+                        ]
+                    ),
+                    "tasks": [
+                        {
+                            "task_id": item.task.task_id,
+                            "capability": item.capability.value,
+                            "depends_on": list(
+                                item.task.candidate.depends_on
+                            ),
+                            "effect": item.execution_policy.effect.value,
+                        }
+                        for item in compiled_v2.tasks
+                    ],
+                    "plan_revision": int(
+                        getattr(planning_trace, "plan_revision", 0) or 0
+                    ),
+                },
             )
         logger.info(
             "[TaskPlanner] source=%s tasks=%s dependencies=%s",
@@ -343,7 +367,7 @@ async def plan_standard_task(
             failure_text = str(exc)
         elif exc.code == AgentErrorCode.RESOURCE_UNAVAILABLE:
             failure_text = f"{exc} 本轮没有调用数据工具，也没有改用新闻或公网来源兜底。"
-        elif exc.code == AgentErrorCode.PLANNER_TIMEOUT:
+        elif exc.code == AgentErrorCode.PLANNER_PROVIDER_FAILED:
             failure_text = f"规划模型请求被上游连接终止：{exc}；" "本轮没有调用任何数据工具。"
         elif exc.code == AgentErrorCode.PLANNER_SCHEMA_INVALID:
             failure_text = (
@@ -353,7 +377,7 @@ async def plan_standard_task(
             failure_text = f"编排在 {exc.code.value} 阶段失败：{exc}；" "本轮没有继续执行。"
         if exc.code in {
             AgentErrorCode.PLANNER_SCHEMA_INVALID,
-            AgentErrorCode.PLANNER_TIMEOUT,
+            AgentErrorCode.PLANNER_PROVIDER_FAILED,
         }:
             degraded_messages = [
                 {

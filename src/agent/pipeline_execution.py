@@ -13,13 +13,24 @@ from src.agent.orchestrator_v2.contracts import (
     AgentErrorCode, AgentStage, AgentStageEventV2, EffectLevel, GoalBudgetV2, GoalDisposition,
     OrchestratorV2Error, StageStatus,
 )
+from src.agent.capability_release import (
+    build_capability_release_manifest,
+)
 from src.agent.orchestrator_v2.outcomes import execution_outcomes_v2
 from src.agent.orchestrator_v2.goal_state import evaluate_goal_v2
 from src.agent.orchestrator_v2.registry import capability_for
 from src.agent.orchestrator_v2.runtime import CompiledIntentGraphV2, compile_intent_graph_v2, serialize_compiled_intent_graph_v2
 from src.agent.orchestrator_v2.planner import plan_intent_graph_v2
-from src.agent.task_executor import PlanExecutionResult, WorkflowExecutor
-from src.agent.task_workflows import TaskPlan, WorkflowCall, workflow_for
+from src.agent.task_executor import (
+    PlanExecutionResult,
+    WorkflowExecutor,
+    action_fingerprint,
+)
+from src.agent.task_workflows import (
+    TaskPlan,
+    WorkflowCall,
+    workflow_for,
+)
 from src.agent.resource_scheduler import ResourceCapacityExceeded
 from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.run_registry import active_run_registry
@@ -82,11 +93,160 @@ async def execute_standard_tasks(
     workflow_specs_by_task = {task.task_id: workflow_for(task.kind) for task in resolved_tasks}
     v2_policy_by_task = compiled_v2.policy_by_task_id
     v2_compiled_by_task = {item.task.task_id: item for item in compiled_v2.tasks}
+    reviewed_action_fingerprints = (
+        context_v2.pending_action_fingerprints()
+    )
+    approved_action_fingerprints: set[str] = set(
+        reviewed_action_fingerprints
+    )
+    receipt_by_task: dict[str, str] = {}
+    requires_approval_by_task: dict[str, bool] = {}
+
+    def task_descriptor(compiled_task: Any) -> dict[str, Any]:
+        task = compiled_task.task
+        spec = workflow_for(task.kind)
+        policy = v2_policy_by_task.get(task.task_id)
+        requires_approval = (
+            spec.requires_confirmation(task.parameters)
+            or bool(
+                policy is not None
+                and policy.confirmation_required
+            )
+            or (
+                task.kind.value == "batch_analysis"
+                and len(task.symbols) > 10
+            )
+        )
+        requires_approval_by_task[task.task_id] = requires_approval
+        return {
+            "task_id": task.task_id,
+            "capability": compiled_task.capability.value,
+            "effect": spec.effect.value,
+            "confirmation": task.candidate.confirmation.value,
+            "requires_approval": requires_approval,
+            "action_fingerprint": action_fingerprint(task),
+            "action_snapshot": {
+                "kind": task.kind.value,
+                "parameters": dict(task.parameters),
+                "symbols": list(task.symbols),
+            },
+        }
+
+    task_descriptors = [
+        task_descriptor(compiled_task)
+        for compiled_task in compiled_v2.tasks
+    ]
+    prepare_authorization = getattr(
+        type(db_manager),
+        "prepare_agent_run_authorization",
+        None,
+    )
+    governance_enabled = bool(
+        db_manager is not None
+        and conversation_id
+        and callable(prepare_authorization)
+    )
+
+    async def authorize_task_descriptors(
+        descriptors: list[dict[str, Any]],
+    ) -> tuple[dict[str, bool], set[str], dict[str, str]]:
+        if not governance_enabled:
+            return (
+                {
+                    str(item.get("task_id") or ""): True
+                    for item in descriptors
+                },
+                set(reviewed_action_fingerprints),
+                {},
+            )
+        authorization = await asyncio.to_thread(
+            db_manager.prepare_agent_run_authorization,
+            run_id=active_run_id,
+            conversation_id=conversation_id,
+            task_descriptors=descriptors,
+            reviewed_action_fingerprints=tuple(
+                reviewed_action_fingerprints
+            ),
+            source_run_id=(
+                context_v2.turns[-1].run_id
+                if context_v2.turns
+                else None
+            ),
+            registry_manifest=build_capability_release_manifest(),
+        )
+        if isinstance(authorization, Mapping):
+            return (
+                {
+                    str(key): bool(value)
+                    for key, value in (
+                        authorization.get("authorized_tasks") or {}
+                    ).items()
+                },
+                set(
+                    authorization.get(
+                        "approved_action_fingerprints"
+                    )
+                    or ()
+                ),
+                {
+                    str(key): str(value)
+                    for key, value in (
+                        authorization.get("receipt_by_task") or {}
+                    ).items()
+                },
+            )
+        return (
+            {
+                str(item.get("task_id") or ""): False
+                for item in descriptors
+            },
+            set(),
+            {},
+        )
+
+    (
+        capability_authorizations,
+        approved_action_fingerprints,
+        receipt_by_task,
+    ) = await authorize_task_descriptors(task_descriptors)
 
     async def run_workflow_call(
         call: WorkflowCall,
         arguments: Dict[str, Any],
     ) -> Dict[str, Any]:
+        if (
+            governance_enabled
+            and requires_approval_by_task.get(call.task_id)
+        ):
+            receipt_id = receipt_by_task.get(call.task_id)
+            authorize_step = getattr(
+                type(db_manager),
+                "authorize_agent_effect_step",
+                None,
+            )
+            if (
+                not receipt_id
+                or db_manager is None
+                or not callable(authorize_step)
+                or not await asyncio.to_thread(
+                    db_manager.authorize_agent_effect_step,
+                    run_id=active_run_id,
+                    task_id=call.task_id,
+                    step_id=call.step_id,
+                    receipt_id=receipt_id,
+                )
+            ):
+                return {
+                    "success": False,
+                    "partial": False,
+                    "error_code": (
+                        AgentErrorCode.POLICY_BLOCKED.value
+                    ),
+                    "errors": [
+                        "审批凭证缺失、过期或与当前运行不匹配，"
+                        "程序已阻止内置能力调用。"
+                    ],
+                }
         return await _run_workflow_call_impl(
             call,
             arguments,
@@ -117,10 +277,11 @@ async def execute_standard_tasks(
         registry,
         run_workflow_call,
         max_plan_tool_calls=get_agent_runtime_limits().max_plan_tool_calls,
-        approved_actions=context_v2.pending_action_fingerprints(),
+        approved_actions=approved_action_fingerprints,
         processor_runner=run_result_processor,
         outcome_observer=report_workflow_outcome,
         execution_policies=v2_policy_by_task,
+        capability_authorizations=capability_authorizations,
     )
     execution = await executor.execute(resolved_tasks)
     await flush_substreams(controller)
@@ -165,7 +326,6 @@ async def execute_standard_tasks(
         max_provider_calls=limits.max_provider_calls,
         max_tool_calls=limits.max_plan_tool_calls,
         tool_calls_used=sum(len(item.calls) for item in execution.tasks),
-        hard_deadline_seconds=limits.run_deadline_seconds,
     )
 
     def evaluate_current_goal():
@@ -251,14 +411,30 @@ async def execute_standard_tasks(
             )
             v2_policy_by_task.update(recovery_compiled.policy_by_task_id)
             v2_compiled_by_task.update({item.task.task_id: item for item in recovery_compiled.tasks})
+            recovery_descriptors = [
+                task_descriptor(compiled_task)
+                for compiled_task in recovery_compiled.tasks
+            ]
+            (
+                recovery_authorizations,
+                recovery_approvals,
+                recovery_receipts,
+            ) = await authorize_task_descriptors(
+                recovery_descriptors
+            )
+            approved_action_fingerprints.update(
+                recovery_approvals
+            )
+            receipt_by_task.update(recovery_receipts)
             recovery_executor = WorkflowExecutor(
                 registry,
                 run_workflow_call,
                 max_plan_tool_calls=limits.max_plan_tool_calls,
-                approved_actions=context_v2.pending_action_fingerprints(),
+                approved_actions=approved_action_fingerprints,
                 processor_runner=run_result_processor,
                 outcome_observer=report_workflow_outcome,
                 execution_policies=recovery_compiled.policy_by_task_id,
+                capability_authorizations=recovery_authorizations,
             )
             recovery_execution = await recovery_executor.execute(recovery_compiled.resolved_tasks)
             execution = PlanExecutionResult(

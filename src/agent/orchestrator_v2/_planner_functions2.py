@@ -74,21 +74,11 @@ async def call_model_exact_v2(
     value_validator: Callable[[BaseModel], None] | None = None,
     payload_normalizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     progress_observer: Callable[[int], Awaitable[None] | None] | None = None,
-    provider_error_code: AgentErrorCode = AgentErrorCode.PLANNER_TIMEOUT,
+    provider_error_code: AgentErrorCode = AgentErrorCode.PLANNER_PROVIDER_FAILED,
     schema_error_code: AgentErrorCode = AgentErrorCode.PLANNER_SCHEMA_INVALID,
     max_tokens: int = 4_000,
     contract_transport: Literal["function", "json_content"] = "function",
-    timeout_seconds: float | None = None,
 ) -> tuple[BaseModel, Any, RepairRecordV2 | None]:
-    request_timeout = (
-        float(timeout_seconds)
-        if timeout_seconds is not None
-        else _runtime_float(
-            "AGENT_PLANNER_REQUEST_TIMEOUT_SECONDS",
-            90.0,
-            minimum=1.0,
-        )
-    )
     tool = _function_tool(function_name, description, model)
     first_payload: Any = None
     first_error: BaseException | None = None
@@ -148,25 +138,25 @@ async def call_model_exact_v2(
         raw_payload: Any = None
         response: Any = None
         completion_task: asyncio.Task | None = None
+        heartbeat: asyncio.Task | None = None
         try:
             # GuardedModelRuntime is the sole transport-retry owner. This
             # contract layer performs one request plus, when needed, one
             # schema-repair request with a different semantic purpose.
             completion_task = asyncio.create_task(completion(**kwargs))
             wait_started = time.monotonic()
-            deadline = wait_started + request_timeout
             while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(f"{function_name} exceeded {request_timeout:.1f}s")
-                done, _ = await asyncio.wait(
-                    {completion_task},
-                    timeout=min(
-                        MODEL_PROGRESS_HEARTBEAT_SECONDS,
-                        remaining,
-                    ),
+                heartbeat = asyncio.create_task(
+                    asyncio.sleep(MODEL_PROGRESS_HEARTBEAT_SECONDS)
                 )
-                if done:
+                done, _ = await asyncio.wait(
+                    {completion_task, heartbeat},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if completion_task in done:
+                    heartbeat.cancel()
+                    await asyncio.gather(heartbeat, return_exceptions=True)
+                    heartbeat = None
                     response = completion_task.result()
                     break
                 if progress_observer is not None:
@@ -182,10 +172,15 @@ async def call_model_exact_v2(
                 task_id=node_id,
                 metadata={
                     "provider_attempts": 1,
-                    "timeout_seconds": request_timeout,
                 },
             ) from exc
         finally:
+            if heartbeat is not None and not heartbeat.done():
+                heartbeat.cancel()
+                await asyncio.gather(
+                    heartbeat,
+                    return_exceptions=True,
+                )
             if completion_task is not None and not completion_task.done():
                 completion_task.cancel()
                 await asyncio.gather(

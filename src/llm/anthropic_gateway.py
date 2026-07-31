@@ -105,6 +105,9 @@ def build_litellm_kwargs(llm_cfg: Dict[str, Any], *, stream: bool, **extra: Any)
     kwargs: Dict[str, Any] = {
         "model": llm_cfg["model"],
         "stream": stream,
+        # Explicitly disable client-owned response deadlines. Agent runs end
+        # only when the provider finishes, fails, or the user cancels.
+        "timeout": None,
     }
     if llm_cfg.get("api_key"):
         kwargs["api_key"] = llm_cfg["api_key"]

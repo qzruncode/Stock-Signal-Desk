@@ -146,12 +146,6 @@ class GuardedModelRuntime:
                 if not circuit.get("allowed"):
                     raise RuntimeError("model provider circuit is open")
 
-            stream_timeout = _env_float(
-                "AGENT_MODEL_STREAM_TIMEOUT_SECONDS",
-                180.0,
-                minimum=1.0,
-                maximum=14_400.0,
-            )
             lease_manager = agent_resource_lease(
                 self.database,
                 resource_name=provider_resource,
@@ -161,13 +155,7 @@ class GuardedModelRuntime:
                     minimum=1,
                     maximum=64,
                 ),
-                lease_seconds=stream_timeout + 15.0,
-                wait_timeout_seconds=_env_float(
-                    "AGENT_PROVIDER_CAPACITY_WAIT_SECONDS",
-                    30.0,
-                    minimum=0.1,
-                    maximum=300.0,
-                ),
+                lease_seconds=120.0,
                 run_id=self.run_id,
                 step_id=f"model:{attempt}",
             )

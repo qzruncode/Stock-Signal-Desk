@@ -70,8 +70,7 @@ async def _live_dependency_probe() -> Dict[str, Any]:
             temperature=0,
             max_tokens=4,
         )
-        async with asyncio.timeout(8.0):
-            await litellm.acompletion(**kwargs)
+        await litellm.acompletion(**kwargs)
         checks["model_provider"] = {"ok": True}
     except Exception as exc:
         checks["model_provider"] = {
@@ -80,13 +79,11 @@ async def _live_dependency_probe() -> Dict[str, Any]:
         }
 
     try:
-        async with asyncio.timeout(10.0):
-            result = await asyncio.to_thread(
-                execute_tool_isolated,
-                "get_market_status",
-                {},
-                deadline_seconds=8.0,
-            )
+        result = await asyncio.to_thread(
+            execute_tool_isolated,
+            "get_market_status",
+            {},
+        )
         checks["market_data"] = {
             "ok": isinstance(result, dict) and result.get("success") is not False,
         }
@@ -268,7 +265,6 @@ async def agent_readiness(
             "requests_per_minute": limits.requests_per_minute,
             "max_messages": limits.max_messages,
             "max_request_chars": limits.max_request_chars,
-            "run_deadline_seconds": limits.run_deadline_seconds,
             "max_plan_tool_calls": limits.max_plan_tool_calls,
             "max_provider_calls": limits.max_provider_calls,
             "max_estimated_tokens": limits.max_estimated_tokens,

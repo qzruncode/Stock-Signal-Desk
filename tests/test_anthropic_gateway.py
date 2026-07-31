@@ -213,6 +213,7 @@ class TestBuildLitellmKwargs(unittest.TestCase):
         self.assertEqual(kwargs["custom_llm_provider"], "anthropic")
         self.assertEqual(kwargs["extra_headers"], {"authorization": "Bearer sk-test-token"})
         self.assertEqual(kwargs["messages"], [{"role": "user", "content": "hi"}])
+        self.assertIsNone(kwargs["timeout"])
 
     def test_stream_false(self):
         kwargs = build_litellm_kwargs(self._cfg(), stream=False)

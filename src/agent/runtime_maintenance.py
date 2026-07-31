@@ -62,7 +62,7 @@ async def run_agent_runtime_maintenance(
                     resource_name="maintenance:agent-retention",
                     slots=1,
                     lease_seconds=120.0,
-                    wait_timeout_seconds=0.2,
+                    wait=False,
                 ):
                     result = await asyncio.to_thread(
                         database.prune_agent_runtime_data,

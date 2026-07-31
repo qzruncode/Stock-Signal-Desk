@@ -52,6 +52,7 @@ class _WorkflowExecutorMethods1:
         processor_runner: ResultProcessorRunner | None = None,
         outcome_observer: OutcomeObserver | None = None,
         execution_policies: Mapping[str, Any] | None = None,
+        capability_authorizations: Mapping[str, bool] | None = None,
     ) -> None:
         self.registry = registry
         self.runner = runner
@@ -59,6 +60,7 @@ class _WorkflowExecutorMethods1:
             registry,
             approved_actions=approved_actions,
             execution_policies=execution_policies,
+            capability_authorizations=capability_authorizations,
         )
         self.max_plan_tool_calls = max_plan_tool_calls
         self.processor_runner = processor_runner

@@ -106,3 +106,6 @@ services/searxng/.venv/
 
 docs
 .claude/plans
+
+# 运行时产物（截图、临时输出）
+/output/

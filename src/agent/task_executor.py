@@ -181,13 +181,21 @@ class WorkflowPolicyValidator:
         *,
         approved_actions: Iterable[str] = (),
         execution_policies: Mapping[str, Any] | None = None,
+        capability_authorizations: Mapping[str, bool] | None = None,
     ) -> None:
         self.registry = registry
         self.approved_actions = frozenset(approved_actions)
         self.execution_policies = dict(execution_policies or {})
+        self.capability_authorizations = dict(
+            capability_authorizations or {}
+        )
 
     def preflight_task(self, task: ResolvedTask) -> list[ValidatedCall]:
         spec = workflow_for(task.kind)
+        if self.capability_authorizations.get(task.task_id) is False:
+            raise PolicyViolation(
+                f"{task.kind.value} is not authorized for the current owner"
+            )
         if not spec.enabled:
             machine = " → ".join(spec.state_machine) if spec.state_machine else "未配置"
             raise WorkflowUnavailable(f"{spec.title}当前不可执行；固定状态机：{machine}")

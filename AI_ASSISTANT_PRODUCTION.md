@@ -8,7 +8,7 @@
 
 - PostgreSQL 主实例启用自动备份、WAL 归档或云厂商 PITR，保留期至少 7 天；
 - 至少一次在隔离环境完成“备份 → 恢复 → schema check → 冒烟测试”的恢复演练；
-- 模型网关、行情源和搜索服务有独立超时、容量与告警；
+- 模型网关、行情源和搜索服务有独立容量与告警；
 - API、迁移任务和备份任务使用不同数据库账号，遵循最小权限。
 
 核心配置示例：
@@ -101,14 +101,14 @@ uvicorn server:app \
   --proxy-headers
 ```
 
-反向代理必须关闭 SSE 缓冲，读取超时大于 `AGENT_RUN_DEADLINE_SECONDS`，限制请求体并覆盖可信转发头。不要启用 `--reload`。优雅停机时间应大于一个事件持久化周期；worker 退出时会释放运行租约，其他 worker 随后接管。
+反向代理必须关闭 SSE 缓冲，并关闭针对 Agent SSE 的读取截止时间，限制请求体并覆盖可信转发头。不要启用 `--reload`。优雅停机时间应大于一个事件持久化周期；worker 退出时会释放运行租约，其他 worker 随后接管。
 
-数据库最大连接数按 `worker 数 × (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)` 预留并保留迁移、备份和运维余量；连接池等待超时必须小于请求总 deadline。
+数据库最大连接数按 `worker 数 × (DATABASE_POOL_SIZE + DATABASE_MAX_OVERFLOW)` 预留并保留迁移、备份和运维余量。
 
 ## 4. 可靠性合同
 
 - 一次会话最多一个活跃 Run，数据库唯一约束负责仲裁跨 worker 竞争。
-- 每个 Run 有总 deadline；Planner、模型流和 Tool 还有各自 deadline。
+- Run、Planner、模型流、最终写作和 Tool 执行均无应用层 deadline，只能由用户主动取消、真实上游失败或进程退出终止。
 - 只读 Tool 仅对声明的瞬时错误做有限指数退避；非只读 Tool 不自动重试。
 - Step 的幂等键会落库。完成结果可复用，运行中 Step 由租约保护，租约过期后才允许接管。
 - 副作用 Tool 在执行前写入 Outbox。下游服务仍必须接受同一幂等键，才能覆盖“对方已成功、本地确认前崩溃”的最后窗口。
@@ -133,6 +133,22 @@ python scripts/evaluate_agent_planner.py
 python scripts/evaluate_agent_planner.py --max-cases 5
 ```
 
+能力注册表、Workflow、Schema、结果契约或 Renderer 发生变化时，运行会检测到能力指纹
+与当前激活版本不一致并失败关闭。发布流程必须：
+
+1. 从真实终态 Run 建立版本化评测用例；
+2. 用候选版本重新执行并保存评测结果；
+3. 确认每个活动用例的最新结果都带有候选能力指纹；
+4. 达到发布版本声明的最低通过率后激活该版本。
+
+相关只读检查入口包括 `/api/v1/agent/quality/summary`、
+`/api/v1/agent/evaluation-results`、`/api/v1/agent/governance/capability-releases`
+和 `/api/v1/agent/governance/audit-events`。运行详情可在前端 `/runs` 查看。
+
+本项目的数据能力继续使用仓库内置的数据提供层，不把 MCP、企业数据源或券商交易系统作为
+部署依赖。若将来改变这一边界，必须作为新的架构决策重新设计权限、密钥、数据分级和回滚
+机制，不能直接挂到当前能力注册表上。
+
 ## 6. 健康、指标和告警
 
 - `/api/health`：进程存活；
@@ -146,7 +162,7 @@ python scripts/evaluate_agent_planner.py --max-cases 5
 - p50/p95/p99 总耗时；
 - Planner、模型和 Tool 分阶段耗时；
 - 恢复次数、重复 Step 复用次数、租约过期数；
-- 熔断器打开数、资源等待超时数、预算拒绝数；
+- 熔断器打开数、资源排队时长、预算拒绝数；
 - 流断连率、续流成功率、终态原子提交失败数。
 
 告警分级：
@@ -162,7 +178,7 @@ python scripts/evaluate_agent_planner.py --max-cases 5
 - 普通问答、实时行情、财务、估值、新闻、产业链、多股批处理和八维买入判断；
 - 同义改写、跨轮引用、编辑后重发、刷新续流、停止生成和重复提交；
 - Planner 低置信度、Prompt 注入证据、数据覆盖不足、空结果和 schema 错误；
-- 模型超时/429/5xx、Tool 超时/进程崩溃、数据库短暂失败；
+- 模型连接失败/429/5xx、Tool 上游连接失败/进程崩溃、数据库短暂失败；
 - worker 在规划中、Tool 中、终态提交前退出后的接管；
 - 相同幂等键并发执行、副作用 Outbox 已完成后的重放；
 - 多租户越权读取、取消和续流；

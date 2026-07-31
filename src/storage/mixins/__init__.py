@@ -15,6 +15,9 @@ from src.storage.mixins.tool_cache import ToolCacheMixin
 from src.storage.mixins.agent_artifact import AgentArtifactMixin
 from src.storage.mixins.agent_run_trace import AgentRunTraceMixin
 from src.storage.mixins.agent_runtime import AgentRuntimeMixin
+from src.storage.mixins.agent_quality import AgentQualityMixin
+from src.storage.mixins.financial_lifecycle import FinancialLifecycleMixin
+from src.storage.mixins.agent_governance import AgentGovernanceMixin
 
 __all__ = [
     "DailyDataMixin",
@@ -31,4 +34,7 @@ __all__ = [
     "AgentArtifactMixin",
     "AgentRunTraceMixin",
     "AgentRuntimeMixin",
+    "AgentQualityMixin",
+    "FinancialLifecycleMixin",
+    "AgentGovernanceMixin",
 ]

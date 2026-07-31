@@ -13,6 +13,9 @@ from src.agent.orchestrator_v2.registry import capability_for
 from src.agent.result_contracts import INDUSTRY_CHAIN, MARKET_OUTLOOK
 from src.agent.message_normalization import normalize_incoming_messages as normalize_messages
 from src.agent.conversation_compaction import compact_history_if_needed as compact_history
+from src.agent.financial_conclusions import (
+    extract_financial_conclusions,
+)
 from src.agent.task_workflows import StandardTaskKind
 
 
@@ -59,6 +62,7 @@ async def finalize_standard_task(
         outcomes_v2,
         artifacts_v2,
     )
+    financial_conclusions = extract_financial_conclusions(outcomes_v2)
     failed_outcomes = [outcome for outcome in outcomes_v2 if outcome.status.value in {"failed", "blocked", "cancelled"}]
     non_succeeded_outcomes = [outcome for outcome in outcomes_v2 if outcome.status.value != "succeeded"]
     if state is not None and non_succeeded_outcomes and not failed_outcomes:
@@ -82,10 +86,42 @@ async def finalize_standard_task(
         "outcomes": [outcome.model_dump(mode="json") for outcome in outcomes_v2],
         "coverage": {outcome.task_id: outcome.coverage.model_dump(mode="json") for outcome in outcomes_v2},
         "goal_state": goal_state_v2.model_dump(mode="json"),
+        "quality_projection": {
+            "outcomes": [
+                {
+                    "task_id": outcome.task_id,
+                    "status": outcome.status.value,
+                    "coverage": outcome.coverage.model_dump(mode="json"),
+                    "evidence_count": len(outcome.evidence),
+                    "warning_count": len(outcome.warnings),
+                    "error_codes": [
+                        error.code.value
+                        for error in outcome.errors
+                    ],
+                }
+                for outcome in outcomes_v2
+            ],
+            "artifact_count": len(artifacts_v2),
+            "goal": {
+                "terminal_reason": (
+                    goal_state_v2.terminal_reason.value
+                    if getattr(
+                        goal_state_v2,
+                        "terminal_reason",
+                        None,
+                    )
+                    else None
+                ),
+                "plan_revision": int(
+                    getattr(goal_state_v2, "plan_revision", 0) or 0
+                ),
+            },
+        },
     }
     if state is not None:
         state["_terminal_artifacts"] = artifacts_v2
         state["_terminal_trace"] = terminal_trace_payload
+        state["_terminal_conclusions"] = financial_conclusions
     elif db_manager is not None and conversation_id:
         if artifacts_v2:
             await asyncio.to_thread(

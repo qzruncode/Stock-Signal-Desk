@@ -87,7 +87,15 @@ class ValuationAnalysisIntent(StrictModel):
     peer_dimension: Literal["valuation", "growth", "profitability", "quality", "all"] | None = None
 
 class FinancialStatementAnalysisIntent(StrictModel):
-    periods: int | None = Field(default=None, ge=1, le=20)
+    periods: int | None = Field(
+        default=None,
+        ge=2,
+        le=20,
+        description=(
+            "需要比较的最近报告期数量；底层三张财务报表至少读取两个报告期。"
+            "用户只说“最新财报”时留空，由程序采用统一默认值。"
+        ),
+    )
 
 NewsTopic = Literal["market", "company", "announcement", "research", "macro", "industry", "social"]
 

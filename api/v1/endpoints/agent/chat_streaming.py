@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
@@ -37,31 +36,31 @@ async def _await_model_stream_step(
     started_at: float,
     heartbeat_seconds: float = MODEL_STREAM_HEARTBEAT_SECONDS,
 ):
+    """Wait for one model-stream operation without imposing a deadline."""
     task = asyncio.ensure_future(awaitable)
-    try:
-        stream_timeout = max(
-            1.0,
-            float(os.getenv("AGENT_MODEL_STREAM_TIMEOUT_SECONDS", "180")),
-        )
-    except (TypeError, ValueError):
-        stream_timeout = 180.0
-    deadline_at = started_at + stream_timeout
+    heartbeat: asyncio.Task[None] | None = None
     try:
         while True:
-            remaining = deadline_at - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(f"model stream {label} exceeded {stream_timeout:.1f}s")
-            done, _ = await asyncio.wait(
-                {task},
-                timeout=min(heartbeat_seconds, remaining),
+            heartbeat = asyncio.create_task(
+                asyncio.sleep(heartbeat_seconds)
             )
-            if done:
+            done, _ = await asyncio.wait(
+                {task, heartbeat},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                heartbeat = None
                 return task.result()
             _append_process_reasoning(
                 controller,
                 (f"模型仍在处理「{label}」，" f"已等待 {max(1, int(time.monotonic() - started_at))} 秒"),
             )
     finally:
+        if heartbeat is not None and not heartbeat.done():
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -196,7 +195,7 @@ async def _collect_streamed_model_answer(
     label: str,
     heartbeat_seconds: float = MODEL_STREAM_HEARTBEAT_SECONDS,
 ) -> tuple[str, str]:
-    """Collect one answer stream; the caller owns the shared hard deadline."""
+    """Collect one answer stream until the model finishes or the user cancels."""
     started_at = time.monotonic()
     visible_request_kwargs = dict(request_kwargs)
     visible_request_kwargs["messages"] = _with_chinese_visible_reasoning(visible_request_kwargs.get("messages"))
@@ -287,39 +286,6 @@ async def _stream_final_answer_without_tools(
     """
     completion = completion or litellm.acompletion
     forced_messages = synthesis_builder(messages, evidence, playbook)
-    try:
-        synthesis_timeout_seconds = max(
-            5.0,
-            min(
-                300.0,
-                float(
-                    os.getenv(
-                        "AGENT_FINAL_SYNTHESIS_TIMEOUT_SECONDS",
-                        "75",
-                    )
-                ),
-            ),
-        )
-    except (TypeError, ValueError):
-        synthesis_timeout_seconds = 75.0
-    synthesis_deadline = time.monotonic() + synthesis_timeout_seconds
-
-    async def collect_with_deadline(
-        request_kwargs: Mapping[str, Any],
-        *,
-        label: str,
-    ) -> tuple[str, str]:
-        remaining = synthesis_deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("final synthesis deadline exhausted")
-        async with asyncio.timeout(remaining):
-            return await _collect_streamed_model_answer(
-                controller,
-                completion,
-                request_kwargs,
-                label=label,
-                heartbeat_seconds=heartbeat_seconds,
-            )
 
     def contract_issues(content: str) -> List[str]:
         issues = contract_checker(playbook, content, evidence)
@@ -339,9 +305,12 @@ async def _stream_final_answer_without_tools(
     )
 
     try:
-        content_text, finish_reason = await collect_with_deadline(
+        content_text, finish_reason = await _collect_streamed_model_answer(
+            controller,
+            completion,
             kwargs,
             label="最终答案综合",
+            heartbeat_seconds=heartbeat_seconds,
         )
     except Exception:
         logger.exception("[Agent] Forced final answer failed")
@@ -382,9 +351,12 @@ async def _stream_final_answer_without_tools(
             repaired_text = ""
             repaired_finish_reason = ""
             try:
-                repaired_text, repaired_finish_reason = await collect_with_deadline(
+                repaired_text, repaired_finish_reason = await _collect_streamed_model_answer(
+                    controller,
+                    completion,
                     repair_kwargs,
                     label="最终答案字段修复",
+                    heartbeat_seconds=heartbeat_seconds,
                 )
             except Exception:
                 logger.exception("[Agent] final answer repair failed")
@@ -439,9 +411,12 @@ async def _stream_final_answer_without_tools(
         retry_text = ""
         retry_finish_reason = ""
         try:
-            retry_text, retry_finish_reason = await collect_with_deadline(
+            retry_text, retry_finish_reason = await _collect_streamed_model_answer(
+                controller,
+                completion,
                 retry_kwargs,
                 label="最终答案完整性修复",
+                heartbeat_seconds=heartbeat_seconds,
             )
         except Exception:
             logger.exception("[Agent] empty/truncated synthesis retry failed")

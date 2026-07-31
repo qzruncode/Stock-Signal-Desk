@@ -28,12 +28,11 @@ class StrictModel(BaseModel):
     )
 
 class AgentErrorCode(str, Enum):
-    PLANNER_TIMEOUT = "planner_timeout"
+    PLANNER_PROVIDER_FAILED = "planner_provider_failed"
     PLANNER_SCHEMA_INVALID = "planner_schema_invalid"
     CLARIFICATION_REQUIRED = "clarification_required"
     RESOURCE_UNAVAILABLE = "resource_unavailable"
     POLICY_BLOCKED = "policy_blocked"
-    DEADLINE_EXCEEDED = "deadline_exceeded"
     CIRCUIT_OPEN = "circuit_open"
     BUDGET_EXCEEDED = "budget_exceeded"
     TOOL_FAILED = "tool_failed"

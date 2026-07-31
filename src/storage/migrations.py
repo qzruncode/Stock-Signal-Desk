@@ -13,7 +13,7 @@ from src.storage.models import AgentRuntimeControl, Base
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2026.07.30.4"
+SCHEMA_VERSION = "2026.07.31.4"
 
 
 def get_schema_version(engine) -> str | None:
@@ -55,6 +55,7 @@ def ensure_compatible_schema(engine, is_sqlite_engine: bool) -> None:
     _migrate_agent_run_budget_fields(engine)
     _migrate_agent_step_observability_fields(engine)
     _migrate_agent_run_trace_latest_stage(engine)
+    _migrate_agent_quality_fields(engine)
     if is_sqlite_engine:
         _migrate_legacy_kline_tables(engine)
         _migrate_financial_fields_rename(engine)
@@ -151,6 +152,34 @@ def _migrate_agent_run_trace_latest_stage(engine) -> None:
             session.execute(text("ALTER TABLE agent_run_traces " "ADD COLUMN verification_json TEXT"))
         if "goal_state_json" not in columns:
             session.execute(text("ALTER TABLE agent_run_traces " "ADD COLUMN goal_state_json TEXT"))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _migrate_agent_quality_fields(engine) -> None:
+    """Add the non-sensitive projection consumed by deterministic evaluators."""
+    inspector = inspect(engine)
+    if "agent_run_traces" not in inspector.get_table_names():
+        return
+    columns = {
+        column["name"]
+        for column in inspector.get_columns("agent_run_traces")
+    }
+    if "quality_projection_json" in columns:
+        return
+    session = Session(bind=engine)
+    try:
+        session.execute(
+            text(
+                "ALTER TABLE agent_run_traces "
+                "ADD COLUMN quality_projection_json TEXT "
+                "NOT NULL DEFAULT '{}'"
+            )
+        )
         session.commit()
     except Exception:
         session.rollback()

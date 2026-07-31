@@ -137,6 +137,7 @@ class AgentRunTraceMixin:
         compiled_plan: Any = None,
         outcomes: Any = None,
         coverage: Any = None,
+        quality_projection: Any = None,
     ) -> None:
         with self.session_scope() as session:
             record = (
@@ -206,6 +207,26 @@ class AgentRunTraceMixin:
                 record.outcomes_json = _json(outcomes, encrypt=True)
             if coverage is not None:
                 record.coverage_json = _json(coverage)
+            if quality_projection is not None:
+                current_projection: dict[str, Any] = {}
+                try:
+                    parsed = json.loads(
+                        record.quality_projection_json or "{}"
+                    )
+                    if isinstance(parsed, dict):
+                        current_projection = parsed
+                except (TypeError, ValueError):
+                    current_projection = {}
+                if not isinstance(quality_projection, Mapping):
+                    raise ValueError(
+                        "quality_projection must be a mapping"
+                    )
+                record.quality_projection_json = _json(
+                    {
+                        **current_projection,
+                        **redact_agent_trace(quality_projection),
+                    }
+                )
             record.updated_at = datetime.now()
 
     def get_latest_agent_run_trace(
