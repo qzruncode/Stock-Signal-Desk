@@ -294,7 +294,7 @@ def _bind_outline_resources(
                         task_id=node.node_id,
                     )
         bound_types = {ref.resource_type for ref in refs}
-        for required in spec.input_resources - bound_types:
+        for required in spec.required_input_resources - bound_types:
             if spec.allow_direct_entities and has_direct_entities:
                 continue
             node_producers = [
@@ -337,6 +337,58 @@ def _bind_outline_resources(
                 (f"{node.node_id} 缺少 {required.value}，" "不会改用新闻或公网搜索生成替代集合。"),
                 task_id=node.node_id,
             )
+        bound_types = {ref.resource_type for ref in refs}
+        for group in spec.alternative_input_resource_groups:
+            if bound_types & group:
+                continue
+            node_producers = [
+                (candidate, resource_type)
+                for candidate in nodes
+                if candidate.node_id != node.node_id
+                for resource_type in group
+                if resource_type
+                in capability_for(candidate.capability).output_resources
+            ]
+            artifact_producers = [
+                (artifact_id, resource_type)
+                for artifact_id, resource_type in available_artifacts.items()
+                if resource_type in group
+            ]
+            if len(node_producers) + len(artifact_producers) == 1:
+                if node_producers:
+                    producer, resource_type = node_producers[0]
+                    refs.append(
+                        InputReferenceV2(
+                            source="node",
+                            node_id=producer.node_id,
+                            resource_type=resource_type,
+                        )
+                    )
+                else:
+                    artifact_id, resource_type = artifact_producers[0]
+                    refs.append(
+                        InputReferenceV2(
+                            source="artifact",
+                            artifact_id=artifact_id,
+                            resource_type=resource_type,
+                        )
+                    )
+                bound_types.add(resource_type)
+                continue
+            names = "/".join(
+                item.value for item in sorted(group, key=lambda value: value.value)
+            )
+            if len(node_producers) + len(artifact_producers) > 1:
+                raise OrchestratorV2Error(
+                    AgentErrorCode.CLARIFICATION_REQUIRED,
+                    f"{node.node_id} 有多个可用的 {names} 来源，请明确使用哪一个。",
+                    task_id=node.node_id,
+                )
+            raise OrchestratorV2Error(
+                AgentErrorCode.RESOURCE_UNAVAILABLE,
+                f"{node.node_id} 至少需要一个 {names}，不会猜测或重新搜索条目。",
+                task_id=node.node_id,
+            )
         updated.append(node.model_copy(update={"input_refs": tuple(refs)}))
     # ``model_copy`` does not rerun graph validators. Re-validate the complete
     # outline after deterministic edges are added so automatic binding cannot
@@ -364,6 +416,7 @@ def _planner_verifier_mode(
     if environment in {"prod", "production"}:
         return "enforce"
     # Forecasts are the highest-risk semantic mode: a superficially related
-    # snapshot can easily be mistaken for evidence about the future.  Keep the
-    # independent verifier active in local/demo deployments for this mode too.
+    # snapshot can easily be mistaken for evidence about the future. Source
+    # and terminal-resource contracts are promoted to enforce mode by the
+    # caller after the typed Goal Contract has been formed.
     return "enforce" if question_type == QuestionType.FORECAST else "off"

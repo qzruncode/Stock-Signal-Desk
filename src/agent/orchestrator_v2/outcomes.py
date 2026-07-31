@@ -52,6 +52,41 @@ def _coverage_from_packets(
             complete=binding_complete,
         )
 
+    rss_coverages = [
+        packet.get("coverage")
+        for packet in packets
+        if isinstance(packet.get("coverage"), Mapping)
+        and {
+            "planned_sources",
+            "attempted_sources",
+            "successful_sources",
+        }
+        <= set(packet["coverage"])
+    ]
+    if rss_coverages:
+        requested = sum(
+            max(0, int(coverage.get("planned_sources") or 0))
+            for coverage in rss_coverages
+        )
+        covered = sum(
+            max(0, int(coverage.get("successful_sources") or 0))
+            for coverage in rss_coverages
+        )
+        failures = tuple(
+            dict.fromkeys(
+                str(failure).strip()
+                for coverage in rss_coverages
+                for failure in coverage.get("failures") or ()
+                if str(failure).strip()
+            )
+        )
+        return CoverageV2(
+            requested=requested,
+            covered=min(requested, covered),
+            missing=failures,
+            complete=requested == covered and not failures,
+        )
+
     if task.task.kind.value == "theme_business_evidence":
         company_packets = [
             packet

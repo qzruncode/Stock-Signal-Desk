@@ -212,24 +212,52 @@ def build_extended_registry(
             ),
             StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY: spec_factory(
                 StandardTaskKind.FINANCIAL_SOURCE_DISCOVERY,
-                "资讯源查询",
-                "列出或检查指定财经资讯源。",
-                {"list_financial_sources", "inspect_financial_source"},
+                "RSSHub来源查询",
+                "动态发现或检查助手既有过滤目录中的 RSSHub 财经来源。",
+                {"discover_rss_sources", "inspect_rss_source"},
                 _compile_source_discovery,
+                output_resource_paths={
+                    TaskResource.RSS_SOURCE_COLLECTION: ("items",),
+                },
+                result_contract="rss_source_discovery",
             ),
             StandardTaskKind.FINANCIAL_FEED_READ: spec_factory(
                 StandardTaskKind.FINANCIAL_FEED_READ,
                 "Feed读取",
-                "按已知路由读取一个财经 Feed。",
-                {"read_financial_feed"},
+                "按显式路由或上游来源资源读取已筛选 RSSHub Feed。",
+                {"read_rss_feed"},
                 _compile_feed_read,
+                input_resource_parameters={
+                    "sources": TaskResource.RSS_SOURCE_COLLECTION,
+                },
+                output_resource_paths={
+                    TaskResource.RSS_ITEM_COLLECTION: ("items",),
+                },
+                result_contract="rss_feed_read",
             ),
             StandardTaskKind.FINANCIAL_ARTICLE_READ: spec_factory(
                 StandardTaskKind.FINANCIAL_ARTICLE_READ,
-                "文章读取",
-                "读取用户指定的一篇财经资讯正文。",
-                {"read_financial_article"},
+                "RSS条目与文档读取",
+                "读取上游精确 RSS 条目或会话中的文本文件资源。",
+                {"read_rss_item", "read_text_document"},
                 _compile_article,
+                input_resource_parameters={
+                    "items": TaskResource.RSS_ITEM_COLLECTION,
+                    "resources": TaskResource.TEXT_DOCUMENT_COLLECTION,
+                },
+                required_input_resources=(),
+                alternative_input_resource_groups=(
+                    {
+                        TaskResource.RSS_ITEM_COLLECTION,
+                        TaskResource.TEXT_DOCUMENT_COLLECTION,
+                    },
+                ),
+                output_resource_paths={
+                    TaskResource.TEXT_DOCUMENT_COLLECTION: ("resources",),
+                    TaskResource.EVIDENCE_COLLECTION: ("evidence_collection",),
+                },
+                allow_partial_tool_failures=True,
+                result_contract="rss_article_read",
             ),
             StandardTaskKind.WEBPAGE_FEED_TRANSFORM: spec_factory(
                 StandardTaskKind.WEBPAGE_FEED_TRANSFORM,
@@ -241,8 +269,8 @@ def build_extended_registry(
             StandardTaskKind.FINANCIAL_FEED_EXPORT: spec_factory(
                 StandardTaskKind.FINANCIAL_FEED_EXPORT,
                 "Feed导出",
-                "导出用户明确指定的财经 Feed。",
-                {"export_financial_feed"},
+                "导出用户明确指定的纯文本 RSSHub Feed。",
+                {"export_rss_feed"},
                 _compile_export,
                 effect=EffectClass.EXTERNAL,
                 confirmation_policy=ConfirmationPolicy.ALWAYS,

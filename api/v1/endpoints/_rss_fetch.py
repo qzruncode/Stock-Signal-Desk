@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import os
 import re
 from html import escape, unescape
 from html.parser import HTMLParser
@@ -16,6 +18,7 @@ import requests
 
 from src.config import Config
 from api.v1.endpoints._rss_routes import RSSHUB_ROUTES
+from api.v1.endpoints._rss_text import normalize_text_item
 
 logger = logging.getLogger(__name__)
 
@@ -135,15 +138,62 @@ _PARAM_FORMATTERS: Dict[str, Dict[str, Callable[[str], str]]] = {
 _PARAM_FORMATTERS_BY_ROUTE: Dict[str, Dict[str, Callable[[str], str]]] = {
     "/xueqiu/fund/:id": {"id": lambda v: v},
 }
+_PRIVILEGED_RSS_OPTIONS = frozenset(
+    {
+        "chatgpt",
+        "image_hotlink_template",
+        "multimedia_hotlink_template",
+        "scihub",
+        "tgiv",
+    }
+)
+
+
+def _server_managed_rss_options() -> Dict[str, Any]:
+    raw = str(
+        os.getenv("RSSHUB_AGENT_PRIVILEGED_OPTIONS") or ""
+    ).strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.error(
+            "RSSHUB_AGENT_PRIVILEGED_OPTIONS is not valid JSON"
+        )
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): item
+        for key, item in value.items()
+        if str(key) in _PRIVILEGED_RSS_OPTIONS
+    }
 
 
 def _normalize_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Drop falsy / empty values; stringify keys. RSSHub ignores empty params anyway."""
     out: Dict[str, Any] = {}
+    privileged = _server_managed_rss_options()
     for k, v in (options or {}).items():
         key = str(k).strip()
         if not key or v is None:
             continue
+        if key in _PRIVILEGED_RSS_OPTIONS:
+            if key not in privileged:
+                raise PermissionError(
+                    f"RSSHub 特权参数 {key} 未由服务端策略启用"
+                )
+            if str(v).strip().casefold() not in {
+                "1",
+                "enabled",
+                "server",
+                "true",
+            }:
+                raise PermissionError(
+                    f"RSSHub 特权参数 {key} 只能请求服务端托管值"
+                )
+            v = privileged[key]
         if isinstance(v, str):
             v = v.strip()
             if not v:
@@ -358,7 +408,27 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
         if _is_unresolvable_truncated_item(title, link, summary):
             continue
 
-        items.append(
+        xml_attachments = []
+        for enclosure in getattr(entry, "enclosures", None) or []:
+            if not isinstance(enclosure, dict):
+                continue
+            enclosure_url = enclosure.get("href") or enclosure.get("url")
+            if not enclosure_url:
+                continue
+            xml_attachments.append(
+                {
+                    "url": str(enclosure_url),
+                    "mime_type": str(
+                        enclosure.get("type")
+                        or enclosure.get("mime_type")
+                        or ""
+                    ),
+                    "title": str(enclosure.get("title") or ""),
+                    "size_in_bytes": enclosure.get("length"),
+                    "duration_in_seconds": None,
+                }
+            )
+        normalized_item = normalize_text_item(
             {
                 "id": str(getattr(entry, "id", "") or getattr(entry, "guid", "")),
                 "title": title,
@@ -367,11 +437,18 @@ def _fetch_rss_feed(url: str, limit: int = 20, timeout: float = 15.0) -> dict:
                 "published": published,
                 "author": getattr(entry, "author", ""),
                 "tags": tags,
-                "image": "",
                 "content_html": content_html,
-                "attachments": [],
+                "attachments": xml_attachments,
             }
         )
+        if (
+            not normalized_item.get("title")
+            and not normalized_item.get("summary")
+            and not normalized_item.get("content_html")
+            and not normalized_item.get("attachments")
+        ):
+            continue
+        items.append(normalized_item)
 
     feed_title = ""
     feed_link = ""
@@ -475,15 +552,15 @@ def _fetch_rss_feed_json(url: str, limit: int = 20, timeout: float = 20.0) -> di
 
         title = _derive_item_title(entry.get("title"), summary)
         link = _readable_http_url(entry.get("url"))
-        image = str(entry.get("image") or entry.get("banner") or "")
         attachments = _attachments_from_json(entry.get("attachments"))
-        if not title and not summary and not content_html and not image and not attachments:
+        if not title and not summary and not content_html and not attachments:
             continue
         if _is_unresolvable_truncated_item(title, link, summary):
             continue
 
         items.append(
-            {
+            normalize_text_item(
+                {
                 "id": str(entry.get("id") or ""),
                 "title": title,
                 # JSON Feed `id` is an opaque stable identifier. It is not a URL and
@@ -494,10 +571,12 @@ def _fetch_rss_feed_json(url: str, limit: int = 20, timeout: float = 20.0) -> di
                 "published": str(entry.get("date_published") or entry.get("date_modified") or "") or None,
                 "author": _authors_to_str(entry.get("authors")),
                 "tags": tags,
-                "image": image,
                 "content_html": content_html,
                 "attachments": attachments,
-            }
+                "updated": str(entry.get("date_modified") or "") or None,
+                "language": str(entry.get("language") or ""),
+                }
+            )
         )
 
     return {

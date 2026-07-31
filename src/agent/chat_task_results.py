@@ -19,6 +19,9 @@ from api.v1.endpoints.agent.chat_decision_renderers import _build_professional_b
 from api.v1.endpoints.agent.chat_evidence_renderers import _build_quantitative_screen_answer
 from api.v1.endpoints.agent.chat_research_renderers import _build_workflow_evidence_fallback
 from src.agent.result_contracts import CollectionFinancialFilterSpec
+from src.agent.rss_renderers import (
+    build_rss_resource_answer as _build_rss_resource_answer,
+)
 from src.agent.task_executor import PlanExecutionResult
 from src.agent.task_workflows import StandardTaskKind, TaskPlan, workflow_for
 from src.tools.symbols import find_securities_in_text
@@ -135,6 +138,30 @@ def _display_number_matches_evidence(
     return False
 
 
+def _normalized_material_claim_value(
+    number_text: str,
+    unit: str,
+) -> tuple[str, Decimal] | None:
+    """Normalize textual evidence claims without losing their dimension."""
+    try:
+        value = Decimal(number_text.replace(",", ""))
+    except InvalidOperation:
+        return None
+    if unit == "亿元":
+        return "currency", value * Decimal("100000000")
+    if unit == "万元":
+        return "currency", value * Decimal("10000")
+    if unit == "元":
+        return "currency", value
+    if unit == "万台":
+        return "count:台", value * Decimal("10000")
+    if unit == "台":
+        return "count:台", value
+    if unit == "%":
+        return "ratio", value
+    return f"count:{unit}", value
+
+
 def _exact_result_contract_answer(
     plan: TaskPlan,
     execution: PlanExecutionResult,
@@ -190,6 +217,18 @@ def _exact_result_contract_answer(
         return _build_professional_buy_decision_answer(evidence) or (
             "## 专业买入分析未完成\n\n" "本轮没有成功取得八维专业分析结果，因此没有输出任何买入结论。请重试本轮问题。"
         )
+    if result_contract in {
+        "rss_source_discovery",
+        "rss_feed_read",
+        "rss_article_read",
+    }:
+        if (
+            result_contract == "rss_article_read"
+            and str(task.parameters.get("response_mode") or "")
+            != "resource_delivery"
+        ):
+            return None
+        return _build_rss_resource_answer(evidence)
     if task.kind in {
         StandardTaskKind.WATCHLIST_QUERY,
         StandardTaskKind.WATCHLIST_MUTATION,
@@ -239,6 +278,22 @@ def _standard_task_answer_issues(
         r"(?P<unit>%|亿元|万元|元|万台|台|个|倍|家)"
     )
     evidence_numbers = _numeric_evidence_values(evidence or [])
+    evidence_text_claims = {
+        normalized
+        for evidence_match in material_claim_pattern.finditer(evidence_text)
+        for number in (
+            evidence_match.group("first"),
+            evidence_match.group("second"),
+        )
+        if number is not None
+        if (
+            normalized := _normalized_material_claim_value(
+                number,
+                evidence_match.group("unit"),
+            )
+        )
+        is not None
+    }
     missing_claims: List[str] = []
     for match in material_claim_pattern.finditer(content):
         claim = match.group(0)
@@ -252,11 +307,9 @@ def _standard_task_answer_issues(
         ]
         unit = match.group("unit")
         if all(
-            _display_number_matches_evidence(
-                number,
-                unit,
-                evidence_numbers,
-            )
+            _display_number_matches_evidence(number, unit, evidence_numbers)
+            or _normalized_material_claim_value(number, unit)
+            in evidence_text_claims
             for number in numbers
         ):
             continue

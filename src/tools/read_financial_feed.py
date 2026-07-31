@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.tools._rss_agent import endpoint_value, ensure_financial_route, object_value, rss_options_schema
+from src.tools._rss_agent import rss_options_schema
 from src.tools.base import ToolSpec, object_schema
+from src.tools.read_rss_feed import read_rss_feed
 
 
 def read_financial_feed(
@@ -16,38 +17,14 @@ def read_financial_feed(
     limit: int = 30,
     force: bool = False,
 ) -> dict[str, Any]:
-    from api.v1.endpoints.rss import FeedSpecRequest, get_rss_feeds_by_spec
-
-    clean_params = object_value(params, "params")
-    clean_options = object_value(options, "options")
-    bounded = max(1, min(int(limit or 30), 100))
-    body = FeedSpecRequest(
-        route_path=ensure_financial_route(route_path),
-        params=clean_params,
-        options=clean_options,
-        namespace=str(namespace or "").strip() or None,
-        limit=bounded,
-        force=bool(force),
+    return read_rss_feed(
+        route_path=route_path,
+        params=params,
+        options=options,
+        namespace=namespace,
+        limit=limit,
+        force=force,
     )
-    result = endpoint_value(lambda: get_rss_feeds_by_spec(body))
-    items = result.get("items") or []
-    errors = [str(error) for error in result.get("errors") or []]
-    data_time = result.get("_fetched_at")
-    return {
-        **result,
-        "success": bool(items) or not errors,
-        "partial": bool(items) and bool(errors),
-        "route_path": body.route_path,
-        "params": clean_params,
-        "options": clean_options,
-        "namespace": body.namespace,
-        "item_count": len(items),
-        "data_time": data_time,
-        "is_stale": False if data_time else None,
-        "freshness_unknown": data_time is None,
-        "errors": errors,
-        "warnings": errors if items else [],
-    }
 
 
 TOOL = ToolSpec(

@@ -216,18 +216,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(validation["valid"])
         self.assertTrue(any(issue["code"] == "invalid_format" for issue in validation["issues"]))
 
-    def test_validate_reports_invalid_searxng_url(self) -> None:
-        validation = self.service.validate(
-            items=[{"key": "SEARXNG_BASE_URLS", "value": "searx.local,https://ok.example"}]
-        )
-        self.assertFalse(validation["valid"])
-        self.assertTrue(any(issue["code"] == "invalid_url" for issue in validation["issues"]))
-
-    def test_validate_reports_invalid_public_searxng_toggle(self) -> None:
-        validation = self.service.validate(items=[{"key": "SEARXNG_PUBLIC_INSTANCES_ENABLED", "value": "maybe"}])
-        self.assertFalse(validation["valid"])
-        self.assertTrue(any(issue["code"] == "invalid_type" for issue in validation["issues"]))
-
     def test_validate_reports_invalid_feishu_webhook_url(self) -> None:
         validation = self.service.validate(items=[{"key": "FEISHU_WEBHOOK_URL", "value": "feishu-hook-without-scheme"}])
         self.assertFalse(validation["valid"])
@@ -300,18 +288,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
             )
         )
 
-    def test_update_persists_public_searxng_toggle(self) -> None:
-        old_version = self.manager.get_config_version()
-        response = self.service.update(
-            config_version=old_version,
-            items=[{"key": "SEARXNG_PUBLIC_INSTANCES_ENABLED", "value": "false"}],
-            reload_now=False,
-        )
-
-        self.assertTrue(response["success"])
-        current_map = self.manager.read_config_map()
-        self.assertEqual(current_map["SEARXNG_PUBLIC_INSTANCES_ENABLED"], "false")
-
     def test_validate_accepts_report_language_english(self) -> None:
         validation = self.service.validate(items=[{"key": "REPORT_LANGUAGE", "value": "en"}])
 
@@ -328,27 +304,6 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
     def _notification_test_env(self):
         return patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True)
-
-    @patch(
-        "src.notification_sender.WechatSender.send_to_wechat",
-        side_effect=requests.exceptions.Timeout(
-            "timeout for https://qyapi.example.com/cgi-bin/webhook/send?key=secret token=abc123"
-        ),
-    )
-    @patch.object(SystemConfigService, "_reload_runtime_singletons")
-    def test_update_with_reload_resets_runtime_singletons(
-        self,
-        mock_reload_runtime_singletons,
-        mock_send_wechat,
-    ) -> None:
-        response = self.service.update(
-            config_version=self.manager.get_config_version(),
-            items=[{"key": "STOCK_LIST", "value": "600519"}],
-            reload_now=True,
-        )
-
-        self.assertTrue(response["success"])
-        mock_reload_runtime_singletons.assert_called_once()
 
     def test_update_with_reload_applies_updated_env_file_when_process_env_is_stale(self) -> None:
         os.environ["STOCK_LIST"] = "600519,000001"

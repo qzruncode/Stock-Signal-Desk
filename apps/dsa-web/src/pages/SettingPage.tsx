@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Bell, Box, Hammer, MessageSquareText } from 'lucide-react';
+import { ArrowLeft, Bell, Box, Hammer, MessageSquareText, Rss } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
@@ -8,6 +8,7 @@ import { ModelSettingsView } from '../components/settings/ModelSettingsView';
 import { AgentPromptView } from '../components/agentPrompts/AgentPromptView';
 import { NotificationSettingsView } from '../components/settings/NotificationSettingsView';
 import { MobileSettingsNavigation } from '../components/settings/MobileSettingsNavigation';
+import { RssSettingsView } from '../components/settings/RssSettingsView';
 import { ToolRegistryView } from '../components/tools/ToolRegistryView';
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
@@ -24,6 +25,13 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Bell,
     available: true,
     description: '企业微信渠道与发送测试',
+  },
+  {
+    id: 'rss',
+    label: 'RSS 数据源',
+    icon: Rss,
+    available: true,
+    description: '浏览已筛选的财经来源并预览 Feed',
   },
   {
     id: 'model',
@@ -129,6 +137,8 @@ const SettingPage: React.FC = () => {
               <AgentPromptView />
             ) : activeCategory?.id === 'notification' ? (
               <NotificationSettingsView />
+            ) : activeCategory?.id === 'rss' ? (
+              <RssSettingsView />
             ) : null}
           </motion.main>
         </AnimatePresence>

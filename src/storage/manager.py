@@ -38,6 +38,7 @@ from src.storage.mixins import (
     AgentQualityMixin,
     FinancialLifecycleMixin,
     AgentGovernanceMixin,
+    TextDocumentMixin,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ class DatabaseManager(
     AgentQualityMixin,
     FinancialLifecycleMixin,
     AgentGovernanceMixin,
+    TextDocumentMixin,
 ):
     """
     数据库管理器 - 单例模式

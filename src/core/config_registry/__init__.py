@@ -167,12 +167,6 @@ def _infer_category(key: str) -> str:
                 "PYTDX",
                 "BAOSTOCK",
                 "YFINANCE",
-                "TAVILY",
-                "SERPAPI",
-                "BRAVE",
-                "BOCHA",
-                "ANSPIRE",
-                "SEARXNG",
                 "NEWS_",
                 "BIAS_",
             )

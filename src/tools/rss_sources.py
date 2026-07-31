@@ -36,8 +36,8 @@ RSS_ROUTE_CAPABILITIES: dict[str, frozenset[str]] = {
     "/jin10/:important?": frozenset({"market", "macro", "realtime"}),
     "/jrj/:channelNum": frozenset({"market", "company"}),
     "/mckinsey/cn/:category?": frozenset({"research", "industry", "macro"}),
-    "/moodysmismicrosite/report/:industry?": frozenset({"research", "industry", "macro"}),
-    "/nanhua/report/:type1/:type2": frozenset({"research", "industry", "macro"}),
+    "/moodysmismicrosite/report/:industry?": frozenset({"research", "industry", "macro", "rating"}),
+    "/nanhua/report/:type1/:type2": frozenset({"research", "industry", "macro", "futures"}),
     "/nifd/research/:categoryGuid?": frozenset({"research", "macro", "industry"}),
     "/qianzhan/analyst/column/:type?": frozenset({"research", "industry"}),
     "/qianzhan/analyst/rank/:type?": frozenset({"research", "industry", "ranking"}),
@@ -55,7 +55,7 @@ RSS_ROUTE_CAPABILITIES: dict[str, frozenset[str]] = {
     "/wallstreetcn/hot/:period?": frozenset({"market", "social"}),
     "/wallstreetcn/news/:category?": frozenset({"market", "company", "macro", "industry"}),
     "/wallstreetcn/live/:category?/:score?": frozenset({"market", "macro", "realtime"}),
-    "/wkjyqh/research": frozenset({"research", "industry", "macro"}),
+    "/wkjyqh/research": frozenset({"research", "industry", "macro", "futures"}),
     "/xueqiu/hots": frozenset({"social", "market"}),
 }
 

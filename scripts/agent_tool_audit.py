@@ -124,6 +124,12 @@ def tool_cases() -> dict[str, dict[str, Any]]:
             "include_content": True,
             "fallback_to_web": True,
         },
+        "discover_rss_sources": {"limit": 100},
+        "inspect_rss_source": {"route_path": "/cls/telegraph/:category?"},
+        "read_rss_feed": {
+            "route_path": "/cls/telegraph/:category?",
+            "limit": 5,
+        },
         "list_financial_sources": {"limit": 100},
         "inspect_financial_source": {"route_path": "/cls/telegraph/:category?"},
         "read_financial_feed": {"route_path": "/cls/telegraph/:category?", "limit": 5},
@@ -176,8 +182,11 @@ def schema_only_tools() -> set[str]:
         "prepare_market_mainline_snapshot",
         "analyze_stock_catalysts",
         "read_financial_article",
+        "read_rss_item",
+        "read_text_document",
         "transform_webpage_to_feed",
         "export_financial_feed",
+        "export_rss_feed",
     }
 
 

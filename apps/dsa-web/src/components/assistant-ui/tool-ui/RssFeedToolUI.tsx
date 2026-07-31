@@ -23,8 +23,10 @@ function readerItem(item: RssFeedItem, index: number): RssItem {
     published: item.published || null,
     author: item.author || item.source || '',
     tags: item.tags || [],
-    image: item.image,
+    content_html: item.content_html,
     attachments: item.attachments || [],
+    item_ref: item.item_ref,
+    resources: item.resources || [],
   };
 }
 

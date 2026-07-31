@@ -8,7 +8,7 @@ for _name, _value in vars(_registry).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
-__all__ = ['_theme_evidence_compiler', '_named_inputs', '_feed_compiler', '_webpage_compiler', '_effect', '_resources', '_cross_run_freshness', '_sem', '_make_spec', 'capability_for', 'capability_catalog', 'migration_coverage', 'normalize_capability_intent']
+__all__ = ['_theme_evidence_compiler', '_named_inputs', '_source_discovery_compiler', '_feed_compiler', '_article_compiler', '_export_compiler', '_webpage_compiler', '_effect', '_resources', '_cross_run_freshness', '_sem', '_make_spec', 'capability_for', 'capability_catalog', 'migration_coverage', 'normalize_capability_intent']
 
 def _theme_evidence_compiler(
     node_id: str,
@@ -50,6 +50,44 @@ def _theme_evidence_compiler(
 def _named_inputs(values: list[dict[str, Any]]) -> dict[str, Any]:
     return {str(item["name"]): item["value"] for item in values}
 
+def _source_discovery_compiler(
+    node_id: str,
+    objective: str,
+    intent: BaseModel,
+    input_refs: tuple[InputReferenceV2, ...],
+    result_selection: ResultSelectionV2 | None,
+    current_year: int,
+) -> NormalizedIntent[Any]:
+    del node_id, input_refs, result_selection, current_year
+    payload = intent.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude_unset=True,
+    )
+    information_needs = payload.pop("information_needs", ())
+    query_parts = [
+        str(value).strip()
+        for value in (
+            *information_needs,
+            payload.get("query"),
+            payload.get("keyword"),
+        )
+        if str(value or "").strip()
+    ]
+    unique_query_parts = tuple(dict.fromkeys(query_parts))
+    if unique_query_parts:
+        # Source discovery is a union lookup: joining explicit information
+        # needs lets the selector keep routes relevant to any requested use.
+        payload["query"] = " ".join(unique_query_parts)
+    payload.pop("keyword", None)
+    if not payload.get("query") and not payload.get("route_path"):
+        payload["query"] = objective
+    payload["force"] = False
+    return NormalizedIntent(
+        intent=intent,
+        execution_parameters=MappingProxyType(payload),
+    )
+
 def _feed_compiler(
     node_id: str,
     objective: str,
@@ -64,6 +102,52 @@ def _feed_compiler(
     if inputs:
         payload["params"] = inputs
     payload["force"] = False
+    return NormalizedIntent(
+        intent=intent,
+        execution_parameters=MappingProxyType(payload),
+    )
+
+def _article_compiler(
+    node_id: str,
+    objective: str,
+    intent: BaseModel,
+    input_refs: tuple[InputReferenceV2, ...],
+    result_selection: ResultSelectionV2 | None,
+    current_year: int,
+) -> NormalizedIntent[Any]:
+    del node_id, objective, result_selection, current_year
+    payload = intent.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude_unset=True,
+    )
+    # Artifact ids identify typed collection wrappers, never the documents
+    # inside those collections. The runtime resolves the bound artifact payload
+    # and the workflow compiler selects one validated TextDocumentResource.
+    if any(
+        ref.resource_type == ResourceType.TEXT_DOCUMENT_COLLECTION
+        for ref in input_refs
+    ):
+        payload.pop("resource_id", None)
+    payload["force"] = False
+    return NormalizedIntent(
+        intent=intent,
+        execution_parameters=MappingProxyType(payload),
+    )
+
+def _export_compiler(
+    node_id: str,
+    objective: str,
+    intent: BaseModel,
+    input_refs: tuple[InputReferenceV2, ...],
+    result_selection: ResultSelectionV2 | None,
+    current_year: int,
+) -> NormalizedIntent[Any]:
+    del node_id, objective, input_refs, result_selection, current_year
+    payload = intent.model_dump(mode="json", exclude_none=True)
+    inputs = _named_inputs(payload.pop("inputs", []))
+    if inputs:
+        payload["params"] = inputs
     return NormalizedIntent(
         intent=intent,
         execution_parameters=MappingProxyType(payload),
@@ -108,6 +192,10 @@ def _resources(
     mapping = {
         TaskResource.SECURITY_COLLECTION: ResourceType.SECURITY_COLLECTION,
         TaskResource.DOMAIN_COLLECTION: ResourceType.DOMAIN_COLLECTION,
+        TaskResource.RSS_SOURCE_COLLECTION: ResourceType.RSS_SOURCE_COLLECTION,
+        TaskResource.RSS_ITEM_COLLECTION: ResourceType.RSS_ITEM_COLLECTION,
+        TaskResource.TEXT_DOCUMENT_COLLECTION: ResourceType.TEXT_DOCUMENT_COLLECTION,
+        TaskResource.EVIDENCE_COLLECTION: ResourceType.EVIDENCE_COLLECTION,
     }
     return frozenset(mapping[item] for item in values)
 
@@ -145,6 +233,13 @@ def _sem(
 def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
     workflow = workflow_for(StandardTaskKind(capability.value))
     input_resources = _resources(workflow.input_resources)
+    required_input_resources = _resources(
+        workflow.required_input_resources
+    )
+    alternative_input_resource_groups = tuple(
+        _resources(group)
+        for group in workflow.alternative_input_resource_groups
+    )
     output_resources = _resources(workflow.output_resources)
     if not output_resources:
         output_resources = frozenset({ResourceType.GENERIC_RESULT})
@@ -193,6 +288,8 @@ def _make_spec(capability: Capability) -> CapabilitySpec[Any, TaskOutcomeV2]:
         intent_model=_INTENT_MODELS[capability],
         result_model=TaskOutcomeV2,
         input_resources=input_resources,
+        required_input_resources=required_input_resources,
+        alternative_input_resource_groups=alternative_input_resource_groups,
         output_resources=output_resources,
         compiler=compiler,
         execution_policy=policy,
@@ -237,6 +334,13 @@ def capability_catalog() -> list[dict[str, Any]]:
             "title": spec.title,
             "description": spec.description,
             "input_resources": sorted(item.value for item in spec.input_resources),
+            "required_input_resources": sorted(
+                item.value for item in spec.required_input_resources
+            ),
+            "alternative_input_resource_groups": [
+                sorted(item.value for item in group)
+                for group in spec.alternative_input_resource_groups
+            ],
             "output_resources": sorted(item.value for item in spec.output_resources),
             "allow_direct_entities": spec.allow_direct_entities,
             "supports_result_selection": spec.supports_result_selection,

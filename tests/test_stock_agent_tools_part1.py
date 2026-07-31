@@ -140,8 +140,12 @@ def test_szse_inquiry_fills_all_path_segments_before_keyword() -> None:
         "/szse/inquire/:category?/:select?/:keyword?",
         "深交所问询",
         params=[
-            {"name": "category", "required": False},
-            {"name": "select", "required": False},
+            {"name": "category", "required": False, "default": "0"},
+            {
+                "name": "select",
+                "required": False,
+                "default": "全部函件类别",
+            },
             {"name": "keyword", "required": False},
         ],
     )

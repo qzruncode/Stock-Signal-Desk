@@ -27,12 +27,6 @@ def _make_config(**kwargs) -> Config:
     """
     defaults = dict(
         stock_list=["600519"],
-        bocha_api_keys=[],
-        tavily_api_keys=[],
-        brave_api_keys=[],
-        serpapi_keys=[],
-        searxng_base_urls=[],
-        searxng_public_instances_enabled=True,
         wechat_webhook_url="https://example.com/webhook",
     )
     defaults.update(kwargs)
@@ -76,7 +70,7 @@ class TestValidateStructuredHappyPath:
     def test_no_issues_when_fully_configured(self):
         cfg = _make_config()
         issues = cfg.validate_structured()
-        # No errors or warnings; only possible info about tushare / search
+        # No errors or warnings.
         errors = [i for i in issues if i.severity == "error"]
         warnings = [i for i in issues if i.severity == "warning"]
         assert errors == []
@@ -106,29 +100,6 @@ class TestValidateStructuredNotification:
         cfg = _make_config(wechat_webhook_url="https://example.com/wh")
         issues = cfg.validate_structured()
         assert not any(i.severity == "warning" and "通知渠道" in i.message for i in issues)
-
-    def test_no_search_engine_is_info(self):
-        cfg = _make_config(searxng_public_instances_enabled=False)
-        issues = cfg.validate_structured()
-        info = [i for i in issues if i.severity == "info"]
-        assert any("搜索引擎" in i.message for i in info)
-        search_issue = next(i for i in info if "搜索引擎" in i.message)
-        assert search_issue.field == "BOCHA_API_KEYS"
-
-    def test_searxng_configured_no_search_info(self):
-        """When searxng_base_urls is configured, no 'unconfigured search engine' info."""
-        cfg = _make_config(searxng_base_urls=["https://searx.example.org"])
-        issues = cfg.validate_structured()
-        info = [i for i in issues if i.severity == "info"]
-        assert not any("搜索引擎" in i.message and "未配置" in i.message for i in info)
-
-    def test_public_searxng_enabled_no_search_info(self):
-        """Public SearXNG mode also counts as search capability."""
-        cfg = _make_config(searxng_public_instances_enabled=True)
-        issues = cfg.validate_structured()
-        info = [i for i in issues if i.severity == "info"]
-        assert not any("搜索引擎" in i.message and "未配置" in i.message for i in info)
-
 
 # ---------------------------------------------------------------------------
 # Deprecated field migration hints

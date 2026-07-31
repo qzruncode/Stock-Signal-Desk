@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.tools._rss_agent import ensure_financial_route, object_value, rss_options_schema
+from src.tools._rss_agent import rss_options_schema
 from src.tools.base import ToolSpec, object_schema
+from src.tools.export_rss_feed import export_rss_feed
 
 _FORMATS = ("rss", "atom", "json", "rss3")
 
@@ -18,29 +19,14 @@ def export_financial_feed(
     format: str = "rss",
     limit: int = 30,
 ) -> dict[str, Any]:
-    fmt = str(format or "rss").lower()
-    if fmt not in _FORMATS:
-        raise ValueError(f"不支持的导出格式: {fmt}")
-    path = ensure_financial_route(route_path)
-    clean_options = object_value(options, "options")
-    clean_options["limit"] = max(1, min(int(limit or 30), 100))
-    return {
-        "success": True,
-        "partial": False,
-        "route_path": path,
-        "params": object_value(params, "params"),
-        "options": clean_options,
-        "namespace": str(namespace or "").strip(),
-        "format": fmt,
-        "available_formats": list(_FORMATS),
-        "limit": clean_options["limit"],
-        "download_ready": True,
-        "data_time": None,
-        "is_stale": None,
-        "freshness_unknown": True,
-        "errors": [],
-        "warnings": [],
-    }
+    return export_rss_feed(
+        route_path=route_path,
+        params=params,
+        options=options,
+        namespace=namespace,
+        format=format,
+        limit=limit,
+    )
 
 
 TOOL = ToolSpec(

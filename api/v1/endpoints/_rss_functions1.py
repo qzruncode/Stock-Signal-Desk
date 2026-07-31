@@ -58,6 +58,7 @@ __all__ = ['get_rss_namespaces', 'get_rss_namespace', 'get_rss_categories', 'get
 def get_rss_namespaces(
     force: bool = Query(False, description="强制刷新缓存"),
     finance_only: bool = Query(True, description="仅返回股市相关路由(财经分类,排除纯加密)"),
+    include_hidden: bool = Query(False, description="包含降级、英文和非默认推荐路由"),
 ):
     """代理 RSSHub /api/namespace，返回扁平化路由列表供前端浏览/搜索/订阅。
 
@@ -65,7 +66,11 @@ def get_rss_namespaces(
     排除纯加密货币。传 finance_only=false 可看全量。
     """
     try:
-        return get_namespaces_flat(force=force, finance_only=finance_only)
+        return get_namespaces_flat(
+            force=force,
+            finance_only=finance_only,
+            include_hidden=include_hidden,
+        )
     except Exception as exc:
         logger.error("Failed to fetch RSS namespaces: %s", exc, exc_info=True)
         raise HTTPException(

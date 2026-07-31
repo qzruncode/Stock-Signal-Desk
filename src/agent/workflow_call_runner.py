@@ -20,7 +20,11 @@ from src.agent.orchestrator_v2.runtime import compile_workflow_call_v2
 from src.agent.resource_scheduler import ResourceCapacityExceeded, agent_resource_lease
 from src.agent.runtime_safety import get_agent_runtime_limits, is_production_environment
 from src.agent.run_registry import active_run_registry
-from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchRequest
+from src.agent.tool_dispatch import (
+    ToolDispatcher,
+    ToolDispatchOutcome,
+    ToolDispatchRequest,
+)
 from src.agent.task_workflows import WorkflowCall
 from src.tools.base import ToolProgressUpdate
 from src.tools.process_runner import execute_tool_isolated
@@ -45,6 +49,17 @@ async def run_workflow_call(
     compact_result: Any = _compact_tool_result,
     attach_fallback: Any = _maybe_attach_search_fallback,
 ) -> Dict[str, Any]:
+    def presentation_result(value: Dict[str, Any]) -> Dict[str, Any]:
+        projected = compact_result(call.tool_name, value)
+        if isinstance(projected, dict):
+            return projected
+        return {
+            "success": value.get("success", True),
+            "result": projected,
+            "errors": value.get("errors", []),
+            "partial": value.get("partial", False),
+        }
+
     compiled_task = v2_compiled_by_task[call.task_id]
     compiled_call_v2 = compile_workflow_call_v2(
         compiled_task,
@@ -83,6 +98,7 @@ async def run_workflow_call(
         call,
         typed_arguments,
         model_config=llm_cfg,
+        conversation_id=conversation_id,
     )
     if (
         cache_key is not None
@@ -99,7 +115,7 @@ async def run_workflow_call(
             active_run_registry.record_execution_cache_result(hit=True)
             result = {**cached_result, "runtime_cache_hit": True}
             tool.set_response(
-                result,
+                presentation_result(result),
                 is_error=result.get("success") is False,
             )
             return result
@@ -127,7 +143,7 @@ async def run_workflow_call(
                     "idempotency_reused": True,
                 }
                 tool.set_response(
-                    reused_effect,
+                    presentation_result(reused_effect),
                     is_error=reused_effect.get("success") is False,
                 )
                 return reused_effect
@@ -187,7 +203,7 @@ async def run_workflow_call(
                 exc,
             )
 
-    def execute_sync() -> Dict[str, Any]:
+    def execute_sync() -> ToolDispatchOutcome | Dict[str, Any]:
         try:
             dispatcher = ToolDispatcher(
                 registry,
@@ -200,6 +216,8 @@ async def run_workflow_call(
                     tool_name=call.tool_name,
                     arguments=typed_arguments,
                     idempotency_key=step_idempotency_key,
+                    conversation_id=conversation_id,
+                    run_id=active_run_id,
                     force_isolation=(
                         is_production_environment()
                         or str(os.getenv("AGENT_ISOLATE_ALL_STATELESS") or "").strip().lower()
@@ -217,7 +235,7 @@ async def run_workflow_call(
         finally:
             flush_tool_reasoning()
 
-    async def execute_with_heartbeat() -> Dict[str, Any]:
+    async def execute_with_heartbeat() -> ToolDispatchOutcome | Dict[str, Any]:
         worker = asyncio.create_task(asyncio.to_thread(execute_sync))
         heartbeat: asyncio.Task[None] | None = None
         try:
@@ -371,8 +389,15 @@ async def run_workflow_call(
                 run_id=active_run_id,
                 step_id=call.step_id,
             ):
-                result = await execute_with_heartbeat()
-            succeeded = result.get("success") is not False
+                dispatched = await execute_with_heartbeat()
+                if isinstance(dispatched, ToolDispatchOutcome):
+                    result = dispatched.canonical_result
+                    presentation = dispatched.presentation_result
+                else:
+                    # Compatibility for tests and injected dispatch adapters.
+                    result = dispatched
+                    presentation = presentation_result(result)
+                succeeded = result.get("success") is not False
             if db_manager is not None:
                 step_finished = await asyncio.to_thread(
                     db_manager.finish_agent_step,
@@ -393,7 +418,7 @@ async def run_workflow_call(
                     db_manager.record_agent_circuit_success,
                     f"tool:{call.tool_name}",
                 )
-            tool.set_response(result, is_error=not succeeded)
+            tool.set_response(presentation, is_error=not succeeded)
             logger.info(
                 "[WorkflowTool] task=%s step=%s tool=%s success=%s " "attempt=%s duration_ms=%d",
                 call.task_id,
@@ -419,23 +444,72 @@ async def run_workflow_call(
             isolated_cancel_event.set()
             last_exception = exc
             error_name = type(exc).__name__.lower()
+            error_message = str(exc).lower()
             error_code = (
                 "budget_exceeded"
-                if "budget exceeded" in str(exc).lower()
+                if "budget exceeded" in error_message
                 else (
                     "circuit_open"
-                    if "circuit is open" in str(exc).lower()
+                    if "circuit is open" in error_message
                     else (
                         "capacity_exceeded"
                         if isinstance(exc, ResourceCapacityExceeded)
                         else (
                             "timeout"
                             if isinstance(exc, TimeoutError)
+                            or "timeout" in error_name
                             else (
                                 "connection_error"
                                 if isinstance(exc, ConnectionError)
+                                or any(
+                                    marker in error_name
+                                    for marker in (
+                                        "connecterror",
+                                        "networkerror",
+                                        "remoteprotocolerror",
+                                    )
+                                )
                                 else (
-                                    "provider_rate_limited" if "ratelimit" in error_name else "tool_process_crashed"
+                                    "provider_rate_limited"
+                                    if "ratelimit" in error_name
+                                    or "rate limit" in error_message
+                                    else (
+                                        "provider_unavailable"
+                                        if any(
+                                            marker in error_message
+                                            for marker in (
+                                                "http 502",
+                                                "http 503",
+                                                "http 504",
+                                                "bad gateway",
+                                                "service unavailable",
+                                            )
+                                        )
+                                        else (
+                                            "permission_denied"
+                                            if isinstance(exc, PermissionError)
+                                            or "permission" in error_name
+                                            else (
+                                                "invalid_parameters"
+                                                if isinstance(exc, (TypeError, ValueError))
+                                                else (
+                                                    "tool_process_crashed"
+                                                    if (
+                                                        "process" in error_name
+                                                        and any(
+                                                            marker in error_message
+                                                            for marker in (
+                                                                "crash",
+                                                                "exited",
+                                                                "terminated",
+                                                            )
+                                                        )
+                                                    )
+                                                    else "tool_failed"
+                                                )
+                                            )
+                                        )
+                                    )
                                 )
                             )
                         )

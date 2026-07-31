@@ -37,6 +37,8 @@ from src.agent.orchestrator_v2.planner import (
     RepairIssueV2,
     RepairRecordV2,
     ResourceType,
+    SourceConstraintMode,
+    SourceKind,
     StageObserver,
     StageStatus,
     capability_catalog,
@@ -235,7 +237,9 @@ async def call_model_exact_v2(
             ) from exc
     raise AssertionError("unreachable")
 
-def _validate_outline_capability_contracts(value: BaseModel) -> None:
+def _validate_outline_capability_contracts(
+    value: BaseModel,
+) -> None:
     outline = IntentOutlineV2.model_validate(value)
     issues: list[RepairIssueV2] = []
     selected_specs = [capability_for(node.capability) for node in outline.nodes]
@@ -243,6 +247,131 @@ def _validate_outline_capability_contracts(value: BaseModel) -> None:
     required_dimensions = frozenset(
         dimension for claim in outline.goal.claims if claim.mandatory for dimension in claim.required_dimensions
     )
+    produced_resources = frozenset(
+        resource
+        for spec in selected_specs
+        for resource in spec.output_resources
+    )
+    missing_resources = tuple(
+        sorted(
+            set(outline.goal.required_output_resources) - produced_resources,
+            key=lambda item: item.value,
+        )
+    )
+    if missing_resources and not outline.needs_clarification:
+        issues.append(
+            RepairIssueV2(
+                pointer="/goal/required_output_resources",
+                code="goal_output_resource_coverage_incomplete",
+                expected=(
+                    "selected capabilities must produce every resource the "
+                    "user requested to view or consume"
+                ),
+                allowed=tuple(item.value for item in produced_resources),
+                message=(
+                    "capability graph does not produce required resources: "
+                    + ", ".join(item.value for item in missing_resources)
+                ),
+            )
+        )
+    rss_requirements = tuple(
+        requirement
+        for requirement in outline.goal.source_requirements
+        if requirement.kind == SourceKind.RSSHUB
+    )
+    if rss_requirements and not outline.needs_clarification:
+        rss_capabilities = {
+            Capability.FINANCIAL_SOURCE_DISCOVERY,
+            Capability.FINANCIAL_FEED_READ,
+            Capability.FINANCIAL_ARTICLE_READ,
+        }
+        if not any(node.capability in rss_capabilities for node in outline.nodes):
+            issues.append(
+                RepairIssueV2(
+                    pointer="/nodes",
+                    code="explicit_rss_route_substituted",
+                    expected="an RSSHub source, feed, or article capability",
+                    allowed=tuple(
+                        sorted(item.value for item in rss_capabilities)
+                    ),
+                    message="explicit RSSHub route cannot be replaced by another data source",
+                )
+            )
+        selected_rss_capabilities = {
+            node.capability
+            for node in outline.nodes
+            if node.capability in rss_capabilities
+        }
+        explicit_route_declared = any(
+            requirement.route_path
+            for requirement in rss_requirements
+        )
+        if (
+            explicit_route_declared
+            and selected_rss_capabilities
+            & {
+                Capability.FINANCIAL_FEED_READ,
+                Capability.FINANCIAL_ARTICLE_READ,
+            }
+            and Capability.FINANCIAL_SOURCE_DISCOVERY
+            not in selected_rss_capabilities
+        ):
+            issues.append(
+                RepairIssueV2(
+                    pointer="/nodes",
+                    code="rss_source_resolution_missing",
+                    expected=(
+                        "explicit RSSHub routes must be resolved before feed "
+                        "or article execution"
+                    ),
+                    allowed=(Capability.FINANCIAL_SOURCE_DISCOVERY.value,),
+                    message="RSSHub feed/article graph is missing source resolution",
+                )
+            )
+        if (
+            explicit_route_declared
+            and Capability.FINANCIAL_ARTICLE_READ
+            in selected_rss_capabilities
+            and Capability.FINANCIAL_FEED_READ
+            not in selected_rss_capabilities
+        ):
+            issues.append(
+                RepairIssueV2(
+                    pointer="/nodes",
+                    code="rss_item_binding_missing",
+                    expected=(
+                        "RSSHub article reads must consume an item produced by "
+                        "the feed step"
+                    ),
+                    allowed=(Capability.FINANCIAL_FEED_READ.value,),
+                    message="RSSHub article graph is missing stable feed item binding",
+                )
+            )
+        exclusive_declared = any(
+            requirement.mode == SourceConstraintMode.EXCLUSIVE
+            for requirement in rss_requirements
+        )
+        if exclusive_declared:
+            unexpected = tuple(
+                node.capability
+                for node in outline.nodes
+                if node.capability not in rss_capabilities
+            )
+            if unexpected:
+                issues.append(
+                    RepairIssueV2(
+                        pointer="/nodes",
+                        code="exclusive_rss_scope_violated",
+                        expected="only RSSHub source/feed/article capabilities",
+                        allowed=tuple(
+                            sorted(item.value for item in rss_capabilities)
+                        ),
+                        message=(
+                            "exclusive RSSHub request selected unrelated capabilities: "
+                            + ", ".join(item.value for item in unexpected)
+                        ),
+                    )
+                )
     missing_dimensions = tuple(
         sorted(
             required_dimensions - covered_dimensions,

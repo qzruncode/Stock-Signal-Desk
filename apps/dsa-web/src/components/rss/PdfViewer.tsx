@@ -8,8 +8,8 @@ import { Button } from '../common';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 export interface PdfViewerProps {
-  /** Same-origin proxy URL returning inline PDF bytes, e.g. /api/v1/rss/pdf/proxy?url=... */
-  proxyUrl: string;
+  /** Same-origin, authenticated TextDocumentResource URL. */
+  resourceUrl: string;
 }
 
 type Status = 'loading' | 'ready' | 'error';
@@ -24,7 +24,7 @@ type Status = 'loading' | 'ready' | 'error';
  * `Content-Disposition: inline`, so the browser's built-in PDF viewer renders
  * it as a fallback if PDF.js fails.
  */
-const PdfViewer: React.FC<PdfViewerProps> = ({ proxyUrl }) => {
+const PdfViewer: React.FC<PdfViewerProps> = ({ resourceUrl }) => {
   const [status, setStatus] = useState<Status>('loading');
   const [errorMsg, setErrorMsg] = useState('');
   const [numPages, setNumPages] = useState(0);
@@ -97,7 +97,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ proxyUrl }) => {
     setCurrentPage(1);
     currentPageRef.current = 1;
 
-    const loadingTask = pdfjsLib.getDocument({ url: proxyUrl });
+    const loadingTask = pdfjsLib.getDocument({ url: resourceUrl });
     loadingTaskRef.current = loadingTask;
     loadingTask.promise
       .then((doc) => {
@@ -133,7 +133,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ proxyUrl }) => {
       loadingTaskRef.current = null;
       if (task) void task.destroy();
     };
-  }, [proxyUrl, renderPage]);
+  }, [resourceUrl, renderPage]);
 
   // Re-render when the page or zoom changes.
   useEffect(() => {
@@ -170,7 +170,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ proxyUrl }) => {
         </Button>
         <span className="mx-1 h-4 w-px bg-border" />
         <a
-          href={proxyUrl}
+          href={resourceUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-cyan hover:bg-muted/60"
@@ -189,7 +189,7 @@ const PdfViewer: React.FC<PdfViewerProps> = ({ proxyUrl }) => {
       {status === 'error' && (
         <div className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-sm text-danger">
           <p>PDF 加载失败：{errorMsg}</p>
-          <a href={proxyUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs text-cyan hover:underline">
+          <a href={resourceUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs text-cyan hover:underline">
             尝试在新窗口打开
           </a>
         </div>

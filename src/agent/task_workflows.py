@@ -112,6 +112,10 @@ class ConfirmationPolicy(str, Enum):
 class TaskResource(str, Enum):
     SECURITY_COLLECTION = "security_collection"
     DOMAIN_COLLECTION = "domain_collection"
+    RSS_SOURCE_COLLECTION = "rss_source_collection"
+    RSS_ITEM_COLLECTION = "rss_item_collection"
+    TEXT_DOCUMENT_COLLECTION = "text_document_collection"
+    EVIDENCE_COLLECTION = "evidence_collection"
 
 
 class CollectionBehavior(str, Enum):
@@ -339,8 +343,14 @@ class WorkflowSpec:
     parameter_requirements: tuple[ParameterRequirement, ...] = ()
     resource_bindings: frozenset[str] = field(default_factory=frozenset)
     input_resources: frozenset[TaskResource] = field(default_factory=frozenset)
+    required_input_resources: frozenset[TaskResource] = field(default_factory=frozenset)
+    alternative_input_resource_groups: tuple[frozenset[TaskResource], ...] = ()
     input_resource_parameters: Mapping[str, TaskResource] = field(default_factory=dict)
     parameter_output_resources: Mapping[str, TaskResource] = field(default_factory=dict)
+    output_resource_paths: Mapping[
+        TaskResource,
+        tuple[str, ...],
+    ] = field(default_factory=dict)
     output_resources: frozenset[TaskResource] = field(default_factory=frozenset)
     collection_behavior: CollectionBehavior = CollectionBehavior.NONE
     result_processor: str | None = None

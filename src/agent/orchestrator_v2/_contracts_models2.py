@@ -25,6 +25,8 @@ class CapabilitySpec(Generic[IntentT, ResultT]):
     intent_model: type[IntentT]
     result_model: type[ResultT]
     input_resources: frozenset[ResourceType]
+    required_input_resources: frozenset[ResourceType]
+    alternative_input_resource_groups: tuple[frozenset[ResourceType], ...]
     output_resources: frozenset[ResourceType]
     compiler: Compiler[IntentT]
     execution_policy: ExecutionPolicy

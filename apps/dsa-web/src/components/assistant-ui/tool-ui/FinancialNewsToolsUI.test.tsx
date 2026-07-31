@@ -65,6 +65,37 @@ describe('FinancialSourcesToolUI', () => {
     expect(screen.getByText(/如需查找“AI”相关资讯/)).toBeInTheDocument();
   });
 
+  it('renders a previously camel-cased persisted source result without losing route metadata', () => {
+    render(
+      <FinancialSourcesToolUI
+        {...callbacks}
+        type="tool-call"
+        toolCallId="sources-persisted"
+        toolName="discover_rss_sources"
+        args={{}}
+        argsText="{}"
+        result={{
+          success: true,
+          catalogCount: 47,
+          matchedCount: 1,
+          returnedCount: 1,
+          items: [{
+            routePath: '/szse/disclosure/listed/notice/:query?',
+            name: '上市公司公告',
+            namespace: 'szse',
+            namespaceName: '深圳证券交易所',
+            description: '上市公司公告（深圳证券交易所）',
+          }],
+        }}
+        status={completed}
+      />,
+    );
+
+    expect(screen.getByText('资讯源目录 47 个 · 匹配 1 个 · 返回 1 个')).toBeInTheDocument();
+    expect(screen.getByText('深圳证券交易所 · 1')).toBeInTheDocument();
+    expect(screen.getByText('/szse/disclosure/listed/notice/:query?')).toBeInTheDocument();
+  });
+
   it('renders concrete dynamic source choices and their ids', () => {
     render(
       <FinancialSourcesToolUI

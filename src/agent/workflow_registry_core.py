@@ -81,8 +81,14 @@ def make_spec(
     requirements: Sequence[ParameterRequirement] = (),
     resources: Iterable[str] = (),
     input_resources: Iterable[TaskResource] = (),
+    required_input_resources: Iterable[TaskResource] | None = None,
+    alternative_input_resource_groups: Sequence[Iterable[TaskResource]] = (),
     input_resource_parameters: Mapping[str, TaskResource] | None = None,
     parameter_output_resources: Mapping[str, TaskResource] | None = None,
+    output_resource_paths: Mapping[
+        TaskResource,
+        tuple[str, ...],
+    ] | None = None,
     output_resources: Iterable[TaskResource] = (),
     collection: CollectionBehavior | None = None,
     result_processor: str | None = None,
@@ -97,6 +103,25 @@ def make_spec(
         if collection is not None
         else CollectionBehavior.PASSTHROUGH if entities else CollectionBehavior.NONE
     )
+    accepted_input_resources = frozenset(
+        {
+            *explicit_input_resources,
+            *({TaskResource.SECURITY_COLLECTION} if entities else set()),
+            *(input_resource_parameters or {}).values(),
+        }
+    )
+    required_resources = (
+        accepted_input_resources
+        if required_input_resources is None
+        else frozenset(required_input_resources)
+    )
+    alternative_groups = tuple(
+        frozenset(group) for group in alternative_input_resource_groups
+    )
+    if not required_resources <= accepted_input_resources:
+        raise ValueError("required_input_resources must be accepted inputs")
+    if any(not group or not group <= accepted_input_resources for group in alternative_groups):
+        raise ValueError("alternative input groups must be non-empty accepted inputs")
     return WorkflowSpec(
         kind=kind,
         title=title,
@@ -126,19 +151,19 @@ def make_spec(
         state_machine=tuple(state_machine),
         parameter_requirements=tuple(requirements),
         resource_bindings=frozenset(resources),
-        input_resources=frozenset(
-            {
-                *explicit_input_resources,
-                *({TaskResource.SECURITY_COLLECTION} if entities else set()),
-                *(input_resource_parameters or {}).values(),
-            }
-        ),
+        input_resources=accepted_input_resources,
+        required_input_resources=required_resources,
+        alternative_input_resource_groups=alternative_groups,
         input_resource_parameters=MappingProxyType(dict(input_resource_parameters or {})),
         parameter_output_resources=MappingProxyType(dict(parameter_output_resources or {})),
+        output_resource_paths=MappingProxyType(
+            dict(output_resource_paths or {})
+        ),
         output_resources=frozenset(
             {
                 *({TaskResource.SECURITY_COLLECTION} if collection_behavior != CollectionBehavior.NONE else set()),
                 *(parameter_output_resources or {}).values(),
+                *(output_resource_paths or {}).keys(),
                 *output_resources,
             }
         ),

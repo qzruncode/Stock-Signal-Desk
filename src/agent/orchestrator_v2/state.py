@@ -20,7 +20,7 @@ from src.agent.orchestrator_v2.contracts import (
 
 
 CONVERSATION_CONTEXT_V2_VERSION = "3"
-ARTIFACT_SCHEMA_VERSION = "agent-artifact-3.0"
+ARTIFACT_SCHEMA_VERSION = "agent-artifact-4.0"
 MAX_V2_TURNS = 8
 
 

@@ -166,6 +166,14 @@ class ChatSessionService:
     def delete_conversation(self, conversation_id: str) -> int:
         if not self.get_conversation(conversation_id):
             return 0
+        from src.services.text_document_service import (
+            delete_conversation_document_blobs,
+        )
+
+        delete_conversation_document_blobs(
+            self.db,
+            conversation_id,
+        )
         return self.db.delete_chat_conversation(conversation_id)
 
     def ensure_conversation(self, conversation_id: Optional[str]) -> Dict[str, Any]:

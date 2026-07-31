@@ -86,6 +86,7 @@ def _execute_tool_process(
     cancel_event: threading.Event | None = None,
     deadline_seconds: float | None = None,
     idempotency_key: str | None = None,
+    execution_context: dict[str, str | None] | None = None,
 ) -> Any:
     """Execute exactly one worker process under cancellation and a deadline."""
     command = [sys.executable, "-m", "src.tools.process_worker"]
@@ -110,6 +111,7 @@ def _execute_tool_process(
             "name": name,
             "arguments": arguments,
             "idempotency_key": worker_idempotency_key,
+            "execution_context": execution_context or {},
         },
         ensure_ascii=False,
     )
@@ -501,6 +503,7 @@ def execute_tool_isolated(
     cancel_event: threading.Event | None = None,
     deadline_seconds: float | None = None,
     idempotency_key: str | None = None,
+    execution_context: dict[str, str | None] | None = None,
 ) -> Any:
     """Execute a tool in a cancellable one-shot process and return its result.
 
@@ -531,6 +534,8 @@ def execute_tool_isolated(
         process_options["deadline_seconds"] = deadline_seconds
     if idempotency_key is not None:
         process_options["idempotency_key"] = idempotency_key
+    if execution_context:
+        process_options["execution_context"] = execution_context
     return _execute_tool_process(name, arguments, **process_options)
 
 

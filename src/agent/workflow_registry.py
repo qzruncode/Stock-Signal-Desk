@@ -30,6 +30,15 @@ _WORKFLOW_REGISTRY = {
 # Neither the planner nor request-local code can mutate the production
 # Workflow Registry after module initialization.
 WORKFLOW_REGISTRY: Mapping[StandardTaskKind, WorkflowSpec] = MappingProxyType(_WORKFLOW_REGISTRY)
+_COMPATIBILITY_TOOL_ADAPTERS = frozenset(
+    {
+        "list_financial_sources",
+        "inspect_financial_source",
+        "read_financial_feed",
+        "read_financial_article",
+        "export_financial_feed",
+    }
+)
 
 
 def workflow_for(kind: StandardTaskKind) -> WorkflowSpec:
@@ -66,7 +75,16 @@ def compile_task(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def registered_workflow_tools() -> frozenset[str]:
-    return frozenset(tool for spec in WORKFLOW_REGISTRY.values() for tool in spec.tool_whitelist)
+    return frozenset(
+        {
+            *(
+                tool
+                for spec in WORKFLOW_REGISTRY.values()
+                for tool in spec.tool_whitelist
+            ),
+            *_COMPATIBILITY_TOOL_ADAPTERS,
+        }
+    )
 
 
 __all__ = [

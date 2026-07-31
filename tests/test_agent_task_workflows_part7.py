@@ -418,6 +418,29 @@ def test_standard_task_answer_validator_accepts_evidence_rounding_and_amount_uni
     )
     assert issues == []
 
+
+def test_standard_task_answer_validator_accepts_amount_from_document_text() -> None:
+    from api.v1.endpoints.agent import chat as chat_mod
+
+    evidence = [
+        {
+            "tool": "read_text_document",
+            "result": {
+                "chunks": [
+                    {
+                        "page": 1,
+                        "text": "调整后委托理财总额不超过人民币50亿元。",
+                    }
+                ]
+            },
+        }
+    ]
+
+    assert chat_mod._standard_task_answer_issues(
+        "委托理财额度不超过50亿元（PDF第1页）。",
+        evidence,
+    ) == []
+
 def test_terminal_block_is_not_hidden_by_completed_upstream_lookup() -> None:
     from api.v1.endpoints.agent import chat as chat_mod
 

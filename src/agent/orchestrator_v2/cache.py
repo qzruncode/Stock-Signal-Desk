@@ -27,6 +27,21 @@ _SENSITIVE_MODEL_KEYS = frozenset(
         "token",
     }
 )
+_RSS_TEXT_PARSER_VERSION = "rss-text-parser-2026.07.31.1"
+_RSS_TEXT_TOOLS = frozenset(
+    {
+        "discover_rss_sources",
+        "inspect_rss_source",
+        "read_rss_feed",
+        "read_rss_item",
+        "read_text_document",
+        "search_financial_news",
+        "search_research_library",
+    }
+)
+_CONVERSATION_RESOURCE_TOOLS = frozenset(
+    {"read_rss_item", "read_text_document"}
+)
 
 
 def _cache_safe_model_config(value: Any) -> Any:
@@ -52,13 +67,14 @@ def execution_cache_key_v2(
     arguments: Mapping[str, Any],
     *,
     model_config: Mapping[str, Any],
+    conversation_id: str | None = None,
 ) -> str | None:
     policy = task.freshness_policy
     if policy.reuse_scope != CacheReuseScope.CROSS_RUN or policy.max_age_seconds is None:
         return None
     fingerprint = stable_fingerprint(
         {
-            "cache_contract": "agent-orchestrator-v2",
+            "cache_contract": "agent-orchestrator-v4-canonical",
             "capability": task.capability.value,
             "capability_version": task.capability_version,
             "intent_schema_version": task.intent_schema_version,
@@ -67,9 +83,19 @@ def execution_cache_key_v2(
             "arguments": dict(arguments),
             "model_config_fingerprint": stable_fingerprint(_cache_safe_model_config(model_config)),
             "freshness_policy": policy.model_dump(mode="json"),
+            "rss_text_parser_version": (
+                _RSS_TEXT_PARSER_VERSION
+                if call.tool_name in _RSS_TEXT_TOOLS
+                else None
+            ),
+            "conversation_resource_scope": (
+                str(conversation_id or "")
+                if call.tool_name in _CONVERSATION_RESOURCE_TOOLS
+                else None
+            ),
         }
     )
-    return f"agent_v2:{fingerprint}"
+    return f"agent_v4:{fingerprint}"
 
 
 def load_execution_cache_v2(

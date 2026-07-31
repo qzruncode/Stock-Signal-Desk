@@ -21,7 +21,7 @@ from sqlalchemy.exc import OperationalError
 
 from src.config import Config
 from src.storage import DatabaseManager, NewsIntel
-from src.search_service import SearchResponse, SearchResult
+from src.storage.news_types import NewsSearchResponse, NewsSearchResult
 
 
 class NewsIntelStorageTestCase(unittest.TestCase):
@@ -43,18 +43,18 @@ class NewsIntelStorageTestCase(unittest.TestCase):
         DatabaseManager.reset_instance()
         self._temp_dir.cleanup()
 
-    def _build_response(self, results) -> SearchResponse:
-        """构造 SearchResponse 快捷函数"""
-        return SearchResponse(
+    def _build_response(self, results) -> NewsSearchResponse:
+        """构造新闻搜索响应快捷函数"""
+        return NewsSearchResponse(
             query="贵州茅台 最新消息",
             results=results,
-            provider="Bocha",
+            provider="test-provider",
             success=True,
         )
 
     def test_save_news_intel_with_url_dedup(self) -> None:
         """相同 URL 去重，仅保留一条记录"""
-        result = SearchResult(
+        result = NewsSearchResult(
             title="茅台发布新产品",
             snippet="公司发布新品...",
             url="https://news.example.com/a",
@@ -105,7 +105,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
 
     def test_save_news_intel_without_url_fallback_key(self) -> None:
         """无 URL 时使用兜底键去重"""
-        result = SearchResult(
+        result = NewsSearchResult(
             title="茅台业绩预告", snippet="业绩大幅增长...", url="", source="example.com", published_date="2025-01-03"
         )
         response = self._build_response([result])
@@ -129,7 +129,7 @@ class NewsIntelStorageTestCase(unittest.TestCase):
     def test_get_recent_news(self) -> None:
         """可按时间范围查询最新新闻"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        result = SearchResult(
+        result = NewsSearchResult(
             title="茅台股价震荡",
             snippet="盘中波动较大...",
             url="https://news.example.com/b",

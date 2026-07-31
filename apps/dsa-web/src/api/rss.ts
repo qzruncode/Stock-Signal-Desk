@@ -1,6 +1,6 @@
 import apiClient from './index';
 
-// ── Feed item（富字段：图/音频/全文，来自 JSON Feed 取数）─────────────────
+// ── Feed item（纯文本正文、稳定条目引用和会话资源）──────────────────────
 
 export interface RssAttachment {
   url: string;
@@ -8,6 +8,33 @@ export interface RssAttachment {
   title?: string;
   size_in_bytes?: number | null;
   duration_in_seconds?: number | null;
+}
+
+export interface RssItemRef {
+  route_path: string;
+  params: Record<string, unknown>;
+  options: Record<string, unknown>;
+  namespace: string;
+  item_id: string;
+  title: string;
+  link: string;
+  content_hash: string;
+}
+
+export interface TextDocumentResource {
+  resource_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  content_hash: string;
+  preview_url: string;
+  download_url: string;
+  extraction_status: 'pending' | 'extracted' | 'empty_text_layer' | 'unsupported' | 'failed';
+  extraction_method?: string | null;
+  text_length: number;
+  chunk_count: number;
+  source_item_ref?: RssItemRef | null;
+  error?: string | null;
 }
 
 export interface RssItem {
@@ -18,9 +45,12 @@ export interface RssItem {
   published: string | null;
   author: string;
   tags: string[];
-  image?: string;
   content_html?: string;
   attachments?: RssAttachment[];
+  item_ref?: RssItemRef;
+  content_hash?: string;
+  resources?: TextDocumentResource[];
+  document_errors?: string[];
 }
 
 // ── 动态发现 + 通用 FeedSpec 类型 ───────────────────────────────────────
@@ -35,6 +65,9 @@ export interface RssFeedOptions {
   filter_category?: string;
   filterout?: string;
   filterout_title?: string;
+  filterout_description?: string;
+  filterout_author?: string;
+  filterout_category?: string;
   filter_case_sensitive?: boolean;
   filter_time?: number;
   sorted?: boolean;
@@ -42,8 +75,6 @@ export interface RssFeedOptions {
   opencc?: string;
   brief?: number;
   format?: 'rss' | 'atom' | 'json' | 'rss3';
-  tgiv?: string;
-  scihub?: string;
 }
 
 /** 一条 RSSHub 路由描述（来自发现的扁平结构）。 */
@@ -304,14 +335,15 @@ export const rssApi = {
     spec: FeedSpec,
     item: Pick<
       RssItem,
-      'id' | 'title' | 'link' | 'content_html' | 'summary' | 'image'
+      'id' | 'title' | 'link' | 'content_html' | 'summary'
       | 'published' | 'author' | 'tags' | 'attachments'
     >,
+    previewSessionId: string,
     signal?: AbortSignal,
     force?: boolean,
   ): Promise<RssItem> {
     return apiClient
-      .post('/api/v1/rss/feeds/item', {
+      .post('/api/v1/rss/feeds/item/preview', {
         route_path: spec.route_path,
         params: spec.params,
         options: spec.options,
@@ -328,13 +360,19 @@ export const rssApi = {
         // fallback keeps everything the detail view renders.
         content_html: item.content_html ?? '',
         summary: item.summary ?? '',
-        image: item.image ?? '',
         published: item.published ?? '',
         author: item.author ?? '',
         tags: item.tags ?? [],
         attachments: item.attachments ?? [],
+        preview_session_id: previewSessionId,
       }, { timeout: 60000, signal })
       .then((r) => r.data);
+  },
+
+  deletePreviewSession(previewSessionId: string): Promise<void> {
+    return apiClient
+      .delete(`/api/v1/rss/preview-sessions/${encodeURIComponent(previewSessionId)}`)
+      .then(() => undefined);
   },
 
   // 原始 feed 透传（多格式下载）—— 返回 Blob

@@ -8,7 +8,7 @@ for _name, _value in vars(_contracts).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
-__all__ = ['SelectionMode', 'ResultSelectionV2', 'ClaimRequirementV2', 'GoalContractV2', 'InputReferenceV2', 'IntentOutlineNodeV2', 'IntentOutlineV2', 'AssumptionRecord', 'FreshnessPolicy', 'ExecutionPolicy', 'CoverageV2', 'EvidenceV2', 'ErrorDetailV2', 'TaskOutcomeV2', 'ProjectedResourceV2', 'AgentStageEventV2', 'AgentArtifactV2', 'RepairIssueV2', 'RepairRecordV2', 'PlanningTraceV2', 'PlannerVerificationV2', 'ClaimStatus', 'EvidenceQuality', 'GoalDisposition', 'GoalTerminalReason', 'EvidenceLedgerEntryV2', 'ClaimAssessmentV2', 'GoalBudgetV2', 'GoalEvaluationV2', 'GoalRunStateV2', 'OrchestratorV2Error']
+__all__ = ['SelectionMode', 'ResultSelectionV2', 'SourceKind', 'SourceConstraintMode', 'SourceRequirementV2', 'ClaimRequirementV2', 'GoalContractV2', 'InputReferenceV2', 'IntentOutlineNodeV2', 'IntentOutlineV2', 'AssumptionRecord', 'FreshnessPolicy', 'ExecutionPolicy', 'CoverageV2', 'EvidenceV2', 'ErrorDetailV2', 'TaskOutcomeV2', 'ProjectedResourceV2', 'AgentStageEventV2', 'AgentArtifactV2', 'RepairIssueV2', 'RepairRecordV2', 'PlanningTraceV2', 'PlannerVerificationV2', 'ClaimStatus', 'EvidenceQuality', 'GoalDisposition', 'GoalTerminalReason', 'EvidenceLedgerEntryV2', 'ClaimAssessmentV2', 'GoalBudgetV2', 'GoalEvaluationV2', 'GoalRunStateV2', 'OrchestratorV2Error']
 
 class SelectionMode(str, Enum):
     BEST_ONE = "best_one"
@@ -27,6 +27,30 @@ class ResultSelectionV2(StrictModel):
             raise ValueError("top_k requires max_items>=2")
         if self.mode == SelectionMode.ALL_RELEVANT and self.max_items is not None:
             raise ValueError("all_relevant requires max_items=null")
+        return self
+
+class SourceKind(str, Enum):
+    RSSHUB = "rsshub"
+    PUBLIC_WEB = "public_web"
+    MARKET_DATA = "market_data"
+    FINANCIAL_DATA = "financial_data"
+
+class SourceConstraintMode(str, Enum):
+    REQUIRE = "require"
+    EXCLUSIVE = "exclusive"
+    EXCLUDE = "exclude"
+
+class SourceRequirementV2(StrictModel):
+    """A user-owned source boundary that cannot be substituted by planning."""
+
+    kind: SourceKind
+    mode: SourceConstraintMode = SourceConstraintMode.REQUIRE
+    route_path: str | None = Field(default=None, min_length=2, max_length=500)
+
+    @model_validator(mode="after")
+    def _validate_route(self) -> "SourceRequirementV2":
+        if self.kind == SourceKind.RSSHUB and self.route_path and not self.route_path.startswith("/"):
+            raise ValueError("RSSHub route_path must start with '/'")
         return self
 
 class ClaimRequirementV2(StrictModel):
@@ -63,12 +87,28 @@ class GoalContractV2(StrictModel):
     time_horizon: str | None = Field(default=None, max_length=120)
     deliverables: tuple[str, ...] = Field(min_length=1, max_length=12)
     claims: tuple[ClaimRequirementV2, ...] = Field(min_length=1, max_length=16)
+    source_requirements: tuple[SourceRequirementV2, ...] = Field(
+        default_factory=tuple,
+        max_length=12,
+    )
+    required_output_resources: tuple[ResourceType, ...] = Field(
+        default_factory=tuple,
+        max_length=12,
+    )
 
     @model_validator(mode="after")
     def _validate_goal(self) -> "GoalContractV2":
         claim_ids = [item.claim_id for item in self.claims]
         if len(claim_ids) != len(set(claim_ids)):
             raise ValueError("goal claim_id values must be unique")
+        source_keys = [
+            (item.kind, item.mode, item.route_path)
+            for item in self.source_requirements
+        ]
+        if len(source_keys) != len(set(source_keys)):
+            raise ValueError("source_requirements must be unique")
+        if len(self.required_output_resources) != len(set(self.required_output_resources)):
+            raise ValueError("required_output_resources must be unique")
         if self.question_type == QuestionType.FORECAST and self.uncertainty_mode != UncertaintyMode.SCENARIO:
             raise ValueError("forecast goals require scenario uncertainty mode")
         if self.question_type == QuestionType.OPERATION and self.uncertainty_mode != UncertaintyMode.NOT_APPLICABLE:

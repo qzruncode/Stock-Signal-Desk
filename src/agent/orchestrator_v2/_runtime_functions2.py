@@ -128,6 +128,27 @@ def task_plan_from_v2(
         spec = capability_for(node.outline.capability)
         workflow = workflow_for(StandardTaskKind(node.outline.capability.value))
         parameters = dict(node.execution_parameters)
+        generic_artifact_resources = {
+            TaskResource.RSS_SOURCE_COLLECTION:
+                ResourceType.RSS_SOURCE_COLLECTION,
+            TaskResource.RSS_ITEM_COLLECTION:
+                ResourceType.RSS_ITEM_COLLECTION,
+            TaskResource.TEXT_DOCUMENT_COLLECTION:
+                ResourceType.TEXT_DOCUMENT_COLLECTION,
+            TaskResource.EVIDENCE_COLLECTION:
+                ResourceType.EVIDENCE_COLLECTION,
+        }
+        for parameter, task_resource in workflow.input_resource_parameters.items():
+            resource_type = generic_artifact_resources.get(task_resource)
+            if resource_type is None:
+                continue
+            bound_values = _artifact_resources(
+                node,
+                artifacts or {},
+                resource_type,
+            )
+            if bound_values:
+                parameters[parameter] = bound_values
         domain_parameter = next(
             (
                 parameter

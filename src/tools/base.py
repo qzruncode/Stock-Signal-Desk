@@ -39,6 +39,10 @@ _TOOL_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar(
     "tool_idempotency_key",
     default=None,
 )
+_TOOL_EXECUTION_CONTEXT: ContextVar[dict[str, str]] = ContextVar(
+    "tool_execution_context",
+    default={},
+)
 
 
 @contextmanager
@@ -71,6 +75,28 @@ def tool_idempotency_context(
 def current_tool_idempotency_key() -> str | None:
     """Return the durable idempotency key for the current tool invocation."""
     return _TOOL_IDEMPOTENCY_KEY.get()
+
+
+@contextmanager
+def tool_execution_context(
+    *,
+    conversation_id: str | None = None,
+    run_id: str | None = None,
+) -> Iterator[None]:
+    token = _TOOL_EXECUTION_CONTEXT.set(
+        {
+            "conversation_id": str(conversation_id or ""),
+            "run_id": str(run_id or ""),
+        }
+    )
+    try:
+        yield
+    finally:
+        _TOOL_EXECUTION_CONTEXT.reset(token)
+
+
+def current_tool_execution_context() -> dict[str, str]:
+    return dict(_TOOL_EXECUTION_CONTEXT.get())
 
 
 def report_tool_progress(

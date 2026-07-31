@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Agent-friendly RSS source catalog — a curated, low-token view of the routes
-the AI assistant can read.
+"""Agent-friendly, low-token view of either the full RSSHub instance or its
+finance-oriented explore subset.
 
 The full ``/namespaces`` payload is RSSHub's raw metadata (English/markdown
 descriptions, prose parameter docs, 3.3MB) — too heavy and too ambiguous for
-an LLM to pick routes and fill params from. This module distills the filtered
-~47-route stock-finance catalog into a compact structure with Chinese-purpose
-descriptions and lightweight param hints, cached 6h (same TTL as the
-namespace blob).
+an LLM to consume directly. This module distills route metadata into compact
+descriptions and parameter hints, while preserving availability and
+auto-recommendation as separate fields. Both scopes are cached for 6h.
 
 Design choice (per plan): **lightweight extraction only**. We pull param
 name/required/hint/default/options straight from RSSHub metadata. Complex
@@ -27,7 +26,8 @@ from api.v1.endpoints._rss_namespace import get_namespaces_flat
 
 logger = logging.getLogger(__name__)
 
-CATALOG_CACHE_KEY = "rss:catalog:v3"
+CATALOG_CACHE_KEY = "rss:catalog:v5:finance"
+ALL_CATALOG_CACHE_KEY = "rss:catalog:v5:all"
 CATALOG_TTL_SECONDS = 6 * 3600  # same as namespace blob
 
 # Routes whose params come from a remote picker (the explore page has dedicated
@@ -131,6 +131,20 @@ def _merge_param_hints(
         if is_picker:
             picker_hint = "需选择具体值，可通过 inspect_financial_source 获取可选项"
             entry["hint"] = f"{entry['hint']}（{picker_hint}）" if entry["hint"] else picker_hint
+        if entry["default"] is None and entry["hint"]:
+            default_match = re.search(
+                r"默认(?:为)?\s*[`'“\"]?([^`'”\"，。,；;\s]+)",
+                entry["hint"],
+            )
+            if default_match:
+                parsed_default = default_match.group(1).strip()
+                if parsed_default.casefold() not in {
+                    "空",
+                    "无",
+                    "none",
+                    "null",
+                }:
+                    entry["default"] = parsed_default
         out.append(entry)
     return out
 
@@ -176,24 +190,37 @@ def _build_catalog_entry(route: Dict[str, Any]) -> Dict[str, Any]:
         "features": features,
         "maintainers": [str(value) for value in route.get("maintainers") or []],
         "requires_configuration": bool(features.get("requireConfig")),
+        "readiness": str(route.get("readiness") or "available"),
+        "auto_recommended": bool(route.get("auto_recommended", True)),
+        "readiness_reason": route.get("readiness_reason"),
     }
 
 
-def get_rss_catalog(force: bool = False) -> Dict[str, Any]:
+def get_rss_catalog(
+    force: bool = False,
+    *,
+    scope: str = "finance",
+) -> Dict[str, Any]:
     """Return the agent-friendly catalog ``{routes, count, _cached, _stale}``.
 
-    Built from the filtered namespace list (broken/English/unuseful already
-    removed by ``_rss_filter``), so only the ~47 curated stock-finance routes
-    appear. Cached 6h.
+    ``scope="all"`` includes every route reported by the configured instance,
+    including unavailable and non-finance routes. ``scope="finance"`` keeps
+    the smaller explore-page subset for backward compatibility. Cached 6h.
     """
-    cached = _cache_get(CATALOG_CACHE_KEY)
+    normalized_scope = "all" if str(scope or "").strip().lower() == "all" else "finance"
+    cache_key = ALL_CATALOG_CACHE_KEY if normalized_scope == "all" else CATALOG_CACHE_KEY
+    cached = _cache_get(cache_key)
     if not force and _is_fresh(cached):
         if isinstance(cached, dict) and cached.get("routes"):
             out = dict(cached)
             out["_cached"] = True
             return out
 
-    ns = get_namespaces_flat(force=force, finance_only=True)
+    ns = get_namespaces_flat(
+        force=force,
+        finance_only=normalized_scope == "finance",
+        include_hidden=normalized_scope == "all",
+    )
     routes = ns.get("routes") or []
     catalog_routes = [_build_catalog_entry(r) for r in routes if isinstance(r, dict)]
     payload = {
@@ -203,9 +230,10 @@ def get_rss_catalog(force: bool = False) -> Dict[str, Any]:
         "_cached": False,
         "_stale": bool(ns.get("_stale")),
         "_error": ns.get("_error"),
+        "scope": normalized_scope,
     }
     if catalog_routes:
-        _cache_put(CATALOG_CACHE_KEY, payload)
+        _cache_put(cache_key, payload)
     return payload
 
 

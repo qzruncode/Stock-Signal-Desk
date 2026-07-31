@@ -11,6 +11,7 @@ import {
   ASSISTANT_SUGGESTION_GROUPS,
   ASSISTANT_SUGGESTIONS,
   ASSISTANT_TOOL_CAPABILITY_COUNT,
+  RSS_DOCUMENT_SUGGESTIONS,
   SUGGESTIONS,
 } from '../assistantQuickActions';
 
@@ -44,13 +45,25 @@ describe('assistant capability catalog', () => {
     const backendTools = [
       ...(modulesBlock ?? '').matchAll(/^\s*"([^"]+)",/gm),
     ].map((match) => match[1]);
+    const compatibilityOnlyTools = new Set([
+      'list_financial_sources',
+      'inspect_financial_source',
+      'read_financial_feed',
+      'read_financial_article',
+      'export_financial_feed',
+    ]);
+    const plannerFacingTools = backendTools.filter(
+      (toolName) => !compatibilityOnlyTools.has(toolName),
+    );
     const catalogTools = ASSISTANT_CAPABILITY_GROUPS.flatMap((group) =>
       group.items.flatMap((item) => (item.toolName ? [item.toolName] : [])),
     );
 
-    expect(backendTools).toHaveLength(66);
-    expect(new Set(catalogTools)).toEqual(new Set(backendTools));
-    expect(catalogTools).toHaveLength(backendTools.length);
+    expect(backendTools).toHaveLength(72);
+    expect(plannerFacingTools).toHaveLength(67);
+    expect(new Set(catalogTools)).toEqual(new Set(plannerFacingTools));
+    expect(catalogTools).toHaveLength(plannerFacingTools.length);
+    expect(catalogTools.some((toolName) => compatibilityOnlyTools.has(toolName))).toBe(false);
   });
 
   it('provides concrete, directly usable prompt examples', () => {
@@ -67,14 +80,32 @@ describe('assistant capability catalog', () => {
   });
 
   it('keeps the original questions first and appends every capability', () => {
-    expect(ASSISTANT_SUGGESTION_GROUPS).toHaveLength(9);
+    expect(ASSISTANT_SUGGESTION_GROUPS).toHaveLength(10);
     expect(ASSISTANT_SUGGESTION_GROUPS[0]?.items).toEqual(SUGGESTIONS);
+    expect(ASSISTANT_SUGGESTION_GROUPS[1]).toMatchObject({
+      id: 'rss-documents',
+      items: RSS_DOCUMENT_SUGGESTIONS,
+    });
     expect(ASSISTANT_SUGGESTIONS).toHaveLength(
-      SUGGESTIONS.length + ASSISTANT_CAPABILITY_COUNT,
+      SUGGESTIONS.length + RSS_DOCUMENT_SUGGESTIONS.length + ASSISTANT_CAPABILITY_COUNT,
     );
     expect(ASSISTANT_SUGGESTIONS.slice(0, SUGGESTIONS.length)).toEqual(SUGGESTIONS);
-    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length)).toEqual(
+    expect(
+      ASSISTANT_SUGGESTIONS.slice(
+        SUGGESTIONS.length,
+        SUGGESTIONS.length + RSS_DOCUMENT_SUGGESTIONS.length,
+      ),
+    ).toEqual(RSS_DOCUMENT_SUGGESTIONS);
+    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length + RSS_DOCUMENT_SUGGESTIONS.length)).toEqual(
       ASSISTANT_CAPABILITY_GROUPS.flatMap((group) => group.items),
     );
+  });
+
+  it('exposes the RSSHub and original-document flows as concrete home examples', () => {
+    expect(RSS_DOCUMENT_SUGGESTIONS).toHaveLength(4);
+    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('健康状态'))).toBe(true);
+    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('PDF 原文件'))).toBe(true);
+    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('逐项引用页码'))).toBe(true);
+    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('JSON Feed'))).toBe(true);
   });
 });

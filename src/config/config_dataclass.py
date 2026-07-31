@@ -71,16 +71,6 @@ class Config:
     llm_reasoning_effort: str = "auto"
     gemini_request_delay: float = 2.0
 
-    # === 搜索引擎配置 ===
-    anspire_api_keys: List[str] = field(default_factory=list)
-    bocha_api_keys: List[str] = field(default_factory=list)
-    minimax_api_keys: List[str] = field(default_factory=list)
-    tavily_api_keys: List[str] = field(default_factory=list)
-    brave_api_keys: List[str] = field(default_factory=list)
-    serpapi_keys: List[str] = field(default_factory=list)
-    searxng_base_urls: List[str] = field(default_factory=list)
-    searxng_public_instances_enabled: bool = True
-
     # === 新闻与分析筛选配置 ===
     news_max_age_days: int = 3
     news_strategy_profile: str = "short"
@@ -376,20 +366,6 @@ class Config:
         cls._BOOTSTRAP_RUNTIME_ENV_OVERRIDES = frozenset()
         cls._BOOTSTRAP_RUNTIME_ENV_PRESENT_KEYS = frozenset()
 
-    def has_searxng_enabled(self) -> bool:
-        return bool(self.searxng_base_urls) or bool(self.searxng_public_instances_enabled)
-
-    def has_search_capability_enabled(self) -> bool:
-        return bool(
-            self.anspire_api_keys
-            or self.bocha_api_keys
-            or self.minimax_api_keys
-            or self.tavily_api_keys
-            or self.brave_api_keys
-            or self.serpapi_keys
-            or self.has_searxng_enabled()
-        )
-
     def refresh_stock_list(self) -> None:
         env_path = self._resolve_env_path()
         stock_list_str = ""
@@ -425,15 +401,6 @@ class Config:
                     severity="error",
                     message=f"Anthropic 网关未配置完整，AI 分析功能将不可用。请补全：{', '.join(_gw_missing)}",
                     field="ANTHROPIC_BASE_URL",
-                )
-            )
-
-        if not self.has_search_capability_enabled():
-            issues.append(
-                ConfigIssue(
-                    severity="info",
-                    message="未配置搜索引擎能力 (Bocha/MiniMax/Tavily/Brave/SerpAPI/SearXNG)，新闻搜索功能将不可用",
-                    field="BOCHA_API_KEYS",
                 )
             )
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Iterable, Mapping
 
 from src.agent.result_contracts import (
@@ -305,31 +307,267 @@ def compile_source_discovery(task: ResolvedTask) -> list[WorkflowCall]:
     route_path = str(task.parameters.get("route_path") or "").strip()
     if route_path:
         return [
-            call_workflow(task, "inspect_source", "inspect_financial_source", select_parameters(task, {"route_path", "keyword", "force"}))
+            call_workflow(
+                task,
+                "inspect_source",
+                "inspect_rss_source",
+                select_parameters(
+                    task,
+                    {"route_path", "keyword", "force"},
+                ),
+            )
         ]
+    query = str(
+        task.parameters.get("query")
+        or task.parameters.get("keyword")
+        or task.candidate.objective
+    ).strip()
     return [
         call_workflow(
             task,
-            "list_sources",
-            "list_financial_sources",
-            select_parameters(task, {"keyword", "namespace", "capability", "force", "limit"}),
+            "discover_sources",
+            "discover_rss_sources",
+            {
+                "query": query,
+                **select_parameters(
+                    task,
+                    {
+                        "namespace",
+                        "category",
+                        "recommended_only",
+                        "force",
+                        "offset",
+                        "limit",
+                    },
+                ),
+            },
         )
     ]
 
 
+def _source_route(source: object) -> str:
+    if not isinstance(source, Mapping):
+        return ""
+    ref = source.get("source_ref")
+    if isinstance(ref, Mapping):
+        route_path = str(ref.get("route_path") or "").strip()
+        if route_path:
+            return route_path
+    return str(source.get("route_path") or "").strip()
+
+
+def _select_source_route(task: ResolvedTask) -> str:
+    explicit = str(task.parameters.get("route_path") or "").strip()
+    if explicit:
+        return explicit
+    sources = task.parameters.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise WorkflowCompileError(
+            "feed_read requires route_path or an upstream RSS source collection"
+        )
+    ranked = sorted(
+        (source for source in sources if isinstance(source, Mapping)),
+        key=lambda source: (
+            str(
+                (
+                    source.get("source_ref")
+                    if isinstance(source.get("source_ref"), Mapping)
+                    else source
+                ).get("readiness")
+                or "available"
+            )
+            == "unavailable",
+            not bool(
+                (
+                    source.get("source_ref")
+                    if isinstance(source.get("source_ref"), Mapping)
+                    else source
+                ).get("auto_recommended", False)
+            ),
+            -float(source.get("relevance_score") or 0),
+        ),
+    )
+    route_path = _source_route(ranked[0]) if ranked else ""
+    if not route_path:
+        raise WorkflowCompileError(
+            "upstream RSS source collection does not contain a route_path"
+        )
+    return route_path
+
+
 def compile_feed_read(task: ResolvedTask) -> list[WorkflowCall]:
+    route_path = _select_source_route(task)
     return [
         call_workflow(
             task,
             "read_feed",
-            "read_financial_feed",
-            select_parameters(task, {"route_path", "params", "options", "namespace", "limit", "force"}),
+            "read_rss_feed",
+            {
+                "route_path": route_path,
+                **select_parameters(
+                    task,
+                    {"params", "options", "namespace", "limit", "force"},
+                ),
+            },
         )
     ]
 
 
+def _matching_item(
+    items: list[object],
+    *,
+    item_id: str,
+    title: str,
+    link: str,
+    selection: str,
+) -> Mapping[str, Any]:
+    candidates = [item for item in items if isinstance(item, Mapping)]
+    if item_id:
+        candidates = [
+            item
+            for item in candidates
+            if str(
+                (
+                    item.get("item_ref")
+                    if isinstance(item.get("item_ref"), Mapping)
+                    else item
+                ).get("item_id")
+                or ""
+            )
+            == item_id
+        ]
+    if link:
+        candidates = [
+            item
+            for item in candidates
+            if str(item.get("link") or "") == link
+        ]
+    if title:
+        candidates = [
+            item
+            for item in candidates
+            if str(item.get("title") or "") == title
+        ]
+    if selection == "latest" and not (item_id or title or link):
+        def published_timestamp(item: Mapping[str, Any]) -> float:
+            value = str(item.get("published") or "").strip()
+            if not value:
+                return float("-inf")
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    parsed = parsedate_to_datetime(value)
+                except (TypeError, ValueError, OverflowError):
+                    return float("-inf")
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+
+        return max(
+            enumerate(candidates),
+            key=lambda pair: (published_timestamp(pair[1]), -pair[0]),
+        )[1]
+    if len(candidates) != 1:
+        raise WorkflowCompileError(
+            "article_read must resolve exactly one upstream item; "
+            "provide selection=latest, item_id, or link when the feed contains multiple items"
+        )
+    return candidates[0]
+
+
 def compile_article(task: ResolvedTask) -> list[WorkflowCall]:
-    return [call_workflow(task, "read_article", "read_financial_article", dict(task.parameters))]
+    resource_id = str(task.parameters.get("resource_id") or "").strip()
+    resources = task.parameters.get("resources")
+    if isinstance(resources, list):
+        candidates = [
+            resource
+            for resource in resources
+            if isinstance(resource, Mapping)
+            and str(resource.get("resource_id") or "").strip()
+        ]
+        if resource_id:
+            candidates = [
+                resource
+                for resource in candidates
+                if str(resource.get("resource_id") or "").strip() == resource_id
+            ]
+        document_mime_type = str(
+            task.parameters.get("document_mime_type") or ""
+        ).strip().lower()
+        if document_mime_type:
+            candidates = [
+                resource
+                for resource in candidates
+                if str(resource.get("mime_type") or "").strip().lower()
+                == document_mime_type
+            ]
+        if len(candidates) == 1:
+            resource_id = str(candidates[0].get("resource_id") or "").strip()
+        elif resource_id or document_mime_type:
+            raise WorkflowCompileError(
+                "document selector must resolve exactly one bound text resource"
+            )
+        elif len(candidates) > 1:
+            raise WorkflowCompileError(
+                "article_read has multiple bound text resources; provide document_mime_type or resource_id"
+            )
+    if resource_id:
+        args = {
+            "resource_id": resource_id,
+            **select_parameters(
+                task,
+                {
+                    "query",
+                    "offset",
+                    "limit",
+                    "page_start",
+                    "page_end",
+                    "reading_mode",
+                },
+            ),
+        }
+        return [
+            call_workflow(
+                task,
+                "read_text_document",
+                "read_text_document",
+                args,
+            )
+        ]
+
+    items = task.parameters.get("items")
+    if not isinstance(items, list) or not items:
+        raise WorkflowCompileError(
+            "article_read requires resource_id or an upstream RSS item collection"
+        )
+    item = _matching_item(
+        items,
+        item_id=str(task.parameters.get("item_id") or "").strip(),
+        title=str(task.parameters.get("title") or "").strip(),
+        link=str(task.parameters.get("link") or "").strip(),
+        selection=str(task.parameters.get("selection") or "").strip(),
+    )
+    item_ref = item.get("item_ref")
+    if not isinstance(item_ref, Mapping):
+        raise WorkflowCompileError(
+            "upstream RSS item does not contain a stable item_ref"
+        )
+    return [
+        call_workflow(
+            task,
+            "read_rss_item",
+            "read_rss_item",
+            {
+                "item_ref": dict(item_ref),
+                "item": dict(item),
+                "include_documents": bool(
+                    task.parameters.get("include_documents", True)
+                ),
+                "force": bool(task.parameters.get("force", False)),
+            },
+        )
+    ]
 
 
 def compile_transform(task: ResolvedTask) -> list[WorkflowCall]:
@@ -337,7 +575,24 @@ def compile_transform(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def compile_export(task: ResolvedTask) -> list[WorkflowCall]:
-    return [call_workflow(task, "export_feed", "export_financial_feed", dict(task.parameters))]
+    return [
+        call_workflow(
+            task,
+            "export_feed",
+            "export_rss_feed",
+            select_parameters(
+                task,
+                {
+                    "route_path",
+                    "params",
+                    "options",
+                    "namespace",
+                    "format",
+                    "limit",
+                },
+            ),
+        )
+    ]
 
 
 def compile_web(task: ResolvedTask) -> list[WorkflowCall]:

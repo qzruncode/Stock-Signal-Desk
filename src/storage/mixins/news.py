@@ -3,13 +3,16 @@
 import hashlib
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import select, and_, desc, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from src.storage.models import NewsIntel
+
+if TYPE_CHECKING:
+    from src.storage.news_types import NewsSearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +26,7 @@ class NewsMixin:
         name: str,
         dimension: str,
         query: str,
-        response: "SearchResponse",
+        response: "NewsSearchResponse",
         query_context: Optional[Dict[str, str]] = None,
     ) -> int:
         """

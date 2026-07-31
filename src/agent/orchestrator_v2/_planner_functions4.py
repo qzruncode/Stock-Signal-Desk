@@ -37,6 +37,7 @@ from src.agent.orchestrator_v2.planner import (
     RepairIssueV2,
     RepairRecordV2,
     ResourceType,
+    SourceKind,
     StageObserver,
     StageStatus,
     capability_catalog,
@@ -173,32 +174,59 @@ async def plan_intent_graph_v2(
             available_artifacts={artifact.artifact_id: artifact.resource_type for artifact in available_artifacts},
             has_direct_entities=bool(current_entities),
         )
-        verifier_mode = "off" if fixed_goal is not None else _planner_verifier_mode(outline.goal.question_type)
+        verifier_mode = (
+            "off"
+            if fixed_goal is not None
+            else _planner_verifier_mode(outline.goal.question_type)
+        )
         if verifier_mode != "off":
 
             async def verify_candidate(
                 candidate: IntentOutlineV2,
             ) -> PlannerVerificationV2:
-                verification_value, _raw_verification, _repair = await call_model_exact_v2(
-                    llm_cfg=llm_cfg,
-                    completion=completion,
-                    function_name="verify_intent_outline_v2",
-                    description=(
-                        "Independently verify semantic coverage, "
-                        "minimality, and resource edges of the frozen "
-                        "intent graph."
-                    ),
-                    model=PlannerVerificationV2,
-                    system_prompt=_VERIFIER_SYSTEM_PROMPT,
-                    semantic_context={
-                        "current_request": request,
-                        "frozen_outline": candidate.model_dump(mode="json"),
-                        "capability_catalog": capability_catalog(),
-                        "conversation_context": dict(semantic_context or {}),
-                    },
-                    node_id=None,
-                    max_tokens=1_500,
-                )
+                try:
+                    verification_value, _raw_verification, _repair = await call_model_exact_v2(
+                        llm_cfg=llm_cfg,
+                        completion=completion,
+                        function_name="verify_intent_outline_v2",
+                        description=(
+                            "Independently verify semantic coverage, "
+                            "minimality, and resource edges of the frozen "
+                            "intent graph."
+                        ),
+                        model=PlannerVerificationV2,
+                        system_prompt=_VERIFIER_SYSTEM_PROMPT,
+                        semantic_context={
+                            "current_request": request,
+                            "frozen_outline": candidate.model_dump(mode="json"),
+                            "capability_catalog": capability_catalog(),
+                            "conversation_context": dict(semantic_context or {}),
+                        },
+                        node_id=None,
+                        max_tokens=1_500,
+                    )
+                except OrchestratorV2Error as exc:
+                    if exc.code not in {
+                        AgentErrorCode.PLANNER_PROVIDER_FAILED,
+                        AgentErrorCode.PLANNER_SCHEMA_INVALID,
+                    }:
+                        raise
+                    logger.warning(
+                        "[AgentPlanner] independent verifier unavailable "
+                        "run=%s code=%s: %s",
+                        active_run_id,
+                        exc.code.value,
+                        exc,
+                    )
+                    return PlannerVerificationV2(
+                        accepted=False,
+                        confidence=0.0,
+                        rationale=(
+                            "Independent verifier unavailable; the primary outline "
+                            "still passed the program-owned capability, resource, "
+                            "and policy contracts."
+                        ),
+                    )
                 return PlannerVerificationV2.model_validate(verification_value)
 
             verification = await verify_candidate(outline)
@@ -392,15 +420,37 @@ async def plan_intent_graph_v2(
                 current_year=now.year,
             )
             all_assumptions.extend(normalized.assumptions)
+            normalized_intent = normalized.intent
+            execution_parameters = dict(normalized.execution_parameters)
+            declared_rss_routes = tuple(
+                str(requirement.route_path or "").strip()
+                for requirement in outline.goal.source_requirements
+                if requirement.kind == SourceKind.RSSHUB
+                and str(requirement.route_path or "").strip()
+            )
+            if (
+                len(declared_rss_routes) == 1
+                and node.capability
+                in {
+                    Capability.FINANCIAL_SOURCE_DISCOVERY,
+                    Capability.FINANCIAL_FEED_READ,
+                }
+            ):
+                route_path = declared_rss_routes[0]
+                execution_parameters["route_path"] = route_path
+                if "route_path" in normalized_intent.model_fields:
+                    normalized_intent = normalized_intent.model_copy(
+                        update={"route_path": route_path}
+                    )
             normalized_intents[node.node_id] = {
-                "semantic_intent": normalized.intent.model_dump(mode="json"),
-                "execution_parameters": dict(normalized.execution_parameters),
+                "semantic_intent": normalized_intent.model_dump(mode="json"),
+                "execution_parameters": execution_parameters,
             }
             planned_nodes.append(
                 PlannedIntentNodeV2(
                     outline=node,
-                    intent=normalized.intent,
-                    execution_parameters=MappingProxyType(dict(normalized.execution_parameters)),
+                    intent=normalized_intent,
+                    execution_parameters=MappingProxyType(execution_parameters),
                     assumptions=normalized.assumptions,
                 )
             )

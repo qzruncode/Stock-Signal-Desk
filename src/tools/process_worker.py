@@ -15,10 +15,24 @@ RESULT_PREFIX = "__DSA_TOOL_RESULT__="
 def main() -> int:
     try:
         request = json.loads(sys.stdin.read() or "{}")
-        from src.tools.base import tool_idempotency_context
+        from src.tools.base import (
+            tool_execution_context,
+            tool_idempotency_context,
+        )
         from src.tools.registry import ToolRegistry
 
-        with tool_idempotency_context(request.get("idempotency_key")):
+        execution_context = request.get("execution_context")
+        if not isinstance(execution_context, dict):
+            execution_context = {}
+        with (
+            tool_idempotency_context(request.get("idempotency_key")),
+            tool_execution_context(
+                conversation_id=execution_context.get(
+                    "conversation_id"
+                ),
+                run_id=execution_context.get("run_id"),
+            ),
+        ):
             result = ToolRegistry().execute(
                 str(request.get("name") or ""),
                 request.get("arguments") or {},

@@ -9,6 +9,7 @@ import threading
 
 from src.tools.base import (
     ToolProgressUpdate,
+    tool_execution_context,
     tool_idempotency_context,
     tool_progress_observer,
 )
@@ -25,6 +26,16 @@ class ToolDispatchRequest:
     arguments: Mapping[str, Any]
     idempotency_key: str
     force_isolation: bool = False
+    conversation_id: str | None = None
+    run_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolDispatchOutcome:
+    """Full execution data plus the bounded card projection."""
+
+    canonical_result: dict[str, Any]
+    presentation_result: dict[str, Any]
 
 
 class ToolDispatcher:
@@ -49,11 +60,15 @@ class ToolDispatcher:
         *,
         cancel_event: threading.Event,
         progress_observer: Callable[[ToolProgressUpdate], None],
-    ) -> dict[str, Any]:
+    ) -> ToolDispatchOutcome:
         arguments = dict(request.arguments)
         with (
             tool_progress_observer(progress_observer),
             tool_idempotency_context(request.idempotency_key),
+            tool_execution_context(
+                conversation_id=request.conversation_id,
+                run_id=request.run_id,
+            ),
         ):
             if request.tool_name in STATEFUL_TOOL_NAMES:
                 raw_result = self._registry.execute(
@@ -66,31 +81,50 @@ class ToolDispatcher:
                     arguments,
                     cancel_event=cancel_event,
                     idempotency_key=request.idempotency_key,
+                    execution_context={
+                        "conversation_id": request.conversation_id,
+                        "run_id": request.run_id,
+                    },
                 )
             else:
                 raw_result = self._registry.execute(
                     request.tool_name,
                     arguments,
                 )
-        compacted = self._compact_result(request.tool_name, raw_result)
-        result = self._attach_fallback(
+        canonical = self._attach_fallback(
             request.tool_name,
             arguments,
-            compacted,
+            raw_result,
         )
-        return (
-            result
-            if isinstance(result, dict)
+        normalized = (
+            canonical
+            if isinstance(canonical, dict)
             else {
                 "success": True,
-                "result": result,
+                "result": canonical,
                 "errors": [],
                 "partial": False,
             }
+        )
+        presentation = self._compact_result(
+            request.tool_name,
+            normalized,
+        )
+        if not isinstance(presentation, dict):
+            presentation = {
+                "success": normalized.get("success", True),
+                "result": presentation,
+                "errors": normalized.get("errors", []),
+                "partial": normalized.get("partial", False),
+            }
+        return ToolDispatchOutcome(
+            canonical_result=normalized,
+            presentation_result=presentation,
         )
 
 
 __all__ = [
     "ToolDispatcher",
+    "ToolDispatchOutcome",
     "ToolDispatchRequest",
 ]

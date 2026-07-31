@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -53,5 +55,19 @@ def _rss_cache_key_generic(
     hour = datetime.now().strftime("%Y%m%d%H")
     params = params or {}
     options = options or {}
+    privileged_requested = any(
+        key in options
+        for key in ("access_key", "key", "scihub", "code", "token")
+    )
+    policy_fingerprint = ""
+    if privileged_requested:
+        policy_fingerprint = sha256(
+            str(
+                os.getenv("RSSHUB_AGENT_PRIVILEGED_OPTIONS") or ""
+            ).encode("utf-8")
+        ).hexdigest()[:16]
     # v5 adds normalized summaries/titles/content and drops structurally empty items.
-    return f"rss:spec:v5:{route_path}:{_stable_json(params)}:{_stable_json(options)}:{hour}"
+    return (
+        f"rss:spec:v6:{route_path}:{_stable_json(params)}:"
+        f"{_stable_json(options)}:{policy_fingerprint}:{hour}"
+    )

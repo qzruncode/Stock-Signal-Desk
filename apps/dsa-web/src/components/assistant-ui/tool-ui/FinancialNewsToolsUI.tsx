@@ -1,6 +1,12 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { FileTextIcon, RadioIcon } from 'lucide-react';
-import type { FeedSpec, RssFeedOptions, RssItem } from '../../../api/rss';
+import type {
+  FeedSpec,
+  RssFeedOptions,
+  RssItem,
+  RssItemRef,
+  TextDocumentResource,
+} from '../../../api/rss';
 import RssDownloadMenu from '../../rss/RssDownloadMenu';
 import RssFeedList from '../../rss/RssFeedList';
 import { ToolStatusPill } from './shared';
@@ -23,31 +29,46 @@ type FeedToolResult = ToolResultBase & {
 
 type SourceItem = {
   route_path?: string;
+  routePath?: string;
   name?: string;
   namespace?: string;
   namespace_name?: string;
+  namespaceName?: string;
   description?: string;
   capabilities?: string[];
   categories?: string[];
   features?: Record<string, boolean>;
   maintainers?: string[];
   requires_configuration?: boolean;
+  requiresConfiguration?: boolean;
+  readiness?: string;
+  auto_recommended?: boolean;
+  autoRecommended?: boolean;
+  source_ref?: SourceItem;
   params?: Array<{ name?: string; required?: boolean; hint?: string; default?: string | null; options?: unknown[] }>;
 };
 
 type SourcesToolResult = ToolResultBase & {
   catalog_count?: number;
+  catalogCount?: number;
   matched_count?: number;
+  matchedCount?: number;
   item_count?: number;
+  itemCount?: number;
   returned_count?: number;
+  returnedCount?: number;
   has_more?: boolean;
+  hasMore?: boolean;
   items?: SourceItem[];
   route?: SourceItem;
   dynamic_options?: Record<string, unknown> | null;
   readiness?: { configured?: boolean; verified?: boolean; message?: string } | null;
   query_scope?: string;
+  queryScope?: string;
   query_note?: string;
+  queryNote?: string;
   applied_filters?: { keyword?: string; namespace?: string; capability?: string };
+  appliedFilters?: { keyword?: string; namespace?: string; capability?: string };
 };
 
 type ArticleToolResult = ToolResultBase & {
@@ -60,8 +81,12 @@ type ArticleToolResult = ToolResultBase & {
   offset?: number;
   next_offset?: number | null;
   has_more?: boolean;
-  image?: string;
   attachments?: Array<{ url?: string; title?: string; mime_type?: string }>;
+  resources?: TextDocumentResource[];
+  resource?: TextDocumentResource;
+  chunks?: Array<{ text?: string; page?: number | null; section?: string | null }>;
+  content_html?: string;
+  item_ref?: RssItemRef;
   tags?: string[];
   route_path?: string;
   namespace?: string;
@@ -107,9 +132,10 @@ function normalizeItem(item: Partial<RssItem>, index: number): RssItem {
     published: item.published || null,
     author: item.author || '',
     tags: item.tags || [],
-    image: item.image,
     content_html: item.content_html,
     attachments: item.attachments || [],
+    item_ref: item.item_ref,
+    resources: item.resources || [],
   };
 }
 
@@ -192,7 +218,7 @@ export function FinancialSourcesToolUI({
   status,
   isError,
 }: ToolCallMessagePartProps<Record<string, unknown>, SourcesToolResult | undefined>) {
-  const inspecting = toolName === 'inspect_financial_source';
+  const inspecting = toolName === 'inspect_financial_source' || toolName === 'inspect_rss_source';
   if (status.type === 'running' && !result) {
     return <ToolStatusPill status={status} label={inspecting ? '正在检查资讯源' : '正在整理可用资讯源'} />;
   }
@@ -244,21 +270,26 @@ export function FinancialSourcesToolUI({
   }
   const items = result?.items ?? [];
   const grouped = items.reduce<Record<string, SourceItem[]>>((groups, item) => {
-    const key = item.namespace_name || item.namespace || '其他来源';
+    const key = item.namespace_name || item.namespaceName || item.namespace || '其他来源';
     (groups[key] ??= []).push(item);
     return groups;
   }, {});
+  const catalogCount = result?.catalog_count ?? result?.catalogCount ?? result?.item_count ?? result?.itemCount ?? items.length;
+  const matchedCount = result?.matched_count ?? result?.matchedCount ?? result?.item_count ?? result?.itemCount ?? items.length;
+  const returnedCount = result?.returned_count ?? result?.returnedCount ?? items.length;
+  const queryNote = result?.query_note ?? result?.queryNote;
+  const keyword = result?.applied_filters?.keyword ?? result?.appliedFilters?.keyword ?? '该关键词';
   return (
     <div className="my-2 space-y-2 rounded-xl border border-border bg-card/60 p-3">
       <div className="text-xs font-semibold text-foreground">
-        资讯源目录 {result?.catalog_count ?? result?.item_count ?? items.length} 个
-        {' · '}匹配 {result?.matched_count ?? result?.item_count ?? items.length} 个
-        {' · '}返回 {result?.returned_count ?? items.length} 个
+        资讯源目录 {catalogCount} 个
+        {' · '}匹配 {matchedCount} 个
+        {' · '}返回 {returnedCount} 个
       </div>
-      {result?.query_note && <p className="text-[10px] leading-4 text-muted-foreground">{result.query_note}</p>}
+      {queryNote && <p className="text-[10px] leading-4 text-muted-foreground">{queryNote}</p>}
       {items.length === 0 && (
         <p className="rounded-lg bg-muted/40 px-3 py-4 text-center text-xs text-muted-foreground">
-          来源目录中没有匹配项。如需查找“{result?.applied_filters?.keyword || '该关键词'}”相关资讯，请使用财经资讯搜索。
+          来源目录中没有匹配项。如需查找“{keyword}”相关资讯，请使用财经资讯搜索。
         </p>
       )}
       <div className="max-h-[34rem] space-y-2 overflow-y-auto pr-1">
@@ -267,13 +298,14 @@ export function FinancialSourcesToolUI({
             <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-foreground">{namespace} · {sourceItems.length}</summary>
             <div className="grid gap-2 border-t border-border p-2 sm:grid-cols-2">
               {sourceItems.map((item, index) => (
-                <div key={item.route_path || index} className="min-w-0 rounded-lg bg-card p-2.5">
-                  <p className="text-xs font-medium text-foreground">{item.name || item.route_path}</p>
-                  <p className="mt-0.5 break-all text-[10px] text-muted-foreground">{item.route_path}</p>
+                <div key={item.route_path || item.routePath || index} className="min-w-0 rounded-lg bg-card p-2.5">
+                  <p className="text-xs font-medium text-foreground">{item.name || item.route_path || item.routePath}</p>
+                  <p className="mt-0.5 break-all text-[10px] text-muted-foreground">{item.route_path || item.routePath}</p>
                   {item.description && <p className="mt-1 text-[10px] leading-4 text-muted-foreground">{item.description}</p>}
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {item.capabilities?.map((capability) => <span key={capability} className="rounded bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{capability}</span>)}
-                    {item.requires_configuration && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] text-amber-700">需配置</span>}
+                    {(item.requires_configuration || item.requiresConfiguration) && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] text-amber-700">需配置</span>}
+                    {item.readiness && <span className="rounded bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{item.readiness}</span>}
                   </div>
                 </div>
               ))}
@@ -292,20 +324,30 @@ export function FinancialArticleToolUI({
 }: ToolCallMessagePartProps<Record<string, unknown>, ArticleToolResult | undefined>) {
   if (status.type === 'running' && !result) return <ToolStatusPill status={status} label="正在读取资讯全文" />;
   if (failed(status, isError, result)) return <ToolStatusPill status={status} isError label="资讯全文读取失败" />;
+  const resources = [
+    ...(result?.resources ?? []),
+    ...(result?.resource ? [result.resource] : []),
+  ];
+  const chunkText = (result?.chunks ?? [])
+    .map((chunk) => chunk.text || '')
+    .filter(Boolean)
+    .join('\n\n');
   const item: RssItem = {
     id: result?.link || result?.title || 'article',
     title: result?.title || '消息全文',
     link: result?.link || '',
-    summary: result?.content_text || '',
+    summary: result?.content_text || chunkText,
     published: result?.published || null,
     author: result?.author || '',
     tags: result?.tags || [],
-    image: result?.image,
+    content_html: result?.content_html,
     attachments: (result?.attachments ?? []).flatMap((attachment) => attachment.url ? [{
       url: attachment.url,
       title: attachment.title,
       mime_type: attachment.mime_type || '',
     }] : []),
+    item_ref: result?.item_ref,
+    resources,
   };
   return (
     <article className="my-2 space-y-2 rounded-xl border border-border bg-card/60 p-3">

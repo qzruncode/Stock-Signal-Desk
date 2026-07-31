@@ -21,7 +21,7 @@ import requests
 
 from src.config import Config
 from api.v1.endpoints._rss_cache import _cache_get, _cache_put
-from api.v1.endpoints._rss_filter import is_hidden_from_explore
+from api.v1.endpoints._rss_filter import is_hidden_from_explore, route_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,11 @@ def _flatten_routes(raw: Dict[str, Any]) -> List[Dict[str, Any]]:
     return routes
 
 
-def get_namespaces_flat(force: bool = False, finance_only: bool = False) -> Dict[str, Any]:
+def get_namespaces_flat(
+    force: bool = False,
+    finance_only: bool = False,
+    include_hidden: bool = False,
+) -> Dict[str, Any]:
     """Flattened route list + metadata for the frontend discovery browser.
 
     When ``finance_only`` is set, only routes in the ``finance`` category whose
@@ -232,10 +236,22 @@ def get_namespaces_flat(force: bool = False, finance_only: bool = False) -> Dict
             for r in routes
             if "finance" in (r.get("categories") or []) and r.get("namespace") not in CRYPTO_NAMESPACES
         ]
-    # Apply the explore-visibility filter (broken / English-only / unuseful)
-    # so the backend serves the curated catalog directly — single source of
-    # truth shared by the RSS explore page and the AI assistant catalog.
-    routes = [r for r in routes if not is_hidden_from_explore(r)]
+    enriched_routes: list[dict[str, Any]] = []
+    for route in routes:
+        readiness, auto_recommended, readiness_reason = route_readiness(route)
+        enriched_routes.append(
+            {
+                **route,
+                "readiness": readiness,
+                "auto_recommended": auto_recommended,
+                "readiness_reason": readiness_reason,
+            }
+        )
+    routes = enriched_routes
+    # The filtered finance catalog uses this same visibility boundary. The
+    # unfiltered scope remains available only to explicit administrative APIs.
+    if not include_hidden:
+        routes = [r for r in routes if not is_hidden_from_explore(r)]
     # Derive categories from the (possibly filtered) set (deduped, sorted).
     cat_set: set[str] = set()
     for r in routes:
@@ -298,6 +314,14 @@ def get_namespace_detail(ns: str, force: bool = False) -> Dict[str, Any]:
     return blob
 
 
-def get_categories(force: bool = False, finance_only: bool = False) -> List[str]:
+def get_categories(
+    force: bool = False,
+    finance_only: bool = False,
+    include_hidden: bool = False,
+) -> List[str]:
     """All route categories (derived from the cached blob)."""
-    return get_namespaces_flat(force=force, finance_only=finance_only).get("categories") or []
+    return get_namespaces_flat(
+        force=force,
+        finance_only=finance_only,
+        include_hidden=include_hidden,
+    ).get("categories") or []

@@ -330,8 +330,9 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
         StandardTaskKind.NOTIFICATION: {"action": "status"},
         StandardTaskKind.FINANCIAL_FEED_READ: {"route_path": "/cls/telegraph"},
         StandardTaskKind.FINANCIAL_ARTICLE_READ: {
-            "route_path": "/cls/telegraph",
-            "title": "测试文章",
+            "resource_id": "textdoc_test",
+            "reading_mode": "targeted",
+            "query": "测试",
         },
         StandardTaskKind.WEBPAGE_FEED_TRANSFORM: {"url": "https://example.com/news"},
         StandardTaskKind.FINANCIAL_FEED_EXPORT: {"route_path": "/cls/telegraph"},

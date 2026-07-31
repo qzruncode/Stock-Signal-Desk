@@ -4,7 +4,7 @@
 import json
 import logging
 from datetime import datetime, date
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional
 
 from sqlalchemy import (
     Column,
@@ -21,9 +21,6 @@ from sqlalchemy import (
     LargeBinary,
 )
 from sqlalchemy.orm import declarative_base
-
-if TYPE_CHECKING:
-    from src.search_service import SearchResponse
 
 logger = logging.getLogger(__name__)
 

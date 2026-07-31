@@ -80,7 +80,7 @@ class ChatMixin:
     ) -> Tuple[List[ChatConversation], int]:
         """分页查询对话会话列表。"""
         with self.get_session() as session:
-            predicate = []
+            predicate = [ChatConversation.title_source != "system"]
             if tenant_id is not None:
                 predicate.append(ChatConversation.tenant_id == tenant_id)
             if owner_id is not None:

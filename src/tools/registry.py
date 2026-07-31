@@ -130,6 +130,12 @@ TOOL_MODULES: tuple[str, ...] = (
     # Information and event evidence
     "search_news",
     "search_financial_news",
+    "discover_rss_sources",
+    "inspect_rss_source",
+    "read_rss_feed",
+    "read_rss_item",
+    "read_text_document",
+    "export_rss_feed",
     "list_financial_sources",
     "inspect_financial_source",
     "read_financial_feed",

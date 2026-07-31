@@ -52,7 +52,7 @@ from src.agent.orchestrator_v2.runtime import (
     __all__,
  )
 
-__all__ = ['serialize_compiled_intent_graph_v2', 'restore_compiled_intent_graph_v2', '_emit', '_workflow_result_selection', '_artifact_securities', '_artifact_domains', '_node_domain_labels', '_node_domains', '_validated_domain_bindings', '_domain_identity_tokens', '_domain_item_identity_tokens']
+__all__ = ['serialize_compiled_intent_graph_v2', 'restore_compiled_intent_graph_v2', '_emit', '_workflow_result_selection', '_artifact_securities', '_artifact_resources', '_artifact_domains', '_node_domain_labels', '_node_domains', '_validated_domain_bindings', '_domain_identity_tokens', '_domain_item_identity_tokens']
 
 def serialize_compiled_intent_graph_v2(
     graph: CompiledIntentGraphV2,
@@ -228,6 +228,36 @@ def _artifact_securities(
             symbol = (str(item.get("symbol") or "") if isinstance(item, Mapping) else str(item or "")).strip()
             if symbol and symbol not in values:
                 values.append(symbol)
+    return values
+
+def _artifact_resources(
+    node: Any,
+    artifacts: Mapping[str, AgentArtifactV2],
+    resource_type: ResourceType,
+) -> list[Any]:
+    """Bind exact typed artifact payloads without falling back to generic results."""
+    from src.agent.orchestrator_v2.state import ARTIFACT_SCHEMA_VERSION
+
+    values: list[Any] = []
+    for ref in node.outline.input_refs:
+        if (
+            ref.source != "artifact"
+            or ref.artifact_id is None
+            or ref.resource_type != resource_type
+        ):
+            continue
+        artifact = artifacts.get(ref.artifact_id)
+        if (
+            artifact is None
+            or artifact.schema_version != ARTIFACT_SCHEMA_VERSION
+            or artifact.resource_type != resource_type
+        ):
+            continue
+        payload = artifact.payload
+        if isinstance(payload, list):
+            values.extend(payload)
+        elif payload not in (None, {}, ()):
+            values.append(payload)
     return values
 
 def _artifact_domains(

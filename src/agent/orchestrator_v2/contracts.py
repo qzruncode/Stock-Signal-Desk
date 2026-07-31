@@ -72,6 +72,9 @@ class OutcomeStatus(str, Enum):
 class ResourceType(str, Enum):
     SECURITY_COLLECTION = "security_collection"
     DOMAIN_COLLECTION = "domain_collection"
+    RSS_SOURCE_COLLECTION = "rss_source_collection"
+    RSS_ITEM_COLLECTION = "rss_item_collection"
+    TEXT_DOCUMENT_COLLECTION = "text_document_collection"
     EVIDENCE_COLLECTION = "evidence_collection"
     MARKET_MAINLINE_SNAPSHOT = "market_mainline_snapshot"
     GENERIC_RESULT = "generic_result"

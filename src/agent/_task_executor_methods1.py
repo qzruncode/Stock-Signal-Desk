@@ -413,6 +413,31 @@ class _WorkflowExecutorMethods1:
             )
             output_entities = ()
         if status == "completed":
+            for resource, path in spec.output_resource_paths.items():
+                projected_values: list[Any] = []
+                projection_present = False
+                for outcome in successful_outcomes:
+                    value: Any = outcome.result
+                    missing = False
+                    for field in path:
+                        if not isinstance(value, Mapping) or field not in value:
+                            missing = True
+                            break
+                        value = value[field]
+                    if missing or value is None:
+                        continue
+                    projection_present = True
+                    if isinstance(value, list):
+                        projected_values.extend(value)
+                    else:
+                        projected_values.append(value)
+                if not projection_present:
+                    continue
+                resource_outputs[resource.value] = (
+                    projected_values[0]
+                    if len(projected_values) == 1 and not path
+                    else projected_values
+                )
             for parameter, resource in spec.parameter_output_resources.items():
                 value = task.parameters.get(parameter)
                 if value not in (None, [], {}):

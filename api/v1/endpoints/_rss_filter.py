@@ -2,9 +2,9 @@
 """Explore-visibility filter for RSSHub routes — the single source of truth.
 
 The frontend used to maintain three blacklist ``Set``s in ``rssRoute.ts`` and
-filter client-side. They are moved here so the backend ``namespaces`` endpoint
-already serves the curated ~47-route stock-finance catalog, and both the RSS
-explore page and the AI assistant consume the same filtered list.
+filter client-side. They are retained for the finance-oriented Explore view
+and as recommendation metadata. They are not an authorization boundary: the
+Agent full-instance catalog keeps every RSSHub route discoverable.
 
 These are **empirically fixed constants**, not live probes:
 - ``KNOWN_BROKEN_ROUTES``: persistently 503/404 (verified by curl-ing each
@@ -135,3 +135,43 @@ def is_hidden_from_explore(route: Any) -> bool:
     else:
         return False
     return path in _HIDDEN_ROUTES
+
+
+def route_readiness(
+    route: Any,
+) -> tuple[str, bool, str | None]:
+    """Describe availability separately from default recommendation.
+
+    Historical explore-page curation must never become an authorization
+    boundary for the Agent. Broken routes stay discoverable as unavailable;
+    English and off-topic routes stay available but are not auto-selected for
+    Chinese stock analysis.
+    """
+    if isinstance(route, str):
+        path = route
+        features: dict[str, Any] = {}
+    elif isinstance(route, dict):
+        path = str(route.get("route_path") or "")
+        raw_features = route.get("features")
+        features = raw_features if isinstance(raw_features, dict) else {}
+    else:
+        path = ""
+        features = {}
+    if path in KNOWN_BROKEN_ROUTES:
+        return "unavailable", False, "历史健康检查显示该路由持续不可用"
+    if bool(features.get("requireConfig")):
+        return "requires_configuration", False, "路由需要实例侧配置"
+    if path in ENGLISH_ONLY_ROUTES:
+        return "available", False, "英文来源，仅在明确请求或相关性足够时使用"
+    if path in UNUSEFUL_ROUTES:
+        return "available", False, "不属于默认股票研究来源，但可被明确调用"
+    return "available", True, None
+
+
+__all__ = [
+    "ENGLISH_ONLY_ROUTES",
+    "KNOWN_BROKEN_ROUTES",
+    "UNUSEFUL_ROUTES",
+    "is_hidden_from_explore",
+    "route_readiness",
+]

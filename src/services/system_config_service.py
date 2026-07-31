@@ -80,13 +80,6 @@ class SystemConfigService(
         """Return grouped schema metadata for UI rendering."""
         return build_schema_response()
 
-    @staticmethod
-    def _reload_runtime_singletons() -> None:
-        """Reset runtime singleton services after config reload."""
-        from src.search_service import reset_search_service
-
-        reset_search_service()
-
     def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
         """Return current config values without server-side secret masking."""
         config_map = self._build_display_config_map(self._manager.read_config_map())
@@ -232,7 +225,6 @@ class SystemConfigService(
         if reload_now:
             try:
                 Config.reset_instance()
-                self._reload_runtime_singletons()
                 setup_env(override=True)
                 config = Config.get_instance()
                 warnings.extend(config.validate())

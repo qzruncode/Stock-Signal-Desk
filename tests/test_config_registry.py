@@ -126,7 +126,6 @@ class TestSettingsHelpMetadata(unittest.TestCase):
         "STOCK_LIST",
         "LLM_TEMPERATURE",
         "WEBUI_HOST",
-        "TAVILY_API_KEYS",
         "NEWS_STRATEGY_PROFILE",
         "WECHAT_WEBHOOK_URL",
         "SCHEDULE_TIME",

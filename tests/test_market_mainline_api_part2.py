@@ -217,7 +217,7 @@ def test_market_mainline_request_streams_forced_schema_without_local_timeout(
     assert __import__("json").loads(content) == payload
     assert model == "test-model"
     assert captured["stream"] is True
-    assert "timeout" not in captured
+    assert captured["timeout"] is None
     assert captured["tool_choice"]["function"]["name"] == ("submit_market_mainline_report")
     assert captured["tools"][0]["function"]["name"] == ("submit_market_mainline_report")
     assert captured.get("extra_body") != {

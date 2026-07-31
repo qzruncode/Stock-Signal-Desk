@@ -106,7 +106,9 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         fallback = _build_detail_fallback(body)
         if fallback is not None:
             _cache_put(cache_key, {"items": [fallback]})
-            return fallback
+            from api.v1.endpoints._rss_text import normalize_text_item
+
+            return normalize_text_item(fallback)
         raise HTTPException(
             status_code=502,
             detail={"error": "upstream_error", "message": result["errors"][0]},
@@ -142,7 +144,9 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         fallback = _build_detail_fallback(body)
         if fallback is not None:
             _cache_put(cache_key, {"items": [fallback]})
-            return fallback
+            from api.v1.endpoints._rss_text import normalize_text_item
+
+            return normalize_text_item(fallback)
         raise HTTPException(
             status_code=404,
             detail={"error": "not_found", "message": "未找到该消息内容"},
@@ -170,7 +174,9 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
             selected["summary"] = body.summary
         if not str(selected.get("image") or "").strip() and body.image:
             selected["image"] = body.image
-    return selected
+    from api.v1.endpoints._rss_text import normalize_text_item
+
+    return normalize_text_item(selected)
 
 @router.post(
     "/feeds/raw",
@@ -218,7 +224,12 @@ def get_rss_feeds_raw(body: RawFeedRequest):
             detail={"error": "upstream_error", "message": f"RSSHub 请求失败: {exc}"},
         )
 
-    return Response(content=resp.content, media_type=_MEDIA_TYPES[fmt])
+    content = resp.content
+    if body.text_only:
+        from api.v1.endpoints._rss_text import filter_raw_feed_bytes
+
+        content = filter_raw_feed_bytes(content, fmt)
+    return Response(content=content, media_type=_MEDIA_TYPES[fmt])
 
 def _build_html_transform_url(body: "HtmlTransformRequest") -> str:
     """构建 RSSHub /rsshub/transform/html/:url/:routeParams URL。"""

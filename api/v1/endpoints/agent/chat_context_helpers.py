@@ -171,7 +171,9 @@ def build_synthesis_messages(
         {"role": "system", "content": f"{system_text}\n\n{synthesis_instruction}"},
         *dialogue,
     ]
-    evidence_packet = list(evidence if evidence is not None else inferred_evidence)
+    evidence_packet = _project_synthesis_evidence(
+        list(evidence if evidence is not None else inferred_evidence)
+    )
     if playbook is not None and playbook.id == THEME_COMPANY_MAPPING.id and evidence_packet:
         candidate_text = json.dumps(evidence_packet, ensure_ascii=False, default=str)
         evidence_packet.append(
@@ -195,6 +197,32 @@ def build_synthesis_messages(
             }
         )
     return result
+
+
+def _project_synthesis_evidence(
+    values: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Bound model-facing evidence without touching canonical execution data."""
+    from api.v1.endpoints.agent.tools import _compact_tool_result
+
+    projected: List[Dict[str, Any]] = []
+    for value in values:
+        if not isinstance(value, dict):
+            continue
+        packet = dict(value)
+        tool_name = str(
+            packet.get("tool")
+            or packet.get("tool_name")
+            or ""
+        )
+        result = packet.get("result")
+        if tool_name and isinstance(result, dict):
+            packet["result"] = _compact_tool_result(
+                tool_name,
+                result,
+            )
+        projected.append(packet)
+    return projected
 
 
 __all__ = [

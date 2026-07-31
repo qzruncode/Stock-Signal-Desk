@@ -10,12 +10,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchRequest
 from src.tools.process_runner import execute_tool_isolated
 from src.tools.base import (
+    current_tool_execution_context,
     current_tool_idempotency_key,
     tool_idempotency_context,
 )
 from src.tools.process_worker import _exit_after_result, main as process_worker_main
+from src.tools.registry import ToolRegistry
 
 
 def test_isolated_runner_parses_structured_result_after_noisy_stdout():
@@ -59,6 +62,49 @@ def test_isolated_runner_forwards_a_stable_scoped_idempotency_key():
     assert forwarded_keys[0] == forwarded_keys[1]
 
 
+def test_dispatcher_forwards_conversation_context_to_isolated_worker():
+    captured: dict = {}
+
+    def isolated(_name, _arguments, **kwargs):
+        captured.update(kwargs.get("execution_context") or {})
+        return {"success": True, "partial": False, "errors": []}
+
+    dispatcher = ToolDispatcher(
+        ToolRegistry(),
+        isolated_executor=isolated,
+        compact_result=lambda _name, result: result,
+        attach_fallback=lambda _name, _arguments, result: result,
+    )
+    outcome = dispatcher.execute(
+        ToolDispatchRequest(
+            tool_name="read_rss_item",
+            arguments={
+                "item_ref": {
+                    "route_path": "/example",
+                    "params": {},
+                    "options": {},
+                    "item_id": "item",
+                    "title": "title",
+                    "link": "https://example.test/item",
+                    "content_hash": "a" * 64,
+                }
+            },
+            idempotency_key="key",
+            force_isolation=True,
+            conversation_id="conversation",
+            run_id="run",
+        ),
+        cancel_event=threading.Event(),
+        progress_observer=lambda _update: None,
+    )
+
+    assert outcome.canonical_result["success"] is True
+    assert captured == {
+        "conversation_id": "conversation",
+        "run_id": "run",
+    }
+
+
 def test_process_worker_exposes_and_resets_idempotency_context():
     request_stream = StringIO(
         json.dumps(
@@ -66,6 +112,10 @@ def test_process_worker_exposes_and_resets_idempotency_context():
                 "name": "get_market_status",
                 "arguments": {},
                 "idempotency_key": "worker-key",
+                "execution_context": {
+                    "conversation_id": "conversation",
+                    "run_id": "run",
+                },
             }
         )
     )
@@ -82,13 +132,17 @@ def test_process_worker_exposes_and_resets_idempotency_context():
             side_effect=lambda *_args, **_kwargs: {
                 "success": True,
                 "key": current_tool_idempotency_key(),
+                "execution_context": current_tool_execution_context(),
             },
         ),
     ):
         assert process_worker_main() == 0
 
     assert '"key": "worker-key"' in response_stream.getvalue()
+    assert '"conversation_id": "conversation"' in response_stream.getvalue()
+    assert '"run_id": "run"' in response_stream.getvalue()
     assert current_tool_idempotency_key() is None
+    assert current_tool_execution_context() == {}
     with tool_idempotency_context("parent-key"):
         assert current_tool_idempotency_key() == "parent-key"
     assert current_tool_idempotency_key() is None

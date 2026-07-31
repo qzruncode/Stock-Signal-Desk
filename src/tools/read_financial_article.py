@@ -6,13 +6,12 @@ from typing import Any
 
 from src.tools._rss_agent import (
     array_value,
-    endpoint_value,
-    ensure_financial_route,
-    html_text,
     object_value,
+    rss_item_ref,
     rss_options_schema,
 )
 from src.tools.base import ToolSpec, object_schema
+from src.tools.read_rss_item import read_rss_item
 
 
 def read_financial_article(
@@ -34,58 +33,79 @@ def read_financial_article(
     max_chars: int = 6000,
     force: bool = False,
 ) -> dict[str, Any]:
-    from api.v1.endpoints.rss import FeedItemDetailRequest, get_rss_feed_item_detail
-
-    body = FeedItemDetailRequest(
-        route_path=ensure_financial_route(route_path),
-        params=object_value(params, "params"),
-        options=object_value(options, "options"),
-        namespace=str(namespace or "").strip() or None,
-        item_id=str(item_id or ""),
-        title=str(title or "").strip(),
-        link=str(link or "").strip(),
-        force=bool(force),
-        content_html=str(list_content_html or ""),
-        summary=str(list_summary or ""),
-        image=str(list_image or ""),
-        published=str(published or ""),
-        author=str(author or ""),
-        tags=[str(value) for value in array_value(tags, "tags")],
-        attachments=[value for value in array_value(attachments, "attachments") if isinstance(value, dict)],
+    clean_params = object_value(params, "params")
+    clean_options = object_value(options, "options")
+    list_item = {
+        "id": str(item_id or ""),
+        "title": str(title or "").strip(),
+        "link": str(link or "").strip(),
+        "summary": str(list_summary or ""),
+        "content_html": str(list_content_html or ""),
+        "published": str(published or ""),
+        "author": str(author or ""),
+        "tags": [str(value) for value in array_value(tags, "tags")],
+        "attachments": [
+            value
+            for value in array_value(attachments, "attachments")
+            if isinstance(value, dict)
+        ],
+    }
+    ref = rss_item_ref(
+        route_path=str(route_path or "").strip(),
+        params=clean_params,
+        options=clean_options,
+        namespace=str(namespace or "").strip(),
+        item=list_item,
     )
-    item = endpoint_value(lambda: get_rss_feed_item_detail(body))
-    full_text = html_text(item.get("content_html") or item.get("summary") or "")
+    resolved = read_rss_item(
+        ref,
+        list_item,
+        include_documents=True,
+        force=force,
+    )
+    full_text = str(resolved.get("content_text") or "")
     start = max(0, int(offset or 0))
     size = max(500, min(int(max_chars or 6000), 12000))
     segment = full_text[start : start + size]
     next_offset = start + len(segment)
     has_more = next_offset < len(full_text)
-    published = item.get("published") or None
-    attachments = item.get("attachments") or []
+    published_value = resolved.get("published") or None
+    resolved_attachments = resolved.get("attachments") or []
     return {
-        "success": bool(segment or attachments or item.get("image") or item.get("link")),
+        "success": bool(
+            segment
+            or resolved_attachments
+            or resolved.get("resources")
+            or resolved.get("link")
+        ),
         "partial": has_more,
-        "title": item.get("title") or body.title,
-        "link": item.get("link") or body.link,
-        "published": published,
-        "author": item.get("author"),
-        "tags": item.get("tags") or [],
-        "image": item.get("image"),
-        "attachments": attachments,
+        "title": resolved.get("title") or title,
+        "link": resolved.get("link") or link,
+        "published": published_value,
+        "author": resolved.get("author"),
+        "tags": resolved.get("tags") or [],
+        "attachments": resolved_attachments,
+        "resources": resolved.get("resources") or [],
+        "item_ref": ref,
         "content_text": segment,
         "content_length": len(full_text),
         "offset": start,
         "next_offset": next_offset if has_more else None,
         "has_more": has_more,
-        "route_path": body.route_path,
-        "params": body.params,
-        "options": body.options,
-        "namespace": body.namespace,
-        "data_time": published,
+        "route_path": ref["route_path"],
+        "params": clean_params,
+        "options": clean_options,
+        "namespace": str(namespace or "").strip() or None,
+        "data_time": published_value,
         "is_stale": None,
-        "freshness_unknown": published is None,
-        "errors": [],
-        "warnings": ["正文较长，可使用 next_offset 继续读取"] if has_more else [],
+        "freshness_unknown": published_value is None,
+        "errors": resolved.get("errors") or [],
+        "warnings": (
+            ["正文较长，可使用 next_offset 继续读取"]
+            if has_more
+            else []
+        )
+        + list(resolved.get("warnings") or []),
     }
 
 

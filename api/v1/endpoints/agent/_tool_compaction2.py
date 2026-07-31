@@ -409,7 +409,7 @@ def _compact_tool_group2(tool_name: str, result: dict[str, object]) -> object:
             compaction_reason="semantic_rss_item_and_text_window",
         )
 
-    if tool_name == "list_financial_sources":
+    if tool_name in {"list_financial_sources", "discover_rss_sources"}:
         compact = _pick_fields(
             result,
             [
@@ -420,6 +420,10 @@ def _compact_tool_group2(tool_name: str, result: dict[str, object]) -> object:
                 "item_count",
                 "returned_count",
                 "has_more",
+                "offset",
+                "next_offset",
+                "scope",
+                "filters",
                 "query_scope",
                 "query_note",
                 "applied_filters",
@@ -446,6 +450,11 @@ def _compact_tool_group2(tool_name: str, result: dict[str, object]) -> object:
                 "features",
                 "maintainers",
                 "requires_configuration",
+                "readiness",
+                "auto_recommended",
+                "readiness_reason",
+                "source_ref",
+                "relevance_score",
             ],
             {"description": 600},
         )
@@ -457,7 +466,7 @@ def _compact_tool_group2(tool_name: str, result: dict[str, object]) -> object:
             compaction_reason="financial_source_catalog_window",
         )
 
-    if tool_name == "inspect_financial_source":
+    if tool_name in {"inspect_financial_source", "inspect_rss_source"}:
         return _annotate_tool_payload(
             tool_name,
             result,

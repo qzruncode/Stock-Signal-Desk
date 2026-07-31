@@ -5,7 +5,6 @@ remains focused on state, validation, and compatibility helpers.
 """
 
 import os
-from urllib.parse import urlparse
 
 
 def load_config_from_env(
@@ -40,44 +39,6 @@ def load_config_from_env(
     # LLM 配置：模型/鉴权统一由 Anthropic 网关（ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL）
     # 决定，由 src.llm.anthropic_gateway 解析，Config 只保留正交生成参数与请求节流。
     # 多供应商路由（LITELLM_MODEL/LLM_CHANNELS/LITELLM_CONFIG/各供应商 key）已退役。
-
-    # Anspire 搜索引擎 API key（搜索引擎配置，非 LLM）
-    anspire_keys_str = os.getenv("ANSPIRE_API_KEYS", "")
-    anspire_api_keys = [k.strip() for k in anspire_keys_str.split(",") if k.strip()]
-
-    bocha_keys_str = os.getenv("BOCHA_API_KEYS", "")
-    bocha_api_keys = [k.strip() for k in bocha_keys_str.split(",") if k.strip()]
-
-    minimax_keys_str = os.getenv("MINIMAX_API_KEYS", "")
-    minimax_api_keys = [k.strip() for k in minimax_keys_str.split(",") if k.strip()]
-
-    tavily_keys_str = os.getenv("TAVILY_API_KEYS", "")
-    tavily_api_keys = [k.strip() for k in tavily_keys_str.split(",") if k.strip()]
-
-    serpapi_keys_str = os.getenv("SERPAPI_API_KEYS", "")
-    serpapi_keys = [k.strip() for k in serpapi_keys_str.split(",") if k.strip()]
-
-    brave_keys_str = os.getenv("BRAVE_API_KEYS", "")
-    brave_api_keys = [k.strip() for k in brave_keys_str.split(",") if k.strip()]
-
-    _raw_urls = [u.strip() for u in os.getenv("SEARXNG_BASE_URLS", "").split(",") if u.strip()]
-    searxng_base_urls = []
-    invalid_searxng_urls = []
-    for u in _raw_urls:
-        p = urlparse(u)
-        if p.scheme in ("http", "https") and p.netloc:
-            searxng_base_urls.append(u)
-        else:
-            invalid_searxng_urls.append(u)
-    if invalid_searxng_urls:
-        logger.warning(
-            "SEARXNG_BASE_URLS 中存在无效 URL，已忽略: %s",
-            ", ".join(invalid_searxng_urls[:3]),
-        )
-    searxng_public_instances_enabled = parse_env_bool(
-        os.getenv("SEARXNG_PUBLIC_INSTANCES_ENABLED"),
-        default=True,
-    )
 
     wechat_msg_type = os.getenv("WECHAT_MSG_TYPE", "markdown")
     wechat_msg_type_lower = wechat_msg_type.lower()
@@ -137,14 +98,6 @@ def load_config_from_env(
         gemini_request_delay=parse_env_float(
             os.getenv("GEMINI_REQUEST_DELAY"), 2.0, field_name="GEMINI_REQUEST_DELAY", minimum=0.0
         ),
-        anspire_api_keys=anspire_api_keys,
-        bocha_api_keys=bocha_api_keys,
-        minimax_api_keys=minimax_api_keys,
-        tavily_api_keys=tavily_api_keys,
-        brave_api_keys=brave_api_keys,
-        serpapi_keys=serpapi_keys,
-        searxng_base_urls=searxng_base_urls,
-        searxng_public_instances_enabled=searxng_public_instances_enabled,
         news_max_age_days=parse_env_int(
             os.getenv("NEWS_MAX_AGE_DAYS"), 3, field_name="NEWS_MAX_AGE_DAYS", minimum=1
         ),
@@ -282,5 +235,4 @@ def load_config_from_env(
         ),
         portfolio_fx_update_enabled=os.getenv("PORTFOLIO_FX_UPDATE_ENABLED", "true").lower() == "true",
     )
-
 

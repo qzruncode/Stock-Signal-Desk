@@ -198,7 +198,7 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
 
         self.assertIn("get_risk_events", names)
 
-    def test_rss_is_exposed_as_direct_business_tools_without_catalog_hops(self) -> None:
+    def test_rss_exposes_dynamic_catalog_and_text_resource_tools(self) -> None:
         names = set(ToolRegistry().get_tool_names())
 
         self.assertIn("search_financial_news", names)
@@ -206,8 +206,12 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertIn("get_regulatory_updates", names)
         self.assertIn("get_monetary_policy_operations", names)
         self.assertNotIn("list_rss_sources", names)
-        self.assertNotIn("read_rss_feed", names)
-        self.assertNotIn("read_rss_item", names)
+        self.assertIn("discover_rss_sources", names)
+        self.assertIn("inspect_rss_source", names)
+        self.assertIn("read_rss_feed", names)
+        self.assertIn("read_rss_item", names)
+        self.assertIn("read_text_document", names)
+        self.assertIn("export_rss_feed", names)
 
     def test_professional_stock_tools_are_registered(self) -> None:
         names = set(ToolRegistry().get_tool_names())

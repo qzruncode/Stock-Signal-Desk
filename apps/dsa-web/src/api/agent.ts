@@ -62,6 +62,23 @@ export interface ChatConversationDetail extends ChatConversationItem {
   };
 }
 
+/**
+ * `thread_state` is an assistant-ui export containing opaque tool payloads.
+ * Tool contracts remain snake_case there, unlike the surrounding REST fields;
+ * deep camel-casing it makes hydrated tool cards silently lose their data.
+ */
+const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConversationDetail => {
+  const rawThreadState = payload.thread_state ?? payload.threadState;
+  const data = toCamelCase<ChatConversationDetail>(payload);
+  return {
+    ...data,
+    ...(rawThreadState === undefined
+      ? {}
+      : { threadState: rawThreadState as ChatConversationThreadState | null }),
+    messages: (data.messages || []).map((message) => toCamelCase<ChatConversationMessage>(message)),
+  };
+};
+
 export interface ChatConversationListResponse {
   items: ChatConversationItem[];
   total: number;
@@ -86,11 +103,7 @@ export const agentApi = {
 
   async getConversation(conversationId: string): Promise<ChatConversationDetail> {
     const response = await apiClient.get<Record<string, unknown>>(`/api/v1/agent/conversations/${conversationId}`);
-    const data = toCamelCase<ChatConversationDetail>(response.data);
-    return {
-      ...data,
-      messages: (data.messages || []).map((message) => toCamelCase<ChatConversationMessage>(message)),
-    };
+    return normalizeConversationDetail(response.data);
   },
 
   async syncConversationSnapshot(
@@ -114,11 +127,7 @@ export const agentApi = {
       `/api/v1/agent/conversations/${conversationId}/snapshot`,
       requestBody,
     );
-    const data = toCamelCase<ChatConversationDetail>(response.data);
-    return {
-      ...data,
-      messages: (data.messages || []).map((message) => toCamelCase<ChatConversationMessage>(message)),
-    };
+    return normalizeConversationDetail(response.data);
   },
 
   async renameConversation(conversationId: string, title: string): Promise<ChatConversationItem> {

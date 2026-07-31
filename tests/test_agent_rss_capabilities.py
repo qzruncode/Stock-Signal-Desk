@@ -44,6 +44,12 @@ CATALOG = {
 def test_agent_registers_every_infos_capability() -> None:
     names = set(ToolRegistry().get_tool_names())
     assert {
+        "discover_rss_sources",
+        "inspect_rss_source",
+        "read_rss_feed",
+        "read_rss_item",
+        "read_text_document",
+        "export_rss_feed",
         "list_financial_sources",
         "inspect_financial_source",
         "read_financial_feed",
@@ -174,7 +180,7 @@ def test_read_financial_article_segments_full_text_without_hidden_truncation() -
 
     request = endpoint.call_args_list[0].args[0]
     assert request.content_html == "<p>列表正文</p>"
-    assert request.image == "https://example.com/cover.png"
+    assert request.image == ""
     assert request.tags == ["A股"]
     assert request.attachments[0]["url"].endswith("fallback.pdf")
     assert first["has_more"] is True
@@ -236,7 +242,7 @@ def test_transform_and_export_feed_keep_assistant_reader_contract() -> None:
 
     with (
         patch("api.v1.endpoints._rss_catalog.get_rss_catalog", return_value=CATALOG),
-        pytest.raises(ValueError, match="47 个股市资讯源"),
+        pytest.raises(ValueError, match="已筛选来源目录"),
     ):
         export_financial_feed("/not-curated", format="rss")
 

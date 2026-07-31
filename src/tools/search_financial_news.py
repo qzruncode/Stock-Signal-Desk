@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""One-call semantic access to the curated RSSHub finance catalog."""
+"""One-call semantic access to the filtered RSSHub finance catalog."""
 
 from __future__ import annotations
 
@@ -9,67 +9,25 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from src.tools.base import ToolSpec, object_schema
-from src.tools.rss_sources import TOPIC_ROUTE_PATHS
+from src.tools.rss_source_resolver import resolve_rss_source_specs
 
 DESCRIPTION = (
-    "从项目 Infos 页同一套 RSSHub 财经源中语义检索最新资讯。工具会自动选源、填路由参数、"
+    "从助手既有 RSSHub 财经来源目录中语义检索最新资讯。工具会自动选源、填路由参数、"
     "并行聚合、去重和排序；无需先列目录再读 feed。可覆盖市场快讯、公司新闻、公告、研报、"
-    "宏观政策、行业和雪球热帖，必要时可在一次调用内补取前几条正文。RSS 无结果时可明确降级到联网搜索。"
+    "宏观政策、行业和社区热点，必要时可在一次调用内补取正文和文本附件。RSS 无结果时可明确降级到联网搜索。"
 )
 
-_PREFERRED_ROUTES: dict[str, list[tuple[str, dict[str, str]]]] = {
-    "market": [
-        ("/cls/telegraph/:category?", {}),
-        ("/wallstreetcn/live/:category?/:score?", {}),
-        ("/10jqka/realtimenews/:tag?", {}),
-        ("/stcn/article/list/kx", {}),
-        ("/jin10/:important?", {}),
-    ],
-    "company": [
-        ("/eastmoney/search/:keyword", {"keyword": "{query}"}),
-        ("/gelonghui/keyword/:keyword", {"keyword": "{query}"}),
-        ("/wallstreetcn/news/:category?", {}),
-    ],
-    "announcement": [
-        ("/sse/disclosure/:query?", {"query": "{query}"}),
-        ("/szse/disclosure/listed/notice/:query?", {"query": "{query}"}),
-        ("/sse/inquire", {}),
-        ("/szse/inquire/:category?/:select?/:keyword?", {}),
-    ],
-    "research": [
-        ("/eastmoney/report/:category", {"category": "stock"}),
-        ("/wkjyqh/research", {}),
-        ("/nifd/research/:categoryGuid?", {}),
-        ("/cih-index/report/list/:report?", {}),
-    ],
-    "macro": [
-        ("/gov/pbc/tradeAnnouncement", {}),
-        ("/nifd/research/:categoryGuid?", {}),
-        ("/wallstreetcn/news/:category?", {"category": "global"}),
-        ("/jin10/:important?", {"important": "1"}),
-    ],
-    "industry": [
-        ("/eastmoney/search/:keyword", {"keyword": "{query}"}),
-        ("/qianzhan/analyst/column/:type?", {}),
-        ("/hexun/pe/news", {}),
-        ("/mckinsey/cn/:category?", {}),
-    ],
-    "social": [
-        ("/xueqiu/hots", {}),
-        ("/eastmoney/search/:keyword", {"keyword": "{query}"}),
-        ("/cls/hot", {}),
-    ],
-}
-
-_DEFAULT_ROUTE_LIMITS = {
-    "market": 3,
-    "company": 1,
-    "announcement": 3,
-    "research": 3,
-    "macro": 3,
-    "industry": 1,
-    "social": 2,
-}
+_TOPICS = frozenset(
+    {
+        "market",
+        "company",
+        "announcement",
+        "research",
+        "macro",
+        "industry",
+        "social",
+    }
+)
 
 
 def _subject_terms(subjects: list[str]) -> list[str]:
@@ -142,72 +100,6 @@ def _is_usable_item(item: dict[str, Any]) -> bool:
     return len(meaningful) >= 4
 
 
-def _default_option(route: dict[str, Any], param: dict[str, Any]) -> str | None:
-    options = param.get("options") or []
-    if not isinstance(options, list) or not options:
-        return None
-    value = options[0].get("value")
-    return str(value) if value is not None else None
-
-
-def _route_params(
-    route: dict[str, Any],
-    query: str,
-    topic: str,
-    subject_terms: list[str],
-    preferred_overrides: dict[str, str],
-) -> dict[str, str] | None:
-    """Build safe parameters from catalog metadata; None means unusable route."""
-    path = str(route.get("route_path") or "")
-    code = next(
-        (term for term in subject_terms if re.fullmatch(r"\d{6}", term)),
-        "",
-    )
-    narrowed_query = " ".join(subject_terms) or query
-    params: dict[str, str] = {}
-    for param in route.get("params") or []:
-        name = str(param.get("name") or "")
-        if path == "/szse/inquire/:category?/:select?/:keyword?":
-            if name == "category":
-                value = "1" if code.startswith("3") else "0"
-            elif name == "select":
-                value = "全部函件类别"
-            elif name == "keyword":
-                value = code or narrowed_query
-            else:
-                value = None
-        else:
-            value = preferred_overrides.get(name)
-        if value:
-            value = value.replace("{query}", narrowed_query)
-            if path == "/szse/disclosure/listed/notice/:query?":
-                value = f"stock={code}" if code else None
-        elif name in {"keyword", "query"}:
-            if path == "/szse/disclosure/listed/notice/:query?" and code:
-                value = f"stock={code}"
-            elif path == "/szse/disclosure/listed/notice/:query?":
-                value = None
-            else:
-                value = narrowed_query
-        elif name == "lang":
-            value = (
-                "zh-Hans"
-                if any(str(option.get("value")) == "zh-Hans" for option in param.get("options") or [])
-                else "Mandarin"
-            )
-        elif param.get("default") is not None:
-            value = str(param.get("default"))
-        elif param.get("required"):
-            value = _default_option(route, param)
-            if value is None:
-                return None
-        else:
-            value = None
-        if value is not None and str(value).strip():
-            params[name] = str(value).strip()
-    return params
-
-
 def _select_specs(
     routes: list[dict[str, Any]],
     query: str,
@@ -217,30 +109,14 @@ def _select_specs(
     max_routes: int = 5,
     allowed_paths_override: frozenset[str] | None = None,
 ) -> list[tuple[str, dict[str, str], str]]:
-    """Rank the complete Infos catalog, while keeping battle-tested defaults."""
-    preferred = {path: (index, overrides) for index, (path, overrides) in enumerate(_PREFERRED_ROUTES[topic])}
-    subject_terms = _subject_terms(subjects or [])
-    ranked: list[tuple[int, str, dict[str, str], str]] = []
-    allowed_paths = allowed_paths_override or TOPIC_ROUTE_PATHS[topic]
-    for route in routes:
-        path = str(route.get("route_path") or "")
-        if not path or path not in allowed_paths:
-            continue
-        preferred_info = preferred.get(path)
-        overrides = dict(preferred_info[1]) if preferred_info else {}
-        params = _route_params(route, query, topic, subject_terms, overrides)
-        if params is None:
-            continue
-        score = 0
-        if preferred_info:
-            score += 1000 - preferred_info[0] * 20
-        # Routes with query parameters can perform server-side narrowing.
-        if any(key in params for key in ("keyword", "query")):
-            score += 300
-        if score > 0:
-            ranked.append((score, path, params, str(route.get("name") or path)))
-    ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    return [(path, params, name) for _, path, params, name in ranked[:max_routes]]
+    return resolve_rss_source_specs(
+        routes,
+        information_need=topic,
+        query=query,
+        subjects=subjects or (),
+        max_sources=max_routes,
+        allowed_paths=allowed_paths_override,
+    )
 
 
 def search_financial_news(
@@ -257,7 +133,9 @@ def search_financial_news(
     # Lazy imports avoid importing the complete FastAPI router while the tool
     # registry itself is still being constructed.
     from api.v1.endpoints._rss_catalog import get_rss_catalog
-    from api.v1.endpoints._rss_reader import read_feed, read_item
+    from api.v1.endpoints._rss_reader import read_feed
+    from src.tools._rss_agent import rss_item_ref
+    from src.tools.read_rss_item import read_rss_item
 
     query = query.strip()
     if not query:
@@ -267,11 +145,15 @@ def search_financial_news(
     if not 1 <= int(limit) <= 30:
         raise ValueError("limit 必须在 1 到 30 之间")
     resolved_topic = str(topic or "").strip().lower()
-    if resolved_topic not in _PREFERRED_ROUTES:
+    if resolved_topic not in _TOPICS:
         raise ValueError(f"不支持的 topic: {resolved_topic}")
-    catalog = get_rss_catalog(force=False)
+    catalog = get_rss_catalog(force=False, scope="finance")
     catalog_routes = [route for route in catalog.get("routes") or [] if isinstance(route, dict)]
-    max_routes = _DEFAULT_ROUTE_LIMITS[resolved_topic] if _max_routes is None else max(1, int(_max_routes))
+    max_routes = (
+        max(2, min(6, int(limit) // 4 + 1))
+        if _max_routes is None
+        else max(1, int(_max_routes))
+    )
     specs = _select_specs(
         catalog_routes,
         query,
@@ -280,9 +162,6 @@ def search_financial_news(
         max_routes=max_routes,
         allowed_paths_override=_route_paths,
     )
-    if not specs and resolved_topic != "market" and _route_paths is None:
-        specs = _select_specs(catalog_routes, query, "market", subjects)
-
     route_results: list[dict[str, Any]] = []
     errors: list[str] = []
     warnings: list[str] = []
@@ -295,7 +174,11 @@ def search_financial_news(
             else max(12, min(30, int(limit) * 2))
         )
         try:
-            result = read_feed(route_path=route_path, params=params, limit=feed_window)
+            result = read_feed(
+                route_path=route_path,
+                params=params,
+                limit=feed_window,
+            )
         except Exception as exc:
             result = {
                 "items": [],
@@ -324,6 +207,16 @@ def search_financial_news(
             item = dict(raw)
             item["rss_route"] = route_result["route_path"]
             item["rss_params"] = route_result["params"]
+            item.setdefault(
+                "item_ref",
+                rss_item_ref(
+                    route_path=route_result["route_path"],
+                    params=route_result["params"],
+                    options={},
+                    namespace="",
+                    item=item,
+                ),
+            )
             if not _is_usable_item(item):
                 continue
             normalized_title = re.sub(r"\s+", "", str(item.get("title") or "")).lower()
@@ -361,16 +254,15 @@ def search_financial_news(
     if include_content:
         for item in selected[:3]:
             try:
-                detail = read_item(
-                    route_path=item["rss_route"],
-                    params=item.get("rss_params") or {},
-                    title=str(item.get("title") or ""),
-                    item_id=str(item.get("id") or ""),
-                    link=str(item.get("link") or ""),
-                    list_summary=str(item.get("summary") or ""),
+                detail = read_rss_item(
+                    item_ref=item.get("item_ref") or {},
+                    item=item,
+                    include_documents=True,
                 )
                 item["content_text"] = detail.get("content_text") or item.get("summary")
-                item["content_fallback"] = bool(detail.get("_fallback"))
+                item["content_chunks"] = detail.get("content_chunks") or []
+                item["resources"] = detail.get("resources") or []
+                item["content_fallback"] = False
             except Exception as exc:
                 item["content_text"] = item.get("summary")
                 item["content_fallback"] = True
@@ -475,6 +367,30 @@ def search_financial_news(
         "rss_catalog_count": catalog.get("count"),
         "attempted_route_count": attempted_route_count,
         "successful_route_count": successful_route_count,
+        "coverage": {
+            "planned_sources": attempted_route_count,
+            "attempted_sources": attempted_route_count,
+            "successful_sources": successful_route_count,
+            "item_count": len(selected),
+            "text_documents_found": sum(
+                len(item.get("attachments") or [])
+                for item in selected
+            ),
+            "text_documents_extracted": sum(
+                len(item.get("resources") or [])
+                for item in selected
+            ),
+            "discarded_non_text": sum(
+                int(
+                    (route.get("result") or {})
+                    .get("coverage", {})
+                    .get("discarded_non_text")
+                    or 0
+                )
+                for route in route_results
+            ),
+            "failures": list(dict.fromkeys(errors))[:10],
+        },
         "web_fallback": web_fallback,
         "source": source,
         # `success` describes whether the tool executed and reached a data

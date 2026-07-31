@@ -191,6 +191,12 @@ _COMPACTION_TOOL_NAMES = {
     'get_social_sentiment',
     'search_news',
     'search_financial_news',
+    'discover_rss_sources',
+    'inspect_rss_source',
+    'read_rss_feed',
+    'read_rss_item',
+    'read_text_document',
+    'export_rss_feed',
     'list_financial_sources',
     'inspect_financial_source',
     'read_financial_feed',
@@ -227,9 +233,9 @@ def _compact_tool_result(tool_name: str, result: Any) -> Any:
         )
     if tool_name in ['analyze_stock_catalysts', 'evaluate_multi_stock_buy_criteria', 'get_domain_stock_candidates', 'get_history_data', 'get_kline', 'get_market_status', 'get_multi_stock_decision_evidence', 'get_multi_stock_financials', 'get_multi_stock_snapshot', 'get_realtime_quotes', 'get_sector_list', 'get_stock_info', 'read_analysis_report', 'screen_atr_volatility_stocks']:
         return _tool_compaction1._compact_tool_group1(tool_name, result)
-    if tool_name in ['get_announcements', 'get_balance_sheet', 'get_cashflow', 'get_financials', 'get_income_statement', 'get_research_report', 'get_risk_events', 'get_shareholder_structure', 'get_social_sentiment', 'get_valuation_ratios', 'inspect_financial_source', 'list_financial_sources', 'search_financial_news', 'search_news']:
+    if tool_name in ['discover_rss_sources', 'get_announcements', 'get_balance_sheet', 'get_cashflow', 'get_financials', 'get_income_statement', 'get_research_report', 'get_risk_events', 'get_shareholder_structure', 'get_social_sentiment', 'get_valuation_ratios', 'inspect_financial_source', 'inspect_rss_source', 'list_financial_sources', 'search_financial_news', 'search_news']:
         return _tool_compaction2._compact_tool_group2(tool_name, result)
-    if tool_name in ['export_financial_feed', 'get_business_segments', 'get_consensus_estimates', 'get_index_data', 'get_peer_comparison', 'get_stock_capital_flow', 'get_technical_indicators', 'read_financial_article', 'read_financial_feed', 'transform_webpage_to_feed', 'webfetch', 'websearch']:
+    if tool_name in ['export_financial_feed', 'export_rss_feed', 'get_business_segments', 'get_consensus_estimates', 'get_index_data', 'get_peer_comparison', 'get_stock_capital_flow', 'get_technical_indicators', 'read_financial_article', 'read_financial_feed', 'read_rss_feed', 'read_rss_item', 'read_text_document', 'transform_webpage_to_feed', 'webfetch', 'websearch']:
         return _tool_compaction3._compact_tool_group3(tool_name, result)
     if tool_name in ['get_bond_yield', 'get_macro_indicator', 'get_market_breadth', 'get_monetary_policy_operations', 'get_regulatory_updates', 'get_sector_flow', 'search_research_library']:
         return _tool_compaction4._compact_tool_group4(tool_name, result)

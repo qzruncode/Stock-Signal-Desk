@@ -24,7 +24,11 @@ __all__ = ['_compact_tool_group3']
 
 
 def _compact_tool_group3(tool_name: str, result: dict[str, object]) -> object:
-    if tool_name in {"read_financial_feed", "transform_webpage_to_feed"}:
+    if tool_name in {
+        "read_financial_feed",
+        "read_rss_feed",
+        "transform_webpage_to_feed",
+    }:
         compact = _pick_fields(
             result,
             [
@@ -60,6 +64,9 @@ def _compact_tool_group3(tool_name: str, result: dict[str, object]) -> object:
                 "image",
                 "content_html",
                 "attachments",
+                "item_ref",
+                "content_hash",
+                "_discarded_non_text",
             ],
             {"summary": 1200, "content_html": 6000},
         )
@@ -71,12 +78,125 @@ def _compact_tool_group3(tool_name: str, result: dict[str, object]) -> object:
             compaction_reason="financial_feed_item_window",
         )
 
-    if tool_name in {"read_financial_article", "export_financial_feed"}:
+    if tool_name in {
+        "read_financial_article",
+        "export_financial_feed",
+        "export_rss_feed",
+    }:
         return _annotate_tool_payload(
             tool_name,
             result,
             payload_policy="complete",
             compacted=False,
+        )
+
+    if tool_name == "read_rss_item":
+        compact = _pick_fields(
+            result,
+            [
+                "success",
+                "partial",
+                "item_ref",
+                "title",
+                "link",
+                "published",
+                "author",
+                "tags",
+                "content_length",
+                "resources",
+                "document_evidence",
+                "attachments",
+                "coverage",
+                "data_time",
+                "is_stale",
+                "freshness_unknown",
+                "errors",
+                "warnings",
+            ],
+        )
+        content_text = result.get("content_text")
+        if isinstance(content_text, str):
+            compact["content_text"] = (
+                content_text
+                if len(content_text) <= 12_000
+                else content_text[:12_000].rstrip() + "…"
+            )
+        compact["content_chunks"] = _trim_list(
+            result.get("content_chunks"),
+            8,
+            [
+                "chunk_index",
+                "text",
+                "content_hash",
+                "page",
+                "section",
+                "char_start",
+                "char_end",
+            ],
+            {"text": 4_000},
+        )
+        compact["document_evidence"] = _trim_list(
+            result.get("document_evidence"),
+            6,
+            [
+                "resource_id",
+                "filename",
+                "content_hash",
+                "chunk_count",
+                "covered_chunk_indices",
+                "coverage_complete",
+                "text",
+            ],
+            {"text": 6_000},
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="evidence_projection",
+            compacted=True,
+            compaction_reason="rss_item_text_window",
+        )
+
+    if tool_name == "read_text_document":
+        compact = _pick_fields(
+            result,
+            [
+                "success",
+                "partial",
+                "resource",
+                "returned_count",
+                "total_chunk_count",
+                "offset",
+                "next_offset",
+                "has_more",
+                "query",
+                "reading_mode",
+                "coverage_digest",
+                "coverage",
+                "errors",
+                "warnings",
+            ],
+        )
+        compact["chunks"] = _trim_list(
+            result.get("chunks"),
+            12,
+            [
+                "chunk_index",
+                "text",
+                "content_hash",
+                "page",
+                "section",
+                "char_start",
+                "char_end",
+            ],
+            {"text": 4_000},
+        )
+        return _annotate_tool_payload(
+            tool_name,
+            compact,
+            payload_policy="evidence_projection",
+            compacted=True,
+            compaction_reason="text_document_chunk_window",
         )
 
     if tool_name == "get_stock_capital_flow":

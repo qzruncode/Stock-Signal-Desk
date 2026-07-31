@@ -113,10 +113,12 @@ export interface RssFeedItem {
   link?: string;
   published?: string | null;
   source?: string;
-  image?: string;
   author?: string;
   tags?: string[];
   attachments?: Array<{ url: string; mime_type: string; title?: string }>;
+  content_html?: string;
+  item_ref?: import('../api/rss').RssItemRef;
+  resources?: import('../api/rss').TextDocumentResource[];
   rss_route?: string;
   rss_params?: Record<string, unknown>;
   source_type?: 'rss' | 'websearch';

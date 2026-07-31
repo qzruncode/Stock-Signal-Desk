@@ -472,10 +472,50 @@ class NotificationIntent(ConfirmationSignal):
 
 class FinancialSourceDiscoveryIntent(StrictModel):
     route_path: str | None = Field(default=None, min_length=1, max_length=500)
-    keyword: str | None = Field(default=None, min_length=1, max_length=120)
+    query: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        description="单一来源用途或主题。用户提出多个用途时使用 information_needs。",
+    )
+    keyword: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+        description="兼容旧记录的单一来源用途；新请求优先使用 query 或 information_needs。",
+    )
+    information_needs: tuple[str, ...] = Field(
+        default_factory=tuple,
+        max_length=8,
+        description=(
+            "用户同时需要覆盖的来源用途。每项保留一个完整用途；例如 A股公告、"
+            "市场快讯、宏观资讯必须分别填写，不能只保留第一项。"
+        ),
+    )
     namespace: str | None = Field(default=None, min_length=1, max_length=80)
-    capability: str | None = Field(default=None, min_length=1, max_length=80)
+    category: Literal["finance"] | None = Field(
+        default=None,
+        description=(
+            "RSSHub 路由元数据分类；当前已筛选目录只有 finance。"
+            "A股公告、市场快讯、宏观等来源用途必须填写在 query，不能填写此字段。"
+        ),
+    )
+    recommended_only: bool | None = None
+    offset: int | None = Field(default=None, ge=0)
     limit: int | None = Field(default=None, ge=1, le=100)
+
+    @field_validator("information_needs")
+    @classmethod
+    def _unique_information_needs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            text = item.strip()
+            key = text.casefold()
+            if text and key not in seen:
+                normalized.append(text)
+                seen.add(key)
+        return tuple(normalized)
 
 ScalarValue = str | int | float | bool
 
@@ -483,15 +523,87 @@ class NamedScalarInput(StrictModel):
     name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
     value: ScalarValue
 
+
+class RssReadOptionsIntent(StrictModel):
+    filter: str | None = Field(default=None, max_length=1000)
+    filter_title: str | None = Field(default=None, max_length=1000)
+    filter_description: str | None = Field(default=None, max_length=1000)
+    filter_author: str | None = Field(default=None, max_length=1000)
+    filter_category: str | None = Field(default=None, max_length=1000)
+    filterout: str | None = Field(default=None, max_length=1000)
+    filterout_title: str | None = Field(default=None, max_length=1000)
+    filterout_description: str | None = Field(default=None, max_length=1000)
+    filterout_author: str | None = Field(default=None, max_length=1000)
+    filterout_category: str | None = Field(default=None, max_length=1000)
+    filter_case_sensitive: bool | None = None
+    filter_time: int | None = Field(default=None, ge=0)
+    sorted: bool | None = None
+    mode: Literal["fulltext"] | None = None
+    opencc: str | None = Field(default=None, min_length=1, max_length=40)
+    brief: int | None = Field(default=None, ge=0, le=10000)
+    format: Literal["rss", "atom", "json", "rss3"] | None = None
+
+
 class FinancialFeedReadIntent(StrictModel):
-    route_path: str = Field(min_length=1, max_length=500)
+    route_path: str | None = Field(default=None, min_length=1, max_length=500)
     inputs: tuple[NamedScalarInput, ...] = Field(default_factory=tuple, max_length=20)
+    options: RssReadOptionsIntent | None = None
     namespace: str | None = Field(default=None, min_length=1, max_length=80)
     limit: int | None = Field(default=None, ge=1, le=100)
 
 class FinancialArticleReadIntent(StrictModel):
-    route_path: str = Field(min_length=1, max_length=500)
-    title: str = Field(min_length=1, max_length=500)
+    route_path: str | None = Field(default=None, min_length=1, max_length=500)
+    item_id: str | None = Field(default=None, min_length=1, max_length=500)
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    link: str | None = Field(default=None, min_length=8, max_length=2000)
+    resource_id: str | None = Field(default=None, min_length=1, max_length=200)
+    document_mime_type: str | None = Field(
+        min_length=3,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$",
+    )
+    selection: Literal["latest"] | None = None
+    response_mode: Literal[
+        "resource_delivery",
+        "answer_question",
+        "complete_summary",
+        "continue_analysis",
+    ]
+    query: str | None = Field(default=None, min_length=1, max_length=500)
+    include_documents: bool | None = None
+    offset: int | None = Field(default=None, ge=0)
+    limit: int | None = Field(default=None, ge=1, le=100)
+    page_start: int | None = Field(default=None, ge=1)
+    page_end: int | None = Field(default=None, ge=1)
+    reading_mode: Literal["targeted", "complete"] | None = None
+
+    @model_validator(mode="after")
+    def _validate_item_selection(self) -> "FinancialArticleReadIntent":
+        explicit_item_selectors = tuple(
+            value for value in (self.item_id, self.title, self.link) if value
+        )
+        if self.selection and explicit_item_selectors:
+            raise ValueError(
+                "selection cannot be combined with item_id, title, or link"
+            )
+        if self.resource_id and (self.selection or explicit_item_selectors):
+            raise ValueError(
+                "resource_id cannot be combined with RSS item selection"
+            )
+        if (
+            self.response_mode != "resource_delivery"
+            and self.reading_mode is None
+        ):
+            raise ValueError(
+                "reading_mode is required when document content must be synthesized"
+            )
+        if self.response_mode == "complete_summary" and self.reading_mode != "complete":
+            raise ValueError(
+                "complete_summary requires reading_mode=complete"
+            )
+        if self.reading_mode == "targeted" and not self.query:
+            raise ValueError("targeted document reading requires query")
+        return self
 
 class WebpageFeedTransformIntent(StrictModel):
     url: str = Field(min_length=8, max_length=2000)
@@ -507,9 +619,10 @@ class WebpageFeedTransformIntent(StrictModel):
 class FinancialFeedExportIntent(ConfirmationSignal):
     route_path: str = Field(min_length=1, max_length=500)
     inputs: tuple[NamedScalarInput, ...] = Field(default_factory=tuple, max_length=20)
+    options: RssReadOptionsIntent | None = None
     namespace: str | None = Field(default=None, min_length=1, max_length=80)
-    format: Literal["json", "rss", "atom", "csv"] | None = None
-    limit: int | None = Field(default=None, ge=1, le=1000)
+    format: Literal["json", "rss", "atom", "rss3"] | None = None
+    limit: int | None = Field(default=None, ge=1, le=100)
 
 class PublicWebResearchIntent(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=500)

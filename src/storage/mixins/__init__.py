@@ -18,6 +18,7 @@ from src.storage.mixins.agent_runtime import AgentRuntimeMixin
 from src.storage.mixins.agent_quality import AgentQualityMixin
 from src.storage.mixins.financial_lifecycle import FinancialLifecycleMixin
 from src.storage.mixins.agent_governance import AgentGovernanceMixin
+from src.storage.mixins.text_document import TextDocumentMixin
 
 __all__ = [
     "DailyDataMixin",
@@ -37,4 +38,5 @@ __all__ = [
     "AgentQualityMixin",
     "FinancialLifecycleMixin",
     "AgentGovernanceMixin",
+    "TextDocumentMixin",
 ]

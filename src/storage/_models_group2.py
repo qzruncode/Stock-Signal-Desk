@@ -8,7 +8,7 @@ for _name, _value in vars(_models).items():
     if not _name.startswith("__"):
         globals()[_name] = _value
 
-__all__ = ['AgentArtifact', 'AgentRunTrace', 'AgentRuntimeControl', 'AgentRun', 'AgentRunEvent', 'AgentStepExecution', 'AgentEffectOutbox', 'AgentRateLimitBucket', 'AgentResourceLease', 'AgentCircuitBreaker', 'BacktestResult', 'BacktestSummary', 'PortfolioAccount', 'PortfolioTrade', 'PortfolioCashLedger']
+__all__ = ['AgentArtifact', 'AgentTextDocument', 'AgentTextChunk', 'AgentRunTrace', 'AgentRuntimeControl', 'AgentRun', 'AgentRunEvent', 'AgentStepExecution', 'AgentEffectOutbox', 'AgentRateLimitBucket', 'AgentResourceLease', 'AgentCircuitBreaker', 'BacktestResult', 'BacktestSummary', 'PortfolioAccount', 'PortfolioTrade', 'PortfolioCashLedger']
 
 class AgentArtifact(Base):
     """Independent, versioned orchestration artifact payload."""
@@ -45,6 +45,88 @@ class AgentArtifact(Base):
             "conversation_id",
             "fingerprint",
             name="uix_agent_artifact_conversation_fingerprint",
+        ),
+    )
+
+class AgentTextDocument(Base):
+    """Conversation-owned original text document and extraction metadata."""
+
+    __tablename__ = "agent_text_documents"
+
+    id = Column(String(96), primary_key=True)
+    conversation_id = Column(
+        String(64),
+        ForeignKey("chat_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id = Column(String(64), nullable=False, default="", index=True)
+    source_url = Column(Text, nullable=False)
+    filename = Column(String(500), nullable=False, default="document")
+    mime_type = Column(String(255), nullable=False)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    content_hash = Column(String(64), nullable=False, index=True)
+    blob_path = Column(Text, nullable=False)
+    extraction_status = Column(String(32), nullable=False, index=True)
+    extraction_method = Column(String(120))
+    text_length = Column(Integer, nullable=False, default=0)
+    chunk_count = Column(Integer, nullable=False, default=0)
+    source_item_json = Column(Text, nullable=False, default="{}")
+    error_detail = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+        index=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "content_hash",
+            name="uix_agent_text_document_conversation_hash",
+        ),
+        Index(
+            "ix_agent_text_documents_conversation_created",
+            "conversation_id",
+            "created_at",
+        ),
+    )
+
+
+class AgentTextChunk(Base):
+    """One stable, locatable extracted-text chunk."""
+
+    __tablename__ = "agent_text_chunks"
+
+    id = Column(String(128), primary_key=True)
+    resource_id = Column(
+        String(96),
+        ForeignKey("agent_text_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chunk_index = Column(Integer, nullable=False)
+    content_hash = Column(String(64), nullable=False, index=True)
+    page = Column(Integer)
+    section = Column(String(500))
+    char_start = Column(Integer, nullable=False, default=0)
+    char_end = Column(Integer, nullable=False, default=0)
+    text_content = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "resource_id",
+            "chunk_index",
+            name="uix_agent_text_chunk_resource_index",
+        ),
+        Index(
+            "ix_agent_text_chunks_resource_page",
+            "resource_id",
+            "page",
         ),
     )
 

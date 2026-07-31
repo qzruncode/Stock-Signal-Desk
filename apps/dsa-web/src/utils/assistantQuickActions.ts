@@ -42,6 +42,26 @@ export const SUGGESTIONS: readonly { label: string; prompt: string }[] = [
   },
 ] as const;
 
+/** 本轮 RSSHub 与会话原始文件能力的可直接执行示例。 */
+export const RSS_DOCUMENT_SUGGESTIONS: readonly AssistantCapability[] = [
+  {
+    label: '查看助手已筛选的 RSSHub 财经来源',
+    prompt: '仅使用已筛选的 RSSHub 财经来源，不调用联网搜索、行情或财务工具。查找可用于 A 股公告、市场快讯和宏观资讯的来源，说明来源名称、路由、健康状态和用途',
+  },
+  {
+    label: '读取指定公告 Feed，并打开最新 PDF',
+    prompt: '只使用深交所“上市公司公告”路由 /szse/disclosure/listed/notice/:query?，参数 query=stock=001399，读取最近 5 条；然后读取最新一条的全文和 PDF 原文件，不要按标题重新搜索，也不要调用其他数据工具',
+  },
+  {
+    label: '从最新公告 PDF 中按页提取关键信息',
+    prompt: '仅使用已筛选的 RSSHub 财经来源，查找宁德时代最近 5 条公司公告；读取最新一条的全文和 PDF 原文件，并从同一份 PDF 提取公告事项、金额、期限、决议和风险控制措施，逐项引用页码，不要调用行情或财务工具',
+  },
+  {
+    label: '把公开网页转换为纯文本资讯 Feed',
+    prompt: '我会提供一个公开网页地址。请将网页转换为可订阅的资讯 Feed，预览纯文本条目并过滤图片、音频和视频；我确认后再按 RSS、Atom、JSON Feed 或 RSS3 格式导出',
+  },
+] as const;
+
 /**
  * AI 助手的完整能力目录。
  *
@@ -153,12 +173,13 @@ export const ASSISTANT_CAPABILITY_GROUPS: readonly AssistantCapabilityGroup[] = 
     items: [
       { label: '这只股票最近有什么重要新闻？', prompt: '搜索宁德时代最近的重要新闻，按时间排序并标明来源', toolName: 'search_news' },
       { label: '今天有哪些值得关注的财经资讯？', prompt: '搜索今天最重要的 A 股市场资讯，按主题归类并标明来源和时间', toolName: 'search_financial_news' },
-      { label: '助手可以查看哪些财经资讯来源？', prompt: '列出助手可用的全部股市资讯与 RSS 源，按命名空间和用途分组', toolName: 'list_financial_sources' },
-      { label: '这个资讯来源具体包含什么内容？', prompt: '先列出可用资讯源；我指定一个后再查看它的参数、主题和运行状态', toolName: 'inspect_financial_source' },
-      { label: '帮我读取一个指定的财经资讯源', prompt: '先列出可用资讯源；我指定来源和筛选条件后再读取该 Feed', toolName: 'read_financial_feed' },
-      { label: '帮我把这篇财经资讯的全文读完', prompt: '先搜索宁德时代最近的重要资讯；我指定一条后再读取完整正文', toolName: 'read_financial_article' },
+      { label: '助手可以查看哪些 RSSHub 来源？', prompt: '列出助手已筛选的 RSSHub 财经来源，按命名空间、健康状态和用途分组', toolName: 'discover_rss_sources' },
+      { label: '这个资讯来源具体包含什么内容？', prompt: '先列出可用资讯源；我指定一个后再查看它的参数、主题和运行状态', toolName: 'inspect_rss_source' },
+      { label: '帮我读取一个指定的 RSSHub 来源', prompt: '先动态发现可用来源；我指定来源和筛选条件后再读取该 Feed', toolName: 'read_rss_feed' },
+      { label: '帮我把资讯和原始文件读完', prompt: '先搜索宁德时代最近的重要资讯；我指定一条后读取准确条目、文本附件和完整原文', toolName: 'read_rss_item' },
+      { label: '继续分析刚才那份原始文件', prompt: '继续读取当前会话中刚才那份原始文本文件，按页码、章节或表格位置引用证据，不要按标题重新搜索', toolName: 'read_text_document' },
       { label: '能把这个网页变成可订阅的资讯源吗？', prompt: '我会提供一个公开网页地址，请尝试把它转换成可订阅的资讯 Feed', toolName: 'transform_webpage_to_feed' },
-      { label: '帮我把这个资讯源导出来', prompt: '先读取我指定的资讯源，再按我选择的 RSS、Atom 或 JSON Feed 格式导出', toolName: 'export_financial_feed' },
+      { label: '帮我把这个资讯源导出来', prompt: '先读取我指定的资讯源，再按我选择的 RSS、Atom、JSON Feed 或 RSS3 格式导出', toolName: 'export_rss_feed' },
       { label: '帮我找找这个行业相关的券商研报', prompt: '搜索人形机器人产业链相关研报，列出标题、机构、时间和核心摘要', toolName: 'search_research_library' },
       { label: '近期有哪些重要的监管政策变化？', prompt: '搜索近期影响 A 股的重要监管政策与规则变化，标明原始来源和时间', toolName: 'get_regulatory_updates' },
       { label: '央行最近在公开市场做了哪些操作？', prompt: '查看近期央行公开市场操作，说明规模、利率、到期量和流动性影响', toolName: 'get_monetary_policy_operations' },
@@ -199,6 +220,12 @@ export const ASSISTANT_SUGGESTION_GROUPS: readonly AssistantCapabilityGroup[] = 
     title: '精选投研问题',
     description: '从产业链、公司比较、公告风险和市场强弱开始研究。',
     items: SUGGESTIONS,
+  },
+  {
+    id: 'rss-documents',
+    title: 'RSSHub 与原始文件',
+    description: '发现来源、读取指定 Feed，并在会话中预览和分析 PDF 等文本文件。',
+    items: RSS_DOCUMENT_SUGGESTIONS,
   },
   ...ASSISTANT_CAPABILITY_GROUPS,
 ];

@@ -258,6 +258,56 @@ def test_financial_statement_periods_share_one_validated_contract() -> None:
     )
     assert explicit.execution_parameters == {"periods": 2}
 
+
+def test_rss_source_category_is_closed_catalog_taxonomy() -> None:
+    valid = normalize_capability_intent(
+        node_id="rss_sources",
+        objective="查找 A 股公告来源",
+        capability=Capability.FINANCIAL_SOURCE_DISCOVERY,
+        intent={"query": "A股公告", "category": "finance"},
+        input_refs=(),
+        result_selection=None,
+        current_year=2026,
+    )
+
+    assert valid.execution_parameters == {
+        "query": "A股公告",
+        "category": "finance",
+        "force": False,
+    }
+    with pytest.raises(ValueError, match="finance"):
+        normalize_capability_intent(
+            node_id="rss_sources",
+            objective="查找 A 股公告来源",
+            capability=Capability.FINANCIAL_SOURCE_DISCOVERY,
+            intent={"query": "A股公告", "category": "A股公告"},
+            input_refs=(),
+            result_selection=None,
+            current_year=2026,
+        )
+
+
+def test_rss_source_discovery_preserves_all_explicit_information_needs() -> None:
+    normalized = normalize_capability_intent(
+        node_id="rss_sources",
+        objective="发现已筛选的 RSSHub 财经来源",
+        capability=Capability.FINANCIAL_SOURCE_DISCOVERY,
+        intent={
+            "information_needs": ("A股公告", "市场快讯", "宏观资讯"),
+            "category": "finance",
+        },
+        input_refs=(),
+        result_selection=None,
+        current_year=2026,
+    )
+
+    assert normalized.execution_parameters == {
+        "query": "A股公告 市场快讯 宏观资讯",
+        "category": "finance",
+        "force": False,
+    }
+
+
 def test_capability_freshness_is_explicit_and_realtime_never_crosses_runs():
     assert set(CAPABILITY_REGISTRY) == set(Capability)
     realtime = CAPABILITY_REGISTRY[Capability.REALTIME_QUOTE].freshness_policy
@@ -312,6 +362,29 @@ def test_cross_run_cache_requires_policy_and_authoritative_observation_time():
         model_config={"model": "test"},
     )
     assert cache_key is not None
+
+    article = compiled_for(Capability.FINANCIAL_ARTICLE_READ)
+    resource_call = WorkflowCall(
+        task_id="cache",
+        step_id="read_resource",
+        tool_name="read_rss_item",
+        arguments={},
+    )
+    first_conversation_key = execution_cache_key_v2(
+        article,
+        resource_call,
+        {"item_ref": {"content_hash": "same-item"}},
+        model_config={"model": "test"},
+        conversation_id="conversation-one",
+    )
+    second_conversation_key = execution_cache_key_v2(
+        article,
+        resource_call,
+        {"item_ref": {"content_hash": "same-item"}},
+        model_config={"model": "test"},
+        conversation_id="conversation-two",
+    )
+    assert first_conversation_key != second_conversation_key
 
     class Database:
         saved = 0
@@ -470,8 +543,11 @@ def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> Non
             Capability.NOTIFICATION: {"action": "status"},
             Capability.FINANCIAL_FEED_READ: {"route_path": "/finance/example"},
             Capability.FINANCIAL_ARTICLE_READ: {
-                "route_path": "/finance/example",
-                "title": "示例",
+                "resource_id": "textdoc_example",
+                "document_mime_type": None,
+                "response_mode": "answer_question",
+                "reading_mode": "targeted",
+                "query": "示例",
             },
             Capability.WEBPAGE_FEED_TRANSFORM: {"url": "https://example.com"},
             Capability.FINANCIAL_FEED_EXPORT: {"route_path": "/finance/example"},
