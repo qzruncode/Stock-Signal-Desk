@@ -15,6 +15,9 @@ from src.agent.domain_renderers import (
     build_ranked_domain_answer as _build_ranked_domain_answer,
     build_theme_business_evidence_answer as _build_theme_business_evidence_answer,
 )
+from src.agent.industry_index_renderers import (
+    build_industry_index_context_answer as _build_industry_index_context_answer,
+)
 from api.v1.endpoints.agent.chat_decision_renderers import _build_professional_buy_decision_answer
 from api.v1.endpoints.agent.chat_evidence_renderers import _build_quantitative_screen_answer
 from api.v1.endpoints.agent.chat_research_renderers import _build_workflow_evidence_fallback
@@ -217,6 +220,8 @@ def _exact_result_contract_answer(
         return _build_professional_buy_decision_answer(evidence) or (
             "## 专业买入分析未完成\n\n" "本轮没有成功取得八维专业分析结果，因此没有输出任何买入结论。请重试本轮问题。"
         )
+    if result_contract == "industry_index_context":
+        return _build_industry_index_context_answer(evidence)
     if result_contract in {
         "rss_source_discovery",
         "rss_feed_read",

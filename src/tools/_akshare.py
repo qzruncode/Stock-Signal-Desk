@@ -15,6 +15,17 @@ import pandas as pd
 from data_provider.rate_limiter import akshare_rate_limiter
 
 _CACHE_LOCK = threading.RLock()
+_MEMORY_CACHE: dict[str, tuple[float, Any]] = {}
+_INFLIGHT: dict[str, threading.Event] = {}
+_MEMORY_CACHE_MAX_ENTRIES = 128
+
+
+def _memory_store_locked(key: str, value: Any) -> None:
+    """Keep the hot single-flight cache bounded; durable cache remains authoritative."""
+    _MEMORY_CACHE[key] = (time.time(), value)
+    while len(_MEMORY_CACHE) > _MEMORY_CACHE_MAX_ENTRIES:
+        oldest_key = min(_MEMORY_CACHE, key=lambda item: _MEMORY_CACHE[item][0])
+        _MEMORY_CACHE.pop(oldest_key, None)
 
 
 def _persistent_cache_get(key: str, ttl_seconds: int) -> Any | None:
@@ -107,26 +118,68 @@ def cached_call(
     ttl_seconds: int = 1800,
     attempts: int = 2,
 ) -> tuple[Any, bool]:
-    """Run a rate-limited AKShare call with short TTL cache and one retry."""
+    """Run a rate-limited AKShare call with cache, retry and keyed single-flight.
+
+    Whole-market AKShare feeds are often projected into several stocks.  A
+    persistent cache alone does not prevent parallel workers from all missing
+    the same key and downloading the same market-wide frame.  The in-process
+    cache and event below make one caller the leader while followers reuse its
+    completed result.
+    """
+    leader = False
     with _CACHE_LOCK:
+        memory = _MEMORY_CACHE.get(key)
+        if memory is not None and ttl_seconds > 0 and time.time() - memory[0] < ttl_seconds:
+            return memory[1], True
+        if memory is not None:
+            _MEMORY_CACHE.pop(key, None)
         cached = _persistent_cache_get(key, ttl_seconds)
         if cached is not None:
+            _memory_store_locked(key, cached)
             return cached, True
+        event = _INFLIGHT.get(key)
+        if event is None:
+            event = threading.Event()
+            _INFLIGHT[key] = event
+            leader = True
+
+    if not leader:
+        event.wait(timeout=120)
+        with _CACHE_LOCK:
+            memory = _MEMORY_CACHE.get(key)
+            if memory is not None and ttl_seconds > 0 and time.time() - memory[0] < ttl_seconds:
+                return memory[1], True
+            if memory is not None:
+                _MEMORY_CACHE.pop(key, None)
+            cached = _persistent_cache_get(key, ttl_seconds)
+            if cached is not None:
+                _memory_store_locked(key, cached)
+                return cached, True
+        # The leader failed or exceeded the bounded wait.  This caller becomes
+        # a normal retrying caller instead of returning a false cache hit.
 
     last_error: Exception | None = None
-    for attempt in range(max(1, attempts)):
-        try:
-            akshare_rate_limiter.wait(min_interval=0.4, max_jitter=1.0)
-            value = fn()
+    try:
+        for attempt in range(max(1, attempts)):
+            try:
+                akshare_rate_limiter.wait(min_interval=0.4, max_jitter=1.0)
+                value = fn()
+                with _CACHE_LOCK:
+                    _memory_store_locked(key, value)
+                    _persistent_cache_put(key, value)
+                return value, False
+            except Exception as exc:  # upstream APIs fail in many transport-specific ways
+                last_error = exc
+                if attempt + 1 < attempts:
+                    time.sleep(0.6 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
+    finally:
+        if leader:
             with _CACHE_LOCK:
-                _persistent_cache_put(key, value)
-            return value, False
-        except Exception as exc:  # upstream APIs fail in many transport-specific ways
-            last_error = exc
-            if attempt + 1 < attempts:
-                time.sleep(0.6 * (attempt + 1))
-    assert last_error is not None
-    raise last_error
+                finished = _INFLIGHT.pop(key, None)
+                if finished is not None:
+                    finished.set()
 
 
 def source_meta(

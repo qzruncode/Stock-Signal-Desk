@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  A_SHARE_EVIDENCE_GROUP,
   ASSISTANT_CAPABILITY_COUNT,
   ASSISTANT_CAPABILITY_GROUPS,
   ASSISTANT_SUGGESTION_GROUPS,
@@ -22,9 +23,9 @@ describe('assistant capability catalog', () => {
     const generalItemCount =
       ASSISTANT_CAPABILITY_GROUPS.find((group) => group.id === 'general')?.items.length ?? 0;
 
-    expect(ASSISTANT_CAPABILITY_GROUPS).toHaveLength(8);
+    expect(ASSISTANT_CAPABILITY_GROUPS).toHaveLength(9);
     expect(ASSISTANT_CAPABILITY_COUNT).toBe(items.length);
-    expect(new Set(ASSISTANT_CAPABILITY_GROUPS.map((group) => group.id)).size).toBe(8);
+    expect(new Set(ASSISTANT_CAPABILITY_GROUPS.map((group) => group.id)).size).toBe(9);
     expect(new Set(items.map((item) => item.label)).size).toBe(items.length);
     expect(new Set(toolNames).size).toBe(toolNames.length);
     expect(toolNames).toHaveLength(items.length - generalItemCount);
@@ -59,8 +60,8 @@ describe('assistant capability catalog', () => {
       group.items.flatMap((item) => (item.toolName ? [item.toolName] : [])),
     );
 
-    expect(backendTools).toHaveLength(72);
-    expect(plannerFacingTools).toHaveLength(67);
+    expect(backendTools).toHaveLength(75);
+    expect(plannerFacingTools).toHaveLength(70);
     expect(new Set(catalogTools)).toEqual(new Set(plannerFacingTools));
     expect(catalogTools).toHaveLength(plannerFacingTools.length);
     expect(catalogTools.some((toolName) => compatibilityOnlyTools.has(toolName))).toBe(false);
@@ -80,9 +81,10 @@ describe('assistant capability catalog', () => {
   });
 
   it('keeps the original questions first and appends every capability', () => {
-    expect(ASSISTANT_SUGGESTION_GROUPS).toHaveLength(10);
+    expect(ASSISTANT_SUGGESTION_GROUPS).toHaveLength(11);
     expect(ASSISTANT_SUGGESTION_GROUPS[0]?.items).toEqual(SUGGESTIONS);
-    expect(ASSISTANT_SUGGESTION_GROUPS[1]).toMatchObject({
+    expect(ASSISTANT_SUGGESTION_GROUPS[1]).toBe(A_SHARE_EVIDENCE_GROUP);
+    expect(ASSISTANT_SUGGESTION_GROUPS[2]).toMatchObject({
       id: 'rss-documents',
       items: RSS_DOCUMENT_SUGGESTIONS,
     });
@@ -92,13 +94,31 @@ describe('assistant capability catalog', () => {
     expect(ASSISTANT_SUGGESTIONS.slice(0, SUGGESTIONS.length)).toEqual(SUGGESTIONS);
     expect(
       ASSISTANT_SUGGESTIONS.slice(
-        SUGGESTIONS.length,
-        SUGGESTIONS.length + RSS_DOCUMENT_SUGGESTIONS.length,
+        SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length,
+        SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length + RSS_DOCUMENT_SUGGESTIONS.length,
       ),
     ).toEqual(RSS_DOCUMENT_SUGGESTIONS);
-    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length + RSS_DOCUMENT_SUGGESTIONS.length)).toEqual(
-      ASSISTANT_CAPABILITY_GROUPS.flatMap((group) => group.items),
+    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length, SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length)).toEqual(
+      A_SHARE_EVIDENCE_GROUP.items,
     );
+    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length + RSS_DOCUMENT_SUGGESTIONS.length)).toEqual(
+      ASSISTANT_CAPABILITY_GROUPS
+        .filter((group) => group.id !== A_SHARE_EVIDENCE_GROUP.id)
+        .flatMap((group) => group.items),
+    );
+  });
+
+  it('shows every new A-share evidence capability near the top of the home page', () => {
+    expect(A_SHARE_EVIDENCE_GROUP.items.map((item) => item.toolName)).toEqual([
+      'get_market_regime',
+      'get_company_structured_evidence',
+      'get_industry_index_context',
+    ]);
+    expect(
+      A_SHARE_EVIDENCE_GROUP.items.every(
+        (item) => item.prompt.includes('数据时间') && !item.prompt.includes('港股') && !item.prompt.includes('美股'),
+      ),
+    ).toBe(true);
   });
 
   it('exposes the RSSHub and original-document flows as concrete home examples', () => {

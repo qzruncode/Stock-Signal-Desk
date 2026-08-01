@@ -5,17 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from src.market_index_catalog import A_SHARE_INDEX_MAP
 from src.tools._akshare import cached_call
 from src.tools._macro_common import get_db, latest_date, number, ordered
 from src.tools.base import ToolSpec, object_schema
 
 
-INDEX_MAP = {
-    "000001": ("上证指数", "sh000001"),
-    "399001": ("深证成指", "sz399001"),
-    "399006": ("创业板指", "sz399006"),
-    "000688": ("科创50", "sh000688"),
-}
+INDEX_MAP = A_SHARE_INDEX_MAP
 
 
 def _daily_frame(index_code: str):

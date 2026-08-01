@@ -27,7 +27,10 @@ from src.agent.orchestrator_v2.cache import (
     execution_cache_key_v2,
     save_execution_cache_v2,
 )
-from src.agent.orchestrator_v2.intents import CollectionFinancialFilterIntent
+from src.agent.orchestrator_v2.intents import (
+    CollectionFinancialFilterIntent,
+    SecurityLookupIntent,
+)
 from src.agent.orchestrator_v2.outcomes import task_outcome_v2
 from src.agent.orchestrator_v2.planner import (
     PlannedIntentGraphV2,
@@ -206,7 +209,7 @@ def test_unified_registry_covers_every_standard_capability_once() -> None:
     assert {item.value for item in Capability} == {item.value for item in StandardTaskKind}
     assert set(CAPABILITY_REGISTRY) == set(Capability)
     assert migration_coverage()["complete"] is True
-    assert migration_coverage()["migrated"] == 46
+    assert migration_coverage()["migrated"] == 47
     with pytest.raises(TypeError):
         CAPABILITY_REGISTRY[Capability.GENERAL_RESPONSE] = None  # type: ignore[index]
 
@@ -481,11 +484,12 @@ def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> Non
     values: dict[Capability, dict[str, Any]] = {capability: {} for capability in Capability}
     values.update(
         {
-            Capability.SECURITY_LOOKUP: {"query": "贵州茅台"},
+            Capability.SECURITY_LOOKUP: {"query": "宁德时代", "exchange": "sz"},
             Capability.MACRO_ANALYSIS: {"indicators": ["PMI"]},
             Capability.INDUSTRY_RESEARCH: {
                 "explicit_subjects": ["人形机器人"],
             },
+            Capability.INDUSTRY_INDEX_RESEARCH: {"query": "食品饮料"},
             Capability.THEME_STOCK_DISCOVERY: {
                 "selection_mode": "named_subset",
                 "themes": ["机器人执行器"],
@@ -576,6 +580,18 @@ def test_every_capability_accepts_and_normalizes_one_exact_typed_intent() -> Non
                     "_program_owned_field": "forbidden",
                 }
             )
+
+
+def test_security_lookup_intent_models_a_share_exchange_and_board_separately() -> None:
+    intent = SecurityLookupIntent(query="宁德时代", exchange="sz")
+    assert intent.exchange == "sz"
+    assert intent.board is None
+
+    with pytest.raises(ValueError):
+        SecurityLookupIntent(query="腾讯控股", exchange="hk")
+
+    with pytest.raises(ValueError):
+        SecurityLookupIntent(query="科创板公司", exchange="sz", board="kcb")
 
 def test_no_capability_exposes_one_open_parameters_object() -> None:
     for capability, spec in CAPABILITY_REGISTRY.items():

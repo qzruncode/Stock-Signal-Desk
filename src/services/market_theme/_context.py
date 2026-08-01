@@ -32,6 +32,19 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
             "errors": [str(exc)],
         }
 
+    try:
+        from src.tools.get_market_regime import get_market_regime
+
+        market_regime = get_market_regime(index="沪深300", history_points=30)
+    except Exception as exc:
+        logger.warning("market theme market regime failed", exc_info=True)
+        market_regime = {
+            "success": False,
+            "datasets": {},
+            "errors": [str(exc)],
+            "data_time": None,
+        }
+
     def _board_catalog(sector_type: str) -> dict[str, Any]:
         try:
             payload = get_sector_list(type=sector_type, force=force)
@@ -120,6 +133,7 @@ def collect_context(*, force: bool, include_rss: bool = True) -> dict[str, Any]:
         "generated_at": current_shanghai_timestamp(),
         "source_snapshot": {
             "market_status": market_status,
+            "market_regime": market_regime,
             "industry_sectors": industry_catalog["items"],
             "concept_sectors": concept_catalog["items"],
             "board_catalog_status": {
@@ -208,6 +222,7 @@ def build_report_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
         "generated_at": context["generated_at"],
         "as_of_date": snapshot.get("market_status", {}).get("data_time") or datetime.now().date().isoformat(),
         "market_status": snapshot.get("market_status") or {},
+        "market_regime": snapshot.get("market_regime") or {},
         "board_catalog": {
             "industry": [item for item in snapshot.get("industry_sectors") or [] if isinstance(item, dict)],
             "concept": [item for item in snapshot.get("concept_sectors") or [] if isinstance(item, dict)],

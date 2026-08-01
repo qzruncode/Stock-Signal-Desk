@@ -7,6 +7,7 @@ not classify risk categories, severity or lifecycle state from phrase lists.
 from __future__ import annotations
 
 import re
+import json
 from datetime import datetime
 from typing import Any
 
@@ -15,7 +16,17 @@ from src.tools.base import ToolSpec, object_schema
 
 
 def _date_value(item: dict[str, Any]) -> str | None:
-    value = str(item.get("published") or item.get("publish_date") or item.get("date") or "").strip()
+    value = str(
+        item.get("published")
+        or item.get("publish_date")
+        or item.get("date")
+        or item.get("公告日期")
+        or item.get("解禁时间")
+        or item.get("上榜日期")
+        or item.get("持股日期")
+        or item.get("日期")
+        or ""
+    ).strip()
     return value[:10] or None
 
 
@@ -49,6 +60,7 @@ def get_risk_events(
     symbol: str,
     days: int = 90,
     limit: int = 30,
+    include_structured: bool = False,
 ) -> dict[str, Any]:
     code = bare_symbol(symbol)
     if len(code) != 6 or not code.isdecimal():
@@ -74,6 +86,33 @@ def get_risk_events(
         type="all",
         limit=min(max(limit * 2, 30), 100),
     )
+    structured_requested = bool(include_structured)
+    try:
+        if not structured_requested:
+            raise LookupError("structured evidence not requested")
+        from src.tools.get_company_structured_evidence import get_company_structured_evidence
+
+        structured = get_company_structured_evidence(
+            code,
+            scope="risk_and_catalyst",
+            days=max(30, days),
+            report_period_count=4,
+        )
+    except LookupError:
+        structured = {
+            "success": False,
+            "coverage_complete": None,
+            "sections": {},
+            "errors": [],
+            "warnings": [],
+        }
+    except Exception as exc:
+        structured = {
+            "success": False,
+            "sections": {},
+            "errors": [f"{type(exc).__name__}: {str(exc)[:400]}"],
+            "warnings": [],
+        }
 
     evidence: list[dict[str, Any]] = []
     for item in news.get("items") or []:
@@ -84,6 +123,24 @@ def get_risk_events(
         normalized = _evidence_item(item, source_type="announcement")
         if normalized:
             evidence.append(normalized)
+    for section_name, section in (structured.get("sections") or {}).items():
+        for dataset_name, dataset in (section.get("datasets") or {}).items():
+            for item in (dataset.get("items") or [])[:20]:
+                if not isinstance(item, dict):
+                    continue
+                evidence.append(
+                    {
+                        "title": f"{section_name}/{dataset_name}",
+                        "date": _date_value(item),
+                        "source": dataset.get("source_api") or "AKShare结构化事项",
+                        "source_type": "structured_event",
+                        "url": "",
+                        "summary": json.dumps(item, ensure_ascii=False, default=str)[:700],
+                        "evidence_basis": "structured_source_row",
+                        "semantic_status": "model_required",
+                        "requires_fulltext_verification": False,
+                    }
+                )
 
     # Prefer a primary announcement when the same disclosure is syndicated.
     # This is source-quality ordering, not semantic risk classification.
@@ -100,7 +157,8 @@ def get_risk_events(
         key = re.sub(
             r"\s+",
             "",
-            f"{item.get('title', '')}|{item.get('date', '')}",
+            f"{item.get('title', '')}|{item.get('date', '')}|"
+            f"{item.get('summary', '') if item.get('source_type') == 'structured_event' else ''}",
         ).casefold()
         if not key or key in seen:
             continue
@@ -110,13 +168,17 @@ def get_risk_events(
 
     news_ok = bool(news.get("success"))
     announcements_ok = bool(announcements.get("success"))
-    acquisition_succeeded = news_ok or announcements_ok
-    partial = acquisition_succeeded and not (news_ok and announcements_ok)
+    structured_ok = bool(structured.get("success"))
+    acquisition_succeeded = news_ok or announcements_ok or (structured_requested and structured_ok)
+    partial = acquisition_succeeded and not (
+        news_ok and announcements_ok and (not structured_requested or structured_ok)
+    )
     errors = list(
         dict.fromkeys(
             [
                 *[str(error) for error in news.get("errors") or []],
                 *[str(error) for error in announcements.get("errors") or []],
+                *[str(error) for error in structured.get("errors") or []],
             ]
         )
     )
@@ -125,11 +187,13 @@ def get_risk_events(
             [
                 *[str(warning) for warning in news.get("warnings") or []],
                 *[str(warning) for warning in announcements.get("warnings") or []],
+                *[str(warning) for warning in structured.get("warnings") or []],
             ]
         )
     )
     if not items and acquisition_succeeded:
-        warnings.append(f"最近 {days} 天的数据源未返回可用的新闻或公告证据")
+        source_label = "新闻、公告或结构化事项" if structured_requested else "新闻或公告"
+        warnings.append(f"最近 {days} 天的数据源未返回可用的{source_label}证据")
 
     latest = next((item.get("date") for item in items if item.get("date")), None)
     name = announcements.get("name") or news.get("name")
@@ -153,18 +217,32 @@ def get_risk_events(
                 "announcement_coverage_days": days,
                 "news_sample_count": len(news.get("items") or []),
                 "announcement_sample_count": len(announcements.get("items") or []),
+                "structured_section_count": len(structured.get("sections") or {}),
+                "structured_requested": structured_requested,
+                "structured_coverage_complete": (
+                    structured.get("coverage_complete") is True if structured_requested else None
+                ),
             },
         },
-        "source": "search_news + get_announcements",
+        "source": (
+            "search_news + get_announcements + AKShare structured company evidence"
+            if structured_requested
+            else "search_news + get_announcements"
+        ),
         "source_chain": list(
             dict.fromkeys(
                 [
                     *([str(news.get("source"))] if news.get("source") else []),
                     *[str(source) for source in announcements.get("source_chain") or []],
+                    *(dataset.get("source_api") for section in (structured.get("sections") or {}).values() for dataset in (section.get("datasets") or {}).values() if dataset.get("source_api")),
                 ]
             )
         ),
-        "source_scope": ("retrieved_news_and_formal_announcements_for_model_risk_review"),
+        "source_scope": (
+            "retrieved_news_formal_announcements_and_structured_events_for_model_risk_review"
+            if structured_requested
+            else "retrieved_news_and_formal_announcements_for_model_risk_review"
+        ),
         "success": acquisition_succeeded,
         "partial": partial,
         "data_time": latest,
@@ -198,6 +276,11 @@ TOOL = ToolSpec(
                 "minimum": 1,
                 "maximum": 100,
                 "default": 30,
+            },
+            "include_structured": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否合并质押、解禁、商誉、回购、合同、定增、调研和停复牌等结构化事项",
             },
         },
         ["symbol"],

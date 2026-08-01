@@ -492,3 +492,34 @@ def test_provider_fallback_accepts_valid_fenced_json_after_malformed_tool_args()
         "thesis": "减速器",
         "mainline_strategy": "confirmed_mainline",
     }
+
+
+def test_provider_payload_parser_recovers_repairable_json_syntax() -> None:
+    response = {
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {
+                            "function": {
+                                "name": "submit_investment_decision_intent_v2",
+                                "arguments": (
+                                    '{"thesis":"减速器" '
+                                    '"mainline_strategy":"confirmed_mainline"}'
+                                ),
+                            },
+                        }
+                    ],
+                    "content": None,
+                },
+            }
+        ],
+    }
+
+    assert _payload_from_response(
+        response,
+        "submit_investment_decision_intent_v2",
+    ) == {
+        "thesis": "减速器",
+        "mainline_strategy": "confirmed_mainline",
+    }

@@ -181,6 +181,8 @@ def _compact_base_company_packet(value: Any) -> dict[str, Any]:
     risks = risks if isinstance(risks, dict) else {}
     announcements = item.get("announcements")
     announcements = announcements if isinstance(announcements, dict) else {}
+    structured = item.get("structured_company_evidence")
+    structured = structured if isinstance(structured, dict) else {}
     return {
         "profile": pick(
             item.get("profile"),
@@ -228,6 +230,7 @@ def _compact_base_company_packet(value: Any) -> dict[str, Any]:
             ),
             **pick(technical, ("data_time", "is_stale", "source")),
         },
+        "structured_company_evidence": structured,
         "financials": {
             **pick(financials, ("amount_unit", "ratio_unit", "data_time")),
             "items": periods,

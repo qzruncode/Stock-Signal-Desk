@@ -99,6 +99,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "get_kline",
     "get_history_data",
     "get_technical_indicators",
+    "get_company_structured_evidence",
     "get_multi_stock_snapshot",
     "get_multi_stock_financials",
     "get_multi_stock_decision_evidence",
@@ -112,7 +113,9 @@ TOOL_MODULES: tuple[str, ...] = (
     # Market and sector state
     "get_market_status",
     "get_market_breadth",
+    "get_market_regime",
     "get_domain_board_catalog",
+    "get_industry_index_context",
     "get_sector_list",
     "get_sector_flow",
     "get_stock_capital_flow",

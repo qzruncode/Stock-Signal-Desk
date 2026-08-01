@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 from typing import Any
 
@@ -37,6 +38,8 @@ def normalize_catalyst_details(
         "news_events",
         "research_events",
         "industry_events",
+        "structured_financial_events",
+        "structured_corporate_events",
     ):
         for item in _list_of_dicts(raw_data.get(key)):
             evidence_id = str(item.get("evidence_id") or "").strip().upper()
@@ -49,7 +52,7 @@ def normalize_catalyst_details(
         time_window = str(candidate.get("time_window") or "").strip()
         raw_ids = candidate.get("evidence_ids")
         if isinstance(raw_ids, str):
-            raw_ids = re.findall(r"[ADSNRI]\d+", raw_ids.upper())
+            raw_ids = re.findall(r"[ADFCSNRI]\d+", raw_ids.upper())
         if not isinstance(raw_ids, list):
             raw_ids = []
         evidence_ids: list[str] = []
@@ -207,6 +210,78 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
             raw["schedule_events"] = []
             raw["schedule_events_error"] = str(exc)
 
+        # AKShare structured disclosures complement formal announcement text:
+        # performance forecasts/flashes, goodwill, repurchases, contracts,
+        # placements, suspensions and institution visits remain separate source
+        # rows and are never pre-labelled as positive catalysts.
+        try:
+            structured = ds.get_company_structured_evidence(
+                symbol,
+                scope="risk_and_catalyst",
+                days=730,
+                report_period_count=4,
+            )
+            structured_sections = structured.get("sections") or {}
+            financial_items: list[dict[str, Any]] = []
+            for dataset_name, dataset in ((structured_sections.get("financial_events") or {}).get("datasets") or {}).items():
+                for item in _list_of_dicts(dataset.get("items")):
+                    financial_items.append(
+                        {
+                            "dataset": dataset_name,
+                            "source_api": dataset.get("source_api"),
+                            **item,
+                        }
+                    )
+            corporate_items: list[dict[str, Any]] = []
+            for dataset_name, dataset in ((structured_sections.get("corporate_events") or {}).get("datasets") or {}).items():
+                for item in _list_of_dicts(dataset.get("items")):
+                    corporate_items.append(
+                        {
+                            "dataset": dataset_name,
+                            "source_api": dataset.get("source_api"),
+                            **item,
+                        }
+                    )
+            raw["structured_financial_events"] = [
+                {
+                    "evidence_id": f"F{index}",
+                    "title": str(item.get("股票简称") or stock_info.get("name") or symbol)
+                    + " / "
+                    + str(item.get("dataset") or "财务事项"),
+                    "date": item.get("公告日期") or item.get("首次预约") or item.get("实际披露"),
+                    "source": item.get("source_api"),
+                    "excerpt": json.dumps(item, ensure_ascii=False, default=str)[:900],
+                    "url": None,
+                }
+                for index, item in enumerate(financial_items[:40], 1)
+            ]
+            raw["structured_corporate_events"] = [
+                {
+                    "evidence_id": f"C{index}",
+                    "title": str(item.get("股票简称") or item.get("名称") or stock_info.get("name") or symbol)
+                    + " / "
+                    + str(item.get("dataset") or "公司事项"),
+                    "date": item.get("公告日期") or item.get("调研日期") or item.get("停牌时间") or item.get("日期"),
+                    "source": item.get("source_api"),
+                    "excerpt": json.dumps(item, ensure_ascii=False, default=str)[:900],
+                    "url": None,
+                }
+                for index, item in enumerate(corporate_items[:40], 1)
+            ]
+            for section_name, error_key in (
+                ("financial_events", "structured_financial_events_error"),
+                ("corporate_events", "structured_corporate_events_error"),
+            ):
+                section_errors = (structured_sections.get(section_name) or {}).get("errors") or []
+                if section_errors:
+                    raw[error_key] = "；".join(str(error) for error in section_errors)[:800]
+        except Exception as exc:
+            logger.warning("[catalyst] structured company evidence failed: %s", exc)
+            raw["structured_financial_events"] = []
+            raw["structured_corporate_events"] = []
+            raw["structured_financial_events_error"] = str(exc)
+            raw["structured_corporate_events_error"] = str(exc)
+
         # News — raw data for LLM to judge catalyst clues
         try:
             news = ds.search_news(symbol, days=180)
@@ -289,6 +364,32 @@ class CatalystEventsEvaluator(BaseCriterionEvaluator):
             lines.append("- 预约披露数据获取失败，不能解释为没有财报核验窗口")
         else:
             lines.append("- 未来12个月暂无已预约的财报披露日期")
+
+        lines.extend(["", "## 结构化财务披露（预告/快报/预约/商誉，语义由你判断）"])
+        sfe = raw.get("structured_financial_events", [])
+        if sfe:
+            for item in sfe[:16]:
+                lines.append(
+                    f"- [{item.get('evidence_id')}] [{item.get('date', '?')}] {item.get('source', '?')}："
+                    f"{item.get('excerpt', '')}"
+                )
+        elif raw.get("structured_financial_events_error"):
+            lines.append("- 结构化财务事项获取不完整，不能解释为没有预告、商誉或披露节点")
+        else:
+            lines.append("- 查询报告期内未返回匹配的结构化财务事项")
+
+        lines.extend(["", "## 结构化公司事项（回购/合同/定增/调研/停复牌，语义由你判断）"])
+        sce = raw.get("structured_corporate_events", [])
+        if sce:
+            for item in sce[:16]:
+                lines.append(
+                    f"- [{item.get('evidence_id')}] [{item.get('date', '?')}] {item.get('source', '?')}："
+                    f"{item.get('excerpt', '')}"
+                )
+        elif raw.get("structured_corporate_events_error"):
+            lines.append("- 结构化公司事项获取不完整，不能解释为没有公司级事件")
+        else:
+            lines.append("- 查询窗口内未返回匹配的结构化公司事项")
 
         lines.extend(["", "## 新闻线索（请自行判断是否涉及展会、签约、战略合作、政策窗口等催化）"])
         ne = raw.get("news_events", [])

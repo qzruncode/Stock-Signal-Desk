@@ -249,12 +249,19 @@ def get_risk_events(
     symbol: str = Query(..., description="股票代码"),
     days: int = Query(90, ge=1, le=365, description="查询最近N天"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
+    include_structured: bool = Query(True, description="合并结构化公司风险事项"),
 ):
     """聚合相关新闻和公司公告中的风险事件。"""
     from src.tools.get_risk_events import get_risk_events as tool_get_risk_events
 
     days_value = days if isinstance(days, int) else 90
-    return tool_get_risk_events(_normalize_symbol(symbol), days=days_value, limit=50)
+    include_value = include_structured if isinstance(include_structured, bool) else True
+    return tool_get_risk_events(
+        _normalize_symbol(symbol),
+        days=days_value,
+        limit=50,
+        include_structured=include_value,
+    )
 
 
 # ---------------------------------------------------------------------------

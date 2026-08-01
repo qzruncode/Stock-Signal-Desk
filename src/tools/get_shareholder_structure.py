@@ -293,7 +293,12 @@ def _normalize_holder_changes(frame: Any) -> list[dict[str, Any]]:
     return items[:20]
 
 
-def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[str, Any]:
+def get_shareholder_structure(
+    symbol: str,
+    *,
+    use_cache: bool = True,
+    include_structured: bool = False,
+) -> dict[str, Any]:
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")
@@ -358,6 +363,21 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
             errors.append(f"institution: {type(exc).__name__}: {exc}")
     institution = _normalize_institution(institution_payload, institution_date)
 
+    structured_ownership: dict[str, Any] = {}
+    try:
+        if not include_structured:
+            raise LookupError("structured ownership not requested")
+        from src.services.akshare_evidence import get_company_evidence
+
+        structured_result = get_company_evidence(code, sections=("ownership",), days=730)
+        structured_ownership = (structured_result.get("sections") or {}).get("ownership") or {}
+        errors.extend(f"structured_ownership: {error}" for error in structured_ownership.get("errors") or [])
+        warnings.extend(str(warning) for warning in structured_ownership.get("warnings") or [])
+    except LookupError:
+        pass
+    except Exception as exc:
+        errors.append(f"structured_ownership: {type(exc).__name__}: {str(exc)[:400]}")
+
     if newest_institution_date and institution_date and newest_institution_date > institution_date:
         warnings.append(f"机构持仓跳过仍在披露中的 {newest_institution_date}，采用已完成披露期 {institution_date}")
     if controller.get("available"):
@@ -393,14 +413,30 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
         "actual_controller": controller,
         "holder_changes": holder_changes,
         "holder_change_item_count": len(holder_changes),
+        "structured_ownership": structured_ownership if include_structured else None,
+        "equity_pledges": ((structured_ownership.get("datasets") or {}).get("equity_pledges") or {}).get("items") or [],
+        "restricted_releases": ((structured_ownership.get("datasets") or {}).get("restricted_releases") or {}).get("items") or [],
+        "northbound_holding_history": ((structured_ownership.get("datasets") or {}).get("northbound_holding_history") or {}).get("items") or [],
         "units": {
             "shares": "股",
             "ratio": "%",
             "market_value": "元",
             "average_price": "元/股",
         },
-        "source": "东方财富F10股东研究 + AKShare同花顺重要股东增减持",
-        "sources": ["东方财富F10股东研究", "AKShare.stock_shareholder_change_ths"],
+        "source": (
+            "东方财富F10股东研究 + AKShare结构化股权与持仓证据"
+            if include_structured
+            else "东方财富F10股东研究 + AKShare同花顺重要股东增减持"
+        ),
+        "sources": [
+            "东方财富F10股东研究",
+            "AKShare.stock_shareholder_change_ths",
+            *(
+                ["AKShare股权质押/限售解禁/沪深港通个股持仓/增减持/控制权"]
+                if include_structured
+                else []
+            ),
+        ],
         "source_urls": [
             f"{_SOURCE_URL}?type=web&code={exchange_prefix(code, upper=True)}",
             f"https://basic.10jqka.com.cn/new/{code}/event.html",
@@ -414,6 +450,11 @@ def get_shareholder_structure(symbol: str, *, use_cache: bool = True) -> dict[st
         | {
             "actual_controller": controller.get("available") is True,
             "holder_changes": change_frame is not None,
+            **(
+                {"structured_ownership": structured_ownership.get("success") is True}
+                if include_structured
+                else {}
+            ),
         },
         "success": success,
         "partial": success and (not all(core_sections.values()) or bool(errors)),
@@ -435,7 +476,14 @@ TOOL = ToolSpec(
     name="get_shareholder_structure",
     description=DESCRIPTION,
     parameters=object_schema(
-        {"symbol": {"type": "string", "description": "A股/北交所股票代码或名称"}},
+        {
+            "symbol": {"type": "string", "description": "A股/北交所股票代码或名称"},
+            "include_structured": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否同时读取质押、解禁、北向个股持仓、增减持和控制权证据",
+            },
+        },
         ["symbol"],
     ),
     executor=get_shareholder_structure,

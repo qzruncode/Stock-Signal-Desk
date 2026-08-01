@@ -10,7 +10,7 @@ psycopg[binary]>=3.1.0      # production PostgreSQL runtime
 cryptography>=43.0.0        # encrypted Agent traces
 
 # 数据源依赖
-akshare>=1.18.55            # 结构化股票数据；包含主营构成/一致预期/同行比较/资金流接口
+akshare>=1.18.81            # A股结构化公司事件、申万指数与市场高低点修复
 
 # 数据处理
 pandas>=2.0.0               # 数据分析

@@ -16,6 +16,7 @@ from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal, Mapping
 import uuid
 
+from json_repair import repair_json
 from pydantic import BaseModel, ValidationError
 
 from src.agent.orchestrator_v2.contracts import (

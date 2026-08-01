@@ -76,7 +76,14 @@ def compile_no_tools(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def compile_security_lookup(task: ResolvedTask) -> list[WorkflowCall]:
-    return [call_workflow(task, "search_security", "search_stocks", select_parameters(task, {"query", "market", "sector", "limit"}))]
+    return [
+        call_workflow(
+            task,
+            "search_security",
+            "search_stocks",
+            select_parameters(task, {"query", "exchange", "board", "sector", "limit"}),
+        )
+    ]
 
 
 def compile_realtime_quote(task: ResolvedTask) -> list[WorkflowCall]:
@@ -96,18 +103,31 @@ def compile_price_history(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def compile_technical(task: ResolvedTask) -> list[WorkflowCall]:
-    return per_symbol(
+    calls = per_symbol(
         task,
         ["get_technical_indicators"],
         {"get_technical_indicators": {"count"}},
         max_symbols=8,
     )
+    return [
+        WorkflowCall(
+            task_id=call.task_id,
+            step_id=call.step_id,
+            tool_name=call.tool_name,
+            arguments={**call.arguments, "include_structured": True},
+            depends_on_steps=call.depends_on_steps,
+            after_steps=call.after_steps,
+            result_bindings=call.result_bindings,
+            execution_guard=call.execution_guard,
+        )
+        for call in calls
+    ]
 
 
 def compile_fundamental(task: ResolvedTask) -> list[WorkflowCall]:
     if len(task.symbols) > 2:
         return [call_workflow(task, "multi_fundamental_snapshot", "get_multi_stock_snapshot", {"symbols": symbols_csv(task)})]
-    return per_symbol(
+    calls = per_symbol(
         task,
         ["get_stock_info", "get_financials", "get_business_segments", "get_shareholder_structure"],
         {
@@ -116,6 +136,21 @@ def compile_fundamental(task: ResolvedTask) -> list[WorkflowCall]:
         },
         max_symbols=2,
     )
+    calls.extend(
+        call_workflow(
+            task,
+            f"structured_company_{index}",
+            "get_company_structured_evidence",
+            {
+                "symbol": symbol,
+                "scope": "risk_and_catalyst",
+                "days": 730,
+                "report_period_count": 4,
+            },
+        )
+        for index, symbol in enumerate(task.symbols, 1)
+    )
+    return calls
 
 
 def compile_valuation(task: ResolvedTask) -> list[WorkflowCall]:
@@ -178,7 +213,7 @@ def compile_announcements(task: ResolvedTask) -> list[WorkflowCall]:
 
 
 def compile_risk(task: ResolvedTask) -> list[WorkflowCall]:
-    return per_symbol(
+    calls = per_symbol(
         task,
         ["get_announcements", "get_risk_events"],
         {
@@ -187,6 +222,23 @@ def compile_risk(task: ResolvedTask) -> list[WorkflowCall]:
         },
         max_symbols=4,
     )
+    return [
+        WorkflowCall(
+            task_id=call.task_id,
+            step_id=call.step_id,
+            tool_name=call.tool_name,
+            arguments=(
+                {**call.arguments, "include_structured": True}
+                if call.tool_name == "get_risk_events"
+                else call.arguments
+            ),
+            depends_on_steps=call.depends_on_steps,
+            after_steps=call.after_steps,
+            result_bindings=call.result_bindings,
+            execution_guard=call.execution_guard,
+        )
+        for call in calls
+    ]
 
 
 def compile_regulatory(task: ResolvedTask) -> list[WorkflowCall]:
@@ -352,6 +404,7 @@ def compile_market(task: ResolvedTask) -> list[WorkflowCall]:
     calls = [
         call_workflow(task, "market_status", "get_market_status"),
         call_workflow(task, "market_breadth", "get_market_breadth"),
+        call_workflow(task, "market_regime", "get_market_regime"),
     ]
     if bool(task.parameters.get("include_index", True)):
         calls.append(call_workflow(task, "index", "get_index_data", select_parameters(task, {"index_code", "days"})))
@@ -464,11 +517,24 @@ def compile_industry(task: ResolvedTask) -> list[WorkflowCall]:
     ]
     if not all(labels):
         raise WorkflowCompileError("industry_research domains must contain semantic topic labels")
+    return [call_workflow(task, "domain_board_catalog", "get_domain_board_catalog", {})]
+
+
+def compile_industry_index_research(task: ResolvedTask) -> list[WorkflowCall]:
+    arguments = select_parameters(
+        task,
+        {"query", "index_type", "index_code", "include_components", "max_matches", "history_points"},
+    )
+    if not (arguments.get("query") or arguments.get("index_code")):
+        raise WorkflowCompileError("industry_index_research requires query or index_code")
     return [
-        call_workflow(task, "domain_board_catalog", "get_domain_board_catalog", {}),
+        call_workflow(
+            task,
+            "industry_index_context",
+            "get_industry_index_context",
+            arguments,
+        )
     ]
-
-
 
 
 __all__ = [
@@ -496,4 +562,5 @@ __all__ = [
     "compile_capital_flow",
     "compile_macro",
     "compile_industry",
+    "compile_industry_index_research",
 ]

@@ -129,6 +129,28 @@ class DataService:
 
         return get_shareholder_structure(symbol)
 
+    def get_company_structured_evidence(
+        self,
+        symbol: str,
+        *,
+        scope: str = "all",
+        days: int = 730,
+        report_period_count: int = 4,
+    ) -> dict[str, Any]:
+        key = f"company_structured:{symbol}:{scope}:{days}:{report_period_count}"
+
+        def _fetch():
+            from src.tools.get_company_structured_evidence import get_company_structured_evidence
+
+            return get_company_structured_evidence(
+                symbol,
+                scope=scope,
+                days=days,
+                report_period_count=report_period_count,
+            )
+
+        return self._cached_call(key, _fetch)
+
     def get_sentiment(self, symbol: str, days: int = 90) -> dict[str, Any]:
         key = f"sentiment:{symbol}:{days}"
 
@@ -149,13 +171,24 @@ class DataService:
 
         return self._cached_call(key, _fetch)
 
-    def get_risk_events(self, symbol: str, days: int = 90) -> dict[str, Any]:
-        key = f"risk_events:{symbol}:{days}"
+    def get_risk_events(
+        self,
+        symbol: str,
+        days: int = 90,
+        *,
+        include_structured: bool = True,
+    ) -> dict[str, Any]:
+        key = f"risk_events:{symbol}:{days}:structured={include_structured}"
 
         def _fetch():
-            from api.v1.endpoints.financials import get_risk_events
+            from src.tools.get_risk_events import get_risk_events
 
-            return get_risk_events(symbol, days=days)
+            return get_risk_events(
+                symbol,
+                days=days,
+                limit=50,
+                include_structured=include_structured,
+            )
 
         return self._cached_call(key, _fetch)
 
@@ -343,7 +376,7 @@ class DataService:
         def _fetch():
             from src.tools.get_technical_indicators import get_technical_indicators
 
-            return get_technical_indicators(symbol, count=count)
+            return get_technical_indicators(symbol, count=count, include_structured=True)
 
         return self._cached_call(key, _fetch)
 

@@ -204,7 +204,7 @@ def _artifact(symbols: tuple[str, ...]) -> AgentArtifactV2:
     )
 def test_all_registered_tools_have_model_generated_args_and_typed_results() -> None:
     registry = ToolRegistry()
-    assert len(registry.get_tool_names()) == 72
+    assert len(registry.get_tool_names()) == 75
     for name in registry.get_tool_names():
         tool = registry.get_tool(name)
         assert tool is not None

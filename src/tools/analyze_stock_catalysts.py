@@ -34,6 +34,14 @@ def _source_coverage(raw: dict[str, Any]) -> dict[str, Any]:
             "count": len(raw.get("schedule_events") or []),
             "error": raw.get("schedule_events_error"),
         },
+        "structured_financial_events": {
+            "count": len(raw.get("structured_financial_events") or []),
+            "error": raw.get("structured_financial_events_error"),
+        },
+        "structured_corporate_events": {
+            "count": len(raw.get("structured_corporate_events") or []),
+            "error": raw.get("structured_corporate_events_error"),
+        },
         "news": {
             "count": len(raw.get("news_events") or []),
             "error": raw.get("news_events_error"),
@@ -106,6 +114,8 @@ def analyze_stock_catalysts(symbols: str) -> dict[str, Any]:
                         "announcements": raw.get("announcement_events") or [],
                         "formal_documents": raw.get("document_events") or [],
                         "report_schedule": raw.get("schedule_events") or [],
+                        "structured_financial_events": raw.get("structured_financial_events") or [],
+                        "structured_corporate_events": raw.get("structured_corporate_events") or [],
                         "news": raw.get("news_events") or [],
                         "research": raw.get("research_events") or [],
                     },
@@ -127,7 +137,7 @@ def analyze_stock_catalysts(symbols: str) -> dict[str, Any]:
                     "source_coverage": {
                         "dimensions": {},
                         "available_count": 0,
-                        "required_count": 5,
+                        "required_count": 7,
                         "complete": False,
                     },
                     "retrieved_evidence": {},
@@ -150,7 +160,7 @@ def analyze_stock_catalysts(symbols: str) -> dict[str, Any]:
         "coverage_complete": len(items) == len(resolved) and not unresolved,
         "horizon": "未来6—12个月",
         "decision_boundary": "催化研究不等于买入判断；估值、股价透支和买入位置需另行核验",
-        "source": "内部同步公告目录、正式定期报告正文、财报预约、公司新闻、券商研报",
+        "source": "内部同步公告目录、正式定期报告正文、AKShare结构化财务/公司事项、财报预约、公司新闻、券商研报",
         "errors": errors,
         "warnings": warnings,
         "data_time": max(data_times) if data_times else None,

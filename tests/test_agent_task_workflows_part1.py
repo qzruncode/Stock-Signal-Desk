@@ -300,6 +300,10 @@ def test_every_enabled_standard_task_has_a_schema_valid_fixed_workflow() -> None
             "query": "人形机器人产业链",
             "domains": [_domain("人形机器人")],
         },
+        StandardTaskKind.INDUSTRY_INDEX_RESEARCH: {
+            "query": "食品饮料",
+            "index_type": "一级行业",
+        },
         StandardTaskKind.THEME_STOCK_DISCOVERY: {"domains": [_domain("减速器")]},
         StandardTaskKind.THEME_BUSINESS_EVIDENCE: {
             "domains": [_domain("人形机器人")],

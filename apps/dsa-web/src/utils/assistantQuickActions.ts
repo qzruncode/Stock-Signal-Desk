@@ -42,6 +42,30 @@ export const SUGGESTIONS: readonly { label: string; prompt: string }[] = [
   },
 ] as const;
 
+/** 首页首屏展示的 A 股结构化数据核验入口。 */
+export const A_SHARE_EVIDENCE_GROUP: AssistantCapabilityGroup = {
+  id: 'a-share-evidence',
+  title: 'A 股结构化数据',
+  description: '核验市场环境、公司事项与申万行业成分，数据时间和缺失项单独保留。',
+  items: [
+    {
+      label: '市场估值、股债利差和拥挤度处于什么位置？',
+      prompt: '查看 A 股 20/60/120 日创新高新低、股债利差、沪深 PE/PB 和拥挤度，并标明每项数据时间与缺失项',
+      toolName: 'get_market_regime',
+    },
+    {
+      label: '这家公司有哪些质押、解禁和结构化事项？',
+      prompt: '完整查看宁德时代的质押、解禁、北向持仓、业绩预告、商誉、回购、合同、定增、调研与停复牌证据，并标明数据时间与缺失项',
+      toolName: 'get_company_structured_evidence',
+    },
+    {
+      label: '申万行业指数和成分股如何对应？',
+      prompt: '查看申万食品饮料一级行业指数近 120 日表现和完整成分股，说明分类边界、数据时间与缺失项',
+      toolName: 'get_industry_index_context',
+    },
+  ],
+};
+
 /** 本轮 RSSHub 与会话原始文件能力的可直接执行示例。 */
 export const RSS_DOCUMENT_SUGGESTIONS: readonly AssistantCapability[] = [
   {
@@ -69,6 +93,7 @@ export const RSS_DOCUMENT_SUGGESTIONS: readonly AssistantCapability[] = [
  * 一一对应。点击能力会发送一个安全、可继续补充条件的示例指令。
  */
 export const ASSISTANT_CAPABILITY_GROUPS: readonly AssistantCapabilityGroup[] = [
+  A_SHARE_EVIDENCE_GROUP,
   {
     id: 'general',
     title: '通用助手',
@@ -221,13 +246,14 @@ export const ASSISTANT_SUGGESTION_GROUPS: readonly AssistantCapabilityGroup[] = 
     description: '从产业链、公司比较、公告风险和市场强弱开始研究。',
     items: SUGGESTIONS,
   },
+  A_SHARE_EVIDENCE_GROUP,
   {
     id: 'rss-documents',
     title: 'RSSHub 与原始文件',
     description: '发现来源、读取指定 Feed，并在会话中预览和分析 PDF 等文本文件。',
     items: RSS_DOCUMENT_SUGGESTIONS,
   },
-  ...ASSISTANT_CAPABILITY_GROUPS,
+  ...ASSISTANT_CAPABILITY_GROUPS.filter((group) => group.id !== A_SHARE_EVIDENCE_GROUP.id),
 ];
 
 export const ASSISTANT_SUGGESTIONS: readonly { label: string; prompt: string }[] = [

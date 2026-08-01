@@ -8,6 +8,7 @@ from src.agent.orchestrator_v2.planner import (
     date,
     inspect,
     json,
+    repair_json,
     logging,
     os,
     re,
@@ -59,7 +60,7 @@ from src.agent.orchestrator_v2.planner import (
     __all__,
  )
 
-__all__ = ['_runtime_float', '_runtime_int', '_json_object', '_payload_from_response', '_pointer', '_deref_schema', '_schema_at_location', '_normalize_json_encoded_contract_fields', '_schema_expectation', '_repair_issues', '_function_tool', '_exact_contract_messages', '_emit']
+__all__ = ['_runtime_float', '_runtime_int', '_json_structure_is_closed', '_json_object', '_payload_from_response', '_pointer', '_deref_schema', '_schema_at_location', '_normalize_json_encoded_contract_fields', '_schema_expectation', '_repair_issues', '_function_tool', '_exact_contract_messages', '_emit']
 
 def _runtime_float(name: str, default: float, *, minimum: float) -> float:
     try:
@@ -81,6 +82,33 @@ def _runtime_int(
         )
     except (TypeError, ValueError):
         return default
+
+
+def _json_structure_is_closed(text: str) -> bool:
+    """Allow local repair only when no source content has been truncated."""
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    pairs = {"}": "{", "]": "["}
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            stack.append(character)
+        elif character in "}]":
+            if not stack or stack[-1] != pairs[character]:
+                return False
+            stack.pop()
+    return not in_string and not stack
+
 
 def _json_object(text: str) -> dict[str, Any]:
     stripped = text.strip()
@@ -108,6 +136,14 @@ def _json_object(text: str) -> dict[str, Any]:
             break
         except json.JSONDecodeError as exc:
             last_error = exc
+            if not _json_structure_is_closed(candidate):
+                continue
+            try:
+                repaired = repair_json(candidate, return_objects=True)
+            except Exception:
+                continue
+            if isinstance(repaired, dict):
+                return repaired
     else:
         assert last_error is not None
         raise RawProviderPayloadError(text, last_error) from last_error

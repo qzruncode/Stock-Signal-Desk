@@ -50,6 +50,7 @@ from src.agent.task_workflows import (
     registered_workflow_tools,
 )
 from src.tools.registry import ToolRegistry
+from src.tools.search_stocks import _markets_for_scope, _security_codes_in_query
 
 
 
@@ -419,3 +420,21 @@ def test_executor_binds_declared_collection_resources_without_task_type_rules() 
         "600519",
         "000858",
     ]
+
+
+def test_security_lookup_keeps_exchange_and_board_constraints_distinct() -> None:
+    lookup = _task(
+        StandardTaskKind.SECURITY_LOOKUP,
+        task_id="lookup",
+        parameters={"query": "宁德时代", "exchange": "sz"},
+    )
+    calls = compile_task(ResolvedTask(candidate=lookup))
+
+    assert [call.arguments for call in calls] == [
+        {"query": "宁德时代", "exchange": "sz"},
+    ]
+    assert _markets_for_scope(exchange="sz") == ("sz", "cyb")
+    assert _markets_for_scope(exchange="sh", board="main") == ("sh",)
+    assert _markets_for_scope(board="cyb") == ("cyb",)
+    assert _security_codes_in_query("宁德时代（300750）") == ("300750",)
+    assert _security_codes_in_query("600519、000858") == ("600519", "000858")

@@ -425,6 +425,15 @@
     "maximum_nodes": 1
   },
   {
+    "case_id": "shenwan-industry-index",
+    "prompt": "查看申万食品饮料一级行业指数的历史表现和完整成分股。",
+    "required_capabilities": ["industry_index_research"],
+    "forbidden_capabilities": ["industry_research", "theme_stock_discovery"],
+    "expected_effects": {"industry_index_research": "read"},
+    "required_scope_terms": ["食品饮料"],
+    "maximum_nodes": 1
+  },
+  {
     "case_id": "trade-execution",
     "prompt": "以限价1500元买入100股贵州茅台。",
     "required_capabilities": ["trade_execution"],

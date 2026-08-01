@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from src.agent.orchestrator_v2.contracts import StrictModel
+from src.market_index_catalog import A_SHARE_INDEX_MAP
 from src.services.buy_criteria.mainline_policy import MainlineStrategyProfile
 from src.services.stock_screening.screen_spec import QuantitativeScreenSpec
 
@@ -37,14 +38,21 @@ MarketMainlineResearchIntent = EmptyIntent
 
 class SecurityLookupIntent(StrictModel):
     query: str | None = Field(default=None, min_length=1, max_length=120)
-    market: Literal["sh", "sz", "bj", "hk", "us"] | None = None
+    exchange: Literal["sh", "sz", "bj"] | None = None
+    board: Literal["main", "cyb", "kcb", "bj"] | None = None
     sector: str | None = Field(default=None, min_length=1, max_length=80)
     limit: int | None = Field(default=None, ge=1, le=100)
 
     @model_validator(mode="after")
     def _has_constraint(self) -> "SecurityLookupIntent":
-        if not any((self.query, self.market, self.sector)):
-            raise ValueError("query, market or sector is required")
+        if not any((self.query, self.exchange, self.board, self.sector)):
+            raise ValueError("query, exchange, board or sector is required")
+        if self.board == "cyb" and self.exchange not in (None, "sz"):
+            raise ValueError("ChiNext is listed on the Shenzhen exchange")
+        if self.board == "kcb" and self.exchange not in (None, "sh"):
+            raise ValueError("STAR Market is listed on the Shanghai exchange")
+        if self.board == "bj" and self.exchange not in (None, "bj"):
+            raise ValueError("Beijing board is listed on the Beijing exchange")
         return self
 
 class RecentPriceRange(StrictModel):
@@ -156,6 +164,13 @@ class MarketOverviewIntent(StrictModel):
     include_index: bool | None = None
     index_code: str | None = Field(default=None, pattern=r"^[A-Za-z0-9.]{2,16}$")
 
+    @field_validator("index_code")
+    @classmethod
+    def _supported_index_code(cls, value: str | None) -> str | None:
+        if value is not None and value not in A_SHARE_INDEX_MAP:
+            raise ValueError("index_code must be a supported mainland index")
+        return value
+
 class SectorAnalysisIntent(StrictModel):
     sector_type: Literal["industry", "concept"] | None = None
     period: Literal["today", "5d", "10d"] | None = None
@@ -211,6 +226,27 @@ class IndustryResearchIntent(StrictModel):
         if not normalized:
             raise ValueError("explicit_subjects must contain at least one value")
         return normalized
+
+class IndustryIndexResearchIntent(StrictModel):
+    query: str | None = Field(default=None, min_length=1, max_length=120)
+    index_type: Literal[
+        "市场表征",
+        "一级行业",
+        "二级行业",
+        "风格指数",
+        "大类风格指数",
+        "金创指数",
+    ] = "一级行业"
+    index_code: str | None = Field(default=None, min_length=1, max_length=32)
+    include_components: bool = True
+    max_matches: int = Field(default=5, ge=1, le=20)
+    history_points: int = Field(default=120, ge=20, le=500)
+
+    @model_validator(mode="after")
+    def _has_lookup_key(self) -> "IndustryIndexResearchIntent":
+        if not (self.query or self.index_code):
+            raise ValueError("industry index research requires query or index_code")
+        return self
 
 class ThemeStockDiscoveryIntent(StrictModel):
     selection_mode: Literal["named_subset", "all_bound"] = Field(

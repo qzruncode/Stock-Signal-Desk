@@ -178,6 +178,7 @@ class Capability(str, Enum):
     CAPITAL_FLOW_ANALYSIS = "capital_flow_analysis"
     MACRO_ANALYSIS = "macro_analysis"
     INDUSTRY_RESEARCH = "industry_research"
+    INDUSTRY_INDEX_RESEARCH = "industry_index_research"
     THEME_STOCK_DISCOVERY = "theme_stock_discovery"
     THEME_BUSINESS_EVIDENCE = "theme_business_evidence"
     STOCK_SCREENING = "stock_screening"

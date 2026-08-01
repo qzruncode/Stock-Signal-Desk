@@ -18,7 +18,8 @@ from src.tools._kline import (
 from src.tools.base import ToolSpec, object_schema
 
 DESCRIPTION = (
-    "基于前复权日线计算 MA、EMA、MACD、RSI、ATR、布林带、20/60 日高低位、当日量/前5日均量和阶段收益；"
+    "基于前复权日线计算 MA、EMA、MACD、RSI、ATR、布林带、20/60 日高低位、当日量/前5日均量和阶段收益，"
+    "并读取 AKShare 筹码分布及龙虎榜机构交易结构；"
     "成交量统一为股，盘中指标会明确标记使用了未完成的当日 K 线。"
     "结果为确定性计算，不做买卖结论，适合技术趋势、波动和位置分析。"
 )
@@ -29,7 +30,11 @@ def _round(value: Any, digits: int = 4) -> Any:
     return round(float(value), digits) if isinstance(value, (int, float)) else value
 
 
-def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
+def get_technical_indicators(
+    symbol: str,
+    count: int = 120,
+    include_structured: bool = False,
+) -> dict[str, Any]:
     code = bare_symbol(symbol)
     safe_count = max(80, min(int(count), 250))
     local_rows = _get_kline_from_stock_daily(code, safe_count) or []
@@ -154,12 +159,29 @@ def get_technical_indicators(symbol: str, count: int = 120) -> dict[str, Any]:
         "return_20d_pct": _round(change(20), 2),
         "return_60d_pct": _round(change(60), 2),
     }
+    trading_evidence: dict[str, Any] = {}
+    trading_errors: list[str] = []
+    try:
+        if not include_structured:
+            raise LookupError("structured trading evidence not requested")
+        from src.services.akshare_evidence import get_company_evidence
+
+        structured = get_company_evidence(code, sections=("trading_evidence",), days=30)
+        trading_evidence = (structured.get("sections") or {}).get("trading_evidence") or {}
+        trading_errors = [f"trading_evidence: {error}" for error in trading_evidence.get("errors") or []]
+    except LookupError:
+        pass
+    except Exception as exc:
+        trading_errors = [f"trading_evidence: {type(exc).__name__}: {str(exc)[:400]}"]
     return {
         "symbol": code,
         "date": rows[-1].get("date"),
         "indicators": indicators,
+        "structured_trading_evidence": trading_evidence,
         "success": True,
-        "errors": [],
+        "partial": bool(trading_errors),
+        "errors": trading_errors,
+        "warnings": list(trading_evidence.get("warnings") or []),
         "adjust": "qfq",
         "period": "daily",
         "bar_complete": bar_complete,
@@ -181,6 +203,11 @@ TOOL = ToolSpec(
                 "maximum": 250,
                 "default": 120,
                 "description": "用于计算的最近日线数量",
+            },
+            "include_structured": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否同时读取筹码分布和龙虎榜机构交易证据",
             },
         },
         ["symbol"],

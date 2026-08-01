@@ -23,9 +23,25 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
         ds = DataService()
         raw: dict[str, Any] = {}
 
+        try:
+            structured = ds.get_company_structured_evidence(
+                symbol,
+                scope="risk_and_catalyst",
+                days=730,
+                report_period_count=4,
+            )
+            raw["structured_risk_evidence"] = structured.get("sections") or {}
+            raw["structured_risk_coverage_complete"] = structured.get("coverage_complete") is True
+            raw["structured_risk_errors"] = structured.get("errors") or []
+            if structured.get("success") is not True:
+                raw["structured_risk_error"] = "结构化公司风险证据域全部不可用"
+        except Exception as exc:
+            logger.warning("[fatal_risks] structured evidence failed: %s", exc)
+            raw["structured_risk_error"] = str(exc)
+
         # Risk events
         try:
-            risk = ds.get_risk_events(symbol, days=730)
+            risk = ds.get_risk_events(symbol, days=730, include_structured=False)
             raw["risk_events"] = {
                 "items": risk.get("items", []),
                 "semantic_status": "model_required",
@@ -42,6 +58,9 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
                 "pledge_ratio": shareholder.get("pledge_ratio") or shareholder.get("total_pledge_ratio"),
                 "top_holder_changes": shareholder.get("top_holder_changes") or shareholder.get("changes"),
                 "reduction_signals": shareholder.get("reduction_signals"),
+                "equity_pledges": shareholder.get("equity_pledges") or [],
+                "restricted_releases": shareholder.get("restricted_releases") or [],
+                "northbound_holding_history": shareholder.get("northbound_holding_history") or [],
             }
         except Exception as exc:
             logger.warning("[fatal_risks] shareholder failed: %s", exc)
@@ -62,6 +81,31 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
         # Build summary — inject actual risk event items so LLM can judge,
         # not just aggregate counts.
         lines: list[str] = []
+        structured_sections = raw.get("structured_risk_evidence") or {}
+        lines.append("## AKShare 结构化风险事项（原始字段，语义由模型判断）")
+        structured_rows = 0
+        for section_name, section in structured_sections.items():
+            for dataset_name, dataset in (section.get("datasets") or {}).items():
+                items = dataset.get("items") or []
+                if not items:
+                    continue
+                structured_rows += len(items)
+                lines.append(
+                    f"- {section_name}/{dataset_name} [{dataset.get('source_api')}]："
+                    f"{str(items[:5])[:1800]}"
+                )
+        if not structured_rows:
+            lines.append(
+                "- "
+                + (
+                    "结构化风险事项获取失败，不能解释为没有质押、解禁、商誉、定增或停复牌风险"
+                    if raw.get("structured_risk_error")
+                    else "查询范围内未返回匹配事项"
+                )
+            )
+        if raw.get("structured_risk_errors"):
+            lines.append("- 部分结构化来源失败：" + "；".join(raw["structured_risk_errors"])[:1200])
+
         re_data = raw.get("risk_events", {})
         # --- Risk events (actual items) ---
         re_items = re_data.get("items") or []
@@ -139,6 +183,8 @@ class FatalRisksEvaluator(BaseCriterionEvaluator):
             failed.append("股东结构")
         if raw.get("financial_signals_error"):
             failed.append("财务异常信号")
+        if raw.get("structured_risk_error"):
+            failed.append("结构化公司风险事项")
         if failed:
             return "、".join(failed) + "获取失败，不能据此证明不存在重大风险"
         return None

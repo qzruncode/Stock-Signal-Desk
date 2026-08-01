@@ -362,6 +362,57 @@ def _compact_flow(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compact_structured(data: dict[str, Any]) -> dict[str, Any]:
+    compact_sections: dict[str, Any] = {}
+    tail_datasets = {"northbound_holding_history", "chip_distribution"}
+    for section_name, section in (data.get("sections") or {}).items():
+        compact_datasets: dict[str, Any] = {}
+        for dataset_name, dataset in (section.get("datasets") or {}).items():
+            items = [item for item in dataset.get("items") or [] if isinstance(item, dict)]
+            selected = items[-20:] if dataset_name in tail_datasets else items[:8]
+            compact_datasets[dataset_name] = {
+                **_pick(
+                    dataset,
+                    ("success", "partial", "source_api", "item_count", "source_row_count", "error"),
+                ),
+                "items": selected,
+            }
+        compact_sections[section_name] = {
+            **_pick(
+                section,
+                (
+                    "success",
+                    "partial",
+                    "coverage_complete",
+                    "available_dataset_count",
+                    "required_dataset_count",
+                    "data_time",
+                    "errors",
+                    "warnings",
+                ),
+            ),
+            "datasets": compact_datasets,
+        }
+    return {
+        **_pick(
+            data,
+            (
+                "success",
+                "partial",
+                "symbol",
+                "coverage_complete",
+                "retrieval_only",
+                "semantic_status",
+                "source",
+                "data_time",
+                "errors",
+                "warnings",
+            ),
+        ),
+        "sections": compact_sections,
+    }
+
+
 def _callers() -> (
     dict[str, tuple[Callable[..., dict[str, Any]], dict[str, Any], Callable[[dict[str, Any]], dict[str, Any]]]]
 ):
@@ -374,6 +425,7 @@ def _callers() -> (
     from src.tools.get_stock_capital_flow import get_stock_capital_flow
     from src.tools.get_stock_info import get_stock_info
     from src.tools.get_valuation_ratios import get_valuation_ratios
+    from src.tools.get_company_structured_evidence import get_company_structured_evidence
 
     return {
         "profile": (get_stock_info, {}, _compact_profile),
@@ -385,6 +437,11 @@ def _callers() -> (
         "risk_events": (get_risk_events, {"days": 730, "limit": 60}, _compact_risks),
         "announcements": (get_announcements, {"days": 730, "type": "all", "limit": 100}, _compact_announcements),
         "capital_flow": (get_stock_capital_flow, {"days": 20}, _compact_flow),
+        "structured_company_evidence": (
+            get_company_structured_evidence,
+            {"scope": "all", "days": 730, "report_period_count": 4},
+            _compact_structured,
+        ),
     }
 
 
@@ -415,14 +472,32 @@ def _run_dimension(
 
 def _coverage(item: dict[str, Any]) -> dict[str, Any]:
     technical = (item.get("snapshot") or {}).get("technical") or {}
+    structured = item.get("structured_company_evidence") or {}
+    structured_sections = structured.get("sections") or {}
+    structured_required = "structured_company_evidence" in item
     dimensions = {
-        "business_reality": _ok(item.get("profile")) and _ok(item.get("business_segments")),
-        "financial_quality": _ok(item.get("financials")),
+        "business_reality": (
+            _ok(item.get("profile"))
+            and _ok(item.get("business_segments"))
+            and (not structured_required or _ok(structured_sections.get("ownership")))
+        ),
+        "financial_quality": (
+            _ok(item.get("financials"))
+            and (not structured_required or _ok(structured_sections.get("financial_events")))
+        ),
         "valuation": _ok(item.get("valuation")),
         "expectations": _ok(item.get("consensus")),
         "peer_context": _ok(item.get("peer_comparison")),
-        "trading_state": bool(technical.get("success")) and _ok(item.get("capital_flow")),
-        "catalyst_and_risk": _ok(item.get("announcements")) and _ok(item.get("risk_events")),
+        "trading_state": (
+            bool(technical.get("success"))
+            and _ok(item.get("capital_flow"))
+            and (not structured_required or _ok(structured_sections.get("trading_evidence")))
+        ),
+        "catalyst_and_risk": (
+            _ok(item.get("announcements"))
+            and _ok(item.get("risk_events"))
+            and (not structured_required or _ok(structured_sections.get("corporate_events")))
+        ),
     }
     missing = [name for name, complete in dimensions.items() if not complete]
     return {
@@ -525,6 +600,7 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
             "business_segments": "东方财富主营构成",
             "valuation_consensus_peers": "东方财富结构化估值与预测",
             "events": "东方财富公司公告 + 公司新闻原始证据",
+            "structured_company_evidence": "AKShare股权/财务披露/公司事项/筹码与龙虎榜",
             "capital_flow": "东方财富成交单大小口径",
         },
         "evidence_standard": [

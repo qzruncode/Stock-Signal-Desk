@@ -53,6 +53,7 @@ def tool_cases() -> dict[str, dict[str, Any]]:
             "use_cache": True,
         },
         "get_technical_indicators": {"symbol": "600519", "count": 120},
+        "get_company_structured_evidence": {"symbol": "600519", "scope": "ownership", "days": 730},
         "get_multi_stock_snapshot": {"symbols": "600519,000858"},
         "get_multi_stock_financials": {
             "symbols": "600519,000858",
@@ -92,6 +93,8 @@ def tool_cases() -> dict[str, dict[str, Any]]:
         },
         "get_market_status": {},
         "get_market_breadth": {},
+        "get_market_regime": {"index": "沪深300", "history_points": 30},
+        "get_industry_index_context": {"query": "银行", "index_type": "一级行业", "max_matches": 2},
         "get_sector_list": {"type": "industry"},
         "get_sector_flow": {"type": "industry", "period": "5d", "top_n": 10},
         "get_stock_capital_flow": {"symbol": "600519", "days": 20},
