@@ -77,6 +77,9 @@ TOOL = ToolSpec(
     ),
     executor=send_notification,
     category="action",
+    effect="side_effect",
+    max_attempts=1,
+    sensitive_fields=("message",),
 )
 
 

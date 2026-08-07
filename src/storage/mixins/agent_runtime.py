@@ -32,7 +32,7 @@ from src.storage.models import (
 )
 
 
-_ACTIVE_RUN_STATUSES = ("queued", "running", "recovering")
+_ACTIVE_RUN_STATUSES = ("queued", "running", "recovering", "interrupted")
 _TERMINAL_RUN_STATUSES = ("completed", "partial", "failed", "cancelled", "blocked")
 _RUNNING_STEP_STATUSES = ("pending", "running", "retry_wait")
 

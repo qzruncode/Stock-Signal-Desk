@@ -17,7 +17,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   TriangleAlert,
-  Workflow,
+  ListChecks,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
@@ -34,6 +34,7 @@ import { cn } from '../utils/cn';
 const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: '全部' },
   { value: 'running', label: '运行中' },
+  { value: 'interrupted', label: '等待审批' },
   { value: 'completed', label: '已完成' },
   { value: 'partial', label: '部分完成' },
   { value: 'blocked', label: '已阻止' },
@@ -45,6 +46,7 @@ const STATUS_LABELS: Record<string, string> = {
   queued: '排队中',
   running: '运行中',
   recovering: '恢复中',
+  interrupted: '等待审批',
   completed: '已完成',
   partial: '部分完成',
   failed: '失败',
@@ -53,29 +55,12 @@ const STATUS_LABELS: Record<string, string> = {
   succeeded: '已完成',
 };
 
-const CAPABILITY_LABELS: Record<string, string> = {
-  general_response: '通用回答',
-  security_lookup: '证券识别',
-  realtime_quote: '实时行情',
-  price_history: '历史行情',
-  technical_analysis: '技术分析',
-  fundamental_analysis: '基本面分析',
-  valuation_analysis: '估值分析',
-  financial_statement_analysis: '财报分析',
-  news_analysis: '新闻分析',
-  risk_analysis: '风险分析',
-  investment_decision: '买入判断',
-  market_overview: '市场概览',
-  market_mainline_research: '市场主线',
-  stock_screening: '股票筛选',
-  collection_financial_filter: '财务筛选',
-};
-
 const DIMENSION_LABELS: Record<string, string> = {
-  planning: '规划契约',
+  control_loop: '控制循环',
+  controlLoop: '控制循环',
   execution: '执行完整性',
-  coverage: '覆盖完整性',
-  evidence: '证据与产物',
+  claim_evidence: '结论与证据',
+  claimEvidence: '结论与证据',
   answer_contract: '回答契约',
   answerContract: '回答契约',
   budget: '资源预算',
@@ -84,7 +69,7 @@ const DIMENSION_LABELS: Record<string, string> = {
 const statusVariant = (status: string) => {
   if (status === 'completed' || status === 'succeeded') return 'success' as const;
   if (status === 'running' || status === 'recovering' || status === 'queued') return 'info' as const;
-  if (status === 'partial' || status === 'blocked') return 'warning' as const;
+  if (status === 'partial' || status === 'blocked' || status === 'interrupted') return 'warning' as const;
   return 'danger' as const;
 };
 
@@ -113,7 +98,7 @@ const RunExplorerPage: React.FC = () => {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [status, setStatus] = useState('');
-  const [capability, setCapability] = useState('');
+  const [tool, setTool] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -149,7 +134,7 @@ const RunExplorerPage: React.FC = () => {
       const [runResponse, qualityResponse] = await Promise.all([
         runExplorerApi.listRuns({
           status: status || undefined,
-          capability: capability || undefined,
+          tool: tool || undefined,
           page,
           limit,
         }),
@@ -171,7 +156,7 @@ const RunExplorerPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [capability, page, status]);
+  }, [page, status, tool]);
 
   useEffect(() => {
     document.title = '运行记录 - Stock Assistant';
@@ -191,15 +176,16 @@ const RunExplorerPage: React.FC = () => {
     }
   }, [loadDetail, selectedRunId]);
 
-  const availableCapabilities = useMemo(
-    () => Array.from(new Set(runs.flatMap((run) => run.capabilities))).sort(),
+  const availableTools = useMemo(
+    () => Array.from(new Set(runs.flatMap((run) => run.tools))).sort(),
     [runs],
   );
   const pageCount = Math.max(1, Math.ceil(total / limit));
   const run = detail?.snapshot.run ?? {};
   const projection = detail?.snapshot.qualityProjection ?? {};
-  const tasks = projection.tasks ?? [];
-  const outcomes = projection.outcomes ?? [];
+  const actions = projection.actions ?? [];
+  const toolResults = projection.toolResults ?? [];
+  const evidence = projection.evidence ?? [];
 
   const selectRun = (runId: string) => {
     setSelectedRunId(runId);
@@ -243,7 +229,7 @@ const RunExplorerPage: React.FC = () => {
           </Link>
           <h1 className="text-2xl font-semibold text-foreground">运行记录</h1>
           <p className="mt-1 text-sm text-secondary-text">
-            查看每次任务的规划、能力调用、覆盖状态、质量评分与反馈。
+            查看每次任务的动态行动、原子工具、证据校验、质量评分与反馈。
           </p>
         </div>
         <button
@@ -304,17 +290,17 @@ const RunExplorerPage: React.FC = () => {
           ))}
         </div>
         <select
-          value={capability}
+          value={tool}
           onChange={(event) => {
-            setCapability(event.target.value);
+            setTool(event.target.value);
             setPage(1);
           }}
           className="ml-auto min-w-40 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-cyan"
-          aria-label="按能力筛选"
+          aria-label="按工具筛选"
         >
-          <option value="">全部能力</option>
-          {availableCapabilities.map((item) => (
-            <option key={item} value={item}>{CAPABILITY_LABELS[item] ?? item}</option>
+          <option value="">全部工具</option>
+          {availableTools.map((item) => (
+            <option key={item} value={item}>{item}</option>
           ))}
         </select>
       </section>
@@ -363,17 +349,18 @@ const RunExplorerPage: React.FC = () => {
                   </span>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {item.capabilities.slice(0, 4).map((itemCapability) => (
+                  {item.tools.slice(0, 4).map((itemTool) => (
                     <span
-                      key={itemCapability}
+                      key={itemTool}
                       className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-secondary-text"
                     >
-                      {CAPABILITY_LABELS[itemCapability] ?? itemCapability}
+                      {itemTool}
                     </span>
                   ))}
                 </div>
                 <div className="mt-2 flex gap-3 text-[11px] text-secondary-text">
-                  <span>{item.taskCount} 个任务</span>
+                  <span>{item.actionCount} 个动态动作</span>
+                  <span>{item.evidenceCount} 条证据</span>
                   <span>{item.toolCallCount} 次工具调用</span>
                   <span>{formatDuration(item.durationMs)}</span>
                 </div>
@@ -471,9 +458,9 @@ const RunExplorerPage: React.FC = () => {
                     )}</p>
                   </div>
                   <div className="rounded-xl bg-muted/60 p-3">
-                    <Workflow className="size-4 text-purple" />
-                    <p className="mt-2 text-xs text-secondary-text">规划任务</p>
-                    <p className="mt-1 font-medium">{tasks.length}</p>
+                    <ListChecks className="size-4 text-purple" />
+                    <p className="mt-2 text-xs text-secondary-text">动态动作</p>
+                    <p className="mt-1 font-medium">{actions.length}</p>
                   </div>
                   <div className="rounded-xl bg-muted/60 p-3">
                     <Database className="size-4 text-emerald-600" />
@@ -533,40 +520,36 @@ const RunExplorerPage: React.FC = () => {
                 )}
               </Card>
 
-              <Card title="执行链" subtitle="Plan → outcomes">
+              <Card title="执行链" subtitle="Dynamic actions → observations → evidence">
                 <div className="space-y-3">
-                  {tasks.map((task, index) => {
-                    const taskId = text(task.taskId);
-                    const outcome = outcomes.find((item) => text(item.taskId) === taskId);
-                    const coverage = (
-                      outcome?.coverage && typeof outcome.coverage === 'object'
-                        ? outcome.coverage as Record<string, unknown>
-                        : {}
-                    );
+                  {actions.map((action, index) => {
+                    const actionId = text(action.actionId);
+                    const result = toolResults.find((item) => text(item.actionId) === actionId);
+                    const actionEvidence = evidence.filter((item) => text(item.actionId) === actionId);
                     return (
-                      <div key={taskId || index} className="rounded-xl border border-border/70 p-3">
+                      <div key={actionId || index} className="rounded-xl border border-border/70 p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <p className="text-sm font-medium">
-                              {CAPABILITY_LABELS[text(task.capability)] ?? text(task.capability)}
+                              {text(action.toolName) || '未指定工具'}
                             </p>
-                            <p className="mt-0.5 font-mono text-[11px] text-secondary-text">{taskId}</p>
+                            <p className="mt-0.5 text-xs text-secondary-text">{text(action.objective)}</p>
+                            <p className="mt-0.5 font-mono text-[11px] text-secondary-text">{actionId}</p>
                           </div>
-                          <Badge variant={statusVariant(text(outcome?.status || 'running'))}>
-                            {STATUS_LABELS[text(outcome?.status)] ?? text(outcome?.status || '等待结果')}
+                          <Badge variant={result?.success === true ? 'success' : result ? 'danger' : 'info'}>
+                            {result?.success === true ? '成功' : result ? '失败' : '未执行'}
                           </Badge>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-4 text-xs text-secondary-text">
-                          <span>副作用：{text(task.effect) || 'read'}</span>
-                          <span>覆盖：{coverage.complete === true ? '完整' : '不完整'}</span>
-                          <span>证据：{numberValue(outcome?.evidenceCount)} 条</span>
-                          <span>警告：{numberValue(outcome?.warningCount)} 条</span>
+                          <span>副作用：{text(result?.effect) || '未执行'}</span>
+                          <span>证据：{actionEvidence.length} 条</span>
+                          <span>依赖：{Array.isArray(action.dependsOn) ? action.dependsOn.length : 0} 个</span>
                         </div>
                       </div>
                     );
                   })}
-                  {tasks.length === 0 ? (
-                    <p className="text-sm text-secondary-text">该运行尚未形成编译任务。</p>
+                  {actions.length === 0 ? (
+                    <p className="text-sm text-secondary-text">该问题无需工具，或运行尚未生成行动。</p>
                   ) : null}
                 </div>
               </Card>

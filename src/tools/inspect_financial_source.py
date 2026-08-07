@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from src.tools._rss_agent import endpoint_value
-from src.tools.base import ToolSpec, object_schema
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 
 
@@ -72,25 +71,4 @@ def inspect_financial_source(
         "errors": [str(dynamic_error)] if dynamic_error and not dynamic else [],
         "warnings": [str(dynamic_error)] if dynamic_error and dynamic else [],
     }
-
-
-TOOL = ToolSpec(
-    name="inspect_financial_source",
-    description=(
-        "查看一个指定财经资讯源的完整路由参数，并获取格隆汇主题、南华研报分类、中指分类、"
-        "财联社话题、富途话题等动态可选值；雪球源还会检查实例读取状态。"
-    ),
-    parameters=object_schema(
-        {
-            "route_path": {"type": "string", "description": "list_financial_sources 返回的精确 route_path"},
-            "keyword": {"type": "string", "description": "过滤动态主题/话题的关键词，可留空"},
-            "force": {"type": "boolean", "default": False},
-        },
-        required=("route_path",),
-    ),
-    executor=inspect_financial_source,
-    category="sentiment",
-)
-
-
-__all__ = ["TOOL", "inspect_financial_source"]
+__all__ = ["inspect_financial_source"]

@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-from src.tools.base import ToolSpec, object_schema
 
 
 _ROUTE = "/gov/pbc/tradeAnnouncement"
@@ -372,33 +371,4 @@ def get_monetary_policy_operations(
     }
 
 
-TOOL = ToolSpec(
-    name="get_monetary_policy_operations",
-    description=(
-        "读取人民银行官方公开市场交易公告，解析逆回购、买断式逆回购、MLF等操作的期限、金额、利率、"
-        "招标方式和公告编号。不会在缺少到期量时虚构净投放；RSS 失败时仅接受人民银行官网结果。"
-    ),
-    parameters=object_schema(
-        {
-            "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30},
-            "instrument": {
-                "type": "string",
-                "enum": [
-                    "all",
-                    "reverse_repo",
-                    "outright_reverse_repo",
-                    "mlf",
-                    "treasury_deposit",
-                    "central_bank_bill",
-                    "other",
-                ],
-                "default": "all",
-            },
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
-            "include_content": {"type": "boolean", "default": False},
-            "fallback_to_web": {"type": "boolean", "default": True},
-        }
-    ),
-    executor=get_monetary_policy_operations,
-    category="macro",
-)
+__all__ = ["get_monetary_policy_operations"]

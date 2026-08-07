@@ -26,20 +26,19 @@ FeedbackCategory = Literal[
 
 
 class AgentEvaluationExpectations(BaseModel):
-    """Deterministic acceptance contract for one evaluation case."""
+    """Domain-neutral deterministic contract for one evaluation case."""
 
     model_config = ConfigDict(extra="forbid")
 
-    required_capabilities: list[str] = Field(default_factory=list)
-    forbidden_capabilities: list[str] = Field(default_factory=list)
-    maximum_nodes: int | None = Field(None, ge=1, le=500)
+    required_tools: list[str] = Field(default_factory=list)
+    forbidden_tools: list[str] = Field(default_factory=list)
+    maximum_actions: int | None = Field(None, ge=1, le=500)
     allowed_statuses: list[TerminalRunStatus] = Field(
         default_factory=lambda: ["completed"]
     )
-    require_all_steps_succeeded: bool = True
-    require_complete_coverage: bool = True
+    require_all_tools_succeeded: bool = True
+    require_claim_evidence_verified: bool = True
     minimum_evidence_items: int = Field(0, ge=0, le=100_000)
-    minimum_artifacts: int = Field(0, ge=0, le=10_000)
     required_answer_terms: list[str] = Field(default_factory=list)
     forbidden_answer_terms: list[str] = Field(default_factory=list)
     maximum_provider_calls: int | None = Field(None, ge=1, le=10_000)

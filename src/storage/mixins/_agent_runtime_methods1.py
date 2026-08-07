@@ -222,10 +222,112 @@ class _AgentRuntimeMixinMethods1:
             if record is None:
                 return False
             record.cancel_requested = True
+            if record.status == "interrupted":
+                record.status = "cancelled"
+                record.active_slot = None
+                record.error_code = "cancelled"
+                record.error_detail = "cancelled while awaiting approval"
+                record.context_snapshot_json = None
+                record.lease_expires_at = None
+                record.finished_at = now
             record.updated_at = now
             return True
 
         return bool(self._run_write_transaction("request_agent_run_cancel", _cancel))
+
+    def interrupt_agent_run(
+        self,
+        run_id: str,
+        *,
+        worker_id: str,
+        attempt: int,
+        checkpoint: Mapping[str, Any],
+    ) -> bool:
+        """Park a run at a LangGraph interrupt while retaining its active slot."""
+        now = datetime.now()
+
+        def _interrupt(session):
+            statement = select(AgentRun).where(AgentRun.id == run_id)
+            if not self._is_sqlite_engine:
+                statement = statement.with_for_update()
+            record = session.execute(statement).scalars().first()
+            if record is None:
+                return False
+            if record.status == "interrupted":
+                return _load_json(record.context_snapshot_json, {}) == dict(checkpoint)
+            if (
+                record.status not in {"queued", "running", "recovering"}
+                or record.worker_id != worker_id
+                or int(record.attempt or 0) != int(attempt)
+            ):
+                return False
+            record.status = "interrupted"
+            record.context_snapshot_json = _json(dict(checkpoint))
+            record.lease_expires_at = None
+            record.heartbeat_at = now
+            record.updated_at = now
+            return True
+
+        return bool(self._run_write_transaction("interrupt_agent_run", _interrupt))
+
+    def resume_interrupted_agent_run(
+        self,
+        run_id: str,
+        *,
+        worker_id: str,
+        lease_seconds: float = 45.0,
+    ) -> dict[str, Any] | None:
+        """Atomically consume the waiting slot for one approval decision."""
+        now = datetime.now()
+
+        def _resume(session):
+            statement = select(AgentRun).where(AgentRun.id == run_id)
+            if not self._is_sqlite_engine:
+                statement = statement.with_for_update()
+            record = session.execute(statement).scalars().first()
+            if record is None or record.status != "interrupted" or record.cancel_requested:
+                return None
+            record.status = "running"
+            record.worker_id = worker_id
+            record.heartbeat_at = now
+            record.lease_expires_at = now + timedelta(seconds=max(5.0, lease_seconds))
+            record.updated_at = now
+            session.flush()
+            return _run_dict(record)
+
+        return self._run_write_transaction("resume_interrupted_agent_run", _resume)
+
+    def cancel_legacy_engine_runs(self) -> int:
+        """Hard-cut active pre-LangGraph runs without converting checkpoints."""
+        now = datetime.now()
+
+        def _cancel(session):
+            records = (
+                session.execute(
+                    select(AgentRun).where(AgentRun.status.in_(_ACTIVE_RUN_STATUSES))
+                )
+                .scalars()
+                .all()
+            )
+            changed = 0
+            for record in records:
+                request = _load_json(record.request_json, {})
+                checkpoint = _load_json(record.context_snapshot_json, {})
+                if request.get("engine") == "langgraph" or checkpoint.get("engine") == "langgraph":
+                    continue
+                record.status = "cancelled"
+                record.active_slot = None
+                record.error_code = "legacy_engine_cutover"
+                record.error_detail = "legacy_engine_cutover"
+                record.context_snapshot_json = None
+                record.lease_expires_at = None
+                record.cancel_requested = True
+                record.finished_at = now
+                record.updated_at = now
+                changed += 1
+            return changed
+
+        return int(self._run_write_transaction("cancel_legacy_engine_runs", _cancel))
     def finish_agent_run(
         self,
         run_id: str,
@@ -410,7 +512,7 @@ class _AgentRuntimeMixinMethods1:
                 session.execute(
                     select(AgentRunTrace).where(
                         AgentRunTrace.run_id == run_id,
-                        AgentRunTrace.orchestrator_mode == "unified",
+                        AgentRunTrace.orchestrator_mode == "langgraph",
                     )
                 )
                 .scalars()
@@ -418,10 +520,10 @@ class _AgentRuntimeMixinMethods1:
             )
             if trace_record is None:
                 trace_record = AgentRunTrace(
-                    id=f"{run_id}:unified"[:64],
+                    id=f"{run_id}:langgraph"[:64],
                     run_id=run_id,
                     conversation_id=conversation_id,
-                    orchestrator_mode="unified",
+                    orchestrator_mode="langgraph",
                     status=str(trace_payload.get("status") or status),
                     created_at=now,
                 )

@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""Agent package — standard-task planning, policy validation and execution."""
+"""Application-hosted LangGraph Agent runtime and durable streaming support."""

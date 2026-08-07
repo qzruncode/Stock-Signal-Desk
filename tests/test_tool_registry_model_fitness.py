@@ -44,46 +44,42 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         registry = ToolRegistry()
         captured = {}
 
-        def fake_search_research_library(**kwargs):
+        def fake_search_news(**kwargs):
             captured.update(kwargs)
             return {"success": True, "errors": []}
 
-        original = registry._tools["search_research_library"]
-        registry._tools["search_research_library"] = replace(
+        original = registry._tools["search_news"]
+        registry._tools["search_news"] = replace(
             original,
-            executor=fake_search_research_library,
+            executor=fake_search_news,
         )
 
         registry.execute(
-            "search_research_library",
+            "search_news",
             {
-                "query": "精密减速器",
-                "category": "industry",
-                "subjects": ["精密减速器"],
-                "includeContent": "true",
-                "days": "1095",
+                "symbol": "600519",
+                "useCache": "false",
+                "days": "30",
             },
         )
 
-        self.assertIs(captured["include_content"], True)
-        self.assertEqual(captured["days"], 1095)
-        self.assertNotIn("includeContent", captured)
+        self.assertIs(captured["use_cache"], False)
+        self.assertEqual(captured["days"], 30)
+        self.assertNotIn("useCache", captured)
 
     def test_registry_rejects_numeric_arguments_outside_declared_schema_bounds(self) -> None:
         registry = ToolRegistry()
         arguments = {
-            "query": "人形机器人",
-            "topic": "industry",
-            "subjects": ["人形机器人"],
-            "days": 730,
+            "symbol": "600519",
+            "days": 365,
             "limit": "100",
         }
 
-        normalized = registry.normalize_arguments("search_financial_news", arguments)
-        self.assertEqual(normalized["days"], 730)
+        normalized = registry.normalize_arguments("search_news", arguments)
+        self.assertEqual(normalized["days"], 365)
         self.assertEqual(normalized["limit"], 100)
         with self.assertRaises(ValueError):
-            registry.validate_arguments("search_financial_news", arguments)
+            registry.validate_arguments("search_news", arguments)
 
     def test_registry_repairs_iso_dates_for_compact_date_schema(self) -> None:
         registry = ToolRegistry()
@@ -192,19 +188,21 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertNotIn("get_price_overdraft_signal", names)
         self.assertNotIn("get_sentiment", names)
 
-    def test_risk_events_tool_is_registered(self) -> None:
+    def test_composite_risk_event_tool_is_not_registered(self) -> None:
         registry = ToolRegistry()
         names = set(registry.get_tool_names())
 
-        self.assertIn("get_risk_events", names)
+        self.assertNotIn("get_risk_events", names)
+        self.assertIn("get_announcements", names)
+        self.assertIn("search_news", names)
 
     def test_rss_exposes_dynamic_catalog_and_text_resource_tools(self) -> None:
         names = set(ToolRegistry().get_tool_names())
 
-        self.assertIn("search_financial_news", names)
-        self.assertIn("search_research_library", names)
-        self.assertIn("get_regulatory_updates", names)
-        self.assertIn("get_monetary_policy_operations", names)
+        self.assertNotIn("search_financial_news", names)
+        self.assertNotIn("search_research_library", names)
+        self.assertNotIn("get_regulatory_updates", names)
+        self.assertNotIn("get_monetary_policy_operations", names)
         self.assertNotIn("list_rss_sources", names)
         self.assertIn("discover_rss_sources", names)
         self.assertIn("inspect_rss_source", names)
@@ -224,20 +222,11 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(names))
 
-    def test_quantitative_screen_rejects_invalid_spec_through_real_registry_contract(self) -> None:
+    def test_composite_quantitative_screen_is_not_model_callable(self) -> None:
         registry = ToolRegistry()
-        arguments = {
-            "screen_spec": {
-                "version": "1.0",
-                "technical_rule": {"strategy": "atr_relative_frequency", "atr_period": 1},
-            },
-            "refresh_if_stale": True,
-        }
-        normalized = registry.normalize_arguments("screen_atr_volatility_stocks", arguments)
-        self.assertEqual(normalized["screen_spec"]["technical_rule"]["atr_period"], 1)
-
-        with self.assertRaises(ValueError):
-            registry.execute("screen_atr_volatility_stocks", arguments)
+        self.assertNotIn("screen_atr_volatility_stocks", registry.get_tool_names())
+        with self.assertRaises(KeyError):
+            registry.validate_arguments("screen_atr_volatility_stocks", {})
 
     def test_result_contract_completes_nullable_freshness_fields(self) -> None:
         result = enforce_result_contract("demo", {"success": True, "errors": []})
@@ -287,17 +276,22 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             patch("src.tools._kline._expected_latest_kline_date", return_value=datetime(2026, 7, 16).date()),
         ):
             kline = registry.execute("get_kline", {"symbol": "600519", "count": 20})
-        with patch(
-            "src.tools.get_sector_list.get_sector_flow",
-            return_value={
+        original_flow = registry._tools["get_sector_flow"]
+        registry._tools["get_sector_flow"] = replace(
+            original_flow,
+            executor=lambda **_kwargs: {
                 "success": True,
+                "partial": False,
                 "records": [{"name": "白酒", "sector_code": "BK0477"}],
                 "errors": [],
                 "warnings": [],
                 "freshness_unknown": True,
             },
-        ):
-            sectors = registry.execute("get_sector_list", {"type": "industry"})
+        )
+        sectors = registry.execute(
+            "get_sector_flow",
+            {"type": "industry", "period": "today", "top_n": 10},
+        )
 
         for result in (quote, kline, sectors):
             self.assertIs(result["success"], True)

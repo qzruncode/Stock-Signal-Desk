@@ -8,9 +8,7 @@ from src.tools._rss_agent import (
     array_value,
     object_value,
     rss_item_ref,
-    rss_options_schema,
 )
-from src.tools.base import ToolSpec, object_schema
 from src.tools.read_rss_item import read_rss_item
 
 
@@ -107,43 +105,4 @@ def read_financial_article(
         )
         + list(resolved.get("warnings") or []),
     }
-
-
-TOOL = ToolSpec(
-    name="read_financial_article",
-    description=(
-        "读取一篇财经资讯全文及图片/音视频/PDF/文档附件。正文按字符分段返回；has_more=true 时必须用 next_offset 继续读取，"
-        "直到完整覆盖。调用时应把上一步 Feed 返回的 summary/content_html/image/published/author/tags/attachments 分别传入"
-        "对应 list_* 与元数据参数，保证上游全文抓取失败时不丢内容。"
-    ),
-    parameters=object_schema(
-        {
-            "route_path": {"type": "string"},
-            "title": {"type": "string"},
-            "params": {"type": "object", "additionalProperties": True},
-            "options": rss_options_schema(),
-            "namespace": {"type": "string"},
-            "item_id": {"type": "string"},
-            "link": {"type": "string"},
-            "list_summary": {"type": "string", "description": "Feed 列表已有摘要，用作全文抓取失败时的可靠回退"},
-            "list_content_html": {
-                "type": "string",
-                "description": "Feed 列表已有 HTML 正文，必须原样传入以保留图片和 PDF 链接",
-            },
-            "list_image": {"type": "string", "description": "Feed 列表已有主图"},
-            "published": {"type": "string", "description": "Feed 列表已有发布时间"},
-            "author": {"type": "string", "description": "Feed 列表已有作者"},
-            "tags": {"type": "array", "items": {"type": "string"}},
-            "attachments": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            "offset": {"type": "integer", "minimum": 0, "default": 0},
-            "max_chars": {"type": "integer", "minimum": 500, "maximum": 12000, "default": 6000},
-            "force": {"type": "boolean", "default": False},
-        },
-        required=("route_path", "title"),
-    ),
-    executor=read_financial_article,
-    category="sentiment",
-)
-
-
-__all__ = ["TOOL", "read_financial_article"]
+__all__ = ["read_financial_article"]

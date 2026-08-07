@@ -2,11 +2,12 @@
   "name": "daily-stock-analysis-rsshub",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.33.4",
   "description": "Project-local RSSHub service controller for Daily Stock Analysis.",
   "scripts": {
     "install:rsshub": "bash ./scripts/install-rsshub.sh",
-    "build": "npm run install:rsshub && pnpm --dir ./app build",
-    "start": "npm run install:rsshub && test -f ./app/dist/index.mjs || pnpm --dir ./app build && bash ./scripts/start-rsshub.sh",
+    "build": "npm run install:rsshub && bash ./scripts/run-pnpm.sh --dir ./app build",
+    "start": "npm run install:rsshub && (test -f ./app/dist/index.mjs || bash ./scripts/run-pnpm.sh --dir ./app build) && bash ./scripts/start-rsshub.sh",
     "dev": "npm run install:rsshub && bash ./scripts/start-rsshub.sh dev"
   }
 }

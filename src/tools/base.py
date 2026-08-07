@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, create_model
 
 @dataclass(frozen=True)
 class ToolProgressUpdate:
-    """Task-local progress emitted by a tool into its owning Workflow."""
+    """Task-local progress emitted by one atomic tool invocation."""
 
     message: str
     progress: int | None = None
@@ -27,10 +27,9 @@ class ToolProgressUpdate:
 
 
 ToolProgressObserver = Callable[[ToolProgressUpdate], None]
-GuardBlockedResultProjector = Callable[
-    [Mapping[str, Any]],
-    Dict[str, Any],
-]
+ToolEffect = Literal["read", "side_effect"]
+ApprovalPolicy = Literal["required_for_side_effect"]
+ToolEffectResolver = Callable[[Mapping[str, Any]], ToolEffect]
 _TOOL_PROGRESS_OBSERVER: ContextVar[ToolProgressObserver | None] = ContextVar(
     "tool_progress_observer",
     default=None,
@@ -42,6 +41,10 @@ _TOOL_IDEMPOTENCY_KEY: ContextVar[str | None] = ContextVar(
 _TOOL_EXECUTION_CONTEXT: ContextVar[dict[str, str]] = ContextVar(
     "tool_execution_context",
     default={},
+)
+_TOOL_EFFECT_APPROVED: ContextVar[bool] = ContextVar(
+    "tool_effect_approved",
+    default=False,
 )
 
 
@@ -97,6 +100,20 @@ def tool_execution_context(
 
 def current_tool_execution_context() -> dict[str, str]:
     return dict(_TOOL_EXECUTION_CONTEXT.get())
+
+
+@contextmanager
+def tool_effect_approval(approved: bool) -> Iterator[None]:
+    """Mark one server-controlled dispatch as approved for side effects."""
+    token = _TOOL_EFFECT_APPROVED.set(bool(approved))
+    try:
+        yield
+    finally:
+        _TOOL_EFFECT_APPROVED.reset(token)
+
+
+def current_tool_effect_approval() -> bool:
+    return bool(_TOOL_EFFECT_APPROVED.get())
 
 
 def report_tool_progress(
@@ -184,16 +201,28 @@ class ToolSpec:
     category: str = "data"
     args_model: type[BaseModel] | None = None
     result_model: type[BaseModel] | None = None
-    failure_result: (
-        Callable[
-            [Mapping[str, Any], str, int],
-            Dict[str, Any],
-        ]
-        | None
-    ) = None
-    guard_blocked_result: GuardBlockedResultProjector | None = None
+    effect: ToolEffect = "read"
+    effect_resolver: ToolEffectResolver | None = None
+    approval_policy: ApprovalPolicy = "required_for_side_effect"
+    retrieval_text: str = ""
+    timeout_seconds: float | None = 120.0
+    max_attempts: int = 2
+    retry_backoff_seconds: float = 0.5
+    idempotent: bool = True
+    sensitive_fields: tuple[str, ...] = ()
+    server_controlled_fields: tuple[str, ...] = ("confirmed",)
 
     def __post_init__(self) -> None:
+        if self.effect not in {"read", "side_effect"}:
+            raise ValueError(f"{self.name} has invalid effect: {self.effect}")
+        if self.approval_policy != "required_for_side_effect":
+            raise ValueError(f"{self.name} has invalid approval policy")
+        if self.max_attempts < 1:
+            raise ValueError(f"{self.name} max_attempts must be positive")
+        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
+            raise ValueError(f"{self.name} timeout_seconds must be positive")
+        if not self.retrieval_text.strip():
+            object.__setattr__(self, "retrieval_text", self.description)
         if self.args_model is None and self.parameters is None:
             raise ValueError(f"{self.name} requires args_model or parameters")
         if self.args_model is None:
@@ -222,15 +251,62 @@ class ToolSpec:
                 ),
             )
 
-    def to_openai_schema(self) -> Dict[str, Any]:
+    def model_parameters(self) -> Dict[str, Any]:
+        """Return the schema visible to a planning model.
+
+        Confirmation and other server-owned fields are deliberately removed.
+        They are restored by the execution policy only after an interrupt has
+        been approved, so a model can never self-authorize an effect.
+        """
+        parameters = dict(self.parameters or {})
+        properties = dict(parameters.get("properties") or {})
+        controlled = set(self.server_controlled_fields)
+        for field_name in controlled:
+            properties.pop(field_name, None)
+        parameters["properties"] = properties
+        parameters["required"] = [
+            name for name in parameters.get("required") or [] if name not in controlled
+        ]
+        return parameters
+
+    def effect_for(self, arguments: Mapping[str, Any]) -> ToolEffect:
+        resolved = self.effect_resolver(arguments) if self.effect_resolver is not None else self.effect
+        if resolved not in {"read", "side_effect"}:
+            raise ValueError(f"{self.name} effect resolver returned invalid value: {resolved}")
+        return resolved
+
+    @property
+    def effect_mode(self) -> Literal["fixed", "argument_dependent"]:
+        """Describe whether effect policy can change with validated arguments."""
+        return "argument_dependent" if self.effect_resolver is not None else "fixed"
+
+    def to_openai_schema(self, *, include_server_controlled: bool = False) -> Dict[str, Any]:
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": (
+                    self.parameters
+                    if include_server_controlled
+                    else self.model_parameters()
+                ),
             },
         }
+
+
+def effect_by_argument(
+    field_name: str,
+    side_effect_values: Iterable[str],
+) -> ToolEffectResolver:
+    """Build a generic per-call effect resolver for mixed read/write tools."""
+    normalized = frozenset(str(value).strip().lower() for value in side_effect_values)
+
+    def resolve(arguments: Mapping[str, Any]) -> ToolEffect:
+        value = str(arguments.get(field_name) or "").strip().lower()
+        return "side_effect" if value in normalized else "read"
+
+    return resolve
 
 
 class TypedToolResult(BaseModel):

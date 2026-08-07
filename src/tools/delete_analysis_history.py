@@ -33,6 +33,8 @@ TOOL = ToolSpec(
     ),
     executor=delete_analysis_history,
     category="action",
+    effect="side_effect",
+    max_attempts=1,
 )
 
 

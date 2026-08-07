@@ -17,7 +17,6 @@ from src.storage.mixins.agent_run_trace import AgentRunTraceMixin
 from src.storage.mixins.agent_runtime import AgentRuntimeMixin
 from src.storage.mixins.agent_quality import AgentQualityMixin
 from src.storage.mixins.financial_lifecycle import FinancialLifecycleMixin
-from src.storage.mixins.agent_governance import AgentGovernanceMixin
 from src.storage.mixins.text_document import TextDocumentMixin
 
 __all__ = [
@@ -37,6 +36,5 @@ __all__ = [
     "AgentRuntimeMixin",
     "AgentQualityMixin",
     "FinancialLifecycleMixin",
-    "AgentGovernanceMixin",
     "TextDocumentMixin",
 ]

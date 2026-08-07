@@ -39,7 +39,10 @@ const ChatHomePage: React.FC = () => {
   const [conversationLoadState, setConversationLoadState] = useState<ConversationLoadState>(null);
   const [conversationLoadAttempt, setConversationLoadAttempt] = useState(0);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
+  const [isClearingConversations, setIsClearingConversations] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const threadRuntimeRef = useRef<ReturnType<typeof useThreadRuntime> | null>(null);
   const resumeExistingRef = useRef<{
     conversationId: string;
@@ -54,7 +57,14 @@ const ChatHomePage: React.FC = () => {
 
   useEffect(() => {
     selectedConversationIdRef.current = selectedConversationId;
+    setApprovalDecision(null);
+    setApprovalError(null);
   }, [selectedConversationId]);
+
+  useEffect(() => {
+    setApprovalDecision(null);
+    setApprovalError(null);
+  }, [selectedConversationDetail?.pendingInterrupt?.interruptId]);
 
   const refreshConversations = useCallback(async () => {
     const response = await agentApi.listConversations();
@@ -191,6 +201,40 @@ const ChatHomePage: React.FC = () => {
         setStreamError(toApiErrorMessage(error, '停止生成失败，请稍后重试'));
       });
   }, [loadConversationDetail]);
+
+  const handleInterruptDecision = useCallback((decision: 'approve' | 'reject') => {
+    const conversationId = selectedConversationIdRef.current;
+    const pending = selectedConversationDetail?.pendingInterrupt;
+    if (!conversationId || !pending || approvalDecision !== null) return;
+    setApprovalDecision(decision);
+    setApprovalError(null);
+    void (async () => {
+      try {
+        await agentApi.decideInterrupt(conversationId, pending.interruptId, {
+          runId: pending.runId,
+          fingerprint: pending.fingerprint,
+          decision,
+        });
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+          const detail = await loadConversationDetail(conversationId);
+          if (
+            detail.pendingInterrupt?.interruptId !== pending.interruptId
+            || detail.isGenerating
+            || detail.resumeState?.status !== 'interrupted'
+          ) {
+            break;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 100));
+        }
+        await refreshConversations();
+      } catch (error) {
+        setApprovalError(toApiErrorMessage(error, '审批已过期或处理失败，请刷新后重试'));
+        void loadConversationDetail(conversationId).catch(() => undefined);
+      } finally {
+        setApprovalDecision(null);
+      }
+    })();
+  }, [approvalDecision, loadConversationDetail, refreshConversations, selectedConversationDetail?.pendingInterrupt]);
 
   const handleDeleteUserTurn = useCallback((messageId: string) => {
     const conversationId = selectedConversationIdRef.current;
@@ -439,6 +483,46 @@ const ChatHomePage: React.FC = () => {
     })();
   }, [beginConversationSelection, createConversation, refreshConversations, selectedConversationId]);
 
+  const handleClearAllConversations = useCallback(() => {
+    if (isClearingConversations || conversations.length === 0) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `确认清除全部 ${conversations.length} 个会话及其历史记录吗？\n此操作不可恢复。`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsClearingConversations(true);
+    activeStreamRef.current = null;
+    resumeExistingRef.current = null;
+    threadRuntimeRef.current?.cancelRun();
+    void (async () => {
+      try {
+        await agentApi.clearAllConversations();
+        conversationDetailCacheRef.current.clear();
+        selectedConversationIdRef.current = null;
+        setSelectedConversationId(null);
+        setSelectedConversationDetail(null);
+        setConversationLoadState(null);
+        setStreamError(null);
+        const items = await refreshConversations();
+        if (items.length === 0) {
+          await createConversation();
+          return;
+        }
+        if (items[0]?.id) {
+          beginConversationSelection(items[0].id);
+        }
+      } catch (error) {
+        setStreamError(toApiErrorMessage(error, '清除全部会话历史失败，请稍后重试'));
+      } finally {
+        setIsClearingConversations(false);
+      }
+    })();
+  }, [beginConversationSelection, conversations.length, createConversation, isClearingConversations, refreshConversations]);
+
   const isConversationSwitching = Boolean(
     selectedConversationId
     && selectedConversationDetail?.id !== selectedConversationId,
@@ -475,36 +559,12 @@ const ChatHomePage: React.FC = () => {
         onDeleteConversation={handleDeleteConversation}
         onDeleteUserTurn={handleDeleteUserTurn}
         onCancelRun={handleUserCancelRun}
-        onBatchDeleteConversations={async (conversationIds) => {
-          const titles = conversations
-            .filter((conversation) => conversationIds.includes(conversation.id))
-            .map((conversation) => conversation.title || '新对话');
-          const confirmed = window.confirm(
-            `确认批量删除 ${conversationIds.length} 个对话吗？\n${titles.slice(0, 5).join('\n')}${titles.length > 5 ? '\n...' : ''}`,
-          );
-          if (!confirmed) {
-            return;
-          }
-
-          try {
-            await Promise.all(conversationIds.map((conversationId) => agentApi.deleteConversation(conversationId)));
-            conversationIds.forEach((conversationId) => {
-              conversationDetailCacheRef.current.delete(conversationId);
-            });
-            const items = await refreshConversations();
-            if (selectedConversationId && conversationIds.includes(selectedConversationId)) {
-              if (items.length === 0) {
-                await createConversation();
-                return;
-              }
-              if (items[0]?.id) {
-                beginConversationSelection(items[0].id);
-              }
-            }
-          } catch (error) {
-            setStreamError(toApiErrorMessage(error, '批量删除会话失败，请稍后重试'));
-          }
-        }}
+        isClearingConversations={isClearingConversations}
+        onClearAllConversations={handleClearAllConversations}
+        pendingInterrupt={selectedConversationDetail?.pendingInterrupt ?? null}
+        approvalDecision={approvalDecision}
+        approvalError={approvalError}
+        onInterruptDecision={handleInterruptDecision}
       />
     </AssistantRuntimeProvider>
   );

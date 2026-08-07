@@ -314,9 +314,21 @@ start_services() {
     log "启动 RSSHub (port $RSSHUB_PORT)..."
     if [[ ! -d "$RSSHUB_DIR/app/.git" ]]; then
         log "初始化 RSSHub 源码与依赖..."
-        (cd "$RSSHUB_DIR" && npm run install:rsshub)
+        if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+            (
+                cd "$RSSHUB_DIR"
+                bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run install:rsshub'
+            )
+        else
+            (cd "$RSSHUB_DIR" && npm run install:rsshub)
+        fi
     fi
-    start_detached "$RSSHUB_DIR" "$PROJECT_DIR/logs/RSSHub.log" env PORT="$RSSHUB_PORT" npm start
+    if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
+        start_detached "$RSSHUB_DIR" "$PROJECT_DIR/logs/RSSHub.log" \
+            env PORT="$RSSHUB_PORT" bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; exec npm start'
+    else
+        start_detached "$RSSHUB_DIR" "$PROJECT_DIR/logs/RSSHub.log" env PORT="$RSSHUB_PORT" npm start
+    fi
 
     log "启动后端 FastAPI (port $BACKEND_PORT)..."
     start_detached "$PROJECT_DIR" "$PROJECT_DIR/logs/backend.log" \

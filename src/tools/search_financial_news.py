@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.tools.base import ToolSpec, object_schema
 from src.tools.rss_source_resolver import resolve_rss_source_specs
 
 DESCRIPTION = (
@@ -31,7 +30,7 @@ _TOPICS = frozenset(
 
 
 def _subject_terms(subjects: list[str]) -> list[str]:
-    """Normalize semantic subjects supplied by the Planner/Workflow.
+    """Normalize semantic subjects supplied by a standalone caller.
 
     This layer deliberately does not infer subjects from user wording.  Its
     only job is retrieval against an already structured request.
@@ -413,53 +412,4 @@ def search_financial_news(
     }
 
 
-TOOL = ToolSpec(
-    name="search_financial_news",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "query": {
-                "type": "string",
-                "description": "要查的公司、行业、事件或宏观主题；例如 贵州茅台、半导体景气、央行降准",
-            },
-            "topic": {
-                "type": "string",
-                "enum": ["market", "company", "announcement", "research", "macro", "industry", "social"],
-                "description": "Planner 已解析的资讯类型；工具不根据 query 猜测类别",
-            },
-            "subjects": {
-                "type": "array",
-                "items": {"type": "string"},
-                "maxItems": 12,
-                "description": "Planner 提取的核心公司、行业或事件主体；工具只记录逐字提及，语义相关性由分析模型判断",
-            },
-            "days": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 365,
-                "default": 30,
-                "description": "只返回最近多少天的记录；缺少发布时间的记录会保留并明确告警",
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 30,
-                "default": 12,
-                "description": "去重后最多返回条数",
-            },
-            "include_content": {
-                "type": "boolean",
-                "default": False,
-                "description": "是否在同一次调用中补取前 3 条正文；仅深入阅读时开启",
-            },
-            "fallback_to_web": {
-                "type": "boolean",
-                "default": True,
-                "description": "RSS 无结果时是否自动调用联网搜索兜底",
-            },
-        },
-        ["query", "topic"],
-    ),
-    executor=search_financial_news,
-    category="sentiment",
-)
+__all__ = ["search_financial_news"]

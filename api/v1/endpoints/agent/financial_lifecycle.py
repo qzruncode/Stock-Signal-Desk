@@ -37,20 +37,6 @@ def list_financial_conclusions(
     }
 
 
-@router.post("/agent/financial-conclusions/refresh")
-def refresh_financial_conclusion_outcomes(
-    request: Request,
-    limit: int = Query(1000, ge=1, le=5000),
-    db_manager: DatabaseManager = Depends(get_database_manager),
-):
-    tenant_id, owner_id = _owner_scope(request)
-    return db_manager.refresh_financial_conclusion_outcomes(
-        tenant_id=tenant_id,
-        owner_id=owner_id,
-        limit=limit,
-    )
-
-
 @router.get("/agent/financial-conclusions/calibration")
 def get_financial_conclusion_calibration(
     request: Request,

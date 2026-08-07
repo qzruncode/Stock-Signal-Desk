@@ -1,131 +1,53 @@
-/// <reference types="node" />
-
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 
 import {
-  A_SHARE_EVIDENCE_GROUP,
-  ASSISTANT_CAPABILITY_COUNT,
-  ASSISTANT_CAPABILITY_GROUPS,
   ASSISTANT_SUGGESTION_GROUPS,
   ASSISTANT_SUGGESTIONS,
-  ASSISTANT_TOOL_CAPABILITY_COUNT,
-  RSS_DOCUMENT_SUGGESTIONS,
-  SUGGESTIONS,
 } from '../assistantQuickActions';
 
-describe('assistant capability catalog', () => {
-  it('contains unique categories, labels and backend tool mappings', () => {
-    const items = ASSISTANT_CAPABILITY_GROUPS.flatMap((group) => group.items);
-    const toolNames = items.flatMap((item) => (item.toolName ? [item.toolName] : []));
-    const generalItemCount =
-      ASSISTANT_CAPABILITY_GROUPS.find((group) => group.id === 'general')?.items.length ?? 0;
+describe('generic assistant intent examples', () => {
+  it('contains three unique intent groups with directly usable prompts', () => {
+    const items = ASSISTANT_SUGGESTION_GROUPS.flatMap((group) => group.items);
 
-    expect(ASSISTANT_CAPABILITY_GROUPS).toHaveLength(9);
-    expect(ASSISTANT_CAPABILITY_COUNT).toBe(items.length);
-    expect(new Set(ASSISTANT_CAPABILITY_GROUPS.map((group) => group.id)).size).toBe(9);
+    expect(ASSISTANT_SUGGESTION_GROUPS.map((group) => group.id)).toEqual([
+      'general',
+      'research',
+      'materials',
+    ]);
     expect(new Set(items.map((item) => item.label)).size).toBe(items.length);
-    expect(new Set(toolNames).size).toBe(toolNames.length);
-    expect(toolNames).toHaveLength(items.length - generalItemCount);
-    expect(ASSISTANT_TOOL_CAPABILITY_COUNT).toBe(toolNames.length);
-    expect(items.every((item) => item.prompt.trim().length > 0)).toBe(true);
+    expect(items.every((item) => item.prompt.trim().length >= 12)).toBe(true);
+    expect(ASSISTANT_SUGGESTIONS).toEqual(items);
   });
 
-  it('covers every registered backend tool with one user-facing prompt example', () => {
-    const registrySource = readFileSync(
-      resolve(process.cwd(), '../../src/tools/registry.py'),
-      'utf8',
-    );
-    const modulesBlock = registrySource.match(
-      /TOOL_MODULES:\s*tuple\[str,\s*\.\.\.\]\s*=\s*\(([\s\S]*?)\n\)/,
-    )?.[1];
-    expect(modulesBlock).toBeTruthy();
+  it('does not encode a tool mapping, capability enum or workflow route', () => {
+    const items = ASSISTANT_SUGGESTION_GROUPS.flatMap((group) => group.items);
 
-    const backendTools = [
-      ...(modulesBlock ?? '').matchAll(/^\s*"([^"]+)",/gm),
-    ].map((match) => match[1]);
-    const compatibilityOnlyTools = new Set([
-      'list_financial_sources',
-      'inspect_financial_source',
-      'read_financial_feed',
-      'read_financial_article',
-      'export_financial_feed',
-    ]);
-    const plannerFacingTools = backendTools.filter(
-      (toolName) => !compatibilityOnlyTools.has(toolName),
-    );
-    const catalogTools = ASSISTANT_CAPABILITY_GROUPS.flatMap((group) =>
-      group.items.flatMap((item) => (item.toolName ? [item.toolName] : [])),
-    );
-
-    expect(backendTools).toHaveLength(75);
-    expect(plannerFacingTools).toHaveLength(70);
-    expect(new Set(catalogTools)).toEqual(new Set(plannerFacingTools));
-    expect(catalogTools).toHaveLength(plannerFacingTools.length);
-    expect(catalogTools.some((toolName) => compatibilityOnlyTools.has(toolName))).toBe(false);
+    for (const item of items) {
+      expect(item).not.toHaveProperty('toolName');
+      expect(item).not.toHaveProperty('capability');
+      expect(item).not.toHaveProperty('workflow');
+    }
   });
 
-  it('provides concrete, directly usable prompt examples', () => {
-    const items = ASSISTANT_CAPABILITY_GROUPS.flatMap((group) => group.items);
+  it('teaches long-tail handling and evidence discipline instead of an SOP', () => {
+    const prompts = ASSISTANT_SUGGESTIONS.map((item) => item.prompt).join('\n');
 
-    expect(items.every((item) => item.prompt.length >= 12)).toBe(true);
-    expect(
-      items.some((item) =>
-        item.prompt.includes('成立条件')
-        && item.prompt.includes('失效信号')
-        && item.prompt.includes('置信度'),
-      ),
-    ).toBe(true);
+    expect(prompts).toContain('不常见的问题');
+    expect(prompts).toContain('不要套固定模板');
+    expect(prompts).toContain('实体、时间口径、来源和证据缺口');
+    expect(prompts).toContain('一致、冲突和仍无法确认');
   });
 
-  it('keeps the original questions first and appends every capability', () => {
-    expect(ASSISTANT_SUGGESTION_GROUPS).toHaveLength(11);
-    expect(ASSISTANT_SUGGESTION_GROUPS[0]?.items).toEqual(SUGGESTIONS);
-    expect(ASSISTANT_SUGGESTION_GROUPS[1]).toBe(A_SHARE_EVIDENCE_GROUP);
-    expect(ASSISTANT_SUGGESTION_GROUPS[2]).toMatchObject({
-      id: 'rss-documents',
-      items: RSS_DOCUMENT_SUGGESTIONS,
-    });
-    expect(ASSISTANT_SUGGESTIONS).toHaveLength(
-      SUGGESTIONS.length + RSS_DOCUMENT_SUGGESTIONS.length + ASSISTANT_CAPABILITY_COUNT,
-    );
-    expect(ASSISTANT_SUGGESTIONS.slice(0, SUGGESTIONS.length)).toEqual(SUGGESTIONS);
-    expect(
-      ASSISTANT_SUGGESTIONS.slice(
-        SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length,
-        SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length + RSS_DOCUMENT_SUGGESTIONS.length,
-      ),
-    ).toEqual(RSS_DOCUMENT_SUGGESTIONS);
-    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length, SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length)).toEqual(
-      A_SHARE_EVIDENCE_GROUP.items,
-    );
-    expect(ASSISTANT_SUGGESTIONS.slice(SUGGESTIONS.length + A_SHARE_EVIDENCE_GROUP.items.length + RSS_DOCUMENT_SUGGESTIONS.length)).toEqual(
-      ASSISTANT_CAPABILITY_GROUPS
-        .filter((group) => group.id !== A_SHARE_EVIDENCE_GROUP.id)
-        .flatMap((group) => group.items),
-    );
-  });
-
-  it('shows every new A-share evidence capability near the top of the home page', () => {
-    expect(A_SHARE_EVIDENCE_GROUP.items.map((item) => item.toolName)).toEqual([
+  it('contains no removed composite Agent tool names', () => {
+    const serialized = JSON.stringify(ASSISTANT_SUGGESTION_GROUPS);
+    for (const removed of [
+      'run_stock_analysis',
+      'run_batch_analysis',
+      'filter_watchlist_by_theme',
+      'evaluate_multi_stock_buy_criteria',
       'get_market_regime',
-      'get_company_structured_evidence',
-      'get_industry_index_context',
-    ]);
-    expect(
-      A_SHARE_EVIDENCE_GROUP.items.every(
-        (item) => item.prompt.includes('数据时间') && !item.prompt.includes('港股') && !item.prompt.includes('美股'),
-      ),
-    ).toBe(true);
-  });
-
-  it('exposes the RSSHub and original-document flows as concrete home examples', () => {
-    expect(RSS_DOCUMENT_SUGGESTIONS).toHaveLength(4);
-    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('健康状态'))).toBe(true);
-    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('PDF 原文件'))).toBe(true);
-    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('逐项引用页码'))).toBe(true);
-    expect(RSS_DOCUMENT_SUGGESTIONS.some((item) => item.prompt.includes('JSON Feed'))).toBe(true);
+    ]) {
+      expect(serialized).not.toContain(removed);
+    }
   });
 });

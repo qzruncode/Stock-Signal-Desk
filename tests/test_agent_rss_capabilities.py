@@ -41,7 +41,7 @@ CATALOG = {
 }
 
 
-def test_agent_registers_every_infos_capability() -> None:
+def test_agent_registers_only_atomic_infos_capabilities() -> None:
     names = set(ToolRegistry().get_tool_names())
     assert {
         "discover_rss_sources",
@@ -50,13 +50,15 @@ def test_agent_registers_every_infos_capability() -> None:
         "read_rss_item",
         "read_text_document",
         "export_rss_feed",
+        "transform_webpage_to_feed",
+    } <= names
+    assert {
         "list_financial_sources",
         "inspect_financial_source",
         "read_financial_feed",
         "read_financial_article",
-        "transform_webpage_to_feed",
         "export_financial_feed",
-    } <= names
+    }.isdisjoint(names)
 
 
 def test_list_and_inspect_financial_sources_preserve_route_contract() -> None:
@@ -247,9 +249,9 @@ def test_transform_and_export_feed_keep_assistant_reader_contract() -> None:
         export_financial_feed("/not-curated", format="rss")
 
 
-def test_semantic_news_compaction_keeps_article_reader_coordinates() -> None:
+def test_generic_rss_compaction_keeps_article_reader_coordinates() -> None:
     compact = _compact_tool_result(
-        "search_financial_news",
+        "read_rss_feed",
         {
             "success": True,
             "items": [

@@ -244,7 +244,7 @@ def list_catalog_routes(
 ) -> List[Dict[str, Any]]:
     """Filter the catalog by namespace (category) and/or keyword for the
     semantic finance-news selector. Returns a slimmed view for the Infos API;
-    route selection for the Agent is internal to ``search_financial_news``.
+    Agent runs discover and inspect sources through generic atomic RSS tools.
     """
     cat = get_rss_catalog(force=False)
     routes = cat.get("routes") or []

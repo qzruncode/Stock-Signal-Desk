@@ -306,10 +306,9 @@ class _AgentQualityMethods2:
             run_ids = [run.id for run in runs]
             traces = (
                 session.execute(
-                    select(AgentRunTrace).where(
-                        AgentRunTrace.run_id.in_(run_ids),
-                        AgentRunTrace.orchestrator_mode == "unified",
-                    )
+                    select(AgentRunTrace)
+                    .where(AgentRunTrace.run_id.in_(run_ids))
+                    .order_by(AgentRunTrace.updated_at.asc())
                 )
                 .scalars()
                 .all()

@@ -1,200 +1,62 @@
-# -*- coding: utf-8 -*-
-"""Agent tool helpers tests — result formatting, compaction, and fallback.
-
-Covers api.v1.endpoints.agent.tools:
-- _format_result / _pick_fields / _trim_list
-- _compact_tool_result for representative tool families
-- _maybe_attach_search_fallback (normal / no-fallback / unresolvable subject)
-"""
-
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
 from api.v1.endpoints.agent.tools import (
-    LLM_ARRAY_LIMIT,
-    LLM_SERIES_LIMIT,
+    MAX_COLLECTION_ITEMS,
+    MAX_MAPPING_KEYS,
+    MAX_NESTING_DEPTH,
+    MAX_TEXT_CHARACTERS,
     _compact_tool_result,
     _format_result,
     _maybe_attach_search_fallback,
-    _pick_fields,
-    _trim_list,
 )
 
 
-# ---------------------------------------------------------------------------
-# low-level helpers
-# ---------------------------------------------------------------------------
+def test_format_result_preserves_unicode_json() -> None:
+    output = _format_result({"value": "中文", "number": 1})
+    assert "中文" in output
+    assert '"number": 1' in output
 
 
-def test_format_result_serializes_to_json_str():
-    out = _format_result({"a": 1, "b": "中文"})
-    assert '"a": 1' in out
-    assert "中文" in out  # ensure_ascii=False keeps CJK readable
+def test_generic_projection_is_independent_of_tool_name() -> None:
+    payload = {"success": True, "items": [{"value": 1}], "custom": {"x": 2}}
+    first = _compact_tool_result("source_a", payload)
+    second = _compact_tool_result("unseen_long_tail_tool", payload)
+
+    assert {key: value for key, value in first.items() if key != "_tool_payload_meta"} == payload
+    assert {key: value for key, value in second.items() if key != "_tool_payload_meta"} == payload
+    assert first["_tool_payload_meta"]["payload_policy"] == "generic_bounded_observation"
+    assert second["_tool_payload_meta"]["source_scope"] == "atomic_tool_result"
 
 
-def test_pick_fields_skips_missing_and_none():
-    out = _pick_fields({"a": 1, "b": None, "c": 3}, ["a", "b", "c", "d"])
-    assert out == {"a": 1, "c": 3}
-
-
-def test_trim_list_returns_empty_for_non_list():
-    assert _trim_list(None, 5) == []
-    assert _trim_list("abc", 5) == []
-
-
-def test_trim_list_applies_limit_and_field_projection():
-    items = [{"k": i, "v": i * 10} for i in range(20)]
-    out = _trim_list(items, 5, ["k"])
-    assert len(out) == 5
-    assert out[0] == {"k": 0}
-
-
-def test_trim_list_keeps_raw_items_when_no_fields():
-    items = ["a", "b", "c"]
-    assert _trim_list(items, 2) == ["a", "b"]
-
-
-# ---------------------------------------------------------------------------
-# _compact_tool_result
-# ---------------------------------------------------------------------------
-
-
-def test_compact_non_dict_returned_as_is():
-    assert _compact_tool_result("get_kline", ["raw", "list"]) == ["raw", "list"]
-
-
-def test_quantitative_screen_result_keeps_rows_formula_and_download() -> None:
+def test_generic_projection_bounds_collections_mappings_text_and_depth() -> None:
     payload = {
-        "success": True,
-        "items": [{"code": "000001", "qualified_ratio_pct": 72}],
-        "formula": {"atr": "14日简单移动平均"},
-        "download_url": "/api/v1/agent/exports/result.csv",
+        "items": list(range(MAX_COLLECTION_ITEMS + 7)),
+        "mapping": {f"key_{index}": index for index in range(MAX_MAPPING_KEYS + 3)},
+        "text": "x" * (MAX_TEXT_CHARACTERS + 5),
+        "nested": {},
     }
-    out = _compact_tool_result("screen_atr_volatility_stocks", payload)
-    assert out["items"] == payload["items"]
-    assert out["formula"] == payload["formula"]
-    assert out["download_url"] == payload["download_url"]
-    assert out["_tool_payload_meta"]["compacted"] is False
+    cursor = payload["nested"]
+    for _ in range(MAX_NESTING_DEPTH + 2):
+        cursor["next"] = {}
+        cursor = cursor["next"]
+
+    projected = _compact_tool_result("any_tool", payload)
+    assert projected["items"][-1]["_omitted_item_count"] == 7
+    assert projected["mapping"]["_omitted_key_count"] == 3
+    assert projected["text"].endswith("…")
+    assert projected["_tool_payload_meta"]["compacted"] is True
 
 
-def test_compact_realtime_quotes_trims_and_annotates():
-    items = [{"code": str(i), "price": i, "pe_ratio": 10 + i} for i in range(20)]
-    out = _compact_tool_result("get_realtime_quotes", {"items": items, "total": 20})
-    assert out["_tool_payload_meta"]["tool_name"] == "get_realtime_quotes"
-    assert out["_tool_payload_meta"]["compacted"] is True
-    assert out["total"] == 20
-    assert len(out["items"]) == 12  # quotes item window
-    assert out["items"][0]["pe_dynamic"] == 10
-    assert "pe" not in out["items"][0]
-    assert "不是 PE(TTM)" in out["valuation_basis"]["pe_dynamic"]
+def test_non_mapping_result_uses_the_same_bounded_policy() -> None:
+    projected = _compact_tool_result("any_tool", list(range(MAX_COLLECTION_ITEMS + 1)))
+    assert projected[-1]["_omitted_item_count"] == 1
 
 
-def test_compact_kline_compacts_time_series():
-    series = [{"date": f"2026-01-{i:02d}"} for i in range(1, 60)]
-    out = _compact_tool_result("get_kline", {"data": series, "symbol": "000001"})
-    assert out["count"] == len(series)
-    assert len(out["recent"]) == LLM_SERIES_LIMIT
-    assert out["range"]["start"] == "2026-01-01"
-
-
-def test_compact_market_status_picks_key_fields():
-    out = _compact_tool_result(
-        "get_market_status",
-        {"is_trading_time": True, "up_count": 100, "noise": "skip"},
-    )
-    assert out["is_trading_time"] is True
-    assert out["up_count"] == 100
-    assert "noise" not in out
-
-
-def test_compact_valuation_keeps_price_overdraft_signal():
-    signal = {"risk_score": 72, "level": "偏高"}
-    out = _compact_tool_result(
-        "get_valuation_ratios",
-        {"symbol": "600519", "pe_ttm": 28.1, "price_overdraft_signal": signal},
-    )
-    assert out["price_overdraft_signal"] == signal
-
-
-def test_compact_sector_list_sorts_and_windows_top_bottom():
-    items = [{"change_pct": i, "name": f"s{i}"} for i in range(-5, 5)]
-    out = _compact_tool_result("get_sector_list", {"items": items, "type": "industry"})
-    assert out["total"] == len(items)
-    assert out["top_movers"][0]["change_pct"] == 4
-    assert out["bottom_movers"][0]["change_pct"] == -5
-
-
-def test_compact_news_family_windows_items():
-    items = [{"title": f"n{i}"} for i in range(20)]
-    out = _compact_tool_result("search_news", {"items": items})
-    assert len(out["items"]) == LLM_ARRAY_LIMIT
-    assert out["item_count"] == 20
-
-
-def test_compact_unknown_tool_returns_full_payload():
-    out = _compact_tool_result("unknown_tool", {"a": 1})
-    assert out["a"] == 1
-    assert out["_tool_payload_meta"]["payload_policy"] == "full"
-    assert out["_tool_payload_meta"]["compacted"] is False
-
-
-# ---------------------------------------------------------------------------
-# _maybe_attach_search_fallback
-# ---------------------------------------------------------------------------
-
-
-def test_maybe_attach_search_fallback_skips_when_healthy():
-    result = {"items": [{"symbol": "000001"}]}
-    out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": "000001"}, result)
-    assert out is result
-
-
-def test_maybe_attach_search_fallback_unresolvable_subject_no_fallback_payload():
-    # tool returns empty quotes -> should_fallback True, but symbol is empty
-    result = {"items": []}
-    out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": ""}, result)
-    assert out["fallback_status"]["used"] is False
-    assert "search_fallback" not in out
-
-
-def test_maybe_attach_search_fallback_attaches_fallback_on_empty_quotes():
-    result = {"items": []}
-    fake_payload = {"type": "price", "success": True, "results": [{"title": "t"}]}
-
-    with (
-        patch(
-            "api.v1.endpoints.agent.tools._resolve_search_subject",
-            return_value=("000001", "平安银行"),
-        ),
-        patch(
-            "api.v1.endpoints.agent.tools._build_search_fallback_payload",
-            return_value=fake_payload,
-        ),
-    ):
-        out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": "000001"}, result)
-
-    assert out["fallback_status"]["used"] is True
-    assert out["fallback_status"]["symbol"] == "000001"
-    assert out["search_fallback"] == fake_payload
-
-
-def test_maybe_attach_search_fallback_handles_first_symbol_in_csv():
-    result = {"items": []}
-    captured = {}
-
-    def _fake_resolve(raw):
-        captured["raw"] = raw
-        return ("600519", "贵州茅台")
-
-    with (
-        patch("api.v1.endpoints.agent.tools._resolve_search_subject", side_effect=_fake_resolve),
-        patch(
-            "api.v1.endpoints.agent.tools._build_search_fallback_payload",
-            return_value={"type": "price", "success": True, "results": []},
-        ),
-    ):
-        out = _maybe_attach_search_fallback("get_realtime_quotes", {"symbol": "600519,000001"}, result)
-
-    assert captured["raw"] == "600519"
-    assert out["fallback_status"]["name"] == "贵州茅台"
+def test_compatibility_fallback_hook_never_hides_failure_or_calls_another_source() -> None:
+    failure = {
+        "success": False,
+        "errors": ["upstream unavailable"],
+        "error_code": "provider_unavailable",
+    }
+    assert _maybe_attach_search_fallback("source_a", {"query": "x"}, failure) is failure
+    assert "search_fallback" not in failure

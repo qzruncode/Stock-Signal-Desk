@@ -260,7 +260,7 @@ TOOL = ToolSpec(
     description=(
         "仅用于查询单只 A 股的券商个股研报；输入必须能定位到具体股票。返回报告日期、机构、评级、"
         "PDF 链接及预测 EPS（元/股）和 PE（倍）。不要用于公司新闻、公告、已实现财务数据、行业、"
-        "宏观、期货或评级研究；后五类必须使用 search_research_library。"
+        "宏观、期货或评级研究；其他研究材料应使用 websearch，或通过 RSS 原子工具发现并读取来源。"
     ),
     parameters=object_schema(
         {

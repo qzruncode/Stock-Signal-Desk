@@ -14,7 +14,7 @@ describe('ThreadListSidebar', () => {
           onSelect={vi.fn()}
           onRename={vi.fn()}
           onDelete={vi.fn()}
-          onBatchDelete={vi.fn()}
+          onClearAll={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -43,7 +43,7 @@ describe('ThreadListSidebar', () => {
           onSelect={vi.fn()}
           onRename={vi.fn()}
           onDelete={vi.fn()}
-          onBatchDelete={vi.fn()}
+          onClearAll={vi.fn()}
         />
       </MemoryRouter>,
     );
@@ -51,5 +51,32 @@ describe('ThreadListSidebar', () => {
     const conversationButton = screen.getByRole('button', { name: '市场主线' });
     expect(conversationButton).toHaveAttribute('aria-current', 'true');
     expect(conversationButton).toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('provides a direct clear-all-history action', () => {
+    const onClearAll = vi.fn();
+    render(
+      <MemoryRouter>
+        <ThreadListSidebar
+          conversations={[{
+            id: 'conversation-1',
+            title: '市场主线',
+            titleSource: 'manual',
+            previewText: '',
+            createdAt: '2026-07-30T00:00:00Z',
+            updatedAt: '2026-07-30T00:00:00Z',
+          }]}
+          selectedConversationId={null}
+          onCreate={vi.fn()}
+          onSelect={vi.fn()}
+          onRename={vi.fn()}
+          onDelete={vi.fn()}
+          onClearAll={onClearAll}
+        />
+      </MemoryRouter>,
+    );
+
+    screen.getByRole('button', { name: '清除全部会话历史' }).click();
+    expect(onClearAll).toHaveBeenCalledOnce();
   });
 });

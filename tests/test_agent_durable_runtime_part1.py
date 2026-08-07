@@ -277,6 +277,42 @@ def test_compiled_checkpoint_is_fenced_by_owner_and_attempt(database):
     )
     assert database.get_agent_run(run_id="run-checkpoint")["context_snapshot"] is None
 
+
+def test_interrupt_decision_slot_can_be_consumed_only_once(database):
+    conversation_id = _conversation(database, "approval-once")
+    assert _claim(
+        database,
+        conversation_id,
+        run_id="run-approval-once",
+    )["claimed"]
+    checkpoint = {
+        "engine": "langgraph",
+        "pending_interrupt": {
+            "interrupt_id": "interrupt-1",
+            "fingerprint": "f" * 64,
+        },
+    }
+
+    assert database.interrupt_agent_run(
+        "run-approval-once",
+        worker_id="worker-a",
+        attempt=1,
+        checkpoint=checkpoint,
+    )
+    first = database.resume_interrupted_agent_run(
+        "run-approval-once",
+        worker_id="worker-b",
+    )
+    duplicate = database.resume_interrupted_agent_run(
+        "run-approval-once",
+        worker_id="worker-c",
+    )
+
+    assert first is not None
+    assert first["status"] == "running"
+    assert first["worker_id"] == "worker-b"
+    assert duplicate is None
+
 def test_terminal_publisher_flushes_events_before_terminal_commit():
     order: list[str] = []
 
@@ -303,11 +339,9 @@ def test_terminal_publisher_flushes_events_before_terminal_commit():
         run=SimpleNamespace(run_id="run", attempt=1),
         messages=[{"role": "user", "content": "hello"}],
         request_body={},
-        initial_agent_context=None,
         conversation_id="conversation",
         database=Database(),
         session_service=Sessions(),
-        state={},
         worker_id="worker",
     )
     asyncio.run(

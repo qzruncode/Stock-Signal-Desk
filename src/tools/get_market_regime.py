@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import Any, Callable
 
 from src.services.akshare_evidence.common import dataset_errors, fetch_frame, latest_data_time
-from src.tools.base import ToolSpec, object_schema
 
 
 def _tail(result: dict[str, Any], count: int) -> dict[str, Any]:
@@ -92,25 +91,4 @@ def get_market_regime(index: str = "沪深300", history_points: int = 120) -> di
     }
 
 
-TOOL = ToolSpec(
-    name="get_market_regime",
-    description=(
-        "获取 A 股多周期市场状态：20/60/120 日创新高新低、股债利差、沪深市场 PE/PB、"
-        "指定指数 PE 和市场拥挤度。保留各源覆盖与失败边界，不用涨跌家数伪造高低点。"
-    ),
-    parameters=object_schema(
-        {
-            "index": {
-                "type": "string",
-                "enum": ["上证50", "沪深300", "中证500", "中证1000", "中证800", "深证100", "创业板50"],
-                "default": "沪深300",
-            },
-            "history_points": {"type": "integer", "minimum": 20, "maximum": 500, "default": 120},
-        }
-    ),
-    executor=get_market_regime,
-    category="market",
-)
-
-
-__all__ = ["TOOL", "get_market_regime"]
+__all__ = ["get_market_regime"]

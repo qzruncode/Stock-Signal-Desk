@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Validated multi-domain A-share candidate discovery.
+"""Service helper for structured multi-domain A-share candidate discovery.
 
-This is the runtime-owned bridge between structured industry-board bindings
+This is used by the standalone buy-criteria service and is not registered as
+an Agent tool because it fans out across multiple board lookups. It bridges structured industry-board bindings
 and the synchronized A-share universe.  It never discovers company identities
 from generic web results.
 Every returned code comes from structured concept-board constituents and is
@@ -13,32 +14,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from src.agent.result_contracts import DomainBoardQuerySpec
-from src.tools.base import ToolSpec, TypedToolResult
+from src.services.buy_criteria.contracts import DomainBoardQuerySpec
 from src.tools.get_theme_stock_candidates import (
     _load_local_universe,
     get_theme_stock_candidates,
 )
-
-
-class GetDomainStockCandidatesArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    domains: list[DomainBoardQuerySpec] = Field(min_length=1, max_length=512)
-
-
-class GetDomainStockCandidatesResult(TypedToolResult):
-    items: list[dict[str, Any]]
-    candidate_count: int = Field(ge=0)
-    returned_count: int = Field(ge=0)
-    requested_domains: list[str]
-    domain_specs: list[DomainBoardQuerySpec]
-    local_universe_count: int = Field(ge=0)
-    domain_results: list[dict[str, Any]]
-    source_scope: str
-    decision_boundary: str
 
 
 def _compact(value: Any) -> str:
@@ -311,23 +291,4 @@ def get_domain_stock_candidates(
     }
 
 
-TOOL = ToolSpec(
-    name="get_domain_stock_candidates",
-    description=(
-        "按一个或多个产业领域从结构化概念板块成分股中查找A股候选，并与本地完整证券库核验。"
-        "这是领域找股的唯一入口；不得用search_stocks或通用网页搜索替代。"
-    ),
-    parameters=None,
-    executor=get_domain_stock_candidates,
-    category="research",
-    args_model=GetDomainStockCandidatesArgs,
-    result_model=GetDomainStockCandidatesResult,
-)
-
-
-__all__ = [
-    "GetDomainStockCandidatesArgs",
-    "GetDomainStockCandidatesResult",
-    "TOOL",
-    "get_domain_stock_candidates",
-]
+__all__ = ["get_domain_stock_candidates"]

@@ -8,7 +8,6 @@ import re
 from typing import Any
 
 from src.services.akshare_evidence.common import fetch_frame
-from src.tools.base import ToolSpec, object_schema
 
 
 def _normalized(value: Any) -> str:
@@ -122,29 +121,4 @@ def get_industry_index_context(
     }
 
 
-TOOL = ToolSpec(
-    name="get_industry_index_context",
-    description=(
-        "查询申万指数实时目录，并按语义名称或指数代码取得日线历史和成分股，用于产业分类、表现和候选集合证据。"
-        "成分关系不作为公司订单或收入证明。"
-    ),
-    parameters=object_schema(
-        {
-            "query": {"type": "string", "default": ""},
-            "index_type": {
-                "type": "string",
-                "enum": ["市场表征", "一级行业", "二级行业", "风格指数", "大类风格指数", "金创指数"],
-                "default": "一级行业",
-            },
-            "index_code": {"type": "string", "default": ""},
-            "include_components": {"type": "boolean", "default": True},
-            "max_matches": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
-            "history_points": {"type": "integer", "minimum": 20, "maximum": 500, "default": 120},
-        }
-    ),
-    executor=get_industry_index_context,
-    category="industry",
-)
-
-
-__all__ = ["TOOL", "get_industry_index_context"]
+__all__ = ["get_industry_index_context"]

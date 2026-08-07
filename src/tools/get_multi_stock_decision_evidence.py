@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Professional, multi-dimensional evidence packet for stock decisions."""
+"""Service helper for the existing standalone professional-analysis API.
+
+It is deliberately absent from the Agent registry because it fans out across
+multiple sources and therefore is not an atomic model-callable tool.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
-from src.tools.base import ToolSpec, object_schema
 from src.tools.get_multi_stock_snapshot import get_multi_stock_snapshot
 from src.tools.symbols import resolve_securities_csv
 
@@ -620,26 +623,4 @@ def get_multi_stock_decision_evidence(symbols: str, thesis: str = "") -> dict[st
     }
 
 
-TOOL = ToolSpec(
-    name="get_multi_stock_decision_evidence",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbols": {
-                "type": "string",
-                "description": "股票代码或公司名称，多个用逗号分隔，最多 8 只",
-            },
-            "thesis": {
-                "type": "string",
-                "description": "本轮投资逻辑或产业主题，例如人形机器人；用于提醒模型核验主营兑现，不作为事实证据",
-                "default": "",
-            },
-        },
-        ["symbols"],
-    ),
-    executor=get_multi_stock_decision_evidence,
-    category="analysis",
-)
-
-
-__all__ = ["TOOL", "get_multi_stock_decision_evidence"]
+__all__ = ["get_multi_stock_decision_evidence"]

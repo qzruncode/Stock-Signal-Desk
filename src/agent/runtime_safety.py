@@ -254,13 +254,16 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
     """Return actionable runtime issues; empty means the checked contract holds."""
     issues: list[str] = []
     try:
-        from src.agent.orchestrator_v2.registry import migration_coverage
+        from src.agent.langgraph_runtime import agent_graph_runtime
 
-        orchestrator_coverage = migration_coverage()
-        if not orchestrator_coverage["complete"]:
-            issues.append("Agent orchestrator capability registry is incomplete")
+        if agent_graph_runtime.catalog.size <= 0:
+            issues.append("Agent atomic tool catalog is empty")
+        for name in agent_graph_runtime.registry.get_tool_names():
+            spec = agent_graph_runtime.registry.get_tool(name)
+            if spec is None or spec.effect not in {"read", "side_effect"}:
+                issues.append(f"Agent tool metadata is invalid: {name}")
     except Exception as exc:
-        issues.append(f"Agent orchestrator registry is invalid: {exc}")
+        issues.append(f"LangGraph Agent runtime is invalid: {exc}")
 
     if not is_production_environment():
         return issues
@@ -312,8 +315,6 @@ def agent_production_issues(static_dir: Path | None = None) -> list[str]:
             Fernet(trace_key.encode("ascii"))
         except Exception:
             issues.append("AGENT_TRACE_ENCRYPTION_KEY must be a valid Fernet key")
-    if str(os.getenv("AGENT_PLANNER_VERIFIER_MODE") or "").strip().lower() != "enforce":
-        issues.append("AGENT_PLANNER_VERIFIER_MODE=enforce is required in production")
     if not _truthy("AGENT_ISOLATE_ALL_STATELESS"):
         issues.append("AGENT_ISOLATE_ALL_STATELESS=true is required in production")
     if static_dir is not None:

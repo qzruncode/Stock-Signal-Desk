@@ -6,7 +6,7 @@ from typing import Any
 
 from src.prompt_templates import get_prompt_template_store
 from src.tools._workflow import envelope, require_confirmation
-from src.tools.base import ToolSpec, object_schema
+from src.tools.base import ToolSpec, effect_by_argument, object_schema
 
 
 def manage_analysis_templates(
@@ -82,6 +82,10 @@ TOOL = ToolSpec(
     ),
     executor=manage_analysis_templates,
     category="action",
+    effect_resolver=effect_by_argument(
+        "action",
+        {"create", "update", "set_default", "delete"},
+    ),
 )
 
 

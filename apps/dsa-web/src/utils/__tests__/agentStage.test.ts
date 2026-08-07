@@ -5,77 +5,83 @@ import {
   reasoningStatusLabel,
 } from '../agentStage';
 
-describe('agent stage v2', () => {
-  it('selects the latest v2 event and accepts backend snake_case fields', () => {
+describe('LangGraph agent stages', () => {
+  it('selects the latest native event and accepts backend snake_case fields', () => {
     expect(latestAgentStageEvent([
       { unrelated: true },
       {
-        event: 'agent_stage_v2',
+        event: 'agent_stage',
         run_id: 'run-1',
-        stage: 'execution',
+        stage: 'execute',
         status: 'started',
-        task_id: 'filter',
+        action_id: 'query-a',
         error_code: null,
-        summary: '正在执行完整候选集合',
+        summary: '正在执行一个原子查询',
       },
     ])).toEqual({
-      event: 'agent_stage_v2',
+      event: 'agent_stage',
       runId: 'run-1',
-      stage: 'execution',
+      stage: 'execute',
       status: 'started',
-      taskId: 'filter',
+      actionId: 'query-a',
       errorCode: null,
-      summary: '正在执行完整候选集合',
+      summary: '正在执行一个原子查询',
       occurredAt: undefined,
     });
   });
 
-  it('ignores malformed events and provides non-technical labels', () => {
-    expect(latestAgentStageEvent([{ event: 'agent_stage_v2', status: 'started' }])).toBeNull();
-    expect(agentStageLabel('resource_binding')).toBe('绑定数据范围');
-    expect(agentStageLabel('benefit_outline')).toBe('拆解产业受益链');
-    expect(agentStageLabel('catalog_mapping')).toBe('匹配真实板块');
-    expect(agentStageLabel('resource_published')).toBe('发布板块集合');
+  it('ignores malformed events and exposes only generic control labels', () => {
+    expect(latestAgentStageEvent([{ event: 'agent_stage', status: 'started' }])).toBeNull();
+    expect(agentStageLabel('understand')).toBe('理解目标');
+    expect(agentStageLabel('discover')).toBe('检索工具');
+    expect(agentStageLabel('plan')).toBe('动态规划');
+    expect(agentStageLabel('approval')).toBe('等待审批');
+    expect(agentStageLabel('reflect')).toBe('检查完成度');
+    expect(agentStageLabel('verify')).toBe('核对证据');
     expect(agentStageLabel('future_stage')).toBe('处理中');
   });
 
-  it('returns a stable snapshot for the same immutable stage event', () => {
-    const event = {
+  it('hydrates historical v2 task ids only as read-only action ids', () => {
+    const event = latestAgentStageEvent([{
       event: 'agent_stage_v2',
-      run_id: 'run-stable',
+      run_id: 'legacy-run',
       stage: 'execution',
-      status: 'started',
-      summary: '正在执行',
-    };
+      status: 'completed',
+      task_id: 'legacy-task',
+      summary: '历史事件',
+    }]);
 
-    expect(latestAgentStageEvent([event])).toBe(latestAgentStageEvent([event]));
+    expect(event?.actionId).toBe('legacy-task');
+    expect(event?.event).toBe('agent_stage_v2');
   });
 
-  it('does not present a failed or merely ended reasoning stream as completed', () => {
-    const failed = latestAgentStageEvent([{
-      event: 'agent_stage_v2',
-      run_id: 'run-failed',
-      stage: 'outline',
-      status: 'failed',
-      error_code: 'planner_schema_invalid',
-      summary: '能力契约校验失败',
-    }]);
-    const completed = latestAgentStageEvent([{
-      event: 'agent_stage_v2',
-      run_id: 'run-completed',
-      stage: 'completed',
-      status: 'succeeded',
+  it('returns a stable snapshot and truthful terminal status', () => {
+    const raw = {
+      event: 'agent_stage',
+      run_id: 'run-stable',
+      stage: 'publish',
+      status: 'completed',
       summary: '回答完成',
+    };
+    const completed = latestAgentStageEvent([raw]);
+    const failed = latestAgentStageEvent([{
+      event: 'agent_stage',
+      run_id: 'run-failed',
+      stage: 'verify',
+      status: 'failed',
+      error_code: 'claim_evidence_gap',
+      summary: '证据不足',
     }]);
 
+    expect(latestAgentStageEvent([raw])).toBe(completed);
     expect(reasoningStatusLabel(true, failed)).toBe('分析与执行中');
     expect(reasoningStatusLabel(false, failed)).toBe('失败');
     expect(reasoningStatusLabel(false, completed)).toBe('完成');
     expect(reasoningStatusLabel(false, null)).toBe('状态未知');
     expect(reasoningStatusLabel(false, latestAgentStageEvent([{
-      event: 'agent_stage_v2',
+      event: 'agent_stage',
       run_id: 'run-cancelled',
-      stage: 'completed',
+      stage: 'publish',
       status: 'cancelled',
       summary: '用户停止',
     }]))).toBe('已取消');

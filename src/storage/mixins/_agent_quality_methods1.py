@@ -1,4 +1,4 @@
-"""Method group extracted from agent_quality."""
+"""Run Explorer persistence methods for generic LangGraph runs."""
 
 from __future__ import annotations
 
@@ -9,6 +9,18 @@ for _name, _value in vars(_base).items():
         globals()[_name] = _value
 
 
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _projection_items(projection: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
+    return [
+        item
+        for item in projection.get(key) or []
+        if isinstance(item, Mapping)
+    ]
+
+
 class _AgentQualityMethods1:
     def list_agent_runs_for_owner(
         self,
@@ -16,7 +28,7 @@ class _AgentQualityMethods1:
         tenant_id: str,
         owner_id: str,
         status: str | None = None,
-        capability: str | None = None,
+        tool: str | None = None,
         page: int = 1,
         limit: int = 30,
     ) -> dict[str, Any]:
@@ -28,14 +40,10 @@ class _AgentQualityMethods1:
                 AgentRun.owner_id == owner_id,
             )
             if status:
-                statement = statement.where(
-                    AgentRun.status == status
-                )
+                statement = statement.where(AgentRun.status == status)
             runs = (
                 session.execute(
-                    statement.order_by(
-                        AgentRun.created_at.desc()
-                    ).limit(5000)
+                    statement.order_by(AgentRun.created_at.desc()).limit(5000)
                 )
                 .scalars()
                 .all()
@@ -43,10 +51,9 @@ class _AgentQualityMethods1:
             run_ids = [run.id for run in runs]
             traces = (
                 session.execute(
-                    select(AgentRunTrace).where(
-                        AgentRunTrace.run_id.in_(run_ids),
-                        AgentRunTrace.orchestrator_mode == "unified",
-                    )
+                    select(AgentRunTrace)
+                    .where(AgentRunTrace.run_id.in_(run_ids))
+                    .order_by(AgentRunTrace.updated_at.asc())
                 )
                 .scalars()
                 .all()
@@ -77,13 +84,10 @@ class _AgentQualityMethods1:
                 if run_ids
                 else []
             )
+
         trace_by_run = {trace.run_id: trace for trace in traces}
-        feedback_by_run = {
-            feedback.run_id: feedback for feedback in feedback_rows
-        }
-        steps_by_run: dict[str, list[dict[str, Any]]] = defaultdict(
-            list
-        )
+        feedback_by_run = {row.run_id: row for row in feedback_rows}
+        steps_by_run: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for step in step_rows:
             steps_by_run[step.run_id].append(
                 {
@@ -94,6 +98,7 @@ class _AgentQualityMethods1:
                     "error_code": step.error_code,
                 }
             )
+
         rows: list[dict[str, Any]] = []
         for run in runs:
             trace = trace_by_run.get(run.id)
@@ -101,102 +106,63 @@ class _AgentQualityMethods1:
                 trace.quality_projection_json if trace else None,
                 {},
             )
-            tasks = [
-                item
-                for item in projection.get("tasks") or []
-                if isinstance(item, Mapping)
-            ]
-            capabilities = sorted(
+            actions = _projection_items(projection, "actions")
+            results = _projection_items(projection, "tool_results")
+            evidence = _projection_items(projection, "evidence")
+            verification = _mapping(projection.get("verification"))
+            tools = sorted(
                 {
-                    str(item.get("capability") or "")
-                    for item in tasks
-                    if str(item.get("capability") or "")
+                    str(item.get("tool_name") or "")
+                    for item in (*actions, *results)
+                    if str(item.get("tool_name") or "")
                 }
             )
-            if capability and capability not in capabilities:
+            if tool and tool not in tools:
                 continue
-            outcomes = [
-                item
-                for item in projection.get("outcomes") or []
-                if isinstance(item, Mapping)
-            ]
             score = score_agent_run_snapshot(
                 {
                     "run": {
                         "status": run.status,
                         "final_text": run.final_text or "",
-                        "tool_call_count": int(
-                            run.tool_call_count or 0
-                        ),
-                        "provider_call_count": int(
-                            run.provider_call_count or 0
-                        ),
-                        "estimated_token_count": int(
-                            run.estimated_token_count or 0
-                        ),
-                        "estimated_cost_micros": int(
-                            run.estimated_cost_micros or 0
-                        ),
+                        "tool_call_count": int(run.tool_call_count or 0),
+                        "provider_call_count": int(run.provider_call_count or 0),
+                        "estimated_token_count": int(run.estimated_token_count or 0),
+                        "estimated_cost_micros": int(run.estimated_cost_micros or 0),
                     },
                     "quality_projection": projection,
                     "steps": steps_by_run.get(run.id, []),
-                    "feedback": _feedback_dict(
-                        feedback_by_run.get(run.id)
-                    ),
+                    "feedback": _feedback_dict(feedback_by_run.get(run.id)),
                 }
             )
             duration_ms = None
             if run.started_at and run.finished_at:
                 duration_ms = max(
                     0,
-                    int(
-                        (
-                            run.finished_at - run.started_at
-                        ).total_seconds()
-                        * 1000
-                    ),
+                    int((run.finished_at - run.started_at).total_seconds() * 1000),
                 )
             rows.append(
                 {
                     "run_id": run.id,
                     "conversation_id": run.conversation_id,
+                    "engine": trace.orchestrator_mode if trace else None,
                     "status": run.status,
                     "error_code": run.error_code,
-                    "capabilities": capabilities,
-                    "task_count": len(tasks),
-                    "outcome_count": len(outcomes),
-                    "coverage_complete": (
-                        bool(outcomes)
-                        and all(
-                            isinstance(item.get("coverage"), Mapping)
-                            and item["coverage"].get("complete") is True
-                            for item in outcomes
-                        )
-                    ),
+                    "tools": tools,
+                    "action_count": len(actions),
+                    "evidence_count": len(evidence),
+                    "claim_evidence_verified": verification.get("accepted") is True,
                     "quality_score": score["total_score"],
                     "quality_status": score["status"],
-                    "feedback": _feedback_dict(
-                        feedback_by_run.get(run.id)
-                    ),
-                    "tool_call_count": int(
-                        run.tool_call_count or 0
-                    ),
-                    "provider_call_count": int(
-                        run.provider_call_count or 0
-                    ),
-                    "estimated_token_count": int(
-                        run.estimated_token_count or 0
-                    ),
-                    "estimated_cost_micros": int(
-                        run.estimated_cost_micros or 0
-                    ),
+                    "feedback": _feedback_dict(feedback_by_run.get(run.id)),
+                    "tool_call_count": int(run.tool_call_count or 0),
+                    "provider_call_count": int(run.provider_call_count or 0),
+                    "estimated_token_count": int(run.estimated_token_count or 0),
+                    "estimated_cost_micros": int(run.estimated_cost_micros or 0),
                     "duration_ms": duration_ms,
                     "created_at": _iso(run.created_at),
                     "started_at": _iso(run.started_at),
                     "finished_at": _iso(run.finished_at),
-                    "final_text_preview": (
-                        str(run.final_text or "")[:240]
-                    ),
+                    "final_text_preview": str(run.final_text or "")[:240],
                 }
             )
         total = len(rows)
@@ -233,10 +199,7 @@ class _AgentQualityMethods1:
             trace = (
                 session.execute(
                     select(AgentRunTrace)
-                    .where(
-                        AgentRunTrace.run_id == run_id,
-                        AgentRunTrace.orchestrator_mode == "unified",
-                    )
+                    .where(AgentRunTrace.run_id == run_id)
                     .order_by(AgentRunTrace.updated_at.desc())
                 )
                 .scalars()
@@ -283,20 +246,15 @@ class _AgentQualityMethods1:
                     "error_code": run.error_code,
                     "attempt": int(run.attempt or 1),
                     "tool_call_count": int(run.tool_call_count or 0),
-                    "provider_call_count": int(
-                        run.provider_call_count or 0
-                    ),
-                    "estimated_token_count": int(
-                        run.estimated_token_count or 0
-                    ),
-                    "estimated_cost_micros": int(
-                        run.estimated_cost_micros or 0
-                    ),
+                    "provider_call_count": int(run.provider_call_count or 0),
+                    "estimated_token_count": int(run.estimated_token_count or 0),
+                    "estimated_cost_micros": int(run.estimated_cost_micros or 0),
                     "created_at": _iso(run.created_at),
                     "started_at": _iso(run.started_at),
                     "finished_at": _iso(run.finished_at),
                 },
                 "trace": {
+                    "engine": trace.orchestrator_mode if trace else None,
                     "status": trace.status if trace else None,
                     "error_code": trace.error_code if trace else None,
                     "schema_version": trace.schema_version if trace else None,
@@ -326,45 +284,27 @@ class _AgentQualityMethods1:
                         "reuse_count": int(step.reuse_count or 0),
                         "error_code": step.error_code,
                         "error_detail": step.error_detail,
-                        "arguments": (
-                            _load_json(step.arguments_json, {})
-                            if include_evidence_payloads
-                            else None
-                        ),
-                        "result": (
-                            _load_json(step.result_json, None)
-                            if include_evidence_payloads
-                            else None
-                        ),
+                        "arguments": _load_json(step.arguments_json, {}) if include_evidence_payloads else None,
+                        "result": _load_json(step.result_json, None) if include_evidence_payloads else None,
                         "started_at": _iso(step.started_at),
                         "finished_at": _iso(step.finished_at),
                     }
                     for step in steps
                 ],
+                # Legacy artifacts are display-only. New LangGraph runs keep
+                # orchestration evidence in the native checkpoint and generic
+                # quality projection instead of writing domain artifacts.
                 "artifacts": [
                     {
                         "id": artifact.id,
                         "resource_type": artifact.resource_type,
                         "producer_node_id": artifact.producer_node_id,
                         "schema_version": artifact.schema_version,
-                        "coverage": _load_json(
-                            artifact.coverage_json,
-                            {},
-                        ),
-                        "sources": _load_json(
-                            artifact.sources_json,
-                            [],
-                        ),
+                        "coverage": _load_json(artifact.coverage_json, {}),
+                        "sources": _load_json(artifact.sources_json, []),
                         "fingerprint": artifact.fingerprint,
-                        "lineage": _load_json(
-                            artifact.lineage_json,
-                            [],
-                        ),
-                        "payload": (
-                            _load_json(artifact.payload_json, {})
-                            if include_evidence_payloads
-                            else None
-                        ),
+                        "lineage": _load_json(artifact.lineage_json, []),
+                        "payload": _load_json(artifact.payload_json, {}) if include_evidence_payloads else None,
                         "produced_at": _iso(artifact.produced_at),
                     }
                     for artifact in artifacts
@@ -372,7 +312,6 @@ class _AgentQualityMethods1:
                 "feedback": _feedback_dict(feedback),
             }
             return redact_agent_trace(snapshot)
-
 
 
 __all__ = ["_AgentQualityMethods1"]

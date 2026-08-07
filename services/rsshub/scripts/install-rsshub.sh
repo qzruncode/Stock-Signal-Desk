@@ -50,7 +50,7 @@ if [[ "$PATCH_APPLIED" == "1" && -d "$APP_DIR/dist" ]]; then
     echo "[rsshub] removed stale dist/ after patching; will rebuild on next start"
 fi
 
-pnpm install --registry="$NPM_REGISTRY" --frozen-lockfile
+bash "$RSSHUB_DIR/scripts/run-pnpm.sh" install --registry="$NPM_REGISTRY" --frozen-lockfile
 
 # Install the Chromium build the pinned playwright expects. Several routes
 # (xueqiu/* via parseToken, and any puppeteer/playwright route) launch a
@@ -65,6 +65,6 @@ pnpm install --registry="$NPM_REGISTRY" --frozen-lockfile
 # matches the installed playwright version exactly (e.g. 1.60.0 → chromium
 # revision 1223).
 echo "[rsshub] installing playwright chromium (needed by xueqiu/puppeteer routes)…"
-if ! pnpm exec playwright install chromium; then
+if ! bash "$RSSHUB_DIR/scripts/run-pnpm.sh" exec playwright install chromium; then
     echo "[rsshub] WARN: playwright chromium install failed — xueqiu/puppeteer routes will 503 until installed manually" >&2
 fi

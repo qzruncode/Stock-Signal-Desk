@@ -5,14 +5,15 @@
 `get_active_system_prompt()` 供 chat 端点读取当前生效的 system prompt。
 
 回落策略：DB 无生效模板、生效模板 content 为空、或查询异常时，
-回落到 `api/v1.endpoints.agent.chat.SYSTEM_PROMPT` 源码常量，保证开箱即用。
+回落到 LangGraph 运行时的稳定默认提示词，保证开箱即用。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from src.agent.langgraph_runtime.prompts import DEFAULT_AGENT_SYSTEM_PROMPT
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ class AgentPromptService:
         """返回 (content, is_fallback)。
 
         优先返回模块级缓存；缓存未命中时查 DB 当前生效模板；
-        DB 无模板 / content 为空 / 查询异常 → 回落源码常量 SYSTEM_PROMPT。
+        DB 无模板 / content 为空 / 查询异常 → 回落源码默认提示词。
         """
         global _cached_active_prompt
         if _cached_active_prompt is not None:
@@ -124,14 +125,8 @@ class AgentPromptService:
 
     @staticmethod
     def _fallback_prompt() -> str:
-        """回落到 chat.py 的 SYSTEM_PROMPT 源码常量。"""
-        try:
-            from api.v1.endpoints.agent.chat import SYSTEM_PROMPT
-
-            return SYSTEM_PROMPT
-        except Exception as exc:  # pragma: no cover - 极端兜底
-            logger.error("[AgentPrompt] 回落 SYSTEM_PROMPT 失败: %s", exc)
-            return "你是 A 股智能分析助手。"
+        """返回与 HTTP 入口解耦的 LangGraph 默认提示词。"""
+        return DEFAULT_AGENT_SYSTEM_PROMPT
 
     @staticmethod
     def _invalidate_cache() -> None:
@@ -141,7 +136,7 @@ class AgentPromptService:
     # ---- 首次种子 ----
 
     def ensure_default_template(self) -> Optional[Dict[str, Any]]:
-        """表为空时，用源码 SYSTEM_PROMPT 种一条生效的默认模板。
+        """表为空时，用源码默认提示词种一条生效的默认模板。
 
         让设置页首次进入就能看到并编辑当前 prompt，而非面对空列表。
         表已有数据则不做任何事。

@@ -8,6 +8,7 @@ router = APIRouter()
 # Import submodules to register routes on the shared router
 from api.v1.endpoints.agent import chat  # noqa: E402, F401
 from api.v1.endpoints.agent import conversations  # noqa: E402, F401
+from api.v1.endpoints.agent import approvals  # noqa: E402, F401
 from api.v1.endpoints.agent import tools  # noqa: E402, F401
 from api.v1.endpoints.agent import health  # noqa: E402, F401
 from api.v1.endpoints.agent import tool_registry_meta  # noqa: E402, F401
@@ -15,16 +16,11 @@ from api.v1.endpoints.agent import prompts  # noqa: E402, F401
 from api.v1.endpoints.agent import exports  # noqa: E402, F401
 from api.v1.endpoints.agent import quality  # noqa: E402, F401
 from api.v1.endpoints.agent import financial_lifecycle  # noqa: E402, F401
-from api.v1.endpoints.agent import governance  # noqa: E402, F401
 from api.v1.endpoints.agent import run_explorer  # noqa: E402, F401
 from api.v1.endpoints.agent import resources  # noqa: E402, F401
 
-# Re-export internal helpers so tests can import/patch them from the package namespace.
-from api.v1.endpoints.agent.chat import (  # noqa: E402, F401
-    _registry,
-    _run_standard_task_pipeline,
-    litellm,
-)
+# The LangGraph tool catalog is exposed for metadata/readiness endpoints.
+from api.v1.endpoints.agent.chat import _registry  # noqa: E402, F401
 from api.v1.endpoints.agent.tools import (  # noqa: E402, F401
     _compact_tool_result,
     _format_result,

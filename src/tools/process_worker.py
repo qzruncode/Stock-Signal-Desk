@@ -17,6 +17,7 @@ def main() -> int:
         request = json.loads(sys.stdin.read() or "{}")
         from src.tools.base import (
             tool_execution_context,
+            tool_effect_approval,
             tool_idempotency_context,
         )
         from src.tools.registry import ToolRegistry
@@ -32,6 +33,7 @@ def main() -> int:
                 ),
                 run_id=execution_context.get("run_id"),
             ),
+            tool_effect_approval(request.get("effect_approved") is True),
         ):
             result = ToolRegistry().execute(
                 str(request.get("name") or ""),

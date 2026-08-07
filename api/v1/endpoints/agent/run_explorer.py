@@ -22,7 +22,7 @@ def _owner_scope(request: Request) -> tuple[str, str]:
 def list_agent_runs(
     request: Request,
     status: str | None = Query(None, max_length=24),
-    capability: str | None = Query(None, max_length=96),
+    tool: str | None = Query(None, max_length=128),
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=100),
     db_manager: DatabaseManager = Depends(get_database_manager),
@@ -32,7 +32,7 @@ def list_agent_runs(
         tenant_id=tenant_id,
         owner_id=owner_id,
         status=status,
-        capability=capability,
+        tool=tool,
         page=page,
         limit=limit,
     )

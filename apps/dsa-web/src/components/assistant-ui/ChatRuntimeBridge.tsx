@@ -96,6 +96,8 @@ const getConversationHydrationKey = (detail: ChatConversationDetail): string => 
       ?? detail.resumeState?.latestStage?.occurred_at
       ?? '',
     detail.resumeState?.afterChunkIndex ?? '',
+    detail.pendingInterrupt?.interruptId ?? '',
+    detail.pendingInterrupt?.fingerprint ?? '',
     detail.threadState?.headId ?? '',
     detail.messages.length,
     lastMessage?.id ?? '',
@@ -195,6 +197,7 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     threadRuntime.reset([]);
 
     const isGenerating = conversationDetail.isGenerating === true;
+    const isWaitingForApproval = Boolean(conversationDetail.pendingInterrupt);
     const canReplayStream = conversationDetail.resumeState?.active === true;
     const threadStateHasRichParts = hasRichParts(conversationDetail.threadState);
     const retainedFinalText = (conversationDetail.resumeState?.assistantText || '').trim();
@@ -203,12 +206,12 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     const retainedTextMismatch = Boolean(
       retainedFinalText && lastAssistantText && retainedFinalText !== lastAssistantText,
     );
-    const shouldReplayStream = isGenerating
+    const shouldReplayStream = !isWaitingForApproval && (isGenerating
       || (canReplayStream
         && (
           (conversationDetail.resumeState?.hasToolEvents === true && !threadStateHasRichParts)
           || retainedTextMismatch
-        ));
+        )));
     const pendingId = `${conversationDetail.id}${PENDING_ASSISTANT_SUFFIX}`;
 
     // isGenerating 时:threadState 是上次完成时的旧快照(不含本次 user 消息),

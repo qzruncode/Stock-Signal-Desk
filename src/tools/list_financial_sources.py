@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.tools.base import ToolSpec, object_schema
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 
 
@@ -84,7 +83,10 @@ def list_financial_sources(
         "is_stale": stale if data_time else None,
         "freshness_unknown": data_time is None,
         "query_scope": "source_catalog_metadata",
-        "query_note": "keyword 仅筛选来源名称、命名空间、路由和用途；搜索资讯内容请使用 search_financial_news。",
+        "query_note": (
+            "keyword 仅筛选来源名称、命名空间、路由和用途；搜索资讯内容请使用 websearch，"
+            "或通过 discover_rss_sources、inspect_rss_source、read_rss_feed 读取具体来源。"
+        ),
         "applied_filters": {
             "keyword": str(keyword or "").strip(),
             "namespace": str(namespace or "").strip(),
@@ -93,49 +95,4 @@ def list_financial_sources(
         "errors": [str(error)] if error and not items else [],
         "warnings": [str(error)] if error and items else [],
     }
-
-
-TOOL = ToolSpec(
-    name="list_financial_sources",
-    description=(
-        "浏览和搜索助手可用的全部股市资讯/RSS源，返回路由、来源、用途、参数提示和能力标签。"
-        "keyword 只筛选来源目录元数据，不搜索资讯正文。"
-        "仅当用户明确询问来源、指定来源或需要原始 Feed 时调用；普通资讯问题直接调用 search_financial_news。"
-    ),
-    parameters=object_schema(
-        {
-            "keyword": {
-                "type": "string",
-                "description": "仅筛选来源名称、命名空间、路由或用途，不搜索资讯内容；留空返回全部来源",
-            },
-            "namespace": {"type": "string", "description": "来源命名空间或中文来源名，可留空"},
-            "capability": {
-                "type": "string",
-                "enum": [
-                    "all",
-                    "market",
-                    "company",
-                    "announcement",
-                    "research",
-                    "macro",
-                    "industry",
-                    "social",
-                    "regulatory",
-                    "realtime",
-                    "monetary_policy",
-                    "project",
-                    "ranking",
-                    "listing",
-                ],
-                "default": "all",
-            },
-            "force": {"type": "boolean", "default": False, "description": "是否强制刷新来源目录"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
-        }
-    ),
-    executor=list_financial_sources,
-    category="sentiment",
-)
-
-
-__all__ = ["TOOL", "list_financial_sources"]
+__all__ = ["list_financial_sources"]

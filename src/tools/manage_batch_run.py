@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.tools._workflow import envelope, model_dump, require_confirmation, run_async
-from src.tools.base import ToolSpec, object_schema
+from src.tools.base import ToolSpec, effect_by_argument, object_schema
 
 
 def manage_batch_run(
@@ -92,6 +92,18 @@ TOOL = ToolSpec(
     ),
     executor=manage_batch_run,
     category="action",
+    effect_resolver=effect_by_argument(
+        "action",
+        {
+            "pause",
+            "continue",
+            "resume_failed",
+            "regenerate_report",
+            "notify",
+            "stop",
+            "delete",
+        },
+    ),
 )
 
 

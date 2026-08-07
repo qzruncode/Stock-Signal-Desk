@@ -44,7 +44,8 @@ describe('QuestionNavigator', () => {
     document.body.append(target);
 
     render(<QuestionNavigator />);
-    fireEvent.click(screen.getByRole('button', { name: '打开问题导航' }));
+    const navigatorButton = screen.getByRole('button', { name: '打开问题导航' });
+    fireEvent.click(navigatorButton);
 
     expect(screen.getByRole('button', { name: '第 1 个问题：第一个问题' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '第 2 个问题：第二个问题 请继续核验' }))

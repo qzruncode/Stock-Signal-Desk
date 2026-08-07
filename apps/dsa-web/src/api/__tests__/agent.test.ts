@@ -4,6 +4,7 @@ import { agentApi } from '../agent';
 
 const get = vi.hoisted(() => vi.fn());
 const put = vi.hoisted(() => vi.fn());
+const deleteRequest = vi.hoisted(() => vi.fn());
 
 vi.mock('../index', () => ({
   default: {
@@ -11,7 +12,7 @@ vi.mock('../index', () => ({
     post: vi.fn(),
     put,
     patch: vi.fn(),
-    delete: vi.fn(),
+    delete: deleteRequest,
   },
 }));
 
@@ -19,6 +20,7 @@ describe('agentApi.syncConversationSnapshot', () => {
   beforeEach(() => {
     get.mockReset();
     put.mockReset();
+    deleteRequest.mockReset();
     put.mockResolvedValue({
       data: {
         id: 'c1',
@@ -29,6 +31,14 @@ describe('agentApi.syncConversationSnapshot', () => {
         messages: [],
       },
     });
+  });
+
+  it('clears all conversations through the collection endpoint', async () => {
+    deleteRequest.mockResolvedValue({ data: { deleted: 3 } });
+
+    await expect(agentApi.clearAllConversations()).resolves.toBe(3);
+
+    expect(deleteRequest).toHaveBeenCalledWith('/api/v1/agent/conversations');
   });
 
   it('does not send an empty message list for a thread-only snapshot', async () => {

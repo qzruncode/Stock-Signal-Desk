@@ -127,6 +127,7 @@ from api.middlewares.auth import add_auth_middleware
 from api.middlewares.error_handler import add_error_handlers
 from api.v1.schemas.common import HealthResponse
 from src.agent.run_registry import active_run_registry
+from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.runtime_safety import (
     enforce_agent_runtime_configuration,
     is_production_environment,
@@ -144,6 +145,15 @@ async def app_lifespan(app: FastAPI):
     app.state.system_config_service = SystemConfigService()
     database = DatabaseManager.get_instance()
     active_run_registry.configure(database)
+    await agent_graph_runtime.start(database)
+    legacy_cancelled = await asyncio.to_thread(
+        database.cancel_legacy_engine_runs,
+    )
+    if legacy_cancelled:
+        logger.warning(
+            "Cancelled %s unfinished legacy Agent run(s) for LangGraph cutover",
+            legacy_cancelled,
+        )
     maintenance_task = None
     try:
         from api.v1.endpoints.batches.helpers import resume_incomplete_batches_on_startup
@@ -179,6 +189,10 @@ async def app_lifespan(app: FastAPI):
             await active_run_registry.shutdown()
         except Exception:
             logger.exception("Failed to shutdown active run registry")
+        try:
+            await agent_graph_runtime.close()
+        except Exception:
+            logger.exception("Failed to close LangGraph runtime")
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
 

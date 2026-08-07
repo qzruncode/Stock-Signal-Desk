@@ -67,7 +67,7 @@ class DataService:
         evaluators retain the exact industry direction from the conversation
         without treating a concept-board label as proof of orders or revenue.
         """
-        from src.agent.result_contracts import InvestmentThesisContext
+        from src.services.buy_criteria.contracts import InvestmentThesisContext
 
         try:
             context = InvestmentThesisContext.model_validate(thesis_context or {})

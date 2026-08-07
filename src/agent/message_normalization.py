@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List
 
 from src.agent.progress import strip_agent_progress
@@ -31,6 +32,7 @@ _TOOL_DETAIL_ARRAY_KEYS = (
     "criteria",
 )
 _AI_SDK_PART_TYPES = {"text", "tool-call", "tool-result", "reasoning", "file", "image"}
+_TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 
 
 def slim_tool_content(result_str: str) -> str:
@@ -74,6 +76,49 @@ def join_text_parts(parts: List[Dict[str, Any]]) -> str:
         if text:
             chunks.append(text)
     return "\n".join(chunks).strip()
+
+
+def message_content_text(content: Any) -> str:
+    """Extract user-visible text from supported provider message shapes.
+
+    Chat history can arrive as a plain string, an AI SDK parts array, or a
+    provider-style array of text blocks.  Tool, reasoning, file, and image
+    blocks are deliberately ignored so control-plane goal extraction cannot
+    accidentally treat hidden or non-user content as the current request.
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes, bytearray)):
+        return ""
+
+    chunks: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            text = part.strip()
+        elif isinstance(part, Mapping):
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type and part_type not in _TEXT_PART_TYPES:
+                continue
+            raw_text = part.get("text")
+            if isinstance(raw_text, Mapping):
+                raw_text = raw_text.get("value")
+            text = str(raw_text or "").strip()
+        else:
+            continue
+        if text:
+            chunks.append(text)
+    return "\n".join(chunks).strip()
+
+
+def latest_user_text(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Return the newest non-empty user text across supported message shapes."""
+    for message in reversed(messages):
+        if str(message.get("role") or "").strip().lower() != "user":
+            continue
+        text = message_content_text(message.get("content"))
+        if text:
+            return text
+    return ""
 
 
 def _convert_assistant_message(message: Dict[str, Any]) -> Dict[str, Any]:
@@ -179,6 +224,8 @@ def normalize_incoming_messages(messages: List[Dict[str, Any]]) -> List[Dict[str
 __all__ = [
     "is_aisdk_content",
     "join_text_parts",
+    "latest_user_text",
+    "message_content_text",
     "normalize_incoming_messages",
     "slim_tool_content",
 ]

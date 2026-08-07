@@ -2,9 +2,6 @@ import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { Badge } from '../common';
 import type { ToolCategory, ToolMeta } from '../../types/toolRegistry';
-import { useToolTest } from '../../hooks/useToolTest';
-import { ToolParamInput } from './ToolParamInput';
-import { ToolTestPanel } from './ToolTestPanel';
 
 const CATEGORY_LABEL: Record<ToolCategory, string> = {
   data: '数据',
@@ -18,6 +15,7 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
   regulatory: '监管',
   events: '公告',
   risk: '风险',
+  action: '操作',
 };
 
 const CATEGORY_VARIANT = {
@@ -32,6 +30,7 @@ const CATEGORY_VARIANT = {
   regulatory: 'warning' as const,
   events: 'info' as const,
   risk: 'warning' as const,
+  action: 'warning' as const,
 };
 
 function formatDefault(value: unknown): string {
@@ -50,10 +49,8 @@ interface ToolListItemProps {
 
 export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
   const [open, setOpen] = useState(false);
-  const test = useToolTest(tool);
   const categoryVariant = CATEGORY_VARIANT[tool.category] ?? 'default';
   const Chevron = open ? ChevronUp : ChevronDown;
-  const running = test.status === 'running';
 
   return (
     <div
@@ -101,6 +98,19 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
               {tool.description}
             </p>
 
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <span>
+                {tool.effectMode === 'argument_dependent'
+                  ? '按参数判断 · 外部操作需审批'
+                  : tool.effect === 'side_effect'
+                    ? '外部操作 · 需审批'
+                    : '只读查询'}
+              </span>
+              <span>超时 {tool.timeoutSeconds ?? '未设置'} 秒</span>
+              <span>最多尝试 {tool.effect === 'side_effect' ? 1 : tool.maxAttempts} 次</span>
+              <span>{tool.idempotent ? '支持幂等重放' : '不支持幂等重放'}</span>
+            </div>
+
             {tool.parameters.length > 0 ? (
               <div className="mt-3">
                 <p className="label-uppercase mb-2">参数</p>
@@ -131,12 +141,6 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
                             <span className="text-muted-foreground">默认: {defaultText}</span>
                           ) : null}
                         </div>
-                        <ToolParamInput
-                          param={param}
-                          value={test.values[param.name] ?? ''}
-                          onChange={(v) => test.setValue(param.name, v)}
-                          disabled={running}
-                        />
                       </li>
                     );
                   })}
@@ -145,10 +149,9 @@ export const ToolListItem: React.FC<ToolListItemProps> = ({ tool }) => {
             ) : (
               <p className="mt-3 text-xs text-muted-foreground">无参数</p>
             )}
-
-            <div className="mt-4 border-t border-border/40 pt-3">
-              <ToolTestPanel test={test} />
-            </div>
+            <p className="mt-4 border-t border-border/40 pt-3 text-xs text-muted-foreground">
+              工具只能由助手在运行中按需选择；涉及外部操作时会先请求你的批准。
+            </p>
           </div>
         </div>
       </div>

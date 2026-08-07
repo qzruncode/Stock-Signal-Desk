@@ -8,5 +8,3 @@ export type {
   UseTaskStreamOptions,
   UseTaskStreamResult,
 } from './useTaskStream';
-export { useToolTest } from './useToolTest';
-export type { ToolTestStatus, UseToolTestResult } from './useToolTest';

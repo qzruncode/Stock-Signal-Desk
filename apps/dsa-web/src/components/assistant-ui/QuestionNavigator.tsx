@@ -1,7 +1,7 @@
 import type { FC } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useThread } from '@assistant-ui/react';
-import { ChevronDownIcon, ListTreeIcon } from 'lucide-react';
+import { ListTreeIcon } from 'lucide-react';
 import {
   getChatQuestionDomId,
   locateChatQuestion,
@@ -13,7 +13,7 @@ type QuestionItem = {
   label: string;
 };
 
-export const QuestionNavigator: FC = () => {
+export const QuestionNavigator: FC<{ className?: string }> = ({ className }) => {
   const messages = useThread((state) => state.messages);
   const questions = useMemo<QuestionItem[]>(
     () => messages.flatMap((message) => {
@@ -92,31 +92,33 @@ export const QuestionNavigator: FC = () => {
   return (
     <div
       ref={rootRef}
-      className="sticky top-0 z-20 mx-auto flex h-9 w-full max-w-3xl shrink-0 justify-end pointer-events-none"
+      className={cn('flex h-8 shrink-0 justify-end pointer-events-none sm:h-9', className)}
     >
       <div className="relative pointer-events-auto">
         <button
           type="button"
           className={cn(
-            'flex h-8 items-center gap-1.5 rounded-lg border border-border/80 bg-card/95 px-2.5 text-xs text-muted-foreground shadow-sm backdrop-blur',
-            'transition hover:border-primary/30 hover:text-foreground',
+            'relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border',
+            'bg-card text-muted-foreground shadow-sm transition hover:text-foreground',
+            'sm:h-9 sm:w-9',
             isOpen && 'border-primary/30 text-foreground shadow-md',
           )}
           aria-label="打开问题导航"
           aria-expanded={isOpen}
           aria-controls="chat-question-navigation"
+          title="问题导航"
           onClick={() => setIsOpen((value) => !value)}
         >
           <ListTreeIcon className="size-3.5 text-primary" />
-          <span>问题导航</span>
-          <span className="rounded bg-muted px-1 text-[10px] tabular-nums">{questions.length}</span>
-          <ChevronDownIcon className={cn('size-3 transition-transform', isOpen && 'rotate-180')} />
+          <span className="absolute right-1 top-1 min-w-3.5 rounded-full border border-border/70 bg-card px-0.5 text-center text-[9px] leading-3.5 tabular-nums text-muted-foreground">
+            {questions.length}
+          </span>
         </button>
 
         {isOpen ? (
           <div
             id="chat-question-navigation"
-            className="absolute right-0 top-10 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+            className="absolute right-0 top-9 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl sm:top-10"
           >
             <div className="flex items-center justify-between border-b border-border/70 px-3 py-2">
               <span className="text-xs font-semibold text-foreground">本次会话的问题</span>

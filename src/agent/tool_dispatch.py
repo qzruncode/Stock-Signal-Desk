@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Typed boundary between Workflow runtime policy and concrete tool execution."""
+"""Typed boundary between LangGraph policy and atomic tool execution."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import threading
 from src.tools.base import (
     ToolProgressUpdate,
     tool_execution_context,
+    tool_effect_approval,
     tool_idempotency_context,
     tool_progress_observer,
 )
@@ -28,6 +29,8 @@ class ToolDispatchRequest:
     force_isolation: bool = False
     conversation_id: str | None = None
     run_id: str | None = None
+    timeout_seconds: float | None = None
+    approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ class ToolDispatcher:
                 conversation_id=request.conversation_id,
                 run_id=request.run_id,
             ),
+            tool_effect_approval(request.approved),
         ):
             if request.tool_name in STATEFUL_TOOL_NAMES:
                 raw_result = self._registry.execute(
@@ -80,11 +84,13 @@ class ToolDispatcher:
                     request.tool_name,
                     arguments,
                     cancel_event=cancel_event,
+                    deadline_seconds=request.timeout_seconds,
                     idempotency_key=request.idempotency_key,
                     execution_context={
                         "conversation_id": request.conversation_id,
                         "run_id": request.run_id,
                     },
+                    effect_approved=request.approved,
                 )
             else:
                 raw_result = self._registry.execute(

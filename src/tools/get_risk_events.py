@@ -1,7 +1,8 @@
-"""Company disclosure evidence for model-based risk review.
+"""Service helper for the standalone risk-event endpoint.
 
-This tool retrieves evidence and preserves provenance. It deliberately does
-not classify risk categories, severity or lifecycle state from phrase lists.
+It aggregates several sources and therefore is deliberately not exposed as an
+atomic Agent tool. It preserves provenance and does not classify risk from
+phrase lists.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ from datetime import datetime
 from typing import Any
 
 from src.tools._akshare import bare_symbol
-from src.tools.base import ToolSpec, object_schema
 
 
 def _date_value(item: dict[str, Any]) -> str | None:
@@ -256,35 +256,5 @@ def get_risk_events(
     }
 
 
-TOOL = ToolSpec(
-    name="get_risk_events",
-    description=(
-        "获取公司的新闻和正式公告，保留时间、来源、链接与摘要，供模型研判风险类别、"
-        "严重度和事项生命周期。工具本身不使用关键词词典给风险下结论。"
-    ),
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A 股代码或名称"},
-            "days": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 730,
-                "default": 90,
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 30,
-            },
-            "include_structured": {
-                "type": "boolean",
-                "default": False,
-                "description": "是否合并质押、解禁、商誉、回购、合同、定增、调研和停复牌等结构化事项",
-            },
-        },
-        ["symbol"],
-    ),
-    executor=get_risk_events,
-    category="risk",
-)
+
+__all__ = ["get_risk_events"]

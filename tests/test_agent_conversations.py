@@ -7,7 +7,7 @@ api.v1.endpoints.agent.conversations.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -82,6 +82,29 @@ def test_create_conversation_returns_new_conversation(client, mock_service):
     assert resp.json()["id"] == "c2"
 
 
+def test_clear_all_conversations_deletes_every_visible_conversation(client, mock_service):
+    mock_service.list_conversation_ids.return_value = ["c1", "c2"]
+    mock_service.delete_conversation.side_effect = [1, 1]
+    with (
+        patch(
+            "api.v1.endpoints.agent.conversations.active_run_registry.cancel",
+            return_value=False,
+        ) as cancel_run,
+        patch(
+            "api.v1.endpoints.agent.conversations.agent_graph_runtime.delete_thread",
+        ) as delete_thread,
+    ):
+        resp = client.delete("/api/v1/agent/conversations")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": 2}
+    assert cancel_run.await_args_list == [call("c1"), call("c2")]
+    assert delete_thread.await_args_list[0].args == ("c1",)
+    assert delete_thread.await_args_list[1].args == ("c2",)
+    assert mock_service.delete_conversation.call_args_list[0].args == ("c1",)
+    assert mock_service.delete_conversation.call_args_list[1].args == ("c2",)
+
+
 # ---------------------------------------------------------------------------
 # get
 # ---------------------------------------------------------------------------
@@ -149,7 +172,8 @@ def test_get_conversation_reconciles_orphan_running_trace_to_failed(
     resume = resp.json()["resume_state"]
     assert resume["status"] == "failed"
     assert resume["latest_stage"] == {
-        "event": "agent_stage_v2",
+        "event": "agent_stage",
+        "engine": "langgraph",
         "run_id": "run-orphan",
         "stage": "completed",
         "status": "failed",

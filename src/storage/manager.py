@@ -37,7 +37,6 @@ from src.storage.mixins import (
     AgentRuntimeMixin,
     AgentQualityMixin,
     FinancialLifecycleMixin,
-    AgentGovernanceMixin,
     TextDocumentMixin,
 )
 
@@ -62,7 +61,6 @@ class DatabaseManager(
     AgentRuntimeMixin,
     AgentQualityMixin,
     FinancialLifecycleMixin,
-    AgentGovernanceMixin,
     TextDocumentMixin,
 ):
     """

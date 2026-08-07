@@ -9,7 +9,6 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from src.tools._akshare import bare_symbol
-from src.tools.base import ToolSpec, object_schema
 
 
 _PROJECT_TYPE = {"all": "0", "ipo": "1", "refinancing": "2", "restructuring": "3"}
@@ -553,30 +552,4 @@ def get_regulatory_updates(
     }
 
 
-TOOL = ToolSpec(
-    name="get_regulatory_updates",
-    description=(
-        "直接读取上交所和深交所官方披露路由：上市公司公告、监管问询、科创板/创业板IPO与再融资项目动态、"
-        "深交所公司上市及终止上市公告。支持代码/简称、日期、交易所和项目阶段过滤；北交所覆盖缺口会明确说明。"
-    ),
-    parameters=object_schema(
-        {
-            "keyword": {"type": "string", "default": "", "description": "股票代码、简称或项目关键词"},
-            "event_type": {
-                "type": "string",
-                "enum": ["all", "disclosure", "inquiry", "project", "listing_notice"],
-                "default": "all",
-            },
-            "market": {"type": "string", "enum": ["auto", "all", "sse", "szse", "bse"], "default": "auto"},
-            "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 90},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 12},
-            "include_content": {"type": "boolean", "default": False},
-            "fallback_to_web": {"type": "boolean", "default": True},
-            "project_type": {"type": "string", "enum": list(_PROJECT_TYPE), "default": "all"},
-            "project_stage": {"type": "string", "enum": list(_PROJECT_STAGE), "default": "all"},
-            "project_status": {"type": "string", "enum": list(_PROJECT_STATUS), "default": "all"},
-        }
-    ),
-    executor=get_regulatory_updates,
-    category="regulatory",
-)
+__all__ = ["get_regulatory_updates"]

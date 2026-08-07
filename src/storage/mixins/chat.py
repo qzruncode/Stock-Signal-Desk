@@ -104,6 +104,26 @@ class ChatMixin:
                 session.expunge(record)
             return list(records), total
 
+    def list_chat_conversation_ids(
+        self,
+        *,
+        tenant_id: str | None = None,
+        owner_id: str | None = None,
+    ) -> List[str]:
+        """Return every user-visible conversation id in the ownership scope."""
+        with self.get_session() as session:
+            predicate = [ChatConversation.title_source != "system"]
+            if tenant_id is not None:
+                predicate.append(ChatConversation.tenant_id == tenant_id)
+            if owner_id is not None:
+                predicate.append(ChatConversation.owner_id == owner_id)
+            statement = (
+                select(ChatConversation.id)
+                .where(*predicate)
+                .order_by(desc(ChatConversation.updated_at), desc(ChatConversation.created_at))
+            )
+            return [str(conversation_id) for conversation_id in session.execute(statement).scalars().all()]
+
     def update_chat_conversation(
         self,
         conversation_id: str,

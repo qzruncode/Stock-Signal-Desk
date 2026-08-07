@@ -7,7 +7,7 @@ from typing import Any
 
 from src.services.watchlist_service import manage_watchlist as _manage_default_watchlist
 from src.storage import DatabaseManager
-from src.tools.base import ToolSpec, object_schema
+from src.tools.base import ToolSpec, effect_by_argument, object_schema
 from src.tools.symbols import resolve_securities_csv
 
 
@@ -205,6 +205,10 @@ TOOL = ToolSpec(
     ),
     executor=manage_watchlist_groups,
     category="action",
+    effect_resolver=effect_by_argument(
+        "action",
+        {"create", "rename", "delete", "add", "remove"},
+    ),
 )
 
 

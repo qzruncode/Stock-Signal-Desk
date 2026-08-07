@@ -22,7 +22,7 @@ export const AgentStageIndicator: FC<{ event: AgentStageEventV2 }> = ({ event })
   const isProblem = event.status === 'failed'
     || event.status === 'blocked'
     || event.status === 'cancelled';
-  const isDone = event.status === 'succeeded';
+  const isDone = event.status === 'succeeded' || event.status === 'completed';
   const Icon = isProblem ? CircleAlertIcon : isDone ? CheckCircle2Icon : Loader2Icon;
   const stageLabel = event.status === 'failed'
     ? '执行失败'
@@ -59,8 +59,8 @@ export const AssistantReasoning: FC<{ text: string }> = ({ text }) => {
   );
   const failed = latestStage?.status === 'failed' || latestStage?.status === 'blocked';
   const cancelled = latestStage?.status === 'cancelled';
-  const completed = latestStage?.stage === 'completed'
-    && latestStage.status === 'succeeded';
+  const completed = latestStage?.status === 'completed'
+    || (latestStage?.stage === 'completed' && latestStage.status === 'succeeded');
   const statusLabel = reasoningStatusLabel(messageRunning, latestStage);
   const visibleText = useMemo(() => {
     if (text.length <= MAX_VISIBLE_REASONING_CHARS) return text;

@@ -9,7 +9,8 @@ export type ToolCategory =
   | 'research'
   | 'regulatory'
   | 'events'
-  | 'risk';
+  | 'risk'
+  | 'action';
 
 export interface ToolParameterSpec {
   name: string;
@@ -24,6 +25,15 @@ export interface ToolMeta {
   name: string;
   category: ToolCategory;
   description: string;
+  retrievalDescription: string;
+  effect: 'read' | 'side_effect';
+  effectMode: 'fixed' | 'argument_dependent';
+  approvalPolicy: 'required_for_side_effect';
+  timeoutSeconds?: number | null;
+  maxAttempts: number;
+  retryBackoffSeconds: number;
+  idempotent: boolean;
+  sensitiveFields: string[];
   parameters: ToolParameterSpec[];
 }
 
@@ -31,14 +41,4 @@ export interface ToolRegistryResponse {
   total: number;
   categories: Record<string, number>;
   tools: ToolMeta[];
-}
-
-/** POST /api/v1/agent/tool-registry/execute 响应(单个工具试运行结果)。 */
-export interface ToolExecuteResult {
-  toolName: string;
-  arguments: Record<string, unknown>;
-  success: boolean;
-  result?: unknown;
-  error?: string;
-  durationMs: number;
 }

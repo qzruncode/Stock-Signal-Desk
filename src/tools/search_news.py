@@ -177,7 +177,10 @@ def _dedupe(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
 def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = True) -> dict[str, Any]:
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
-        raise ValueError("symbol 必须能解析为 6 位股票代码；行业或主题资讯请使用 search_financial_news")
+        raise ValueError(
+            "symbol 必须能解析为 6 位股票代码；行业或主题资讯请使用 websearch，"
+            "或先 discover_rss_sources 再 read_rss_feed"
+        )
     if not 1 <= int(days) <= 365:
         raise ValueError("days 必须在 1 到 365 之间")
     if not 1 <= int(limit) <= 50:

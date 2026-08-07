@@ -15,7 +15,7 @@ export CACHE_TYPE="${CACHE_TYPE:-memory}"
 export CACHE_EXPIRE="${CACHE_EXPIRE:-300}"
 
 if [[ "$MODE" == "dev" ]]; then
-    exec pnpm --dir "$APP_DIR" dev
+    exec bash "$RSSHUB_DIR/scripts/run-pnpm.sh" --dir "$APP_DIR" dev
 fi
 
-exec pnpm --dir "$APP_DIR" start
+exec bash "$RSSHUB_DIR/scripts/run-pnpm.sh" --dir "$APP_DIR" start

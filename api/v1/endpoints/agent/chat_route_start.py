@@ -133,6 +133,7 @@ async def agent_chat_impl(
             "queued",
             "running",
             "recovering",
+            "interrupted",
             "completed",
             "partial",
             "failed",
@@ -189,25 +190,6 @@ async def agent_chat_impl(
             list(messages),
             parent_message_id=body.get("history_parent_id"),
         )
-    agent_context = session_service.get_agent_context(conv_id)
-    memory_loader = getattr(
-        type(db_manager),
-        "list_agent_user_memories",
-        None,
-    )
-    explicit_memories = (
-        await asyncio.to_thread(
-            db_manager.list_agent_user_memories,
-            tenant_id=tenant_id,
-            owner_id=owner_id,
-            conversation_id=conv_id,
-            enabled_only=True,
-            limit=50,
-        )
-        if callable(memory_loader)
-        else []
-    )
-
     # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
     # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会
     # 都通过检查、各自落库 messages 后第二个静默 attach 到第一个 run 而丢消息。
@@ -218,11 +200,10 @@ async def agent_chat_impl(
             max_active_runs=limits.max_active_runs,
             max_owner_active_runs=limits.max_active_runs_per_owner,
             request_payload={
+                "engine": "langgraph",
                 "body": body,
                 "messages": list(messages),
                 "conversation_id": conv_id,
-                "agent_context": agent_context,
-                "explicit_memories": explicit_memories,
                 "model": llm_cfg.get("model"),
             },
             tenant_id=tenant_id,
@@ -279,11 +260,11 @@ async def agent_chat_impl(
                 messages=list(messages),
                 body=body,
                 llm_cfg=llm_cfg,
-                agent_context=agent_context,
                 conversation_id=conv_id,
                 db_manager=db_manager,
                 session_service=session_service,
-                explicit_memories=explicit_memories,
+                tenant_id=tenant_id,
+                owner_id=owner_id,
             )
         )
 

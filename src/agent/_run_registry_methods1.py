@@ -369,6 +369,27 @@ class _ActiveRunRegistryMethods1:
         # created after the retention window expires.
         cleanup_handle = asyncio.get_running_loop().call_later(retention, _start_cleanup)
         self._cleanup_handles.add(cleanup_handle)
+
+    async def mark_interrupted(self, conversation_id: str) -> None:
+        """Close the current stream while LangGraph keeps the run checkpoint."""
+        async with self._lock:
+            run = self._runs.get(conversation_id)
+            if run is None:
+                return
+            run.status = "interrupted"
+            if run.lease_task is not None and not run.lease_task.done():
+                run.lease_task.cancel()
+        run.broadcaster.mark_finished()
+        await run.broadcaster.drain()
+        async with self._lock:
+            current = self._runs.get(conversation_id)
+            if current is run:
+                self._runs.pop(conversation_id, None)
+        logger.info(
+            "[AgentRun] waiting for approval run_id=%s conversation_id=%s",
+            run.run_id,
+            conversation_id,
+        )
     async def cancel(self, conversation_id: str, *, remove: bool = True) -> bool:
         """显式取消一个 run,用于删除会话/用户放弃任务。
 

@@ -19,6 +19,7 @@ from src.tools.get_peer_comparison import get_peer_comparison
 from src.tools.get_sector_flow import _fetch_all as fetch_all_sector_flow, get_sector_flow
 from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
 from src.tools.get_monetary_policy_operations import _operation_item
+from src.tools.registry import ToolRegistry
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
 from src.tools.search_financial_news import (
     _select_specs,
@@ -61,7 +62,7 @@ def _catalog_route(
         "description": name,
         "params": params or [],
     }
-def test_research_search_tools_contain_no_query_intent_router() -> None:
+def test_legacy_search_helpers_have_no_intent_router_and_are_not_registered() -> None:
     financial_source = inspect.getsource(financial_news_module)
     research_source = inspect.getsource(research_library_module)
 
@@ -70,8 +71,16 @@ def test_research_search_tools_contain_no_query_intent_router() -> None:
         assert "_infer_category" not in source
         assert "_INTENT_WORDS" not in source
         assert "_HIGH_PRECISION_SUBJECTS" not in source
-    assert {"query", "topic"} <= set(financial_news_module.TOOL.parameters["required"])
-    assert {"query", "category", "subjects"} <= set(research_library_module.TOOL.parameters["required"])
+    registered = set(ToolRegistry().get_tool_names())
+    assert {"search_financial_news", "search_research_library"}.isdisjoint(registered)
+    assert {
+        "discover_rss_sources",
+        "inspect_rss_source",
+        "read_rss_feed",
+        "read_rss_item",
+        "websearch",
+        "webfetch",
+    } <= registered
 
 def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording() -> None:
     routes = [
@@ -106,7 +115,7 @@ def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording()
     assert first == second
     assert first[0][0] == "/eastmoney/report/:category"
 
-def test_industry_news_uses_only_planner_supplied_subjects():
+def test_industry_news_uses_only_caller_supplied_subjects():
     terms = _subject_terms(["人形机器人"])
 
     assert terms == ["人形机器人"]

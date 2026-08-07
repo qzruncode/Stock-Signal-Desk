@@ -25,6 +25,9 @@ _TERMINAL_STATUSES = frozenset(
         "failed",
         "cancelled",
         "blocked",
+        # A LangGraph interrupt is terminal for this HTTP stream, while the
+        # durable run itself remains resumable through the approval endpoint.
+        "interrupted",
     }
 )
 

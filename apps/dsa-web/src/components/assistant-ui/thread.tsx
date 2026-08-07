@@ -56,7 +56,6 @@ import { splitAssistantText } from '../../utils/assistantTextSplit';
 import { cn } from '../../utils/cn';
 import { latestAgentStageEvent } from '../../utils/agentStage';
 import { getChatQuestionDomId } from '../../utils/chatQuestionLocator';
-import { QuestionNavigator } from './QuestionNavigator';
 import { AgentStageIndicator, AssistantReasoning } from './AgentReasoning';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
@@ -67,16 +66,17 @@ const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: str
 }) => {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div
+        aria-hidden="true"
+        className="h-14 shrink-0 border-b border-border/50 bg-background lg:h-9"
+      />
+
       <ThreadPrimitive.Viewport
         data-chat-thread-viewport="true"
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pt-14 pb-4 sm:gap-4 sm:px-4 sm:pt-5 sm:pb-5 lg:px-6"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pb-4 sm:gap-4 sm:px-4 sm:pb-5 lg:px-6"
       >
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <EmptyState />
-        </AuiIf>
-
-        <AuiIf condition={(s) => !s.thread.isEmpty}>
-          <QuestionNavigator />
         </AuiIf>
 
         <AuiIf condition={(s) => !s.thread.isEmpty}>

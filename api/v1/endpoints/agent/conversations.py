@@ -12,6 +12,7 @@ from fastapi import Body, Depends, HTTPException, Query, Request
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
 from src.agent.run_registry import active_run_registry
+from src.agent.langgraph_runtime import agent_graph_runtime
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -26,6 +27,41 @@ def _session_service(
         db_manager,
         tenant_id=str(getattr(request.state, "tenant_id", "local")),
         owner_id=str(getattr(request.state, "owner_id", "admin")),
+    )
+
+
+async def _cancel_conversation_run_before_delete(
+    conversation_id: str,
+    db_manager: DatabaseManager,
+) -> None:
+    """Stop local or cross-worker execution before deleting its transcript."""
+    active_run_registry.configure(db_manager)
+    local_run = active_run_registry.get(conversation_id)
+    cancelled = await active_run_registry.cancel(conversation_id)
+    if cancelled:
+        logger.info("[Agent] cancelled active run for deleted conversation %s", conversation_id)
+    if not cancelled or local_run is not None:
+        return
+
+    # A different worker owns the task. Its durable cancel watcher must publish
+    # the terminal state before the parent conversation is removed, otherwise
+    # its partial/trace writes would target a deleted row.
+    deadline = asyncio.get_running_loop().time() + 10.0
+    while asyncio.get_running_loop().time() < deadline:
+        durable = await asyncio.to_thread(
+            db_manager.get_agent_run,
+            conversation_id=conversation_id,
+        )
+        if durable is None or durable.get("status") not in {
+            "queued",
+            "running",
+            "recovering",
+        }:
+            return
+        await asyncio.sleep(0.1)
+    raise HTTPException(
+        status_code=409,
+        detail="任务正在其他节点停止，请稍后重试删除",
     )
 
 
@@ -47,6 +83,22 @@ def create_agent_conversation(
 ):
     service = _session_service(request, db_manager)
     return service.create_conversation()
+
+
+@router.delete("/agent/conversations")
+async def clear_agent_conversations(
+    request: Request,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """Clear all user-visible conversations in the current ownership scope."""
+    service = _session_service(request, db_manager)
+    conversation_ids = service.list_conversation_ids()
+    deleted = 0
+    for conversation_id in conversation_ids:
+        await _cancel_conversation_run_before_delete(conversation_id, db_manager)
+        await agent_graph_runtime.delete_thread(conversation_id)
+        deleted += service.delete_conversation(conversation_id)
+    return {"deleted": deleted}
 
 
 @router.get("/agent/conversations/{conversation_id}")
@@ -94,7 +146,8 @@ def get_agent_conversation(
     ):
         reconciled_trace_status = "failed"
         persisted_stage = {
-            "event": "agent_stage_v2",
+            "event": "agent_stage",
+            "engine": "langgraph",
             "run_id": trace.get("run_id"),
             "stage": "completed",
             "status": "failed",
@@ -102,6 +155,15 @@ def get_agent_conversation(
             "summary": "后台运行已经中断，没有仍在执行的任务",
         }
     conversation["is_generating"] = is_generating
+    context_snapshot = durable_run.get("context_snapshot") if durable_run else None
+    pending_interrupt = (
+        context_snapshot.get("pending_interrupt")
+        if durable_status == "interrupted"
+        and isinstance(context_snapshot, dict)
+        and context_snapshot.get("engine") == "langgraph"
+        and isinstance(context_snapshot.get("pending_interrupt"), dict)
+        else None
+    )
     conversation["resume_state"] = {
         "run_id": (run.run_id if run else (durable_run.get("run_id") if durable_run else None)),
         "active": (
@@ -121,7 +183,9 @@ def get_agent_conversation(
         ),
         "has_tool_events": (run.broadcaster.has_tool_events if run else durable_has_tool_events),
         "latest_stage": persisted_stage,
+        "pending_interrupt": pending_interrupt,
     }
+    conversation["pending_interrupt"] = pending_interrupt
     return conversation
 
 
@@ -158,34 +222,8 @@ async def delete_agent_conversation(
     # CancelledError 分支,该分支会 save_partial_assistant_text 落库。若先删
     # 会话记录,后写的 partial 会挂到已不存在的 conversation_id 上成为孤儿
     # 消息(FK 缺失时残留脏数据)。先 cancel 让 task 收尾、再删 DB。
-    local_run = active_run_registry.get(conversation_id)
-    cancelled = await active_run_registry.cancel(conversation_id)
-    if cancelled:
-        logger.info("[Agent] cancelled active run for deleted conversation %s", conversation_id)
-    if cancelled and local_run is None:
-        # A different worker owns the task. Its one-second durable cancel
-        # watcher must publish the terminal state before the parent
-        # conversation is removed, otherwise its partial/trace writes would
-        # target a deleted row.
-        deadline = asyncio.get_running_loop().time() + 10.0
-        while asyncio.get_running_loop().time() < deadline:
-            durable = await asyncio.to_thread(
-                db_manager.get_agent_run,
-                conversation_id=conversation_id,
-            )
-            if durable is None or durable.get("status") not in {
-                "queued",
-                "running",
-                "recovering",
-            }:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail="任务正在其他节点停止，请稍后重试删除",
-            )
-
+    await _cancel_conversation_run_before_delete(conversation_id, db_manager)
+    await agent_graph_runtime.delete_thread(conversation_id)
     deleted = service.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="对话不存在")

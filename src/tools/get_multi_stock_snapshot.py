@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Batch, entity-safe market snapshot for comparing multiple A-share stocks."""
+"""Service helper for an existing standalone multi-stock analysis endpoint.
+
+It is intentionally not registered as an Agent tool because it performs
+several source calls internally.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
-from src.tools.base import ToolSpec, object_schema
 from src.tools.get_realtime_quotes import get_realtime_quotes
 from src.tools.get_technical_indicators import get_technical_indicators
 from src.tools.symbols import resolve_securities_csv
@@ -164,21 +167,4 @@ def get_multi_stock_snapshot(symbols: str) -> dict[str, Any]:
     }
 
 
-TOOL = ToolSpec(
-    name="get_multi_stock_snapshot",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbols": {
-                "type": "string",
-                "description": "股票代码或公司名称，多个用逗号分隔，最多 12 只",
-            },
-        },
-        ["symbols"],
-    ),
-    executor=get_multi_stock_snapshot,
-    category="analysis",
-)
-
-
-__all__ = ["TOOL", "get_multi_stock_snapshot"]
+__all__ = ["get_multi_stock_snapshot"]

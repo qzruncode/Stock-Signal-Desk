@@ -7,12 +7,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.tools.base import ToolSpec, object_schema
 from src.tools.rss_source_resolver import resolve_rss_source_specs
 
 
 def _semantic_terms(subjects: list[str]) -> list[str]:
-    """Normalize Planner-supplied subjects without interpreting user prose."""
+    """Normalize caller-supplied subjects without interpreting user prose."""
     return list(dict.fromkeys(str(subject).strip().lower() for subject in subjects if len(str(subject).strip()) >= 2))
 
 
@@ -48,7 +47,7 @@ def search_research_library(
         raise ValueError(f"不支持的 category: {category}")
     subject_terms = _semantic_terms(subjects or [])
     if not subject_terms:
-        raise ValueError("subjects 必须由 Planner 提供至少一个语义主题")
+        raise ValueError("subjects 必须提供至少一个语义主题")
     if not 1 <= days <= 3650 or not 1 <= limit <= 30:
         raise ValueError("days 必须为 1..3650，limit 必须为 1..30")
     resolved = category
@@ -261,51 +260,4 @@ def search_research_library(
     }
 
 
-TOOL = ToolSpec(
-    name="search_research_library",
-    description=(
-        "仅用于行业、宏观、期货、评级及跨机构专题研究资料检索。若用户询问一只具体 A 股的券商个股研报，"
-        "必须使用 get_research_report；若询问公司新闻或公告，不要调用本工具。来源由程序从助手既有 "
-        "RSSHub 财经目录按信息需求、参数可满足性、健康状态和相关性动态选择。"
-    ),
-    parameters=object_schema(
-        {
-            "query": {"type": "string", "description": "Planner 组织的检索表达式"},
-            "category": {
-                "type": "string",
-                "enum": ["industry", "macro", "futures", "rating"],
-                "description": "Planner 已解析的研究类别",
-            },
-            "subjects": {
-                "type": "array",
-                "items": {"type": "string"},
-                "minItems": 1,
-                "maxItems": 12,
-                "description": "Planner 提取的核心研究主题",
-            },
-            "futures_type": {
-                "type": "string",
-                "enum": [
-                    "black",
-                    "enchem",
-                    "nonfe",
-                    "agri",
-                    "bond",
-                    "exrate",
-                    "option",
-                    "ship",
-                    "stockindex_IM/IF/IH/IC",
-                    "macro",
-                ],
-                "description": "仅期货研究可选的结构化品类",
-            },
-            "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 365},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
-            "include_content": {"type": "boolean", "default": False},
-            "fallback_to_web": {"type": "boolean", "default": True},
-        },
-        ["query", "category", "subjects"],
-    ),
-    executor=search_research_library,
-    category="research",
-)
+__all__ = ["search_research_library"]

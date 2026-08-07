@@ -95,6 +95,13 @@ class ChatSessionService:
             "limit": safe_limit,
         }
 
+    def list_conversation_ids(self) -> List[str]:
+        """Return all visible conversation ids for this tenant and owner."""
+        return self.db.list_chat_conversation_ids(
+            tenant_id=self._tenant_id,
+            owner_id=self._owner_id,
+        )
+
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         conversation = self.db.get_chat_conversation(
             conversation_id,
@@ -119,39 +126,14 @@ class ChatSessionService:
         }
 
     def get_agent_context(self, conversation_id: str) -> Dict[str, Any]:
-        """Read server-owned semantic context without inspecting rendered answers."""
-        conversation = self.db.get_chat_conversation(
-            conversation_id,
-            tenant_id=self._tenant_id,
-            owner_id=self._owner_id,
-        )
-        if not conversation:
-            return {}
-        raw_context = getattr(conversation, "agent_context_json", None)
-        if raw_context:
-            try:
-                value = json.loads(raw_context)
-            except (TypeError, ValueError):
-                value = None
-            if isinstance(value, dict):
-                return value
+        """Legacy orchestration JSON is intentionally never executable.
 
-        raw = getattr(conversation, "thread_state_json", None)
-        if not raw:
-            return {}
-        try:
-            thread_state = json.loads(raw)
-        except (TypeError, ValueError):
-            return {}
-        if not isinstance(thread_state, dict):
-            return {}
-        value = thread_state.get(self.AGENT_CONTEXT_KEY)
-        if isinstance(value, dict):
-            return value
-        from src.agent.conversation_context import recover_context_from_thread_state
-
-        recovered = recover_context_from_thread_state(thread_state)
-        return recovered.model_dump() if recovered.turns else {}
+        The native LangGraph checkpointer is the only control-state source.
+        This compatibility method remains for older callers and therefore
+        always returns an empty context.
+        """
+        del conversation_id
+        return {}
 
     def rename_conversation(self, conversation_id: str, title: str) -> Optional[Dict[str, Any]]:
         if not self.get_conversation(conversation_id):
@@ -284,41 +266,10 @@ class ChatSessionService:
         artifact_ids_to_keep: set[str] | None = None
         run_ids_to_keep: set[str] | None = None
         if next_agent_context is None and prune_agent_context_to_messages:
-            existing_context = self.get_agent_context(conversation_id)
-            if isinstance(existing_context, dict) and str(existing_context.get("version") or "") == "3":
-                from src.agent.orchestrator_v2.state import ConversationContextV2
-
-                parsed_context = ConversationContextV2.from_value(existing_context)
-                next_agent_context = parsed_context.retain_for_messages(normalized_messages or []).model_dump(
-                    mode="json"
-                )
-                artifact_ids_to_keep = {
-                    artifact_id
-                    for turn in next_agent_context.get("turns") or []
-                    for task in turn.get("tasks") or []
-                    for artifact_id in task.get("artifact_refs") or []
-                } | {
-                    str(reference.get("artifact_id") or "")
-                    for turn in next_agent_context.get("turns") or []
-                    for reference in turn.get("terminal_artifacts") or []
-                    if str(reference.get("artifact_id") or "")
-                }
-                run_ids_to_keep = {
-                    str(turn.get("run_id") or "")
-                    for turn in next_agent_context.get("turns") or []
-                    if str(turn.get("run_id") or "")
-                }
-            else:
-                from src.agent.conversation_context import (
-                    ConversationContext,
-                    recover_context_from_thread_state,
-                )
-
-                if existing_context:
-                    parsed_context = ConversationContext.from_value(existing_context)
-                else:
-                    parsed_context = recover_context_from_thread_state(thread_state or existing_thread_state)
-                next_agent_context = parsed_context.retain_for_messages(normalized_messages or []).model_dump()
+            # LangGraph checkpoints are the only orchestration state. Legacy
+            # context JSON remains readable with old history but is never
+            # migrated, pruned, or re-entered into a new turn.
+            next_agent_context = {}
 
         agent_context_json = None
         if next_agent_context is not None:

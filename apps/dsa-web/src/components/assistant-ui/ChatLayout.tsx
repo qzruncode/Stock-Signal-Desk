@@ -8,14 +8,16 @@ import {
   PanelLeftCloseIcon,
   PanelLeftIcon,
   RefreshCcwIcon,
+  ShieldAlertIcon,
   XIcon,
 } from 'lucide-react';
-import type { ChatConversationItem } from '../../api/agent';
+import type { ChatConversationItem, PendingAgentInterrupt } from '../../api/agent';
 import { analysisApi } from '../../api/analysis';
 import { useTaskStream } from '../../hooks/useTaskStream';
 import type { TaskInfo } from '../../types/analysis';
 import { isFloatingAnalysisTaskVisible } from '../../utils/analysisTaskVisibility';
 import { cn } from '../../utils/cn';
+import { QuestionNavigator } from './QuestionNavigator';
 import { ThreadListSidebar } from './threadlist-sidebar';
 
 const Thread = lazy(() => import('./thread'));
@@ -35,7 +37,12 @@ export type ChatLayoutProps = {
   onDeleteConversation: (conversation: ChatConversationItem) => void;
   onDeleteUserTurn: (messageId: string) => void;
   onCancelRun: () => void;
-  onBatchDeleteConversations: (conversationIds: string[]) => Promise<void>;
+  isClearingConversations: boolean;
+  onClearAllConversations: () => void;
+  pendingInterrupt: PendingAgentInterrupt | null;
+  approvalDecision: 'approve' | 'reject' | null;
+  approvalError: string | null;
+  onInterruptDecision: (decision: 'approve' | 'reject') => void;
 };
 
 export const ChatLayout: React.FC<ChatLayoutProps> = ({
@@ -53,7 +60,12 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   onDeleteConversation,
   onDeleteUserTurn,
   onCancelRun,
-  onBatchDeleteConversations,
+  isClearingConversations,
+  onClearAllConversations,
+  pendingInterrupt,
+  approvalDecision,
+  approvalError,
+  onInterruptDecision,
 }) => {
   const [isDesktop, setIsDesktop] = useState(false);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
@@ -118,7 +130,8 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               onSelect={onSelectConversation}
               onRename={onRenameConversation}
               onDelete={onDeleteConversation}
-              onBatchDelete={onBatchDeleteConversations}
+              isClearingAll={isClearingConversations}
+              onClearAll={onClearAllConversations}
               onCollapse={() => setIsDesktopSidebarCollapsed(true)}
             />
           </div>
@@ -174,7 +187,11 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               }}
               onRename={onRenameConversation}
               onDelete={onDeleteConversation}
-              onBatchDelete={onBatchDeleteConversations}
+              isClearingAll={isClearingConversations}
+              onClearAll={() => {
+                setMobileSidebarState('closing');
+                onClearAllConversations();
+              }}
             />
           </div>
         </div>
@@ -182,22 +199,25 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <AnalysisTaskActivity />
-        <button
-          type="button"
-          onClick={() => {
-            if (!isDesktop) {
-              setMobileSidebarState((value) => (value === 'open' ? 'closing' : 'open'));
-            }
-          }}
-          className={cn(
-            'fixed right-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-xl border border-border',
-            'bg-card text-muted-foreground shadow-sm transition hover:text-foreground',
-            'sm:h-10 sm:w-10 lg:hidden',
-          )}
-          aria-label={mobileSidebarOpen ? '收起对话列表' : '展开对话列表'}
-        >
-          {mobileSidebarOpen ? <PanelLeftCloseIcon className="size-4" /> : <PanelLeftIcon className="size-4" />}
-        </button>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-14 items-start justify-end px-3 pt-2 lg:h-9 lg:px-6 lg:pt-1">
+          <div className="pointer-events-auto flex items-center gap-3">
+            <QuestionNavigator />
+            {!isDesktop ? (
+              <button
+                type="button"
+                onClick={() => setMobileSidebarState((value) => (value === 'open' ? 'closing' : 'open'))}
+                className={cn(
+                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border',
+                  'bg-card text-muted-foreground shadow-sm transition hover:text-foreground',
+                  'sm:h-9 sm:w-9',
+                )}
+                aria-label={mobileSidebarOpen ? '收起对话列表' : '展开对话列表'}
+              >
+                {mobileSidebarOpen ? <PanelLeftCloseIcon className="size-3.5" /> : <PanelLeftIcon className="size-3.5" />}
+              </button>
+            ) : null}
+          </div>
+        </div>
 
         {streamError ? (
           <div className="absolute left-3 right-13 top-14 z-10 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800 shadow-sm sm:left-4 sm:right-14 sm:top-3 lg:left-4">
@@ -221,6 +241,14 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
           <Suspense fallback={<ChatLoadingFallback />}>
             <Thread onUserCancel={onCancelRun} onDeleteUserTurn={onDeleteUserTurn} />
           </Suspense>
+          {pendingInterrupt ? (
+            <ApprovalCard
+              interrupt={pendingInterrupt}
+              decision={approvalDecision}
+              error={approvalError}
+              onDecision={onInterruptDecision}
+            />
+          ) : null}
           {isConversationSwitching ? (
             <ConversationSwitchOverlay
               error={conversationSwitchError}
@@ -232,6 +260,62 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
     </div>
   );
 };
+
+function ApprovalCard({
+  interrupt,
+  decision,
+  error,
+  onDecision,
+}: {
+  interrupt: PendingAgentInterrupt;
+  decision: 'approve' | 'reject' | null;
+  error: string | null;
+  onDecision: (decision: 'approve' | 'reject') => void;
+}) {
+  const busy = decision !== null;
+  return (
+    <div className="absolute bottom-24 left-3 right-3 z-20 mx-auto max-w-2xl rounded-2xl border border-amber-300/70 bg-amber-50/95 p-4 shadow-xl backdrop-blur sm:left-5 sm:right-5">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700">
+          <ShieldAlertIcon className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="font-semibold text-amber-950">需要你的确认</p>
+          <p className="mt-1 text-sm leading-6 text-amber-900">{interrupt.summary}</p>
+          <div className="mt-2 rounded-lg border border-amber-200/80 bg-white/70 px-3 py-2 text-xs text-amber-950">
+            <p><span className="text-amber-700">操作：</span>{interrupt.toolName}</p>
+            {Object.keys(interrupt.arguments || {}).length > 0 ? (
+              <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-amber-900">
+                {JSON.stringify(interrupt.arguments, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+          {error ? <p className="mt-2 text-xs text-red-700">{error}</p> : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDecision('approve')}
+              className="inline-flex h-9 items-center justify-center rounded-lg bg-amber-700 px-4 text-sm font-medium text-white transition hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {decision === 'approve' ? <Loader2Icon className="mr-2 size-4 animate-spin" /> : null}
+              批准一次
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onDecision('reject')}
+              className="inline-flex h-9 items-center justify-center rounded-lg border border-amber-300 bg-white px-4 text-sm font-medium text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {decision === 'reject' ? <Loader2Icon className="mr-2 size-4 animate-spin" /> : null}
+              拒绝
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AnalysisTaskActivity() {
   const [tasks, setTasks] = useState<Record<string, TaskInfo>>({});

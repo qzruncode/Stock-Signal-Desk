@@ -5,6 +5,7 @@ export type AgentRunStatus =
   | 'queued'
   | 'running'
   | 'recovering'
+  | 'interrupted'
   | 'completed'
   | 'partial'
   | 'failed'
@@ -26,10 +27,11 @@ export interface AgentRunSummary {
   conversationId: string;
   status: AgentRunStatus;
   errorCode?: string | null;
-  capabilities: string[];
-  taskCount: number;
-  outcomeCount: number;
-  coverageComplete: boolean;
+  engine?: string | null;
+  tools: string[];
+  actionCount: number;
+  evidenceCount: number;
+  claimEvidenceVerified: boolean;
   qualityScore: number;
   qualityStatus: 'passed' | 'failed';
   feedback?: AgentRunFeedback | null;
@@ -73,10 +75,12 @@ export interface AgentRunDetail {
     run: Record<string, unknown>;
     trace: Record<string, unknown>;
     qualityProjection: {
-      tasks?: Array<Record<string, unknown>>;
-      outcomes?: Array<Record<string, unknown>>;
-      artifactCount?: number;
-      goal?: Record<string, unknown>;
+      intent?: Record<string, unknown>;
+      actions?: Array<Record<string, unknown>>;
+      toolResults?: Array<Record<string, unknown>>;
+      evidence?: Array<Record<string, unknown>>;
+      verification?: Record<string, unknown>;
+      budgets?: Record<string, unknown>;
     };
     steps: Array<Record<string, unknown>>;
     artifacts: Array<Record<string, unknown>>;
@@ -113,7 +117,7 @@ export interface AgentQualitySummary {
 export const runExplorerApi = {
   async listRuns(params: {
     status?: string;
-    capability?: string;
+    tool?: string;
     page?: number;
     limit?: number;
   } = {}): Promise<AgentRunListResponse> {

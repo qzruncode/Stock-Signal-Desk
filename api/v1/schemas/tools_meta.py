@@ -44,6 +44,18 @@ class ToolMeta(BaseModel):
     name: str = Field(..., description="工具名（OpenAI function name）")
     category: ToolCategory = Field(..., description="工具分类")
     description: str = Field(..., description="工具描述（原文，超过 500 字截断）")
+    retrieval_description: str = Field(..., description="动态工具检索使用的描述")
+    effect: Literal["read", "side_effect"] = Field(..., description="调用是否产生副作用")
+    effect_mode: Literal["fixed", "argument_dependent"] = Field(
+        ...,
+        description="副作用是否由调用参数动态判定",
+    )
+    approval_policy: Literal["required_for_side_effect"] = Field(..., description="审批策略")
+    timeout_seconds: Optional[float] = Field(None, description="单次调用超时")
+    max_attempts: int = Field(..., ge=1, description="最大尝试次数；副作用运行时强制为一次")
+    retry_backoff_seconds: float = Field(..., ge=0, description="只读调用的重试退避")
+    idempotent: bool = Field(..., description="是否支持幂等重放")
+    sensitive_fields: List[str] = Field(default_factory=list, description="审批卡片需要脱敏的字段")
     parameters: List[ToolParameterSpec] = Field(default_factory=list, description="参数列表")
     typed: bool = Field(False, description="参数和结果是否都由同源运行时模型校验")
     args_schema: Dict[str, Any] = Field(
@@ -62,25 +74,3 @@ class ToolRegistryResponse(BaseModel):
     total: int = Field(..., description="工具总数")
     categories: Dict[str, int] = Field(default_factory=dict, description="各 category 的工具计数")
     tools: List[ToolMeta] = Field(default_factory=list, description="工具列表")
-
-
-class ToolExecuteRequest(BaseModel):
-    """POST /api/v1/agent/tool-registry/execute 请求。"""
-
-    tool_name: str = Field(..., description="工具名(OpenAI function name)")
-    arguments: Dict[str, Any] = Field(default_factory=dict, description="工具参数")
-
-
-class ToolExecuteResponse(BaseModel):
-    """POST /api/v1/agent/tool-registry/execute 响应。
-
-    success=False 时 result 为 None、error 填可读错误信息;
-    success=True 时 result 为压缩 + 联网兜底后的 payload(与真实 agent 调用看到的相同)。
-    """
-
-    tool_name: str = Field(..., description="工具名")
-    arguments: Dict[str, Any] = Field(default_factory=dict, description="实际执行用的参数")
-    success: bool = Field(..., description="是否执行成功")
-    result: Optional[Any] = Field(None, description="压缩 + 兜底后的结果 payload")
-    error: Optional[str] = Field(None, description="失败时的可读错误信息")
-    duration_ms: int = Field(..., description="服务端执行耗时(毫秒)")

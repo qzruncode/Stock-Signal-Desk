@@ -30,12 +30,12 @@ export interface ChatConversationThreadState {
   messages: ChatConversationThreadStateMessage[];
 }
 
-export interface PersistedAgentStageV2 {
-  event: 'agent_stage_v2';
+export interface PersistedAgentStage {
+  event: 'agent_stage' | 'agent_stage_v2';
   runId?: string;
   run_id?: string;
   stage: string;
-  status: 'started' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
+  status: 'started' | 'completed' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
   taskId?: string | null;
   task_id?: string | null;
   errorCode?: string | null;
@@ -43,6 +43,18 @@ export interface PersistedAgentStageV2 {
   summary?: string;
   occurredAt?: string;
   occurred_at?: string;
+}
+
+export interface PendingAgentInterrupt {
+  interruptId: string;
+  runId: string;
+  conversationId?: string;
+  fingerprint: string;
+  actionId?: string;
+  toolName: string;
+  summary: string;
+  arguments: Record<string, unknown>;
+  createdAt?: string;
 }
 
 export interface ChatConversationDetail extends ChatConversationItem {
@@ -58,8 +70,10 @@ export interface ChatConversationDetail extends ChatConversationItem {
     eventCursor?: number;
     assistantText: string;
     hasToolEvents?: boolean;
-    latestStage?: PersistedAgentStageV2 | null;
+    latestStage?: PersistedAgentStage | null;
+    pendingInterrupt?: PendingAgentInterrupt | null;
   };
+  pendingInterrupt?: PendingAgentInterrupt | null;
 }
 
 /**
@@ -69,12 +83,34 @@ export interface ChatConversationDetail extends ChatConversationItem {
  */
 const normalizeConversationDetail = (payload: Record<string, unknown>): ChatConversationDetail => {
   const rawThreadState = payload.thread_state ?? payload.threadState;
+  const rawPending = payload.pending_interrupt ?? payload.pendingInterrupt;
   const data = toCamelCase<ChatConversationDetail>(payload);
+  const normalizedPending = rawPending && typeof rawPending === 'object' && !Array.isArray(rawPending)
+    ? {
+        ...toCamelCase<PendingAgentInterrupt>(rawPending as Record<string, unknown>),
+        arguments: (
+          (rawPending as Record<string, unknown>).arguments
+          && typeof (rawPending as Record<string, unknown>).arguments === 'object'
+          && !Array.isArray((rawPending as Record<string, unknown>).arguments)
+        )
+          ? (rawPending as Record<string, unknown>).arguments as Record<string, unknown>
+          : {},
+      }
+    : null;
   return {
     ...data,
     ...(rawThreadState === undefined
       ? {}
       : { threadState: rawThreadState as ChatConversationThreadState | null }),
+    pendingInterrupt: normalizedPending,
+    ...(data.resumeState
+      ? {
+          resumeState: {
+            ...data.resumeState,
+            pendingInterrupt: normalizedPending,
+          },
+        }
+      : {}),
     messages: (data.messages || []).map((message) => toCamelCase<ChatConversationMessage>(message)),
   };
 };
@@ -141,11 +177,35 @@ export const agentApi = {
     await apiClient.delete(`/api/v1/agent/conversations/${conversationId}`);
   },
 
+  async clearAllConversations(): Promise<number> {
+    const response = await apiClient.delete<{ deleted?: number }>('/api/v1/agent/conversations');
+    return Number(response.data.deleted || 0);
+  },
+
   async cancelConversationRun(conversationId: string): Promise<boolean> {
     const response = await apiClient.post<{ cancelled: boolean }>(
       `/api/v1/agent/conversations/${conversationId}/cancel`,
     );
     return response.data.cancelled === true;
+  },
+
+  async decideInterrupt(
+    conversationId: string,
+    interruptId: string,
+    payload: {
+      runId: string;
+      fingerprint: string;
+      decision: 'approve' | 'reject';
+    },
+  ): Promise<void> {
+    await apiClient.post(
+      `/api/v1/agent/conversations/${conversationId}/interrupts/${interruptId}/decision`,
+      {
+        run_id: payload.runId,
+        fingerprint: payload.fingerprint,
+        decision: payload.decision,
+      },
+    );
   },
 
 };

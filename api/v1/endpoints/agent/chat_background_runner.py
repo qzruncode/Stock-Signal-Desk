@@ -1,38 +1,46 @@
-# -*- coding: utf-8 -*-
-"""Durable background run lifecycle."""
+"""Durable background lifecycle for the LangGraph control plane."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Mapping
+from typing import Any, Mapping
 
+from src.agent.langgraph_runtime import agent_graph_runtime
+from src.agent.message_normalization import latest_user_text
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
 from src.agent.terminal_publisher import AgentTerminalPublisher
-from src.agent.orchestrator_v2.contracts import AgentErrorCode, AgentStage, AgentStageEventV2, StageStatus
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
-from src.agent.user_memory import build_explicit_memory_message
+
 
 logger = logging.getLogger(__name__)
+
+
+async def _checkpoint_state(conversation_id: str) -> dict[str, Any]:
+    try:
+        return await agent_graph_runtime.get_state(conversation_id)
+    except Exception:
+        logger.warning("[Agent] unable to read LangGraph state", exc_info=True)
+        return {}
+
 
 async def _execute_background_agent_run(
     *,
     controller: RunBroadcaster,
     run: ActiveRun,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     body: Mapping[str, Any],
     llm_cfg: Mapping[str, Any],
-    agent_context: Mapping[str, Any] | None,
     conversation_id: str,
     db_manager: DatabaseManager,
     session_service: ChatSessionService,
-    recovery_checkpoint: Mapping[str, Any] | None = None,
-    pipeline_runner: Any,
-    terminal_status_mapper: Any,
-    explicit_memories: List[Mapping[str, Any]] | None = None,
+    tenant_id: str,
+    owner_id: str,
+    resume_decision: Mapping[str, Any] | None = None,
+    recovery: bool = False,
 ) -> None:
-    """Execute one durable run; safe to call for both first-run and recovery."""
+    """Run, resume, or recover one checkpointed graph invocation."""
     from src.services.agent_prompt_service import AgentPromptService
 
     system_prompt, is_fallback = AgentPromptService(db_manager).get_active_system_prompt()
@@ -40,131 +48,113 @@ async def _execute_background_agent_run(
         "[Agent] system prompt %s",
         "fallback to source default" if is_fallback else "from template",
     )
-
-    last_save_ts = 0.0
-    state: Dict[str, Any] = {"assistant_text": ""}
     terminal_publisher = AgentTerminalPublisher(
         controller=controller,
         run=run,
         messages=messages,
         request_body=body,
-        initial_agent_context=agent_context,
         conversation_id=conversation_id,
         database=db_manager,
         session_service=session_service,
-        state=state,
         worker_id=active_run_registry.worker_id,
     )
 
-    async def on_progress(assistant_text_so_far: str) -> None:
-        nonlocal last_save_ts
-        controller.assistant_text_snapshot = assistant_text_so_far
-        now = asyncio.get_running_loop().time()
-        if now - last_save_ts < 3.0:
-            return
-        last_save_ts = now
-        await asyncio.to_thread(
-            session_service.save_partial_assistant_text,
-            conversation_id,
-            assistant_text_so_far,
-        )
-
-    final_response_text = ""
     try:
-        memory_message = build_explicit_memory_message(
-            explicit_memories or []
-        )
-        execution_messages = (
-            [memory_message, *messages]
-            if memory_message is not None
-            else messages
-        )
-        final_response_text = await pipeline_runner(
-            controller,
-            execution_messages,
-            dict(llm_cfg),
-            system_prompt,
-            on_progress=on_progress,
-            state=state,
-            conversation_context=agent_context,
-            conversation_id=conversation_id,
-            run_id=run.run_id,
-            run_attempt=run.attempt,
-            recovery_checkpoint=recovery_checkpoint,
-            db_manager=db_manager,
-        )
+        common = {
+            "llm_config": dict(llm_cfg),
+            "database": db_manager,
+            "controller": controller,
+            "run_id": run.run_id,
+            "conversation_id": conversation_id,
+            "run_attempt": run.attempt,
+            "tenant_id": tenant_id,
+            "owner_id": owner_id,
+        }
+        if resume_decision is not None:
+            graph_result = await agent_graph_runtime.resume(
+                interrupt_id=str(resume_decision.get("interrupt_id") or ""),
+                decision={
+                    "decision": str(resume_decision.get("decision") or ""),
+                    "fingerprint": str(resume_decision.get("fingerprint") or ""),
+                },
+                **common,
+            )
+        elif recovery:
+            graph_result = await agent_graph_runtime.recover(**common)
+        else:
+            graph_result = await agent_graph_runtime.run_new(
+                messages=messages,
+                user_text=latest_user_text(messages),
+                system_prompt=system_prompt,
+                **common,
+            )
 
-        terminal_status = terminal_status_mapper(state)
-        terminal_error = (
-            str(state.get("_run_error_code") or "")
-            if state.get("_run_status")
-            in {
-                "failed",
-                "blocked",
-                "partial",
-            }
-            else None
-        )
+        if graph_result.interrupted:
+            pending = dict(graph_result.pending_interrupt or {})
+            await controller.drain()
+            parked = await asyncio.to_thread(
+                db_manager.interrupt_agent_run,
+                run.run_id,
+                worker_id=active_run_registry.worker_id,
+                attempt=run.attempt,
+                checkpoint={
+                    "engine": "langgraph",
+                    "thread_id": agent_graph_runtime.thread_id(conversation_id),
+                    "pending_interrupt": pending,
+                },
+            )
+            if not parked:
+                raise RuntimeError("failed to persist LangGraph approval interrupt")
+            await active_run_registry.mark_interrupted(conversation_id)
+            return
+
+        final_text = graph_result.final_text
+        controller.assistant_text_snapshot = final_text
+        terminal_status = graph_result.status
+        if terminal_status not in {"completed", "partial", "failed", "cancelled", "blocked"}:
+            terminal_status = "failed"
         await terminal_publisher.commit(
             status=terminal_status,
-            final_text=final_response_text,
-            error_code=terminal_error,
-            error_detail=terminal_error,
+            final_text=final_text,
+            graph_state=graph_result.state,
+            error_code=graph_result.error_code,
+            error_detail=graph_result.error_code,
         )
         await active_run_registry.mark_done(
             conversation_id,
             terminal_status,
-            final_text=final_response_text,
-            error=terminal_error,
+            final_text=final_text,
+            error=graph_result.error_code,
             persist=False,
         )
     except asyncio.CancelledError:
-        partial = str(state.get("assistant_text") or "")
         if active_run_registry.shutting_down or run.cancel_reason in {"restart", "lease_lost"}:
-            # A planned process restart is not a user cancellation.  Preserve
-            # the partial snapshot and leave the durable run active with a
-            # released lease; the next worker will reclaim the same run_id.
-            if partial.strip():
-                try:
-                    await asyncio.shield(
-                        asyncio.to_thread(
-                            session_service.save_partial_assistant_text,
-                            conversation_id,
-                            partial,
-                        )
-                    )
-                except (asyncio.CancelledError, Exception):
-                    logger.warning(
-                        "[Agent] restart-time partial save failed",
-                        exc_info=True,
-                    )
             raise
-
-        cancelled_stage = AgentStageEventV2(
-            run_id=run.run_id,
-            stage=AgentStage.COMPLETED,
-            status=StageStatus.CANCELLED,
-            summary="用户已停止本轮分析",
+        state = await _checkpoint_state(conversation_id)
+        partial = str(
+            state.get("answer_final")
+            or state.get("answer_draft")
+            or controller.assistant_text_snapshot
+            or ""
+        ).strip()
+        partial = partial + "\n\n[已停止]" if partial else "[已停止]"
+        latest_stage = {
+            "event": "agent_stage",
+            "engine": "langgraph",
+            "run_id": run.run_id,
+            "stage": "publish",
+            "status": "cancelled",
+            "summary": "用户已停止本轮任务",
+        }
+        controller.add_data(latest_stage)
+        await terminal_publisher.commit(
+            status="cancelled",
+            final_text=partial,
+            graph_state=state,
+            error_code="cancelled",
+            error_detail="cancelled by user",
+            latest_stage=latest_stage,
         )
-        controller.add_data(cancelled_stage.model_dump(mode="json"))
-        partial = partial.rstrip() + "\n\n[已停止]" if partial.strip() else "[已停止]"
-        try:
-            await terminal_publisher.commit(
-                status="cancelled",
-                final_text=partial,
-                error_code="cancelled",
-                error_detail="cancelled by user",
-                latest_stage=cancelled_stage,
-            )
-        except Exception:
-            logger.exception(
-                "[Agent] atomic cancel terminal commit failed run_id=%s",
-                run.run_id,
-            )
-            # Leave the durable active slot intact. The expired lease exposes
-            # the failed terminal commit to recovery/operations instead of
-            # publishing a transcript/run mismatch.
-            raise
         await active_run_registry.mark_done(
             conversation_id,
             "cancelled",
@@ -174,30 +164,36 @@ async def _execute_background_agent_run(
         )
         raise
     except Exception as exc:
-        logger.exception("[Agent] background run failed")
+        logger.exception("[Agent] LangGraph background run failed")
         controller.add_error(str(exc))
-        failed_stage = AgentStageEventV2(
-            run_id=run.run_id,
-            stage=AgentStage.COMPLETED,
-            status=StageStatus.FAILED,
-            error_code=AgentErrorCode.TOOL_FAILED,
-            summary="本轮分析发生未处理的内部异常",
-        )
-        controller.add_data(failed_stage.model_dump(mode="json"))
-        partial = str(state.get("assistant_text") or "")
+        state = await _checkpoint_state(conversation_id)
+        partial = str(
+            state.get("answer_final")
+            or state.get("answer_draft")
+            or controller.assistant_text_snapshot
+            or ""
+        ).strip()
+        latest_stage = {
+            "event": "agent_stage",
+            "engine": "langgraph",
+            "run_id": run.run_id,
+            "stage": "publish",
+            "status": "failed",
+            "error_code": "agent_runtime_failed",
+            "summary": "本轮任务发生未处理异常",
+        }
+        controller.add_data(latest_stage)
         try:
             await terminal_publisher.commit(
                 status="failed",
-                error_code=AgentErrorCode.TOOL_FAILED.value,
-                error_detail=str(exc),
                 final_text=partial,
-                latest_stage=failed_stage,
+                graph_state=state,
+                error_code="agent_runtime_failed",
+                error_detail=f"{type(exc).__name__}: {exc}",
+                latest_stage=latest_stage,
             )
         except Exception:
-            logger.exception(
-                "[Agent] atomic failed terminal commit failed run_id=%s",
-                run.run_id,
-            )
+            logger.exception("[Agent] atomic failed terminal commit failed run_id=%s", run.run_id)
         await active_run_registry.mark_done(
             conversation_id,
             "failed",

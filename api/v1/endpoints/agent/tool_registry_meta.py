@@ -1,38 +1,23 @@
 # -*- coding: utf-8 -*-
-"""Tool registry metadata + 执行端点。
+"""Read-only metadata for the atomic tool registry.
 
 只读反射 src.tools.registry.ToolRegistry，供前端 /setting 页展示当前接入
-LLM 模型的全部工具(GET /agent/tool-registry);并提供单工具试运行端点
-(POST /agent/tool-registry/execute),复用与真实 agent chat 完全一致的执行链
-(registry.execute → _compact_tool_result → _maybe_attach_search_fallback),
-使 setting 页「测试」结果 = LLM 实际看到的结果。不修改 ToolRegistry 自身的
-注册逻辑。
+LLM 模型的全部工具(GET /agent/tool-registry)。工具执行只允许经 LangGraph
+策略与审批节点进入，不提供可绕过审批的调试执行端点。
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import time
 from typing import Any, Dict, List, Optional
 
 from api.v1.endpoints.agent import router
 from api.v1.schemas.tools_meta import (
     ToolCategory,
-    ToolExecuteRequest,
-    ToolExecuteResponse,
     ToolMeta,
     ToolParameterSpec,
     ToolRegistryResponse,
 )
-from api.v1.endpoints.agent.tools import (
-    _compact_tool_result,
-    _maybe_attach_search_fallback,
-)
 from src.tools.registry import ToolRegistry
-from src.tools.process_runner import execute_tool_isolated
-
-logger = logging.getLogger(__name__)
 
 
 _DESCRIPTION_MAX_LEN = 500
@@ -101,9 +86,18 @@ def _build_tool_meta(tool_def: Any) -> ToolMeta:
         name=tool_def.name,
         category=category,  # type: ignore[arg-type]
         description=_truncate_description(tool_def.description or ""),
-        parameters=_flatten_parameters(tool_def.parameters or {}),
+        retrieval_description=_truncate_description(tool_def.retrieval_text or tool_def.description or ""),
+        effect=tool_def.effect,
+        effect_mode=tool_def.effect_mode,
+        approval_policy=tool_def.approval_policy,
+        timeout_seconds=tool_def.timeout_seconds,
+        max_attempts=tool_def.max_attempts,
+        retry_backoff_seconds=tool_def.retry_backoff_seconds,
+        idempotent=tool_def.idempotent,
+        sensitive_fields=list(tool_def.sensitive_fields),
+        parameters=_flatten_parameters(tool_def.model_parameters()),
         typed=(tool_def.args_model is not None and tool_def.result_model is not None),
-        args_schema=dict(tool_def.parameters or {}),
+        args_schema=tool_def.model_parameters(),
         result_schema=(tool_def.result_model.model_json_schema() if tool_def.result_model is not None else None),
     )
 
@@ -132,72 +126,3 @@ def list_tool_registry(
         categories=categories,
         tools=tools,
     )
-
-
-@router.post("/agent/tool-registry/execute", response_model=ToolExecuteResponse)
-async def execute_tool(req: ToolExecuteRequest) -> ToolExecuteResponse:
-    """单工具试运行。
-
-    复用与真实 agent chat 一致的执行链(execute → 压缩 → 联网兜底),
-    使 setting 页「测试」结果与 LLM 实际看到的相同。同步网络 IO 丢进线程池,
-    避免阻塞事件循环(与 chat.py 的 _execute_one_tool 同思路)。工具不存在、
-    参数错误或任意异常均以 success=False + error 返回,保持响应结构统一,
-    供前端按 success 字段判断。原生风险工具仍使用进程隔离，但不设置应用层
-    硬截止；执行由工具完成、真实异常或用户取消结束。
-    """
-    tool_name = (req.tool_name or "").strip()
-    args = _registry.normalize_arguments(tool_name, req.arguments or {})
-    start = time.perf_counter()
-
-    def _elapsed_ms() -> int:
-        return int((time.perf_counter() - start) * 1000)
-
-    try:
-
-        def _sync_fetch() -> Any:
-            # Every registered tool runs out-of-process.  Several apparently
-            # harmless tools can enter AKShare/libmini_racer indirectly when a
-            # cache misses.  Running only a hand-maintained subset in isolation
-            # leaves the FastAPI worker vulnerable to a native abort during
-            # concurrent probes.
-            from src.tools.process_runner import STATEFUL_TOOL_NAMES
-
-            result = (
-                _registry.execute(tool_name, args)
-                if tool_name in STATEFUL_TOOL_NAMES
-                else execute_tool_isolated(
-                    tool_name,
-                    args,
-                )
-            )
-            compacted = _compact_tool_result(tool_name, result)
-            return _maybe_attach_search_fallback(tool_name, args, compacted)
-
-        payload = await asyncio.to_thread(_sync_fetch)
-        succeeded = not (isinstance(payload, dict) and payload.get("success") is False)
-        errors = payload.get("errors") if isinstance(payload, dict) else None
-        return ToolExecuteResponse(
-            tool_name=tool_name,
-            arguments=args,
-            success=succeeded,
-            result=payload,
-            error=(str(errors[0]) if not succeeded and isinstance(errors, list) and errors else None),
-            duration_ms=_elapsed_ms(),
-        )
-    except KeyError:
-        return ToolExecuteResponse(
-            tool_name=tool_name,
-            arguments=args,
-            success=False,
-            error=f"工具不存在: {tool_name}",
-            duration_ms=_elapsed_ms(),
-        )
-    except Exception as e:  # noqa: BLE001 — 试运行端点要把任意异常透传给前端
-        logger.exception("[tool-registry] execute failed: %s", tool_name)
-        return ToolExecuteResponse(
-            tool_name=tool_name,
-            arguments=args,
-            success=False,
-            error=str(e),
-            duration_ms=_elapsed_ms(),
-        )

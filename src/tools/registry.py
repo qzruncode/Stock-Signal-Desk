@@ -11,12 +11,16 @@ from __future__ import annotations
 import importlib
 import re
 from collections import OrderedDict
-from typing import Any, get_args
+from typing import Any
 
 from jsonschema import Draft202012Validator
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 
-from src.tools.base import ToolSpec, enforce_result_contract
+from src.tools.base import (
+    ToolSpec,
+    current_tool_effect_approval,
+    enforce_result_contract,
+)
 
 ToolDef = ToolSpec  # compatibility for existing API metadata imports
 
@@ -65,31 +69,18 @@ def normalize_tool_arguments(tool: ToolSpec, arguments: dict[str, Any]) -> dict[
     return normalized
 
 
-def _bound_model_type(annotation: Any) -> type[BaseModel] | None:
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return annotation
-    for candidate in get_args(annotation):
-        model = _bound_model_type(candidate)
-        if model is not None:
-            return model
-    return None
-
-
 TOOL_MODULES: tuple[str, ...] = (
     # Local universe and user portfolio operations
     "search_stocks",
     "manage_watchlist",
     "manage_watchlist_groups",
-    "filter_watchlist_by_theme",
     "get_data_health",
-    # Persisted analysis workflows formerly exposed by Dashboard
-    "run_stock_analysis",
+    # Persisted records and single external operations
     "get_analysis_status",
     "search_analysis_history",
     "read_analysis_report",
     "delete_analysis_history",
     "manage_analysis_templates",
-    "run_batch_analysis",
     "manage_batch_run",
     "manage_analysis_schedule",
     "get_notification_status",
@@ -99,24 +90,11 @@ TOOL_MODULES: tuple[str, ...] = (
     "get_kline",
     "get_history_data",
     "get_technical_indicators",
-    "get_company_structured_evidence",
-    "get_multi_stock_snapshot",
     "get_multi_stock_financials",
-    "get_multi_stock_decision_evidence",
-    "prepare_market_mainline_snapshot",
-    "evaluate_market_mainline_gate",
-    "evaluate_multi_stock_buy_criteria",
-    "analyze_stock_catalysts",
-    "get_domain_stock_candidates",
-    "get_company_theme_evidence",
-    "screen_atr_volatility_stocks",
     # Market and sector state
     "get_market_status",
     "get_market_breadth",
-    "get_market_regime",
     "get_domain_board_catalog",
-    "get_industry_index_context",
-    "get_sector_list",
     "get_sector_flow",
     "get_stock_capital_flow",
     # Company and financial fundamentals
@@ -132,26 +110,15 @@ TOOL_MODULES: tuple[str, ...] = (
     "get_shareholder_structure",
     # Information and event evidence
     "search_news",
-    "search_financial_news",
     "discover_rss_sources",
     "inspect_rss_source",
     "read_rss_feed",
     "read_rss_item",
     "read_text_document",
     "export_rss_feed",
-    "list_financial_sources",
-    "inspect_financial_source",
-    "read_financial_feed",
-    "read_financial_article",
     "transform_webpage_to_feed",
-    "export_financial_feed",
-    "search_research_library",
-    "get_regulatory_updates",
-    "get_monetary_policy_operations",
     "get_announcements",
-    "get_risk_events",
     "get_research_report",
-    "get_social_sentiment",
     # Market context
     "get_index_data",
     "get_bond_yield",
@@ -178,8 +145,17 @@ class ToolRegistry:
                 raise ValueError(f"duplicate tool: {tool.name}")
             self._tools[tool.name] = tool
 
-    def get_all_schemas(self) -> list[dict[str, Any]]:
-        return [tool.to_openai_schema() for tool in self._tools.values()]
+    def get_all_schemas(
+        self,
+        *,
+        include_server_controlled: bool = False,
+    ) -> list[dict[str, Any]]:
+        return [
+            tool.to_openai_schema(
+                include_server_controlled=include_server_controlled,
+            )
+            for tool in self._tools.values()
+        ]
 
     def get_tool_names(self) -> list[str]:
         return list(self._tools)
@@ -219,49 +195,63 @@ class ToolRegistry:
             raise ValueError(f"invalid arguments for {name}: {details}")
         return normalized
 
-    def project_bound_argument(
+    def validate_model_arguments(
         self,
         name: str,
-        parameter: str,
-        value: Any,
-    ) -> Any:
-        """Project a predecessor result into the consumer's typed field.
-
-        Tool cards may add presentation metadata and producer result models may
-        contain fields that the consuming resource intentionally does not
-        accept. Only fields declared by the consumer model cross a Workflow
-        binding boundary.
-        """
+        arguments: dict[str, Any],
+        *,
+        approved: bool = False,
+    ) -> dict[str, Any]:
+        """Validate model-authored arguments under server-owned controls."""
         tool = self._tools.get(name)
-        if tool is None or tool.args_model is None:
+        if tool is None:
             raise KeyError(f"Tool not found: {name}")
-        field = tool.args_model.model_fields.get(parameter)
-        if field is None:
-            raise ValueError(f"{name} has no bindable parameter {parameter}")
-        projected = value
-        model_type = _bound_model_type(field.annotation)
-        if isinstance(value, dict) and parameter in value:
-            projected = value[parameter]
-        elif model_type is not None and isinstance(value, dict):
-            projected = {key: value[key] for key in model_type.model_fields if key in value}
-        validated = TypeAdapter(field.annotation).validate_python(projected)
-        if isinstance(validated, BaseModel):
-            return validated.model_dump(
-                mode="python",
-                exclude_unset=True,
+        if not isinstance(arguments, dict):
+            raise TypeError("tool arguments must be an object")
+        controlled = set(tool.server_controlled_fields)
+        supplied = sorted(controlled.intersection(arguments))
+        if supplied:
+            raise ValueError(
+                f"model cannot set server-controlled fields for {name}: "
+                + ", ".join(supplied)
             )
-        return validated
+        prepared = dict(arguments)
+        declared = set((tool.parameters or {}).get("properties") or {})
+        for field_name in controlled.intersection(declared):
+            prepared[field_name] = bool(approved)
+        return self.validate_arguments(name, prepared)
+
+    def effect_for(self, name: str, arguments: dict[str, Any]) -> str:
+        tool = self._tools.get(name)
+        if tool is None:
+            raise KeyError(f"Tool not found: {name}")
+        uncontrolled = {
+            key: value
+            for key, value in arguments.items()
+            if key not in set(tool.server_controlled_fields)
+        }
+        return tool.effect_for(uncontrolled)
 
     def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         tool = self._tools.get(name)
         if tool is None:
             raise KeyError(f"Tool not found: {name}")
-        # Direct registry callers keep the module-owned validation/result
-        # contract.  The standard-task executor calls validate_arguments()
-        # explicitly before execution so policy rejection happens before the
-        # UI exposes a tool call.
+        # The graph validates model-authored fields before dispatch; this
+        # boundary repeats the module-owned schema and result checks.
         if not isinstance(arguments, dict):
             raise TypeError("tool arguments must be an object")
+        effect_arguments = {
+            key: value
+            for key, value in arguments.items()
+            if key not in set(tool.server_controlled_fields)
+        }
+        if (
+            tool.effect_for(effect_arguments) == "side_effect"
+            and not current_tool_effect_approval()
+        ):
+            raise PermissionError(
+                f"side-effect tool {name} can only run after a server-approved interrupt"
+            )
         normalized = (
             self.validate_arguments(name, arguments)
             if tool.args_model is not None
@@ -271,26 +261,5 @@ class ToolRegistry:
         if tool.result_model is not None:
             return tool.result_model.model_validate(payload).model_dump(mode="python")
         return payload
-
-    def project_guard_blocked_result(
-        self,
-        name: str,
-        arguments: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Build a typed terminal result without launching the tool runner."""
-        tool = self._tools.get(name)
-        if tool is None:
-            raise KeyError(f"Tool not found: {name}")
-        if tool.guard_blocked_result is None:
-            raise ValueError(f"{name} has no result projector for a blocked execution guard")
-        normalized = self.validate_arguments(name, arguments)
-        payload = enforce_result_contract(
-            name,
-            tool.guard_blocked_result(normalized),
-        )
-        if tool.result_model is not None:
-            return tool.result_model.model_validate(payload).model_dump(mode="python")
-        return payload
-
 
 __all__ = ["TOOL_MODULES", "ToolDef", "ToolRegistry", "normalize_tool_arguments"]

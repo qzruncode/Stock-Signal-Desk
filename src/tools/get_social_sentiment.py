@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from src.tools._akshare import bare_symbol, cached_call, frame_records
-from src.tools.base import ToolSpec, object_schema
 
 
 def _parse_count(value: Any) -> int:
@@ -466,28 +465,4 @@ def get_social_sentiment(
     }
 
 
-TOOL = ToolSpec(
-    name="get_social_sentiment",
-    description=(
-        "采样单只 A 股的东方财富股吧公开帖子，并补充 47 条 Infos 路由中的雪球热榜精确提及；"
-        "返回公开讨论与资讯来源拆分、阅读回复热度、实际时间覆盖和东方财富千股千评趋势。"
-        "工具不使用词典判断情绪；语义极性由最终模型结合上下文分析。"
-    ),
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A 股代码或名称"},
-            "days": {"type": "integer", "minimum": 1, "maximum": 180, "default": 30},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
-            "max_pages": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 10,
-                "default": 3,
-                "description": "最多采样股吧列表页数",
-            },
-        },
-        ["symbol"],
-    ),
-    executor=get_social_sentiment,
-    category="sentiment",
-)
+__all__ = ["get_social_sentiment"]
