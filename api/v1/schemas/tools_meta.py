@@ -24,6 +24,10 @@ ToolCategory = Literal[
     "events",
     "risk",
     "action",
+    "source_read",
+    "source_catalog",
+    "source_search",
+    "deterministic_calculation",
 ]
 
 
@@ -44,7 +48,10 @@ class ToolMeta(BaseModel):
     name: str = Field(..., description="工具名（OpenAI function name）")
     category: ToolCategory = Field(..., description="工具分类")
     description: str = Field(..., description="工具描述（原文，超过 500 字截断）")
-    retrieval_description: str = Field(..., description="动态工具检索使用的描述")
+    retrieval_description: str = Field(
+        ...,
+        description="完整模型工具目录中使用的说明；字段名仅为接口兼容保留",
+    )
     effect: Literal["read", "side_effect"] = Field(..., description="调用是否产生副作用")
     effect_mode: Literal["fixed", "argument_dependent"] = Field(
         ...,
@@ -65,6 +72,10 @@ class ToolMeta(BaseModel):
     result_schema: Optional[Dict[str, Any]] = Field(
         None,
         description="运行时结果模型生成的完整 JSON Schema",
+    )
+    source_catalog: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="该通用操作可选择的完整数据源目录；source_id 只能取其中 id",
     )
 
 

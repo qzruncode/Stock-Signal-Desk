@@ -32,12 +32,12 @@ class AgentEvaluationExpectations(BaseModel):
 
     required_tools: list[str] = Field(default_factory=list)
     forbidden_tools: list[str] = Field(default_factory=list)
-    maximum_actions: int | None = Field(None, ge=1, le=500)
     allowed_statuses: list[TerminalRunStatus] = Field(
         default_factory=lambda: ["completed"]
     )
-    require_all_tools_succeeded: bool = True
-    require_claim_evidence_verified: bool = True
+    require_all_tools_succeeded: bool = False
+    require_evidence_citations: bool = True
+    require_evidence_sources: bool = True
     minimum_evidence_items: int = Field(0, ge=0, le=100_000)
     required_answer_terms: list[str] = Field(default_factory=list)
     forbidden_answer_terms: list[str] = Field(default_factory=list)

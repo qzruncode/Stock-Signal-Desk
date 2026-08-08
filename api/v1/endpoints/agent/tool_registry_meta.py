@@ -34,6 +34,10 @@ _VALID_CATEGORIES = {
     "events",
     "risk",
     "action",
+    "source_read",
+    "source_catalog",
+    "source_search",
+    "deterministic_calculation",
 }
 _registry = ToolRegistry()
 
@@ -55,26 +59,53 @@ def _simplify_param_type(raw_type: Any) -> str:
     return str(raw_type) if raw_type is not None else "string"
 
 
+def _parameter_shape(
+    prop: Dict[str, Any],
+    definitions: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Unwrap Pydantic's nullable ``anyOf`` for the compact metadata view."""
+    if prop.get("type") is not None:
+        return prop
+    choices = prop.get("anyOf") or prop.get("oneOf") or []
+    non_null = [
+        item
+        for item in choices
+        if isinstance(item, dict) and item.get("type") != "null"
+    ]
+    shape = {**prop, **non_null[0]} if len(non_null) == 1 else prop
+    ref = str(shape.get("$ref") or "")
+    prefix = "#/$defs/"
+    if ref.startswith(prefix):
+        resolved = definitions.get(ref[len(prefix) :])
+        if isinstance(resolved, dict):
+            shape = {**shape, **resolved}
+    return shape
+
+
 def _flatten_parameters(parameters: Dict[str, Any]) -> List[ToolParameterSpec]:
     if not isinstance(parameters, dict):
         return []
     properties = parameters.get("properties") or {}
     required_set = set(parameters.get("required") or [])
+    definitions = parameters.get("$defs") or {}
     if not isinstance(properties, dict):
         return []
+    if not isinstance(definitions, dict):
+        definitions = {}
 
     specs: List[ToolParameterSpec] = []
     for name, prop in properties.items():
         if not isinstance(prop, dict):
             continue
+        shape = _parameter_shape(prop, definitions)
         specs.append(
             ToolParameterSpec(
                 name=name,
-                type=_simplify_param_type(prop.get("type")),
-                description=prop.get("description"),
+                type=_simplify_param_type(shape.get("type")),
+                description=shape.get("description"),
                 required=name in required_set,
-                enum=prop.get("enum") if isinstance(prop.get("enum"), list) else None,
-                default=prop.get("default"),
+                enum=shape.get("enum") if isinstance(shape.get("enum"), list) else None,
+                default=shape.get("default"),
             )
         )
     return specs
@@ -86,7 +117,10 @@ def _build_tool_meta(tool_def: Any) -> ToolMeta:
         name=tool_def.name,
         category=category,  # type: ignore[arg-type]
         description=_truncate_description(tool_def.description or ""),
-        retrieval_description=_truncate_description(tool_def.retrieval_text or tool_def.description or ""),
+        # Compatibility field retained for the settings API. The runtime no
+        # longer has a separate retrieval index; every model sees the same
+        # complete compact description catalog.
+        retrieval_description=_truncate_description(tool_def.description or ""),
         effect=tool_def.effect,
         effect_mode=tool_def.effect_mode,
         approval_policy=tool_def.approval_policy,
@@ -99,6 +133,7 @@ def _build_tool_meta(tool_def: Any) -> ToolMeta:
         typed=(tool_def.args_model is not None and tool_def.result_model is not None),
         args_schema=tool_def.model_parameters(),
         result_schema=(tool_def.result_model.model_json_schema() if tool_def.result_model is not None else None),
+        source_catalog=[dict(item) for item in tool_def.source_catalog],
     )
 
 

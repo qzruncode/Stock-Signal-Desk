@@ -14,13 +14,13 @@ from src.tools.registry import ToolRegistry
 def test_only_generic_langgraph_control_plane_is_executable() -> None:
     result = audit_architecture()
     assert result["ok"] is True, result["issues"]
-    assert result["engine"] == "langgraph"
+    assert result["engine"] == "langgraph_agent_loop"
 
 
 def test_removed_control_plane_files_do_not_return() -> None:
     assert not [relative for relative in BANNED_FILES if (PROJECT_ROOT / relative).exists()]
     legacy_root = Path(PROJECT_ROOT) / "src/agent/orchestrator_v2"
-    assert not list(legacy_root.glob("*.py"))
+    assert not legacy_root.exists()
 
 
 def test_composite_sop_tools_are_not_registered() -> None:

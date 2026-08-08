@@ -93,19 +93,3 @@ def _bind_extracted_function(_member):
 for _function_module in (_webfetch_functions1, _webfetch_functions2):
     for _function_name in _function_module.__all__:
         globals()[_function_name] = _bind_extracted_function(getattr(_function_module, _function_name))
-
-
-TOOL = ToolSpec(
-    name="webfetch",
-    description=WEBFETCH_DESCRIPTION,
-    parameters=object_schema(
-        {
-            "url": {"type": "string", "description": "要读取的公开 http(s) URL"},
-            "format": {"type": "string", "enum": ["markdown", "text", "html"], "default": "markdown"},
-            "timeout": {"type": "integer", "minimum": 5, "maximum": 120, "default": 30},
-        },
-        ["url"],
-    ),
-    executor=fetch_url,
-    category="search",
-)

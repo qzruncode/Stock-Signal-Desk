@@ -92,15 +92,15 @@ export const QuestionNavigator: FC<{ className?: string }> = ({ className }) => 
   return (
     <div
       ref={rootRef}
-      className={cn('flex h-8 shrink-0 justify-end pointer-events-none sm:h-9', className)}
+      className={cn('flex h-7 shrink-0 justify-end pointer-events-none sm:h-8', className)}
     >
       <div className="relative pointer-events-auto">
         <button
           type="button"
           className={cn(
-            'relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border',
+            'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border',
             'bg-card text-muted-foreground shadow-sm transition hover:text-foreground',
-            'sm:h-9 sm:w-9',
+            'sm:h-8 sm:w-8',
             isOpen && 'border-primary/30 text-foreground shadow-md',
           )}
           aria-label="打开问题导航"
@@ -109,8 +109,8 @@ export const QuestionNavigator: FC<{ className?: string }> = ({ className }) => 
           title="问题导航"
           onClick={() => setIsOpen((value) => !value)}
         >
-          <ListTreeIcon className="size-3.5 text-primary" />
-          <span className="absolute right-1 top-1 min-w-3.5 rounded-full border border-border/70 bg-card px-0.5 text-center text-[9px] leading-3.5 tabular-nums text-muted-foreground">
+          <ListTreeIcon className="size-3 text-primary" />
+          <span className="absolute right-0.5 top-0.5 min-w-3 rounded-full border border-border/70 bg-card px-0.5 text-center text-[8px] leading-3 tabular-nums text-muted-foreground">
             {questions.length}
           </span>
         </button>
@@ -118,7 +118,7 @@ export const QuestionNavigator: FC<{ className?: string }> = ({ className }) => 
         {isOpen ? (
           <div
             id="chat-question-navigation"
-            className="absolute right-0 top-9 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl sm:top-10"
+            className="absolute right-0 top-8 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-card shadow-xl sm:top-9"
           >
             <div className="flex items-center justify-between border-b border-border/70 px-3 py-2">
               <span className="text-xs font-semibold text-foreground">本次会话的问题</span>

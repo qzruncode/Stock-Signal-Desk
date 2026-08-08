@@ -49,8 +49,8 @@ def test_isolated_runner_executes_exactly_one_atomic_request() -> None:
 
     with patch("src.tools.process_runner.subprocess.Popen", side_effect=create):
         result = execute_tool_isolated(
-            "get_market_status",
-            {"market": "A股"},
+            "read_market_indices_sina",
+            {},
             idempotency_key="durable-step",
             execution_context={"conversation_id": "conversation", "run_id": "run"},
             effect_approved=False,
@@ -59,8 +59,8 @@ def test_isolated_runner_executes_exactly_one_atomic_request() -> None:
     assert result == {"success": True, "value": 1}
     assert len(created) == 1
     request = created[0].request
-    assert request["name"] == "get_market_status"
-    assert request["arguments"] == {"market": "A股"}
+    assert request["name"] == "read_market_indices_sina"
+    assert request["arguments"] == {}
     assert len(request["idempotency_key"]) == 64
     assert request["execution_context"] == {"conversation_id": "conversation", "run_id": "run"}
     assert request["effect_approved"] is False
@@ -78,8 +78,8 @@ def test_isolated_runner_derives_stable_scoped_idempotency_key() -> None:
     with patch("src.tools.process_runner.subprocess.Popen", side_effect=Capture):
         for _ in range(2):
             execute_tool_isolated(
-                "get_market_status",
-                {"market": "A股"},
+                "read_market_indices_sina",
+                {},
                 idempotency_key="durable-step",
             )
 
@@ -133,7 +133,7 @@ def test_worker_exposes_and_resets_server_owned_contexts() -> None:
     request_stream = StringIO(
         json.dumps(
             {
-                "name": "get_market_status",
+                "name": "read_market_indices_sina",
                 "arguments": {},
                 "idempotency_key": "worker-key",
                 "execution_context": {"conversation_id": "conversation", "run_id": "run"},
@@ -189,7 +189,7 @@ def test_isolated_runner_terminates_process_group_when_cancelled() -> None:
             patch("src.tools.process_runner.os.killpg") as kill_group,
         ):
             with pytest.raises(RuntimeError, match="已取消"):
-                execute_tool_isolated("get_market_status", {}, cancel_event=cancel_event)
+                execute_tool_isolated("read_market_indices_sina", {}, cancel_event=cancel_event)
     finally:
         timer.cancel()
     kill_group.assert_called_once_with(4242, signal.SIGTERM)
@@ -201,7 +201,7 @@ def test_isolated_runner_enforces_atomic_tool_deadline() -> None:
         patch("src.tools.process_runner.os.killpg"),
         pytest.raises(ToolProcessTimeout, match="超过"),
     ):
-        execute_tool_isolated("get_market_status", {}, deadline_seconds=0.1)
+        execute_tool_isolated("read_market_indices_sina", {}, deadline_seconds=0.1)
 
 
 def test_one_shot_worker_exits_without_thread_finalization() -> None:

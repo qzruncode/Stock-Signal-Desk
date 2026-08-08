@@ -30,7 +30,23 @@ type ConversationLoadState = {
   message?: string;
 } | null;
 
+type ActiveStream = {
+  conversationId: string;
+  resumeExisting: boolean;
+  /** The durable snapshot shown when the browser stream was attached. */
+  initialRunId: string | null;
+  /** A new user turn may start while this still describes the prior run. */
+  startedFromTerminalSnapshot: boolean;
+};
+
 const MAX_CACHED_CONVERSATIONS = 12;
+const TERMINAL_RUN_STATUSES = new Set([
+  'completed',
+  'partial',
+  'failed',
+  'cancelled',
+  'blocked',
+]);
 
 const ChatHomePage: React.FC = () => {
   const [conversations, setConversations] = useState<ChatConversationItem[]>([]);
@@ -49,10 +65,7 @@ const ChatHomePage: React.FC = () => {
     afterChunkIndex: number;
   } | null>(null);
   const selectedConversationIdRef = useRef<string | null>(null);
-  const activeStreamRef = useRef<{
-    conversationId: string;
-    resumeExisting: boolean;
-  } | null>(null);
+  const activeStreamRef = useRef<ActiveStream | null>(null);
   const conversationDetailCacheRef = useRef(new Map<string, ChatConversationDetail>());
 
   useEffect(() => {
@@ -256,7 +269,6 @@ const ChatHomePage: React.FC = () => {
         await agentApi.cancelConversationRun(conversationId).catch(() => false);
         const detail = await agentApi.syncConversationSnapshot(conversationId, {
           messages: repositoryToConversationSnapshotMessages(nextThread),
-          threadState: nextThread,
           pruneAgentContextToMessages: true,
         });
         if (selectedConversationIdRef.current === conversationId) {
@@ -285,6 +297,21 @@ const ChatHomePage: React.FC = () => {
     return detail;
   }, [loadConversationDetail, refreshConversations]);
 
+  const shouldDetachTerminalStream = useCallback((conversationId: string, runId: string | null | undefined) => {
+    const activeStream = activeStreamRef.current;
+    if (!activeStream || activeStream.conversationId !== conversationId) {
+      return false;
+    }
+    // When a user starts a fresh turn from an already terminal conversation,
+    // the detail endpoint still reports the preceding run until the new run
+    // has been admitted.  That old terminal snapshot must never cancel the
+    // fresh browser request before it reaches the server.
+    if (activeStream.startedFromTerminalSnapshot) {
+      return Boolean(runId && runId !== activeStream.initialRunId);
+    }
+    return true;
+  }, []);
+
   const runtime = useDataStreamRuntime({
     api: '/api/v1/agent/chat',
     protocol: 'data-stream',
@@ -301,21 +328,35 @@ const ChatHomePage: React.FC = () => {
     },
     body: () => {
       if (!selectedConversationId) return undefined;
+      const initialResumeState = selectedConversationDetail?.id === selectedConversationId
+        ? selectedConversationDetail.resumeState
+        : undefined;
+      const initialRunId = initialResumeState?.runId ?? null;
+      const startedFromTerminalSnapshot = TERMINAL_RUN_STATUSES.has(
+        initialResumeState?.status ?? '',
+      );
       const resumeExisting = resumeExistingRef.current;
       if (resumeExisting?.conversationId === selectedConversationId) {
         activeStreamRef.current = {
           conversationId: selectedConversationId,
           resumeExisting: true,
+          initialRunId,
+          startedFromTerminalSnapshot,
         };
         return {
           conversation_id: selectedConversationId,
           resume_existing: true,
           after_chunk_index: resumeExisting.afterChunkIndex,
+          // The execution timeline already consumes structured stage events.
+          // Avoid rebuilding a redundant tool-card repository on reconnect.
+          stream_presentation: 'timeline',
         };
       }
       activeStreamRef.current = {
         conversationId: selectedConversationId,
         resumeExisting: false,
+        initialRunId,
+        startedFromTerminalSnapshot,
       };
       conversationDetailCacheRef.current.delete(selectedConversationId);
       const request = currentUserRequest(threadRuntimeRef.current?.export());
@@ -327,6 +368,7 @@ const ChatHomePage: React.FC = () => {
         messages: request.messages,
         history_mode: 'server',
         history_parent_id: request.historyParentId,
+        stream_presentation: 'timeline',
       };
     },
     onResponse: async (response) => {
@@ -367,6 +409,12 @@ const ChatHomePage: React.FC = () => {
         return;
       }
 
+      // A server restart can leave assistant-ui's local ReadableStream marked
+      // as running after its transport has already disappeared.  Release that
+      // stale local run before hydrating the durable conversation state; the
+      // bridge will then attach to the persisted run (or render its terminal
+      // result) instead of leaving the timeline frozen at its last stage.
+      threadRuntimeRef.current?.cancelRun();
       setStreamError('连接中断，正在恢复已生成的回答...');
       void reconcileConversationAfterStream(failedStream.conversationId)
         .then((detail) => {
@@ -403,12 +451,10 @@ const ChatHomePage: React.FC = () => {
           await refreshConversations();
           return;
         }
-        const exportedThread = threadRuntimeRef.current?.export();
-        if (exportedThread) {
-          await agentApi.syncConversationSnapshot(conversationId, {
-            threadState: exportedThread,
-          });
-        }
+        // The terminal LangGraph transaction has already persisted canonical
+        // messages and the bounded durable execution trace.  Do not write the
+        // assistant-ui export back here: it is an opaque live rendering
+        // snapshot and may contain repeated, large tool payloads.
         await reconcileConversationAfterStream(conversationId);
       } catch (error) {
         setStreamError(toApiErrorMessage(error, '回答已生成，但会话同步失败，请刷新后重试'));
@@ -540,6 +586,7 @@ const ChatHomePage: React.FC = () => {
       <ChatRuntimeBridge
         conversationDetail={selectedConversationDetail}
         onPrepareResumeExisting={prepareResumeExisting}
+        shouldDetachTerminalStream={shouldDetachTerminalStream}
         onThreadRuntime={(threadRuntime) => {
           threadRuntimeRef.current = threadRuntime;
         }}

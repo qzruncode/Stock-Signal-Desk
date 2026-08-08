@@ -1,7 +1,13 @@
-"""Read one filtered RSSHub finance route into a text-only collection."""
+"""Lower-level adapter for reading one RSSHub route.
+
+This module is intentionally not registered as a model tool. Agent-visible
+``read_rss_*`` tools bind a fixed route before calling this adapter.
+"""
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from src.tools._rss_agent import (
@@ -9,9 +15,46 @@ from src.tools._rss_agent import (
     ensure_rss_route,
     object_value,
     rss_item_ref,
-    rss_options_schema,
 )
-from src.tools.base import ToolSpec, object_schema, report_tool_progress
+from src.tools.base import report_tool_progress
+
+
+def _source_published_time(value: Any) -> tuple[float, str] | None:
+    """Return a comparable source-published timestamp, never a fetch time.
+
+    RSS publishers use both ISO-8601 and RFC 2822 dates.  The enclosing Feed
+    response's ``_fetched_at`` is deliberately excluded: it describes our
+    transport/cache activity and must not become evidence that an article was
+    published at that time.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+    # A few feeds omit a timezone.  Preserve that source value in the result;
+    # the UTC replacement is only a stable ordering key for this collection.
+    comparable = (
+        parsed.timestamp()
+        if parsed.tzinfo
+        else parsed.replace(tzinfo=timezone.utc).timestamp()
+    )
+    return comparable, parsed.isoformat()
+
+
+def _latest_source_published_time(items: list[dict[str, Any]]) -> str | None:
+    candidates = [
+        parsed
+        for item in items
+        if isinstance(item, dict)
+        if (parsed := _source_published_time(item.get("published"))) is not None
+    ]
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def read_rss_feed(
@@ -21,12 +64,20 @@ def read_rss_feed(
     namespace: str = "",
     limit: int = 30,
     force: bool = False,
+    *,
+    validate_catalog: bool = True,
 ) -> dict[str, Any]:
     from api.v1.endpoints._rss_text import normalize_text_item
     from api.v1.endpoints.rss import FeedSpecRequest, get_rss_feeds_by_spec
 
     report_tool_progress("正在读取 Feed", progress=15)
-    path = ensure_rss_route(route_path)
+    path = (
+        ensure_rss_route(route_path)
+        if validate_catalog
+        else str(route_path or "").strip()
+    )
+    if not path.startswith("/"):
+        raise ValueError("RSSHub 路由必须以 / 开头")
     clean_params = object_value(params, "params")
     clean_options = object_value(options, "options")
     bounded = max(1, min(int(limit or 30), 100))
@@ -55,7 +106,7 @@ def read_rss_feed(
         )
         items.append(item)
     errors = [str(error) for error in raw.get("errors") or []]
-    data_time = raw.get("_fetched_at")
+    data_time = _latest_source_published_time(items)
     report_tool_progress("Feed 读取完成", progress=100)
     return {
         **raw,
@@ -80,38 +131,18 @@ def read_rss_feed(
             "failures": errors,
         },
         "data_time": data_time,
-        "is_stale": False if data_time else None,
+        "data_time_provenance": "source" if data_time else "unavailable",
+        "data_time_note": (
+            None
+            if data_time
+            else "RSS Feed 未返回可解析的条目发布时间；_fetched_at 仅表示本服务获取或缓存刷新时间。"
+        ),
+        # A publication time alone cannot establish that an arbitrary news
+        # feed is stale; do not turn cache age into a source-data judgement.
+        "is_stale": None,
         "freshness_unknown": data_time is None,
         "errors": errors,
         "warnings": errors if items else [],
     }
 
-
-TOOL = ToolSpec(
-    name="read_rss_feed",
-    description=(
-        "读取助手已筛选 RSSHub 来源目录中的路由，返回纯文本条目、稳定 item_ref 和"
-        "文本型附件；图片、音频、视频会在规范化阶段丢弃。"
-    ),
-    parameters=object_schema(
-        {
-            "route_path": {"type": "string"},
-            "params": {"type": "object", "additionalProperties": True},
-            "options": rss_options_schema(),
-            "namespace": {"type": "string"},
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 30,
-            },
-            "force": {"type": "boolean", "default": False},
-        },
-        required=("route_path",),
-    ),
-    executor=read_rss_feed,
-    category="sentiment",
-)
-
-
-__all__ = ["TOOL", "read_rss_feed"]
+__all__ = ["read_rss_feed"]

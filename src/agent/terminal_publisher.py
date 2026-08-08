@@ -9,8 +9,209 @@ from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from src.agent.run_registry import ActiveRun, RunBroadcaster
+from src.agent.langgraph_runtime.events import project_stage_history_for_client
+from src.agent.langgraph_runtime.presentation import (
+    project_arguments_for_timeline,
+    project_tool_result_for_timeline,
+)
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
+
+
+def _short_text(value: Any, limit: int = 500) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def _short_list(value: Any, *, item_limit: int = 12, text_limit: int = 240) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [_short_text(item, text_limit) for item in value[:item_limit] if str(item or "").strip()]
+
+
+def _trace_result_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    projected: list[dict[str, Any]] = []
+    for raw in value[:12]:
+        if not isinstance(raw, Mapping):
+            continue
+        attributes = []
+        for attribute in list(raw.get("attributes") or [])[:5]:
+            if not isinstance(attribute, Mapping):
+                continue
+            attributes.append(
+                {
+                    "name": _short_text(attribute.get("name"), 80),
+                    "value": _short_text(attribute.get("value"), 160),
+                }
+            )
+        projected.append(
+            {
+                "title": _short_text(raw.get("title"), 360),
+                "url": _short_text(raw.get("url"), 1_000) or None,
+                "source": _short_text(raw.get("source"), 320) or None,
+                "published_at": _short_text(raw.get("published_at"), 160) or None,
+                "summary": _short_text(raw.get("summary"), 500) or None,
+                "attributes": attributes,
+            }
+        )
+    return projected
+
+
+def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for item in results[:80]:
+        source_refs = _short_list(item.get("source_refs"), item_limit=16, text_limit=1_000)
+        raw_result = item.get("result") if isinstance(item.get("result"), Mapping) else {}
+        display_result = (
+            dict(item.get("display_result") or {})
+            if isinstance(item.get("display_result"), Mapping)
+            else project_tool_result_for_timeline(raw_result, source_refs=source_refs)
+        )
+        raw_arguments = (
+            item.get("display_arguments")
+            if isinstance(item.get("display_arguments"), Mapping)
+            else item.get("arguments")
+        )
+        arguments = project_arguments_for_timeline(
+            raw_arguments if isinstance(raw_arguments, Mapping) else {},
+        )
+        projected.append(
+            {
+                "action_id": _short_text(item.get("action_id") or item.get("id"), 96),
+                "tool_call_id": _short_text(item.get("tool_call_id"), 128) or None,
+                "tool_name": _short_text(item.get("tool_name"), 128),
+                "arguments": arguments,
+                "success": item.get("success") is True,
+                "partial": bool(item.get("partial")),
+                "reused": bool(item.get("reused")),
+                "error_code": _short_text(
+                    item.get("error_code") or raw_result.get("error_code"),
+                    128,
+                ) or None,
+                "errors": _short_list(
+                    item.get("errors") or raw_result.get("errors"),
+                    item_limit=8,
+                    text_limit=800,
+                ),
+                "data_time": _short_text(item.get("data_time"), 160) or None,
+                "is_stale": item.get("is_stale"),
+                "freshness_unknown": bool(item.get("freshness_unknown")),
+                # These are provenance identifiers and links, not a source count.
+                "source_refs": source_refs,
+                "source_labels": _short_list(
+                    display_result.get("source_labels"),
+                    item_limit=16,
+                    text_limit=320,
+                ),
+                "result_count": (
+                    int(display_result["result_count"])
+                    if isinstance(display_result.get("result_count"), int)
+                    else None
+                ),
+                "omitted_result_count": (
+                    int(display_result["omitted_result_count"])
+                    if isinstance(display_result.get("omitted_result_count"), int)
+                    else 0
+                ),
+                "result_summary": _short_text(display_result.get("result_summary"), 800)
+                or None,
+                "result_items": _trace_result_items(display_result.get("result_items")),
+                "reference_links": _short_list(
+                    display_result.get("reference_links"),
+                    item_limit=16,
+                    text_limit=1_000,
+                ),
+            }
+        )
+    return projected
+
+
+def _trace_evidence(evidence: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "evidence_id": _short_text(item.get("evidence_id") or item.get("id"), 96),
+            "action_id": _short_text(item.get("action_id"), 96),
+            "tool_call_id": _short_text(item.get("tool_call_id"), 128) or None,
+            "tool_name": _short_text(item.get("tool_name"), 128),
+            "success": item.get("success") is True,
+            "partial": bool(item.get("partial")),
+            "data_time": _short_text(item.get("data_time"), 160) or None,
+            "observed_at": _short_text(item.get("observed_at"), 160) or None,
+            "is_stale": item.get("is_stale"),
+            "freshness_unknown": bool(item.get("freshness_unknown")),
+            "source_refs": _short_list(item.get("source_refs"), item_limit=12, text_limit=240),
+        }
+        for item in evidence[:80]
+    ]
+
+
+def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Persist the compact, user-safe projection of the claim audit ledger."""
+    projected: list[dict[str, Any]] = []
+    for item in claims[:80]:
+        checks = item.get("checks") if isinstance(item.get("checks"), Mapping) else {}
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), Sequence) else []
+        projected.append(
+            {
+                "claim_id": _short_text(item.get("claim_id"), 96),
+                "text": _short_text(item.get("text"), 2_000),
+                "kind": _short_text(item.get("kind"), 32),
+                "evidence_ids": _short_list(item.get("evidence_ids"), item_limit=16, text_limit=96),
+                "entity_fields": _short_list(item.get("entity_fields"), item_limit=24, text_limit=96),
+                "time_references": _short_list(item.get("time_references"), item_limit=12, text_limit=96),
+                "uses_relative_time": bool(item.get("uses_relative_time")),
+                "checks": {
+                    "tool_success": checks.get("tool_success") is True,
+                    "source": checks.get("source") is True,
+                    "entity_scope": checks.get("entity_scope") is True,
+                    "time": checks.get("time") is True,
+                },
+                "evidence": [
+                    {
+                        "evidence_id": _short_text(entry.get("evidence_id"), 96),
+                        "tool_name": _short_text(entry.get("tool_name"), 128),
+                        "data_time": _short_text(entry.get("data_time"), 160) or None,
+                        "source_refs": _short_list(entry.get("source_refs"), item_limit=8, text_limit=240),
+                    }
+                    for entry in evidence[:16]
+                    if isinstance(entry, Mapping)
+                ],
+            }
+        )
+    return projected
+
+
+def _execution_trace(
+    *,
+    stage_history: Sequence[Mapping[str, Any]],
+    tool_results: Sequence[Mapping[str, Any]],
+    evidence: Sequence[Mapping[str, Any]],
+    claim_evidence: Sequence[Mapping[str, Any]],
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "stages": project_stage_history_for_client(
+            [item for item in stage_history if isinstance(item, Mapping)],
+        ),
+        "tool_results": _trace_tool_results(tool_results),
+        "evidence": _trace_evidence(evidence),
+        "claim_evidence": _trace_claim_evidence(claim_evidence),
+        "loop": {
+            "model_turn_count": int(state.get("model_turn_count") or 0),
+            "tool_call_count": int(state.get("tool_call_count") or 0),
+            "tool_call_limit": int(state.get("tool_call_limit") or 0),
+            "evidence_repair_count": int(state.get("evidence_repair_count") or 0),
+            "evidence_repair_limit": int(state.get("evidence_repair_limit") or 0),
+            "work_budget_exhausted": bool(state.get("work_budget_exhausted")),
+            "work_budget_detail": _short_text(state.get("work_budget_detail"), 500) or None,
+        },
+        "completed_tool_call_ids": _short_list(
+            state.get("completed_tool_call_ids"),
+            item_limit=80,
+            text_limit=96,
+        ),
+    }
 
 
 @dataclass
@@ -33,9 +234,13 @@ class AgentTerminalPublisher:
         error_code: str | None = None,
         error_detail: str | None = None,
         latest_stage: Mapping[str, Any] | None = None,
+        stage_history: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
         """Commit transcript, generic trace, and run status in one DB transaction."""
         await self.controller.drain()
+        if stage_history is None:
+            snapshot = getattr(self.controller, "stage_history_snapshot", None)
+            stage_history = snapshot() if callable(snapshot) else []
         terminal_messages = [dict(message) for message in self.messages]
         if final_text.strip():
             terminal_messages.append(
@@ -59,12 +264,6 @@ class AgentTerminalPublisher:
             "",
         )
         state = dict(graph_state or {})
-        plan = state.get("plan") if isinstance(state.get("plan"), Mapping) else {}
-        actions = [
-            dict(item)
-            for item in (plan.get("actions") or [])
-            if isinstance(item, Mapping)
-        ]
         tool_results = [
             dict(item)
             for item in (state.get("tool_results") or [])
@@ -75,38 +274,39 @@ class AgentTerminalPublisher:
             for item in (state.get("evidence") or [])
             if isinstance(item, Mapping)
         ]
-        verification = (
-            dict(state.get("verification") or {})
-            if isinstance(state.get("verification"), Mapping)
-            else {}
-        )
+        claim_evidence = [
+            dict(item)
+            for item in (state.get("claim_evidence") or [])
+            if isinstance(item, Mapping)
+        ]
         quality_projection = {
-            "engine": "langgraph",
-            "intent": state.get("intent") if isinstance(state.get("intent"), Mapping) else {},
-            "actions": actions,
+            "engine": "langgraph_agent_loop",
             "tool_results": tool_results,
             "evidence": evidence,
-            "verification": verification,
-            "completed_action_ids": list(state.get("completed_action_ids") or []),
+            "claim_evidence": claim_evidence,
+            "completed_tool_call_ids": list(state.get("completed_tool_call_ids") or []),
             "budgets": {
-                "plan_round": int(state.get("plan_round") or 0),
-                "max_plan_rounds": int(state.get("max_plan_rounds") or 0),
-                "search_expansions": int(state.get("search_expansions") or 0),
-                "max_search_expansions": int(state.get("max_search_expansions") or 0),
-                "verification_round": int(state.get("verification_round") or 0),
-                "max_verification_rounds": int(state.get("max_verification_rounds") or 0),
-                "max_elapsed_seconds": int(state.get("max_elapsed_seconds") or 0),
+                "tool_call_count": int(state.get("tool_call_count") or 0),
+                "tool_call_limit": int(state.get("tool_call_limit") or 0),
+                "model_turn_count": int(state.get("model_turn_count") or 0),
+                "evidence_repair_count": int(state.get("evidence_repair_count") or 0),
+                "evidence_repair_limit": int(state.get("evidence_repair_limit") or 0),
             },
+            "execution_trace": _execution_trace(
+                stage_history=stage_history,
+                tool_results=tool_results,
+                evidence=evidence,
+                claim_evidence=claim_evidence,
+                state=state,
+            ),
         }
         trace_payload = {
-            "engine": "langgraph",
+            "engine": "langgraph_agent_loop",
             "run_id": self.run.run_id,
             "status": status,
-            "intent": state.get("intent"),
-            "plan_round": state.get("plan_round"),
-            "search_expansions": state.get("search_expansions"),
-            "verification_round": state.get("verification_round"),
-            "verification": verification,
+            "model_turn_count": state.get("model_turn_count"),
+            "tool_call_count": state.get("tool_call_count"),
+            "evidence_repair_count": state.get("evidence_repair_count"),
             "quality_projection": quality_projection,
         }
         if error_code:

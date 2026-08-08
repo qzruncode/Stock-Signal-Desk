@@ -11,40 +11,8 @@ for _name, _value in vars(_models).items():
 __all__ = [
     "AgentApprovalReceipt",
     "AgentAuditEvent",
-    "AgentCapabilityGrant",
-    "AgentCapabilityRelease",
     "AgentUserMemory",
 ]
-
-
-class AgentCapabilityGrant(Base):
-    """Per-owner override for one built-in capability."""
-
-    __tablename__ = "agent_capability_grants"
-
-    id = Column(String(64), primary_key=True)
-    tenant_id = Column(String(64), nullable=False, index=True)
-    owner_id = Column(String(128), nullable=False, index=True)
-    capability = Column(String(96), nullable=False, index=True)
-    decision = Column(String(16), nullable=False, index=True)
-    reason = Column(Text)
-    created_at = Column(DateTime, nullable=False, default=datetime.now)
-    updated_at = Column(
-        DateTime,
-        nullable=False,
-        default=datetime.now,
-        onupdate=datetime.now,
-        index=True,
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "owner_id",
-            "capability",
-            name="uix_agent_capability_grant_owner",
-        ),
-    )
 
 
 class AgentApprovalReceipt(Base):
@@ -114,25 +82,6 @@ class AgentAuditEvent(Base):
             "created_at",
         ),
     )
-
-
-class AgentCapabilityRelease(Base):
-    """Versioned snapshot of the executable built-in capability registry."""
-
-    __tablename__ = "agent_capability_releases"
-
-    id = Column(String(64), primary_key=True)
-    release_version = Column(String(96), nullable=False, unique=True, index=True)
-    registry_fingerprint = Column(String(64), nullable=False, index=True)
-    manifest_json = Column(Text, nullable=False)
-    status = Column(String(24), nullable=False, default="draft", index=True)
-    evaluation_suite = Column(String(96))
-    minimum_pass_rate = Column(Float, nullable=False, default=1.0)
-    evaluation_summary_json = Column(Text, nullable=False, default="{}")
-    created_by = Column(String(128), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
-    activated_at = Column(DateTime, index=True)
-    retired_at = Column(DateTime, index=True)
 
 
 class AgentUserMemory(Base):

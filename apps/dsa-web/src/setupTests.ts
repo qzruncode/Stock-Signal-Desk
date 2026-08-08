@@ -22,7 +22,7 @@ Object.defineProperty(globalThis, 'IntersectionObserver', {
   value: IntersectionObserverMock,
 });
 
-// jsdom 无 ResizeObserver;KlineToolUI 等组件用它监听容器尺寸变化。
+// jsdom 默认没有 ResizeObserver；图表等通用可视化组件会用它监听容器尺寸变化。
 class ResizeObserverMock implements ResizeObserver {
   readonly disconnect = () => {};
   readonly observe = () => {};

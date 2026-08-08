@@ -58,7 +58,6 @@ def read_financial_article(
     resolved = read_rss_item(
         ref,
         list_item,
-        include_documents=True,
         force=force,
     )
     full_text = str(resolved.get("content_text") or "")

@@ -418,6 +418,23 @@ class _ActiveRunRegistryMethods1:
                 await task
             except asyncio.CancelledError:
                 pass
+        if self._database is not None:
+            try:
+                await asyncio.shield(
+                    asyncio.to_thread(
+                        self._database.release_agent_resources_for_run,
+                        run.run_id,
+                    )
+                )
+            except Exception:
+                # The terminal transcript has priority.  A failed cleanup is
+                # still bounded by the ordinary lease expiry and must not make
+                # the user's explicit cancellation look like a failed run.
+                logger.warning(
+                    "[AgentRun] failed to release resources for cancelled run_id=%s",
+                    run.run_id,
+                    exc_info=True,
+                )
         current = self._runs.get(conversation_id)
         if current is run and run.is_running:
             # A run that never entered its callback still needs a terminal

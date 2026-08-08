@@ -21,13 +21,17 @@ from src.tools.process_worker import RESULT_PREFIX
 # Every entry is still one registered atomic query.
 ISOLATED_TOOL_NAMES = frozenset(
     {
-        "get_market_status",
-        "get_market_breadth",
+        "read_market_breadth_sina",
+        "read_market_indices_sina",
+        "read_market_limit_up_pool_eastmoney",
+        "read_market_limit_down_pool_eastmoney",
+        "read_market_broken_board_pool_eastmoney",
         "get_sector_list",
-        "get_sector_flow",
-        "get_index_data",
-        "get_macro_indicator",
-        "get_bond_yield",
+        "read_sector_flow_eastmoney",
+        "read_index_daily_history_sina",
+        "read_index_quote_sina",
+        "read_macro_indicator_akshare",
+        "read_bond_yield_eastmoney",
     }
 )
 
@@ -35,9 +39,20 @@ ISOLATED_TOOL_NAMES = frozenset(
 # one-shot child process. They remain single external operations.
 STATEFUL_TOOL_NAMES = frozenset(
     {
-        "get_analysis_status",
-        "manage_batch_run",
-        "manage_analysis_schedule",
+        "read_analysis_task",
+        "list_analysis_tasks",
+        "list_batch_runs",
+        "get_current_batch_run_status",
+        "read_batch_run",
+        "read_batch_run_report",
+        "pause_batch_run",
+        "continue_batch_run",
+        "resume_failed_batch_run",
+        "regenerate_batch_run_report",
+        "stop_batch_run",
+        "delete_batch_run",
+        "get_analysis_schedule",
+        "update_analysis_schedule",
     }
 )
 

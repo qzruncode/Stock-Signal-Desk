@@ -6,7 +6,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 from datetime import datetime, timedelta
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +15,7 @@ from src.services.chat_session_service import ChatSessionService
 from src.agent.model_runtime import GuardedModelRuntime
 from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.storage import DatabaseManager
-from src.storage.models import AgentRun, AgentRunTrace, AgentStepExecution
+from src.storage.models import AgentRun, AgentStepExecution
 
 
 
@@ -71,36 +70,6 @@ def test_cross_thread_admission_enforces_one_global_slot(database):
     assert sum(result["claimed"] is True for result in results) == 1
     rejected = next(result for result in results if not result["claimed"])
     assert rejected["reason"] == "capacity"
-
-def test_goal_state_is_persisted_as_authoritative_run_trace(database):
-    conversation_id = _conversation(database, "goal-state")
-    goal_state = {
-        "version": "goal-state-1",
-        "plan_revision": 1,
-        "evaluation": {
-            "disposition": "best_effort",
-            "terminal_reason": "budget_exhausted",
-        },
-    }
-
-    database.upsert_agent_run_trace(
-        run_id="run-goal-state",
-        conversation_id=conversation_id,
-        orchestrator_mode="unified",
-        status="partial",
-        goal_state=goal_state,
-    )
-
-    with database.session_scope() as session:
-        record = (
-            session.query(AgentRunTrace)
-            .filter_by(
-                run_id="run-goal-state",
-                orchestrator_mode="unified",
-            )
-            .one()
-        )
-        assert json.loads(record.goal_state_json) == goal_state
 
 def test_admission_enforces_owner_fairness_and_preserves_resume_conflicts(
     database,
@@ -286,7 +255,7 @@ def test_interrupt_decision_slot_can_be_consumed_only_once(database):
         run_id="run-approval-once",
     )["claimed"]
     checkpoint = {
-        "engine": "langgraph",
+        "engine": "langgraph_agent_loop",
         "pending_interrupt": {
             "interrupt_id": "interrupt-1",
             "fingerprint": "f" * 64,
@@ -352,6 +321,127 @@ def test_terminal_publisher_flushes_events_before_terminal_commit():
     )
 
     assert order == ["events", "terminal"]
+
+
+def test_terminal_publisher_persists_safe_structured_execution_trace():
+    captured: dict = {}
+
+    class Controller:
+        async def drain(self):
+            return None
+
+        @staticmethod
+        def stage_history_snapshot():
+            return [
+                {
+                    "event": "agent_stage",
+                    "run_id": "run-trace",
+                    "stage": "execute",
+                    "status": "completed",
+                    "summary": "原子工具已返回结果",
+                    "details": {"tool_name": "read_quote", "success": True},
+                }
+            ]
+
+    class Database:
+        def commit_agent_run_terminal(self, **kwargs):
+            captured.update(kwargs)
+            return True
+
+    class Sessions:
+        @staticmethod
+        def normalize_messages(messages):
+            return messages
+
+        @staticmethod
+        def generate_title(_text):
+            return "title"
+
+    publisher = AgentTerminalPublisher(
+        controller=Controller(),
+        run=SimpleNamespace(run_id="run-trace", attempt=1),
+        messages=[{"role": "user", "content": "查询行情"}],
+        request_body={},
+        conversation_id="conversation-trace",
+        database=Database(),
+        session_service=Sessions(),
+        worker_id="worker",
+    )
+    asyncio.run(
+        publisher.commit(
+            status="completed",
+            final_text="答案",
+            graph_state={
+                "tool_results": [
+                    {
+                        "action_id": "a1",
+                        "tool_call_id": "call-a1",
+                        "model_tool_call_id": "call-a1",
+                        "tool_name": "read_quote",
+                        "effect": "read",
+                        "success": True,
+                        "data_time": "2026-08-07",
+                        "source_refs": ["source-1"],
+                    }
+                ],
+                "evidence": [
+                    {
+                        "evidence_id": "ev-a1",
+                        "action_id": "a1",
+                        "tool_call_id": "call-a1",
+                        "tool_name": "read_quote",
+                        "effect": "read",
+                        "success": True,
+                        "data_time": "2026-08-07",
+                        "source_refs": ["source-1"],
+                    }
+                ],
+                "claim_evidence": [
+                    {
+                        "claim_id": "claim_1",
+                        "text": "报价已返回【证据 ev-a1】",
+                        "kind": "fact",
+                        "evidence_ids": ["ev-a1"],
+                        "entity_fields": ["symbol"],
+                        "time_references": ["2026-08-07"],
+                        "checks": {
+                            "tool_success": True,
+                            "source": True,
+                            "entity_scope": True,
+                            "time": True,
+                        },
+                        "evidence": [
+                            {
+                                "evidence_id": "ev-a1",
+                                "tool_name": "read_quote",
+                                "data_time": "2026-08-07",
+                                "source_refs": ["source-1"],
+                            }
+                        ],
+                    }
+                ],
+                "completed_tool_call_ids": ["call-a1"],
+                "model_turn_count": 2,
+                "tool_call_count": 1,
+                "tool_call_limit": 8,
+                "evidence_repair_count": 0,
+                "evidence_repair_limit": 1,
+                "work_budget_exhausted": False,
+            },
+        )
+    )
+
+    trace = captured["trace"]["quality_projection"]["execution_trace"]
+    assert trace["stages"][0]["stage"] == "execute"
+    assert "actions" not in trace
+    assert trace["tool_results"][0]["tool_call_id"] == "call-a1"
+    assert trace["tool_results"][0]["data_time"] == "2026-08-07"
+    assert trace["evidence"][0]["evidence_id"] == "ev-a1"
+    assert trace["evidence"][0]["tool_call_id"] == "call-a1"
+    assert trace["claim_evidence"][0]["evidence_ids"] == ["ev-a1"]
+    assert trace["claim_evidence"][0]["checks"]["time"] is True
+    assert trace["loop"]["tool_call_count"] == 1
+    assert trace["completed_tool_call_ids"] == ["call-a1"]
 
 def test_expired_run_lease_can_be_reclaimed_without_losing_cursor(database):
     conversation_id = _conversation(database, "recovery")

@@ -86,9 +86,10 @@ def test_background_launch_failure_uses_existing_stale_universe() -> None:
     assert "source down" in result["warning"]
 
 
-def test_agent_registry_exposes_maintenance_capabilities() -> None:
+def test_agent_registry_excludes_aggregate_maintenance_dashboard() -> None:
     names = set(ToolRegistry().get_tool_names())
-    assert {"search_stocks", "manage_watchlist", "get_data_health"}.issubset(names)
+    assert {"search_stocks", "list_watchlist", "add_watchlist_items"}.issubset(names)
+    assert "get_data_health" not in names
 
 
 def test_manage_watchlist_tool_delegates_explicit_action() -> None:
@@ -114,14 +115,14 @@ def test_manage_watchlist_list_ignores_symbols_field() -> None:
     manage.assert_called_once_with("list", [])
 
 
-def test_registry_manage_watchlist_list_ignores_symbols_field() -> None:
+def test_registry_list_watchlist_has_no_multiplexed_action_field() -> None:
     with patch(
         "src.tools.manage_watchlist._manage",
         return_value={"codes": ["300850"], "count": 1, "changed": []},
     ) as manage:
         result = ToolRegistry().execute(
-            "manage_watchlist",
-            {"action": "list", "symbols": "新强联"},
+            "list_watchlist",
+            {},
         )
 
     assert result["success"] is True

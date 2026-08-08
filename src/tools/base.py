@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Shared contracts for LLM-callable tools.
+"""Shared contracts for LLM-callable, atomic operations.
 
-Every registered tool owns its schema and executor in the module whose file
-name matches the tool name.  The registry only discovers these definitions.
+An operation is model-callable; an upstream source is data selected by that
+operation through an explicit ``source_id``.  This keeps a growing RSS/quote/
+web source catalog visible without turning every source into a separate tool
+schema or hiding a workflow behind one opaque convenience function.
 """
 
 from __future__ import annotations
@@ -29,7 +31,34 @@ class ToolProgressUpdate:
 ToolProgressObserver = Callable[[ToolProgressUpdate], None]
 ToolEffect = Literal["read", "side_effect"]
 ApprovalPolicy = Literal["required_for_side_effect"]
+DataTimeProvenance = Literal["source", "inferred", "unavailable"]
 ToolEffectResolver = Callable[[Mapping[str, Any]], ToolEffect]
+# A model never chooses an operation, workflow, capability, or provider route
+# through an arbitrary argument.  ``source_id`` is the one intentional
+# exception: generic read operations use it to name one entry from their
+# declared, model-visible source catalog.  One invocation still calls exactly
+# that source and never falls back to another one.
+MODEL_TOOL_SELECTOR_FIELDS = frozenset(
+    {
+        "action",
+        "operation",
+        "workflow",
+        "capability",
+        "tool",
+        "tool_name",
+        "provider",
+        "provider_name",
+        "source",
+        "source_name",
+        "source_type",
+        "route",
+        "route_path",
+        "namespace",
+        "params",
+        "fallback",
+        "fallback_provider",
+    }
+)
 _TOOL_PROGRESS_OBSERVER: ContextVar[ToolProgressObserver | None] = ContextVar(
     "tool_progress_observer",
     default=None,
@@ -135,7 +164,12 @@ def report_tool_progress(
 
 
 def enforce_result_contract(tool_name: str, result: Any) -> Dict[str, Any]:
-    """Validate and complete the common Agent-facing result envelope."""
+    """Validate and complete the common Agent-facing result envelope.
+
+    ``data_time`` is reserved for the source's own timestamp. Transport
+    timestamps such as ``_fetched_at`` and ``retrieved_at`` describe when this
+    service obtained a response, not when the source data was true.
+    """
     if not isinstance(result, dict):
         raise TypeError(f"{tool_name} must return an object, got {type(result).__name__}")
     payload = dict(result)
@@ -161,10 +195,36 @@ def enforce_result_contract(tool_name: str, result: Any) -> Dict[str, Any]:
         payload["data_time"] = data_time.isoformat()
     elif data_time is not None and not isinstance(data_time, str):
         raise ValueError(f"{tool_name} result.data_time must be an ISO string or null")
+    data_time = payload["data_time"]
+    expected_provenance: DataTimeProvenance = (
+        "unavailable"
+        if data_time is None
+        else ("inferred" if payload.get("data_time_inferred") is True else "source")
+    )
+    provenance = payload.get("data_time_provenance")
+    if provenance is None:
+        payload["data_time_provenance"] = expected_provenance
+    elif provenance not in {"source", "inferred", "unavailable"}:
+        raise ValueError(
+            f"{tool_name} result.data_time_provenance must be source, inferred, or unavailable"
+        )
+    elif provenance != expected_provenance:
+        raise ValueError(
+            f"{tool_name} result.data_time_provenance does not match data_time semantics"
+        )
+    data_time_note = payload.get("data_time_note")
+    if data_time_note is not None and not isinstance(data_time_note, str):
+        raise ValueError(f"{tool_name} result.data_time_note must be a string or null")
+    if data_time is None and not data_time_note:
+        payload["data_time_note"] = "数据源未提供原始数据时间；仅能确认本次查询已完成。"
     payload.setdefault("is_stale", None)
     if payload["is_stale"] is not None and not isinstance(payload["is_stale"], bool):
         raise ValueError(f"{tool_name} result.is_stale must be boolean or null")
-    payload.setdefault("freshness_unknown", data_time is None)
+    if data_time is None:
+        # A transport completion time must never make source freshness known.
+        payload["freshness_unknown"] = True
+    else:
+        payload.setdefault("freshness_unknown", False)
     if not isinstance(payload["freshness_unknown"], bool):
         raise ValueError(f"{tool_name} result.freshness_unknown must be boolean")
     if data_time is None and payload["is_stale"] is not None:
@@ -192,7 +252,7 @@ def object_schema(
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """A complete, module-owned tool definition."""
+    """A complete, module-owned atomic tool definition."""
 
     name: str
     description: str
@@ -204,13 +264,20 @@ class ToolSpec:
     effect: ToolEffect = "read"
     effect_resolver: ToolEffectResolver | None = None
     approval_policy: ApprovalPolicy = "required_for_side_effect"
-    retrieval_text: str = ""
     timeout_seconds: float | None = 120.0
     max_attempts: int = 2
     retry_backoff_seconds: float = 0.5
     idempotent: bool = True
     sensitive_fields: tuple[str, ...] = ()
     server_controlled_fields: tuple[str, ...] = ("confirmed",)
+    # Free-text retrieval inputs are declared by their owning atomic tool.
+    # The control plane can then preserve user-specified temporal intent when
+    # it normalizes model-authored searches, without guessing from field names.
+    retrieval_query_fields: tuple[str, ...] = ()
+    # Optional, declarative source directory for a generic operation.  It is
+    # pure metadata: selecting ``source_id`` can only choose one listed source
+    # for the current atomic operation, never another operation or fallback.
+    source_catalog: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.effect not in {"read", "side_effect"}:
@@ -221,8 +288,6 @@ class ToolSpec:
             raise ValueError(f"{self.name} max_attempts must be positive")
         if self.timeout_seconds is not None and self.timeout_seconds <= 0:
             raise ValueError(f"{self.name} timeout_seconds must be positive")
-        if not self.retrieval_text.strip():
-            object.__setattr__(self, "retrieval_text", self.description)
         if self.args_model is None and self.parameters is None:
             raise ValueError(f"{self.name} requires args_model or parameters")
         if self.args_model is None:
@@ -241,6 +306,37 @@ class ToolSpec:
             if self.parameters is not None and self.parameters != generated:
                 raise ValueError(f"{self.name} parameters must be generated from args_model")
             object.__setattr__(self, "parameters", generated)
+        parameter_fields = set((self.parameters or {}).get("properties") or {})
+        selector_fields = sorted(parameter_fields & MODEL_TOOL_SELECTOR_FIELDS)
+        if selector_fields:
+            raise ValueError(
+                f"{self.name} exposes an operation or source selector: "
+                + ", ".join(selector_fields)
+            )
+        if "source_id" in parameter_fields and not self.source_catalog:
+            raise ValueError(
+                f"{self.name} exposes source_id without a declared source_catalog"
+            )
+        if self.source_catalog:
+            declared_source_ids = {
+                str(item.get("id") or "").strip()
+                for item in self.source_catalog
+                if isinstance(item, Mapping)
+            }
+            if not declared_source_ids or "" in declared_source_ids:
+                raise ValueError(f"{self.name} source_catalog entries require stable id values")
+            source_schema = (self.parameters or {}).get("properties", {}).get("source_id")
+            enum_values = set(source_schema.get("enum") or ()) if isinstance(source_schema, Mapping) else set()
+            if enum_values and enum_values != declared_source_ids:
+                raise ValueError(
+                    f"{self.name} source_id enum must exactly match source_catalog ids"
+                )
+        unknown_query_fields = sorted(set(self.retrieval_query_fields) - parameter_fields)
+        if unknown_query_fields:
+            raise ValueError(
+                f"{self.name} retrieval_query_fields are absent from parameters: "
+                + ", ".join(unknown_query_fields)
+            )
         if self.result_model is None:
             object.__setattr__(
                 self,
@@ -319,6 +415,8 @@ class TypedToolResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     data_time: str | None = None
+    data_time_provenance: DataTimeProvenance = "unavailable"
+    data_time_note: str | None = None
     is_stale: bool | None = None
     freshness_unknown: bool = False
 
@@ -409,8 +507,12 @@ def _schema_type(
 def _annotated_type(
     name: str,
     schema: Dict[str, Any],
+    *,
+    nullable: bool = False,
 ) -> Any:
     value_type = _schema_type(name, schema)
+    if nullable:
+        value_type = value_type | type(None)
     constraints: dict[str, Any] = {}
     for source, target in (
         ("minimum", "ge"),
@@ -450,10 +552,9 @@ def model_from_object_schema(
         field_type = _annotated_type(
             f"{_model_name(name)}{_model_name(field_name)}",
             field_schema,
+            nullable=field_name not in required,
         )
         default = ... if field_name in required else field_schema.get("default") if "default" in field_schema else None
-        if default is None and field_name not in required:
-            field_type = field_type | type(None)
         fields[field_name] = (field_type, default)
     return create_model(
         _model_name(name),

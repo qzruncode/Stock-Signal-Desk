@@ -15,7 +15,7 @@ import httpx
 import pandas as pd
 
 from data_provider.utils import is_bse_code
-from src.tools._akshare import bare_symbol, cached_call
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call
 from src.tools._trading_calendar import _fallback_trade_day, _fetch_trade_dates, expected_trade_day, is_trading_time
 from src.tools.base import ToolSpec, object_schema
 
@@ -346,22 +346,157 @@ def get_stock_capital_flow(symbol: str, days: int = 20) -> dict[str, Any]:
     }
 
 
-TOOL = ToolSpec(
-    name="get_stock_capital_flow",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"},
-            "days": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 20,
-                "description": "返回最近交易日数量",
+def read_stock_capital_flow_history_eastmoney(
+    symbol: str,
+    days: int = 20,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one Eastmoney daily capital-flow series without joining a quote."""
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    market = _market_for(code)
+    limit = max(1, min(int(days), 100))
+    now = datetime.now().astimezone()
+    ttl = 75 if is_trading_time(now) else 30 * 60
+    frame, cached = (
+        cached_call(
+            f"stock-capital-flow:history:v1:{market}:{code}",
+            lambda: _fetch_eastmoney_direct(code, market),
+            ttl_seconds=ttl,
+            attempts=1,
+        )
+        if use_cache
+        else (_fetch_eastmoney_direct(code, market), False)
+    )
+    records = [_record(row, now) for row in frame.to_dict(orient="records")]
+    items = records[-limit:]
+    latest = items[-1] if items else None
+    latest_date = datetime.fromisoformat(latest["date"]).date() if latest else None
+    stale, warning = _is_stale(latest_date, now)
+    transport = str(frame.attrs.get("transport") or "http")
+    return {
+        "symbol": code,
+        "market": market,
+        "days": limit,
+        "items": items,
+        "item_count": len(items),
+        "latest": latest,
+        "amount_unit": "元",
+        "ratio_unit": "%",
+        "price_unit": "人民币元",
+        "main_flow_definition": "主力净流入=超大单净流入+大单净流入（东方财富口径）",
+        "source": "东方财富个股资金流日线",
+        "source_url": "https://data.eastmoney.com/zjlx/detail.html",
+        "source_scope": "daily_capital_flow_history",
+        "source_transport": transport,
+        "success": bool(items),
+        "partial": False,
+        "errors": [] if items else ["东方财富没有返回个股资金流日线"],
+        "warnings": [warning] if warning else [],
+        "data_time": (latest.get("data_time") or latest.get("date")) if latest else None,
+        "source_data_time_granularity": "timestamp" if latest and latest.get("data_time") else "trading_date",
+        "is_stale": stale if items else None,
+        "freshness_unknown": stale is None,
+        # This names a transport fallback, never a substituted data source.
+        "fallback_used": transport == "scrapling_dynamic",
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+def read_stock_capital_flow_quote_eastmoney(
+    symbol: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one Eastmoney current-session capital-flow quote."""
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    market = _market_for(code)
+    now = datetime.now().astimezone()
+    ttl = 75 if is_trading_time(now) else 30 * 60
+    raw, cached = (
+        cached_call(
+            f"stock-capital-flow:quote:v1:{market}:{code}",
+            lambda: _fetch_current_flow(code, market),
+            ttl_seconds=ttl,
+            attempts=1,
+        )
+        if use_cache
+        else (_fetch_current_flow(code, market), False)
+    )
+    item = _record(raw, now) if isinstance(raw, dict) else None
+    return {
+        "symbol": code,
+        "market": market,
+        "item": item,
+        "amount_unit": "元",
+        "ratio_unit": "%",
+        "price_unit": "人民币元",
+        "main_flow_definition": "主力净流入=超大单净流入+大单净流入（东方财富口径）",
+        "source": "东方财富个股资金流实时快照",
+        "source_url": "https://data.eastmoney.com/zjlx/detail.html",
+        "source_scope": "current_session_capital_flow_quote",
+        "success": item is not None,
+        "partial": False,
+        "errors": [] if item else ["东方财富没有返回当前交易日资金流快照"],
+        "warnings": [],
+        "data_time": item.get("data_time") if item else None,
+        "source_data_time_granularity": "timestamp",
+        "is_stale": False if item and item.get("data_time") else None,
+        "freshness_unknown": not bool(item and item.get("data_time")),
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_stock_capital_flow_history_eastmoney",
+        description=(
+            "从东方财富读取一只 A 股的资金流日线序列，包含主力、超大单、大单、中单、小单净流入及占比；"
+            "不补入实时快照，不汇总 5/10/20 日结论。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"},
+                "days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20,
+                    "description": "返回最近交易日数量",
+                },
             },
-        },
-        ["symbol"],
+            ["symbol"],
+        ),
+        executor=read_stock_capital_flow_history_eastmoney,
+        category="market",
     ),
-    executor=get_stock_capital_flow,
-    category="market",
+    ToolSpec(
+        name="read_stock_capital_flow_quote_eastmoney",
+        description=(
+            "从东方财富读取一只 A 股当前交易日的资金流快照；"
+            "不查询历史日线、不计算资金持续性，也不把成交单大小解释为机构持仓。"
+        ),
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"}},
+            ["symbol"],
+        ),
+        executor=read_stock_capital_flow_quote_eastmoney,
+        category="market",
+    ),
 )
+
+
+__all__ = [
+    "TOOLS",
+    "_market_for",
+    "get_stock_capital_flow",
+    "read_stock_capital_flow_history_eastmoney",
+    "read_stock_capital_flow_quote_eastmoney",
+]

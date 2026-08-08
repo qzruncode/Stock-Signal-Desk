@@ -237,10 +237,42 @@ export function FeedItemCard({ item, onOpen }: { item: RssItem; onOpen: () => vo
   );
 }
 
+function FeedItemRow({ item, onOpen }: { item: RssItem; onOpen: () => void }) {
+  const normalizedTitle = item.title.trim().replace(/\s+/g, ' ');
+  const normalizedSummary = item.summary.trim().replace(/\s+/g, ' ');
+  const accessibleLabel = [normalizedTitle, normalizedSummary, item.author, item.published]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <div className="min-w-0 border-b border-border/60 last:border-b-0">
+      <button
+        type="button"
+        onClick={onOpen}
+        title={accessibleLabel}
+        aria-label={accessibleLabel}
+        className="flex w-full min-w-0 items-center gap-2 py-1.5 text-left text-[11px] transition-colors hover:bg-muted/40"
+      >
+        <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+          {normalizedTitle || '消息详情'}
+        </span>
+        {normalizedSummary && normalizedSummary !== normalizedTitle && (
+          <span className="min-w-0 flex-[2] truncate text-muted-foreground">{normalizedSummary}</span>
+        )}
+        <span className="hidden shrink-0 items-center gap-2 text-[10px] text-muted-text sm:flex">
+          {item.published && <span>{formatTime(item.published)}</span>}
+          {item.author && <span className="max-w-28 truncate">{item.author}</span>}
+        </span>
+        {(item.resources ?? []).length > 0 && <span className="shrink-0 text-[10px] text-cyan-700">原文</span>}
+      </button>
+    </div>
+  );
+}
+
 export interface RssFeedListProps {
   items: RssItem[];
   feedTitle?: string;
   spec?: FeedSpec | null;
+  compact?: boolean;
 }
 
 function FeedItemDetail({ item }: { item: RssItem }) {
@@ -302,7 +334,7 @@ function FeedItemDetail({ item }: { item: RssItem }) {
   );
 }
 
-export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec }) => {
+export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec, compact = false }) => {
   const [previewSessionId] = useState(() => {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       return crypto.randomUUID().replaceAll('-', '_');
@@ -351,7 +383,7 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
 
   return (
     <>
-      <div className="space-y-3">
+      <div className={compact ? 'space-y-0' : 'space-y-3'}>
         {feedTitle && (
           <div className="mb-1 flex items-center gap-2 text-xs text-muted-text">
             <span>{feedTitle}</span>
@@ -359,7 +391,13 @@ export const RssFeedList: React.FC<RssFeedListProps> = ({ items, feedTitle, spec
             <span>{items.length} 条</span>
           </div>
         )}
-        {items.map((item, index) => (
+        {items.map((item, index) => compact ? (
+          <FeedItemRow
+            key={item.id || item.link || `${item.title}-${index}`}
+            item={item}
+            onOpen={() => void openItem(item)}
+          />
+        ) : (
           <FeedItemCard
             key={item.id || item.link || `${item.title}-${index}`}
             item={item}

@@ -147,6 +147,78 @@ def test_get_conversation_returns_persisted_terminal_agent_stage(
     assert resume["latest_stage"]["status"] == "failed"
 
 
+def test_get_conversation_returns_execution_trace_once_at_canonical_level(
+    client,
+    mock_service,
+):
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    durable = {
+        "run_id": "run-trace",
+        "conversation_id": "c1",
+        "status": "completed",
+        "event_cursor": 0,
+        "final_text": "答案",
+        "context_snapshot": None,
+    }
+    trace = {
+        "run_id": "run-trace",
+        "status": "completed",
+        "execution_trace": {
+            "stages": [{"stage": "publish", "status": "completed"}],
+            "tool_results": [{"tool_name": "read_source", "success": True}],
+        },
+    }
+    with (
+        patch(
+            "src.storage.manager.DatabaseManager.get_agent_run",
+            return_value=durable,
+        ),
+        patch(
+            "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+            return_value=trace,
+        ),
+    ):
+        response = client.get("/api/v1/agent/conversations/c1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_trace"] == trace["execution_trace"]
+    assert "execution_trace" not in body["resume_state"]
+
+
+def test_get_conversation_does_not_reconstruct_removed_verification_retry(
+    client,
+    mock_service,
+):
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    durable = {
+        "run_id": "run-invalid-verifier",
+        "conversation_id": "c1",
+        "status": "partial",
+        "error_code": "legacy_verification_provider_invalid_response",
+        "event_cursor": 0,
+        "final_text": "验证未完成",
+        "context_snapshot": None,
+    }
+    with (
+        patch(
+            "src.storage.manager.DatabaseManager.get_agent_run",
+            return_value=durable,
+        ),
+        patch(
+            "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+            return_value=None,
+        ),
+    ):
+        resp = client.get("/api/v1/agent/conversations/c1")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "verification_retry" not in body
+    assert "verification_retry" not in body["resume_state"]
+    assert body["resume_state"]["status"] == "partial"
+
+
 def test_get_conversation_reconciles_orphan_running_trace_to_failed(
     client,
     mock_service,
@@ -173,7 +245,7 @@ def test_get_conversation_reconciles_orphan_running_trace_to_failed(
     assert resume["status"] == "failed"
     assert resume["latest_stage"] == {
         "event": "agent_stage",
-        "engine": "langgraph",
+        "engine": "langgraph_agent_loop",
         "run_id": "run-orphan",
         "stage": "completed",
         "status": "failed",
@@ -272,7 +344,7 @@ def test_cancel_conversation_404_when_missing(client, mock_service):
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_syncs_messages_and_thread_state(client, mock_service):
+def test_snapshot_syncs_messages_and_discards_legacy_thread_state(client, mock_service):
     mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
     resp = client.put(
         "/api/v1/agent/conversations/c1/snapshot",
@@ -282,7 +354,7 @@ def test_snapshot_syncs_messages_and_thread_state(client, mock_service):
     args, kwargs = mock_service.save_conversation_snapshot.call_args
     assert args[0] == "c1"
     assert args[1] == [{"role": "user", "content": "hi"}]
-    assert kwargs["thread_state"] == {"x": 1}
+    assert kwargs["thread_state"] == {}
 
 
 def test_snapshot_404_when_conversation_missing(client, mock_service):
@@ -303,10 +375,10 @@ def test_snapshot_coerces_non_list_messages_to_empty(client, mock_service):
     assert resp.status_code == 200
     args, kwargs = mock_service.save_conversation_snapshot.call_args
     assert args[1] == []
-    assert kwargs["thread_state"] is None
+    assert kwargs["thread_state"] == {}
 
 
-def test_snapshot_without_messages_preserves_canonical_transcript(client, mock_service):
+def test_snapshot_without_messages_discards_legacy_thread_state(client, mock_service):
     mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
     resp = client.put(
         "/api/v1/agent/conversations/c1/snapshot",
@@ -315,7 +387,7 @@ def test_snapshot_without_messages_preserves_canonical_transcript(client, mock_s
     assert resp.status_code == 200
     args, kwargs = mock_service.save_conversation_snapshot.call_args
     assert args[1] is None
-    assert kwargs["thread_state"] == {"messages": []}
+    assert kwargs["thread_state"] == {}
 
 
 def test_snapshot_forwards_structured_context_pruning_request(client, mock_service):
@@ -331,6 +403,7 @@ def test_snapshot_forwards_structured_context_pruning_request(client, mock_servi
 
     assert resp.status_code == 200
     assert mock_service.save_conversation_snapshot.call_args.kwargs["prune_agent_context_to_messages"] is True
+    assert mock_service.save_conversation_snapshot.call_args.kwargs["thread_state"] == {}
 
 
 def test_assistant_progress_copy_is_not_persisted():

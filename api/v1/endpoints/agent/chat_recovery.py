@@ -30,7 +30,7 @@ async def recover_interrupted_agent_runs(
         run_id = str(candidate.get("run_id") or "")
         conversation_id = str(candidate.get("conversation_id") or "")
         request = candidate.get("request") or {}
-        if not run_id or not conversation_id or request.get("engine") != "langgraph":
+        if not run_id or not conversation_id or request.get("engine") != "langgraph_agent_loop":
             continue
         reclaimed = await asyncio.to_thread(
             db_manager.reclaim_agent_run,
@@ -50,15 +50,20 @@ async def recover_interrupted_agent_runs(
                 error_detail="durable request payload is incomplete",
             )
             continue
-        if not await agent_graph_runtime.has_checkpoint(conversation_id):
-            await asyncio.to_thread(
-                db_manager.finish_agent_run,
+        # A process can restart after durable run admission but before the
+        # first graph checkpoint commits.  This is a new-engine run with a
+        # persisted request, not a legacy checkpoint to convert.  Restart it
+        # from that input instead of invoking an empty graph with ``None``.
+        resume_from_checkpoint = await agent_graph_runtime.has_checkpoint(
+            conversation_id,
+            run_id=run_id,
+        )
+        if not resume_from_checkpoint:
+            logger.info(
+                "[Agent] recovery restarting uncheckpointed request run_id=%s conversation_id=%s",
                 run_id,
-                status="failed",
-                error_code="checkpoint_missing",
-                error_detail="LangGraph checkpoint is missing; legacy checkpoints are not converted",
+                conversation_id,
             )
-            continue
         try:
             llm_cfg = config_loader()
             run = await active_run_registry.adopt_recovered(
@@ -84,6 +89,7 @@ async def recover_interrupted_agent_runs(
                 _llm_cfg: Mapping[str, Any] = dict(llm_cfg),
                 _tenant_id: str = tenant_id,
                 _owner_id: str = owner_id,
+                _resume_from_checkpoint: bool = resume_from_checkpoint,
             ) -> asyncio.Task:
                 return asyncio.create_task(
                     background_runner(
@@ -97,7 +103,7 @@ async def recover_interrupted_agent_runs(
                         session_service=session_service,
                         tenant_id=_tenant_id,
                         owner_id=_owner_id,
-                        recovery=True,
+                        recovery=_resume_from_checkpoint,
                     )
                 )
 

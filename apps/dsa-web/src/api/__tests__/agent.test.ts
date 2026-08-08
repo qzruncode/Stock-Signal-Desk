@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentApi } from '../agent';
 
 const get = vi.hoisted(() => vi.fn());
+const post = vi.hoisted(() => vi.fn());
 const put = vi.hoisted(() => vi.fn());
 const deleteRequest = vi.hoisted(() => vi.fn());
 
 vi.mock('../index', () => ({
   default: {
     get,
-    post: vi.fn(),
+    post,
     put,
     patch: vi.fn(),
     delete: deleteRequest,
@@ -19,6 +20,7 @@ vi.mock('../index', () => ({
 describe('agentApi.syncConversationSnapshot', () => {
   beforeEach(() => {
     get.mockReset();
+    post.mockReset();
     put.mockReset();
     deleteRequest.mockReset();
     put.mockResolvedValue({
@@ -41,21 +43,36 @@ describe('agentApi.syncConversationSnapshot', () => {
     expect(deleteRequest).toHaveBeenCalledWith('/api/v1/agent/conversations');
   });
 
-  it('does not send an empty message list for a thread-only snapshot', async () => {
-    await agentApi.syncConversationSnapshot('c1', {
-      threadState: { messages: [] },
-    });
+  it('sends a server-verifiable approval decision to the pending interrupt', async () => {
+    post.mockResolvedValue({ data: { accepted: true } });
+
+    await expect(agentApi.decideInterrupt('c1', 'interrupt-1', {
+      runId: 'run-1',
+      fingerprint: 'fingerprint-1',
+      decision: 'approve',
+    })).resolves.toBeUndefined();
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/agent/conversations/c1/interrupts/interrupt-1/decision',
+      {
+        run_id: 'run-1',
+        fingerprint: 'fingerprint-1',
+        decision: 'approve',
+      },
+    );
+  });
+
+  it('does not send an empty message list for a metadata-only snapshot', async () => {
+    await agentApi.syncConversationSnapshot('c1', {});
 
     expect(put).toHaveBeenCalledWith(
       '/api/v1/agent/conversations/c1/snapshot',
-      { thread_state: { messages: [] } },
+      {},
     );
   });
 
   it('requests server-context pruning only for an edited transcript', async () => {
     await agentApi.syncConversationSnapshot('c1', {
       messages: [{ id: 'u1', role: 'user', content: '保留问题' }],
-      threadState: { messages: [] },
       pruneAgentContextToMessages: true,
     });
 
@@ -63,13 +80,12 @@ describe('agentApi.syncConversationSnapshot', () => {
       '/api/v1/agent/conversations/c1/snapshot',
       {
         messages: [{ id: 'u1', role: 'user', content: '保留问题' }],
-        thread_state: { messages: [] },
         prune_agent_context_to_messages: true,
       },
     );
   });
 
-  it('preserves snake_case tool payloads inside the opaque persisted thread state', async () => {
+  it('drops an obsolete opaque thread snapshot before normalizing a conversation', async () => {
     get.mockResolvedValue({
       data: {
         id: 'c1',
@@ -105,13 +121,36 @@ describe('agentApi.syncConversationSnapshot', () => {
     });
 
     const detail = await agentApi.getConversation('c1');
-    const result = (detail.threadState?.messages[0]?.message.content as Array<Record<string, unknown>>)[0]?.result as Record<string, unknown>;
 
     expect(detail.createdAt).toBe('2026-07-26T00:00:00Z');
-    expect(result).toMatchObject({ catalog_count: 47, matched_count: 15, returned_count: 15 });
-    expect((result.items as Array<Record<string, unknown>>)[0]).toMatchObject({
-      route_path: '/szse/disclosure/listed/notice/:query?',
-      namespace_name: '深圳证券交易所',
+    expect(detail.threadState).toBeUndefined();
+  });
+
+  it('bounds an oversized execution trace before it enters page state', async () => {
+    get.mockResolvedValue({
+      data: {
+        id: 'c1',
+        title: '对话',
+        title_source: 'auto',
+        created_at: '2026-07-26T00:00:00Z',
+        updated_at: '2026-07-26T00:00:00Z',
+        messages: [],
+        execution_trace: {
+          tool_results: Array.from({ length: 160 }, (_, index) => ({
+            action_id: `action-${index}`,
+            raw_body: 'x'.repeat(12_000),
+          })),
+        },
+      },
     });
+
+    const detail = await agentApi.getConversation('c1');
+    const trace = detail.executionTrace;
+    const toolResults = trace?.toolResults || [];
+
+    expect(toolResults).toHaveLength(81);
+    expect((toolResults[0]?.rawBody as string).length).toBeLessThanOrEqual(1_600);
+    expect(trace?.clientTraceTruncated).toBe(true);
+    expect(JSON.stringify(trace).length).toBeLessThan(190_000);
   });
 });

@@ -1,19 +1,26 @@
 import type React from 'react';
 import { useEffect, useRef } from 'react';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
-import type { ExportedMessageRepository, ThreadMessageLike } from '@assistant-ui/core';
+import type { ThreadMessageLike } from '@assistant-ui/core';
 import type { ReadonlyJSONValue } from 'assistant-stream/utils';
-import { type ChatConversationDetail } from '../../api/agent';
+import { type AgentExecutionTrace, type ChatConversationDetail } from '../../api/agent';
 
 /**
  * ChatRuntimeBridge:把后端会话详情(ChatConversationDetail)桥接到 assistant-ui
- * 的 ThreadRuntime。负责 hydration(import/reset)、续流(startRun)与生成态判定。
+ * 的 ThreadRuntime。负责规范化 hydration、续流(startRun)与生成态判定。
  *
  * 从 ChatHomePage 抽出,使页面文件守住 600 行预算;本文件只导出该组件,
  * 辅助函数不导出以保持 Fast Refresh 干净。
  */
 
 const PENDING_ASSISTANT_SUFFIX = '-assistant-pending';
+const TERMINAL_RUN_STATUSES = new Set([
+  'completed',
+  'partial',
+  'failed',
+  'cancelled',
+  'blocked',
+]);
 
 const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => {
   if (role === 'user' || role === 'assistant' || role === 'system') {
@@ -22,68 +29,124 @@ const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => 
   return 'assistant';
 };
 
-const toRuntimeMessages = (
-  messages: ChatConversationDetail['messages'],
-  latestStage?: NonNullable<ChatConversationDetail['resumeState']>['latestStage'],
-): ThreadMessageLike[] => {
-  const lastAssistantId = [...messages]
-    .reverse()
-    .find((message) => message.role === 'assistant')?.id;
-  const persistedStage = latestStage as ReadonlyJSONValue | undefined;
-  return messages
-    .filter((message) => (message.content || '').trim().length > 0)
-    .map((message) => ({
-      id: message.id,
-      role: normalizeMessageRole(message.role),
-      createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
-      content: [{ type: 'text' as const, text: message.content || '' }],
-      ...(persistedStage && message.id === lastAssistantId
-        ? { metadata: { unstable_data: [persistedStage] } }
-        : {}),
-    }));
+const stageEventKey = (value: unknown): string => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return String(value);
+  const record = value as Record<string, unknown>;
+  return [
+    record.event,
+    record.run_id ?? record.runId,
+    record.stage,
+    record.status,
+    record.action_id ?? record.actionId ?? record.task_id ?? record.taskId,
+    record.tool_call_id ?? record.toolCallId,
+    record.round_id ?? record.roundId,
+    record.occurred_at ?? record.occurredAt,
+    record.summary,
+  ].map((item) => String(item ?? '')).join('|');
 };
 
-const withPersistedStage = (
-  threadState: ChatConversationDetail['threadState'],
+const persistedStageEvents = (
+  latestStage: NonNullable<ChatConversationDetail['resumeState']>['latestStage'],
+  executionTrace?: AgentExecutionTrace | null,
+): ReadonlyJSONValue[] => {
+  const candidates = [
+    ...(executionTrace?.stages || []),
+    ...(latestStage ? [latestStage] : []),
+  ] as unknown as ReadonlyJSONValue[];
+  const seen = new Set<string>();
+  return candidates.filter((event) => {
+    const key = stageEventKey(event);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const hasPersistedExecution = (
+  persistedStages: ReadonlyJSONValue[],
+  executionTrace?: AgentExecutionTrace | null,
+): boolean => {
+  if (persistedStages.length > 0) return true;
+  if (!executionTrace) return false;
+  return Object.values(executionTrace).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
+  });
+};
+
+const isTerminalRunStatus = (status: string | null | undefined): boolean => (
+  typeof status === 'string' && TERMINAL_RUN_STATUSES.has(status)
+);
+
+const toRuntimeMessages = (
+  conversationId: string,
+  messages: ChatConversationDetail['messages'],
   latestStage?: NonNullable<ChatConversationDetail['resumeState']>['latestStage'],
-): ChatConversationDetail['threadState'] => {
-  if (!threadState || !latestStage) return threadState;
-  let injected = false;
-  const messages = [...threadState.messages]
-    .reverse()
-    .map((entry) => {
-      if (injected || entry.message?.role !== 'assistant') return entry;
-      injected = true;
-      const metadata = (
-        typeof entry.message.metadata === 'object'
-        && entry.message.metadata !== null
-        && !Array.isArray(entry.message.metadata)
-      )
-        ? entry.message.metadata as Record<string, unknown>
-        : {};
-      const existing = Array.isArray(metadata.unstable_data)
-        ? metadata.unstable_data
-        : [];
+  executionTrace?: AgentExecutionTrace | null,
+  runId?: string | null,
+  assistantText?: string,
+  includeTracePlaceholder = false,
+): ThreadMessageLike[] => {
+  const persistedStages = persistedStageEvents(latestStage, executionTrace);
+  // A durable trace belongs to the assistant message created by that same
+  // terminal run, never merely to the latest historical assistant message.
+  // This prevents a failed/cancelled turn with no answer text from decorating
+  // a previous answer as if it were still executing.
+  const normalizedAssistantText = (assistantText || '').trim();
+  const traceAssistantId = normalizedAssistantText
+    ? [...messages].reverse().find((message) => (
+        message.role === 'assistant' && (message.content || '').trim() === normalizedAssistantText
+      ))?.id
+    : undefined;
+  const runtimeMessages = messages
+    .filter((message) => (message.content || '').trim().length > 0)
+    .map((message) => {
+      const stages = message.id === traceAssistantId ? persistedStages : [];
       return {
-        ...entry,
-        message: {
-          ...entry.message,
-          metadata: {
-            ...metadata,
-            unstable_data: [...existing, latestStage],
-          },
-        },
+        id: message.id,
+        role: normalizeMessageRole(message.role),
+        createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
+        content: [{ type: 'text' as const, text: message.content || '' }],
+        ...(
+          (stages.length > 0 || (message.id === traceAssistantId && executionTrace))
+            ? {
+                metadata: {
+                  ...(stages.length > 0 ? { unstable_data: stages } : {}),
+                  ...(message.id === traceAssistantId && executionTrace
+                    ? { custom: { agent_execution_trace: executionTrace } }
+                    : {}),
+                },
+              }
+            : {}
+        ),
       };
-    })
-    .reverse();
-  return {
-    ...threadState,
-    messages,
-  };
+    });
+  // A failed/cancelled run can legitimately have no assistant text at all.
+  // Keep its durable trace visible as a dedicated assistant record rather
+  // than replaying obsolete stream chunks merely to recreate tool UI.
+  if (
+    includeTracePlaceholder
+    && !traceAssistantId
+    && hasPersistedExecution(persistedStages, executionTrace)
+  ) {
+    const stageRunId = latestStage?.runId ?? latestStage?.run_id;
+    runtimeMessages.push({
+      id: `${conversationId}-agent-trace-${runId || stageRunId || 'latest'}`,
+      role: 'assistant',
+      createdAt: new Date(),
+      content: [],
+      metadata: {
+        ...(persistedStages.length > 0 ? { unstable_data: persistedStages } : {}),
+        ...(executionTrace ? { custom: { agent_execution_trace: executionTrace } } : {}),
+      },
+    });
+  }
+  return runtimeMessages;
 };
 
 const getConversationHydrationKey = (detail: ChatConversationDetail): string => {
   const lastMessage = detail.messages.at(-1);
+  const executionTrace = detail.executionTrace ?? detail.resumeState?.executionTrace;
   return [
     detail.id,
     detail.updatedAt,
@@ -95,27 +158,18 @@ const getConversationHydrationKey = (detail: ChatConversationDetail): string => 
     detail.resumeState?.latestStage?.occurredAt
       ?? detail.resumeState?.latestStage?.occurred_at
       ?? '',
+    executionTrace?.stages?.length ?? 0,
+    stageEventKey(executionTrace?.stages?.at(-1)),
+    executionTrace?.toolResults?.length ?? 0,
+    executionTrace?.evidence?.length ?? 0,
+    executionTrace?.claimEvidence?.length ?? 0,
     detail.resumeState?.afterChunkIndex ?? '',
     detail.pendingInterrupt?.interruptId ?? '',
     detail.pendingInterrupt?.fingerprint ?? '',
-    detail.threadState?.headId ?? '',
     detail.messages.length,
     lastMessage?.id ?? '',
     lastMessage?.content ?? '',
   ].join('|');
-};
-
-const hasRichParts = (threadState: ChatConversationDetail['threadState']): boolean => {
-  if (!threadState?.messages?.length) return false;
-  return threadState.messages.some((entry) => {
-    const content = entry.message?.content;
-    return Array.isArray(content)
-      && content.some((part) => {
-        if (!part || typeof part !== 'object') return false;
-        const partType = (part as Record<string, unknown>).type;
-        return partType === 'tool-call' || partType === 'tool-result' || partType === 'reasoning';
-      });
-  });
 };
 
 const removeTrailingAssistant = (
@@ -128,31 +182,32 @@ const removeTrailingAssistant = (
   return messages.slice(0, -1);
 };
 
-const getLastAssistantText = (messages: ChatConversationDetail['messages']): string => {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === 'assistant') {
-      return (message.content || '').trim();
-    }
-  }
-  return '';
-};
-
 export type ChatRuntimeBridgeProps = {
   conversationDetail: ChatConversationDetail | null;
   onThreadRuntime: (threadRuntime: ReturnType<typeof useThreadRuntime>) => void;
   onPrepareResumeExisting: (conversationId: string, afterChunkIndex: number | null) => void;
+  /**
+   * A terminal snapshot is only allowed to detach a local stream that is
+   * actually attached to that durable run.  A user can send a new turn while
+   * the selected detail still describes the preceding terminal run.
+   */
+  shouldDetachTerminalStream?: (conversationId: string, runId: string | null | undefined) => boolean;
 };
+
+const detachTerminalStreamByDefault = () => true;
 
 export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
   conversationDetail,
   onThreadRuntime,
   onPrepareResumeExisting,
+  shouldDetachTerminalStream = detachTerminalStreamByDefault,
 }) => {
   const threadRuntime = useThreadRuntime();
   const isThreadRunning = useThread((state) => state.isRunning);
   const appliedHydrationKeyRef = useRef<string | null>(null);
   const appliedConversationIdRef = useRef<string | null>(null);
+  const pendingConversationIdRef = useRef<string | null>(null);
+  const terminalDetachKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     onThreadRuntime(threadRuntime);
@@ -162,6 +217,8 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     if (!conversationDetail) {
       appliedHydrationKeyRef.current = null;
       appliedConversationIdRef.current = null;
+      pendingConversationIdRef.current = null;
+      terminalDetachKeyRef.current = null;
       onPrepareResumeExisting('', null);
       threadRuntime.cancelRun();
       threadRuntime.reset([]);
@@ -171,13 +228,45 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
     // A delayed detail request can resolve after the user has already sent a
     // message.  Hydrating that stale snapshot would call cancelRun/reset and
     // erase the live assistant turn. Keep the local run authoritative for the
-    // same conversation. A genuine conversation change is allowed to detach
-    // the old local stream once the new detail is ready.
+    // same conversation. For another conversation, cancel the local stream
+    // first and wait for assistant-ui to finish its abort update before reset.
+    // Resetting immediately removes the old parent message while its stream
+    // callback can still write to it, which throws "Parent message not found".
     const isConversationChange = (
       appliedConversationIdRef.current !== null
       && appliedConversationIdRef.current !== conversationDetail.id
     );
+    const hydrationKey = getConversationHydrationKey(conversationDetail);
+    const serverReportedTerminal = isTerminalRunStatus(
+      conversationDetail.resumeState?.status,
+    );
+    if (isThreadRunning && isConversationChange) {
+      if (pendingConversationIdRef.current !== conversationDetail.id) {
+        pendingConversationIdRef.current = conversationDetail.id;
+        onPrepareResumeExisting('', null);
+        threadRuntime.cancelRun();
+      }
+      return;
+    }
     if (isThreadRunning && !isConversationChange) {
+      // A stale local stream must never outlive a durable terminal result.
+      // This can happen when the API restarts between two data-stream chunks:
+      // the server completes safely, while the client-side reader still says
+      // it is running.  Cancel once and let the next non-running render
+      // hydrate the canonical terminal trace/message.
+      if (
+        serverReportedTerminal
+        && shouldDetachTerminalStream(
+          conversationDetail.id,
+          conversationDetail.resumeState?.runId,
+        )
+      ) {
+        if (terminalDetachKeyRef.current !== hydrationKey) {
+          terminalDetachKeyRef.current = hydrationKey;
+          threadRuntime.cancelRun();
+        }
+        return;
+      }
       // Record which conversation owns the live runtime even when its stale
       // server snapshot must not be applied. A later id change can then detach
       // this stream safely.
@@ -185,12 +274,13 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       return;
     }
 
-    const hydrationKey = getConversationHydrationKey(conversationDetail);
+    terminalDetachKeyRef.current = null;
     if (appliedHydrationKeyRef.current === hydrationKey) {
       return;
     }
     appliedHydrationKeyRef.current = hydrationKey;
     appliedConversationIdRef.current = conversationDetail.id;
+    pendingConversationIdRef.current = null;
 
     onPrepareResumeExisting(conversationDetail.id, null);
     threadRuntime.cancelRun();
@@ -198,53 +288,39 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
 
     const isGenerating = conversationDetail.isGenerating === true;
     const isWaitingForApproval = Boolean(conversationDetail.pendingInterrupt);
-    const canReplayStream = conversationDetail.resumeState?.active === true;
-    const threadStateHasRichParts = hasRichParts(conversationDetail.threadState);
-    const retainedFinalText = (conversationDetail.resumeState?.assistantText || '').trim();
-    const latestStage = conversationDetail.resumeState?.latestStage;
-    const lastAssistantText = getLastAssistantText(conversationDetail.messages);
-    const retainedTextMismatch = Boolean(
-      retainedFinalText && lastAssistantText && retainedFinalText !== lastAssistantText,
+    const resumeStatus = conversationDetail.resumeState?.status;
+    // Protect the UI against stale API payloads as well as the backend
+    // contract: terminal history is display data, never a live stream.
+    const canReplayStream = !isTerminalRunStatus(resumeStatus) && (
+      isGenerating || conversationDetail.resumeState?.active === true
     );
-    const shouldReplayStream = !isWaitingForApproval && (isGenerating
-      || (canReplayStream
-        && (
-          (conversationDetail.resumeState?.hasToolEvents === true && !threadStateHasRichParts)
-          || retainedTextMismatch
-        )));
+    const latestStage = conversationDetail.resumeState?.latestStage;
+    // The conversation-level trace is canonical.  Older server payloads may
+    // still carry the same trace in resumeState, so retain it only as a
+    // fallback instead of traversing/rendering two deep copies.
+    const executionTrace = conversationDetail.executionTrace
+      ?? conversationDetail.resumeState?.executionTrace;
+    const shouldReplayStream = !isWaitingForApproval && canReplayStream;
     const pendingId = `${conversationDetail.id}${PENDING_ASSISTANT_SUFFIX}`;
 
-    // isGenerating 时:threadState 是上次完成时的旧快照(不含本次 user 消息),
-    // 而 messages 是生成开始时刚落的完整历史(含本次 user)。故续流场景一律用
-    // messages,确保恢复完整历史;非生成态才用 threadState(保留分支结构)。
+    // `thread_state` is an opaque assistant-ui snapshot. It can contain old
+    // tool result shapes and arbitrarily large payloads, so it is never
+    // re-imported as rendering state. Canonical messages plus the durable
+    // trace for this exact run are the only display inputs.
     const messagesWithoutPending = conversationDetail.messages.filter((m) => m.id !== pendingId);
     const visibleMessages = shouldReplayStream
       ? removeTrailingAssistant(messagesWithoutPending)
       : conversationDetail.messages;
 
-    // 纯文本历史以 messages 为权威来源。threadState 是 assistant-ui 的内部
-    // 导出格式，旧版本或外部写入的精简快照可能缺少 createdAt/metadata 等字段；
-    // 无条件 import 会让消息区只剩空白 assistant 气泡。只有工具消息确实需要
-    // 保留工具卡片、或思考消息需要保留 reasoning part 时才导入，并在格式
-    // 不兼容时可靠回退到标准消息列表。
-    const canImportThreadState = !shouldReplayStream
-      && threadStateHasRichParts
-      && Boolean(conversationDetail.threadState?.messages?.length);
-    if (canImportThreadState) {
-      try {
-        threadRuntime.import(
-          withPersistedStage(
-            conversationDetail.threadState,
-            latestStage,
-          ) as unknown as ExportedMessageRepository,
-        );
-      } catch (error) {
-        console.warn('[Chat] Invalid conversation thread state, falling back to messages', error);
-        threadRuntime.reset(toRuntimeMessages(visibleMessages, latestStage));
-      }
-    } else {
-      threadRuntime.reset(toRuntimeMessages(visibleMessages, latestStage));
-    }
+    threadRuntime.reset(toRuntimeMessages(
+      conversationDetail.id,
+      visibleMessages,
+      latestStage,
+      executionTrace,
+      conversationDetail.resumeState?.runId,
+      conversationDetail.resumeState?.assistantText,
+      !shouldReplayStream,
+    ));
 
     if (!shouldReplayStream) {
       // A normal send starts its run inside assistant-ui before hydration.  If
@@ -271,7 +347,13 @@ export const ChatRuntimeBridge: React.FC<ChatRuntimeBridgeProps> = ({
       sourceId: parentId,
       runConfig: {},
     });
-  }, [conversationDetail, isThreadRunning, threadRuntime, onPrepareResumeExisting]);
+  }, [
+    conversationDetail,
+    isThreadRunning,
+    threadRuntime,
+    onPrepareResumeExisting,
+    shouldDetachTerminalStream,
+  ]);
 
   return null;
 };

@@ -1,0 +1,491 @@
+"""Generic atomic operations over explicitly named data sources.
+
+The Agent sees stable operations such as ``read_rss_source`` and the complete
+source directory for each operation.  ``source_id`` names one source from that
+directory; it is not a hidden provider fallback or a way to choose another
+workflow.  Every executor below invokes one source implementation exactly
+once, then returns its raw normalized observation.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Mapping
+
+from src.tools._rss_agent import rss_options_schema
+from src.tools.base import ToolSpec, object_schema, report_tool_progress
+from src.tools.kline_source_tools import _read_source as _read_kline_source
+from src.tools.realtime_quote_source_tools import _read_source as _read_quote_source
+from src.tools.read_rss_feed import read_rss_feed
+from src.tools.rss_route_tools import (
+    list_rss_cih_report_categories,
+    list_rss_cls_subjects,
+    list_rss_futunn_topics,
+    list_rss_gelonghui_subjects,
+    list_rss_nanhua_report_types,
+)
+from src.tools.rss_sources import RSS_SOURCE_DEFINITIONS, RssSourceDefinition
+from src.tools.technical_indicator_source_tools import calculate_indicator as _calculate_indicator
+from src.tools.web_source_tools import (
+    read_web_firecrawl,
+    read_web_http,
+    read_web_patchright,
+    read_web_scrapling,
+    search_web_exa,
+    search_web_firecrawl_searxng,
+    search_web_parallel,
+)
+
+
+def _rss_source_id(source: RssSourceDefinition) -> str:
+    return source.tool_name.removeprefix("read_rss_")
+
+
+_RSS_SOURCES = {_rss_source_id(source): source for source in RSS_SOURCE_DEFINITIONS}
+
+
+def _rss_source_metadata(source: RssSourceDefinition) -> dict[str, Any]:
+    return {
+        "id": _rss_source_id(source),
+        "provider": source.provider,
+        "name": source.feed_name,
+        "purpose": source.purpose,
+        "capabilities": sorted(source.capabilities),
+        "parameters": [
+            {
+                "name": item.name,
+                "description": item.description,
+                "required": item.required,
+                "enum": list(item.enum),
+                "default": item.route_default,
+            }
+            for item in source.parameters
+        ],
+    }
+
+
+RSS_SOURCE_CATALOG = tuple(_rss_source_metadata(source) for source in RSS_SOURCE_DEFINITIONS)
+
+
+def _rss_params(source: RssSourceDefinition, params: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {item.name for item in source.parameters}
+    unknown = sorted(str(key) for key in params if str(key) not in allowed)
+    if unknown:
+        raise ValueError(
+            f"source_id={_rss_source_id(source)} 不支持参数: " + ", ".join(unknown)
+        )
+    normalized = {
+        item.name: str(params[item.name]).strip()
+        for item in source.parameters
+        if params.get(item.name) not in (None, "")
+    }
+    for item in source.parameters:
+        if item.required and not normalized.get(item.name):
+            raise ValueError(f"source_id={_rss_source_id(source)} 缺少必填参数 {item.name}")
+    last_bound = max(
+        (index for index, item in enumerate(source.parameters) if item.name in normalized),
+        default=-1,
+    )
+    for item in source.parameters[:last_bound]:
+        if item.name not in normalized:
+            if item.route_default is None:
+                raise ValueError(
+                    f"source_id={_rss_source_id(source)} 设置后续路径参数前必须先提供 {item.name}"
+                )
+            normalized[item.name] = item.route_default
+    return normalized
+
+
+def read_rss_source(
+    source_id: str,
+    source_params: Mapping[str, Any] | None = None,
+    options: Mapping[str, Any] | None = None,
+    limit: int = 30,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Read one declared RSS source without discovery or provider fallback."""
+    source = _RSS_SOURCES.get(str(source_id or "").strip())
+    if source is None:
+        raise ValueError(f"未知 RSS source_id: {source_id}")
+    report_tool_progress(f"正在读取 {source.provider} · {source.feed_name}", progress=10)
+    result = read_rss_feed(
+        source.route_path,
+        params=_rss_params(source, source_params or {}),
+        options=dict(options or {}) or None,
+        namespace=source.namespace,
+        limit=max(1, min(int(limit), 100)),
+        force=bool(force),
+        validate_catalog=False,
+    )
+    result["source"] = {
+        "id": _rss_source_id(source),
+        "provider": source.provider,
+        "feed_name": source.feed_name,
+        "route_path": source.route_path,
+    }
+    result["capabilities"] = sorted(source.capabilities)
+    report_tool_progress(f"{source.provider} · {source.feed_name}读取完成", progress=100)
+    return result
+
+
+_RSS_CATALOG_READERS: dict[str, tuple[str, Callable[..., dict[str, Any]], bool]] = {
+    "cih_report_categories": ("中指研究院报告分类", list_rss_cih_report_categories, False),
+    "cls_subjects": ("财联社话题目录", list_rss_cls_subjects, True),
+    "futunn_topics": ("富途专题目录", list_rss_futunn_topics, True),
+    "gelonghui_subjects": ("格隆汇主题目录", list_rss_gelonghui_subjects, True),
+    "nanhua_report_types": ("南华期货研报分类", list_rss_nanhua_report_types, False),
+}
+
+RSS_CATALOG_SOURCE_CATALOG = tuple(
+    {
+        "id": source_id,
+        "name": title,
+        "purpose": "读取该来源允许的分类、话题或目录值；不读取资讯正文。",
+        "parameters": ([{"name": "keyword", "required": False}] if supports_keyword else []),
+    }
+    for source_id, (title, _reader, supports_keyword) in _RSS_CATALOG_READERS.items()
+)
+
+
+def list_rss_source_catalog(
+    source_id: str,
+    keyword: str = "",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Read one source's category/topic catalog only."""
+    item = _RSS_CATALOG_READERS.get(str(source_id or "").strip())
+    if item is None:
+        raise ValueError(f"未知 RSS 目录 source_id: {source_id}")
+    _title, reader, supports_keyword = item
+    if supports_keyword:
+        return reader(keyword=str(keyword or "").strip(), force=bool(force))
+    if str(keyword or "").strip():
+        raise ValueError(f"source_id={source_id} 不支持 keyword")
+    return reader(force=bool(force))
+
+
+QUOTE_SOURCE_CATALOG = (
+    {"id": "eastmoney_push", "name": "东方财富 Push 实时行情", "purpose": "A 股单证券实时行情"},
+    {"id": "sina", "name": "新浪财经实时行情", "purpose": "A 股单证券实时行情"},
+    {"id": "tencent", "name": "腾讯财经实时行情", "purpose": "A 股单证券实时行情"},
+    {"id": "xueqiu", "name": "雪球实时行情", "purpose": "A 股单证券实时行情"},
+)
+
+
+def read_realtime_quote(source_id: str, symbol: str) -> dict[str, Any]:
+    """Read one source's single-security quote; no cache or fallback provider."""
+    if str(source_id or "").strip() not in {item["id"] for item in QUOTE_SOURCE_CATALOG}:
+        raise ValueError(f"未知实时行情 source_id: {source_id}")
+    return _read_quote_source(str(symbol), str(source_id))
+
+
+KLINE_SOURCE_CATALOG = (
+    {"id": "eastmoney", "name": "东方财富日线（AKShare）", "purpose": "A 股前复权日线"},
+    {"id": "sina", "name": "新浪财经日线（AKShare）", "purpose": "A 股前复权日线"},
+    {"id": "tencent", "name": "腾讯财经日线（AKShare）", "purpose": "A 股前复权日线"},
+)
+
+
+def _valid_kline_source(source_id: str) -> str:
+    normalized = str(source_id or "").strip()
+    if normalized not in {item["id"] for item in KLINE_SOURCE_CATALOG}:
+        raise ValueError(f"未知日线 source_id: {source_id}")
+    return normalized
+
+
+def read_recent_kline(source_id: str, symbol: str, count: int = 60) -> dict[str, Any]:
+    """Read one source's recent daily bars only."""
+    from datetime import datetime, timedelta
+
+    bounded = max(20, min(int(count), 500))
+    now = datetime.now().astimezone()
+    return _read_kline_source(
+        symbol=str(symbol),
+        source_key=_valid_kline_source(source_id),
+        start_date=(now - timedelta(days=max(120, int(bounded * 1.7) + 30))).strftime("%Y%m%d"),
+        end_date=now.strftime("%Y%m%d"),
+        requested_count=bounded,
+        range_mode=False,
+    )
+
+
+def read_kline_range(
+    source_id: str,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+) -> dict[str, Any]:
+    """Read one source's requested daily-bar range only."""
+    from src.tools.kline_source_tools import _validate_date
+
+    start = _validate_date(start_date, "start_date")
+    end = _validate_date(end_date, "end_date")
+    if start > end:
+        raise ValueError("start_date 不能晚于 end_date")
+    return _read_kline_source(
+        symbol=str(symbol),
+        source_key=_valid_kline_source(source_id),
+        start_date=start,
+        end_date=end,
+        requested_count=None,
+        range_mode=True,
+    )
+
+
+_INDICATORS = (
+    "moving_average",
+    "exponential_moving_average",
+    "macd",
+    "rsi",
+    "atr",
+    "bollinger_bands",
+    "period_return",
+)
+def calculate_technical_indicator(
+    source_id: str,
+    indicator: str,
+    symbol: str,
+    count: int = 120,
+    window: int | None = None,
+    period: int | None = None,
+    fast_period: int | None = None,
+    slow_period: int | None = None,
+    signal_period: int | None = None,
+    standard_deviations: float | None = None,
+) -> dict[str, Any]:
+    """Read one source's bars and calculate one requested deterministic indicator."""
+    return _calculate_indicator(
+        source_key=_valid_kline_source(source_id),
+        indicator=str(indicator or "").strip(),
+        symbol=str(symbol),
+        count=int(count),
+        window=window,
+        period=period,
+        fast_period=fast_period,
+        slow_period=slow_period,
+        signal_period=signal_period,
+        standard_deviations=standard_deviations,
+    )
+
+
+WEB_SEARCH_SOURCE_CATALOG = (
+    {"id": "firecrawl_searxng", "name": "Firecrawl + SearXNG", "purpose": "公开网页搜索"},
+    {"id": "exa", "name": "Exa", "purpose": "公开网页搜索"},
+    {"id": "parallel", "name": "Parallel", "purpose": "公开网页搜索"},
+)
+_WEB_SEARCHERS = {
+    "firecrawl_searxng": search_web_firecrawl_searxng,
+    "exa": search_web_exa,
+    "parallel": search_web_parallel,
+}
+
+
+def search_web_source(
+    source_id: str,
+    query: str,
+    num_results: int = 8,
+    context_max_characters: int = 12_000,
+    livecrawl: str = "fallback",
+    search_type: str = "auto",
+) -> dict[str, Any]:
+    """Search one explicit public-web source, without cross-provider fallback."""
+    source = str(source_id or "").strip()
+    searcher = _WEB_SEARCHERS.get(source)
+    if searcher is None:
+        raise ValueError(f"未知网页搜索 source_id: {source_id}")
+    common = {
+        "query": str(query),
+        "numResults": max(1, min(int(num_results), 20)),
+        "contextMaxCharacters": max(1_000, int(context_max_characters)),
+    }
+    if source == "exa":
+        return searcher(livecrawl=str(livecrawl), type=str(search_type), **common)
+    return searcher(**common)
+
+
+WEB_READ_SOURCE_CATALOG = (
+    {"id": "http", "name": "标准 HTTP", "purpose": "公开 URL 直接读取"},
+    {"id": "scrapling", "name": "Scrapling", "purpose": "公开 URL HTTP 渲染读取"},
+    {"id": "patchright", "name": "Patchright", "purpose": "公开 URL JavaScript 浏览器渲染读取"},
+    {"id": "firecrawl", "name": "Firecrawl", "purpose": "公开 URL 抓取"},
+)
+_WEB_READERS = {
+    "http": read_web_http,
+    "scrapling": read_web_scrapling,
+    "patchright": read_web_patchright,
+    "firecrawl": read_web_firecrawl,
+}
+
+
+def read_web_source(
+    source_id: str,
+    url: str,
+    format: str = "markdown",
+    timeout: int | None = None,
+) -> dict[str, Any]:
+    """Read one explicit public-web source, without provider fallback."""
+    reader = _WEB_READERS.get(str(source_id or "").strip())
+    if reader is None:
+        raise ValueError(f"未知网页读取 source_id: {source_id}")
+    return reader(url=str(url), format=str(format), timeout=timeout)
+
+
+def _source_enum(catalog: tuple[dict[str, Any], ...]) -> list[str]:
+    return [str(item["id"]) for item in catalog]
+
+
+_SOURCE_ID = {"type": "string", "description": "从下方完整来源目录选择一个 source_id"}
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_rss_source",
+        description="读取一个明确指定的 RSS 数据源。先在完整 RSS 来源目录中选择 source_id；每次只访问该来源，不搜索或切换来源。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(RSS_SOURCE_CATALOG)},
+                "source_params": {"type": "object", "additionalProperties": True, "default": {}, "description": "所选来源目录中声明的路径参数键值"},
+                "options": rss_options_schema(),
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
+                "force": {"type": "boolean", "default": False},
+            },
+            ["source_id"],
+        ),
+        executor=read_rss_source,
+        category="source_read",
+        max_attempts=2,
+        source_catalog=RSS_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="list_rss_source_catalog",
+        description="读取一个 RSS 来源的分类、话题或目录，不读取 Feed 或正文。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(RSS_CATALOG_SOURCE_CATALOG)},
+                "keyword": {"type": "string", "default": ""},
+                "force": {"type": "boolean", "default": False},
+            },
+            ["source_id"],
+        ),
+        executor=list_rss_source_catalog,
+        category="source_catalog",
+        max_attempts=2,
+        source_catalog=RSS_CATALOG_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="read_realtime_quote",
+        description="读取一个明确指定来源的一只 A 股实时行情；不改查其他来源。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(QUOTE_SOURCE_CATALOG)},
+                "symbol": {"type": "string", "description": "A 股代码或名称"},
+            },
+            ["source_id", "symbol"],
+        ),
+        executor=read_realtime_quote,
+        category="source_read",
+        max_attempts=1,
+        source_catalog=QUOTE_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="read_recent_kline",
+        description="读取一个明确指定来源的一只 A 股近期前复权日线；不计算指标或改查来源。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(KLINE_SOURCE_CATALOG)},
+                "symbol": {"type": "string", "description": "A 股代码或名称"},
+                "count": {"type": "integer", "minimum": 20, "maximum": 500, "default": 60},
+            },
+            ["source_id", "symbol"],
+        ),
+        executor=read_recent_kline,
+        category="source_read",
+        max_attempts=1,
+        source_catalog=KLINE_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="read_kline_range",
+        description="读取一个明确指定来源的一只 A 股日期区间前复权日线；不计算指标或改查来源。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(KLINE_SOURCE_CATALOG)},
+                "symbol": {"type": "string", "description": "A 股代码或名称"},
+                "start_date": {"type": "string", "pattern": "^[0-9]{8}$"},
+                "end_date": {"type": "string", "pattern": "^[0-9]{8}$"},
+            },
+            ["source_id", "symbol", "start_date", "end_date"],
+        ),
+        executor=read_kline_range,
+        category="source_read",
+        max_attempts=1,
+        source_catalog=KLINE_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="calculate_technical_indicator",
+        description="从一个明确指定日线来源读取数据，并计算一个明确指定的技术指标；不输出指标组合或交易结论。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(KLINE_SOURCE_CATALOG)},
+                "indicator": {"type": "string", "enum": list(_INDICATORS)},
+                "symbol": {"type": "string", "description": "A 股代码或名称"},
+                "count": {"type": "integer", "minimum": 30, "maximum": 250, "default": 120},
+                "window": {"type": "integer", "minimum": 2, "maximum": 250},
+                "period": {"type": "integer", "minimum": 2, "maximum": 120},
+                "fast_period": {"type": "integer", "minimum": 2, "maximum": 120},
+                "slow_period": {"type": "integer", "minimum": 3, "maximum": 250},
+                "signal_period": {"type": "integer", "minimum": 2, "maximum": 120},
+                "standard_deviations": {"type": "number", "exclusiveMinimum": 0, "maximum": 5},
+            },
+            ["source_id", "indicator", "symbol"],
+        ),
+        executor=calculate_technical_indicator,
+        category="deterministic_calculation",
+        max_attempts=1,
+        source_catalog=KLINE_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="search_web_source",
+        description="通过一个明确指定的公开网页搜索来源检索；失败时不跨来源兜底。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(WEB_SEARCH_SOURCE_CATALOG)},
+                "query": {"type": "string", "description": "原样发送给所选来源的查询"},
+                "num_results": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
+                "context_max_characters": {"type": "integer", "minimum": 1000, "maximum": 30000, "default": 12000},
+                "livecrawl": {"type": "string", "enum": ["fallback", "preferred"], "default": "fallback"},
+                "search_type": {"type": "string", "enum": ["auto", "fast", "deep"], "default": "auto"},
+            },
+            ["source_id", "query"],
+        ),
+        executor=search_web_source,
+        category="source_search",
+        max_attempts=2,
+        retrieval_query_fields=("query",),
+        source_catalog=WEB_SEARCH_SOURCE_CATALOG,
+    ),
+    ToolSpec(
+        name="read_web_source",
+        description="通过一个明确指定的公开网页读取来源读取 URL；失败时不跨来源兜底。",
+        parameters=object_schema(
+            {
+                "source_id": {**_SOURCE_ID, "enum": _source_enum(WEB_READ_SOURCE_CATALOG)},
+                "url": {"type": "string", "description": "公开 http(s) URL"},
+                "format": {"type": "string", "enum": ["markdown", "text", "html"], "default": "markdown"},
+                "timeout": {"type": "integer", "minimum": 5, "maximum": 120},
+            },
+            ["source_id", "url"],
+        ),
+        executor=read_web_source,
+        category="source_read",
+        max_attempts=2,
+        source_catalog=WEB_READ_SOURCE_CATALOG,
+    ),
+)
+
+
+__all__ = [
+    "RSS_CATALOG_SOURCE_CATALOG",
+    "RSS_SOURCE_CATALOG",
+    "TOOLS",
+    "WEB_READ_SOURCE_CATALOG",
+    "WEB_SEARCH_SOURCE_CATALOG",
+]

@@ -118,6 +118,69 @@ def _cached_spread(country: str) -> tuple[float | None, str | None]:
     return (round(y10 - y2, 4), date_key) if y10 is not None and y2 is not None else (None, None)
 
 
+def read_bond_yield_eastmoney(
+    country: str = "cn",
+    term: str = "10y",
+    days: int = 30,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one Eastmoney yield series without curve calculations or DB fallback."""
+    country = str(country or "").strip().lower()
+    term = str(term or "").strip().lower()
+    days = int(days)
+    if country not in COUNTRIES:
+        raise ValueError(f"不支持的国家: {country}")
+    if term not in TERMS:
+        raise ValueError(f"不支持的期限: {term}")
+    if not 5 <= days <= 250:
+        raise ValueError("days 必须在 5 到 250 之间")
+
+    now = datetime.now().astimezone()
+    errors: list[str] = []
+    try:
+        frame, cached = (
+            cached_call(
+                "bond-yield:eastmoney:source:v1",
+                _fetch_frame,
+                ttl_seconds=6 * 3600,
+                attempts=1,
+            )
+            if use_cache
+            else (_fetch_frame(), False)
+        )
+    except Exception as exc:
+        frame, cached = None, False
+        errors.append(f"中美国债收益率: {exc}")
+
+    history = _series_from_frame(frame, country, term, days)
+    data_date = latest_date(history, "date")
+    if not history and not errors:
+        errors.append("东方财富没有返回可用国债收益率记录")
+    return {
+        "country": country,
+        "country_name": COUNTRIES[country],
+        "term": term,
+        "term_label": TERMS[term],
+        "history": history,
+        "history_count": len(history),
+        "latest": history[-1] if history else None,
+        "units": {"yield": "%"},
+        "source": "东方财富中美国债收益率",
+        "source_scope": "single_sovereign_yield_series",
+        "success": bool(history),
+        "partial": False,
+        "errors": errors,
+        "warnings": [],
+        "data_time": data_date.isoformat() if data_date else None,
+        "is_stale": data_date < now.date() - timedelta(days=7) if data_date else None,
+        "freshness_unknown": data_date is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
 def get_bond_yield(country: str = "cn", term: str = "10y", days: int = 30) -> dict[str, Any]:
     country = str(country or "").strip().lower()
     term = str(term or "").strip().lower()
@@ -198,19 +261,30 @@ def get_bond_yield(country: str = "cn", term: str = "10y", days: int = 30) -> di
     }
 
 
-TOOL = ToolSpec(
-    name="get_bond_yield",
-    description=(
-        "获取中国或美国2年、5年、10年、30年国债收益率历史，并用同一交易日的10年和2年数据计算期限利差。"
-        "缓存命中不等于降级；返回百分比单位、利差日期和陈旧状态。"
+TOOLS = (
+    ToolSpec(
+        name="read_bond_yield_eastmoney",
+        description=(
+            "从东方财富读取中国或美国某一期限的国债收益率历史记录。"
+            "只返回该期限的来源序列，不计算期限利差、不写本地库、也不在来源失败时读取本地缓存。"
+        ),
+        parameters=object_schema(
+            {
+                "country": {"type": "string", "enum": list(COUNTRIES), "default": "cn"},
+                "term": {"type": "string", "enum": list(TERMS), "default": "10y"},
+                "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 30},
+            }
+        ),
+        executor=read_bond_yield_eastmoney,
+        category="macro",
     ),
-    parameters=object_schema(
-        {
-            "country": {"type": "string", "enum": list(COUNTRIES), "default": "cn"},
-            "term": {"type": "string", "enum": list(TERMS), "default": "10y"},
-            "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 30},
-        }
-    ),
-    executor=get_bond_yield,
-    category="macro",
 )
+
+
+__all__ = [
+    "TOOLS",
+    "_fetch_frame",
+    "_same_date_spread",
+    "get_bond_yield",
+    "read_bond_yield_eastmoney",
+]

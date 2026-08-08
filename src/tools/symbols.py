@@ -28,6 +28,25 @@ def resolve_symbol(value: str) -> str:
         return raw
 
 
+def resolve_local_symbol(value: str) -> str:
+    """Resolve a security only from code and the maintained local master.
+
+    Model-authored actions use this path before dispatch.  It deliberately
+    does not call the legacy provider-backed name resolver: a direct quote,
+    statement, or news read must remain one source operation.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return raw
+    try:
+        from src.services.name_to_code_resolver import resolve_local_name_to_code
+
+        return resolve_local_name_to_code(raw) or raw
+    except Exception as exc:
+        logger.debug("local symbol resolve failed for %s: %s", raw, exc)
+        return raw
+
+
 def resolve_symbols_csv(value: str) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -39,6 +58,29 @@ def resolve_symbols_csv(value: str) -> list[str]:
             seen.add(symbol)
             result.append(symbol)
     return result
+
+
+def resolve_local_securities_csv(value: str) -> tuple[list[dict[str, str]], list[str]]:
+    """Resolve a security list from local identity data without provider I/O."""
+    from src.services.name_to_code_resolver import get_database_stock_indexes
+
+    _, code_to_name = get_database_stock_indexes()
+    resolved: list[dict[str, str]] = []
+    unresolved: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[,，、;；\n]+", value or ""):
+        raw = part.strip()
+        if not raw:
+            continue
+        code = resolve_local_symbol(raw).strip()
+        if not re.fullmatch(r"\d{6}", code):
+            unresolved.append(raw)
+            continue
+        if code in seen:
+            continue
+        seen.add(code)
+        resolved.append({"input": raw, "symbol": code, "name": code_to_name.get(code, raw)})
+    return resolved, unresolved
 
 
 def resolve_securities_csv(value: str) -> tuple[list[dict[str, str]], list[str]]:
@@ -139,18 +181,18 @@ def normalize_tool_security_arguments(
     tool_name: str,
     arguments: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
-    """Normalize common ``symbol``/``symbols`` arguments before tool execution."""
+    """Normalize model tool security identities without provider-backed lookup."""
     normalized = dict(arguments)
     unresolved: list[str] = []
     if isinstance(normalized.get("symbol"), str):
         raw = normalized["symbol"].strip()
-        code = resolve_symbol(raw).strip()
+        code = resolve_local_symbol(raw).strip()
         if re.fullmatch(r"\d{6}", code):
             normalized["symbol"] = code
         elif raw:
             unresolved.append(raw)
     if isinstance(normalized.get("symbols"), str):
-        resolved, missing = resolve_securities_csv(normalized["symbols"])
+        resolved, missing = resolve_local_securities_csv(normalized["symbols"])
         normalized["symbols"] = ",".join(item["symbol"] for item in resolved)
         unresolved.extend(missing)
     return normalized, unresolved
@@ -160,6 +202,8 @@ __all__ = [
     "find_securities_in_markdown_table_first_column",
     "find_securities_in_text",
     "normalize_tool_security_arguments",
+    "resolve_local_securities_csv",
+    "resolve_local_symbol",
     "resolve_securities_csv",
     "resolve_symbol",
     "resolve_symbols_csv",

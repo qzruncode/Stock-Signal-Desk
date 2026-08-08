@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from data_provider.utils import is_bse_code
-from src.tools._akshare import bare_symbol, cached_call, exchange_prefix, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, exchange_prefix, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 _QUOTE_URL = "https://push2delay.eastmoney.com/api/qt/stock/get"
@@ -541,19 +541,308 @@ def get_valuation_ratios(
     return _build(symbol, bool(with_history), use_cache)
 
 
-TOOL = ToolSpec(
-    name="get_valuation_ratios",
-    description=(
-        "获取当前 PE(TTM/静态/动态)、PB(MRQ/年报)、PS(TTM)、PCF(TTM)、远期 PE/PEG、"
-        "近365天真实已实施股息率、仅使用正 PE 的历史分位，以及行业中值和均值。"
+def _validated_symbol(symbol: str) -> str:
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    return code
+
+
+def _history_items(frame: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in frame_records(frame):
+        trade_date = _date_text(row.get("数据日期"))
+        if not trade_date:
+            continue
+        items.append(
+            {
+                "trade_date": trade_date,
+                "price": _number(row.get("当日收盘价")),
+                "total_market_cap": _number(row.get("总市值")),
+                "circulating_market_cap": _number(row.get("流通市值")),
+                "total_shares": _number(row.get("总股本")),
+                "circulating_shares": _number(row.get("流通股本")),
+                "pe_ttm": _number(row.get("PE(TTM)")),
+                "pe_static": _number(row.get("PE(静)")),
+                "pb_mrq": _number(row.get("市净率")),
+                "peg_trailing": _number(row.get("PEG值")),
+                "pcf_ttm": _number(row.get("市现率")),
+                "ps_ttm": _number(row.get("市销率")),
+            }
+        )
+    return sorted(items, key=lambda item: item["trade_date"])
+
+
+def read_valuation_history_eastmoney(
+    symbol: str,
+    days: int = 250,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one provider's daily valuation series without derived percentiles."""
+    code = _validated_symbol(symbol)
+    limit = max(5, min(int(days), 1825))
+    frame, cached = (
+        cached_call(
+            f"valuation:history:atomic:v1:{code}",
+            lambda: _fetch_history(code),
+            ttl_seconds=30 * 60,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_history(code), False)
+    )
+    items = _history_items(frame)[-limit:]
+    latest = items[-1] if items else None
+    now = datetime.now().astimezone()
+    expected = _expected_completed_trade_day(now)
+    return {
+        "symbol": code,
+        "days": limit,
+        "items": items,
+        "item_count": len(items),
+        "latest": latest,
+        "price_unit": "人民币元",
+        "market_cap_unit": "元",
+        "share_unit": "股",
+        "ratio_unit": "倍",
+        "source": "东方财富估值历史/AKShare",
+        "source_scope": "daily_valuation_history",
+        "success": bool(items),
+        "partial": False,
+        "errors": [] if items else ["东方财富没有返回可用估值历史"],
+        "warnings": [],
+        "data_time": latest.get("trade_date") if latest else None,
+        "is_stale": (
+            datetime.fromisoformat(str(latest["trade_date"])).date() < expected
+            if latest and latest.get("trade_date")
+            else None
+        ),
+        "freshness_unknown": latest is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+def read_valuation_quote_eastmoney(
+    symbol: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one Eastmoney real-time valuation/market-cap quote."""
+    code = _validated_symbol(symbol)
+    quote, cached = (
+        cached_call(
+            f"valuation:quote:atomic:v1:{code}",
+            lambda: _fetch_quote(code),
+            ttl_seconds=60,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_quote(code), False)
+    )
+    now = datetime.now().astimezone()
+    success = any(
+        quote.get(key) is not None
+        for key in ("price", "pe_ttm", "pe_static", "pe_dynamic", "total_market_cap", "circulating_market_cap")
+    )
+    data_time = quote.get("quote_time")
+    return {
+        "symbol": code,
+        **quote,
+        "price_unit": "人民币元",
+        "market_cap_unit": "元",
+        "ratio_unit": "倍",
+        "source": "东方财富实时估值快照",
+        "source_scope": "realtime_valuation_quote",
+        "success": success,
+        "partial": False,
+        "errors": [] if success else ["东方财富没有返回可用估值快照字段"],
+        "warnings": [],
+        "data_time": data_time,
+        "data_time_provenance": "source" if data_time else "unavailable",
+        "data_time_note": (
+            None
+            if data_time
+            else "东方财富实时估值快照未返回 quote_time；_fetched_at 仅表示本服务获取时间。"
+        ),
+        "is_stale": False if data_time else None,
+        "freshness_unknown": data_time is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+def read_peer_valuation_eastmoney(
+    symbol: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one Eastmoney peer-comparison table without ranking conclusions."""
+    code = _validated_symbol(symbol)
+    comparison, cached = (
+        cached_call(
+            f"valuation:peer-comparison:atomic:v1:{code}",
+            lambda: _fetch_comparison(code),
+            ttl_seconds=30 * 60,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_comparison(code), False)
+    )
+    now = datetime.now().astimezone()
+    report_date = comparison.get("report_date")
+    return {
+        "symbol": code,
+        **comparison,
+        "ratio_unit": "倍",
+        "source": "东方财富同行估值比较",
+        "source_scope": "peer_valuation_comparison",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": [],
+        "data_time": report_date,
+        "is_stale": None,
+        "freshness_unknown": report_date is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+def read_dividend_history_eastmoney(
+    symbol: str,
+    limit: int = 100,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read Eastmoney's dividend implementation records without computing yield."""
+    code = _validated_symbol(symbol)
+    maximum = max(1, min(int(limit), 200))
+    frame, cached = (
+        cached_call(
+            f"valuation:dividend:atomic:v1:{code}",
+            lambda: _fetch_dividends(code),
+            ttl_seconds=6 * 3600,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_dividends(code), False)
+    )
+    items: list[dict[str, Any]] = []
+    for row in frame_records(frame):
+        ex_dividend_date = _date_text(row.get("除权除息日"))
+        report_date = _date_text(row.get("报告期"))
+        progress = str(row.get("方案进度") or "").strip() or None
+        cash_per_10 = _number(row.get("现金分红-现金分红比例"))
+        if not any((ex_dividend_date, report_date, progress, cash_per_10 is not None)):
+            continue
+        items.append(
+            {
+                "report_date": report_date,
+                "ex_dividend_date": ex_dividend_date,
+                "progress": progress,
+                "cash_dividend_per_10_shares": cash_per_10,
+                "cash_dividend_per_share": round(cash_per_10 / 10, 6) if cash_per_10 is not None else None,
+            }
+        )
+    items.sort(key=lambda item: (item.get("ex_dividend_date") or "", item.get("report_date") or ""), reverse=True)
+    items = items[:maximum]
+    latest = next((item.get("ex_dividend_date") or item.get("report_date") for item in items), None)
+    now = datetime.now().astimezone()
+    return {
+        "symbol": code,
+        "limit": maximum,
+        "items": items,
+        "item_count": len(items),
+        "cash_dividend_unit": "人民币元/10股",
+        "source": "东方财富分红实施记录/AKShare",
+        "source_scope": "dividend_implementation_history",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": [],
+        "data_time": latest,
+        "is_stale": None,
+        "freshness_unknown": latest is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_valuation_history_eastmoney",
+        description=(
+            "从东方财富（AKShare）读取一只 A 股的日度估值历史，包括价格、PE、PB、PS、PCF、PEG、市值和股本；"
+            "不混合实时快照、同行比较或分红，也不计算估值分位。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"},
+                "days": {"type": "integer", "minimum": 5, "maximum": 1825, "default": 250},
+            },
+            ["symbol"],
+        ),
+        executor=read_valuation_history_eastmoney,
+        category="financials",
     ),
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "股票代码或名称"},
-            "with_history": {"type": "boolean", "default": True, "description": "是否计算 1/3/5 年正 PE 历史分位"},
-        },
-        ["symbol"],
+    ToolSpec(
+        name="read_valuation_quote_eastmoney",
+        description=(
+            "从东方财富读取一只 A 股的当前价格、PE（TTM/静态/动态）、PB（年报）和市值快照；"
+            "不查询历史估值、同行比较或分红。"
+        ),
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"}},
+            ["symbol"],
+        ),
+        executor=read_valuation_quote_eastmoney,
+        category="financials",
     ),
-    executor=get_valuation_ratios,
-    category="financials",
+    ToolSpec(
+        name="read_peer_valuation_eastmoney",
+        description=(
+            "从东方财富读取一只 A 股所在同行估值比较表的原始指标、样本数、排名和行业均值/中值；"
+            "不把排名或均值自动解释成高估、低估或投资结论。"
+        ),
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"}},
+            ["symbol"],
+        ),
+        executor=read_peer_valuation_eastmoney,
+        category="financials",
+    ),
+    ToolSpec(
+        name="read_dividend_history_eastmoney",
+        description=(
+            "从东方财富（AKShare）读取一只 A 股的分红方案和实施记录；"
+            "返回报告期、除权除息日和每10股现金分红，不计算股息率或 TTM 汇总。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 100},
+            },
+            ["symbol"],
+        ),
+        executor=read_dividend_history_eastmoney,
+        category="financials",
+    ),
 )
+
+
+__all__ = [
+    "TOOLS",
+    "_history_statistics",
+    "_ttm_dividend",
+    "get_valuation_ratios",
+    "read_dividend_history_eastmoney",
+    "read_peer_valuation_eastmoney",
+    "read_valuation_history_eastmoney",
+    "read_valuation_quote_eastmoney",
+]

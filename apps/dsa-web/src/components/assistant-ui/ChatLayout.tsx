@@ -7,11 +7,13 @@ import {
   Loader2Icon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
-  RefreshCcwIcon,
   ShieldAlertIcon,
   XIcon,
 } from 'lucide-react';
-import type { ChatConversationItem, PendingAgentInterrupt } from '../../api/agent';
+import type {
+  ChatConversationItem,
+  PendingAgentInterrupt,
+} from '../../api/agent';
 import { analysisApi } from '../../api/analysis';
 import { useTaskStream } from '../../hooks/useTaskStream';
 import type { TaskInfo } from '../../types/analysis';
@@ -199,21 +201,21 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
 
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <AnalysisTaskActivity />
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-14 items-start justify-end px-3 pt-2 lg:h-9 lg:px-6 lg:pt-1">
-          <div className="pointer-events-auto flex items-center gap-3">
+        <div className="relative z-30 flex shrink-0 items-center justify-end gap-3 px-3 pb-2 pt-1 lg:px-6 lg:py-1">
+          <div className="flex items-center gap-3">
             <QuestionNavigator />
             {!isDesktop ? (
               <button
                 type="button"
                 onClick={() => setMobileSidebarState((value) => (value === 'open' ? 'closing' : 'open'))}
                 className={cn(
-                  'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border',
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border',
                   'bg-card text-muted-foreground shadow-sm transition hover:text-foreground',
-                  'sm:h-9 sm:w-9',
+                  'sm:h-8 sm:w-8',
                 )}
                 aria-label={mobileSidebarOpen ? '收起对话列表' : '展开对话列表'}
               >
-                {mobileSidebarOpen ? <PanelLeftCloseIcon className="size-3.5" /> : <PanelLeftIcon className="size-3.5" />}
+                {mobileSidebarOpen ? <PanelLeftCloseIcon className="size-3" /> : <PanelLeftIcon className="size-3" />}
               </button>
             ) : null}
           </div>

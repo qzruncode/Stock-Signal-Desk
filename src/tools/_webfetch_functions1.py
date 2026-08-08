@@ -265,6 +265,10 @@ def _challenge_reason(content: str, content_type: str) -> str | None:
     normalized = text[:20_000].replace("\\", "").lower()
     markers = (
         ("_waf_", "页面返回了 WAF 加密挑战而非正文"),
+        # Some providers return this JavaScript configuration as Markdown,
+        # rather than an HTML status page.  It is still a bot challenge, not
+        # readable source content.
+        ("cf_app_waf", "页面返回了访问验证而非正文"),
         ("cf-chl-", "页面返回了 Cloudflare 验证而非正文"),
         ("cloudflare ray id", "页面返回了 Cloudflare 验证而非正文"),
         ("cf-turnstile", "页面返回了 Cloudflare 验证而非正文"),
@@ -283,6 +287,18 @@ def _challenge_reason(content: str, content_type: str) -> str | None:
     for marker, reason in markers:
         if marker in normalized:
             return reason
+
+    # Do not reject an ordinary article that merely discusses verification.
+    # The pairing below is the actual access-gate wording emitted by several
+    # anti-bot pages, so it is safe to treat as a failed fetch.
+    if (
+        "access verification" in normalized
+        and (
+            "slide to complete the verification" in normalized
+            or "before accessing the web page" in normalized
+        )
+    ):
+        return "页面返回了访问验证而非正文"
 
     mime = content_type.split(";", 1)[0].strip().lower()
     if "html" in mime:

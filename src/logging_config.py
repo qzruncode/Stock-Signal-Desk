@@ -50,6 +50,10 @@ class RelativePathFormatter(logging.Formatter):
 
 # 默认需要降低日志级别的第三方库
 DEFAULT_QUIET_LOGGERS = [
+    # LangGraph's SQLite saver can persist multi-megabyte checkpoints.  At
+    # DEBUG, aiosqlite logs the entire parameter blob for every write, which
+    # turns normal Agent activity into large synchronous log I/O.
+    "aiosqlite",
     "urllib3",
     "sqlalchemy",
     "google",

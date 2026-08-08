@@ -60,7 +60,24 @@ def _persistent_cache_put(key: str, value: Any) -> None:
 def bare_symbol(symbol: str) -> str:
     from src.tools.symbols import resolve_symbol
 
-    code = resolve_symbol(symbol).strip()
+    return _bare_resolved_symbol(resolve_symbol(symbol))
+
+
+def bare_local_symbol(symbol: str) -> str:
+    """Normalize a locally confirmed security identity without provider I/O.
+
+    Agent-visible source tools use this helper.  ``bare_symbol`` deliberately
+    retains the legacy online resolver for compatibility callers, while an
+    atomic read must not hide a second identity-source request before it calls
+    its declared provider.
+    """
+    from src.tools.symbols import resolve_local_symbol
+
+    return _bare_resolved_symbol(resolve_local_symbol(symbol))
+
+
+def _bare_resolved_symbol(value: str) -> str:
+    code = str(value or "").strip()
     lower = code.lower()
     if lower.startswith(("sh", "sz", "bj")):
         code = code[2:]

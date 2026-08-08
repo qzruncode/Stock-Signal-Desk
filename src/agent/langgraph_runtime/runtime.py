@@ -1,32 +1,43 @@
-"""Lifecycle and invocation facade for the application-hosted LangGraph."""
+"""Lifecycle and invocation facade for the application-hosted Agent graph."""
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
-import asyncio
 import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from langchain_core.messages import convert_to_messages
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.types import Command
+from langgraph.errors import GraphRecursionError
+from langgraph.types import Command, Overwrite
 
+from src.agent.model_runtime import (
+    ModelProviderReportedTimeoutError,
+    ModelProviderUnavailableError,
+)
 from src.agent.run_registry import active_run_registry
+from src.agent.runtime_safety import get_agent_runtime_limits
 from src.tools.registry import ToolRegistry
 
 from .catalog import ToolCatalog
 from .events import GraphEventBridge
 from .executor import AtomicToolExecutor
 from .graph import build_agent_graph
-from .model import StructuredModelClient
+from .model import LiteLLMChatModel, LiteLLMGateway
 from .state import AgentGraphInput, GraphContext
 
 
-CHECKPOINT_THREAD_PREFIX = "agent-v1"
+# ``checkpoint_ns`` is reserved by LangGraph for subgraph routing and the root
+# graph must use its empty namespace.  The versioned thread prefix is the
+# durable engine namespace here; it prevents a checkpoint created by the
+# removed semantic DAG from being resumed by this loop.
+CHECKPOINT_THREAD_PREFIX = "agent-v2"
 CHECKPOINT_NAMESPACE = ""
 
 
@@ -50,14 +61,6 @@ def _postgres_connection_string(value: str) -> str:
     return normalized
 
 
-def _run_timeout_seconds() -> float:
-    try:
-        value = float(str(os.getenv("AGENT_GRAPH_MAX_ELAPSED_SECONDS") or "900").strip())
-    except (TypeError, ValueError):
-        value = 900.0
-    return max(5.0, min(7_200.0, value))
-
-
 def _sqlite_checkpoint_path(database_url: str) -> Path:
     configured = str(os.getenv("AGENT_CHECKPOINT_SQLITE_PATH") or "").strip()
     if configured:
@@ -73,18 +76,26 @@ def _sqlite_checkpoint_path(database_url: str) -> Path:
     return (Path.cwd() / ".agent-checkpoints" / "langgraph.sqlite3").resolve()
 
 
+def _evidence_repair_limit() -> int:
+    try:
+        return max(0, min(8, int(str(os.getenv("AGENT_EVIDENCE_REPAIR_LIMIT") or "2").strip())))
+    except ValueError:
+        return 2
+
+
 @dataclass(frozen=True)
 class GraphRunResult:
     status: str
     final_text: str
     state: dict[str, Any]
+    stage_history: list[dict[str, Any]] | None = None
     interrupted: bool = False
     pending_interrupt: dict[str, Any] | None = None
     error_code: str | None = None
 
 
 class LangGraphRuntimeManager:
-    """Own one compiled graph and one native checkpointer per application."""
+    """Own one compiled ``create_agent`` graph and one native checkpointer."""
 
     def __init__(
         self,
@@ -140,8 +151,7 @@ class LangGraphRuntimeManager:
                 getattr(database, "_db_url", None) or os.getenv("DATABASE_URL") or ""
             ).strip()
             if database_url.startswith(("postgresql://", "postgres://", "postgresql+")):
-                connection_string = _postgres_connection_string(database_url)
-                context = AsyncPostgresSaver.from_conn_string(connection_string)
+                context = AsyncPostgresSaver.from_conn_string(_postgres_connection_string(database_url))
                 self._checkpointer_context = context
                 self.checkpointer = await context.__aenter__()
                 await self.checkpointer.setup()
@@ -159,7 +169,7 @@ class LangGraphRuntimeManager:
                 self.checkpointer = await context.__aenter__()
                 await self.checkpointer.setup()
                 self._backend = f"sqlite:{sqlite_path}"
-        self.graph = build_agent_graph(checkpointer=self.checkpointer)
+        self.graph = build_agent_graph(checkpointer=self.checkpointer, registry=self.registry)
 
     async def close(self) -> None:
         self.graph = None
@@ -176,12 +186,16 @@ class LangGraphRuntimeManager:
 
     @classmethod
     def graph_config(cls, conversation_id: str) -> dict[str, Any]:
+        limits = get_agent_runtime_limits()
         return {
             "configurable": {
                 "thread_id": cls.thread_id(conversation_id),
                 "checkpoint_ns": CHECKPOINT_NAMESPACE,
             },
-            "recursion_limit": 100,
+            # This guards the number of graph transitions, never the duration
+            # of a provider's reasoning.  Tool/provider budgets remain the
+            # actual work limits.
+            "recursion_limit": max(1_000, min(10_000, limits.max_tool_calls * 4 + 32)),
         }
 
     def _require_graph(self) -> Any:
@@ -204,12 +218,16 @@ class LangGraphRuntimeManager:
         executor: Any | None = None,
     ) -> GraphContext:
         events = GraphEventBridge(controller, run_id=run_id)
-        model_client = model or StructuredModelClient(
-            llm_config=llm_config,
-            database=database,
-            run_id=run_id,
-            worker_id=active_run_registry.worker_id,
-        )
+        if model is None:
+            gateway = LiteLLMGateway(
+                llm_config=llm_config,
+                database=database,
+                run_id=run_id,
+                worker_id=active_run_registry.worker_id,
+            )
+            model_client: Any = LiteLLMChatModel(gateway=gateway, llm_config=dict(llm_config))
+        else:
+            model_client = model
         tool_executor = executor or AtomicToolExecutor(
             self.registry,
             database=database,
@@ -232,9 +250,10 @@ class LangGraphRuntimeManager:
             run_attempt=max(1, int(run_attempt)),
             tenant_id=tenant_id,
             owner_id=owner_id,
+            side_effect_lock=asyncio.Lock(),
         )
 
-    async def _invoke_with_time_budget(
+    async def _invoke_graph(
         self,
         graph: Any,
         graph_input: Any,
@@ -244,18 +263,30 @@ class LangGraphRuntimeManager:
     ) -> Mapping[str, Any] | None:
         config = self.graph_config(conversation_id)
         try:
-            async with asyncio.timeout(_run_timeout_seconds()):
-                return await graph.ainvoke(graph_input, config, context=context)
-        except TimeoutError:
+            return await graph.ainvoke(graph_input, config, context=context)
+        except ModelProviderReportedTimeoutError:
             return await self._terminate_partial(
                 graph,
                 config=config,
                 context=context,
-                error_code="time_budget_exceeded",
-                message=(
-                    "本轮执行达到时间预算，尚未完成最终 Claim-Evidence 校验。"
-                    "已保留现有工具结果与证据，未验证结论未发布。"
-                ),
+                error_code="model_provider_timeout",
+                message="上游模型服务返回超时；已保留已有工具观察和证据。",
+            )
+        except ModelProviderUnavailableError:
+            return await self._terminate_partial(
+                graph,
+                config=config,
+                context=context,
+                error_code="model_provider_unavailable",
+                message="模型服务暂时不可用；已保留已有工具观察和证据。",
+            )
+        except GraphRecursionError:
+            return await self._terminate_partial(
+                graph,
+                config=config,
+                context=context,
+                error_code="agent_loop_budget_exceeded",
+                message="本轮工具/循环预算已耗尽；已保留已有观察并停止继续调用。",
             )
         except RuntimeError as exc:
             if "agent provider budget exceeded" not in str(exc).lower():
@@ -265,10 +296,7 @@ class LangGraphRuntimeManager:
                 config=config,
                 context=context,
                 error_code="provider_budget_exceeded",
-                message=(
-                    "本轮模型调用、Token 或费用预算已耗尽，尚未完成最终 Claim-Evidence 校验。"
-                    "已保留现有工具结果与证据，未验证结论未发布。"
-                ),
+                message="本轮模型调用、Token 或费用预算已耗尽；已保留已有工具观察和证据。",
             )
 
     async def _terminate_partial(
@@ -280,31 +308,18 @@ class LangGraphRuntimeManager:
         error_code: str,
         message: str,
     ) -> Mapping[str, Any]:
-        """Fail closed when a hard runtime budget prevents final verification."""
         snapshot = await graph.aget_state(config)
         state = dict(snapshot.values or {})
-        # Only an answer that already passed verification is safe to retain as
-        # visible output. An answer_draft remains checkpointed for audit but is
-        # never promoted after a hard budget stop.
-        answer = str(state.get("answer_final") or "").strip() or message
-        update = {
-            "answer_final": answer,
-            "status": "partial",
-            "error_code": error_code,
-        }
+        answer = str(state.get("answer_final") or state.get("answer_draft") or "").strip()
+        if not answer:
+            answer = message
+        update = {"answer_final": answer, "status": "partial", "error_code": error_code}
         try:
             await graph.aupdate_state(config, update)
         except Exception:
-            # The terminal publisher still receives the explicit update;
-            # failure to append this final checkpoint must not turn a
-            # truthful partial result into a fabricated completion.
             pass
-        context.events.stage(
-            "publish",
-            "completed",
-            message,
-            error_code=error_code,
-        )
+        context.events.close_open_stages(status="failed", reason=message, error_code=error_code)
+        context.events.stage("publish", "failed", message, error_code=error_code)
         context.events.text(answer)
         return {**state, **update}
 
@@ -338,14 +353,36 @@ class LangGraphRuntimeManager:
             model=model,
             executor=executor,
         )
+        limits = get_agent_runtime_limits()
         input_state: AgentGraphInput = {
-            "input_run_id": run_id,
-            "input_conversation_id": conversation_id,
-            "input_messages": [dict(item) for item in messages],
-            "input_user_text": user_text,
-            "input_system_prompt": system_prompt,
+            "messages": Overwrite(convert_to_messages(messages)),
+            "engine": "langgraph_agent_loop",
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "user_text": user_text,
+            "system_prompt": system_prompt,
+            "reference_time": datetime.now().astimezone().isoformat(),
+            "tool_results": Overwrite([]),
+            "evidence": Overwrite([]),
+            "claim_evidence": [],
+            "completed_tool_call_ids": Overwrite([]),
+            "approved_tool_call_ids": Overwrite([]),
+            "rejected_tool_call_ids": Overwrite([]),
+            "tool_call_count": Overwrite(0),
+            "model_turn_count": Overwrite(0),
+            "evidence_repair_count": Overwrite(0),
+            "tool_call_limit": limits.max_tool_calls,
+            "evidence_repair_limit": _evidence_repair_limit(),
+            "work_budget_exhausted": False,
+            "work_budget_detail": "",
+            "evidence_feedback": "",
+            "pending_interrupt": None,
+            "answer_draft": "",
+            "answer_final": "",
+            "status": "running",
+            "error_code": None,
         }
-        output = await self._invoke_with_time_budget(
+        output = await self._invoke_graph(
             graph,
             input_state,
             conversation_id=conversation_id,
@@ -382,7 +419,7 @@ class LangGraphRuntimeManager:
             model=model,
             executor=executor,
         )
-        output = await self._invoke_with_time_budget(
+        output = await self._invoke_graph(
             graph,
             Command(resume={str(interrupt_id): dict(decision)}),
             conversation_id=conversation_id,
@@ -413,12 +450,7 @@ class LangGraphRuntimeManager:
             tenant_id=tenant_id,
             owner_id=owner_id,
         )
-        output = await self._invoke_with_time_budget(
-            graph,
-            None,
-            conversation_id=conversation_id,
-            context=context,
-        )
+        output = await self._invoke_graph(graph, None, conversation_id=conversation_id, context=context)
         return await self._result(output, conversation_id=conversation_id, events=context.events)
 
     async def _result(
@@ -446,6 +478,7 @@ class LangGraphRuntimeManager:
                 status="interrupted",
                 final_text=str(state.get("answer_final") or state.get("answer_draft") or ""),
                 state=state,
+                stage_history=events.stage_history,
                 interrupted=True,
                 pending_interrupt=pending,
                 error_code=None,
@@ -454,6 +487,7 @@ class LangGraphRuntimeManager:
             status=str(state.get("status") or "failed"),
             final_text=str(state.get("answer_final") or state.get("answer_draft") or ""),
             state=state,
+            stage_history=events.stage_history,
             interrupted=False,
             pending_interrupt=None,
             error_code=(str(state.get("error_code")) if state.get("error_code") else None),
@@ -465,10 +499,7 @@ class LangGraphRuntimeManager:
         for task in snapshot.tasks:
             for item in getattr(task, "interrupts", ()) or ():
                 value = dict(getattr(item, "value", {}) or {})
-                return {
-                    "interrupt_id": str(getattr(item, "id", "")),
-                    **value,
-                }
+                return {"interrupt_id": str(getattr(item, "id", "")), **value}
         return None
 
     async def get_state(self, conversation_id: str) -> dict[str, Any]:
@@ -476,10 +507,15 @@ class LangGraphRuntimeManager:
         snapshot = await graph.aget_state(self.graph_config(conversation_id))
         return dict(snapshot.values or {})
 
-    async def has_checkpoint(self, conversation_id: str) -> bool:
+    async def has_checkpoint(self, conversation_id: str, *, run_id: str | None = None) -> bool:
         graph = self._require_graph()
         snapshot = await graph.aget_state(self.graph_config(conversation_id))
-        return bool(snapshot.config)
+        state = dict(snapshot.values or {})
+        if not snapshot.config or not state:
+            return False
+        if run_id is not None:
+            return str(state.get("run_id") or "") == str(run_id)
+        return True
 
     async def delete_thread(self, conversation_id: str) -> None:
         if self.checkpointer is None:

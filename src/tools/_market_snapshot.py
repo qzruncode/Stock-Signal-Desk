@@ -166,15 +166,22 @@ def _fetch_sina_a_breadth() -> dict[str, Any]:
         raise RuntimeError("新浪全A实时行情覆盖股票过少")
     timestamps = [str(value) for value in frame.get("时间戳", []) if value]
     now = datetime.now().astimezone()
-    data_time = _iso_local(now)
+    data_time = None
+    # 新浪的全市场表只给出时分秒，缺少来源日期。绝不能把本服务的抓取时刻当
+    # 成行情时间；若拼接当前日期，仅能作为明确标注的推定时间。
+    data_time_inferred = False
     if timestamps and re.fullmatch(r"\d{2}:\d{2}:\d{2}", max(timestamps)):
-        data_time = _iso_local(datetime.combine(now.date(), time.fromisoformat(max(timestamps))))
+        data_time = _iso_local(
+            datetime.combine(now.date(), time.fromisoformat(max(timestamps)))
+        )
+        data_time_inferred = True
     return {
         "up_count": up,
         "down_count": down,
         "flat_count": flat,
         "halt_count": None,
         "data_time": data_time,
+        "data_time_inferred": data_time_inferred,
         "source": "新浪全A实时行情",
         "breadth_scope": "A股（含北交所）",
     }

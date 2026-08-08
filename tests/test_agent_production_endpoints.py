@@ -31,10 +31,10 @@ def test_agent_readiness_reports_langgraph_checkpointer_and_atomic_catalog() -> 
     auth._auth_enabled = None
     assert response.status_code == 200
     payload = response.json()
-    assert payload["checks"]["runtime"]["engine"] == "langgraph"
+    assert payload["checks"]["runtime"]["engine"] == "langgraph_agent_loop"
     assert payload["checks"]["runtime"]["graph_initialized"] is True
     assert payload["checks"]["tools"]["registered"] > 0
-    assert payload["checks"]["tools"]["retrieval_catalog"] == payload["checks"]["tools"]["registered"]
+    assert payload["checks"]["tools"]["operation_directory"] == payload["checks"]["tools"]["registered"]
 
 
 def test_agent_readiness_fails_closed_when_model_is_unavailable() -> None:
@@ -88,21 +88,22 @@ def test_tool_registry_is_read_only_and_exposes_execution_policy_metadata() -> N
             response = client.get("/api/v1/agent/tool-registry")
             forbidden = client.post(
                 "/api/v1/agent/tool-registry/execute",
-                json={"tool_name": "get_market_status", "arguments": {}},
+                json={"tool_name": "read_market_indices_sina", "arguments": {}},
             )
 
     auth._auth_enabled = None
     assert response.status_code == 200
     assert forbidden.status_code in {404, 405}
     tools = {item["name"]: item for item in response.json()["tools"]}
-    assert "get_market_status" in tools
-    assert tools["get_market_status"]["effect"] == "read"
-    assert tools["get_market_status"]["effect_mode"] == "fixed"
-    assert tools["get_market_status"]["timeout_seconds"] > 0
-    assert tools["get_market_status"]["max_attempts"] >= 1
-    assert "confirmed" not in tools["manage_watchlist"]["args_schema"]["properties"]
-    assert tools["manage_watchlist"]["approval_policy"] == "required_for_side_effect"
-    assert tools["manage_watchlist"]["effect_mode"] == "argument_dependent"
+    assert "read_market_indices_sina" in tools
+    assert tools["read_market_indices_sina"]["effect"] == "read"
+    assert tools["read_market_indices_sina"]["effect_mode"] == "fixed"
+    assert tools["read_market_indices_sina"]["timeout_seconds"] > 0
+    assert tools["read_market_indices_sina"]["max_attempts"] >= 1
+    assert "confirmed" not in tools["add_watchlist_items"]["args_schema"]["properties"]
+    assert tools["add_watchlist_items"]["approval_policy"] == "required_for_side_effect"
+    assert tools["add_watchlist_items"]["effect"] == "side_effect"
+    assert tools["add_watchlist_items"]["effect_mode"] == "fixed"
 
 
 def test_registered_catalog_contains_no_removed_composite_sop_tools() -> None:

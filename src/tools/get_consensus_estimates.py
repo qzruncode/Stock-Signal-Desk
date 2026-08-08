@@ -11,7 +11,7 @@ from typing import Any
 
 import akshare as ak
 
-from src.tools._akshare import bare_symbol, cached_call, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 DESCRIPTION = (
@@ -170,6 +170,7 @@ def _normalize_financial_metrics(rows: list[dict[str, Any]]) -> tuple[list[dict[
 
 
 def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
+    """Legacy bundled consensus view for non-Agent callers only."""
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")
@@ -260,21 +261,151 @@ def get_consensus_estimates(symbol: str, metric: str = "all") -> dict[str, Any]:
     }
 
 
-TOOL = ToolSpec(
-    name="get_consensus_estimates",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "股票代码或股票名称"},
-            "metric": {
-                "type": "string",
-                "enum": ["all", "eps", "net_profit"],
-                "default": "all",
-                "description": "预测指标：all、eps 每股收益、net_profit 净利润",
+def _validated_code(symbol: str) -> str:
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    return code
+
+
+def read_consensus_metric_ths(
+    symbol: str,
+    metric: str,
+) -> dict[str, Any]:
+    """Read one THS consensus metric query (EPS or net profit)."""
+    code = _validated_code(symbol)
+    if metric not in _INDICATORS:
+        raise ValueError("metric 必须是 eps 或 net_profit")
+    rows, cached = _forecast(code, metric)
+    estimates = _normalize_summary(rows, metric)
+    return {
+        "symbol": code,
+        "metric": metric,
+        "estimates": estimates,
+        "coverage_available": bool(estimates),
+        "coverage_status": "covered" if estimates else "no_sell_side_coverage",
+        "unit": "元/股" if metric == "eps" else "亿元",
+        "source": "同花顺盈利预测/AKShare",
+        "source_url": f"https://basic.10jqka.com.cn/new/{code}/worth.html",
+        "source_scope": f"consensus_{metric}",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": ([] if estimates else [f"{metric} 无机构一致预测覆盖"]),
+        "data_time": None,
+        "is_stale": None,
+        "freshness_unknown": True,
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+def read_consensus_institution_forecasts_ths(symbol: str) -> dict[str, Any]:
+    """Read one THS institution-detail consensus query."""
+    code = _validated_code(symbol)
+    rows, cached = _detail(code, "institutions")
+    institutions = _normalize_institutions(rows)
+    report_dates = [item["report_date"] for item in institutions if item.get("report_date")]
+    latest_report_date = max(report_dates) if report_dates else None
+    return {
+        "symbol": code,
+        "institutions": institutions[:20],
+        "institution_item_count": len(institutions),
+        "latest_institution_report_date": latest_report_date,
+        "source": "同花顺机构预测明细/AKShare",
+        "source_url": f"https://basic.10jqka.com.cn/new/{code}/worth.html",
+        "source_scope": "consensus_institution_forecasts",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": ([] if institutions else ["该数据源未返回机构预测明细"]),
+        "data_time": latest_report_date,
+        "is_stale": (
+            datetime.fromisoformat(latest_report_date).date()
+            < (datetime.now().date() - timedelta(days=180))
+            if latest_report_date
+            else None
+        ),
+        "freshness_unknown": latest_report_date is None,
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+def read_consensus_financial_estimates_ths(symbol: str) -> dict[str, Any]:
+    """Read one THS financial-estimate detail query."""
+    code = _validated_code(symbol)
+    rows, cached = _detail(code, "financial_metrics")
+    actuals, forecasts = _normalize_financial_metrics(rows)
+    dated = [item.get("year") for item in [*actuals, *forecasts] if item.get("year")]
+    latest_year = max(dated) if dated else None
+    return {
+        "symbol": code,
+        "actuals": actuals,
+        "financial_forecasts": forecasts,
+        "source": "同花顺财务预测明细/AKShare",
+        "source_url": f"https://basic.10jqka.com.cn/new/{code}/worth.html",
+        "source_scope": "consensus_financial_estimates",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": ([] if actuals or forecasts else ["该数据源未返回财务预测明细"]),
+        "data_time": str(latest_year) if latest_year else None,
+        "is_stale": None,
+        "freshness_unknown": latest_year is None,
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_consensus_metric_ths",
+        description=(
+            "从同花顺/AKShare读取一只 A 股的一个一致预期指标。metric 必须明确选择 EPS 或净利润；"
+            "不同时读取机构明细或其他指标。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "股票代码或股票名称"},
+                "metric": {
+                    "type": "string",
+                    "enum": ["eps", "net_profit"],
+                    "description": "一致预期指标：eps 每股收益，net_profit 净利润",
+                },
             },
-        },
-        ["symbol"],
+            ["symbol", "metric"],
+        ),
+        executor=read_consensus_metric_ths,
+        category="financials",
     ),
-    executor=get_consensus_estimates,
-    category="financials",
+    ToolSpec(
+        name="read_consensus_institution_forecasts_ths",
+        description="从同花顺/AKShare读取一只 A 股的机构预测明细，不读取汇总指标或财务预测表。",
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "股票代码或股票名称"}},
+            ["symbol"],
+        ),
+        executor=read_consensus_institution_forecasts_ths,
+        category="financials",
+    ),
+    ToolSpec(
+        name="read_consensus_financial_estimates_ths",
+        description="从同花顺/AKShare读取一只 A 股的财务预测明细，不读取机构列表或其他一致预期指标。",
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "股票代码或股票名称"}},
+            ["symbol"],
+        ),
+        executor=read_consensus_financial_estimates_ths,
+        category="financials",
+    ),
 )
+
+
+__all__ = [
+    "TOOLS",
+    "get_consensus_estimates",
+    "read_consensus_financial_estimates_ths",
+    "read_consensus_institution_forecasts_ths",
+    "read_consensus_metric_ths",
+]

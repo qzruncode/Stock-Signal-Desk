@@ -7,9 +7,7 @@ from typing import Any
 from src.tools._rss_agent import (
     ensure_rss_route,
     object_value,
-    rss_options_schema,
 )
-from src.tools.base import ToolSpec, object_schema
 
 
 _FORMATS = ("rss", "atom", "json", "rss3")
@@ -48,35 +46,4 @@ def export_rss_feed(
     }
 
 
-TOOL = ToolSpec(
-    name="export_rss_feed",
-    description=(
-        "准备下载助手已筛选 RSSHub 来源的纯文本版本，支持 RSS、Atom、JSON Feed 和"
-        " RSS3；媒体 enclosure 会被移除。仅在用户明确要求导出时调用。"
-    ),
-    parameters=object_schema(
-        {
-            "route_path": {"type": "string"},
-            "params": {"type": "object", "additionalProperties": True},
-            "options": rss_options_schema(),
-            "namespace": {"type": "string"},
-            "format": {
-                "type": "string",
-                "enum": list(_FORMATS),
-                "default": "rss",
-            },
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 100,
-                "default": 30,
-            },
-        },
-        required=("route_path",),
-    ),
-    executor=export_rss_feed,
-    category="action",
-)
-
-
-__all__ = ["TOOL", "export_rss_feed"]
+__all__ = ["export_rss_feed"]

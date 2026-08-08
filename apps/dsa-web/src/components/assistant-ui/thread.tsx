@@ -1,5 +1,5 @@
-import type { FC } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ErrorInfo, FC, ReactNode } from 'react';
+import { Component, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AuiIf,
   ThreadPrimitive,
@@ -10,7 +10,6 @@ import {
   useThread,
   useAui,
   useAuiState,
-  type ReasoningMessagePartProps,
 } from '@assistant-ui/react';
 import {
   ArrowUpIcon,
@@ -29,20 +28,6 @@ import {
   SquareIcon as StopIcon,
   MicIcon,
 } from 'lucide-react';
-import {
-  GenericToolUI,
-  KlineToolUI,
-  RealtimeQuotesToolUI,
-  FinancialsToolUI,
-  NewsToolUI,
-  RssFeedToolUI,
-  FinancialArticleToolUI,
-  FinancialExportToolUI,
-  FinancialFeedToolUI,
-  FinancialSourcesToolUI,
-  WorkflowToolsUI,
-} from '../../hooks/useAssistantTools';
-import { ToolStatusGroupProvider } from './tool-ui/shared';
 import { ASSISTANT_SUGGESTION_GROUPS } from '../../utils/assistantQuickActions';
 import {
   ComposerAttachments,
@@ -51,12 +36,12 @@ import {
   UserMessageAttachments,
 } from './attachment';
 import { Tooltip } from '../common/Tooltip';
-import { AssistantMarkdownText } from './AssistantMarkdownText';
+import { AssistantMarkdown } from './AssistantMarkdownText';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
 import { cn } from '../../utils/cn';
 import { latestAgentStageEvent } from '../../utils/agentStage';
 import { getChatQuestionDomId } from '../../utils/chatQuestionLocator';
-import { AgentStageIndicator, AssistantReasoning } from './AgentReasoning';
+import { AgentExecutionTimeline, AssistantReasoning } from './AgentReasoning';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
 
@@ -66,14 +51,9 @@ const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: str
 }) => {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div
-        aria-hidden="true"
-        className="h-14 shrink-0 border-b border-border/50 bg-background lg:h-9"
-      />
-
       <ThreadPrimitive.Viewport
         data-chat-thread-viewport="true"
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pb-4 sm:gap-4 sm:px-4 sm:pb-5 lg:px-6"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pb-4 pt-2 sm:gap-4 sm:px-4 sm:pb-5 lg:px-6 lg:pt-2"
       >
         <AuiIf condition={(s) => s.thread.isEmpty}>
           <EmptyState />
@@ -84,7 +64,7 @@ const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: str
             <ThreadPrimitive.Messages
               components={{
                 UserMessage: () => <UserMessage onDeleteTurn={onDeleteUserTurn} />,
-                AssistantMessage,
+                AssistantMessage: GuardedAssistantMessage,
               }}
             />
           </div>
@@ -301,6 +281,50 @@ const EditComposerSendButton: FC = () => {
 
 /* ── Assistant Message ───────────────────────────────────────────────── */
 
+interface AssistantMessageBoundaryProps {
+  children: ReactNode;
+  resetKey: string;
+}
+
+interface AssistantMessageBoundaryState {
+  hasError: boolean;
+}
+
+class AssistantMessageBoundary extends Component<
+  AssistantMessageBoundaryProps,
+  AssistantMessageBoundaryState
+> {
+  override state: AssistantMessageBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): AssistantMessageBoundaryState {
+    return { hasError: true };
+  }
+
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('[Chat] assistant message rendering failed; preserving the rest of the conversation.', error, errorInfo);
+  }
+
+  override componentDidUpdate(previousProps: AssistantMessageBoundaryProps) {
+    if (previousProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          className="mb-2 rounded-xl border border-amber-300/60 bg-amber-50/70 px-3 py-2 text-xs text-amber-900"
+          role="status"
+        >
+          本条执行详情暂时无法显示；运行记录仍已保留，可刷新后重试查看。
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const AssistantMessage: FC = () => {
   const isRunning = useMessage((s) => s.status?.type === 'running');
   const stageEvents = useMessage((s) => s.metadata?.unstable_data);
@@ -314,6 +338,12 @@ const AssistantMessage: FC = () => {
       .filter(Boolean)
       .join('\n'),
   );
+  const answerText = useMessage((s) =>
+    s.content
+      .map((part) => (part.type === 'text' ? part.text : ''))
+      .filter(Boolean)
+      .join('\n'),
+  );
   const hasVisibleContent = useMessage((s) =>
     s.content.some((part) => {
       if (part.type === 'text') {
@@ -322,77 +352,48 @@ const AssistantMessage: FC = () => {
       if (part.type === 'reasoning') {
         return part.text.trim().length > 0;
       }
-      return true;
+      return false;
     }),
   );
-  if (!isRunning && !hasVisibleContent) {
+  const hasExecutionRecord = useMessage((s) => {
+    if (Array.isArray(s.metadata?.unstable_data) && s.metadata.unstable_data.length > 0) {
+      return true;
+    }
+    const trace = s.metadata?.custom?.agent_execution_trace
+      ?? s.metadata?.custom?.agentExecutionTrace;
+    return Boolean(trace && typeof trace === 'object');
+  });
+  if (!isRunning && !hasVisibleContent && !hasExecutionRecord) {
     return null;
   }
   return (
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
         <div className="w-full min-w-0 overflow-hidden rounded-xl bg-card/75 px-3.5 py-3 text-sm text-foreground sm:px-4 sm:py-3.5">
-          {latestStage && (
-            isRunning
-            || latestStage.status === 'failed'
-            || latestStage.status === 'blocked'
-            || latestStage.status === 'cancelled'
-          ) ? (
-            <AgentStageIndicator event={latestStage} />
-          ) : isRunning && !hasVisibleContent ? (
+          <AgentExecutionTimeline />
+          {!latestStage && isRunning && !hasVisibleContent ? (
             <AssistantPendingIndicator />
           ) : null}
           <AssistantReasoning text={reasoningText} />
-          <ToolStatusGroupProvider>
-            <MessagePrimitive.Parts
-              components={{
-                Text: AssistantMarkdownText,
-                Reasoning: SuppressedReasoning,
-                tools: {
-                  by_name: {
-                    get_kline: KlineToolUI,
-                    get_realtime_quotes: RealtimeQuotesToolUI,
-                    get_financials: FinancialsToolUI,
-                    search_news: NewsToolUI,
-                    search_financial_news: RssFeedToolUI,
-                    search_research_library: RssFeedToolUI,
-                    list_financial_sources: FinancialSourcesToolUI,
-                    inspect_financial_source: FinancialSourcesToolUI,
-                    discover_rss_sources: FinancialSourcesToolUI,
-                    inspect_rss_source: FinancialSourcesToolUI,
-                    read_financial_feed: FinancialFeedToolUI,
-                    read_rss_feed: FinancialFeedToolUI,
-                    transform_webpage_to_feed: FinancialFeedToolUI,
-                    read_financial_article: FinancialArticleToolUI,
-                    read_rss_item: FinancialArticleToolUI,
-                    read_text_document: FinancialArticleToolUI,
-                    export_financial_feed: FinancialExportToolUI,
-                    export_rss_feed: FinancialExportToolUI,
-                    manage_watchlist: WorkflowToolsUI,
-                    manage_watchlist_groups: WorkflowToolsUI,
-                    run_stock_analysis: WorkflowToolsUI,
-                    get_analysis_status: WorkflowToolsUI,
-                    search_analysis_history: WorkflowToolsUI,
-                    read_analysis_report: WorkflowToolsUI,
-                    delete_analysis_history: WorkflowToolsUI,
-                    manage_analysis_templates: WorkflowToolsUI,
-                    run_batch_analysis: WorkflowToolsUI,
-                    manage_batch_run: WorkflowToolsUI,
-                    manage_analysis_schedule: WorkflowToolsUI,
-                    get_notification_status: WorkflowToolsUI,
-                    send_notification: WorkflowToolsUI,
-                  },
-                  Fallback: GenericToolUI,
-                },
-              }}
-            />
-          </ToolStatusGroupProvider>
+          <AssistantMarkdown text={answerText} />
         </div>
         <div className="absolute bottom-0 left-0 flex h-5 items-center gap-1">
           <AssistantActionBar />
         </div>
       </div>
     </MessagePrimitive.Root>
+  );
+};
+
+const GuardedAssistantMessage: FC = () => {
+  const resetKey = useMessage((s) => {
+    const stageCount = Array.isArray(s.metadata?.unstable_data) ? s.metadata.unstable_data.length : 0;
+    return `${s.id}:${s.status?.type || 'idle'}:${s.content.length}:${stageCount}`;
+  });
+  return (
+    <AssistantMessageBoundary resetKey={resetKey}>
+      <AssistantMessage />
+    </AssistantMessageBoundary>
   );
 };
 
@@ -454,8 +455,6 @@ const AssistantPendingIndicator: FC = () => (
     </span>
   </div>
 );
-
-const SuppressedReasoning: FC<ReasoningMessagePartProps> = () => null;
 
 /* ── Composer ────────────────────────────────────────────────────────── */
 

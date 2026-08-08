@@ -1,5 +1,11 @@
 # -*- coding: utf-8 -*-
-"""``get_business_segments`` — normalized reported business composition."""
+"""Reported business-composition rows from the Eastmoney disclosure source.
+
+``get_business_segments`` remains a compatibility helper for older HTTP
+consumers which expect a precomputed summary.  The Agent registry exposes
+``read_business_segments_eastmoney`` instead: it returns normalized disclosure
+rows only, leaving concentration, ranking and interpretation to the model.
+"""
 
 from __future__ import annotations
 
@@ -10,13 +16,13 @@ from typing import Any
 
 import akshare as ak
 
-from src.tools._akshare import bare_symbol, cached_call, exchange_prefix, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, exchange_prefix, frame_records
 from src.tools.base import ToolSpec, object_schema
 
-DESCRIPTION = (
-    "获取公司披露的主营业务构成，可按产品、行业或地区查看收入、成本、毛利及各自占比，"
-    "并返回收入集中度和主要利润来源。金额为人民币元，占比与毛利率为百分比；"
-    "中期数据是年初至报告期累计口径，不作为单季度数据。"
+SOURCE_DESCRIPTION = (
+    "从东方财富主营构成披露（AKShare）读取一只 A 股按产品、行业或地区列示的主营收入、"
+    "成本、毛利及来源披露的占比。返回逐条披露记录，不按收入或利润排序、不计算集中度、"
+    "不判断主要利润来源；中期数据为年初至报告期累计口径。"
 )
 
 _CATEGORY_BY_SOURCE = {
@@ -113,8 +119,15 @@ def _summary(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summaries
 
 
-def _empty(code: str, category: str, message: str, *, fetched_at: str) -> dict[str, Any]:
-    return {
+def _empty(
+    code: str,
+    category: str,
+    message: str,
+    *,
+    fetched_at: str,
+    include_summary: bool,
+) -> dict[str, Any]:
+    payload = {
         "symbol": code,
         "category": category,
         "requested_periods": 0,
@@ -122,7 +135,6 @@ def _empty(code: str, category: str, message: str, *, fetched_at: str) -> dict[s
         "available_categories": [],
         "items": [],
         "item_count": 0,
-        "summaries": [],
         "amount_unit": "元",
         "ratio_unit": "%",
         "currency": "CNY",
@@ -137,10 +149,20 @@ def _empty(code: str, category: str, message: str, *, fetched_at: str) -> dict[s
         "_cached": False,
         "_fetched_at": fetched_at,
     }
+    if include_summary:
+        payload["summaries"] = []
+    return payload
 
 
-def get_business_segments(symbol: str, category: str = "all", periods: int = 2) -> dict[str, Any]:
-    code = bare_symbol(symbol)
+def _read_business_segments(
+    symbol: str,
+    category: str = "all",
+    periods: int = 2,
+    *,
+    include_summary: bool,
+    local_identity: bool = False,
+) -> dict[str, Any]:
+    code = bare_local_symbol(symbol) if local_identity else bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")
     if category not in {"all", "product", "industry", "region"}:
@@ -156,7 +178,13 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
             attempts=2,
         )
     except Exception as exc:
-        return _empty(code, category, f"主营构成数据获取失败: {exc}", fetched_at=now.isoformat())
+        return _empty(
+            code,
+            category,
+            f"主营构成数据获取失败: {exc}",
+            fetched_at=now.isoformat(),
+            include_summary=include_summary,
+        )
 
     normalized = [item for item in (_normalize_row(row, code) for row in frame_records(frame)) if item is not None]
     if category != "all":
@@ -164,14 +192,11 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
     available_periods = sorted({item["report_date"] for item in normalized}, reverse=True)
     selected_periods = available_periods[:periods]
     selected = [item for item in normalized if item["report_date"] in selected_periods]
-    selected.sort(
-        key=lambda item: (item["report_date"], item["category"], item.get("revenue") or float("-inf")), reverse=True
-    )
 
     latest_report = selected_periods[0] if selected_periods else None
     source_url = "https://emweb.securities.eastmoney.com/PC_HSF10/BusinessAnalysis/" f"Index?type=web&code={prefixed}"
     errors = [] if selected else [f"没有找到 category={category} 的主营构成披露"]
-    return {
+    payload = {
         "symbol": code,
         "category": category,
         "requested_periods": periods,
@@ -179,13 +204,13 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
         "available_categories": sorted({item["category"] for item in selected}),
         "items": selected,
         "item_count": len(selected),
-        "summaries": _summary(selected),
         "amount_unit": "元",
         "ratio_unit": "%",
         "currency": "CNY",
         "flow_basis": "full_year for 12-31; otherwise year_to_date",
         "source": "东方财富主营构成（AKShare）",
         "source_url": source_url,
+        "source_scope": "reported_business_segments",
         "success": bool(selected),
         "errors": errors,
         "data_time": latest_report,
@@ -199,30 +224,72 @@ def get_business_segments(symbol: str, category: str = "all", periods: int = 2) 
         "_cached": cached,
         "_fetched_at": now.isoformat(),
     }
+    if include_summary:
+        payload["summaries"] = _summary(selected)
+    return payload
 
 
-TOOL = ToolSpec(
-    name="get_business_segments",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "股票代码或股票名称，如 600519 或 贵州茅台"},
-            "category": {
-                "type": "string",
-                "enum": ["all", "product", "industry", "region"],
-                "default": "all",
-                "description": "主营分类：all 全部、product 产品、industry 行业、region 地区",
+def get_business_segments(symbol: str, category: str = "all", periods: int = 2) -> dict[str, Any]:
+    """Legacy convenience read with local concentration summaries.
+
+    This remains intentionally outside the model tool catalog.  Existing HTTP
+    callers can retain their contract while the Agent receives the raw
+    normalized disclosure rows through ``read_business_segments_eastmoney``.
+    """
+    return _read_business_segments(
+        symbol,
+        category,
+        periods,
+        include_summary=True,
+    )
+
+
+def read_business_segments_eastmoney(
+    symbol: str,
+    category: str = "all",
+    periods: int = 2,
+) -> dict[str, Any]:
+    """Read one source's normalized business-segment disclosure rows only."""
+    return _read_business_segments(
+        symbol,
+        category,
+        periods,
+        include_summary=False,
+        local_identity=True,
+    )
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_business_segments_eastmoney",
+        description=SOURCE_DESCRIPTION,
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "股票代码或股票名称，如 600519 或 贵州茅台"},
+                "category": {
+                    "type": "string",
+                    "enum": ["all", "product", "industry", "region"],
+                    "default": "all",
+                    "description": "主营分类：all 全部、product 产品、industry 行业、region 地区",
+                },
+                "periods": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 2,
+                    "description": "返回最近披露报告期数量",
+                },
             },
-            "periods": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 8,
-                "default": 2,
-                "description": "返回最近报告期数量",
-            },
-        },
-        ["symbol"],
+            ["symbol"],
+        ),
+        executor=read_business_segments_eastmoney,
+        category="financials",
     ),
-    executor=get_business_segments,
-    category="financials",
 )
+
+
+__all__ = [
+    "TOOLS",
+    "get_business_segments",
+    "read_business_segments_eastmoney",
+]

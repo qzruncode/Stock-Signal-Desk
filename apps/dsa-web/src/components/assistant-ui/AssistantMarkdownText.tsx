@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import type { TextMessagePartProps } from '@assistant-ui/react';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
 
-export const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text }) => {
+export const AssistantMarkdown: FC<{ text: string }> = ({ text }) => {
   const { content, stopped } = splitAssistantText(text);
 
   return (
@@ -87,3 +87,8 @@ export const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text }) => {
     </div>
   );
 };
+
+/** Adapter kept for assistant-ui part registries outside the chat timeline. */
+export const AssistantMarkdownText: FC<TextMessagePartProps> = ({ text }) => (
+  <AssistantMarkdown text={text} />
+);

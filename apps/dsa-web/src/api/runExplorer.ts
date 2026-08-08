@@ -29,9 +29,9 @@ export interface AgentRunSummary {
   errorCode?: string | null;
   engine?: string | null;
   tools: string[];
-  actionCount: number;
+  toolObservationCount: number;
   evidenceCount: number;
-  claimEvidenceVerified: boolean;
+  evidenceLinksVerified: boolean;
   qualityScore: number;
   qualityStatus: 'passed' | 'failed';
   feedback?: AgentRunFeedback | null;
@@ -75,12 +75,10 @@ export interface AgentRunDetail {
     run: Record<string, unknown>;
     trace: Record<string, unknown>;
     qualityProjection: {
-      intent?: Record<string, unknown>;
-      actions?: Array<Record<string, unknown>>;
       toolResults?: Array<Record<string, unknown>>;
       evidence?: Array<Record<string, unknown>>;
-      verification?: Record<string, unknown>;
-      budgets?: Record<string, unknown>;
+      loop?: Record<string, unknown>;
+      completedToolCallIds?: string[];
     };
     steps: Array<Record<string, unknown>>;
     artifacts: Array<Record<string, unknown>>;

@@ -79,7 +79,9 @@ class ToolDispatcher:
                     request.tool_name,
                     arguments,
                 )
-            elif request.tool_name in ISOLATED_TOOL_NAMES or request.force_isolation:
+            elif (
+                request.tool_name in ISOLATED_TOOL_NAMES or request.force_isolation
+            ) and self._registry.supports_isolated_execution(request.tool_name):
                 raw_result = self._isolated_executor(
                     request.tool_name,
                     arguments,

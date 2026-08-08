@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.tools._akshare import bare_symbol, cached_call, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 
@@ -114,6 +114,7 @@ def get_announcements(
     limit: int = 30,
     use_cache: bool = True,
 ) -> dict[str, Any]:
+    """Legacy multi-source fallback for non-Agent callers only."""
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError(f"无法识别 A 股代码: {symbol}")
@@ -243,26 +244,98 @@ def get_announcements(
     }
 
 
-TOOL = ToolSpec(
-    name="get_announcements",
-    description=(
-        "获取单只 A 股在指定时间窗内的正式公司公告，返回公告日期、数据源原始类型和可引用链接。"
-        "工具不按标题词典判断事件分类或重要性；没有公告也是有效查询结果。"
-    ),
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A 股代码或名称"},
-            "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 30, "description": "向前查询自然日数"},
-            "type": {
-                "type": "string",
-                "enum": ["all"],
-                "default": "all",
-                "description": "固定为 all；公告语义由模型根据证据判断",
+def read_company_announcements_akshare(
+    symbol: str,
+    days: int = 30,
+    limit: int = 30,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one formal-announcement source without an internal fallback."""
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError(f"无法识别 A 股代码: {symbol}")
+    days = int(days)
+    limit = int(limit)
+    if not 1 <= days <= 730:
+        raise ValueError("days 必须在 1 到 730 之间")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit 必须在 1 到 100 之间")
+
+    now = datetime.now().astimezone()
+    begin_date = (now - timedelta(days=days)).date().isoformat()
+    end_date = now.date().isoformat()
+    frame, cached = (
+        cached_call(
+            f"announcements:akshare:v1:{code}:{begin_date}:{end_date}",
+            lambda: _fetch_akshare(code, begin_date, end_date),
+            ttl_seconds=86400,
+            attempts=1,
+        )
+        if use_cache
+        else (_fetch_akshare(code, begin_date, end_date), False)
+    )
+    seen: set[str] = set()
+    items: list[dict[str, Any]] = []
+    for row in frame_records(frame):
+        item = _normalize_item(row, code)
+        if item is None:
+            continue
+        key = re.sub(r"\s+", "", f"{item['title']}|{item.get('publish_date') or ''}").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    items.sort(key=lambda item: (item.get("publish_date") or "", item.get("title") or ""), reverse=True)
+    items = items[:limit]
+    latest = next((item.get("publish_date") for item in items if item.get("publish_date")), None)
+    return {
+        "symbol": code,
+        "days": days,
+        "limit": limit,
+        "items": items,
+        "item_count": len(items),
+        "has_announcements": bool(items),
+        "coverage_start": begin_date,
+        "coverage_end": end_date,
+        "source": "AKShare/东方财富公司公告",
+        "source_scope": "formal_company_announcements",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": [],
+        "data_time": latest,
+        "retrieved_at": now.isoformat(),
+        "is_stale": False if latest else None,
+        "freshness_unknown": latest is None,
+        "_cached": cached,
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_company_announcements_akshare",
+        description=(
+            "从 AKShare/东方财富的单一公司公告源读取指定时间窗内的正式公告；"
+            "返回原始公告类型、日期和链接，不使用 RSS 兜底或标题词典分类。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A 股代码或名称"},
+                "days": {"type": "integer", "minimum": 1, "maximum": 730, "default": 30, "description": "向前查询自然日数"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
             },
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
-        },
-        ["symbol"],
+            ["symbol"],
+        ),
+        executor=read_company_announcements_akshare,
+        category="events",
     ),
-    executor=get_announcements,
-    category="events",
 )
+
+
+__all__ = [
+    "TOOLS",
+    "_fetch_exchange_rss",
+    "get_announcements",
+    "read_company_announcements_akshare",
+]

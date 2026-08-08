@@ -24,7 +24,6 @@ from datetime import datetime, time, timedelta
 from typing import Any
 
 from data_provider.akshare_fetcher import AkshareFetcher
-from src.tools.base import ToolSpec, object_schema
 from src.tools._trading_calendar import expected_trade_day, is_trading_time, trade_dates
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,18 @@ _fetcher: AkshareFetcher | None = None
 
 
 def _quote_data_time(item: dict) -> str | None:
-    return item.get("trade_time") or item.get("data_time") or item.get("_fetched_at")
+    """Return only a timestamp supplied by the quote source itself.
+
+    ``_fetched_at`` records when this service performed a request or refreshed
+    a cache.  It must never be promoted to a market-data timestamp: doing so
+    makes a delayed or cached quote look current to the Agent verifier.
+    ``UnifiedRealtimeQuote`` preserves the provider timestamp as
+    ``trade_time`` for every source that exposes one.
+    """
+    value = item.get("trade_time")
+    if value is None:
+        return None
+    return str(value).strip() or None
 
 
 def _get_fetcher() -> AkshareFetcher:
@@ -125,12 +135,22 @@ def _build_response(
         is_stale = None
     if trading is None:
         trading = _is_trading_hours()
+    data_time = max(
+        (_quote_data_time(item) for item in marked if _quote_data_time(item)),
+        default=None,
+    )
     return {
         "success": success,
         "partial": success and bool(errors),
         "items": marked,
         "total": len(marked),
-        "data_time": max((_quote_data_time(item) for item in marked if _quote_data_time(item)), default=None),
+        "data_time": data_time,
+        "data_time_provenance": "source" if data_time else "unavailable",
+        "data_time_note": (
+            None
+            if data_time
+            else "报价来源未返回 trade_time；_fetched_at 仅表示本服务获取或缓存刷新时间。"
+        ),
         "is_stale": is_stale,
         "freshness_unknown": is_stale is None,
         "is_trading_session": trading,
@@ -223,21 +243,4 @@ def get_realtime_quotes(symbols: list[str]) -> dict[str, Any]:
     return _build_response(marked, requested=requested, invalid=invalid, trading=trading)
 
 
-def _execute(symbols: str) -> dict[str, Any]:
-    from src.tools.symbols import resolve_symbols_csv
-
-    return get_realtime_quotes(resolve_symbols_csv(symbols))
-
-
-TOOL = ToolSpec(
-    name="get_realtime_quotes",
-    description=REALTIME_QUOTES_DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbols": {"type": "string", "description": "股票代码或名称，多个用逗号分隔，如 600519,000001"},
-        },
-        ["symbols"],
-    ),
-    executor=_execute,
-    category="data",
-)
+__all__ = ["REALTIME_QUOTES_DESCRIPTION", "get_realtime_quotes"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.tools._workflow import envelope, model_dump, require_confirmation, run_async
-from src.tools.base import ToolSpec, effect_by_argument, object_schema
+from src.tools.base import ToolSpec, object_schema
 
 
 def manage_analysis_schedule(
@@ -45,26 +45,68 @@ def manage_analysis_schedule(
     raise ValueError("action 必须是 get 或 update")
 
 
-TOOL = ToolSpec(
-    name="manage_analysis_schedule",
-    description=(
-        "查看或修改自动批量分析计划。update 会改变后台自动执行行为，只有用户明确确认计划时间、启停状态和模板后"
-        "才能传 confirmed=true。通知由计划关联的分析/通知配置负责。"
+def get_analysis_schedule() -> dict[str, Any]:
+    from api.v1.endpoints.batches.schedule import get_batch_schedule
+
+    return envelope(action="get", schedule=model_dump(run_async(get_batch_schedule())))
+
+
+def update_analysis_schedule(
+    enabled: bool,
+    times: str,
+    prompt_template_id: str,
+) -> dict[str, Any]:
+    if not str(prompt_template_id or "").strip():
+        raise ValueError(
+            "更新自动分析计划必须提供 prompt_template_id；请先读取当前计划或模板列表后再选择。"
+        )
+    from api.v1.endpoints.batches.schedule import (
+        BatchScheduleRequest,
+        update_batch_schedule,
+    )
+
+    parsed_times = sorted({part.strip() for part in str(times or "").split(",") if part.strip()})
+    result = run_async(
+        update_batch_schedule(
+            BatchScheduleRequest(
+                enabled=bool(enabled),
+                times=parsed_times,
+                template_id=str(prompt_template_id).strip(),
+            )
+        )
+    )
+    return envelope(action="update", schedule=model_dump(result))
+
+
+TOOLS = (
+    ToolSpec(
+        name="get_analysis_schedule",
+        description="读取当前自动分析计划；不修改后台执行配置。",
+        parameters=object_schema(),
+        executor=get_analysis_schedule,
+        category="action",
     ),
-    parameters=object_schema(
-        {
-            "action": {"type": "string", "enum": ["get", "update"]},
-            "enabled": {"type": "boolean", "default": False},
-            "times": {"type": "string", "description": "逗号分隔的 HH:MM，如 09:00,15:10"},
-            "prompt_template_id": {"type": "string"},
-            "confirmed": {"type": "boolean", "default": False},
-        },
-        required=("action",),
+    ToolSpec(
+        name="update_analysis_schedule",
+        description="更新自动分析计划的启停状态、时间和模板；这是一次持久化修改，必须经过用户审批。",
+        parameters=object_schema(
+            {
+                "enabled": {"type": "boolean", "description": "是否启用自动分析"},
+                "times": {"type": "string", "description": "逗号分隔的 HH:MM，如 09:00,15:10"},
+                "prompt_template_id": {"type": "string", "minLength": 1, "description": "要使用的模板 ID；需先明确读取或选择"},
+            },
+            required=("enabled", "times", "prompt_template_id"),
+        ),
+        executor=update_analysis_schedule,
+        category="action",
+        effect="side_effect",
     ),
-    executor=manage_analysis_schedule,
-    category="action",
-    effect_resolver=effect_by_argument("action", {"update"}),
 )
 
 
-__all__ = ["TOOL", "manage_analysis_schedule"]
+__all__ = [
+    "TOOLS",
+    "get_analysis_schedule",
+    "manage_analysis_schedule",
+    "update_analysis_schedule",
+]

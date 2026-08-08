@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import List
 
 import pytest
@@ -23,6 +25,7 @@ from src.agent.run_registry import (
     RunBroadcaster,
     RunCapacityExceeded,
 )
+from src.storage import DatabaseManager
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +87,91 @@ def test_unsubscribe_stops_receiving():
         assert q.get_nowait().text_delta == "a"
         # q 里只有 "a",没有 "b"
         assert q.empty()
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_tool_call_carries_action_parent_id_for_execution_tree():
+    """工具流的 tool part 必须能回链到 LangGraph action 节点。"""
+
+    async def run():
+        broadcaster = RunBroadcaster()
+        queue = broadcaster.subscribe()
+        await broadcaster.add_tool_call(
+            "read_quote",
+            tool_call_id="call-1",
+            parent_id="action-1",
+        )
+        chunk = queue.get_nowait()
+        assert chunk.tool_call_id == "call-1"
+        assert chunk.tool_name == "read_quote"
+        assert chunk.parent_id == "action-1"
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_tool_result_stream_projection_bounds_one_large_observation():
+    """Large source payloads must not become a browser-sized tool part."""
+
+    async def run():
+        broadcaster = RunBroadcaster()
+        queue = broadcaster.subscribe()
+        tool = await broadcaster.add_tool_call("read_source", "call-large")
+        original = {
+            "success": True,
+            "items": [{"title": f"item-{index}", "body": "x" * 4_000} for index in range(24)],
+        }
+        tool.set_response(original)
+
+        queue.get_nowait()  # tool-call-begin
+        response = queue.get_nowait()
+        rendered = response.result
+        assert len(json.dumps(rendered, ensure_ascii=False).encode("utf-8")) <= (
+            run_registry_module._TOOL_RESULT_STREAM_MAX_BYTES
+        )
+        assert rendered["_stream_presentation"]["truncated"] is True
+        assert len(original["items"]) == 24
+        assert len(original["items"][0]["body"]) == 4_000
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_tool_result_stream_projection_bounds_a_whole_run(monkeypatch):
+    """Many valid tool calls must still leave the page a bounded render tree."""
+    monkeypatch.setattr(run_registry_module, "_TOOL_RESULT_STREAM_MAX_BYTES", 2_000)
+    monkeypatch.setattr(run_registry_module, "_TOOL_RESULT_STREAM_RUN_MAX_BYTES", 2_000)
+
+    async def run():
+        broadcaster = RunBroadcaster()
+        queue = broadcaster.subscribe()
+        first = await broadcaster.add_tool_call("read_one", "call-one")
+        first.set_response({"success": True, "rows": [{"text": "a" * 3_000}]})
+        second = await broadcaster.add_tool_call("read_two", "call-two")
+        second.set_response({"success": True, "rows": [{"text": "b" * 3_000}]})
+
+        chunks = [queue.get_nowait() for _ in range(4)]
+        second_result = chunks[-1].result
+        assert second_result["_stream_presentation"]["reason"] == "run_tool_result_budget"
+
+    asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_reasoning_stream_is_bounded_by_characters_and_chunk_count(monkeypatch):
+    """Token-sized progress updates must not create an unbounded browser message."""
+    monkeypatch.setattr(run_registry_module, "_REASONING_STREAM_MAX_CHARACTERS", 10)
+    monkeypatch.setattr(run_registry_module, "_REASONING_STREAM_MAX_CHUNKS", 2)
+
+    async def run():
+        broadcaster = RunBroadcaster()
+        queue = broadcaster.subscribe()
+        broadcaster.append_reasoning("12345")
+        broadcaster.append_reasoning("67890")
+        broadcaster.append_reasoning("ignored")
+
+        chunks = [queue.get_nowait() for _ in range(3)]
+        assert [chunk.reasoning_delta for chunk in chunks[:2]] == ["12345", "67890"]
+        assert "执行步骤" in chunks[2].reasoning_delta
+        assert queue.empty()
 
     asyncio.new_event_loop().run_until_complete(run())
 
@@ -242,6 +330,45 @@ def test_cancel_stops_running_task_and_removes_run(reset_registry):
         assert run_obj.task.cancelled()
 
     asyncio.new_event_loop().run_until_complete(run())
+
+
+def test_cancel_releases_resources_owned_by_the_cancelled_run(tmp_path: Path):
+    DatabaseManager.reset_instance()
+    database = DatabaseManager(db_url=f"sqlite:///{tmp_path / 'registry.db'}")
+    database.create_chat_conversation("c-resource-cancel")
+    registry = ActiveRunRegistry(database=database, worker_id="worker-a")
+
+    async def factory(_broadcaster: RunBroadcaster):
+        async def _wait_forever():
+            await asyncio.Event().wait()
+
+        return asyncio.create_task(_wait_forever())
+
+    async def run():
+        active = await registry.try_claim(
+            "c-resource-cancel",
+            run_id="run-resource-cancel",
+            request_payload={"messages": []},
+        )
+        assert active is not None
+        await active.start(factory)
+        lease = database.try_acquire_agent_resource(
+            resource_name="provider:cancel-test",
+            lease_owner="owner-a",
+            slots=1,
+            lease_seconds=30,
+            run_id=active.run_id,
+            step_id="model:1",
+        )
+        assert lease
+
+        assert await registry.cancel("c-resource-cancel") is True
+        assert database.agent_runtime_metrics()["active_resource_leases"] == 0
+
+    try:
+        asyncio.run(run())
+    finally:
+        DatabaseManager.reset_instance()
 
 
 def test_subscriber_disconnect_does_not_kill_generation(reset_registry):

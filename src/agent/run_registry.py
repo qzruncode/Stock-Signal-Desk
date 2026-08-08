@@ -18,6 +18,7 @@ assistant-stream 0.0.32 的 ``create_run`` 把"生成 task 生命周期"与"消�
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -53,6 +54,162 @@ _RUN_HEARTBEAT_SECONDS = 15.0
 _RUN_CANCEL_POLL_SECONDS = 1.0
 _EVENT_BATCH_MAX_CHUNKS = 64
 _EVENT_BATCH_FLUSH_SECONDS = 0.05
+# Tool observations may contain many source rows or long article extracts.  The
+# complete observation is retained by the atomic-step ledger and the graph's
+# model state; this is only the browser/data-stream copy.  Bounding both one
+# result and a complete run prevents several successful tools from turning a
+# live chat into an oversized React tree.
+_TOOL_RESULT_STREAM_MAX_BYTES = 16_000
+_TOOL_RESULT_STREAM_RUN_MAX_BYTES = 96_000
+_TOOL_RESULT_STREAM_MIN_REMAINING_BYTES = 1_024
+# Progress/reasoning integrations can emit token-sized deltas.  The durable
+# execution timeline already carries the useful user-facing process, so keep
+# this optional auxiliary channel bounded by both characters and chunk count.
+# These are presentation limits only, not model-thinking timeouts.
+_REASONING_STREAM_MAX_CHARACTERS = 12_000
+_REASONING_STREAM_MAX_CHUNKS = 64
+_REASONING_STREAM_TRUNCATION_NOTICE = "\n（其余内部过程已折叠；执行步骤仍会继续更新。）"
+
+
+def _serialized_bytes(value: Any) -> int:
+    try:
+        return len(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError):
+        return len(str(value).encode("utf-8", errors="replace"))
+
+
+def _bounded_stream_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    collection_limit: int,
+    mapping_limit: int,
+    text_limit: int,
+) -> Any:
+    """Build a JSON-safe browser projection without changing durable data."""
+    if depth >= 10:
+        return "[详情已折叠]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:text_limit]
+    if isinstance(value, Mapping):
+        items = list(value.items())
+        projected = {
+            str(key)[:128]: _bounded_stream_value(
+                item,
+                depth=depth + 1,
+                collection_limit=collection_limit,
+                mapping_limit=mapping_limit,
+                text_limit=text_limit,
+            )
+            for key, item in items[:mapping_limit]
+        }
+        if len(items) > mapping_limit:
+            projected["_stream_omitted_key_count"] = len(items) - mapping_limit
+        return projected
+    if isinstance(value, (list, tuple)):
+        projected = [
+            _bounded_stream_value(
+                item,
+                depth=depth + 1,
+                collection_limit=collection_limit,
+                mapping_limit=mapping_limit,
+                text_limit=text_limit,
+            )
+            for item in value[:collection_limit]
+        ]
+        if len(value) > collection_limit:
+            projected.append({"_stream_omitted_item_count": len(value) - collection_limit})
+        return projected
+    return str(value)[:text_limit]
+
+
+def _tool_result_stream_summary(
+    value: Any,
+    *,
+    reason: str,
+    original_bytes: int,
+) -> dict[str, Any]:
+    """Keep the generic tool-result contract visible after UI truncation."""
+    safe = _json_safe(value)
+    summary: dict[str, Any] = {}
+    if isinstance(safe, Mapping):
+        # These are protocol-level result fields, not tool/domain routing.
+        for key in (
+            "success",
+            "partial",
+            "error_code",
+            "errors",
+            "warnings",
+            "data_time",
+            "data_time_provenance",
+            "is_stale",
+            "freshness_unknown",
+        ):
+            if key in safe:
+                summary[key] = _bounded_stream_value(
+                    safe[key],
+                    collection_limit=3,
+                    mapping_limit=6,
+                    text_limit=360,
+                )
+    else:
+        summary["result_preview"] = _bounded_stream_value(
+            safe,
+            collection_limit=2,
+            mapping_limit=4,
+            text_limit=360,
+        )
+    summary["_stream_presentation"] = {
+        "truncated": True,
+        "reason": reason,
+        "original_bytes": original_bytes,
+    }
+    return summary
+
+
+def _project_tool_result_for_stream(value: Any, *, byte_limit: int) -> Any:
+    """Bound a tool result for streaming while preserving the graph/audit copy."""
+    safe = _json_safe(value)
+    original_bytes = _serialized_bytes(safe)
+    if original_bytes <= byte_limit:
+        return safe
+
+    for collection_limit, mapping_limit, text_limit in (
+        (24, 64, 3_000),
+        (12, 32, 1_200),
+        (6, 16, 600),
+        (3, 8, 300),
+    ):
+        projected = _bounded_stream_value(
+            safe,
+            collection_limit=collection_limit,
+            mapping_limit=mapping_limit,
+            text_limit=text_limit,
+        )
+        if isinstance(projected, Mapping):
+            projected = dict(projected)
+            projected["_stream_presentation"] = {
+                "truncated": True,
+                "reason": "per_tool_result_budget",
+                "original_bytes": original_bytes,
+            }
+        if _serialized_bytes(projected) <= byte_limit:
+            return projected
+
+    return _tool_result_stream_summary(
+        safe,
+        reason="per_tool_result_budget",
+        original_bytes=original_bytes,
+    )
 
 
 def runtime_worker_id() -> str:
@@ -135,12 +292,10 @@ class _BroadcasterToolCallController:
         )
 
     def set_response(self, result: Any, is_error: bool = False) -> None:
-        self._broadcaster._emit(
-            ToolResultChunk(
-                tool_call_id=self._tool_call_id,
-                result=result,
-                is_error=is_error,
-            )
+        self._broadcaster.add_tool_result(
+            self._tool_call_id,
+            result,
+            is_error=is_error,
         )
         self._closed = True
 
@@ -183,6 +338,10 @@ class RunBroadcaster:
         # 生成逻辑会把已累积的 assistant 文本写到这里,供续流端点补齐用。
         # (与 chat.py 的 state["assistant_text"] 同源,由 run_callback 实时镜像。)
         self.assistant_text_snapshot: str = ""
+        self._tool_result_stream_bytes = 0
+        self._reasoning_stream_characters = 0
+        self._reasoning_stream_chunks = 0
+        self._reasoning_stream_truncated = False
 
     # ── 产出方法 (与 RunController 同名) ────────────────────────────────
 
@@ -190,19 +349,83 @@ class RunBroadcaster:
         self._emit(TextDeltaChunk(text_delta=text_delta))
 
     def append_reasoning(self, reasoning_delta: str) -> None:
-        self._emit(ReasoningDeltaChunk(reasoning_delta=reasoning_delta))
+        """Publish a bounded auxiliary reasoning stream for renderer safety.
 
-    async def add_tool_call(self, tool_name: str, tool_call_id: Optional[str] = None) -> _BroadcasterToolCallController:
+        Structured ``agent_stage`` events remain the canonical explanation of
+        what the agent is doing.  This guard only prevents an integration that
+        sends thousands of token-sized private progress deltas from turning one
+        assistant message into an ever-growing React tree.
+        """
+        text = str(reasoning_delta or "")
+        if not text or self._reasoning_stream_truncated:
+            return
+
+        remaining = _REASONING_STREAM_MAX_CHARACTERS - self._reasoning_stream_characters
+        can_emit = remaining > 0 and self._reasoning_stream_chunks < _REASONING_STREAM_MAX_CHUNKS
+        if can_emit:
+            visible = text[:remaining]
+            if visible:
+                self._emit(ReasoningDeltaChunk(reasoning_delta=visible))
+                self._reasoning_stream_characters += len(visible)
+                self._reasoning_stream_chunks += 1
+            if len(visible) == len(text) and self._reasoning_stream_characters < _REASONING_STREAM_MAX_CHARACTERS \
+                    and self._reasoning_stream_chunks < _REASONING_STREAM_MAX_CHUNKS:
+                return
+
+        self._reasoning_stream_truncated = True
+        self._emit(ReasoningDeltaChunk(reasoning_delta=_REASONING_STREAM_TRUNCATION_NOTICE))
+
+    async def add_tool_call(
+        self,
+        tool_name: str,
+        tool_call_id: Optional[str] = None,
+        parent_id: Optional[str] = None,
+    ) -> _BroadcasterToolCallController:
         # 保持 async 签名，与 RunController.add_tool_call 一致，标准任务流水线里
         # 用 await 调用,无需改调用方。
         if tool_call_id is None:
             tool_call_id = f"call_{asyncio.get_running_loop().time()}"
-        self._emit(ToolCallBeginChunk(tool_call_id=tool_call_id, tool_name=tool_name))
+        self._emit(
+            ToolCallBeginChunk(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                parent_id=parent_id,
+            )
+        )
         return _BroadcasterToolCallController(self, tool_call_id, tool_name)
 
-    def add_tool_result(self, tool_call_id: str, result: Any) -> None:
-        # 与 RunController.add_tool_result 同名（当前标准任务流水线未用，保留兼容）。
-        self._emit(ToolResultChunk(tool_call_id=tool_call_id, result=result))
+    def add_tool_result(
+        self,
+        tool_call_id: str,
+        result: Any,
+        *,
+        is_error: bool = False,
+    ) -> None:
+        """Emit a browser-safe observation without shrinking graph/audit data."""
+        original_bytes = _serialized_bytes(result)
+        remaining = _TOOL_RESULT_STREAM_RUN_MAX_BYTES - self._tool_result_stream_bytes
+        if remaining < min(
+            _TOOL_RESULT_STREAM_MAX_BYTES,
+            _TOOL_RESULT_STREAM_MIN_REMAINING_BYTES,
+        ):
+            presentation = _tool_result_stream_summary(
+                result,
+                reason="run_tool_result_budget",
+                original_bytes=original_bytes,
+            )
+        else:
+            presentation = _project_tool_result_for_stream(
+                result,
+                byte_limit=min(_TOOL_RESULT_STREAM_MAX_BYTES, remaining),
+            )
+        self._tool_result_stream_bytes += _serialized_bytes(presentation)
+        self._emit(
+            ToolResultChunk(
+                tool_call_id=tool_call_id,
+                result=presentation,
+                is_error=is_error,
+            )
+        )
 
     def add_data(self, data: Any) -> None:
         self._emit(DataChunk(data=data))
@@ -219,6 +442,23 @@ class RunBroadcaster:
     @property
     def has_tool_events(self) -> bool:
         return self._has_tool_events
+
+    def stage_history_snapshot(self) -> list[dict[str, Any]]:
+        """Return the committed LangGraph stage events for this run.
+
+        The broadcaster is also the durable stream boundary, so this snapshot
+        includes events emitted by a resumed invocation after ``drain()``.  It
+        deliberately projects only ``agent_stage`` data; tool arguments and
+        result payloads remain in their existing tool/event channels.
+        """
+        stages: list[dict[str, Any]] = []
+        for chunk in self._history:
+            if not isinstance(chunk, DataChunk) or not isinstance(chunk.data, Mapping):
+                continue
+            if chunk.data.get("event") != "agent_stage":
+                continue
+            stages.append(dict(chunk.data))
+        return stages
 
     def subscribe(
         self,

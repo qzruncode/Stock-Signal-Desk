@@ -61,10 +61,10 @@ def main() -> int:
 
     result = {
         "ok": not issues,
-        "engine": "langgraph",
+        "engine": architecture["engine"],
         "static_dir": str(static_dir),
-        "registered_tools": architecture["registered_tools"],
-        "graph_nodes": architecture["graph_nodes"],
+        "registered_tools": architecture["operation_count"],
+        "rss_sources": architecture["rss_source_count"],
         "issues": list(dict.fromkeys(issues)),
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

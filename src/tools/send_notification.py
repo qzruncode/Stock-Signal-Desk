@@ -1,4 +1,9 @@
-"""Send an explicitly requested notification through configured channels."""
+"""Send one explicitly supplied notification through configured channels.
+
+The model-facing action intentionally sends only caller-supplied text.  Reading
+a report and delivering it are separate actions, so a notification call cannot
+hide a report lookup, report rendering, or provider-specific batch workflow.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,24 @@ from src.notification import get_notification_service
 from src.services.history_service import HistoryService
 from src.tools._workflow import envelope, model_dump, require_confirmation, run_async
 from src.tools.base import ToolSpec, object_schema
+
+
+def send_custom_notification(message: str, title: str = "") -> dict[str, Any]:
+    """Deliver exactly one caller-supplied message to the configured channel."""
+    content = str(message or "").strip()
+    if not content:
+        raise ValueError("通知正文不能为空")
+    clean_title = str(title or "").strip()
+    body = f"# {clean_title}\n\n{content}" if clean_title else content
+    sent = bool(get_notification_service().send(body))
+    if not sent:
+        raise RuntimeError("企业微信通知发送失败，请检查设置页渠道配置")
+    return envelope(
+        channel="wechat",
+        sent=True,
+        title=clean_title or None,
+        message="通知已发送",
+    )
 
 
 def send_notification(
@@ -58,29 +81,27 @@ def send_notification(
     )
 
 
-TOOL = ToolSpec(
-    name="send_notification",
-    description=(
-        "通过设置页已配置的企业微信发送正式报告、批量报告或用户指定内容。只有用户明确说发送/通知且目标内容清晰时"
-        "才能调用并传 confirmed=true；生成报告、分析或推荐本身不代表同意发送。优先传报告 ID，避免重新拼写报告。"
+TOOLS = (
+    ToolSpec(
+        name="send_custom_notification",
+        description=(
+            "将明确给出的正文通过已配置的企业微信发送一次。只能在用户明确要求发送且内容已确认时使用；"
+            "服务端会在审批后执行。不会读取报告、批量任务或其他数据源。"
+        ),
+        parameters=object_schema(
+            {
+                "message": {"type": "string", "minLength": 1, "description": "待发送的完整正文"},
+                "title": {"type": "string", "description": "可选标题"},
+            },
+            required=("message",),
+        ),
+        executor=send_custom_notification,
+        category="action",
+        effect="side_effect",
+        max_attempts=1,
+        sensitive_fields=("message",),
     ),
-    parameters=object_schema(
-        {
-            "content_type": {"type": "string", "enum": ["analysis_report", "batch_report", "custom"]},
-            "message": {"type": "string", "description": "custom 时的正文"},
-            "record_id": {"type": "string", "description": "analysis_report 的历史记录 ID"},
-            "batch_run_id": {"type": "string", "description": "batch_report 的批次 ID"},
-            "title": {"type": "string"},
-            "confirmed": {"type": "boolean", "description": "用户本轮是否明确要求发送", "default": False},
-        },
-        required=("content_type", "confirmed"),
-    ),
-    executor=send_notification,
-    category="action",
-    effect="side_effect",
-    max_attempts=1,
-    sensitive_fields=("message",),
 )
 
 
-__all__ = ["TOOL", "send_notification"]
+__all__ = ["TOOLS", "send_custom_notification", "send_notification"]

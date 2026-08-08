@@ -7,7 +7,12 @@ import asyncio
 import logging
 from typing import Any, AsyncIterator, Mapping
 
-from assistant_stream.assistant_stream_chunk import AssistantStreamChunk
+from assistant_stream.assistant_stream_chunk import (
+    AssistantStreamChunk,
+    ToolCallBeginChunk,
+    ToolCallDeltaChunk,
+    ToolResultChunk,
+)
 
 from src.agent.run_registry import (
     ActiveRun,
@@ -30,6 +35,32 @@ _TERMINAL_STATUSES = frozenset(
         "interrupted",
     }
 )
+
+
+_TIMELINE_HIDDEN_CHUNKS = (
+    ToolCallBeginChunk,
+    ToolCallDeltaChunk,
+    ToolResultChunk,
+)
+
+
+async def timeline_presentation_stream(
+    source: AsyncIterator[AssistantStreamChunk],
+) -> AsyncIterator[AssistantStreamChunk]:
+    """Project a stream for the unified execution timeline.
+
+    LangGraph emits durable ``agent_stage`` data for every tool lifecycle.
+    The timeline client renders that canonical data directly, so replaying the
+    legacy assistant-ui tool parts after a reconnect only creates a second,
+    potentially large copy of each tool result in its message repository.
+    Keep text, reasoning, stage data and terminal errors unchanged while
+    omitting those redundant transient parts.  The unprojected stream remains
+    available for clients that explicitly need the legacy tool-part protocol.
+    """
+    async for chunk in source:
+        if isinstance(chunk, _TIMELINE_HIDDEN_CHUNKS):
+            continue
+        yield chunk
 
 
 async def subscriber_stream(
@@ -106,4 +137,5 @@ async def durable_subscriber_stream(
 __all__ = [
     "durable_subscriber_stream",
     "subscriber_stream",
+    "timeline_presentation_stream",
 ]

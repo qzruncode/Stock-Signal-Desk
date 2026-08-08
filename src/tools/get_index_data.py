@@ -188,18 +188,132 @@ def get_index_data(index_code: str = "000001", days: int = 20) -> dict[str, Any]
     }
 
 
-TOOL = ToolSpec(
-    name="get_index_data",
-    description=(
-        "获取上证、深证、创业板或科创50的日线与当前交易日快照。实时快照只会在能与上一日收盘价对齐时"
-        "并入历史，避免把今日行情覆盖到昨日日期；返回价格、涨跌幅、成交量和成交额的明确单位与数据时间。"
+def _validated_index_code(index_code: str) -> str:
+    normalized = str(index_code or "").strip()
+    if normalized not in INDEX_MAP:
+        raise ValueError(f"不支持的指数代码: {normalized}")
+    return normalized
+
+
+def read_index_daily_history_sina(
+    index_code: str = "000001",
+    days: int = 20,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read the daily-history endpoint only; no live quote is merged into it."""
+    code = _validated_index_code(index_code)
+    limit = int(days)
+    if not 5 <= limit <= 250:
+        raise ValueError("days 必须在 5 到 250 之间")
+    frame, cached = (
+        cached_call(
+            f"index-daily:atomic:v1:{code}",
+            lambda: _daily_frame(code),
+            ttl_seconds=900,
+        )
+        if use_cache
+        else (_daily_frame(code), False)
+    )
+    history = _daily_records(frame, limit)
+    data_date = latest_date(history, "date")
+    now = datetime.now().astimezone()
+    expected = _expected_session_date(now)
+    return {
+        "index_code": code,
+        "index_name": INDEX_MAP[code][0],
+        "days": limit,
+        "items": history,
+        "item_count": len(history),
+        "units": {"price": "index_point", "volume": "source_reported", "amount": "CNY", "pct_chg": "%"},
+        "source": "新浪指数日线/AKShare",
+        "source_scope": "index_daily_history",
+        "success": bool(history),
+        "partial": False,
+        "errors": [] if history else ["新浪指数日线没有可用记录"],
+        "warnings": [],
+        "data_time": data_date.isoformat() if data_date else None,
+        "is_stale": (expected is not None and data_date.isoformat() < expected if data_date else None),
+        "freshness_unknown": data_date is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+def read_index_quote_sina(
+    index_code: str = "000001",
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read the Sina real-time index quote endpoint only."""
+    code = _validated_index_code(index_code)
+    frame, cached = (
+        cached_call("index-spot-sina:atomic:v1", _spot_frame, ttl_seconds=30, attempts=1)
+        if use_cache
+        else (_spot_frame(), False)
+    )
+    now = datetime.now().astimezone()
+    session_date = _expected_session_date(now)
+    item = _spot_record(frame, code, session_date)
+    return {
+        "index_code": code,
+        "index_name": INDEX_MAP[code][0],
+        "item": item,
+        "units": {"price": "index_point", "volume": "source_reported", "amount": "CNY", "pct_chg": "%"},
+        "source": "新浪指数实时行情/AKShare",
+        "source_scope": "index_realtime_quote",
+        "success": item is not None,
+        "partial": False,
+        "errors": [] if item else ["新浪指数实时行情没有返回该指数"],
+        "warnings": [],
+        # Sina's response has no provider timestamp.  The session date is a
+        # useful coarse label but explicitly marked as inferred evidence.
+        "data_time": session_date if item else None,
+        "data_time_inferred": item is not None,
+        "is_stale": None,
+        "freshness_unknown": True,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_index_daily_history_sina",
+        description=(
+            "从新浪（AKShare）读取指定中国主要指数的日线历史；"
+            "返回日线 OHLC、成交量和成交额，不合并当前盘中快照或写入本地宏观缓存。"
+        ),
+        parameters=object_schema(
+            {
+                "index_code": {"type": "string", "enum": list(INDEX_MAP), "default": "000001"},
+                "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 20},
+            }
+        ),
+        executor=read_index_daily_history_sina,
+        category="macro",
     ),
-    parameters=object_schema(
-        {
-            "index_code": {"type": "string", "enum": list(INDEX_MAP), "default": "000001"},
-            "days": {"type": "integer", "minimum": 5, "maximum": 250, "default": 20},
-        }
+    ToolSpec(
+        name="read_index_quote_sina",
+        description=(
+            "从新浪（AKShare）读取指定中国主要指数的当前行情快照；"
+            "不获取日线，也不把快照拼接进历史序列。"
+        ),
+        parameters=object_schema(
+            {"index_code": {"type": "string", "enum": list(INDEX_MAP), "default": "000001"}}
+        ),
+        executor=read_index_quote_sina,
+        category="macro",
     ),
-    executor=get_index_data,
-    category="macro",
 )
+
+
+__all__ = [
+    "TOOLS",
+    "_merge_snapshot",
+    "get_index_data",
+    "read_index_daily_history_sina",
+    "read_index_quote_sina",
+]

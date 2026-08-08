@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from src.tools._akshare import bare_symbol, cached_call, exchange_prefix
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, exchange_prefix
 
 _BASE = "https://emweb.securities.eastmoney.com/PC_HSF10/NewFinanceAnalysis"
 _UA = (
@@ -423,9 +423,10 @@ def get_financial_section(
     periods: int = 4,
     *,
     use_cache: bool = True,
+    local_identity: bool = False,
 ) -> dict[str, Any]:
     periods = max(2, min(int(periods), 20))
-    code = bare_symbol(symbol)
+    code = bare_local_symbol(symbol) if local_identity else bare_symbol(symbol)
     if use_cache:
         value, cached = cached_call(
             f"financial_section:v1:{section}:{code}:{periods}",

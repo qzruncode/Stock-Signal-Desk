@@ -6,7 +6,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 from datetime import datetime, timedelta
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +15,7 @@ from src.services.chat_session_service import ChatSessionService
 from src.agent.model_runtime import GuardedModelRuntime
 from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.storage import DatabaseManager
-from src.storage.models import AgentRun, AgentRunTrace
+from src.storage.models import AgentRun
 
 
 
@@ -53,13 +52,10 @@ def _claim(
     )
 def test_terminal_commit_rolls_back_all_published_state_on_error(
     database,
-    monkeypatch,
 ):
     conversation_id = _conversation(database, "terminal")
     _claim(database, conversation_id, run_id="run-terminal")
-    monkeypatch.setenv("AGENT_TRACE_ENCRYPTION_KEY", "invalid")
-
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="quality_projection must be a mapping"):
         database.commit_agent_run_terminal(
             run_id="run-terminal",
             conversation_id=conversation_id,
@@ -70,13 +66,12 @@ def test_terminal_commit_rolls_back_all_published_state_on_error(
             ],
             final_text="答案",
             agent_context={"version": "3"},
-            trace={"compiled_plan": {"token": "must-redact"}},
+            trace={"quality_projection": ["invalid"]},
         )
 
     assert database.get_chat_messages(conversation_id) == []
     assert database.get_agent_run(run_id="run-terminal")["status"] == "running"
 
-    monkeypatch.delenv("AGENT_TRACE_ENCRYPTION_KEY")
     assert database.commit_agent_run_terminal(
         run_id="run-terminal",
         conversation_id=conversation_id,
@@ -88,7 +83,11 @@ def test_terminal_commit_rolls_back_all_published_state_on_error(
         final_text="答案",
         agent_context={"version": "3"},
         trace={
-            "compiled_plan": {"capability": "general_qa"},
+            "quality_projection": {
+                "engine": "langgraph_agent_loop",
+                "tool_results": [],
+                "evidence": [],
+            },
             "latest_stage": {"status": "succeeded"},
         },
     )
@@ -172,6 +171,47 @@ def test_resource_slots_rate_limit_and_budget_are_shared(database):
     assert denied["allowed"] is False
     assert denied["reason"] == "provider_call_count"
 
+
+def test_releasing_one_cancelled_run_frees_only_its_resource_slots(database):
+    first = database.try_acquire_agent_resource(
+        resource_name="provider:cleanup",
+        lease_owner="owner-a",
+        slots=3,
+        lease_seconds=30,
+        run_id="run-cancelled",
+        step_id="model:1",
+    )
+    second = database.try_acquire_agent_resource(
+        resource_name="provider:cleanup",
+        lease_owner="owner-b",
+        slots=3,
+        lease_seconds=30,
+        run_id="run-cancelled",
+        step_id="model:2",
+    )
+    other = database.try_acquire_agent_resource(
+        resource_name="provider:cleanup",
+        lease_owner="owner-c",
+        slots=3,
+        lease_seconds=30,
+        run_id="run-still-active",
+        step_id="model:1",
+    )
+    assert first and second and other
+
+    assert database.release_agent_resources_for_run("run-cancelled") == 2
+    assert database.agent_runtime_metrics()["active_resource_leases"] == 1
+
+    replacement = database.try_acquire_agent_resource(
+        resource_name="provider:cleanup",
+        lease_owner="owner-d",
+        slots=3,
+        lease_seconds=30,
+        run_id="run-next",
+        step_id="model:1",
+    )
+    assert replacement in {first, second}
+
 def test_chat_service_enforces_owner_and_tenant_boundary(database):
     owner_a = ChatSessionService(
         database,
@@ -231,6 +271,42 @@ def test_model_runtime_retries_only_transient_start_failures(
     assert result["choices"][0]["message"]["content"] == "ok"
     assert calls == 2
     assert database.get_agent_run(run_id="run-model-retry")["provider_call_count"] == 2
+
+
+def test_model_runtime_does_not_cancel_slow_provider_reasoning(database, monkeypatch) -> None:
+    conversation_id = _conversation(database, "model-unbounded")
+    _claim(database, conversation_id, run_id="run-model-unbounded")
+    monkeypatch.setenv("AGENT_PROVIDER_MAX_ATTEMPTS", "1")
+    calls = 0
+    completed = False
+
+    async def completion(**_kwargs):
+        nonlocal calls, completed
+        calls += 1
+        await asyncio.sleep(0.03)
+        completed = True
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    runtime = GuardedModelRuntime(
+        database=database,
+        run_id="run-model-unbounded",
+        worker_id="worker-a",
+        model="test-model",
+        token_estimator=lambda messages, model: 10,
+    )
+    result = asyncio.run(
+        runtime.complete(
+            completion,
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=20,
+        )
+    )
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert completed is True
+    assert calls == 1
+    assert database.get_agent_run(run_id="run-model-unbounded")["provider_call_count"] == 1
+    assert database.agent_runtime_metrics()["active_resource_leases"] == 0
 
 def test_model_stream_close_releases_the_shared_provider_slot(
     database,

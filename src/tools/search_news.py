@@ -11,15 +11,14 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from src.tools._akshare import bare_symbol, cached_call, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 _RSS_ROUTE = "/eastmoney/search/:keyword"
 
 DESCRIPTION = (
-    "搜索一只A股/北交所公司的相关新闻。使用 AKShare 单股新闻与项目 RSSHub 的东方财富"
-    "关键词路由并行取数，按公司名称/代码严格校验主体、去重并限制返回量；"
-    "不会把只在行情表尾部出现代码的市场榜单冒充公司新闻。研报请用 get_research_report。"
+    "从 AKShare 的 stock_news_em 单一来源读取一只 A 股/北交所公司的相关新闻，"
+    "按公司名称或代码校验主体、去重并限制返回量；不会调用 RSSHub 或其他新闻来源。"
 )
 
 
@@ -178,8 +177,8 @@ def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = 
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError(
-            "symbol 必须能解析为 6 位股票代码；行业或主题资讯请使用 websearch，"
-            "或先 discover_rss_sources 再 read_rss_feed"
+            "symbol 必须能解析为 6 位股票代码；行业或主题资讯请直接选择对应的 "
+            "read_rss_* 数据源工具，必要时再使用 websearch"
         )
     if not 1 <= int(days) <= 365:
         raise ValueError("days 必须在 1 到 365 之间")
@@ -270,22 +269,112 @@ def search_news(symbol: str, days: int = 30, limit: int = 20, use_cache: bool = 
     }
 
 
-TOOL = ToolSpec(
-    name="search_news",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A股/北交所股票代码或公司名称"},
-            "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "最近天数"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "最多返回条数"},
-            "use_cache": {
-                "type": "boolean",
-                "default": True,
-                "description": "是否使用半小时缓存；需要强制刷新时设为 false",
+def read_company_news_akshare(
+    symbol: str,
+    days: int = 30,
+    limit: int = 20,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one provider's company-news feed without fallback source mixing."""
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    if not 1 <= int(days) <= 365:
+        raise ValueError("days 必须在 1 到 365 之间")
+    if not 1 <= int(limit) <= 50:
+        raise ValueError("limit 必须在 1 到 50 之间")
+    name = _stock_name(code)
+    try:
+        if use_cache:
+            frame, cached = cached_call(
+                f"stock-news:{code}",
+                lambda: _fetch_direct(code),
+                ttl_seconds=1800,
+            )
+        else:
+            frame, cached = _fetch_direct(code), False
+    except Exception as exc:
+        return {
+            "success": False,
+            "partial": False,
+            "symbol": code,
+            "name": name,
+            "items": [],
+            "item_count": 0,
+            "source": "AKShare stock_news_em",
+            "errors": [f"akshare_news: {type(exc).__name__}: {exc}"],
+            "warnings": [],
+            "data_time": None,
+            "is_stale": None,
+            "freshness_unknown": True,
+            "_cached": False,
+        }
+    cutoff = datetime.now() - timedelta(days=int(days))
+    direct_items, weak_mentions = _normalize_direct(frame, code, name)
+    undated_count = 0
+    filtered: list[dict[str, Any]] = []
+    for item in direct_items:
+        published = _date_time(item.get("published"))
+        if published is None:
+            undated_count += 1
+        elif published < cutoff:
+            continue
+        filtered.append(item)
+    items = _dedupe(filtered, int(limit))
+    dates = [_date_time(item.get("published")) for item in items]
+    latest = max((value for value in dates if value), default=None)
+    warnings: list[str] = []
+    if weak_mentions:
+        warnings.append(
+            f"{weak_mentions} 条结果未在标题或摘要中逐字出现证券代码或简称；需结合来源语义复核"
+        )
+    if undated_count:
+        warnings.append(f"包含 {undated_count} 条无可验证发布时间的结果")
+    if not name:
+        warnings.append("本地股票索引未找到公司简称，仅能按代码校验主体")
+    return {
+        "success": True,
+        "partial": False,
+        "symbol": code,
+        "name": name,
+        "days": int(days),
+        "limit": int(limit),
+        "items": items,
+        "item_count": len(items),
+        "unverified_entity_mention_count": weak_mentions,
+        "source": "AKShare stock_news_em",
+        "sources": ["akshare_stock_news_em"],
+        "data_time": latest.isoformat() if latest else None,
+        "freshness_unknown": latest is None,
+        "is_stale": latest < cutoff if latest else None,
+        "errors": [],
+        "warnings": warnings,
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_company_news_akshare",
+        description=DESCRIPTION,
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A股/北交所股票代码或公司名称"},
+                "days": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30, "description": "最近天数"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20, "description": "最多返回条数"},
+                "use_cache": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "是否使用半小时缓存；需要强制刷新时设为 false",
+                },
             },
-        },
-        ["symbol"],
+            ["symbol"],
+        ),
+        executor=read_company_news_akshare,
+        category="news_source",
     ),
-    executor=search_news,
-    category="sentiment",
 )
+
+
+__all__ = ["TOOLS", "_entity_mentions", "read_company_news_akshare", "search_news"]

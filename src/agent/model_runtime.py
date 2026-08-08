@@ -43,6 +43,8 @@ def _is_transient_provider_error(error: BaseException) -> bool:
     markers = (
         "timeout",
         "connection",
+        "connect",
+        "network",
         "rate limit",
         "ratelimit",
         "service unavailable",
@@ -51,6 +53,25 @@ def _is_transient_provider_error(error: BaseException) -> bool:
         "overloaded",
     )
     return any(marker in name or marker in text for marker in markers)
+
+
+def _is_provider_reported_timeout(error: BaseException) -> bool:
+    name = type(error).__name__.lower()
+    text = str(error).lower()
+    return "timeout" in name or "timeout" in text or "timed out" in text
+
+
+class ModelProviderReportedTimeoutError(RuntimeError):
+    """The upstream provider reported a timeout; no local deadline is applied."""
+
+
+class ModelProviderUnavailableError(RuntimeError):
+    """The upstream provider or its circuit is temporarily unavailable.
+
+    This deliberately represents an upstream availability result, not a local
+    analysis deadline.  The graph can therefore close safely as ``partial``
+    without pretending that a completed answer was produced.
+    """
 
 
 class ManagedModelStream:
@@ -144,7 +165,7 @@ class GuardedModelRuntime:
                     worker_id=self.worker_id,
                 )
                 if not circuit.get("allowed"):
-                    raise RuntimeError("model provider circuit is open")
+                    raise ModelProviderUnavailableError("model provider circuit is open")
 
             lease_manager = agent_resource_lease(
                 self.database,
@@ -196,9 +217,24 @@ class GuardedModelRuntime:
                 await finalize(exc)
                 raise
             except BaseException as exc:
-                last_error = exc
-                await finalize(exc)
+                error: BaseException = (
+                    ModelProviderReportedTimeoutError(
+                        "upstream model provider reported timeout"
+                    )
+                    if _is_provider_reported_timeout(exc)
+                    else exc
+                )
+                last_error = error
+                await finalize(error)
                 if attempt >= max_attempts or not _is_transient_provider_error(exc):
+                    if isinstance(error, ModelProviderReportedTimeoutError):
+                        raise error from exc
+                    if _is_transient_provider_error(exc):
+                        raise ModelProviderUnavailableError(
+                            "model provider is temporarily unavailable"
+                        ) from exc
+                    if error is not exc:
+                        raise error from exc
                     raise
                 await asyncio.sleep(backoff * (2 ** (attempt - 1)))
                 continue
@@ -242,4 +278,6 @@ class GuardedModelRuntime:
 __all__ = [
     "GuardedModelRuntime",
     "ManagedModelStream",
+    "ModelProviderReportedTimeoutError",
+    "ModelProviderUnavailableError",
 ]

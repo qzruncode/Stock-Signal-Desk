@@ -354,6 +354,10 @@ def _build_detail_fallback(body: "FeedItemDetailRequest") -> Optional[Dict[str, 
         "image": body.image,
         "content_html": body.content_html,
         "attachments": list(body.attachments or []),
+        # This is still the same selected RSS item, but it is not a successful
+        # fulltext re-fetch.  Consumers that need complete article coverage
+        # must be able to distinguish it from a source-provided full body.
+        "_content_origin": "list_item_fallback",
     }
 
 def _fulltext_lost_content(list_html: str, new_html: str) -> bool:

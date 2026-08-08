@@ -7,7 +7,10 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from src.tools.get_business_segments import get_business_segments
+from src.tools.get_business_segments import (
+    get_business_segments,
+    read_business_segments_eastmoney,
+)
 
 
 def _frame() -> pd.DataFrame:
@@ -120,6 +123,19 @@ def test_business_segments_filters_category_before_selecting_periods() -> None:
 
     assert result["periods"] == ["2025-12-31"]
     assert all(item["category"] == "product" for item in result["items"])
+
+
+def test_agent_business_segment_read_returns_rows_without_local_concentration() -> None:
+    with (
+        patch("src.tools.get_business_segments.cached_call", return_value=(_frame(), False)),
+        patch("src.tools.get_business_segments._summary", side_effect=AssertionError("must not summarize")),
+    ):
+        result = read_business_segments_eastmoney("600519", category="product", periods=2)
+
+    assert result["success"] is True
+    assert result["source_scope"] == "reported_business_segments"
+    assert "summaries" not in result
+    assert [item["segment_name"] for item in result["items"]] == ["茅台酒", "系列酒", "茅台酒"]
 
 
 def test_business_segments_uses_bse_prefix_and_reports_empty_category() -> None:

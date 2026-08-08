@@ -131,7 +131,6 @@ def _set_safe_production_env(monkeypatch) -> None:
         "AGENT_TRACE_ENCRYPTION_KEY",
         Fernet.generate_key().decode("ascii"),
     )
-    monkeypatch.setenv("AGENT_PLANNER_VERIFIER_MODE", "enforce")
     monkeypatch.setenv("AGENT_ISOLATE_ALL_STATELESS", "true")
     monkeypatch.delenv("GUNICORN_WORKERS", raising=False)
     monkeypatch.delenv("GUNICORN_CMD_ARGS", raising=False)

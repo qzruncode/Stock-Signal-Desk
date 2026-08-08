@@ -313,7 +313,10 @@ class _AgentRuntimeMixinMethods1:
             for record in records:
                 request = _load_json(record.request_json, {})
                 checkpoint = _load_json(record.context_snapshot_json, {})
-                if request.get("engine") == "langgraph" or checkpoint.get("engine") == "langgraph":
+                if (
+                    request.get("engine") == "langgraph_agent_loop"
+                    or checkpoint.get("engine") == "langgraph_agent_loop"
+                ):
                     continue
                 record.status = "cancelled"
                 record.active_slot = None
@@ -438,6 +441,12 @@ class _AgentRuntimeMixinMethods1:
                     )
                 )
             conversation.preview_text = latest_preview[:200] if latest_preview else None
+            # The LangGraph terminal commit is the canonical transcript and
+            # durable execution-trace boundary.  An assistant-ui export can
+            # retain arbitrarily large, obsolete tool payloads from a previous
+            # browser session; keeping it after a terminal commit makes later
+            # hydration replay stale progress and can exhaust the renderer.
+            conversation.thread_state_json = None
             if agent_context is not None:
                 conversation.agent_context_json = _json(dict(agent_context))
             if generated_title and conversation.title_source != "manual":
@@ -512,7 +521,7 @@ class _AgentRuntimeMixinMethods1:
                 session.execute(
                     select(AgentRunTrace).where(
                         AgentRunTrace.run_id == run_id,
-                        AgentRunTrace.orchestrator_mode == "langgraph",
+                        AgentRunTrace.orchestrator_mode == "langgraph_agent_loop",
                     )
                 )
                 .scalars()
@@ -520,10 +529,10 @@ class _AgentRuntimeMixinMethods1:
             )
             if trace_record is None:
                 trace_record = AgentRunTrace(
-                    id=f"{run_id}:langgraph"[:64],
+                    id=f"{run_id}:langgraph-agent-loop"[:64],
                     run_id=run_id,
                     conversation_id=conversation_id,
-                    orchestrator_mode="langgraph",
+                    orchestrator_mode="langgraph_agent_loop",
                     status=str(trace_payload.get("status") or status),
                     created_at=now,
                 )
@@ -532,24 +541,12 @@ class _AgentRuntimeMixinMethods1:
             trace_record.error_code = str(trace_payload.get("error_code") or error_code or "") or None
             trace_field_map = {
                 "stage_durations": "stage_durations_json",
-                "outcomes": "outcomes_json",
-                "coverage": "coverage_json",
                 "latest_stage": "latest_stage_json",
-                "compiled_plan": "compiled_plan_json",
                 "quality_projection": "quality_projection_json",
             }
             for source_key, target_field in trace_field_map.items():
                 if source_key in trace_payload:
-                    if source_key in {"outcomes", "compiled_plan"}:
-                        from src.storage.mixins.agent_run_trace import (
-                            encode_agent_trace_json,
-                        )
-
-                        encoded_value = encode_agent_trace_json(
-                            trace_payload[source_key],
-                            encrypt=True,
-                        )
-                    elif source_key == "quality_projection":
+                    if source_key == "quality_projection":
                         from src.storage.mixins.agent_run_trace import (
                             redact_agent_trace,
                         )

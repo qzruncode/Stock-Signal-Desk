@@ -15,13 +15,11 @@ from src.tools._kline import (
     _kline_is_stale,
     get_kline,
 )
-from src.tools.base import ToolSpec, object_schema
 
 DESCRIPTION = (
     "基于前复权日线计算 MA、EMA、MACD、RSI、ATR、布林带、20/60 日高低位、当日量/前5日均量和阶段收益，"
-    "并读取 AKShare 筹码分布及龙虎榜机构交易结构；"
     "成交量统一为股，盘中指标会明确标记使用了未完成的当日 K 线。"
-    "结果为确定性计算，不做买卖结论，适合技术趋势、波动和位置分析。"
+    "结果只来自一段日线序列的确定性计算，不读取筹码、龙虎榜或其他补充数据，不做买卖结论。"
 )
 
 
@@ -34,44 +32,48 @@ def get_technical_indicators(
     symbol: str,
     count: int = 120,
     include_structured: bool = False,
+    _raw_kline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     code = bare_symbol(symbol)
     safe_count = max(80, min(int(count), 250))
-    local_rows = _get_kline_from_stock_daily(code, safe_count) or []
-    # A long local history is not sufficient if its latest bar is stale.  The
-    # old shortcut silently skipped the multi-source refresh and made the
-    # final entry gate compare today's quote with indicators several sessions
-    # old.  Fresh local rows remain the fast path; stale rows go through the
-    # normal K-line refresh and realtime-bar completion chain.
-    if len(local_rows) >= 30 and not _kline_is_stale(local_rows):
-        data_time = _kline_data_time(local_rows)
-        today = datetime.now().date().isoformat()
-        raw = {
-            "success": True,
-            "data": local_rows,
-            "source": "stock_daily",
-            "data_time": data_time,
-            "is_stale": _kline_is_stale(local_rows),
-            "fallback_used": False,
-            "_cached": True,
-            "bar_complete": not (
-                str(data_time or "")[:10] == today
-                and datetime.now().time() < datetime.strptime("15:00", "%H:%M").time()
-            ),
-        }
+    if _raw_kline is not None:
+        # Source-specific Agent adapters supply their own one-source
+        # observation here. This branch must never invoke the legacy recovery
+        # chain on its own.
+        raw = dict(_raw_kline)
     else:
-        try:
-            raw = get_kline(code, count=safe_count, use_cache=True)
-        except Exception as exc:
-            return {
-                "symbol": code,
-                "indicators": {},
-                "errors": [str(exc)],
-                "source": "K线多源链",
-                "success": False,
-                "is_stale": None,
-                "fallback_used": True,
+        local_rows = _get_kline_from_stock_daily(code, safe_count) or []
+        # This branch remains only for legacy non-Agent callers. The Agent
+        # registry exposes source-specific indicator reads instead.
+        if len(local_rows) >= 30 and not _kline_is_stale(local_rows):
+            data_time = _kline_data_time(local_rows)
+            today = datetime.now().date().isoformat()
+            raw = {
+                "success": True,
+                "data": local_rows,
+                "source": "stock_daily",
+                "data_time": data_time,
+                "is_stale": _kline_is_stale(local_rows),
+                "fallback_used": False,
+                "_cached": True,
+                "bar_complete": not (
+                    str(data_time or "")[:10] == today
+                    and datetime.now().time() < datetime.strptime("15:00", "%H:%M").time()
+                ),
             }
+        else:
+            try:
+                raw = get_kline(code, count=safe_count, use_cache=True)
+            except Exception as exc:
+                return {
+                    "symbol": code,
+                    "indicators": {},
+                    "errors": [str(exc)],
+                    "source": "K线多源链",
+                    "success": False,
+                    "is_stale": None,
+                    "fallback_used": True,
+                }
     rows = raw.get("data") or []
     if len(rows) < 30:
         return {
@@ -191,27 +193,4 @@ def get_technical_indicators(
     }
 
 
-TOOL = ToolSpec(
-    name="get_technical_indicators",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "股票代码或股票名称"},
-            "count": {
-                "type": "integer",
-                "minimum": 80,
-                "maximum": 250,
-                "default": 120,
-                "description": "用于计算的最近日线数量",
-            },
-            "include_structured": {
-                "type": "boolean",
-                "default": False,
-                "description": "是否同时读取筹码分布和龙虎榜机构交易证据",
-            },
-        },
-        ["symbol"],
-    ),
-    executor=get_technical_indicators,
-    category="analysis",
-)
+__all__ = ["DESCRIPTION", "get_technical_indicators"]

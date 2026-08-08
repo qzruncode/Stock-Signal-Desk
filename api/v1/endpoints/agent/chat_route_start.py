@@ -13,7 +13,11 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from src.agent.run_registry import RunBroadcaster, RunCapacityExceeded, active_run_registry
-from src.agent.run_streaming import durable_subscriber_stream, subscriber_stream
+from src.agent.run_streaming import (
+    durable_subscriber_stream,
+    subscriber_stream,
+    timeline_presentation_stream,
+)
 from src.agent.runtime_safety import AgentRequestValidationError, agent_request_rate_limiter, get_agent_runtime_limits, validate_chat_request_body
 from src.auth import get_client_ip
 from src.services.chat_session_service import ChatSessionService
@@ -85,6 +89,15 @@ async def agent_chat_impl(
         owner_id=str(getattr(request.state, "owner_id", "admin")),
     )
 
+    # The current chat UI has one integrated execution timeline.  It does not
+    # render legacy assistant-ui tool cards, so a reconnect must not replay a
+    # second copy of every tool payload into the client-side message store.
+    # Older/third-party clients retain the full assistant-stream contract.
+    timeline_presentation = body.get("stream_presentation") == "timeline"
+
+    def stream_for_client(source: Any):
+        return timeline_presentation_stream(source) if timeline_presentation else source
+
     # Resume is an attachment operation, not a new model request.  It must not
     # require the current model configuration and must never create a new blank
     # conversation when a stale/invalid id is supplied.
@@ -104,7 +117,7 @@ async def agent_chat_impl(
             replay_from = max(0, int(body.get("after_chunk_index") or 0))
         except (TypeError, ValueError):
             replay_from = 0
-        if active_run is not None:
+        if active_run is not None and active_run.is_running:
             durable_run = await asyncio.to_thread(
                 db_manager.get_agent_run,
                 run_id=active_run.run_id,
@@ -118,13 +131,29 @@ async def agent_chat_impl(
             )
             if durable_run is not None:
                 return DataStreamResponse(
-                    durable_subscriber_stream(
+                    stream_for_client(durable_subscriber_stream(
                         db_manager,
                         durable_run,
                         replay_from=replay_from,
-                    )
+                    ))
                 )
-            return DataStreamResponse(subscriber_stream(active_run, replay_from=replay_from))
+            return DataStreamResponse(
+                stream_for_client(subscriber_stream(active_run, replay_from=replay_from))
+            )
+        if active_run is not None:
+            # Keep a retained terminal handle authoritative over a briefly
+            # stale durable row. A completed/failed local run must never be
+            # attached as though it were still generating.
+            logger.info(
+                "[Agent] chat resume rejected terminal run_id=%s conversation_id=%s status=%s",
+                active_run.run_id,
+                conversation_id,
+                active_run.status,
+            )
+            return JSONResponse(
+                status_code=409,
+                content={"error": "run_not_active", "conversation_id": conversation_id},
+            )
         durable_run = await asyncio.to_thread(
             db_manager.get_agent_run,
             conversation_id=conversation_id,
@@ -133,12 +162,6 @@ async def agent_chat_impl(
             "queued",
             "running",
             "recovering",
-            "interrupted",
-            "completed",
-            "partial",
-            "failed",
-            "cancelled",
-            "blocked",
         }:
             logger.info(
                 "[Agent] durable resume run_id=%s conversation_id=%s from chunk %s status=%s",
@@ -148,11 +171,11 @@ async def agent_chat_impl(
                 durable_run.get("status"),
             )
             return DataStreamResponse(
-                durable_subscriber_stream(
+                stream_for_client(durable_subscriber_stream(
                     db_manager,
                     durable_run,
                     replay_from=replay_from,
-                )
+                ))
             )
         logger.info("[Agent] chat resume requested but no durable run for %s", conversation_id)
         return JSONResponse(
@@ -200,7 +223,7 @@ async def agent_chat_impl(
             max_active_runs=limits.max_active_runs,
             max_owner_active_runs=limits.max_active_runs_per_owner,
             request_payload={
-                "engine": "langgraph",
+                "engine": "langgraph_agent_loop",
                 "body": body,
                 "messages": list(messages),
                 "conversation_id": conv_id,
@@ -279,7 +302,7 @@ async def agent_chat_impl(
         await active_run_registry.mark_done(conv_id, "failed", error="run_start_failed")
         logger.exception("[Agent] failed to start run_id=%s", run.run_id)
         raise HTTPException(status_code=500, detail="AI 助手任务启动失败，请重试") from exc
-    return DataStreamResponse(subscriber_stream(run, first_queue))
+    return DataStreamResponse(stream_for_client(subscriber_stream(run, first_queue)))
 
 
 __all__ = ["agent_chat_impl"]

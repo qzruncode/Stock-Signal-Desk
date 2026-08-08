@@ -19,7 +19,6 @@ from urllib.parse import urlencode
 import httpx
 
 from src.tools._firecrawl import firecrawl_rest_config
-from src.tools.base import ToolSpec, object_schema
 
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
@@ -481,64 +480,3 @@ def websearch(
         "content_requested": bool(include_content),
         "content_result_count": sum(bool(item.get("content_text")) for item in compacted),
     }
-
-
-def _execute(
-    query: str,
-    numResults: int = 8,
-    livecrawl: str = "fallback",
-    type: str = "auto",
-    contextMaxCharacters: int | None = None,
-    sessionId: str = "",
-    includeContent: bool = False,
-) -> dict[str, Any]:
-    return websearch(
-        query=query,
-        num_results=numResults,
-        livecrawl=livecrawl,
-        search_type=type,
-        context_max_characters=contextMaxCharacters,
-        session_id=sessionId,
-        include_content=includeContent,
-    )
-
-
-TOOL = ToolSpec(
-    name="websearch",
-    description=WEBSEARCH_DESCRIPTION,
-    parameters=object_schema(
-        {
-            "query": {"type": "string", "description": "原样发送给搜索引擎的查询内容"},
-            "numResults": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 20,
-                "default": 8,
-            },
-            "livecrawl": {
-                "type": "string",
-                "enum": ["fallback", "preferred"],
-                "default": "fallback",
-            },
-            "type": {
-                "type": "string",
-                "enum": ["auto", "fast", "deep"],
-                "default": "auto",
-            },
-            "contextMaxCharacters": {
-                "type": "integer",
-                "minimum": 1000,
-                "maximum": 50000,
-                "default": 12000,
-            },
-            "includeContent": {
-                "type": "boolean",
-                "default": False,
-                "description": "是否让本地 Firecrawl 在搜索时同步抓取结果页正文",
-            },
-        },
-        ["query"],
-    ),
-    executor=_execute,
-    category="search",
-)

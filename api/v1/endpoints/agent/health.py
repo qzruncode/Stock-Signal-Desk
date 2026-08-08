@@ -28,7 +28,6 @@ from src.agent.runtime_safety import (
 from src.auth import is_auth_enabled
 from src.storage import DatabaseManager
 from src.tools.registry import ToolRegistry
-from src.tools.process_runner import execute_tool_isolated
 from src.storage.migrations import SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -78,17 +77,19 @@ async def _live_dependency_probe() -> Dict[str, Any]:
             "error": type(exc).__name__,
         }
 
+    # A generic Agent has many optional data sources.  Probing one named
+    # provider here would turn an unrelated upstream outage into a false
+    # runtime-health failure and hard-code a domain-specific dependency into
+    # the control plane.  Individual source availability is observed by the
+    # action executor and reflected into the next plan instead.
     try:
-        result = await asyncio.to_thread(
-            execute_tool_isolated,
-            "get_market_status",
-            {},
-        )
-        checks["market_data"] = {
-            "ok": isinstance(result, dict) and result.get("success") is not False,
+        tool_count = len(_health_registry.get_tool_names())
+        checks["tool_catalog"] = {
+            "ok": tool_count > 0,
+            "registered": tool_count,
         }
     except Exception as exc:
-        checks["market_data"] = {
+        checks["tool_catalog"] = {
             "ok": False,
             "error": type(exc).__name__,
         }
@@ -164,7 +165,7 @@ async def agent_readiness(
         "production": is_production_environment(),
         "workers": configured_worker_count(),
         "auth_enabled": is_auth_enabled(),
-        "engine": "langgraph",
+        "engine": "langgraph_agent_loop",
         "checkpointer": agent_graph_runtime.backend,
         "graph_initialized": agent_graph_runtime.initialized,
         "issues": runtime_issues,
@@ -174,7 +175,7 @@ async def agent_readiness(
             "requests_per_minute": limits.requests_per_minute,
             "max_messages": limits.max_messages,
             "max_request_chars": limits.max_request_chars,
-            "max_plan_tool_calls": limits.max_plan_tool_calls,
+            "max_tool_calls": limits.max_tool_calls,
             "max_provider_calls": limits.max_provider_calls,
             "max_estimated_tokens": limits.max_estimated_tokens,
             "max_estimated_cost_micros": limits.max_estimated_cost_micros,
@@ -184,7 +185,7 @@ async def agent_readiness(
     checks["tools"] = {
         "ok": True,
         "registered": len(_health_registry.get_tool_names()),
-        "retrieval_catalog": agent_graph_runtime.catalog.size,
+        "operation_directory": agent_graph_runtime.catalog.size,
     }
     # Readiness stays shallow by default. Coupling pod admission to an
     # optional market/model dependency would evict every healthy worker during

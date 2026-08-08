@@ -1,11 +1,15 @@
-"""Explain the datasets maintained automatically for Agent analysis."""
+"""Legacy aggregate maintenance dashboard helper.
+
+It intentionally is not an Agent tool: one dashboard response combines several
+unrelated local datasets and maintenance jobs, so it cannot be represented as
+a single atomic observation in the model catalog.
+"""
 
 from __future__ import annotations
 
 from typing import Any
 
 from src.services.data_maintenance import get_data_health as _get_health
-from src.tools.base import ToolSpec, object_schema
 
 
 def get_data_health() -> dict[str, Any]:
@@ -27,14 +31,4 @@ def get_data_health() -> dict[str, Any]:
         "warnings": warnings,
     }
 
-
-TOOL = ToolSpec(
-    name="get_data_health",
-    description="查看助手自动维护的股票池、K线和财务数据覆盖率、数据时间及最近维护任务。",
-    parameters=object_schema(),
-    executor=get_data_health,
-    category="data",
-)
-
-
-__all__ = ["TOOL", "get_data_health"]
+__all__ = ["get_data_health"]

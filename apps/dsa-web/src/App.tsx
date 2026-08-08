@@ -1,7 +1,7 @@
 import type React from 'react';
 import { Suspense, useEffect } from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import { ApiErrorAlert, Shell } from './components/common';
+import { Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { scheduleIdlePreload } from './utils/routePreload';
 import {
@@ -20,7 +20,7 @@ const PageFallback: React.FC = () => (
 
 const AppContent: React.FC = () => {
   const location = useLocation();
-  const { isLoading, loadError, refreshStatus } = useAuth();
+  const { isLoading, loadError } = useAuth();
 
   useEffect(() => {
     if (!isLoading && !loadError) {
@@ -32,23 +32,6 @@ const AppContent: React.FC = () => {
     return (
       <div className="flex min-h-screen items-center justify-center bg-base">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
-      </div>
-    );
-  }
-
-  if (loadError) {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-base px-4">
-        <div className="w-full max-w-lg">
-          <ApiErrorAlert error={loadError} />
-        </div>
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => void refreshStatus()}
-        >
-          重试
-        </button>
       </div>
     );
   }

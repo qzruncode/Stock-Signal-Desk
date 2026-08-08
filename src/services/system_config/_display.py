@@ -3,23 +3,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict
 
 
 class DisplayMixin:
     """Map raw env values into user-facing display values."""
 
-    _DISPLAY_KEY_ALIASES: Dict[str, Tuple[str, ...]] = {
-        "AGENT_SKILL_DIR": ("AGENT_SKILL_DIR", "AGENT_STRATEGY_DIR"),
-        "AGENT_SKILL_AUTOWEIGHT": ("AGENT_SKILL_AUTOWEIGHT", "AGENT_STRATEGY_AUTOWEIGHT"),
-        "AGENT_SKILL_ROUTING": ("AGENT_SKILL_ROUTING", "AGENT_STRATEGY_ROUTING"),
-    }
-    _DISPLAY_VALUE_ALIASES: Dict[str, Dict[str, str]] = {
-        "AGENT_ORCHESTRATOR_MODE": {
-            "strategy": "specialist",
-            "skill": "specialist",
-        }
-    }
+    _DISPLAY_KEY_ALIASES: Dict[str, tuple[str, ...]] = {}
+    _DISPLAY_VALUE_ALIASES: Dict[str, Dict[str, str]] = {}
 
     @classmethod
     def _normalize_display_value(cls, key: str, value: str) -> str:
@@ -48,7 +39,7 @@ class DisplayMixin:
                 )
                 continue
 
-            selected_value: Optional[str] = None
+            selected_value: str | None = None
             candidate_seen = False
             for candidate_key in candidates[1:]:
                 if candidate_key not in raw_upper:

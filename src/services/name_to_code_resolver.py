@@ -147,21 +147,14 @@ def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
         return None
 
 
-def resolve_name_to_code(name: str) -> Optional[str]:
-    """
-    Resolve stock name to code.
+def resolve_local_name_to_code(name: str) -> Optional[str]:
+    """Resolve one security identity from code and maintained local indexes only.
 
-    Strategy (in order):
-    1. If input looks like a code (5-6 digits or 1-5 letters), return it normalized.
-    2. Local STOCK_NAME_MAP reverse (exclude ambiguous names).
-    3. AkShare exact-name fallback (A-shares).
-    4. Return None.
-
-    Args:
-        name: Stock name or code string.
-
-    Returns:
-        Resolved stock code, or None if ambiguous/failed.
+    This is the identity-validation boundary for model-authored atomic tool
+    calls.  It must remain free of provider requests: if the local master does
+    not know a name, the graph can explicitly plan ``search_stocks`` or ask
+    for clarification instead of hiding a second data source inside the
+    requested source tool.
     """
     if not name or not isinstance(name, str):
         return None
@@ -185,6 +178,31 @@ def resolve_name_to_code(name: str) -> Optional[str]:
     database_reverse, _ = get_database_stock_indexes()
     if s in database_reverse:
         return database_reverse[s]
+
+    return None
+
+
+def resolve_name_to_code(name: str) -> Optional[str]:
+    """Resolve one security code, using a legacy online fallback when needed.
+
+    Non-Agent compatibility callers retain the historical exact AkShare
+    fallback.  LangGraph model tool dispatch uses ``resolve_local_name_to_code``
+    instead so a direct source action never performs a hidden identity lookup.
+    """
+    if not name or not isinstance(name, str):
+        return None
+    s = name.strip()
+    if not s:
+        return None
+
+    local = resolve_local_name_to_code(s)
+    if local:
+        return local
+
+    # Preserve the historical ambiguity rule.  An ambiguous static alias must
+    # never be "resolved" by a provider-side name lookup.
+    if s in _LOCAL_AMBIGUOUS_NAMES:
+        return None
 
     # Skip the A-share network identity refresh for non-CJK free text.
     if not _contains_cjk(s):

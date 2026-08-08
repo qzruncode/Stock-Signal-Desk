@@ -10,8 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.tools.registry import TOOL_MODULES, ToolRegistry
-from src.tools.base import enforce_result_contract
+from src.tools.base import ToolSpec, enforce_result_contract, object_schema
 
 
 class ToolRegistryModelFitnessTestCase(unittest.TestCase):
@@ -19,13 +20,33 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         registry = ToolRegistry()
         names = registry.get_tool_names()
 
-        self.assertEqual(len(names), len(TOOL_MODULES))
+        self.assertGreaterEqual(len(names), len(TOOL_MODULES))
         self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(
+            set(TOOL_MODULES),
+            {registry.get_tool_owner_module(name) for name in names},
+        )
 
-    def test_each_registered_tool_has_same_named_module(self) -> None:
+    def test_each_registered_tool_has_an_existing_owner_module(self) -> None:
         tools_dir = Path(__file__).parents[1] / "src" / "tools"
-        missing = [name for name in ToolRegistry().get_tool_names() if not (tools_dir / f"{name}.py").is_file()]
+        registry = ToolRegistry()
+        missing = [
+            name
+            for name in registry.get_tool_names()
+            if not (tools_dir / f"{registry.get_tool_owner_module(name)}.py").is_file()
+        ]
         self.assertEqual(missing, [])
+
+    def test_each_registered_tool_executor_is_owned_by_its_tool_module(self) -> None:
+        registry = ToolRegistry()
+        for name in registry.get_tool_names():
+            spec = registry.get_tool(name)
+            self.assertIsNotNone(spec)
+            self.assertEqual(
+                getattr(spec.executor, "__module__", None),
+                f"src.tools.{registry.get_tool_owner_module(name)}",
+                msg=name,
+            )
 
     def test_every_schema_property_is_accepted_by_its_executor(self) -> None:
         """Prevent model-visible camel/snake-case drift from failing at runtime."""
@@ -44,18 +65,18 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         registry = ToolRegistry()
         captured = {}
 
-        def fake_search_news(**kwargs):
+        def fake_company_news(**kwargs):
             captured.update(kwargs)
             return {"success": True, "errors": []}
 
-        original = registry._tools["search_news"]
-        registry._tools["search_news"] = replace(
+        original = registry._tools["read_company_news_akshare"]
+        registry._tools["read_company_news_akshare"] = replace(
             original,
-            executor=fake_search_news,
+            executor=fake_company_news,
         )
 
         registry.execute(
-            "search_news",
+            "read_company_news_akshare",
             {
                 "symbol": "600519",
                 "useCache": "false",
@@ -75,17 +96,18 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             "limit": "100",
         }
 
-        normalized = registry.normalize_arguments("search_news", arguments)
+        normalized = registry.normalize_arguments("read_company_news_akshare", arguments)
         self.assertEqual(normalized["days"], 365)
         self.assertEqual(normalized["limit"], 100)
         with self.assertRaises(ValueError):
-            registry.validate_arguments("search_news", arguments)
+            registry.validate_arguments("read_company_news_akshare", arguments)
 
     def test_registry_repairs_iso_dates_for_compact_date_schema(self) -> None:
         registry = ToolRegistry()
         normalized = registry.normalize_arguments(
-            "get_history_data",
+            "read_kline_range",
             {
+                "source_id": "eastmoney",
                 "symbol": "600519",
                 "startDate": "2026-01-01",
                 "endDate": "2026/07/17",
@@ -98,17 +120,17 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
     def test_registry_does_not_guess_human_readable_sector_flow_enums(self) -> None:
         registry = ToolRegistry()
         normalized = registry.normalize_arguments(
-            "get_sector_flow",
+            "read_sector_flow_eastmoney",
             {
                 "type": "行业板块",
                 "period": "近5日",
-                "top_n": "10",
+                "max_items": "10",
             },
         )
 
         self.assertEqual(normalized["type"], "行业板块")
         self.assertEqual(normalized["period"], "近5日")
-        self.assertEqual(normalized["top_n"], 10)
+        self.assertEqual(normalized["max_items"], 10)
 
     def test_all_tool_schemas_are_closed_and_described(self) -> None:
         for schema in ToolRegistry().get_all_schemas():
@@ -118,28 +140,86 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             self.assertEqual(parameters["type"], "object", msg=function["name"])
             self.assertIs(parameters["additionalProperties"], False, msg=function["name"])
 
-    def test_get_stock_info_resolves_name_before_data_calls(self) -> None:
+    def test_atomic_tool_schema_allows_only_declared_source_catalog_selection(self) -> None:
+        for spec in ToolRegistry()._tools.values():
+            fields = set(spec.model_parameters().get("properties") or {})
+            self.assertFalse(
+                fields
+                & {
+                    "action",
+                    "operation",
+                    "workflow",
+                    "capability",
+                    "tool",
+                    "tool_name",
+                    "provider",
+                    "source",
+                    "route_path",
+                    "namespace",
+                    "params",
+                    "fallback",
+                },
+                msg=spec.name,
+            )
+            if "source_id" in fields:
+                self.assertTrue(spec.source_catalog, msg=spec.name)
+            else:
+                self.assertFalse(spec.source_catalog, msg=spec.name)
+
+        with self.assertRaisesRegex(ValueError, "operation or source selector"):
+            ToolSpec(
+                name="invalid_source_switcher",
+                description="不应允许模型选择来源",
+                parameters=object_schema({"provider": {"type": "string"}}),
+                executor=lambda **_kwargs: {"success": True},
+            )
+        with self.assertRaisesRegex(ValueError, "source_id without a declared source_catalog"):
+            ToolSpec(
+                name="undeclared_source_id",
+                description="不应允许未声明目录的来源选择",
+                parameters=object_schema({"source_id": {"type": "string"}}),
+                executor=lambda **_kwargs: {"success": True},
+            )
+
+    def test_atomic_company_profile_read_uses_local_identity_without_provider_fallback(self) -> None:
         registry = ToolRegistry()
 
         with (
-            patch("src.services.name_to_code_resolver.resolve_name_to_code", return_value="600519"),
-            patch("src.tools.get_stock_info._fetch_cninfo", return_value={"A股简称": "贵州茅台"}),
             patch(
-                "src.tools.get_stock_info._fetch_eastmoney_capital",
-                return_value={"symbol": "600519", "market_code": "sh"},
+                "src.services.name_to_code_resolver.resolve_local_name_to_code",
+                return_value="600519",
+            ) as local_resolver,
+            patch(
+                "src.services.name_to_code_resolver.resolve_name_to_code",
+                side_effect=AssertionError("atomic source reads must not call the legacy resolver"),
             ),
+            patch(
+                "src.tools.get_stock_info.cached_call",
+                side_effect=lambda _key, loader, **_kwargs: (loader(), False),
+            ),
+            patch("src.tools.get_stock_info._fetch_cninfo", return_value={"A股简称": "贵州茅台"}),
         ):
-            result = registry.execute("get_stock_info", {"symbol": "贵州茅台"})
+            result = registry.execute(
+                "read_company_profile_cninfo",
+                {"symbol": "贵州茅台"},
+            )
 
+        local_resolver.assert_called_once_with("贵州茅台")
         self.assertEqual(result["symbol"], "600519")
         self.assertEqual(result["short_name"], "贵州茅台")
 
-    def test_realtime_quotes_resolves_each_symbol_in_csv(self) -> None:
-        calls: list[list[str]] = []
+    def test_direct_realtime_quote_resolves_one_symbol_without_fallback(self) -> None:
+        calls: list[str] = []
 
-        def fake_get_realtime_quotes(symbols: list[str]):
-            calls.append(list(symbols))
-            return {"success": True, "symbols": list(symbols), "errors": []}
+        def fake_quote(symbol: str) -> UnifiedRealtimeQuote:
+            calls.append(symbol)
+            return UnifiedRealtimeQuote(
+                code=symbol,
+                name="贵州茅台",
+                source=RealtimeSource.EASTMONEY_PUSH,
+                trade_time="2026-08-08T14:30:00+08:00",
+                price=1500.0,
+            )
 
         registry = ToolRegistry()
 
@@ -147,23 +227,38 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             return {"贵州茅台": "600519", "宁德时代": "300750"}.get(value, value)
 
         with (
-            patch("src.tools.get_realtime_quotes.get_realtime_quotes", side_effect=fake_get_realtime_quotes),
-            patch("src.services.name_to_code_resolver.resolve_name_to_code", side_effect=resolver),
+            patch(
+                "src.services.name_to_code_resolver.resolve_local_name_to_code",
+                side_effect=resolver,
+            ) as local_resolver,
+            patch(
+                "src.services.name_to_code_resolver.resolve_name_to_code",
+                side_effect=AssertionError("atomic source reads must not call the legacy resolver"),
+            ),
+            patch.dict(
+                "src.tools.realtime_quote_source_tools._SOURCES",
+                {"eastmoney_push": ("测试来源", "test_quote", fake_quote)},
+            ),
         ):
-            result = registry.execute("get_realtime_quotes", {"symbols": "贵州茅台,宁德时代"})
+            result = registry.execute(
+                "read_realtime_quote",
+                {"source_id": "eastmoney_push", "symbol": "贵州茅台"},
+            )
 
-        self.assertEqual(calls, [["600519", "300750"]])
-        self.assertEqual(result["symbols"], ["600519", "300750"])
+        self.assertEqual(calls, ["600519"])
+        self.assertEqual(result["items"][0]["code"], "600519")
+        self.assertFalse(result["fallback_used"])
+        local_resolver.assert_called_once_with("贵州茅台")
 
     def test_schema_defaults_are_tightened_for_heavy_tools(self) -> None:
         registry = ToolRegistry()
         schemas = {item["function"]["name"]: item["function"]["parameters"] for item in registry.get_all_schemas()}
 
-        self.assertEqual(schemas["get_kline"]["properties"]["count"]["default"], 60)
-        self.assertEqual(schemas["get_financials"]["properties"]["periods"]["default"], 6)
+        self.assertEqual(schemas["read_recent_kline"]["properties"]["count"]["default"], 60)
+        self.assertEqual(schemas["read_core_financial_indicators_ths"]["properties"]["periods"]["default"], 6)
         self.assertEqual(schemas["get_balance_sheet"]["properties"]["periods"]["default"], 4)
-        self.assertEqual(schemas["search_news"]["properties"]["days"]["default"], 30)
-        self.assertEqual(schemas["get_research_report"]["properties"]["days"]["default"], 365)
+        self.assertEqual(schemas["read_company_news_akshare"]["properties"]["days"]["default"], 30)
+        self.assertEqual(schemas["read_company_research_reports_akshare"]["properties"]["days"]["default"], 365)
 
     def test_removed_search_fallback_tools_are_not_registered(self) -> None:
         registry = ToolRegistry()
@@ -193,10 +288,42 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         names = set(registry.get_tool_names())
 
         self.assertNotIn("get_risk_events", names)
-        self.assertIn("get_announcements", names)
-        self.assertIn("search_news", names)
+        self.assertNotIn("get_announcements", names)
+        self.assertIn("read_company_news_akshare", names)
+        self.assertIn("read_company_announcements_akshare", names)
 
-    def test_rss_exposes_dynamic_catalog_and_text_resource_tools(self) -> None:
+    def test_model_catalog_excludes_multiplexed_status_and_notification_adapters(self) -> None:
+        names = set(ToolRegistry().get_tool_names())
+
+        self.assertTrue(
+            {
+                "read_analysis_task",
+                "list_analysis_tasks",
+                "send_custom_notification",
+            }.issubset(names)
+        )
+        self.assertTrue(
+            {
+                "get_analysis_status",
+                "send_notification",
+                "send_batch_run_notification",
+            }.isdisjoint(names)
+        )
+
+    def test_single_operation_schemas_do_not_hide_report_lookup_or_schedule_fallback(self) -> None:
+        registry = ToolRegistry()
+        notification = registry.get_tool("send_custom_notification")
+        schedule = registry.get_tool("update_analysis_schedule")
+
+        self.assertIsNotNone(notification)
+        self.assertIsNotNone(schedule)
+        notification_fields = set(notification.model_parameters()["properties"])
+        self.assertEqual(notification_fields, {"message", "title"})
+        self.assertNotIn("confirmed", notification_fields)
+        schedule_schema = schedule.model_parameters()
+        self.assertIn("prompt_template_id", schedule_schema["required"])
+
+    def test_rss_exposes_generic_operations_and_complete_source_catalog(self) -> None:
         names = set(ToolRegistry().get_tool_names())
 
         self.assertNotIn("search_financial_news", names)
@@ -204,23 +331,50 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertNotIn("get_regulatory_updates", names)
         self.assertNotIn("get_monetary_policy_operations", names)
         self.assertNotIn("list_rss_sources", names)
-        self.assertIn("discover_rss_sources", names)
-        self.assertIn("inspect_rss_source", names)
-        self.assertIn("read_rss_feed", names)
+        self.assertNotIn("discover_rss_sources", names)
+        self.assertNotIn("inspect_rss_source", names)
+        self.assertNotIn("read_rss_feed", names)
+        self.assertIn("read_rss_source", names)
+        self.assertIn("list_rss_source_catalog", names)
         self.assertIn("read_rss_item", names)
         self.assertIn("read_text_document", names)
-        self.assertIn("export_rss_feed", names)
+        self.assertNotIn("export_rss_feed", names)
+        source_spec = ToolRegistry().get_tool("read_rss_source")
+        self.assertIsNotNone(source_spec)
+        assert source_spec is not None
+        self.assertEqual(len(source_spec.source_catalog), 47)
+        self.assertIn(
+            "cls_telegraph",
+            {str(item["id"]) for item in source_spec.source_catalog},
+        )
 
-    def test_professional_stock_tools_are_registered(self) -> None:
+    def test_professional_stock_tools_are_source_level_reads(self) -> None:
         names = set(ToolRegistry().get_tool_names())
         expected = {
-            "get_business_segments",
-            "get_consensus_estimates",
-            "get_peer_comparison",
-            "get_stock_capital_flow",
-            "get_technical_indicators",
+            "read_business_segments_eastmoney",
+            "read_sector_flow_eastmoney",
+            "read_bond_yield_eastmoney",
+            "read_macro_indicator_akshare",
+            "read_consensus_metric_ths",
+            "read_peer_comparison_dimension_eastmoney",
+            "read_stock_capital_flow_history_eastmoney",
+            "calculate_technical_indicator",
         }
         self.assertTrue(expected.issubset(names))
+        self.assertTrue(
+            {
+                "get_financials",
+                "get_valuation_ratios",
+                "get_stock_capital_flow",
+                "get_market_status",
+                "get_market_breadth",
+                "get_index_data",
+                "get_realtime_quotes",
+                "get_kline",
+                "get_history_data",
+                "get_technical_indicators",
+            }.isdisjoint(names)
+        )
 
     def test_composite_quantitative_screen_is_not_model_callable(self) -> None:
         registry = ToolRegistry()
@@ -263,34 +417,52 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         """The Agent must never infer acquisition success from an arbitrary payload shape."""
         registry = ToolRegistry()
 
+        def fake_quote(symbol: str) -> UnifiedRealtimeQuote:
+            return UnifiedRealtimeQuote(
+                code=symbol,
+                source=RealtimeSource.EASTMONEY_PUSH,
+                trade_time="2026-07-16T14:30:00+08:00",
+                price=1500.0,
+            )
+
+        with patch.dict(
+            "src.tools.realtime_quote_source_tools._SOURCES",
+            {"eastmoney_push": ("测试来源", "test_quote", fake_quote)},
+        ):
+            quote = registry.execute(
+                "read_realtime_quote",
+                {"source_id": "eastmoney_push", "symbol": "600519"},
+            )
         with patch(
-            "src.tools.get_realtime_quotes.get_realtime_quotes",
-            return_value={"success": True, "partial": False, "items": [{"code": "600519"}]},
+            "src.tools.source_operations._read_kline_source",
+            return_value={
+                "success": True,
+                "partial": False,
+                "symbol": "600519",
+                "data": [{"date": "2026-07-16", "close": 1500.0}],
+                "errors": [],
+                "warnings": [],
+            },
         ):
-            quote = registry.execute("get_realtime_quotes", {"symbols": "600519"})
-        with (
-            patch(
-                "src.tools._kline.fetch_and_persist_kline",
-                return_value=([{"date": "2026-07-16", "close": 1500.0}], "eastmoney"),
-            ),
-            patch("src.tools._kline._expected_latest_kline_date", return_value=datetime(2026, 7, 16).date()),
-        ):
-            kline = registry.execute("get_kline", {"symbol": "600519", "count": 20})
-        original_flow = registry._tools["get_sector_flow"]
-        registry._tools["get_sector_flow"] = replace(
+            kline = registry.execute(
+                "read_recent_kline",
+                {"source_id": "eastmoney", "symbol": "600519", "count": 20},
+            )
+        original_flow = registry._tools["read_sector_flow_eastmoney"]
+        registry._tools["read_sector_flow_eastmoney"] = replace(
             original_flow,
             executor=lambda **_kwargs: {
                 "success": True,
                 "partial": False,
-                "records": [{"name": "白酒", "sector_code": "BK0477"}],
+                "items": [{"name": "白酒", "sector_code": "BK0477"}],
                 "errors": [],
                 "warnings": [],
                 "freshness_unknown": True,
             },
         )
         sectors = registry.execute(
-            "get_sector_flow",
-            {"type": "industry", "period": "today", "top_n": 10},
+            "read_sector_flow_eastmoney",
+            {"type": "industry", "period": "today", "max_items": 10},
         )
 
         for result in (quote, kline, sectors):

@@ -126,7 +126,7 @@ def _request_page(params: dict[str, Any], page: int) -> tuple[list[dict[str, Any
     raise RuntimeError(f"东方财富板块资金流第 {page} 页失败: {last_error}")
 
 
-def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
+def _source_params(type: str, period: str, *, page_size: int = 100) -> dict[str, Any]:
     config = _PERIODS[period]
     fields = {
         "f2",
@@ -147,8 +147,8 @@ def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
         config["leader"],
         config["leader_code"],
     }
-    params = {
-        "pz": 100,
+    return {
+        "pz": max(1, min(int(page_size), 100)),
         "po": 1,
         "np": 1,
         "ut": "b2884a393a59ad64002292a3e90d46a5",
@@ -160,20 +160,13 @@ def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
         "stat": config["stat"],
         "fields": ",".join(sorted(fields)),
     }
-    first, total = _request_page(params, 1)
-    pages = max(1, math.ceil(total / 100))
-    raw_rows = list(first)
-    if pages > 1:
-        with ThreadPoolExecutor(max_workers=min(4, pages - 1)) as pool:
-            futures = {pool.submit(_request_page, params, page): page for page in range(2, pages + 1)}
-            page_rows: dict[int, list[dict[str, Any]]] = {}
-            for future in as_completed(futures):
-                page = futures[future]
-                rows, _ = future.result()
-                page_rows[page] = rows
-        for page in range(2, pages + 1):
-            raw_rows.extend(page_rows.get(page, []))
 
+
+def _normalize_source_rows(
+    raw_rows: list[dict[str, Any]],
+    period: str,
+) -> list[dict[str, Any]]:
+    config = _PERIODS[period]
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw in raw_rows:
@@ -206,6 +199,26 @@ def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
                 "data_time": datetime.fromtimestamp(timestamp).astimezone().isoformat() if timestamp else None,
             }
         )
+    return records
+
+
+def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
+    params = _source_params(type, period)
+    first, total = _request_page(params, 1)
+    pages = max(1, math.ceil(total / 100))
+    raw_rows = list(first)
+    if pages > 1:
+        with ThreadPoolExecutor(max_workers=min(4, pages - 1)) as pool:
+            futures = {pool.submit(_request_page, params, page): page for page in range(2, pages + 1)}
+            page_rows: dict[int, list[dict[str, Any]]] = {}
+            for future in as_completed(futures):
+                page = futures[future]
+                rows, _ = future.result()
+                page_rows[page] = rows
+        for page in range(2, pages + 1):
+            raw_rows.extend(page_rows.get(page, []))
+
+    records = _normalize_source_rows(raw_rows, period)
     records.sort(
         key=lambda item: item.get("main_net_inflow") if item.get("main_net_inflow") is not None else -math.inf,
         reverse=True,
@@ -213,6 +226,12 @@ def _fetch_all(type: str, period: str) -> list[dict[str, Any]]:
     for rank, record in enumerate(records, 1):
         record["main_flow_rank"] = rank
     return records
+
+
+def _fetch_source_page(type: str, period: str, max_items: int) -> list[dict[str, Any]]:
+    """Read one provider page and preserve the provider's response order."""
+    rows, _ = _request_page(_source_params(type, period, page_size=max_items), 1)
+    return _normalize_source_rows(rows, period)[:max_items]
 
 
 def _freshness(data_time: str | None, now: datetime) -> tuple[bool | None, str | None]:
@@ -300,35 +319,108 @@ def get_sector_flow(type: str = "industry", top_n: int = 10, period: str = "toda
     }
 
 
-TOOL = ToolSpec(
-    name="get_sector_flow",
-    description=(
-        "获取A股行业或概念板块在今日、近5日或近10日的真实资金流排名，返回主力、"
-        "超大单、大单、中单和小单净流入及占比、板块涨跌幅和领涨股。"
+def read_sector_flow_eastmoney(
+    type: str = "industry",
+    period: str = "today",
+    max_items: int = 50,
+) -> dict[str, Any]:
+    """Read one Eastmoney sector-flow page without computing ranks or top lists."""
+    type = str(type).strip().lower()
+    period = str(period).strip().lower()
+    if type not in {"industry", "concept"}:
+        raise ValueError("type 仅支持 industry 或 concept")
+    if period not in _PERIODS:
+        raise ValueError("period 仅支持 today、5d 或 10d")
+    max_items = max(1, min(int(max_items), 100))
+    now = datetime.now().astimezone()
+    ttl = 75 if is_trading_time(now) else 30 * 60
+    errors: list[str] = []
+    try:
+        records, cached = cached_call(
+            f"sector-flow:eastmoney:source:v1:{type}:{period}:{max_items}",
+            lambda: _fetch_source_page(type, period, max_items),
+            ttl_seconds=ttl,
+            attempts=1,
+        )
+    except Exception as exc:
+        records, cached = [], False
+        errors.append(str(exc))
+
+    valid = [record for record in records if record.get("main_net_inflow") is not None]
+    data_times = [str(record["data_time"]) for record in records if record.get("data_time")]
+    data_time = max(data_times) if data_times else None
+    is_stale, warning = _freshness(data_time, now)
+    warnings = [warning] if warning else []
+    if records and not valid:
+        errors.append("上游返回了板块行情，但没有有效主力净流入字段")
+    return {
+        "type": type,
+        "period": period,
+        "period_label": _PERIODS[period]["label"],
+        "requested_max_items": max_items,
+        "items": records,
+        "item_count": len(records),
+        "source_order": "东方财富本次接口响应顺序；本工具未计算排名或筛选流入/流出列表",
+        "amount_unit": "元",
+        "ratio_unit": "%",
+        "price_unit": "人民币元",
+        "main_flow_definition": "主力净流入=超大单净流入+大单净流入（东方财富口径）",
+        "source": "东方财富板块资金流（AKShare 同源公开接口）",
+        "source_url": "https://data.eastmoney.com/bkzj/",
+        "source_scope": "sector_flow_source_records",
+        "success": bool(valid),
+        "partial": False,
+        "errors": errors,
+        "warnings": warnings,
+        "data_time": data_time,
+        "is_stale": is_stale if valid else None,
+        "freshness_unknown": is_stale is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_sector_flow_eastmoney",
+        description=(
+            "从东方财富读取 A 股行业或概念板块在指定周期的单页资金流原始记录，包含主力、"
+            "超大单、大单、中单和小单净流入及占比、板块涨跌幅和来源提供的领涨股字段。"
+            "保持数据源响应顺序，不计算板块排名、流入榜、流出榜或市场结论。"
+        ),
+        parameters=object_schema(
+            {
+                "type": {
+                    "type": "string",
+                    "enum": ["industry", "concept"],
+                    "default": "industry",
+                    "description": "板块类型",
+                },
+                "period": {
+                    "type": "string",
+                    "enum": ["today", "5d", "10d"],
+                    "default": "today",
+                    "description": "资金流统计周期",
+                },
+                "max_items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 50,
+                    "description": "返回的来源记录上限；保持来源响应顺序",
+                },
+            }
+        ),
+        executor=read_sector_flow_eastmoney,
+        category="market",
     ),
-    parameters=object_schema(
-        {
-            "type": {
-                "type": "string",
-                "enum": ["industry", "concept"],
-                "default": "industry",
-                "description": "板块类型",
-            },
-            "period": {
-                "type": "string",
-                "enum": ["today", "5d", "10d"],
-                "default": "today",
-                "description": "资金流统计周期",
-            },
-            "top_n": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 30,
-                "default": 10,
-                "description": "净流入和净流出各返回数量",
-            },
-        }
-    ),
-    executor=get_sector_flow,
-    category="market",
 )
+
+
+__all__ = [
+    "TOOLS",
+    "_fetch_all",
+    "get_sector_flow",
+    "read_sector_flow_eastmoney",
+]

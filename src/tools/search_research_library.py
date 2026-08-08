@@ -170,7 +170,6 @@ def search_research_library(
                 detail = read_rss_item(
                     item_ref=item.get("item_ref") or {},
                     item=item,
-                    include_documents=True,
                 )
                 item["content_text"] = detail.get("content_text") or item["summary"]
                 item["content_chunks"] = detail.get("content_chunks") or []

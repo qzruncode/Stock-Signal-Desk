@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 import httpx
 
-from src.tools._akshare import bare_symbol, cached_call, exchange_prefix
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, exchange_prefix
 from src.tools.base import ToolSpec, object_schema
 
 _URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
@@ -280,6 +280,7 @@ def _dimension_result(code: str, dimension: str, rows: list[dict[str, Any]]) -> 
 
 
 def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
+    """Legacy multi-dimension convenience view for non-Agent callers only."""
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")
@@ -352,21 +353,84 @@ def get_peer_comparison(symbol: str, dimension: str = "all") -> dict[str, Any]:
     }
 
 
-TOOL = ToolSpec(
-    name="get_peer_comparison",
-    description=DESCRIPTION,
-    parameters=object_schema(
+def read_peer_comparison_dimension_eastmoney(
+    symbol: str,
+    dimension: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one Eastmoney peer-comparison report dimension."""
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    if dimension not in _REPORTS:
+        raise ValueError("dimension 必须是 growth、valuation、profitability 或 scale")
+    rows, cached = (
+        cached_call(
+            f"peer:v3:{code}:{dimension}",
+            lambda: _request_rows(code, dimension),
+            ttl_seconds=2 * 3600,
+            attempts=2,
+        )
+        if use_cache
+        else (_request_rows(code, dimension), False)
+    )
+    result = _dimension_result(code, dimension, rows)
+    report_date = result.get("report_date")
+    now = datetime.now().astimezone()
+    expected_annual = date(now.year - 1, 12, 31) if now.month >= 5 else date(now.year - 2, 12, 31)
+    result.update(
         {
-            "symbol": {"type": "string", "description": "股票代码或股票名称"},
-            "dimension": {
-                "type": "string",
-                "enum": ["all", "growth", "valuation", "profitability", "scale"],
-                "default": "all",
-                "description": "比较维度：成长性、估值、杜邦盈利能力、规模或全部",
+            "symbol": code,
+            "dimension": dimension,
+            "amount_unit": "元",
+            "ratio_unit": "% 或 倍，详见字段名后缀与 ranking.metric",
+            "source": "东方财富同行比较公开接口",
+            "source_url": (
+                "https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html"
+                f"?type=web&code={exchange_prefix(code, upper=True)}#/thbj"
+            ),
+            "source_scope": f"peer_comparison_{dimension}",
+            "partial": False,
+            "errors": [],
+            "warnings": [],
+            "data_time": report_date,
+            "freshness_unknown": report_date is None,
+            "is_stale": (
+                datetime.fromisoformat(report_date).date() < expected_annual
+                if report_date
+                else None
+            ),
+            "fallback_used": False,
+            "_cached": cached,
+            "_fetched_at": now.isoformat(),
+        }
+    )
+    return result
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_peer_comparison_dimension_eastmoney",
+        description=(
+            "从东方财富读取一只 A 股在一个明确同行比较维度上的原始对标数据。"
+            "dimension 必须明确选择成长、估值、盈利能力或规模；不并发读取其他维度，也不输出综合评分。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "股票代码或股票名称"},
+                "dimension": {
+                    "type": "string",
+                    "enum": ["growth", "valuation", "profitability", "scale"],
+                    "description": "同行比较维度",
+                },
             },
-        },
-        ["symbol"],
+            ["symbol", "dimension"],
+        ),
+        executor=read_peer_comparison_dimension_eastmoney,
+        category="analysis",
     ),
-    executor=get_peer_comparison,
-    category="analysis",
 )
+
+
+__all__ = ["TOOLS", "get_peer_comparison", "read_peer_comparison_dimension_eastmoney"]

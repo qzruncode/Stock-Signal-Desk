@@ -8,8 +8,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 
-from src.tools._akshare import bare_symbol, cached_call
-from src.tools._financial_data import fetch_core_indicators, get_financial_bundle
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call
+from src.tools._financial_data import (
+    _expected_min_report_date,
+    fetch_core_indicators,
+    get_financial_bundle,
+)
 from src.tools.base import ToolSpec, object_schema
 
 
@@ -145,19 +149,87 @@ def get_financials(symbol: str, periods: int = 6, *, use_cache: bool = True) -> 
     return result
 
 
-TOOL = ToolSpec(
-    name="get_financials",
-    description=(
-        "获取最近报告期的核心财务指标：单季度收入、归母及扣非净利润、现金流、增长率、利润率、"
-        "ROE、偿债能力、营运资产和每股指标；明确区分单季度流量与期末存量。"
+def read_core_financial_indicators_ths(
+    symbol: str,
+    periods: int = 6,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read the reported THS indicator table without merging other statements.
+
+    ``get_financials`` deliberately remains available to old HTTP services as
+    their convenience merger.  It is not model-callable: a planning model must
+    choose this source or one of the three statement reads explicitly.
+    """
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    limit = max(2, min(int(periods), 20))
+    items, cached = (
+        cached_call(
+            f"core-financial-indicators:ths:v1:{code}:{limit}",
+            lambda: fetch_core_indicators(code, limit),
+            ttl_seconds=6 * 3600,
+            attempts=2,
+        )
+        if use_cache
+        else (fetch_core_indicators(code, limit), False)
+    )
+    normalized = [dict(item) for item in items if isinstance(item, dict) and item.get("report_date")]
+    normalized.sort(key=lambda item: str(item["report_date"]))
+    latest_report = str(normalized[-1]["report_date"]) if normalized else None
+    now = datetime.now().astimezone()
+    return {
+        "symbol": code,
+        "requested_periods": limit,
+        "periods": len(normalized),
+        "items": normalized,
+        "amount_unit": "元",
+        "ratio_unit": "%",
+        "per_share_unit": "元/股",
+        "source": "同花顺财务摘要/AKShare",
+        "source_scope": "reported_core_financial_indicators",
+        "success": bool(normalized),
+        "partial": False,
+        "errors": [] if normalized else ["同花顺核心财务指标没有可用报告期"],
+        "warnings": [],
+        "data_time": latest_report,
+        "is_stale": (
+            datetime.fromisoformat(latest_report).date() < _expected_min_report_date(now.date())
+            if latest_report
+            else None
+        ),
+        "freshness_unknown": latest_report is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_core_financial_indicators_ths",
+        description=(
+            "从同花顺财务摘要（AKShare）读取一只 A 股的已披露核心指标；"
+            "返回该来源原始报告期指标，不合并东方财富三张报表，也不生成财务结论。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"},
+                "periods": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 20,
+                    "default": 6,
+                    "description": "最近报告期数量",
+                },
+            },
+            ["symbol"],
+        ),
+        executor=read_core_financial_indicators_ths,
+        category="financials",
     ),
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "股票代码或名称"},
-            "periods": {"type": "integer", "minimum": 2, "maximum": 20, "default": 6, "description": "最近报告期数量"},
-        },
-        ["symbol"],
-    ),
-    executor=get_financials,
-    category="financials",
 )
+
+
+__all__ = ["TOOLS", "get_financials", "read_core_financial_indicators_ths"]

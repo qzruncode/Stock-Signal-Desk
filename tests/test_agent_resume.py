@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -139,8 +138,8 @@ def test_chat_returns_409_when_run_in_progress(client):
     assert resp.json()["error"] == "run_in_progress"
 
 
-def test_chat_resume_existing_replays_retained_run(client):
-    """resume_existing 通过 /agent/chat 重放既有 data-stream,包含工具 chunk。"""
+def test_chat_resume_existing_rejects_terminal_retained_run(client):
+    """终态 run 的事件历史不能伪装成仍可续流的实时执行。"""
     created = client.post("/api/v1/agent/conversations").json()
     cid = created["id"]
     broadcaster = RunBroadcaster()
@@ -153,28 +152,18 @@ def test_chat_resume_existing_replays_retained_run(client):
         status="completed",
     )
 
-    with patch(
-        "api.v1.endpoints.agent.chat._get_llm_config",
-        return_value={"model": "gpt-4o", "api_key": None, "api_base": None, "extra_headers": None},
-    ):
-        with client.stream(
-            "POST",
-            "/api/v1/agent/chat",
-            json={
-                "messages": [{"role": "user", "content": "hi"}],
-                "conversation_id": cid,
-                "resume_existing": True,
-                "after_chunk_index": 0,
-            },
-        ) as resp:
-            body = b"".join(resp.iter_bytes()).decode("utf-8")
+    resp = client.post(
+        "/api/v1/agent/chat",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "conversation_id": cid,
+            "resume_existing": True,
+            "after_chunk_index": 0,
+        },
+    )
 
-    assert resp.status_code == 200
-    first_line = body.strip().splitlines()[0]
-    assert json.loads(first_line.removeprefix("0:")) == "已生成内容"
-    assert "get_kline" in body
-    assert "call_kline" in body
-    assert "601318" in body
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "run_not_active"
 
 
 def test_chat_resume_existing_without_run_returns_409(client):
@@ -201,7 +190,7 @@ def test_chat_resume_existing_without_run_returns_409(client):
 
 
 def test_get_conversation_includes_is_generating(client):
-    """getConversation 返回运行态;completed retained run 也可 resume replay。"""
+    """getConversation 只把实际仍在运行的任务标记为可续流。"""
     created = client.post("/api/v1/agent/conversations").json()
     cid = created["id"]
     detail = client.get(f"/api/v1/agent/conversations/{cid}").json()
@@ -224,7 +213,7 @@ def test_get_conversation_includes_is_generating(client):
     )
     detail3 = client.get(f"/api/v1/agent/conversations/{cid}").json()
     assert detail3["is_generating"] is False
-    assert detail3["resume_state"]["active"] is True
+    assert detail3["resume_state"]["active"] is False
     assert detail3["resume_state"]["status"] == "completed"
     assert detail3["resume_state"]["has_tool_events"] is False
 

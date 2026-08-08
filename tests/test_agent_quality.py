@@ -23,24 +23,15 @@ def database(tmp_path: Path):
         DatabaseManager.reset_instance()
 
 
-def _quality_projection(*, supported: bool = True) -> dict:
+def _quality_projection(*, linked: bool = True) -> dict:
     return {
-        "engine": "langgraph",
-        "intent": {"objective": "核验 600519 的公开信息"},
-        "actions": [
-            {
-                "action_id": "news",
-                "objective": "查询公开信息",
-                "tool_name": "search_news",
-                "arguments": {"symbol": "600519", "days": 30},
-                "depends_on": [],
-                "expected_evidence": ["公开来源和发布时间"],
-            }
-        ],
+        "engine": "langgraph_agent_loop",
         "tool_results": [
             {
                 "action_id": "news",
-                "tool_name": "search_news",
+                "tool_call_id": "call-news",
+                "tool_name": "read_company_news_akshare",
+                "effect": "read",
                 "success": True,
                 "errors": [],
             }
@@ -49,32 +40,38 @@ def _quality_projection(*, supported: bool = True) -> dict:
             {
                 "evidence_id": "ev_news",
                 "action_id": "news",
-                "tool_name": "search_news",
+                "tool_call_id": "call-news",
+                "tool_name": "read_company_news_akshare",
+                "effect": "read",
                 "success": True,
-                "source_refs": ["https://example.test/news/1"],
+                "source_refs": ["https://example.test/news/1"] if linked else [],
                 "data_time": "2026-08-06T10:00:00+08:00",
             }
         ],
-        "verification": {
-            "accepted": supported,
-            "claims": [
-                {
-                    "claim": "公开信息已核验",
-                    "material": True,
-                    "evidence_ids": ["ev_news"],
-                    "supported": supported,
-                    "issue": None if supported else "证据不支持该表述",
-                }
-            ],
-        },
-        "completed_action_ids": ["news"],
-        "budgets": {
-            "plan_round": 1,
-            "max_plan_rounds": 6,
-            "search_expansions": 0,
-            "max_search_expansions": 2,
-            "verification_round": 0,
-            "max_verification_rounds": 2,
+        "claim_evidence": [
+            {
+                "claim_id": "claim_news",
+                "text": "结论包含风险提示【证据 ev_news】",
+                "kind": "fact",
+                "evidence_ids": ["ev_news"],
+                "entity_fields": ["query"],
+                "time_references": [],
+                "checks": {
+                    "tool_success": True,
+                    "source": linked,
+                    "entity_scope": True,
+                    "time": True,
+                },
+            }
+        ],
+        "completed_tool_call_ids": ["call-news"],
+        "loop": {
+            "model_turn_count": 2,
+            "tool_call_count": 1,
+            "tool_call_limit": 8,
+            "evidence_repair_count": 0,
+            "evidence_repair_limit": 1,
+            "work_budget_exhausted": False,
         },
     }
 
@@ -84,7 +81,7 @@ def _terminal_run(
     *,
     run_id: str,
     conversation_id: str,
-    supported: bool = True,
+    linked: bool = True,
 ) -> None:
     database.create_chat_conversation(
         conversation_id,
@@ -94,17 +91,17 @@ def _terminal_run(
     claimed = database.claim_agent_run(
         run_id=run_id,
         conversation_id=conversation_id,
-        request_payload={"engine": "langgraph", "messages": [{"role": "user", "content": "核验 600519"}]},
+        request_payload={"engine": "langgraph_agent_loop", "messages": [{"role": "user", "content": "核验 600519"}]},
         worker_id="worker-a",
         tenant_id="tenant-a",
         owner_id="owner-a",
     )
     assert claimed["claimed"] is True
-    projection = _quality_projection(supported=supported)
+    projection = _quality_projection(linked=linked)
     database.upsert_agent_run_trace(
         run_id=run_id,
         conversation_id=conversation_id,
-        orchestrator_mode="langgraph",
+        orchestrator_mode="langgraph_agent_loop",
         status="running",
         quality_projection=projection,
     )
@@ -112,15 +109,15 @@ def _terminal_run(
         run_id=run_id,
         conversation_id=conversation_id,
         status="completed",
-        final_text="结论包含风险提示 [ev_news]",
+        final_text="结论包含风险提示【证据 ev_news】",
         messages=[
             {"role": "user", "content": "核验 600519"},
-            {"role": "assistant", "content": "结论包含风险提示 [ev_news]"},
+            {"role": "assistant", "content": "结论包含风险提示【证据 ev_news】"},
         ],
         agent_context={},
         worker_id="worker-a",
         trace={
-            "engine": "langgraph",
+            "engine": "langgraph_agent_loop",
             "status": "completed",
             "quality_projection": projection,
         },
@@ -137,9 +134,9 @@ def test_quality_evaluation_case_passes_and_feedback_is_owned(database) -> None:
         name="dynamic-evidence-query",
         description=None,
         expectations={
-            "required_tools": ["search_news"],
+            "required_tools": ["read_company_news_akshare"],
             "minimum_evidence_items": 1,
-            "require_claim_evidence_verified": True,
+            "require_evidence_citations": True,
             "required_answer_terms": ["风险提示"],
             "minimum_score": 0.9,
         },
@@ -176,25 +173,25 @@ def test_quality_evaluation_case_passes_and_feedback_is_owned(database) -> None:
     explorer = database.list_agent_runs_for_owner(
         tenant_id="tenant-a",
         owner_id="owner-a",
-        tool="search_news",
+        tool="read_company_news_akshare",
     )
     assert explorer["total"] == 1
-    assert explorer["items"][0]["tools"] == ["search_news"]
+    assert explorer["items"][0]["tools"] == ["read_company_news_akshare"]
     snapshot = database.get_agent_run_quality_snapshot(
         "run-source",
         tenant_id="tenant-a",
         owner_id="owner-a",
     )
     assert snapshot is not None
-    assert snapshot["quality_projection"]["actions"][0]["action_id"] == "news"
+    assert snapshot["quality_projection"]["tool_results"][0]["action_id"] == "news"
 
 
-def test_quality_evaluator_rejects_unsupported_claim(database) -> None:
+def test_quality_evaluator_rejects_unlinked_evidence(database) -> None:
     _terminal_run(
         database,
         run_id="run-unsupported",
         conversation_id="conversation-unsupported",
-        supported=False,
+        linked=False,
     )
     snapshot = database.get_agent_run_quality_snapshot(
         "run-unsupported",
@@ -204,8 +201,8 @@ def test_quality_evaluator_rejects_unsupported_claim(database) -> None:
     assert snapshot is not None
     result = score_agent_run_snapshot(snapshot)
     assert result["passed"] is False
-    assert result["dimensions"]["claim_evidence"]["score"] < 1.0
-    assert any(item["code"] == "claim_evidence_contract_failed" for item in result["violations"])
+    assert result["dimensions"]["evidence_links"]["score"] < 1.0
+    assert any(item["code"] == "evidence_link_contract_failed" for item in result["violations"])
 
 
 def test_completed_no_tool_general_answer_can_pass_generic_quality_contract() -> None:
@@ -213,12 +210,10 @@ def test_completed_no_tool_general_answer_can_pass_generic_quality_contract() ->
         {
             "run": {"status": "completed", "final_text": "稳定的常识解释"},
             "quality_projection": {
-                "engine": "langgraph",
-                "actions": [],
+                "engine": "langgraph_agent_loop",
                 "tool_results": [],
                 "evidence": [],
-                "verification": {"accepted": True, "claims": []},
-                "budgets": {"plan_round": 0, "max_plan_rounds": 6},
+                "loop": {"tool_call_count": 0, "work_budget_exhausted": False},
             },
             "steps": [],
         }
@@ -231,7 +226,7 @@ def test_legacy_capability_expectations_are_not_executable() -> None:
     result = score_agent_run_snapshot(
         {
             "run": {"status": "completed", "final_text": "answer"},
-            "quality_projection": {"verification": {"accepted": True, "claims": []}},
+            "quality_projection": {"tool_results": [], "evidence": []},
             "steps": [],
         },
         {"required_capabilities": ["stock_profile"]},
@@ -296,14 +291,14 @@ def test_run_explorer_list_uses_tool_filter_and_owner_scope(api_client) -> None:
     fake_db.list_agent_runs_for_owner.return_value = {"items": [], "total": 0, "page": 1, "limit": 30}
     response = client.get(
         "/api/v1/agent/runs",
-        params={"status": "completed", "tool": "search_news", "page": 1},
+        params={"status": "completed", "tool": "read_company_news_akshare", "page": 1},
     )
     assert response.status_code == 200
     fake_db.list_agent_runs_for_owner.assert_called_once_with(
         tenant_id="local",
         owner_id="admin",
         status="completed",
-        tool="search_news",
+        tool="read_company_news_akshare",
         page=1,
         limit=30,
     )

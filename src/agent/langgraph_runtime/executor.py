@@ -13,11 +13,13 @@ from typing import Any, Callable, Mapping
 
 from src.agent.resource_scheduler import ResourceCapacityExceeded, agent_resource_lease
 from src.agent.run_registry import active_run_registry
-from src.agent.runtime_safety import get_agent_runtime_limits, is_production_environment
+from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchOutcome, ToolDispatchRequest
 from src.tools.base import ToolProgressUpdate
 from src.tools.process_runner import execute_tool_isolated
 from src.tools.registry import ToolRegistry
+
+from .presentation import project_arguments_for_timeline, project_tool_result_for_timeline
 
 
 ACTIVE_STEP_LEASE_SECONDS = 3_600.0
@@ -77,27 +79,17 @@ def _source_refs(value: Any, *, depth: int = 0) -> list[str]:
     return deduplicated[:30]
 
 
-def _entities(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    entity_keys = {
-        "symbol",
-        "symbols",
-        "code",
-        "codes",
-        "stock_code",
-        "stock_codes",
-        "name",
-        "names",
-        "index_code",
-        "sector",
-        "industry",
-        "query",
-        "keyword",
-        "keywords",
-    }
+def _request_context(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep authored query context without prescribing entity field names.
+
+    An atomic source can discover the relevant entities in its response.  A
+    static list of argument keys therefore cannot be the sole entity context
+    for a later answer-to-evidence reference check.
+    """
     return {
         str(key): value
         for key, value in arguments.items()
-        if str(key).lower() in entity_keys and value not in (None, "", [], {})
+        if value not in (None, "", [], {})
     }
 
 
@@ -163,6 +155,30 @@ class AtomicToolExecutor:
             "errors": list(source.get("errors") or []),
         }
 
+    @staticmethod
+    def _completed_stage_details(
+        record: Mapping[str, Any],
+        evidence: Mapping[str, Any] | None,
+        *,
+        source_id: str | None,
+    ) -> dict[str, Any]:
+        display_result = (
+            dict(record.get("display_result") or {})
+            if isinstance(record.get("display_result"), Mapping)
+            else {}
+        )
+        return {
+            "tool_name": record.get("tool_name"),
+            "success": record.get("success") is True,
+            "partial": bool(record.get("partial")),
+            "reused": bool(record.get("reused")),
+            "arguments": dict(record.get("display_arguments") or {}),
+            "data_time": record.get("data_time"),
+            "evidence_id": evidence.get("evidence_id") if evidence else None,
+            "source_id": source_id,
+            **display_result,
+        }
+
     async def execute(
         self,
         action: Mapping[str, Any],
@@ -185,17 +201,25 @@ class AtomicToolExecutor:
         spec = self.registry.get_tool(tool_name)
         if spec is None:
             raise KeyError(f"Tool not found: {tool_name}")
+        source_id = str(arguments.get("source_id") or "").strip() or None
+        display_arguments = project_arguments_for_timeline(
+            arguments,
+            sensitive_fields=spec.sensitive_fields,
+            server_controlled_fields=spec.server_controlled_fields,
+        )
         fingerprint = action_fingerprint(
             run_id=self.run_id,
             action_id=action_id,
             tool_name=tool_name,
             arguments=authored_arguments,
         )
+        tool_call_id = f"lg_{fingerprint[:24]}"
         tool_call = None
         if self.controller is not None:
             tool_call = await self.controller.add_tool_call(
                 tool_name,
-                tool_call_id=f"lg_{fingerprint[:24]}",
+                tool_call_id=tool_call_id,
+                parent_id=action_id,
             )
             tool_call.append_args_text(
                 json.dumps(
@@ -209,10 +233,18 @@ class AtomicToolExecutor:
                 )
             )
         self.events.stage(
-            "execute",
+            "tool",
             "started",
             f"执行原子工具 {tool_name}",
             action_id=action_id,
+            tool_call_id=tool_call_id,
+            details={
+                "tool_name": tool_name,
+                "effect": effect,
+                "argument_keys": sorted(str(key) for key in arguments),
+                "arguments": display_arguments,
+                "source_id": source_id,
+            },
         )
 
         max_attempts = 1 if effect == "side_effect" else max(1, int(spec.max_attempts))
@@ -231,15 +263,26 @@ class AtomicToolExecutor:
                 presentation = self._presentation(tool_name, canonical)
                 if tool_call is not None:
                     tool_call.set_response(presentation, is_error=presentation.get("success") is False)
-                return self._result_record(
+                record, evidence = self._result_record(
                     action_id=action_id,
                     tool_name=tool_name,
+                    tool_call_id=tool_call_id,
                     arguments=authored_arguments,
                     effect=effect,
                     fingerprint=fingerprint,
-                    result=presentation,
+                    result=canonical,
                     reused=True,
                 )
+                self.events.stage(
+                    "tool",
+                    "completed" if record["success"] else "failed",
+                    f"{tool_name} 已复用幂等结果",
+                    action_id=action_id,
+                    tool_call_id=tool_call_id,
+                    error_code=None if record["success"] else "tool_failed",
+                    details=self._completed_stage_details(record, evidence, source_id=source_id),
+                )
+                return record, evidence
 
         attempt = 0
         last_error: BaseException | None = None
@@ -251,7 +294,7 @@ class AtomicToolExecutor:
                     idempotency_key=idempotency_key,
                     run_id=self.run_id,
                     conversation_id=self.conversation_id,
-                    task_id="langgraph",
+                    task_id="agent_loop",
                     step_id=action_id,
                     tool_name=tool_name,
                     effect=effect,
@@ -271,15 +314,26 @@ class AtomicToolExecutor:
                 presentation = self._presentation(tool_name, canonical)
                 if tool_call is not None:
                     tool_call.set_response(presentation, is_error=presentation.get("success") is False)
-                return self._result_record(
+                record, evidence = self._result_record(
                     action_id=action_id,
                     tool_name=tool_name,
+                    tool_call_id=tool_call_id,
                     arguments=authored_arguments,
                     effect=effect,
                     fingerprint=fingerprint,
-                    result=presentation,
+                    result=canonical,
                     reused=True,
                 )
+                self.events.stage(
+                    "tool",
+                    "completed" if record["success"] else "failed",
+                    f"{tool_name} 已复用幂等结果",
+                    action_id=action_id,
+                    tool_call_id=tool_call_id,
+                    error_code=None if record["success"] else "tool_failed",
+                    details=self._completed_stage_details(record, evidence, source_id=source_id),
+                )
+                return record, evidence
             if claim_action == "exhausted":
                 last_error = RuntimeError(str(claim.get("error_detail") or "tool attempts exhausted"))
                 break
@@ -296,10 +350,11 @@ class AtomicToolExecutor:
                 loop.call_soon_threadsafe(
                     partial(
                         self.events.stage,
-                        "execute",
+                        "tool",
                         "started",
                         f"{tool_name}：{update.message}{suffix}",
                         action_id=action_id,
+                        tool_call_id=tool_call_id,
                     )
                 )
 
@@ -320,11 +375,16 @@ class AtomicToolExecutor:
                         run_id=self.run_id,
                         timeout_seconds=spec.timeout_seconds,
                         approved=approved,
-                        force_isolation=(
-                            is_production_environment()
-                            or str(os.getenv("AGENT_ISOLATE_ALL_STATELESS") or "").strip().lower()
-                            in {"1", "true", "yes", "on"}
-                        ),
+                        # A source tool can block in a parser, driver or remote
+                        # socket even when its own library timeout is ignored.
+                        # Module-owned catalog tools run in the existing
+                        # cancellable child-process boundary. A caller may
+                        # inject an in-memory registry (for embedding or
+                        # testing); that registry cannot be reconstructed by
+                        # the worker, so the dispatcher keeps those calls in
+                        # process while preserving the same policy checks.
+                        # This does not impose a timeout on model reasoning.
+                        force_isolation=True,
                     ),
                     cancel_event=cancel_event,
                     progress_observer=progress,
@@ -336,7 +396,7 @@ class AtomicToolExecutor:
                         self.database.reserve_agent_run_budget,
                         self.run_id,
                         tool_calls=1,
-                        max_tool_calls=get_agent_runtime_limits().max_plan_tool_calls,
+                        max_tool_calls=get_agent_runtime_limits().max_tool_calls,
                     )
                     if not budget.get("allowed") and budget.get("reason") != "run_not_found":
                         raise RuntimeError(f"Agent run tool-call budget exceeded: {budget.get('reason')}")
@@ -387,18 +447,21 @@ class AtomicToolExecutor:
                 record, evidence = self._result_record(
                     action_id=action_id,
                     tool_name=tool_name,
+                    tool_call_id=tool_call_id,
                     arguments=authored_arguments,
                     effect=effect,
                     fingerprint=fingerprint,
-                    result=presentation,
+                    result=canonical,
                     reused=False,
                 )
                 self.events.stage(
-                    "execute",
+                    "tool",
                     "completed" if record["success"] else "failed",
                     f"{tool_name} 已返回结果",
                     action_id=action_id,
+                    tool_call_id=tool_call_id,
                     error_code=(None if record["success"] else "tool_failed"),
+                    details=self._completed_stage_details(record, evidence, source_id=source_id),
                 )
                 return record, evidence
             except asyncio.CancelledError:
@@ -443,6 +506,7 @@ class AtomicToolExecutor:
         record, _ = self._result_record(
             action_id=action_id,
             tool_name=tool_name,
+            tool_call_id=tool_call_id,
             arguments=authored_arguments,
             effect=effect,
             fingerprint=fingerprint,
@@ -450,11 +514,20 @@ class AtomicToolExecutor:
             reused=False,
         )
         self.events.stage(
-            "execute",
+            "tool",
             "failed",
             f"{tool_name} 执行失败",
             action_id=action_id,
+            tool_call_id=tool_call_id,
             error_code=_error_code(last_error),
+            details={
+                "tool_name": tool_name,
+                "success": False,
+                "error_code": _error_code(last_error),
+                "errors": failure["errors"],
+                "arguments": record.get("display_arguments") or display_arguments,
+                "source_id": source_id,
+            },
         )
         return record, None
 
@@ -463,6 +536,7 @@ class AtomicToolExecutor:
         *,
         action_id: str,
         tool_name: str,
+        tool_call_id: str,
         arguments: Mapping[str, Any],
         effect: str,
         fingerprint: str,
@@ -472,18 +546,31 @@ class AtomicToolExecutor:
         success = result.get("success") is not False
         now = datetime.now().astimezone().isoformat()
         source_refs = _source_refs(result)
+        spec = self.registry.get_tool(tool_name)
+        display_arguments = project_arguments_for_timeline(
+            arguments,
+            sensitive_fields=(spec.sensitive_fields if spec else ()),
+            server_controlled_fields=(spec.server_controlled_fields if spec else ("confirmed",)),
+        )
+        display_result = project_tool_result_for_timeline(result, source_refs=source_refs)
         record = {
             "id": action_id,
             "action_id": action_id,
             "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
             "effect": effect,
             "fingerprint": fingerprint,
             "arguments": dict(arguments),
+            "display_arguments": display_arguments,
             "success": success,
             "partial": bool(result.get("partial")),
             "result": dict(result),
+            "display_result": display_result,
             "errors": list(result.get("errors") or []),
+            "error_code": result.get("error_code"),
             "data_time": result.get("data_time"),
+            "data_time_provenance": result.get("data_time_provenance"),
+            "data_time_note": result.get("data_time_note"),
             "is_stale": result.get("is_stale"),
             "freshness_unknown": bool(result.get("freshness_unknown", result.get("data_time") is None)),
             "source_refs": source_refs,
@@ -498,10 +585,14 @@ class AtomicToolExecutor:
             "evidence_id": evidence_id,
             "action_id": action_id,
             "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "effect": effect,
             "success": True,
             "partial": bool(result.get("partial")),
-            "entities": _entities(arguments),
+            "entities": _request_context(arguments),
             "data_time": result.get("data_time"),
+            "data_time_provenance": result.get("data_time_provenance"),
+            "data_time_note": result.get("data_time_note"),
             "is_stale": result.get("is_stale"),
             "freshness_unknown": bool(result.get("freshness_unknown", result.get("data_time") is None)),
             "source_refs": source_refs or [f"tool:{tool_name}"],

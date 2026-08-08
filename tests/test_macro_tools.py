@@ -5,8 +5,9 @@ from datetime import date
 import pandas as pd
 
 from src.tools._macro_common import expected_indicator_period
-from src.tools.get_bond_yield import _fetch_frame, _same_date_spread
+from src.tools.get_bond_yield import _fetch_frame, _same_date_spread, read_bond_yield_eastmoney
 from src.tools.get_index_data import _merge_snapshot
+from src.tools.get_macro_indicator import read_macro_indicator_akshare
 
 
 def test_indicator_release_calendar_does_not_expect_unreleased_periods():
@@ -102,3 +103,51 @@ def test_bond_yield_fetches_only_recent_page_with_explicit_timeout(monkeypatch):
     assert calls[0][1]["params"]["p"] == "1"
     assert calls[0][1]["params"]["ps"] == "500"
     assert calls[0][1]["timeout"] == (4, 10)
+
+
+def test_agent_bond_read_has_no_curve_spread_or_local_fallback(monkeypatch):
+    frame = pd.DataFrame(
+        [
+            {
+                "日期": pd.Timestamp("2026-07-14").date(),
+                "中国国债收益率10年": 2.0,
+            },
+            {
+                "日期": pd.Timestamp("2026-07-15").date(),
+                "中国国债收益率10年": 2.1,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "src.tools.get_bond_yield.cached_call",
+        lambda _key, _call, **_kwargs: (frame, False),
+    )
+
+    result = read_bond_yield_eastmoney(country="cn", term="10y", days=5)
+
+    assert result["success"] is True
+    assert result["source_scope"] == "single_sovereign_yield_series"
+    assert "spread" not in result
+    assert result["fallback_used"] is False
+
+
+def test_agent_macro_read_has_no_trend_or_local_fallback(monkeypatch):
+    frame = pd.DataFrame(
+        [
+            {"月份": "2026年5月", "制造业-指数": 49.5, "制造业-同比增长": 0.2, "非制造业-指数": 50.0},
+            {"月份": "2026年6月", "制造业-指数": 50.1, "制造业-同比增长": 0.4, "非制造业-指数": 50.3},
+            {"月份": "2026年7月", "制造业-指数": 50.4, "制造业-同比增长": 0.6, "非制造业-指数": 50.6},
+        ]
+    )
+    monkeypatch.setattr(
+        "src.tools.get_macro_indicator.cached_call",
+        lambda _key, _call, **_kwargs: (frame, False),
+    )
+
+    result = read_macro_indicator_akshare("PMI", periods=3)
+
+    assert result["success"] is True
+    assert result["source_scope"] == "single_macro_indicator_series"
+    assert "trend" not in result
+    assert "history" not in result
+    assert result["fallback_used"] is False

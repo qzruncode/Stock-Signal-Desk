@@ -106,14 +106,12 @@ class _AgentQualityMethods1:
                 trace.quality_projection_json if trace else None,
                 {},
             )
-            actions = _projection_items(projection, "actions")
             results = _projection_items(projection, "tool_results")
             evidence = _projection_items(projection, "evidence")
-            verification = _mapping(projection.get("verification"))
             tools = sorted(
                 {
                     str(item.get("tool_name") or "")
-                    for item in (*actions, *results)
+                    for item in results
                     if str(item.get("tool_name") or "")
                 }
             )
@@ -134,6 +132,12 @@ class _AgentQualityMethods1:
                     "feedback": _feedback_dict(feedback_by_run.get(run.id)),
                 }
             )
+            evidence_links_score = float(
+                _mapping(_mapping(score.get("dimensions")).get("evidence_links")).get(
+                    "score",
+                    0,
+                )
+            )
             duration_ms = None
             if run.started_at and run.finished_at:
                 duration_ms = max(
@@ -148,9 +152,9 @@ class _AgentQualityMethods1:
                     "status": run.status,
                     "error_code": run.error_code,
                     "tools": tools,
-                    "action_count": len(actions),
+                    "tool_observation_count": len(results),
                     "evidence_count": len(evidence),
-                    "claim_evidence_verified": verification.get("accepted") is True,
+                    "evidence_links_verified": evidence_links_score >= 1.0,
                     "quality_score": score["total_score"],
                     "quality_status": score["status"],
                     "feedback": _feedback_dict(feedback_by_run.get(run.id)),

@@ -132,6 +132,77 @@ def _trend(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def read_macro_indicator_akshare(
+    indicator: str,
+    periods: int = 12,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one selected indicator's normalized source records only.
+
+    The Agent-facing operation deliberately neither derives a trend nor falls
+    back to a local snapshot.  A source failure must reach graph reflection so
+    the model can decide whether to find different evidence.
+    """
+    indicator = str(indicator or "").strip()
+    indicator = indicator if indicator == "社融" else indicator.upper()
+    periods = int(periods)
+    if indicator not in INDICATORS:
+        raise ValueError(f"不支持的宏观指标: {indicator}")
+    if not 3 <= periods <= 120:
+        raise ValueError("periods 必须在 3 到 120 之间")
+
+    now = datetime.now().astimezone()
+    errors: list[str] = []
+    try:
+        frame, cached = (
+            cached_call(
+                f"macro-indicator:akshare:source:v1:{indicator}",
+                _fetcher(indicator),
+                ttl_seconds=6 * 3600,
+                attempts=1,
+            )
+            if use_cache
+            else (_fetcher(indicator)(), False)
+        )
+    except Exception as exc:
+        frame, cached = None, False
+        errors.append(f"{indicator}: {exc}")
+
+    records = _normalize(frame, indicator)[-periods:]
+    actual = latest_date(records, "period")
+    expected = expected_indicator_period(indicator)
+    stale = actual < expected if actual else None
+    warnings = (
+        [f"{indicator} 最新期间为 {actual.isoformat()}，正常发布日历下预期至少为 {expected.isoformat()}"]
+        if stale and actual
+        else []
+    )
+    if not records and not errors:
+        errors.append(f"{indicator} 没有可用来源记录")
+    return {
+        "indicator": indicator,
+        "indicator_name": INDICATORS[indicator]["name"],
+        "frequency": INDICATORS[indicator]["frequency"],
+        "unit": INDICATORS[indicator]["unit"],
+        "records": records,
+        "record_count": len(records),
+        "expected_latest_period_end": expected.isoformat(),
+        "source": "AKShare 宏观指标来源",
+        "source_scope": "single_macro_indicator_series",
+        "success": bool(records),
+        "partial": False,
+        "errors": errors,
+        "warnings": warnings,
+        "data_time": actual.isoformat() if actual else None,
+        "is_stale": stale,
+        "freshness_unknown": actual is None,
+        "fallback_used": False,
+        "_cached": cached,
+        "_fetched_at": now.isoformat(),
+    }
+
+
 def get_macro_indicator(
     indicator: str,
     periods: int = 12,
@@ -210,25 +281,35 @@ def get_macro_indicator(
     }
 
 
-TOOL = ToolSpec(
-    name="get_macro_indicator",
-    description=(
-        "获取中国 PMI、CPI、PPI、GDP、M2、社融或 LPR 的结构化历史。按指标分别标注频率、单位、"
-        "同比/环比含义和正常发布日历；上游落后时明确标为 stale，不把缓存命中误报为降级。"
-    ),
-    parameters=object_schema(
-        {
-            "indicator": {"type": "string", "enum": list(INDICATORS)},
-            "periods": {
-                "type": "integer",
-                "minimum": 3,
-                "maximum": 120,
-                "default": 12,
-                "description": "返回最近发布期数；GDP 为季度，其余通常为月度",
+TOOLS = (
+    ToolSpec(
+        name="read_macro_indicator_akshare",
+        description=(
+            "从 AKShare 的指定宏观指标来源读取 PMI、CPI、PPI、GDP、M2、社融或 LPR 的逐期结构化记录。"
+            "只返回来源字段与发布期，不计算趋势，不读取本地缓存作为失败兜底。"
+        ),
+        parameters=object_schema(
+            {
+                "indicator": {"type": "string", "enum": list(INDICATORS)},
+                "periods": {
+                    "type": "integer",
+                    "minimum": 3,
+                    "maximum": 120,
+                    "default": 12,
+                    "description": "返回最近发布期数；GDP 为季度，其余通常为月度",
+                },
             },
-        },
-        ["indicator"],
+            ["indicator"],
+        ),
+        executor=read_macro_indicator_akshare,
+        category="macro",
     ),
-    executor=get_macro_indicator,
-    category="macro",
 )
+
+
+__all__ = [
+    "INDICATOR_FETCHERS",
+    "TOOLS",
+    "get_macro_indicator",
+    "read_macro_indicator_akshare",
+]

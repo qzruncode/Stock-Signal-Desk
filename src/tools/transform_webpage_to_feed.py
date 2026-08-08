@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.tools._rss_agent import endpoint_value, object_value, rss_options_schema
-from src.tools.base import ToolSpec, object_schema
+from src.tools._rss_agent import endpoint_value, object_value
 
 
 def transform_webpage_to_feed(
@@ -77,35 +76,4 @@ def transform_webpage_to_feed(
     }
 
 
-TOOL = ToolSpec(
-    name="transform_webpage_to_feed",
-    description=(
-        "把任意网页通过 CSS 选择器转换成 RSS Feed 并预览结果。适用于用户提供网页并要求持续读取其列表内容；"
-        "需要 RSSHub 允许目标域名。"
-    ),
-    parameters=object_schema(
-        {
-            "url": {"type": "string"},
-            "item": {"type": "string", "default": "html", "description": "每条内容的 CSS 选择器"},
-            "title": {"type": "string", "description": "Feed 标题，可留空"},
-            "item_title": {"type": "string"},
-            "item_title_attr": {"type": "string", "description": "从标题元素读取的属性名，如 title"},
-            "item_link": {"type": "string"},
-            "item_link_attr": {"type": "string", "description": "从链接元素读取的属性名，通常为 href"},
-            "item_desc": {"type": "string"},
-            "item_desc_attr": {"type": "string", "description": "从描述元素读取的属性名"},
-            "item_pubdate": {"type": "string"},
-            "item_pubdate_attr": {"type": "string", "description": "从时间元素读取的属性名，如 datetime"},
-            "item_content": {"type": "string", "description": "二次抓取正文的 CSS 选择器"},
-            "encoding": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-            "options": rss_options_schema(),
-        },
-        required=("url",),
-    ),
-    executor=transform_webpage_to_feed,
-    category="sentiment",
-)
-
-
-__all__ = ["TOOL", "transform_webpage_to_feed"]
+__all__ = ["transform_webpage_to_feed"]

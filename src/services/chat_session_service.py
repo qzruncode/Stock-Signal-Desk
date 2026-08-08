@@ -102,7 +102,20 @@ class ChatSessionService:
             owner_id=self._owner_id,
         )
 
-    def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+    def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        include_thread_state: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Read the canonical transcript without reviving opaque UI state.
+
+        The persisted ``thread_state_json`` is an old assistant-ui rendering
+        export, not Agent state.  It can contain complete historical tool
+        payloads, so active request paths must not deserialize it.  The opt-in
+        flag retains a read-only compatibility escape hatch without letting
+        that payload re-enter the live chat path.
+        """
         conversation = self.db.get_chat_conversation(
             conversation_id,
             tenant_id=self._tenant_id,
@@ -112,18 +125,20 @@ class ChatSessionService:
             return None
         messages = self.db.get_chat_messages(conversation_id)
         thread_state = None
-        if getattr(conversation, "thread_state_json", None):
+        if include_thread_state and getattr(conversation, "thread_state_json", None):
             try:
                 thread_state = json.loads(conversation.thread_state_json)
                 if isinstance(thread_state, dict):
                     thread_state.pop(self.AGENT_CONTEXT_KEY, None)
             except (TypeError, ValueError):
                 thread_state = None
-        return {
+        payload = {
             **conversation.to_dict(),
             "messages": [message.to_dict() for message in messages],
-            "thread_state": thread_state,
         }
+        if include_thread_state:
+            payload["thread_state"] = thread_state
+        return payload
 
     def get_agent_context(self, conversation_id: str) -> Dict[str, Any]:
         """Legacy orchestration JSON is intentionally never executable.
@@ -237,15 +252,6 @@ class ChatSessionService:
         )
         if not conversation:
             return None
-
-        existing_thread_state: Dict[str, Any] = {}
-        if getattr(conversation, "thread_state_json", None):
-            try:
-                parsed = json.loads(conversation.thread_state_json)
-                if isinstance(parsed, dict):
-                    existing_thread_state = parsed
-            except (TypeError, ValueError):
-                existing_thread_state = {}
 
         normalized_messages = self._normalize_messages(messages) if messages is not None else None
         effective_thread_state: Optional[Dict[str, Any]] = None

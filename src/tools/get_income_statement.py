@@ -5,7 +5,7 @@ from src.tools.base import ToolSpec, object_schema
 
 
 def get_income_statement(symbol: str, periods: int = 4):
-    return get_statement(symbol, "income_statement", periods)
+    return get_statement(symbol, "income_statement", periods, local_identity=True)
 
 
 TOOL = ToolSpec(

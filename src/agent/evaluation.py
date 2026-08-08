@@ -1,18 +1,20 @@
-"""Deterministic quality scoring for the generic LangGraph control loop.
+"""Deterministic quality scoring for the generic message/tool Agent loop.
 
-The evaluator reads only server-owned terminal state: dynamic actions, atomic
-tool results, evidence records, Claim-Evidence verification, budgets and the
-final answer.  It has no domain capability catalog and does not grade with an
-LLM.
+The evaluator deliberately reads the same durable facts that the runtime
+publishes: terminal status, actual tool observations, evidence records,
+evidence references in the answer, and work counters.  It does not reconstruct
+a plan, a capability set, or a separate verification workflow.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 
-EVALUATOR_VERSION = "langgraph-agent-quality-2.0"
+EVALUATOR_VERSION = "langgraph-agent-loop-quality-3.1"
+_EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -24,11 +26,7 @@ def _sequence(value: Any) -> Sequence[Any]:
 
 
 def _string_set(value: Any) -> set[str]:
-    return {
-        str(item).strip()
-        for item in _sequence(value)
-        if str(item).strip()
-    }
+    return {str(item).strip() for item in _sequence(value) if str(item).strip()}
 
 
 def _bounded_int(value: Any, default: int = 0) -> int:
@@ -36,6 +34,21 @@ def _bounded_int(value: Any, default: int = 0) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def _ratio(passed: int, total: int) -> float:
+    return 1.0 if total == 0 else passed / total
+
+
+def _evidence_id(item: Mapping[str, Any]) -> str:
+    return str(item.get("evidence_id") or item.get("id") or "").strip()
+
+
+def _has_source_reference(item: Mapping[str, Any]) -> bool:
+    return any(
+        str(ref).strip() and not str(ref).strip().startswith("tool:")
+        for ref in _sequence(item.get("source_refs"))
+    )
 
 
 @dataclass(frozen=True)
@@ -53,15 +66,11 @@ class QualityDimension:
         }
 
 
-def _ratio(passed: int, total: int) -> float:
-    return 1.0 if total == 0 else passed / total
-
-
 def score_agent_run_snapshot(
     snapshot: Mapping[str, Any],
     expectations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Score one terminal run against a domain-neutral acceptance contract."""
+    """Score one terminal run against a domain-neutral loop contract."""
 
     expected = dict(expectations or {})
     run = _mapping(snapshot.get("run"))
@@ -73,11 +82,8 @@ def score_agent_run_snapshot(
     )
     final_text = str(run.get("final_text") or "").strip()
 
-    actions = tuple(
-        _mapping(item)
-        for item in _sequence(projection.get("actions"))
-        if isinstance(item, Mapping)
-    )
+    # Results are observations that actually reached the model, unlike an old
+    # planned-action list which may never have been executed.
     tool_results = tuple(
         _mapping(item)
         for item in _sequence(projection.get("tool_results"))
@@ -88,32 +94,36 @@ def score_agent_run_snapshot(
         for item in _sequence(projection.get("evidence"))
         if isinstance(item, Mapping)
     )
-    verification = _mapping(projection.get("verification"))
-    budgets = _mapping(projection.get("budgets"))
+    claim_evidence = tuple(
+        _mapping(item)
+        for item in _sequence(projection.get("claim_evidence"))
+        if isinstance(item, Mapping)
+    )
+    loop = _mapping(projection.get("loop")) or _mapping(projection.get("budgets"))
 
     actual_tools = {
         str(item.get("tool_name") or "").strip()
-        for item in (*actions, *tool_results)
+        for item in tool_results
         if str(item.get("tool_name") or "").strip()
     }
     required_tools = _string_set(expected.get("required_tools"))
     forbidden_tools = _string_set(expected.get("forbidden_tools"))
     missing_tools = sorted(required_tools - actual_tools)
     present_forbidden_tools = sorted(forbidden_tools & actual_tools)
-    maximum_actions = _bounded_int(expected.get("maximum_actions"), 0)
-    invalid_actions = [
-        str(item.get("action_id") or "")
-        for item in actions
-        if not str(item.get("action_id") or "").strip()
-        or not str(item.get("tool_name") or "").strip()
-        or not isinstance(item.get("arguments"), Mapping)
+    malformed_observations = [
+        str(item.get("tool_call_id") or item.get("action_id") or item.get("id") or "")
+        for item in tool_results
+        if not str(item.get("tool_name") or "").strip()
+        or not str(item.get("tool_call_id") or item.get("action_id") or item.get("id") or "").strip()
     ]
-    plan_round = _bounded_int(budgets.get("plan_round"))
-    max_plan_rounds = _bounded_int(budgets.get("max_plan_rounds"))
-    control_issues = len(missing_tools) + len(present_forbidden_tools) + len(invalid_actions)
-    if maximum_actions and len(actions) > maximum_actions:
-        control_issues += 1
-    if max_plan_rounds and plan_round > max_plan_rounds:
+    maximum_tool_calls = _bounded_int(expected.get("maximum_tool_calls"), 0)
+    observed_tool_calls = max(
+        _bounded_int(run.get("tool_call_count")),
+        _bounded_int(loop.get("tool_call_count")),
+        len(tool_results),
+    )
+    control_issues = len(missing_tools) + len(present_forbidden_tools) + len(malformed_observations)
+    if maximum_tool_calls and observed_tool_calls > maximum_tool_calls:
         control_issues += 1
     control_score = max(0.0, 1.0 - control_issues / max(1, len(required_tools) + 1))
 
@@ -123,58 +133,67 @@ def score_agent_run_snapshot(
     failed_steps = [
         item
         for item in steps
-        if str(item.get("status") or "") not in {"completed", "skipped"}
+        if str(item.get("status") or "") not in {"completed", "skipped", "reused"}
     ]
     failed_results = [item for item in tool_results if item.get("success") is not True]
-    require_all_tools = bool(expected.get("require_all_tools_succeeded", True))
+    # A failed read is an observation, not necessarily a failed run: the
+    # model may inspect it and deliberately use another source.  A strict
+    # evaluation case can opt into requiring every attempted operation to pass.
+    require_all_tools = bool(expected.get("require_all_tools_succeeded", False))
     execution_ok = terminal_ok and (
         not require_all_tools or (not failed_steps and not failed_results)
     )
     execution_score = 1.0 if execution_ok else 0.5 if terminal_ok else 0.0
 
-    evidence_by_id = {
-        str(item.get("evidence_id") or item.get("id") or ""): item
+    factual_evidence = [
+        item
         for item in evidence
-        if item.get("success") is True
-        and str(item.get("evidence_id") or item.get("id") or "")
+        if item.get("success") is True and str(item.get("effect") or "read") != "side_effect"
+    ]
+    evidence_by_id = {
+        _evidence_id(item): item
+        for item in factual_evidence
+        if _evidence_id(item)
     }
-    claims = tuple(
-        _mapping(item)
-        for item in _sequence(verification.get("claims"))
-        if isinstance(item, Mapping)
+    cited_ids = set(_EVIDENCE_REFERENCE.findall(final_text))
+    unknown_citations = sorted(cited_ids - set(evidence_by_id))
+    cited_evidence_without_source = sorted(
+        evidence_id
+        for evidence_id in cited_ids & set(evidence_by_id)
+        if not _has_source_reference(evidence_by_id[evidence_id])
     )
-    material_claims = [item for item in claims if item.get("material") is not False]
-    unsupported_claims: list[dict[str, Any]] = []
-    for claim in material_claims:
-        evidence_ids = [str(item) for item in _sequence(claim.get("evidence_ids")) if str(item)]
-        if (
-            claim.get("supported") is not True
-            or not evidence_ids
-            or any(item not in evidence_by_id for item in evidence_ids)
-        ):
-            unsupported_claims.append(
-                {
-                    "claim": str(claim.get("claim") or "")[:240],
-                    "evidence_ids": evidence_ids,
-                }
-            )
-    evidence_without_source = [
+    evidence_without_source = sorted(
         evidence_id
         for evidence_id, item in evidence_by_id.items()
-        if not [
-            ref
-            for ref in _sequence(item.get("source_refs"))
-            if not str(ref).startswith("tool:")
-        ]
-    ]
+        if not _has_source_reference(item)
+    )
     minimum_evidence = _bounded_int(expected.get("minimum_evidence_items"), 0)
-    verified = verification.get("accepted") is True
-    require_verified = bool(expected.get("require_claim_evidence_verified", True))
+    require_citations = bool(expected.get("require_evidence_citations", True))
+    require_sources = bool(expected.get("require_evidence_sources", True))
+    ledger_cited_ids = {
+        evidence_id
+        for claim in claim_evidence
+        for evidence_id in _string_set(claim.get("evidence_ids"))
+    }
+    failed_claim_checks = []
+    for index, claim in enumerate(claim_evidence):
+        checks = _mapping(claim.get("checks"))
+        if not checks or not all(value is True for value in checks.values()):
+            failed_claim_checks.append(str(claim.get("claim_id") or f"claim-{index + 1}"))
+    ledger_required = (
+        str(projection.get("engine") or "") == "langgraph_agent_loop"
+        and bool(factual_evidence)
+    )
+    unmapped_citations = sorted(cited_ids - ledger_cited_ids)
     evidence_checks = [
         len(evidence_by_id) >= minimum_evidence,
-        not evidence_without_source,
-        not unsupported_claims,
-        not require_verified or verified,
+        not require_sources or not evidence_without_source,
+        not unknown_citations,
+        not cited_evidence_without_source,
+        not require_citations or not factual_evidence or bool(cited_ids),
+        not ledger_required or bool(claim_evidence),
+        not unmapped_citations,
+        not failed_claim_checks,
     ]
     evidence_score = _ratio(sum(evidence_checks), len(evidence_checks))
 
@@ -187,34 +206,36 @@ def score_agent_run_snapshot(
 
     budget_limits = {
         "provider_call_count": _bounded_int(expected.get("maximum_provider_calls"), 0),
-        "tool_call_count": _bounded_int(expected.get("maximum_tool_calls"), 0),
+        "tool_call_count": maximum_tool_calls,
         "estimated_token_count": _bounded_int(expected.get("maximum_estimated_tokens"), 0),
         "estimated_cost_micros": _bounded_int(expected.get("maximum_estimated_cost_micros"), 0),
     }
-    exceeded_budgets = {
-        key: {"actual": _bounded_int(run.get(key)), "maximum": limit}
-        for key, limit in budget_limits.items()
-        if limit and _bounded_int(run.get(key)) > limit
+    budget_actual = {
+        "provider_call_count": _bounded_int(run.get("provider_call_count")),
+        "tool_call_count": observed_tool_calls,
+        "estimated_token_count": _bounded_int(run.get("estimated_token_count")),
+        "estimated_cost_micros": _bounded_int(run.get("estimated_cost_micros")),
     }
-    budget_score = 1.0 if not exceeded_budgets else max(
-        0.0,
-        1.0 - len(exceeded_budgets) / len(budget_limits),
-    )
+    exceeded_budgets = {
+        key: {"actual": budget_actual[key], "maximum": limit}
+        for key, limit in budget_limits.items()
+        if limit and budget_actual[key] > limit
+    }
+    work_budget_exhausted = bool(loop.get("work_budget_exhausted"))
+    budget_score = 1.0 if not exceeded_budgets and not work_budget_exhausted else 0.0
 
     dimensions = (
         QualityDimension(
             "control_loop",
             control_score,
-            0.15,
+            0.20,
             {
                 "actual_tools": sorted(actual_tools),
                 "missing_required_tools": missing_tools,
                 "present_forbidden_tools": present_forbidden_tools,
-                "action_count": len(actions),
-                "maximum_actions": maximum_actions or None,
-                "invalid_actions": invalid_actions,
-                "plan_round": plan_round,
-                "max_plan_rounds": max_plan_rounds or None,
+                "observed_tool_calls": observed_tool_calls,
+                "maximum_tool_calls": maximum_tool_calls or None,
+                "malformed_observations": malformed_observations,
             },
         ),
         QualityDimension(
@@ -225,26 +246,33 @@ def score_agent_run_snapshot(
                 "status": actual_status,
                 "allowed_statuses": sorted(allowed_statuses),
                 "failed_step_ids": [str(item.get("step_id") or "") for item in failed_steps],
-                "failed_action_ids": [str(item.get("action_id") or "") for item in failed_results],
+                "failed_tool_call_ids": [
+                    str(item.get("tool_call_id") or item.get("action_id") or item.get("id") or "")
+                    for item in failed_results
+                ],
             },
         ),
         QualityDimension(
-            "claim_evidence",
+            "evidence_links",
             evidence_score,
             0.30,
             {
-                "verification_accepted": verified,
                 "evidence_count": len(evidence_by_id),
                 "minimum_evidence_items": minimum_evidence,
-                "material_claim_count": len(material_claims),
-                "unsupported_claims": unsupported_claims,
+                "cited_evidence_ids": sorted(cited_ids),
+                "unknown_citations": unknown_citations,
+                "cited_evidence_without_source": cited_evidence_without_source,
                 "evidence_without_source": evidence_without_source,
+                "claim_count": len(claim_evidence),
+                "ledger_required": ledger_required,
+                "unmapped_citations": unmapped_citations,
+                "failed_claim_checks": failed_claim_checks,
             },
         ),
         QualityDimension(
             "answer_contract",
             answer_score,
-            0.20,
+            0.15,
             {
                 "has_answer": bool(final_text),
                 "missing_required_terms": missing_terms,
@@ -255,13 +283,16 @@ def score_agent_run_snapshot(
             "budget",
             budget_score,
             0.15,
-            {"exceeded": exceeded_budgets},
+            {
+                "exceeded": exceeded_budgets,
+                "work_budget_exhausted": work_budget_exhausted,
+                "work_budget_detail": str(loop.get("work_budget_detail") or "")[:500] or None,
+            },
         ),
     )
     dimension_payload = {item.name: item.as_dict() for item in dimensions}
     total_score = round(
-        sum(item.score * item.weight for item in dimensions)
-        / sum(item.weight for item in dimensions),
+        sum(item.score * item.weight for item in dimensions) / sum(item.weight for item in dimensions),
         6,
     )
 
@@ -269,7 +300,7 @@ def score_agent_run_snapshot(
     violation_inputs = (
         ("control_loop_contract_failed", control_score < 1.0, dimension_payload["control_loop"]["details"]),
         ("execution_contract_failed", not execution_ok, dimension_payload["execution"]["details"]),
-        ("claim_evidence_contract_failed", evidence_score < 1.0, dimension_payload["claim_evidence"]["details"]),
+        ("evidence_link_contract_failed", evidence_score < 1.0, dimension_payload["evidence_links"]["details"]),
         ("answer_contract_failed", answer_score < 1.0, dimension_payload["answer_contract"]["details"]),
         ("budget_contract_failed", budget_score < 1.0, dimension_payload["budget"]["details"]),
     )
@@ -279,7 +310,14 @@ def score_agent_run_snapshot(
 
     legacy_expectation_keys = sorted(
         key
-        for key in ("required_capabilities", "forbidden_capabilities", "maximum_nodes", "require_complete_coverage")
+        for key in (
+            "required_capabilities",
+            "forbidden_capabilities",
+            "maximum_nodes",
+            "maximum_actions",
+            "require_complete_coverage",
+            "require_claim_evidence_verified",
+        )
         if key in expected
     )
     if legacy_expectation_keys:

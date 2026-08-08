@@ -25,6 +25,29 @@ async def _checkpoint_state(conversation_id: str) -> dict[str, Any]:
         return {}
 
 
+async def _release_cancelled_run_resources(
+    db_manager: DatabaseManager,
+    run_id: str,
+) -> None:
+    """Free fan-out provider slots after a user-visible cancellation.
+
+    This is also needed when a different worker wrote the durable cancellation
+    request: its local registry cannot clean up the slots owned by this worker.
+    It does not interrupt or deadline model reasoning; it runs only after the
+    run has already been cancelled.
+    """
+    try:
+        await asyncio.shield(
+            asyncio.to_thread(db_manager.release_agent_resources_for_run, run_id)
+        )
+    except Exception:
+        logger.warning(
+            "[Agent] failed to release resources for cancelled run_id=%s",
+            run_id,
+            exc_info=True,
+        )
+
+
 async def _execute_background_agent_run(
     *,
     controller: RunBroadcaster,
@@ -40,7 +63,7 @@ async def _execute_background_agent_run(
     resume_decision: Mapping[str, Any] | None = None,
     recovery: bool = False,
 ) -> None:
-    """Run, resume, or recover one checkpointed graph invocation."""
+    """Run, resume, or recover one checkpointed message/tool loop."""
     from src.services.agent_prompt_service import AgentPromptService
 
     system_prompt, is_fallback = AgentPromptService(db_manager).get_active_system_prompt()
@@ -98,7 +121,7 @@ async def _execute_background_agent_run(
                 worker_id=active_run_registry.worker_id,
                 attempt=run.attempt,
                 checkpoint={
-                    "engine": "langgraph",
+                    "engine": "langgraph_agent_loop",
                     "thread_id": agent_graph_runtime.thread_id(conversation_id),
                     "pending_interrupt": pending,
                 },
@@ -119,6 +142,7 @@ async def _execute_background_agent_run(
             graph_state=graph_result.state,
             error_code=graph_result.error_code,
             error_detail=graph_result.error_code,
+            stage_history=graph_result.stage_history,
         )
         await active_run_registry.mark_done(
             conversation_id,
@@ -130,38 +154,41 @@ async def _execute_background_agent_run(
     except asyncio.CancelledError:
         if active_run_registry.shutting_down or run.cancel_reason in {"restart", "lease_lost"}:
             raise
-        state = await _checkpoint_state(conversation_id)
-        partial = str(
-            state.get("answer_final")
-            or state.get("answer_draft")
-            or controller.assistant_text_snapshot
-            or ""
-        ).strip()
-        partial = partial + "\n\n[已停止]" if partial else "[已停止]"
-        latest_stage = {
-            "event": "agent_stage",
-            "engine": "langgraph",
-            "run_id": run.run_id,
-            "stage": "publish",
-            "status": "cancelled",
-            "summary": "用户已停止本轮任务",
-        }
-        controller.add_data(latest_stage)
-        await terminal_publisher.commit(
-            status="cancelled",
-            final_text=partial,
-            graph_state=state,
-            error_code="cancelled",
-            error_detail="cancelled by user",
-            latest_stage=latest_stage,
-        )
-        await active_run_registry.mark_done(
-            conversation_id,
-            "cancelled",
-            final_text=partial,
-            error="cancelled",
-            persist=False,
-        )
+        try:
+            state = await _checkpoint_state(conversation_id)
+            partial = str(
+                state.get("answer_final")
+                or state.get("answer_draft")
+                or controller.assistant_text_snapshot
+                or ""
+            ).strip()
+            partial = partial + "\n\n[已停止]" if partial else "[已停止]"
+            latest_stage = {
+                "event": "agent_stage",
+                "engine": "langgraph_agent_loop",
+                "run_id": run.run_id,
+                "stage": "publish",
+                "status": "cancelled",
+                "summary": "用户已停止本轮任务",
+            }
+            controller.add_data(latest_stage)
+            await terminal_publisher.commit(
+                status="cancelled",
+                final_text=partial,
+                graph_state=state,
+                error_code="cancelled",
+                error_detail="cancelled by user",
+                latest_stage=latest_stage,
+            )
+            await active_run_registry.mark_done(
+                conversation_id,
+                "cancelled",
+                final_text=partial,
+                error="cancelled",
+                persist=False,
+            )
+        finally:
+            await _release_cancelled_run_resources(db_manager, run.run_id)
         raise
     except Exception as exc:
         logger.exception("[Agent] LangGraph background run failed")
@@ -175,7 +202,7 @@ async def _execute_background_agent_run(
         ).strip()
         latest_stage = {
             "event": "agent_stage",
-            "engine": "langgraph",
+            "engine": "langgraph_agent_loop",
             "run_id": run.run_id,
             "stage": "publish",
             "status": "failed",

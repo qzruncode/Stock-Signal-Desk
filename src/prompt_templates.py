@@ -12,48 +12,25 @@ from sqlalchemy.orm.exc import NoResultFound
 
 from src.storage import Base, get_db
 
-DEFAULT_PROMPT_NAME = "综合多维分析"
+DEFAULT_PROMPT_NAME = "通用取证分析"
 
-DEFAULT_PROMPT_CONTENT = """## 角色
-你是一个 A股/港股/美股 综合投资分析助手。
+DEFAULT_PROMPT_CONTENT = """## 任务
+围绕用户当前问题完成可核验的分析或说明，不套用预设领域框架。
 
-## 分析框架
-请从以下维度对股票进行全面分析：
-
-### 1. 技术面
-- 趋势判断（多头/空头/震荡），关注均线排列和价格位置
-- 关键支撑位和压力位
-- 成交量和价格的关系（放量/缩量）
-- K线形态和短期动能
-- 不要迷信单一技术指标，结合多个信号综合判断
-
-### 2. 基本面
-- 估值水平（PE/PB 分位数，与同行业对比）
-- 财务健康度（营收/利润增速、现金流、ROE）
-- 成长性评估
-- 行业地位和竞争力
-
-### 3. 资金面
-- 主力资金流向（净流入/流出趋势）
-- 筹码结构（集中度、获利比例）
-- 北向资金/机构持仓变化（如适用）
-
-### 4. 消息面
-- 近期重要公告和新闻
-- 行业政策动态
-- 市场情绪和舆情
-
-### 5. 宏观面
-- 大盘指数趋势
-- 所属行业板块表现排名
-- 相关行业联动
+## 方法
+1. 先明确问题、范围、时间口径和交付形式。
+2. 只使用与问题直接相关的事实、材料或工具结果；区分事实、计算、观点和推断。
+3. 对每项重要结论说明依据、反证或不确定性；信息不足时明确缺口，不补造细节。
+4. 输出应直接回应用户问题，避免无关维度、固定评分和预设行动建议。
 
 ## 输出要求
-1. 综合评分（满分100）
-2. 各维度分析摘要（每个维度 2-4 句话，给出关键数据）
-3. 操作建议：买入/观望/减仓，附止损/目标位
-4. 风险提示：列出核心风险点
-5. 如果数据不足以做出判断，说明缺少什么数据"""
+先给结论，再给简洁依据；保留必要的来源、时间和限制说明。"""
+
+_LEGACY_DEFAULT_TEMPLATE_NAME = "综合多维分析"
+_LEGACY_DEFAULT_TEMPLATE_MARKERS = (
+    "综合评分（满分100）",
+    "操作建议：买入/观望/减仓",
+)
 
 
 class PromptTemplate(Base):
@@ -79,6 +56,21 @@ class PromptTemplateStore:
         existing = self.load_all()
         if not existing:
             self.create(DEFAULT_PROMPT_NAME, DEFAULT_PROMPT_CONTENT, is_default=True)
+            return
+        # Migrate only the untouched, code-supplied stock-analysis SOP.  A
+        # user-authored template is never rewritten merely because it happens
+        # to discuss a similar subject.
+        for template in existing:
+            content = str(template.get("content") or "")
+            if (
+                template.get("name") == _LEGACY_DEFAULT_TEMPLATE_NAME
+                and all(marker in content for marker in _LEGACY_DEFAULT_TEMPLATE_MARKERS)
+            ):
+                self.update(
+                    str(template["id"]),
+                    name=DEFAULT_PROMPT_NAME,
+                    content=DEFAULT_PROMPT_CONTENT,
+                )
 
     def load_all(self) -> List[dict]:
         db = get_db()
@@ -164,6 +156,37 @@ class PromptTemplateStore:
         with db._engine.begin() as conn:
             conn.execute(PromptTemplate.__table__.update().where(PromptTemplate.id == template_id).values(**values))
         return self.get(template_id)
+
+    def set_default(self, template_id: str) -> Optional[dict]:
+        """Set exactly one default template inside one database transaction."""
+        db = get_db()
+        now = _now_iso()
+        with db._engine.begin() as conn:
+            target = conn.execute(
+                PromptTemplate.__table__.update()
+                .where(PromptTemplate.id == template_id)
+                .values(is_default=1, updated_at=now)
+            )
+            if not target.rowcount:
+                return None
+            conn.execute(
+                PromptTemplate.__table__.update()
+                .where(PromptTemplate.id != template_id)
+                .values(is_default=0, updated_at=now)
+            )
+        return self.get(template_id)
+
+    def delete_non_default(self, template_id: str) -> bool:
+        """Delete one non-default template with no preceding read."""
+        db = get_db()
+        with db._engine.begin() as conn:
+            result = conn.execute(
+                PromptTemplate.__table__.delete().where(
+                    PromptTemplate.id == template_id,
+                    PromptTemplate.is_default != 1,
+                )
+            )
+        return bool(result.rowcount)
 
     def delete(self, template_id: str) -> bool:
         existing = self.get(template_id)

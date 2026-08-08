@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import patch
 
 from src.services.name_to_code_resolver import (
+    resolve_local_name_to_code,
     resolve_name_to_code,
     _is_code_like,
     _normalize_code,
@@ -134,6 +135,12 @@ class TestResolveNameToCode:
         with patch("src.services.name_to_code_resolver._get_akshare_name_to_code") as online:
             assert resolve_name_to_code("维宏股份") == "300508"
             online.assert_not_called()
+
+    @patch("src.services.name_to_code_resolver.get_database_stock_indexes", return_value=({}, {}))
+    @patch("src.services.name_to_code_resolver._get_akshare_name_to_code")
+    def test_local_only_resolution_never_uses_akshare(self, mock_akshare, _mock_database):
+        assert resolve_local_name_to_code("仅在线可解析的证券") is None
+        mock_akshare.assert_not_called()
 
     def test_returns_none_for_empty_or_invalid_input(self):
         assert resolve_name_to_code("") is None

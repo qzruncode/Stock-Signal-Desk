@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from src.tools._akshare import bare_symbol, cached_call, exchange_prefix, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, exchange_prefix, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 _BASE_URL = "https://emweb.securities.eastmoney.com/PC_HSF10/ShareholderResearch"
@@ -299,6 +299,7 @@ def get_shareholder_structure(
     use_cache: bool = True,
     include_structured: bool = False,
 ) -> dict[str, Any]:
+    """Legacy merged shareholder view for non-Agent callers only."""
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")
@@ -472,20 +473,187 @@ def get_shareholder_structure(
     }
 
 
-TOOL = ToolSpec(
-    name="get_shareholder_structure",
-    description=DESCRIPTION,
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A股/北交所股票代码或名称"},
-            "include_structured": {
-                "type": "boolean",
-                "default": False,
-                "description": "是否同时读取质押、解禁、北向个股持仓、增减持和控制权证据",
-            },
-        },
-        ["symbol"],
+def _validated_code(symbol: str) -> str:
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("symbol 必须能解析为 6 位股票代码")
+    return code
+
+
+def read_shareholder_f10_profile_eastmoney(
+    symbol: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read the single Eastmoney F10 PageAjax shareholder profile."""
+    code = _validated_code(symbol)
+    payload, cached = (
+        cached_call(
+            f"shareholders:f10:v2:{code}",
+            lambda: _fetch_f10_profile(code),
+            ttl_seconds=6 * 3600,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_f10_profile(code), False)
+    )
+    holder_count = _normalize_holder_count(payload)
+    top_holders, top_holders_report_date = _normalize_top_holders(payload)
+    controller = _normalize_controller(payload)
+    holder_report_date = holder_count.get("report_date") or top_holders_report_date
+    return {
+        "symbol": code,
+        "holder_count": holder_count,
+        "top_holders_report_date": top_holders_report_date,
+        "top_holders": top_holders,
+        "top_holder_item_count": len(top_holders),
+        "actual_controller": controller,
+        "source": "东方财富F10股东研究",
+        "source_url": f"{_SOURCE_URL}?type=web&code={exchange_prefix(code, upper=True)}",
+        "source_scope": "shareholder_f10_profile",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": ([str(controller["date_note"])] if controller.get("available") else []),
+        "data_time": holder_report_date,
+        "holder_report_date": holder_report_date,
+        "freshness_unknown": holder_report_date is None,
+        "is_stale": (
+            holder_report_date < _expected_latest_report_date(_today()).isoformat()
+            if holder_report_date
+            else None
+        ),
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+def read_institutional_holdings_eastmoney(
+    symbol: str,
+    report_date: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one explicit disclosure-period institutional-holdings query."""
+    code = _validated_code(symbol)
+    try:
+        normalized_date = datetime.fromisoformat(str(report_date)[:10]).date().isoformat()
+    except ValueError as exc:
+        raise ValueError("report_date 必须是 YYYY-MM-DD") from exc
+    payload, cached = (
+        cached_call(
+            f"shareholders:institution:v2:{code}:{normalized_date}",
+            lambda: _fetch_institution_report(code, normalized_date),
+            ttl_seconds=12 * 3600,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_institution_report(code, normalized_date), False)
+    )
+    institution = _normalize_institution(payload, normalized_date)
+    return {
+        "symbol": code,
+        "institution_holding": institution,
+        "source": "东方财富F10机构持仓",
+        "source_url": f"{_SOURCE_URL}?type=web&code={exchange_prefix(code, upper=True)}",
+        "source_scope": "institutional_holdings_for_explicit_report_date",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": ([] if institution.get("available") else ["该披露期未返回机构持仓汇总"]),
+        "data_time": normalized_date,
+        "freshness_unknown": False,
+        "is_stale": None,
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+def read_major_shareholder_changes_ths(
+    symbol: str,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read the one THS important-shareholder-change source."""
+    code = _validated_code(symbol)
+    frame, cached = (
+        cached_call(
+            f"shareholders:changes:v2:{code}",
+            lambda: _fetch_holder_change_frame(code),
+            ttl_seconds=6 * 3600,
+            attempts=2,
+        )
+        if use_cache
+        else (_fetch_holder_change_frame(code), False)
+    )
+    items = _normalize_holder_changes(frame)
+    latest = next((item.get("announcement_date") for item in items if item.get("announcement_date")), None)
+    return {
+        "symbol": code,
+        "holder_changes": items,
+        "holder_change_item_count": len(items),
+        "source": "AKShare/同花顺重要股东增减持",
+        "source_url": f"https://basic.10jqka.com.cn/new/{code}/event.html",
+        "source_scope": "major_shareholder_changes",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": ([] if items else ["该数据源未返回重要股东增减持记录"]),
+        "data_time": latest,
+        "freshness_unknown": latest is None,
+        "is_stale": None,
+        "_cached": cached,
+        "_fetched_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_shareholder_f10_profile_eastmoney",
+        description=(
+            "从东方财富 F10 的单次股东档案响应读取股东户数、前十大股东和实际控制人字段；"
+            "不请求机构持仓明细、增减持或其他股权数据。"
+        ),
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "A股/北交所股票代码或名称"}},
+            ["symbol"],
+        ),
+        executor=read_shareholder_f10_profile_eastmoney,
+        category="financials",
     ),
-    executor=get_shareholder_structure,
-    category="financials",
+    ToolSpec(
+        name="read_institutional_holdings_eastmoney",
+        description=(
+            "从东方财富读取一只股票在一个明确披露期的机构持仓汇总。"
+            "report_date 必须来自已取得的披露期信息；工具不会自动查找或选择报告期。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A股/北交所股票代码或名称"},
+                "report_date": {"type": "string", "description": "已披露报告期，YYYY-MM-DD"},
+            },
+            ["symbol", "report_date"],
+        ),
+        executor=read_institutional_holdings_eastmoney,
+        category="financials",
+    ),
+    ToolSpec(
+        name="read_major_shareholder_changes_ths",
+        description="从同花顺/AKShare读取一只股票的重要股东增减持记录，不加载 F10 股东档案或机构持仓。",
+        parameters=object_schema(
+            {"symbol": {"type": "string", "description": "A股/北交所股票代码或名称"}},
+            ["symbol"],
+        ),
+        executor=read_major_shareholder_changes_ths,
+        category="financials",
+    ),
 )
+
+
+__all__ = [
+    "TOOLS",
+    "get_shareholder_structure",
+    "read_institutional_holdings_eastmoney",
+    "read_major_shareholder_changes_ths",
+    "read_shareholder_f10_profile_eastmoney",
+]

@@ -1,93 +1,86 @@
-"""Model boundary for planning, reflection, synthesis, and verification."""
+"""LangChain chat-model adapter over the application's guarded LiteLLM client.
+
+The application keeps its existing provider accounting, retry, circuit-breaker,
+and lease logic.  This adapter only translates the standard LangChain message
+and tool-call protocol, so ``create_agent`` owns the Agent loop instead of a
+second, hand-written structured-output loop.
+"""
 
 from __future__ import annotations
 
 import json
-import re
-from typing import Any, Awaitable, Callable, Mapping, TypeVar
+from typing import Any, Awaitable, Callable, Mapping
 
-from json_repair import repair_json
-from pydantic import BaseModel, ValidationError
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, convert_to_openai_messages
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import ConfigDict, Field
 
 from src.agent.model_runtime import GuardedModelRuntime
 from src.llm.anthropic_gateway import build_litellm_kwargs
-
-
-ContractT = TypeVar("ContractT", bound=BaseModel)
 
 
 def _field(value: Any, name: str) -> Any:
     return value.get(name) if isinstance(value, Mapping) else getattr(value, name, None)
 
 
-def _json_object(value: Any) -> dict[str, Any]:
-    if isinstance(value, dict):
-        return dict(value)
-    text = str(value or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        parsed = repair_json(text, return_objects=True)
-    if not isinstance(parsed, dict):
-        raise ValueError("model response must contain one JSON object")
-    return parsed
+def _content(value: Any) -> str | list[dict[str, Any]]:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return [dict(item) if isinstance(item, Mapping) else {"type": "text", "text": str(item)} for item in value]
+    if value is None:
+        return ""
+    return str(value)
 
 
-def _response_payload(response: Any, function_name: str) -> dict[str, Any]:
-    contents: list[Any] = []
-    for choice in _field(response, "choices") or []:
-        message = _field(choice, "message")
-        if message is None:
+def _tool_calls(message: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for index, raw_call in enumerate(_field(message, "tool_calls") or []):
+        function = _field(raw_call, "function") or {}
+        name = str(_field(function, "name") or _field(raw_call, "name") or "").strip()
+        raw_arguments = _field(function, "arguments")
+        if raw_arguments is None:
+            raw_arguments = _field(raw_call, "arguments")
+        if isinstance(raw_arguments, Mapping):
+            arguments = dict(raw_arguments)
+        else:
+            try:
+                parsed = json.loads(str(raw_arguments or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = {}
+            arguments = dict(parsed) if isinstance(parsed, Mapping) else {}
+        if not name:
             continue
-        for call in _field(message, "tool_calls") or []:
-            function = _field(call, "function")
-            if str(_field(function, "name") or "") != function_name:
-                continue
-            arguments = _field(function, "arguments")
-            if arguments is not None:
-                return _json_object(arguments)
-        content = _field(message, "content")
-        if content:
-            contents.append(content)
-    errors: list[Exception] = []
-    for content in contents:
-        try:
-            return _json_object(content)
-        except Exception as exc:  # pragma: no cover - only last error matters
-            errors.append(exc)
-    if errors:
-        raise errors[0]
-    raise ValueError(f"model returned no {function_name} payload")
+        calls.append(
+            {
+                "name": name,
+                "args": arguments,
+                "id": str(_field(raw_call, "id") or f"call_{index}"),
+                "type": "tool_call",
+            }
+        )
+    return calls
 
 
-def _response_text(response: Any) -> str:
-    parts: list[str] = []
-    for choice in _field(response, "choices") or []:
-        message = _field(choice, "message")
-        content = _field(message, "content")
-        if isinstance(content, str):
-            parts.append(content)
-        elif isinstance(content, list):
-            for item in content:
-                text = _field(item, "text")
-                if text:
-                    parts.append(str(text))
-    return "".join(parts).strip()
+def _response_metadata(response: Any) -> dict[str, Any]:
+    choice = next(iter(_field(response, "choices") or []), None)
+    usage = _field(response, "usage") or {}
+    return {
+        "model": str(_field(response, "model") or ""),
+        "finish_reason": str(_field(choice, "finish_reason") or ""),
+        "usage": {
+            key: _field(usage, key)
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            if _field(usage, key) is not None
+        },
+    }
 
 
-def _fallback_token_estimator(messages: list[dict[str, Any]], _model: str) -> int:
-    characters = sum(
-        len(json.dumps(message, ensure_ascii=False, default=str))
-        for message in messages
-    )
-    return max(1, int(characters / 2.5))
-
-
-class StructuredModelClient:
-    """One run-scoped client with provider budgets and exact contracts."""
+class LiteLLMGateway:
+    """Run-scoped access to LiteLLM through the existing safety boundary."""
 
     def __init__(
         self,
@@ -107,7 +100,8 @@ class StructuredModelClient:
 
                 return int(litellm.token_counter(model=model, messages=messages))
             except Exception:
-                return _fallback_token_estimator(messages, model)
+                characters = len(json.dumps(messages, ensure_ascii=False, default=str))
+                return max(1, int(characters / 2.5))
 
         self.runtime = GuardedModelRuntime(
             database=database,
@@ -117,7 +111,7 @@ class StructuredModelClient:
             token_estimator=estimate,
         )
 
-    async def _complete(self, **kwargs: Any) -> Any:
+    async def complete(self, **kwargs: Any) -> Any:
         completion = self._completion
         if completion is None:
             import litellm
@@ -125,101 +119,78 @@ class StructuredModelClient:
             completion = litellm.acompletion
         return await self.runtime.complete(completion, **kwargs)
 
-    async def structured(
-        self,
-        contract: type[ContractT],
-        *,
-        function_name: str,
-        description: str,
-        system_prompt: str,
-        payload: Mapping[str, Any],
-        max_tokens: int = 4_000,
-        validator: Callable[[ContractT], None] | None = None,
-    ) -> ContractT:
-        """Request one exact object and perform one targeted repair."""
-        schema = contract.model_json_schema()
-        first_payload: dict[str, Any] | None = None
-        first_error: Exception | None = None
-        for attempt in range(2):
-            request_payload = dict(payload)
-            if attempt:
-                request_payload["targeted_repair"] = {
-                    "invalid_payload": first_payload,
-                    "validation_error": str(first_error),
-                    "instruction": "仅修复无效字段，返回符合完整 Schema 的对象。",
-                }
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "task": description,
-                            "state": request_payload,
-                        },
-                        ensure_ascii=False,
-                        default=str,
-                    ),
-                },
-            ]
-            kwargs = build_litellm_kwargs(
-                self.llm_config,
-                stream=False,
-                messages=messages,
-                tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": function_name,
-                            "description": description,
-                            "parameters": schema,
-                        },
-                    }
-                ],
-                tool_choice={
-                    "type": "function",
-                    "function": {"name": function_name},
-                },
-                temperature=0,
-                max_tokens=max(256, int(max_tokens)),
-            )
-            raw_payload: dict[str, Any] | None = None
-            try:
-                response = await self._complete(**kwargs)
-                raw_payload = _response_payload(response, function_name)
-                result = contract.model_validate(raw_payload)
-                if validator is not None:
-                    validator(result)
-                return result
-            except (ValidationError, ValueError, TypeError) as exc:
-                if attempt == 0:
-                    first_payload = raw_payload
-                    first_error = exc
-                    continue
-                raise RuntimeError(
-                    f"{function_name} remained invalid after one repair: {exc}"
-                ) from exc
-        raise AssertionError("unreachable")
 
-    async def text(
+class LiteLLMChatModel(BaseChatModel):
+    """A native async chat model that speaks LangChain's tool protocol."""
+
+    gateway: LiteLLMGateway = Field(exclude=True)
+    llm_config: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @property
+    def _llm_type(self) -> str:
+        return "application_litellm"
+
+    @property
+    def _identifying_params(self) -> dict[str, Any]:
+        return {"model": str(self.llm_config.get("model") or "default")}
+
+    def bind_tools(
         self,
+        tools: list[BaseTool | dict[str, Any]] | list[Any],
         *,
-        messages: list[dict[str, Any]],
-        max_tokens: int = 8_000,
-        temperature: float = 0.1,
-    ) -> str:
-        kwargs = build_litellm_kwargs(
-            self.llm_config,
-            stream=False,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max(256, int(max_tokens)),
+        tool_choice: Any | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        return self.bind(
+            tools=[convert_to_openai_tool(tool) for tool in tools],
+            tool_choice=tool_choice,
+            **kwargs,
         )
-        response = await self._complete(**kwargs)
-        text = _response_text(response)
-        if not text:
-            raise RuntimeError("model returned an empty answer")
-        return text
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        raise NotImplementedError("LiteLLMChatModel is async-only")
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        request: dict[str, Any] = {
+            "stream": False,
+            "messages": convert_to_openai_messages(messages),
+            "temperature": kwargs.pop("temperature", self.llm_config.get("temperature", 0.1)),
+            "max_tokens": int(kwargs.pop("max_tokens", self.llm_config.get("max_tokens", 8_000))),
+        }
+        if stop:
+            request["stop"] = stop
+        for field in ("tools", "tool_choice", "parallel_tool_calls", "response_format"):
+            if field in kwargs and kwargs[field] is not None:
+                request[field] = kwargs[field]
+        response = await self.gateway.complete(
+            **build_litellm_kwargs(self.llm_config, **request)
+        )
+        choice = next(iter(_field(response, "choices") or []), None)
+        message = _field(choice, "message") or {}
+        additional_kwargs: dict[str, Any] = {}
+        reasoning = _field(message, "reasoning_content")
+        if reasoning:
+            additional_kwargs["reasoning_content"] = str(reasoning)
+        ai_message = AIMessage(
+            content=_content(_field(message, "content")),
+            tool_calls=_tool_calls(message),
+            additional_kwargs=additional_kwargs,
+            response_metadata=_response_metadata(response),
+        )
+        return ChatResult(generations=[ChatGeneration(message=ai_message)])
 
 
-__all__ = ["StructuredModelClient"]
+__all__ = ["LiteLLMChatModel", "LiteLLMGateway"]

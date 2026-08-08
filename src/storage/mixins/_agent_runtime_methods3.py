@@ -288,6 +288,40 @@ class _AgentRuntimeMixinMethods3:
             return True
 
         return bool(self._run_write_transaction("release_agent_resource", _release))
+
+    def release_agent_resources_for_run(self, run_id: str) -> int:
+        """Release every shared resource slot still attributed to one run.
+
+        Normal ``agent_resource_lease`` context exits release their own slot.
+        A user cancellation can however interrupt a LangGraph fan-out while a
+        provider coroutine is still unwinding.  Clearing the run-owned leases
+        here makes the cancellation terminal state immediately available to
+        later runs.  A late owner-specific release from the cancelled task is
+        harmless because the owner token will no longer match.
+        """
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            return 0
+        now = datetime.now()
+
+        def _release(session):
+            statement = select(AgentResourceLease).where(
+                AgentResourceLease.run_id == normalized_run_id
+            )
+            if not self._is_sqlite_engine:
+                statement = statement.with_for_update()
+            records = list(session.execute(statement).scalars())
+            for record in records:
+                record.lease_owner = None
+                record.run_id = None
+                record.step_id = None
+                record.lease_expires_at = None
+                record.updated_at = now
+            return len(records)
+
+        return int(
+            self._run_write_transaction("release_agent_resources_for_run", _release)
+        )
     def agent_circuit_before_request(
         self,
         resource_name: str,

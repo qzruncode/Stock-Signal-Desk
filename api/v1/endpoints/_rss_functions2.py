@@ -170,6 +170,7 @@ def get_rss_feed_item_detail(body: FeedItemDetailRequest):
         or _fulltext_lost_content(list_html, new_html)
     ):
         selected["content_html"] = body.content_html
+        selected["_content_origin"] = "list_item_fallback"
         if not str(selected.get("summary") or "").strip() and body.summary:
             selected["summary"] = body.summary
         if not str(selected.get("image") or "").strip() and body.image:

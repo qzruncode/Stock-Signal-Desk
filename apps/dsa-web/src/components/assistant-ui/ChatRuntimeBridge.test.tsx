@@ -91,12 +91,7 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
-  it('falls back to canonical messages when a tool thread state cannot be imported', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    runtime.import.mockImplementationOnce(() => {
-      throw new Error('invalid exported repository');
-    });
-
+  it('ignores opaque tool thread state and restores canonical messages', async () => {
     render(
       <ChatRuntimeBridge
         conversationDetail={makeDetail(true)}
@@ -106,15 +101,14 @@ describe('ChatRuntimeBridge', () => {
     );
 
     await waitFor(() => {
-      expect(runtime.import).toHaveBeenCalledOnce();
+      expect(runtime.import).not.toHaveBeenCalled();
       expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
         expect.objectContaining({ id: 'assistant-1', role: 'assistant' }),
       ]));
     });
-    warn.mockRestore();
   });
 
-  it('imports thread state when it contains model reasoning', async () => {
+  it('does not import historical reasoning parts as live UI state', async () => {
     const detail = makeDetail(false);
     detail.threadState!.messages[0]!.message.content = [
       { type: 'reasoning', text: '先核验事实。' },
@@ -130,7 +124,8 @@ describe('ChatRuntimeBridge', () => {
     );
 
     await waitFor(() => {
-      expect(runtime.import).toHaveBeenCalledOnce();
+      expect(runtime.import).not.toHaveBeenCalled();
+      expect(runtime.reset).toHaveBeenCalled();
     });
   });
 
@@ -162,7 +157,9 @@ describe('ChatRuntimeBridge', () => {
     await waitFor(() => {
       expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
         expect.objectContaining({
-          id: 'assistant-1',
+          id: 'conversation-1-agent-trace-run-failed',
+          role: 'assistant',
+          content: [],
           metadata: {
             unstable_data: [detail.resumeState!.latestStage],
           },
@@ -171,7 +168,7 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
-  it('overrides stale rich-history status with the persisted terminal stage', async () => {
+  it('uses the persisted terminal stage instead of stale rich-history state', async () => {
     const detail = makeDetail(false);
     detail.threadState!.messages[0]!.message.content = [
       { type: 'reasoning', text: '模型仍在处理，已等待 816 秒' },
@@ -209,10 +206,11 @@ describe('ChatRuntimeBridge', () => {
     );
 
     await waitFor(() => {
-      const imported = runtime.import.mock.calls.at(-1)?.[0] as {
-        messages: Array<{ message: { metadata: { unstable_data: unknown[] } } }>;
-      };
-      const events = imported.messages[0]!.message.metadata.unstable_data;
+      expect(runtime.import).not.toHaveBeenCalled();
+      const resetMessages = runtime.reset.mock.calls.at(-1)?.[0] as Array<{
+        metadata?: { unstable_data?: unknown[] };
+      }>;
+      const events = resetMessages.find((message) => message.metadata?.unstable_data)?.metadata?.unstable_data;
       expect(events.at(-1)).toBe(detail.resumeState!.latestStage);
     });
   });
@@ -242,6 +240,52 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
+  it('does not replay a terminal failed run when a stale payload still marks it active', async () => {
+    const detail = makeDetail(false);
+    detail.messages = detail.messages.slice(0, 1);
+    detail.threadState = null;
+    detail.resumeState = {
+      runId: 'run-failed',
+      active: true,
+      status: 'failed',
+      afterChunkIndex: 0,
+      assistantText: '',
+      hasToolEvents: true,
+      latestStage: {
+        event: 'agent_stage_v2',
+        runId: 'run-failed',
+        stage: 'completed',
+        status: 'failed',
+        summary: '模型服务不可用，已结束本轮执行',
+      },
+      executionTrace: {
+        toolResults: [{ action_id: 'action-1', tool_name: 'search_news', success: true }],
+      },
+    };
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.startRun).not.toHaveBeenCalled();
+      expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'conversation-1-agent-trace-run-failed',
+          role: 'assistant',
+          content: [],
+          metadata: expect.objectContaining({
+            unstable_data: [detail.resumeState!.latestStage],
+          }),
+        }),
+      ]));
+    });
+  });
+
   it('does not hydrate a stale detail snapshot over a locally running turn', async () => {
     vi.mocked(useThread).mockReturnValue(true);
 
@@ -260,7 +304,82 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
-  it('detaches a running local stream when a different conversation is ready', async () => {
+  it('detaches a stale local stream when the durable run has already ended', async () => {
+    vi.mocked(useThread).mockReturnValue(true);
+    const detail = makeDetail(false);
+    detail.resumeState = {
+      runId: 'run-terminal',
+      active: false,
+      status: 'partial',
+      afterChunkIndex: 0,
+      assistantText: '已安全结束的部分结果',
+      latestStage: {
+        event: 'agent_stage',
+        runId: 'run-terminal',
+        stage: 'publish',
+        status: 'completed',
+        summary: '答案与运行终态已准备原子发布',
+      },
+    };
+
+    const view = render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.cancelRun).toHaveBeenCalledOnce();
+      expect(runtime.reset).not.toHaveBeenCalled();
+    });
+
+    vi.mocked(useThread).mockReturnValue(false);
+    view.rerender(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
+        expect.objectContaining({ id: 'assistant-1', role: 'assistant' }),
+      ]));
+    });
+  });
+
+  it('does not detach a fresh local turn because the loaded detail belongs to a prior terminal run', async () => {
+    vi.mocked(useThread).mockReturnValue(true);
+    const detail = makeDetail(false);
+    detail.resumeState = {
+      runId: 'run-prior-terminal',
+      active: false,
+      status: 'cancelled',
+      afterChunkIndex: 0,
+      assistantText: '',
+    };
+    const shouldDetachTerminalStream = vi.fn().mockReturnValue(false);
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+        shouldDetachTerminalStream={shouldDetachTerminalStream}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(shouldDetachTerminalStream).toHaveBeenCalledWith('conversation-1', 'run-prior-terminal');
+      expect(runtime.cancelRun).not.toHaveBeenCalled();
+      expect(runtime.reset).not.toHaveBeenCalled();
+    });
+  });
+
+  it('waits for a running local stream to detach before replacing its message tree', async () => {
     vi.mocked(useThread).mockReturnValue(true);
     const firstDetail = makeDetail(false);
     const view = render(
@@ -293,6 +412,19 @@ describe('ChatRuntimeBridge', () => {
 
     await waitFor(() => {
       expect(runtime.cancelRun).toHaveBeenCalledOnce();
+      expect(runtime.reset).not.toHaveBeenCalled();
+    });
+
+    vi.mocked(useThread).mockReturnValue(false);
+    view.rerender(
+      <ChatRuntimeBridge
+        conversationDetail={nextDetail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
       expect(runtime.reset).toHaveBeenLastCalledWith(expect.arrayContaining([
         expect.objectContaining({ id: 'assistant-1' }),
       ]));

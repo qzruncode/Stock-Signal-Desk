@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from src.logging_config import LITELLM_LOGGERS, setup_logging
+from src.logging_config import DEFAULT_QUIET_LOGGERS, LITELLM_LOGGERS, setup_logging
 
 
 @pytest.fixture(autouse=True)
@@ -14,6 +14,7 @@ def restore_logging_state():
     original_root_level = root_logger.level
     original_handlers = list(root_logger.handlers)
     original_litellm_levels = {logger_name: logging.getLogger(logger_name).level for logger_name in LITELLM_LOGGERS}
+    original_quiet_levels = {logger_name: logging.getLogger(logger_name).level for logger_name in DEFAULT_QUIET_LOGGERS}
 
     yield
 
@@ -26,6 +27,8 @@ def restore_logging_state():
     root_logger.setLevel(original_root_level)
 
     for logger_name, level in original_litellm_levels.items():
+        logging.getLogger(logger_name).setLevel(level)
+    for logger_name, level in original_quiet_levels.items():
         logging.getLogger(logger_name).setLevel(level)
 
 
@@ -86,3 +89,16 @@ def test_invalid_litellm_log_level_falls_back_to_warning(tmp_path, monkeypatch):
     assert "invalid level warning should remain" in debug_log_text
     assert "LITELLM_LOG_LEVEL" in debug_log_text
     assert "已回退为 WARNING" in debug_log_text
+
+
+def test_aiosqlite_checkpoint_debug_is_quiet_but_warnings_remain(tmp_path):
+    setup_logging(log_prefix="stock_analysis", log_dir=str(tmp_path), debug=False)
+
+    logger = logging.getLogger("aiosqlite")
+    logger.debug("checkpoint payload must not be written")
+    logger.warning("aiosqlite warning should remain")
+
+    debug_log_text = _read_debug_log(tmp_path)
+
+    assert "checkpoint payload must not be written" not in debug_log_text
+    assert "aiosqlite warning should remain" in debug_log_text

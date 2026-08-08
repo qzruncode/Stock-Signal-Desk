@@ -6,7 +6,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.tools._akshare import bare_symbol, cached_call, frame_records
+from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call, frame_records
 from src.tools.base import ToolSpec, object_schema
 
 
@@ -126,6 +126,7 @@ def get_research_report(
     limit: int = 20,
     use_cache: bool = True,
 ) -> dict[str, Any]:
+    """Legacy cross-source fallback for non-Agent callers only."""
     code = bare_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError(f"无法识别 A 股代码: {symbol}")
@@ -255,21 +256,94 @@ def get_research_report(
     }
 
 
-TOOL = ToolSpec(
-    name="get_research_report",
-    description=(
-        "仅用于查询单只 A 股的券商个股研报；输入必须能定位到具体股票。返回报告日期、机构、评级、"
-        "PDF 链接及预测 EPS（元/股）和 PE（倍）。不要用于公司新闻、公告、已实现财务数据、行业、"
-        "宏观、期货或评级研究；其他研究材料应使用 websearch，或通过 RSS 原子工具发现并读取来源。"
+def read_company_research_reports_akshare(
+    symbol: str,
+    days: int = 365,
+    limit: int = 20,
+    *,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Read one structured research-report source without RSS substitution."""
+    code = bare_local_symbol(symbol)
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError(f"无法识别 A 股代码: {symbol}")
+    days = int(days)
+    limit = int(limit)
+    if not 1 <= days <= 1825:
+        raise ValueError("days 必须在 1 到 1825 之间")
+    if not 1 <= limit <= 100:
+        raise ValueError("limit 必须在 1 到 100 之间")
+
+    now = datetime.now().astimezone()
+    cutoff = now.replace(tzinfo=None) - timedelta(days=days)
+    frame, cached = (
+        cached_call(
+            f"research-report:akshare:v1:{code}",
+            lambda: _fetch_akshare(code),
+            ttl_seconds=86400,
+            attempts=1,
+        )
+        if use_cache
+        else (_fetch_akshare(code), False)
+    )
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in frame_records(frame):
+        if not _within_days(row.get("日期"), cutoff):
+            continue
+        item = _normalize_direct(row, code)
+        if item is None:
+            continue
+        key = re.sub(
+            r"\s+", "", f"{item.get('title', '')}|{item.get('publish_date', '')}|{item.get('org', '')}"
+        ).lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
+    items.sort(key=lambda row: row.get("publish_date") or "", reverse=True)
+    items = items[:limit]
+    latest = next((item.get("publish_date") for item in items if item.get("publish_date")), None)
+    return {
+        "symbol": code,
+        "days": days,
+        "limit": limit,
+        "items": items,
+        "item_count": len(items),
+        "has_reports": bool(items),
+        "source": "AKShare/东方财富个股研报",
+        "source_scope": "broker_individual_stock_research_reports",
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": [],
+        "data_time": latest,
+        "retrieved_at": now.isoformat(),
+        "is_stale": False if latest else None,
+        "freshness_unknown": latest is None,
+        "_cached": cached,
+    }
+
+
+TOOLS = (
+    ToolSpec(
+        name="read_company_research_reports_akshare",
+        description=(
+            "从 AKShare/东方财富的单一券商个股研报源读取一只 A 股的研报；"
+            "返回日期、机构、评级、PDF 链接和原始预测字段，不搜索 RSS 或混合其他研究来源。"
+        ),
+        parameters=object_schema(
+            {
+                "symbol": {"type": "string", "description": "A 股代码或名称"},
+                "days": {"type": "integer", "minimum": 1, "maximum": 1825, "default": 365},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+            ["symbol"],
+        ),
+        executor=read_company_research_reports_akshare,
+        category="research",
     ),
-    parameters=object_schema(
-        {
-            "symbol": {"type": "string", "description": "A 股代码或名称"},
-            "days": {"type": "integer", "minimum": 1, "maximum": 1825, "default": 365},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
-        },
-        ["symbol"],
-    ),
-    executor=get_research_report,
-    category="research",
 )
+
+
+__all__ = ["TOOLS", "get_research_report", "read_company_research_reports_akshare"]

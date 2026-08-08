@@ -40,6 +40,19 @@ def statement_view(result: dict[str, Any], section: str) -> dict[str, Any]:
     }
 
 
-def get_statement(symbol: str, section: str, periods: int, *, use_cache: bool = True) -> dict[str, Any]:
+def get_statement(
+    symbol: str,
+    section: str,
+    periods: int,
+    *,
+    use_cache: bool = True,
+    local_identity: bool = False,
+) -> dict[str, Any]:
     """Return one statement without requesting the other two statements."""
-    return get_financial_section(symbol, section, periods, use_cache=use_cache)
+    return get_financial_section(
+        symbol,
+        section,
+        periods,
+        use_cache=use_cache,
+        local_identity=local_identity,
+    )

@@ -16,7 +16,11 @@ import src.tools.search_research_library as research_library_module
 
 from src.tools.get_consensus_estimates import get_consensus_estimates
 from src.tools.get_peer_comparison import get_peer_comparison
-from src.tools.get_sector_flow import _fetch_all as fetch_all_sector_flow, get_sector_flow
+from src.tools.get_sector_flow import (
+    _fetch_all as fetch_all_sector_flow,
+    get_sector_flow,
+    read_sector_flow_eastmoney,
+)
 from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.registry import ToolRegistry
@@ -74,13 +78,23 @@ def test_legacy_search_helpers_have_no_intent_router_and_are_not_registered() ->
     registered = set(ToolRegistry().get_tool_names())
     assert {"search_financial_news", "search_research_library"}.isdisjoint(registered)
     assert {
+        "read_rss_cls_telegraph",
+        "read_rss_eastmoney_reports",
+        "list_rss_cls_subjects",
+        "read_rss_item",
+        "search_web_firecrawl_searxng",
+        "search_web_exa",
+        "search_web_parallel",
+        "read_web_http",
+        "read_web_scrapling",
+        "read_web_patchright",
+        "read_web_firecrawl",
+    } <= registered
+    assert {
         "discover_rss_sources",
         "inspect_rss_source",
         "read_rss_feed",
-        "read_rss_item",
-        "websearch",
-        "webfetch",
-    } <= registered
+    }.isdisjoint(registered)
 
 def test_semantic_rss_selector_is_driven_by_structured_topic_not_query_wording() -> None:
     routes = [
@@ -463,6 +477,48 @@ def test_sector_flow_never_substitutes_price_performance_for_money_flow() -> Non
     assert result["inflow_top"] == []
     assert result["outflow_top"] == []
     assert result["fallback_used"] is False
+
+
+def test_agent_sector_flow_read_preserves_source_order_without_rank_or_top_lists() -> None:
+    source_rows = [
+        {
+            "f12": "BK2",
+            "f14": "来源先返回的板块",
+            "f3": -1.2,
+            "f62": -90,
+            "f184": -3.0,
+            "f66": -50,
+            "f72": -40,
+            "f78": 10,
+            "f84": 80,
+            "f124": 1784180000,
+        },
+        {
+            "f12": "BK1",
+            "f14": "来源后返回的板块",
+            "f3": 1.2,
+            "f62": 100,
+            "f184": 2.0,
+            "f66": 60,
+            "f72": 40,
+            "f78": -20,
+            "f84": -80,
+            "f124": 1784180000,
+        },
+    ]
+
+    with (
+        patch("src.tools.get_sector_flow.cached_call", side_effect=lambda _key, call, **_kwargs: (call(), False)),
+        patch("src.tools.get_sector_flow._request_page", return_value=(source_rows, len(source_rows))),
+        patch("src.tools.get_sector_flow._freshness", return_value=(False, None)),
+    ):
+        result = read_sector_flow_eastmoney(type="industry", period="today", max_items=2)
+
+    assert result["success"] is True
+    assert result["source_scope"] == "sector_flow_source_records"
+    assert [item["sector_code"] for item in result["items"]] == ["BK2", "BK1"]
+    assert all("main_flow_rank" not in item for item in result["items"])
+    assert "inflow_top" not in result and "outflow_top" not in result
 
 def test_consensus_total_failure_has_unknown_freshness_without_data_time() -> None:
     with (

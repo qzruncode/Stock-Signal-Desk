@@ -59,8 +59,8 @@ const DIMENSION_LABELS: Record<string, string> = {
   control_loop: '控制循环',
   controlLoop: '控制循环',
   execution: '执行完整性',
-  claim_evidence: '结论与证据',
-  claimEvidence: '结论与证据',
+  evidence_links: '证据关联',
+  evidenceLinks: '证据关联',
   answer_contract: '回答契约',
   answerContract: '回答契约',
   budget: '资源预算',
@@ -183,7 +183,6 @@ const RunExplorerPage: React.FC = () => {
   const pageCount = Math.max(1, Math.ceil(total / limit));
   const run = detail?.snapshot.run ?? {};
   const projection = detail?.snapshot.qualityProjection ?? {};
-  const actions = projection.actions ?? [];
   const toolResults = projection.toolResults ?? [];
   const evidence = projection.evidence ?? [];
 
@@ -229,7 +228,7 @@ const RunExplorerPage: React.FC = () => {
           </Link>
           <h1 className="text-2xl font-semibold text-foreground">运行记录</h1>
           <p className="mt-1 text-sm text-secondary-text">
-            查看每次任务的动态行动、原子工具、证据校验、质量评分与反馈。
+            查看每次运行中实际发生的工具调用、证据关联、质量评分与反馈。
           </p>
         </div>
         <button
@@ -359,7 +358,7 @@ const RunExplorerPage: React.FC = () => {
                   ))}
                 </div>
                 <div className="mt-2 flex gap-3 text-[11px] text-secondary-text">
-                  <span>{item.actionCount} 个动态动作</span>
+                  <span>{item.toolObservationCount} 条工具观察</span>
                   <span>{item.evidenceCount} 条证据</span>
                   <span>{item.toolCallCount} 次工具调用</span>
                   <span>{formatDuration(item.durationMs)}</span>
@@ -459,8 +458,8 @@ const RunExplorerPage: React.FC = () => {
                   </div>
                   <div className="rounded-xl bg-muted/60 p-3">
                     <ListChecks className="size-4 text-purple" />
-                    <p className="mt-2 text-xs text-secondary-text">动态动作</p>
-                    <p className="mt-1 font-medium">{actions.length}</p>
+                    <p className="mt-2 text-xs text-secondary-text">工具观察</p>
+                    <p className="mt-1 font-medium">{toolResults.length}</p>
                   </div>
                   <div className="rounded-xl bg-muted/60 p-3">
                     <Database className="size-4 text-emerald-600" />
@@ -520,36 +519,34 @@ const RunExplorerPage: React.FC = () => {
                 )}
               </Card>
 
-              <Card title="执行链" subtitle="Dynamic actions → observations → evidence">
+              <Card title="执行链" subtitle="Actual tool calls → observations → evidence">
                 <div className="space-y-3">
-                  {actions.map((action, index) => {
-                    const actionId = text(action.actionId);
-                    const result = toolResults.find((item) => text(item.actionId) === actionId);
-                    const actionEvidence = evidence.filter((item) => text(item.actionId) === actionId);
+                  {toolResults.map((result, index) => {
+                    const actionId = text(result.actionId) || text(result.toolCallId);
+                    const actionEvidence = evidence.filter((item) => text(item.actionId) === text(result.actionId));
                     return (
                       <div key={actionId || index} className="rounded-xl border border-border/70 p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <p className="text-sm font-medium">
-                              {text(action.toolName) || '未指定工具'}
+                              {text(result.toolName) || '未指定工具'}
                             </p>
-                            <p className="mt-0.5 text-xs text-secondary-text">{text(action.objective)}</p>
                             <p className="mt-0.5 font-mono text-[11px] text-secondary-text">{actionId}</p>
                           </div>
-                          <Badge variant={result?.success === true ? 'success' : result ? 'danger' : 'info'}>
-                            {result?.success === true ? '成功' : result ? '失败' : '未执行'}
+                          <Badge variant={result.success === true ? 'success' : 'danger'}>
+                            {result.success === true ? '成功' : '失败'}
                           </Badge>
                         </div>
                         <div className="mt-3 flex flex-wrap gap-4 text-xs text-secondary-text">
-                          <span>副作用：{text(result?.effect) || '未执行'}</span>
+                          <span>类型：{text(result.effect) || 'read'}</span>
                           <span>证据：{actionEvidence.length} 条</span>
-                          <span>依赖：{Array.isArray(action.dependsOn) ? action.dependsOn.length : 0} 个</span>
+                          <span>数据时间：{text(result.dataTime) || '未提供'}</span>
                         </div>
                       </div>
                     );
                   })}
-                  {actions.length === 0 ? (
-                    <p className="text-sm text-secondary-text">该问题无需工具，或运行尚未生成行动。</p>
+                  {toolResults.length === 0 ? (
+                    <p className="text-sm text-secondary-text">该问题没有调用工具。</p>
                   ) : null}
                 </div>
               </Card>

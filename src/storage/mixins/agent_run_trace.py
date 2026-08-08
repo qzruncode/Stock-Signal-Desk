@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Redacted V2 run-trace persistence."""
+"""Redacted trace persistence for the generic Agent loop.
+
+Legacy trace columns remain in the database so historical runs can be shown
+read-only, but this writer deliberately has no parameters that can populate
+the retired planner/verification payloads.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
-import hashlib
 import json
 import os
 import re
@@ -96,24 +100,6 @@ def _json(value: Any, *, encrypt: bool = False) -> str:
     return encode_agent_trace_json(value, encrypt=encrypt)
 
 
-def _raw_trace_value(value: Any) -> Any:
-    store_raw = str(os.getenv("AGENT_TRACE_STORE_RAW", "")).strip().lower()
-    production = str(os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower() in {"prod", "production"}
-    if store_raw in {"0", "false", "no", "off"} or (production and store_raw not in {"1", "true", "yes", "on"}):
-        serialized = json.dumps(
-            redact_agent_trace(value),
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
-        return {
-            "omitted": True,
-            "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
-            "reason": "raw_trace_storage_disabled",
-        }
-    return value
-
-
 class AgentRunTraceMixin:
     def upsert_agent_run_trace(
         self,
@@ -126,17 +112,7 @@ class AgentRunTraceMixin:
         schema_version: str | None = None,
         model_config: Any = None,
         stage_durations: Any = None,
-        raw_outline: Any = None,
-        normalized_outline: Any = None,
-        raw_intents: Any = None,
-        normalized_intents: Any = None,
-        repairs: Any = None,
-        verification: Any = None,
-        goal_state: Any = None,
         latest_stage: Any = None,
-        compiled_plan: Any = None,
-        outcomes: Any = None,
-        coverage: Any = None,
         quality_projection: Any = None,
     ) -> None:
         with self.session_scope() as session:
@@ -167,46 +143,8 @@ class AgentRunTraceMixin:
                 record.model_config_json = _json(model_config)
             if stage_durations is not None:
                 record.stage_durations_json = _json(stage_durations)
-            if raw_outline is not None:
-                record.raw_outline_json = _json(
-                    _raw_trace_value(raw_outline),
-                    encrypt=True,
-                )
-            if normalized_outline is not None:
-                record.normalized_outline_json = _json(
-                    normalized_outline,
-                    encrypt=True,
-                )
-            if raw_intents is not None:
-                record.raw_intents_json = _json(
-                    _raw_trace_value(raw_intents),
-                    encrypt=True,
-                )
-            if normalized_intents is not None:
-                record.normalized_intents_json = _json(
-                    normalized_intents,
-                    encrypt=True,
-                )
-            if repairs is not None:
-                record.repairs_json = _json(repairs)
-            if verification is not None:
-                record.verification_json = _json(
-                    verification,
-                    encrypt=True,
-                )
-            if goal_state is not None:
-                record.goal_state_json = _json(
-                    goal_state,
-                    encrypt=True,
-                )
             if latest_stage is not None:
                 record.latest_stage_json = _json(latest_stage)
-            if compiled_plan is not None:
-                record.compiled_plan_json = _json(compiled_plan, encrypt=True)
-            if outcomes is not None:
-                record.outcomes_json = _json(outcomes, encrypt=True)
-            if coverage is not None:
-                record.coverage_json = _json(coverage)
             if quality_projection is not None:
                 current_projection: dict[str, Any] = {}
                 try:
@@ -256,11 +194,22 @@ class AgentRunTraceMixin:
                         latest_stage = parsed
                 except (TypeError, ValueError):
                     latest_stage = None
+            execution_trace = None
+            if record.quality_projection_json:
+                try:
+                    projection = json.loads(record.quality_projection_json)
+                    if isinstance(projection, dict):
+                        candidate = projection.get("execution_trace")
+                        if isinstance(candidate, dict):
+                            execution_trace = candidate
+                except (TypeError, ValueError):
+                    execution_trace = None
             return {
                 "run_id": record.run_id,
                 "status": record.status,
                 "error_code": record.error_code,
                 "latest_stage": latest_stage,
+                "execution_trace": execution_trace,
                 "updated_at": (record.updated_at.isoformat() if record.updated_at is not None else None),
             }
 

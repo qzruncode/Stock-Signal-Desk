@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from fastapi import Body, Depends, HTTPException, Query, Request
 
@@ -13,10 +13,82 @@ from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
 from src.agent.run_registry import active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
+from src.agent.langgraph_runtime.events import project_stage_history_for_client
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+
+def _stage_history_from_events(
+    db_manager: DatabaseManager,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    """Recover stage-only progress when a run has not reached terminal trace commit."""
+    if not run_id:
+        return []
+    try:
+        events = db_manager.list_agent_run_events(
+            run_id,
+            after_sequence=0,
+            limit=10_000,
+        )
+    except Exception:
+        logger.warning("[Agent] unable to read stage history run_id=%s", run_id, exc_info=True)
+        return []
+    stages: list[dict[str, Any]] = []
+    for event in events:
+        if str(event.get("event_type") or "") != "data":
+            continue
+        payload = event.get("payload")
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        if isinstance(data, Mapping) and data.get("event") == "agent_stage":
+            stages.append(dict(data))
+    return stages
+
+
+def _execution_trace_for_run(
+    *,
+    db_manager: DatabaseManager,
+    trace: Mapping[str, Any] | None,
+    run: Any | None,
+    durable_run: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    run_id = str(run.run_id if run is not None else (durable_run or {}).get("run_id") or "")
+    if not run_id:
+        return None
+    if not isinstance(trace, Mapping) or str(trace.get("run_id") or "") != run_id:
+        persisted: dict[str, Any] = {}
+    else:
+        candidate = trace.get("execution_trace")
+        persisted = dict(candidate) if isinstance(candidate, Mapping) else {}
+
+    # A recovered run's broadcaster starts at the durable event cursor and
+    # therefore contains only new chunks. Read the ordered event log as the
+    # base, then merge the local committed suffix for the tiny publication
+    # window before the next database read.
+    stages = _stage_history_from_events(db_manager, run_id)
+    if run is not None:
+        snapshot = getattr(run.broadcaster, "stage_history_snapshot", None)
+        local_stages = snapshot() if callable(snapshot) else []
+        seen = {
+            "|".join(
+                str(item.get(key) or "")
+                for key in ("run_id", "stage", "status", "action_id", "occurred_at", "summary")
+            )
+            for item in stages
+        }
+        for item in local_stages:
+            identity = "|".join(
+                str(item.get(key) or "")
+                for key in ("run_id", "stage", "status", "action_id", "occurred_at", "summary")
+            )
+            if identity not in seen:
+                stages.append(dict(item))
+                seen.add(identity)
+    if stages:
+        persisted["stages"] = project_stage_history_for_client(stages)
+    return persisted or None
 
 
 def _session_service(
@@ -28,6 +100,19 @@ def _session_service(
         tenant_id=str(getattr(request.state, "tenant_id", "local")),
         owner_id=str(getattr(request.state, "owner_id", "admin")),
     )
+
+
+def _conversation_presentation(conversation: Mapping[str, Any]) -> dict[str, Any]:
+    """Exclude an obsolete assistant-ui snapshot from browser responses.
+
+    Canonical messages plus the durable LangGraph trace are the display
+    contract.  The legacy snapshot remains persisted for a read-only
+    compatibility exporter, but sending it with every detail response can
+    freeze the browser before React has a chance to ignore it.
+    """
+    payload = dict(conversation)
+    payload.pop("thread_state", None)
+    return payload
 
 
 async def _cancel_conversation_run_before_delete(
@@ -128,6 +213,12 @@ def get_agent_conversation(
         "recovering",
     }
     trace = db_manager.get_latest_agent_run_trace(conversation_id)
+    execution_trace = _execution_trace_for_run(
+        db_manager=db_manager,
+        trace=trace,
+        run=run,
+        durable_run=durable_run,
+    )
     persisted_stage = (
         trace.get("latest_stage")
         if isinstance(trace, dict)
@@ -147,7 +238,7 @@ def get_agent_conversation(
         reconciled_trace_status = "failed"
         persisted_stage = {
             "event": "agent_stage",
-            "engine": "langgraph",
+            "engine": "langgraph_agent_loop",
             "run_id": trace.get("run_id"),
             "stage": "completed",
             "status": "failed",
@@ -155,20 +246,24 @@ def get_agent_conversation(
             "summary": "后台运行已经中断，没有仍在执行的任务",
         }
     conversation["is_generating"] = is_generating
+    conversation["execution_trace"] = execution_trace
     context_snapshot = durable_run.get("context_snapshot") if durable_run else None
     pending_interrupt = (
         context_snapshot.get("pending_interrupt")
         if durable_status == "interrupted"
         and isinstance(context_snapshot, dict)
-        and context_snapshot.get("engine") == "langgraph"
+        and context_snapshot.get("engine") == "langgraph_agent_loop"
         and isinstance(context_snapshot.get("pending_interrupt"), dict)
         else None
     )
     conversation["resume_state"] = {
         "run_id": (run.run_id if run else (durable_run.get("run_id") if durable_run else None)),
-        "active": (
-            is_generating or (run is not None and run.broadcaster.history_length > 0) or durable_event_cursor > 0
-        ),
+        # `active` is an attachment contract, not a history-exists flag.  A
+        # terminal run can have a long durable event log, but replaying it as
+        # a live data stream makes the browser recreate transient tool parts
+        # after the run has already ended.  Historical stages/results are
+        # exposed separately through execution_trace and event_cursor.
+        "active": is_generating,
         "is_generating": is_generating,
         "status": (run.status if run else (durable_status or reconciled_trace_status)),
         # The durable event log is the authoritative presentation state.
@@ -186,7 +281,7 @@ def get_agent_conversation(
         "pending_interrupt": pending_interrupt,
     }
     conversation["pending_interrupt"] = pending_interrupt
-    return conversation
+    return _conversation_presentation(conversation)
 
 
 @router.patch("/agent/conversations/{conversation_id}")
@@ -203,7 +298,7 @@ def rename_agent_conversation(
     conversation = service.rename_conversation(conversation_id, title)
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")
-    return conversation
+    return _conversation_presentation(conversation)
 
 
 @router.delete("/agent/conversations/{conversation_id}")
@@ -255,13 +350,17 @@ def sync_agent_conversation_snapshot(
     service = _session_service(request, db_manager)
     raw_messages = payload.get("messages") if "messages" in payload else None
     messages = raw_messages if isinstance(raw_messages, list) else ([] if raw_messages is not None else None)
-    thread_state = payload.get("thread_state")
+    # ``thread_state`` was an assistant-ui renderer export, not durable Agent
+    # state.  Older clients may still send it, but accepting it here lets an
+    # arbitrarily large historical tool tree re-enter storage and later cost a
+    # browser a deep JSON walk.  Replace any legacy value with an empty marker;
+    # the canonical transcript and LangGraph checkpoint remain authoritative.
     conversation = service.save_conversation_snapshot(
         conversation_id,
         messages,
-        thread_state=thread_state if isinstance(thread_state, dict) else None,
+        thread_state={},
         prune_agent_context_to_messages=bool(payload.get("prune_agent_context_to_messages")),
     )
     if not conversation:
         raise HTTPException(status_code=404, detail="对话不存在")
-    return conversation
+    return _conversation_presentation(conversation)

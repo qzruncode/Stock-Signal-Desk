@@ -62,7 +62,6 @@ async def agent_chat_resume_impl(
             "queued",
             "running",
             "recovering",
-            "interrupted",
         }:
             return JSONResponse(status_code=200, content={"active": False})
         try:
