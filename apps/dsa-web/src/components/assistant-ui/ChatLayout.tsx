@@ -157,7 +157,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
       ) : null}
 
       {!isDesktop && mobileSidebarOpen ? (
-        <div className="fixed inset-0 z-30 lg:hidden" onClick={() => setMobileSidebarState('closing')}>
+        <div className="fixed inset-0 z-40 lg:hidden" onClick={() => setMobileSidebarState('closing')}>
           <div
             className={cn(
               'page-drawer-overlay absolute inset-0 backdrop-blur-[2px]',

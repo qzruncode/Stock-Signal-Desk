@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Controller, useForm, useWatch } from 'react-hook-form';
 import { ChevronDown, ClipboardPaste, Loader2, RotateCcw, Save } from 'lucide-react';
 import { Button, InlineAlert } from '../common';
 import { SettingsField } from './SettingsField';
@@ -30,6 +31,7 @@ const TARGET_KEYS = [
 const TARGET_KEY_SET = new Set<string>(TARGET_KEYS);
 
 type SaveStatus = { type: 'success' | 'error'; message: string } | null;
+type ModelFormValues = Record<string, string>;
 
 function collectValuesFromPaste(text: string): Record<string, string> | null {
   const trimmed = text.trim();
@@ -59,10 +61,13 @@ export const ModelSettingsView: React.FC = () => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
-  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const { control, getValues, handleSubmit, reset, setValue } = useForm<ModelFormValues>({
+    defaultValues: { pasteText: '' },
+  });
+  const watchedFieldValues = useWatch({ control });
+  const fieldValues = useMemo(() => watchedFieldValues ?? {}, [watchedFieldValues]);
 
   const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState('');
 
   // 表单 -> JSON：fieldValues 变化时把 7 个目标字段拼成 JSON 回显
   useEffect(() => {
@@ -71,23 +76,21 @@ export const ModelSettingsView: React.FC = () => {
       if (fieldValues[key]) obj[key] = fieldValues[key];
     }
     const canonical = Object.keys(obj).length > 0 ? JSON.stringify(obj, null, 2) : '';
-    setPasteText((current) => (current === canonical ? current : canonical));
-  }, [fieldValues]);
+    if (getValues('pasteText') !== canonical) {
+      setValue('pasteText', canonical, { shouldDirty: false });
+    }
+  }, [fieldValues, getValues, setValue]);
 
   // JSON -> 表单：textarea 输入时实时解析，匹配字段写入 fieldValues
   const handlePasteChange = useCallback((text: string) => {
-    setPasteText(text);
+    setValue('pasteText', text, { shouldDirty: false });
     const matched = collectValuesFromPaste(text);
     if (!matched) return;
-    setFieldValues((prev) => {
-      const next = { ...prev };
-      for (const key of TARGET_KEYS) {
-        next[key] = key in matched ? matched[key] : '';
-      }
-      return next;
-    });
+    for (const key of TARGET_KEYS) {
+      setValue(key, key in matched ? matched[key] : '', { shouldDirty: true });
+    }
     setSaveStatus(null);
-  }, []);
+  }, [setValue]);
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -103,14 +106,14 @@ export const ModelSettingsView: React.FC = () => {
       for (const item of configRes.items) {
         values[item.key] = item.value ?? '';
       }
-      setFieldValues(values);
+      reset({ ...values, pasteText: '' });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load configuration';
       setLoadError(msg);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [reset]);
 
   useEffect(() => {
     void fetchConfig();
@@ -160,12 +163,7 @@ export const ModelSettingsView: React.FC = () => {
     return changed;
   }, [config, fieldValues]);
 
-  const handleFieldChange = useCallback((key: string, value: string) => {
-    setFieldValues((prev) => ({ ...prev, [key]: value }));
-    setSaveStatus(null);
-  }, []);
-
-  const handleSave = useCallback(async () => {
+  const handleSave = useCallback(async (submittedValues: ModelFormValues) => {
     if (!config || dirtyKeys.length === 0) return;
 
     setSaving(true);
@@ -174,7 +172,7 @@ export const ModelSettingsView: React.FC = () => {
     try {
       const items = dirtyKeys.map((key) => ({
         key,
-        value: fieldValues[key] ?? '',
+        value: submittedValues[key] ?? '',
       }));
 
       const result = await systemConfigApi.update({
@@ -191,13 +189,13 @@ export const ModelSettingsView: React.FC = () => {
 
       const newConfig = await systemConfigApi.getConfig(true);
       setConfig(newConfig);
-      const values: Record<string, string> = { ...fieldValues };
+      const values: Record<string, string> = { ...submittedValues };
       for (const item of newConfig.items) {
         if (!dirtyKeys.includes(item.key)) {
           values[item.key] = item.value ?? '';
         }
       }
-      setFieldValues(values);
+      reset(values);
     } catch (err: unknown) {
       if (err instanceof SystemConfigValidationError) {
         const fieldIssues = err.issues.map((i) => `${i.key}: ${i.message}`).join('\n');
@@ -214,7 +212,7 @@ export const ModelSettingsView: React.FC = () => {
     } finally {
       setSaving(false);
     }
-  }, [config, dirtyKeys, fieldValues]);
+  }, [config, dirtyKeys, reset]);
 
   if (loading) {
     return (
@@ -240,7 +238,8 @@ export const ModelSettingsView: React.FC = () => {
   }
 
   return (
-    <section className="space-y-5">
+    <form onSubmit={handleSubmit(handleSave)}>
+      <section className="space-y-5">
       <header className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -250,8 +249,8 @@ export const ModelSettingsView: React.FC = () => {
         </div>
         <Button
           variant="secondary"
-          onClick={handleSave}
-          disabled={saving}
+          type="submit"
+          disabled={saving || dirtyKeys.length === 0}
           isLoading={saving}
           loadingText="保存中..."
         >
@@ -278,12 +277,18 @@ export const ModelSettingsView: React.FC = () => {
           />
         </summary>
         <div className="space-y-3 border-t border-border/40 px-4 py-3">
-          <textarea
-            value={pasteText}
-            onChange={(e) => handlePasteChange(e.target.value)}
-            rows={5}
-            className="input-surface w-full rounded-xl border border-border/55 bg-elevated/40 px-3 py-2 font-mono text-xs leading-relaxed transition focus:border-cyan/40 focus:outline-none"
-            spellCheck={false}
+          <Controller
+            name="pasteText"
+            control={control}
+            render={({ field }) => (
+              <textarea
+                {...field}
+                onChange={(e) => handlePasteChange(e.target.value)}
+                rows={5}
+                className="input-surface w-full rounded-xl border border-border/55 bg-elevated/40 px-3 py-2 font-mono text-xs leading-relaxed transition focus:border-cyan/40 focus:outline-none"
+                spellCheck={false}
+              />
+            )}
           />
         </div>
       </details>
@@ -305,17 +310,27 @@ export const ModelSettingsView: React.FC = () => {
           />
         ) : (
           orderedFields.map((fieldSchema) => (
-            <SettingsField
+            <Controller
               key={fieldSchema.key}
-              field={fieldSchema}
-              value={fieldValues[fieldSchema.key] ?? ''}
-              onChange={handleFieldChange}
-              isMasked={maskedKeys.has(fieldSchema.key)}
+              name={fieldSchema.key}
+              control={control}
+              render={({ field }) => (
+                <SettingsField
+                  field={fieldSchema}
+                  value={field.value ?? ''}
+                  onChange={(_, value) => {
+                    field.onChange(value);
+                    setSaveStatus(null);
+                  }}
+                  isMasked={maskedKeys.has(fieldSchema.key)}
+                />
+              )}
             />
           ))
         )}
       </div>
-    </section>
+      </section>
+    </form>
   );
 };
 

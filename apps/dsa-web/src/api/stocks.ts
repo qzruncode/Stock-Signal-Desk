@@ -24,6 +24,16 @@ export interface StocksListResponse {
   total_pages: number;
 }
 
+export interface StockListSyncStatus {
+  status: 'idle' | 'running' | 'success' | 'failed';
+  progress: number;
+  total: number;
+  started_at: string | null;
+  finished_at: string | null;
+  message: string;
+  error: string | null;
+}
+
 export interface KlineBatchResponse {
   results: Record<string, KlineBatchBar[]>;
 }
@@ -68,6 +78,16 @@ export const stocksApi = {
       params: query,
       signal,
     });
+    return response.data;
+  },
+
+  async syncList(): Promise<{ success: boolean; message: string; status: string }> {
+    const response = await apiClient.post('/api/v1/stocks/sync/list');
+    return response.data;
+  },
+
+  async syncListStatus(): Promise<StockListSyncStatus> {
+    const response = await apiClient.get<StockListSyncStatus>('/api/v1/stocks/sync/list/status');
     return response.data;
   },
 

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
 import { Button } from '../common';
 import type { AgentPromptTemplate } from '../../types/agentPrompts';
 
@@ -10,10 +10,14 @@ export interface AgentPromptFormProps {
   onSubmit: (values: { name: string; content: string }) => void;
 }
 
+interface PromptFormValues {
+  name: string;
+  content: string;
+}
+
 /**
  * prompt 模板新建/编辑表单。
- * 受控 name + 非受控 content（textarea defaultValue）。
- * 父组件通过 key 在切换编辑目标时 remount 本组件，从而重置初始值，避免 effect 同步。
+ * 父组件通过 key 在切换编辑目标时 remount 本组件，从而重置初始值。
  */
 export const AgentPromptForm: React.FC<AgentPromptFormProps> = ({
   template,
@@ -21,31 +25,38 @@ export const AgentPromptForm: React.FC<AgentPromptFormProps> = ({
   onCancel,
   onSubmit,
 }) => {
-  const [name, setName] = useState(template?.name ?? '');
-  const contentRef = useRef<HTMLTextAreaElement>(null);
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isValid },
+  } = useForm<PromptFormValues>({
+    defaultValues: {
+      name: template?.name ?? '',
+      content: template?.content ?? '',
+    },
+    mode: 'onChange',
+  });
 
-  const handleSubmit = () => {
-    const content = contentRef.current?.value ?? '';
-    onSubmit({ name: name.trim(), content });
+  const submit = (values: PromptFormValues) => {
+    onSubmit({ name: values.name.trim(), content: values.content });
   };
 
   return (
-    <div className="mb-4 rounded-xl border border-border/60 bg-surface/40 p-4">
+    <form onSubmit={handleSubmit(submit)} className="mb-4 rounded-xl border border-border/60 bg-surface/40 p-4">
       <h3 className="mb-3 text-sm font-semibold text-foreground">
         {template ? '编辑模板' : '新建模板'}
       </h3>
       <label className="mb-1 block text-xs text-secondary-text">模板名称</label>
       <input
         type="text"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
+        {...register('name', { required: '请输入模板名称' })}
         placeholder="例如：A 股分析助手默认"
         className="mb-3 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-muted-text focus:border-cyan/50 focus:outline-none focus:ring-1 focus:ring-cyan/20"
       />
+      {errors.name ? <p className="-mt-2 mb-3 text-xs text-danger">{errors.name.message}</p> : null}
       <label className="mb-1 block text-xs text-secondary-text">提示词内容（system prompt）</label>
       <textarea
-        ref={contentRef}
-        defaultValue={template?.content ?? ''}
+        {...register('content')}
         placeholder="输入提示词内容..."
         rows={12}
         className="w-full resize-y rounded-lg border border-border bg-surface px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-text focus:border-cyan/50 focus:outline-none focus:ring-1 focus:ring-cyan/20"
@@ -59,13 +70,13 @@ export const AgentPromptForm: React.FC<AgentPromptFormProps> = ({
           size="sm"
           isLoading={saving}
           loadingText="保存中..."
-          onClick={handleSubmit}
-          disabled={!name.trim()}
+          type="submit"
+          disabled={!isValid}
         >
           {template ? '保存' : '创建'}
         </Button>
       </div>
-    </div>
+    </form>
   );
 };
 

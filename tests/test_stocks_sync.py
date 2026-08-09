@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -98,6 +98,52 @@ def test_sync_stock_list_starts_when_idle(client):
     assert body["status"] == "running"
 
 
+def test_sync_stock_list_rejects_when_persistent_job_is_running(client):
+    with patch.object(sync_mod, "_latest_stock_universe_status", return_value={"status": "running"}):
+        resp = client.post("/api/v1/stocks/sync/list")
+
+    assert resp.status_code == 409
+
+
+def test_run_list_sync_forwards_progress_and_marks_success():
+    changes = {
+        "total": 5000,
+        "added": 10,
+        "updated": 4980,
+        "delisted": 10,
+        "delisted_daily": 0,
+    }
+
+    def fake_ensure(**kwargs):
+        kwargs["on_progress"](200, 5000, "股票列表写入中 200/5000")
+        return {"maintenance_status": "success", "changes": changes}
+
+    with patch.object(sync_mod, "ensure_stock_universe", side_effect=fake_ensure), patch.object(
+        sync_mod, "_set_list_state"
+    ) as set_state:
+        sync_mod._run_list_sync()
+
+    assert any(call.kwargs == {"progress": 200, "total": 5000, "message": "股票列表写入中 200/5000"} for call in set_state.call_args_list)
+    assert any(call.kwargs.get("status") == "success" for call in set_state.call_args_list)
+
+
+def test_run_list_sync_does_not_report_stale_fallback_as_success():
+    with patch.object(
+        sync_mod,
+        "ensure_stock_universe",
+        return_value={
+            "maintenance_status": "stale_fallback",
+            "warning": "股票基础库自动更新未完成，当前使用本地缓存",
+            "total": 5000,
+        },
+    ), patch.object(sync_mod, "_set_list_state") as set_state:
+        sync_mod._run_list_sync()
+
+    failed_call = next(call for call in set_state.call_args_list if call.kwargs.get("status") == "failed")
+    assert failed_call.kwargs["message"] == "股票列表同步失败"
+    assert "本地缓存" in failed_call.kwargs["error"]
+
+
 def test_old_sync_route_removed(client):
     resp = client.post("/api/v1/stocks/sync")
     assert resp.status_code in (404, 405)
@@ -128,6 +174,37 @@ def test_list_sync_status_falls_back_to_db_when_state_empty(client):
     body = resp.json()
     assert body["total"] == 5000
     assert body["status"] == "success"
+
+
+def test_list_sync_status_uses_persisted_running_job(client):
+    now = datetime.now()
+    job = sync_mod.DataMaintenanceJob(
+        id="job-1",
+        dataset="stock_universe",
+        status="running",
+        progress=200,
+        total=5000,
+        message="股票列表写入中 200/5000",
+        started_at=now,
+        updated_at=now,
+        created_at=now,
+    )
+    db = MagicMock()
+    session = MagicMock()
+    query = MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = job
+    session.query.return_value = query
+    db.get_session.return_value.__enter__.return_value = session
+
+    with patch.object(sync_mod, "DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value = db
+        resp = client.get("/api/v1/stocks/sync/list/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "running"
+    assert body["progress"] == 200
+    assert body["message"] == "股票列表写入中 200/5000"
 
 
 def test_get_latest_trading_day_skips_weekend():

@@ -29,6 +29,7 @@
     "pdfjs-dist": "^4.10.38",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-hook-form": "^7.85.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.0",
     "recharts": "^3.3.0",

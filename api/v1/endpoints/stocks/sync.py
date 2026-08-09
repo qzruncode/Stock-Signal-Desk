@@ -20,7 +20,7 @@ from api.v1.endpoints.stocks import router
 from api.v1.schemas.common import ErrorResponse
 from src.services.data_maintenance import ensure_stock_universe
 from src.services.system_config_service import SystemConfigService
-from src.storage import DatabaseManager, StockDaily, StockMeta
+from src.storage import DataMaintenanceJob, DatabaseManager, StockDaily, StockMeta
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ KLINE_SYNC_MAX_WORKERS = 5
 KLINE_SYNC_ATTEMPTS = 2
 KLINE_SYNC_RETRY_DELAY_SECONDS = 1.5
 STATUS_DB_FALLBACK_TTL_SECONDS = 30.0
+STATUS_RUNNING_STALE_AFTER_SECONDS = 60.0
 _status_db_fallback_cache = {"expires_at": 0.0, "total": 0}
 
 
@@ -162,15 +163,21 @@ def _get_active_stock_codes() -> list[str]:
 
 
 def _run_list_sync() -> None:
+    def on_progress(processed: int, total: int, message: str) -> None:
+        _set_list_state(progress=processed, total=total, message=message)
+
     try:
-        maintenance = ensure_stock_universe(trigger="legacy_stocks_api", force=True)
-        result = maintenance.get("changes") or {
-            "total": maintenance["total"],
-            "added": 0,
-            "updated": 0,
-            "delisted": 0,
-            "delisted_daily": 0,
-        }
+        maintenance = ensure_stock_universe(
+            trigger="legacy_stocks_api",
+            force=True,
+            on_progress=on_progress,
+        )
+        result = maintenance.get("changes")
+        if maintenance.get("maintenance_status") != "success" or not result:
+            raise RuntimeError(
+                maintenance.get("warning")
+                or "股票列表同步未完成，当前仍使用本地缓存"
+            )
         _set_list_state(
             status="success",
             progress=result["total"],
@@ -178,11 +185,16 @@ def _run_list_sync() -> None:
             finished_at=_utc_now_iso(),
             message=(
                 f"同步列表完成(基础资料): 新增 {result['added']}, 更新 {result['updated']}, "
-                f"退市 {result['delisted']}(清理日线 {result['delisted_daily']})"
+                f"标记退市 {result['delisted']}"
             ),
         )
     except Exception as e:
-        _set_list_state(status="failed", error=str(e), finished_at=_utc_now_iso())
+        _set_list_state(
+            status="failed",
+            error=str(e),
+            message="股票列表同步失败",
+            finished_at=_utc_now_iso(),
+        )
         logger.error("[StocksSync] 列表同步失败: %s", e, exc_info=True)
 
 
@@ -305,11 +317,54 @@ def _run_missing_kline_sync(codes: list[str]) -> None:
         logger.error("[StocksSync] 缺失K线同步失败: %s", e, exc_info=True)
 
 
+def _latest_stock_universe_status() -> dict | None:
+    db = DatabaseManager.get_instance()
+    try:
+        with db.get_session() as session:
+            job = (
+                session.query(DataMaintenanceJob)
+                .filter(DataMaintenanceJob.dataset == "stock_universe")
+                .order_by(DataMaintenanceJob.created_at.desc())
+                .first()
+            )
+            if not isinstance(job, DataMaintenanceJob):
+                return None
+            status = job.status
+            error = job.error
+            message = job.message or ""
+            if status == "queued":
+                status = "running"
+            if status == "partial":
+                status = "failed"
+            if status == "running":
+                heartbeat_at = job.updated_at or job.started_at or job.created_at
+                if heartbeat_at and (datetime.now() - heartbeat_at).total_seconds() > STATUS_RUNNING_STALE_AFTER_SECONDS:
+                    status = "failed"
+                    error = error or "股票列表同步任务已中断，请重新同步"
+                    message = "股票列表同步任务已中断"
+            return {
+                **_initial_state(),
+                "status": status,
+                "progress": job.progress or 0,
+                "total": job.total or 0,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                "message": message,
+                "error": error,
+            }
+    except Exception:
+        logger.warning("读取股票列表持久化同步状态失败", exc_info=True)
+        return None
+
+
 def _status_with_db_fallback(state: dict) -> dict:
-    if state["total"] != 0:
+    if state["status"] != "idle" or state["total"] != 0:
         return state
-    if state["status"] != "idle":
-        return state
+
+    persisted_status = _latest_stock_universe_status()
+    if persisted_status is not None:
+        return persisted_status
+
     try:
         now = time.monotonic()
         if now < _status_db_fallback_cache["expires_at"]:
@@ -350,10 +405,17 @@ def sync_stock_list(
     service: SystemConfigService = Depends(get_system_config_service),
 ):
     """Trigger stock metadata sync only."""
+    current_state = _get_list_state_copy()
+    persisted_status = _latest_stock_universe_status()
+    if current_state["status"] == "running" or (persisted_status and persisted_status["status"] == "running"):
+        raise HTTPException(
+            status_code=409, detail={"error": "sync_in_progress", "message": "股票列表同步正在进行中，请稍后再试"}
+        )
     if not _mark_list_sync_started():
         raise HTTPException(
             status_code=409, detail={"error": "sync_in_progress", "message": "股票列表同步正在进行中，请稍后再试"}
         )
+    _set_list_state(message="准备同步股票列表")
     thread = threading.Thread(target=_run_list_sync, daemon=True)
     thread.start()
     return {"success": True, "message": "同步列表已启动", "status": "running"}

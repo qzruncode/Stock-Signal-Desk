@@ -148,11 +148,16 @@ def _update_job(job_id: str, **values: Any) -> None:
         session.commit()
 
 
-def run_stock_universe_maintenance_job(job_id: str) -> dict[str, Any]:
+def run_stock_universe_maintenance_job(
+    job_id: str,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
     """Execute one already-claimed refresh and persist its terminal state."""
 
     def progress(processed: int, total: int, message: str) -> None:
         _update_job(job_id, progress=processed, total=total, message=message)
+        if on_progress:
+            on_progress(processed, total, message)
 
     try:
         result = sync_stock_universe(progress)
@@ -189,7 +194,12 @@ def _launch_stock_universe_worker(job_id: str) -> None:
     )
 
 
-def ensure_stock_universe(*, trigger: str = "agent", force: bool = False) -> dict[str, Any]:
+def ensure_stock_universe(
+    *,
+    trigger: str = "agent",
+    force: bool = False,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
     """Ensure stock data readiness without making Agent reads wait on the network.
 
     Normal Agent calls return an existing local universe immediately and refresh
@@ -266,7 +276,7 @@ def ensure_stock_universe(*, trigger: str = "agent", force: bool = False) -> dic
             raise RuntimeError(job.error if job is not None else "股票基础库维护任务等待超时")
 
         try:
-            result = run_stock_universe_maintenance_job(job_id)
+            result = run_stock_universe_maintenance_job(job_id, on_progress=on_progress)
         except Exception as exc:
             if current["total"] == 0:
                 raise

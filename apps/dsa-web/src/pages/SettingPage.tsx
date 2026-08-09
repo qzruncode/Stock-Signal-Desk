@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Bell, Box, Hammer, MessageSquareText, Rss } from 'lucide-react';
+import { ArrowLeft, Bell, Box, Hammer, ListFilter, MessageSquareText, Rss } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
@@ -9,7 +9,9 @@ import { AgentPromptView } from '../components/agentPrompts/AgentPromptView';
 import { NotificationSettingsView } from '../components/settings/NotificationSettingsView';
 import { MobileSettingsNavigation } from '../components/settings/MobileSettingsNavigation';
 import { RssSettingsView } from '../components/settings/RssSettingsView';
+import { StockListSettingsView } from '../components/settings/StockListSettingsView';
 import { ToolRegistryView } from '../components/tools/ToolRegistryView';
+import { cn } from '../utils/cn';
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
@@ -25,6 +27,13 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Bell,
     available: true,
     description: '企业微信渠道与发送测试',
+  },
+  {
+    id: 'stocks',
+    label: '股票列表',
+    icon: ListFilter,
+    available: true,
+    description: '浏览全市场股票并管理自选分组',
   },
   {
     id: 'rss',
@@ -73,7 +82,12 @@ const SettingPage: React.FC = () => {
 
   return (
     <motion.div
-      className="mx-auto max-w-6xl space-y-6 py-6"
+      className={cn(
+        'mx-auto max-w-6xl py-6',
+        activeCategory?.id === 'stocks'
+          ? 'flex h-full min-h-0 flex-col space-y-3 overflow-hidden'
+          : 'space-y-6',
+      )}
       initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
@@ -100,7 +114,10 @@ const SettingPage: React.FC = () => {
         <h1 className="hidden text-2xl font-semibold text-foreground lg:block">AI 助手设置</h1>
       </header>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[14rem_1fr]">
+      <div className={cn(
+        'grid grid-cols-1 gap-6 lg:grid-cols-[14rem_1fr]',
+        activeCategory?.id === 'stocks' && 'min-h-0 flex-1',
+      )}>
         <aside className="hidden lg:sticky lg:top-4 lg:block lg:self-start">
           <SettingsSidebar
             categories={SETTINGS_CATEGORIES}
@@ -112,7 +129,10 @@ const SettingPage: React.FC = () => {
         <AnimatePresence mode="wait" initial={false}>
           <motion.main
             key={activeId}
-            className="min-w-0"
+            className={cn(
+              'min-w-0',
+              activeCategory?.id === 'stocks' && 'min-h-0 overflow-hidden',
+            )}
             initial={{ opacity: 0, x: prefersReducedMotion ? 0 : 10 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: prefersReducedMotion ? 0 : -6 }}
@@ -137,6 +157,8 @@ const SettingPage: React.FC = () => {
               <AgentPromptView />
             ) : activeCategory?.id === 'notification' ? (
               <NotificationSettingsView />
+            ) : activeCategory?.id === 'stocks' ? (
+              <StockListSettingsView />
             ) : activeCategory?.id === 'rss' ? (
               <RssSettingsView />
             ) : null}

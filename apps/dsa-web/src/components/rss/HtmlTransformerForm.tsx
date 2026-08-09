@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
 import { Wand2 } from 'lucide-react';
 import type { HtmlTransformRequest, RssItem } from '../../api/rss';
 import { Modal, Button, Input, InlineAlert, Loading, EmptyState } from '../common';
@@ -28,7 +29,7 @@ const EMPTY: FormState = {
 };
 
 export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen, onClose }) => {
-  const [form, setForm] = useState<FormState>(EMPTY);
+  const { register, handleSubmit } = useForm<FormState>({ defaultValues: EMPTY });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<RssItem[]>([]);
@@ -45,23 +46,21 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
     previewAbortRef.current?.abort();
   }, [isOpen]);
 
-  const update = (k: keyof FormState, v: string) => setForm((f) => ({ ...f, [k]: v }));
-
-  const buildRequest = (): HtmlTransformRequest => ({
-    url: form.url,
-    title: form.title || undefined,
-    item: form.item || 'html',
-    itemTitle: form.itemTitle || undefined,
-    itemLink: form.itemLink || undefined,
-    itemDesc: form.itemDesc || undefined,
-    itemPubDate: form.itemPubDate || undefined,
-    itemContent: form.itemContent || undefined,
-    encoding: form.encoding || undefined,
+  const buildRequest = (values: FormState): HtmlTransformRequest => ({
+    url: values.url,
+    title: values.title || undefined,
+    item: values.item || 'html',
+    itemTitle: values.itemTitle || undefined,
+    itemLink: values.itemLink || undefined,
+    itemDesc: values.itemDesc || undefined,
+    itemPubDate: values.itemPubDate || undefined,
+    itemContent: values.itemContent || undefined,
+    encoding: values.encoding || undefined,
     limit: 20,
   });
 
-  const handlePreview = async () => {
-    if (!form.url.trim()) {
+  const handlePreview = async (values: FormState) => {
+    if (!values.url.trim()) {
       setError('请输入目标网页 URL');
       return;
     }
@@ -76,7 +75,7 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
     setError(null);
     setItems([]);
     try {
-      const res = await rssApi.transformHtml(buildRequest(), ctrl.signal);
+      const res = await rssApi.transformHtml(buildRequest(values), ctrl.signal);
       if (seq !== previewSeqRef.current) return; // superseded — don't touch state
       setItems(res.items || []);
       setFeedTitle(res.feed_title || '');
@@ -93,25 +92,25 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="网页转 RSS（HTML→RSS 万能转换器）" width="max-w-3xl">
-      <div className="space-y-3">
+      <form onSubmit={handleSubmit(handlePreview)} className="space-y-3">
         <p className="text-xs text-muted-text">
           把任意网页转成 RSS。填入目标 URL 与 CSS 选择器（RSSHub 会按选择器提取条目）。需 RSSHub 实例开启 <code className="text-secondary-text">ALLOW_USER_SUPPLY_UNSAFE_DOMAIN</code>。
         </p>
 
-        <Input label="目标网页 URL *" placeholder="https://example.com/news" value={form.url} onChange={(e) => update('url', e.target.value)} />
+        <Input label="目标网页 URL *" placeholder="https://example.com/news" {...register('url')} />
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <Input label="Feed 标题（可选）" placeholder="默认取页面标题" value={form.title} onChange={(e) => update('title', e.target.value)} />
-          <Input label="item 选择器 *" placeholder="如 div.post" value={form.item} onChange={(e) => update('item', e.target.value)} />
-          <Input label="标题选择器 itemTitle" placeholder="如 h2 a" value={form.itemTitle} onChange={(e) => update('itemTitle', e.target.value)} />
-          <Input label="链接选择器 itemLink" placeholder="如 a" value={form.itemLink} onChange={(e) => update('itemLink', e.target.value)} />
-          <Input label="描述选择器 itemDesc" placeholder="如 p.summary" value={form.itemDesc} onChange={(e) => update('itemDesc', e.target.value)} />
-          <Input label="时间选择器 itemPubDate" placeholder="如 time" value={form.itemPubDate} onChange={(e) => update('itemPubDate', e.target.value)} />
-          <Input label="正文选择器 itemContent" placeholder="二次抓取完整正文" value={form.itemContent} onChange={(e) => update('itemContent', e.target.value)} />
-          <Input label="编码 encoding" placeholder="默认 utf-8" value={form.encoding} onChange={(e) => update('encoding', e.target.value)} />
+          <Input label="Feed 标题（可选）" placeholder="默认取页面标题" {...register('title')} />
+          <Input label="item 选择器 *" placeholder="如 div.post" {...register('item')} />
+          <Input label="标题选择器 itemTitle" placeholder="如 h2 a" {...register('itemTitle')} />
+          <Input label="链接选择器 itemLink" placeholder="如 a" {...register('itemLink')} />
+          <Input label="描述选择器 itemDesc" placeholder="如 p.summary" {...register('itemDesc')} />
+          <Input label="时间选择器 itemPubDate" placeholder="如 time" {...register('itemPubDate')} />
+          <Input label="正文选择器 itemContent" placeholder="二次抓取完整正文" {...register('itemContent')} />
+          <Input label="编码 encoding" placeholder="默认 utf-8" {...register('encoding')} />
         </div>
 
         <div className="flex gap-2">
-          <Button variant="primary" size="sm" isLoading={loading} onClick={() => void handlePreview()}>
+          <Button type="submit" variant="primary" size="sm" isLoading={loading}>
             <Wand2 className="h-3.5 w-3.5" />
             预览
           </Button>
@@ -123,7 +122,7 @@ export const HtmlTransformerForm: React.FC<HtmlTransformerFormProps> = ({ isOpen
         {!loading && !error && items.length === 0 && (
           <EmptyState title="填写参数后点击预览" description="预览成功后会在此显示转换后的 RSS 内容。" />
         )}
-      </div>
+      </form>
     </Modal>
   );
 };

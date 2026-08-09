@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Controller, useForm, useWatch } from 'react-hook-form';
 import { Sparkles, ShieldCheck } from 'lucide-react';
 import { rssApi, type RssRouteDescriptor, type RssCookieTestResult } from '../../api/rss';
 import { Input, Select, Badge, Button, InlineAlert } from '../common';
@@ -26,6 +27,8 @@ export interface RssRouteParamFormProps {
   params: Record<string, string>;
   onParamsChange: (params: Record<string, string>) => void;
 }
+
+type RouteParamsFormValues = Record<string, string>;
 
 /**
  * "需配置 Cookie" 路由的通用提示（非雪球）。
@@ -116,6 +119,14 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
   params,
   onParamsChange,
 }) => {
+  const { control, reset, setValue } = useForm<RouteParamsFormValues>({
+    defaultValues: params,
+  });
+  const watchedParams = useWatch({ control });
+  const formParams = useMemo(
+    () => (watchedParams ?? {}) as RouteParamsFormValues,
+    [watchedParams],
+  );
   const paramList = useMemo(() => parseRouteParams(route.route_path), [route.route_path]);
   const exampleParams = useMemo(
     () => paramsFromExample(route.route_path, route.example),
@@ -195,11 +206,18 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.route_path]);
 
+  useEffect(() => {
+    const same = Object.keys(formParams).length === Object.keys(params).length
+      && Object.entries(formParams).every(([name, value]) => params[name] === value);
+    if (!same) onParamsChange(formParams);
+  }, [formParams, onParamsChange, params]);
+
   const update = (name: string, value: string) => {
-    onParamsChange({ ...params, [name]: value });
+    setValue(name, value, { shouldDirty: true });
   };
 
   const fillExample = () => {
+    reset(exampleParams);
     onParamsChange({ ...exampleParams });
   };
 
@@ -240,8 +258,8 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
           </div>
           {routeCascadePicker(route.route_path) ? (
             <NanhuaReportPicker
-              value1={params.type1 ?? ''}
-              value2={params.type2 ?? ''}
+              value1={formParams.type1 ?? ''}
+              value2={formParams.type2 ?? ''}
               onSelect={(param, value) => update(param, value)}
             />
           ) : paramList.map((p) => {
@@ -256,7 +274,7 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
                 return (
                   <CihIndexReportPicker
                     key={p.name}
-                    value={params[p.name] ?? ''}
+                    value={formParams[p.name] ?? ''}
                     onSelect={(segment) => update(p.name, segment)}
                   />
                 );
@@ -265,7 +283,7 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
                 return (
                   <ClsSubjectPicker
                     key={p.name}
-                    value={params[p.name] ?? ''}
+                    value={formParams[p.name] ?? ''}
                     onSelect={(id) => update(p.name, id)}
                   />
                 );
@@ -274,7 +292,7 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
                 return (
                   <FutunnTopicPicker
                     key={p.name}
-                    value={params[p.name] ?? ''}
+                    value={formParams[p.name] ?? ''}
                     onSelect={(id) => update(p.name, id)}
                   />
                 );
@@ -282,7 +300,7 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
               return (
                 <GelonghuiSubjectPicker
                   key={p.name}
-                  value={params[p.name] ?? ''}
+                  value={formParams[p.name] ?? ''}
                   onSelect={(id) => update(p.name, id)}
                 />
               );
@@ -290,12 +308,18 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
             if (paramOptions.length > 0) {
               return (
                 <div key={p.name}>
-                  <Select
-                    label={label}
-                    value={params[p.name] ?? ''}
-                    onChange={(value) => update(p.name, value)}
-                    options={p.optional ? [{ value: '', label: '默认' }, ...paramOptions] : paramOptions}
-                    placeholder={`选择 ${p.name}`}
+                  <Controller
+                    name={p.name}
+                    control={control}
+                    render={({ field }) => (
+                      <Select
+                        label={label}
+                        value={field.value ?? ''}
+                        onChange={field.onChange}
+                        options={p.optional ? [{ value: '', label: '默认' }, ...paramOptions] : paramOptions}
+                        placeholder={`选择 ${p.name}`}
+                      />
+                    )}
                   />
                   {hint && (
                     <p className="mt-1.5 text-[11px] leading-relaxed text-muted-text">{hint}</p>
@@ -304,13 +328,19 @@ export const RssRouteParamForm: React.FC<RssRouteParamFormProps> = ({
               );
             }
             return (
-              <Input
+              <Controller
                 key={p.name}
-                label={label}
-                hint={hint || undefined}
-                placeholder={exampleParams[p.name] ? `如 ${exampleParams[p.name]}` : `输入 ${p.name}`}
-                value={params[p.name] ?? ''}
-                onChange={(e) => update(p.name, e.target.value)}
+                name={p.name}
+                control={control}
+                render={({ field }) => (
+                  <Input
+                    label={label}
+                    hint={hint || undefined}
+                    placeholder={exampleParams[p.name] ? `如 ${exampleParams[p.name]}` : `输入 ${p.name}`}
+                    value={field.value ?? ''}
+                    onChange={field.onChange}
+                  />
+                )}
               />
             );
           })}

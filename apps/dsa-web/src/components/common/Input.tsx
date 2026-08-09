@@ -1,5 +1,5 @@
+import { forwardRef, useId, useState } from 'react';
 import type React from 'react';
-import { useId, useState } from 'react';
 import { Lock, Key } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { EyeToggleIcon } from './EyeToggleIcon';
@@ -19,7 +19,7 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   onPasswordVisibleChange?: (visible: boolean) => void;
 }
 
-export const Input = ({
+export const Input = forwardRef<HTMLInputElement, InputProps>(({
   label,
   hint,
   error,
@@ -31,7 +31,7 @@ export const Input = ({
   passwordVisible,
   onPasswordVisibleChange,
   ...props
-}: InputProps) => {
+}, ref) => {
   const generatedId = useId();
   const inputId = id ?? props.name ?? generatedId;
   const hintId = hint ? `${inputId}-hint` : undefined;
@@ -107,6 +107,7 @@ export const Input = ({
         )}
         <input
           id={inputId}
+          ref={ref}
           aria-describedby={describedBy}
           aria-invalid={ariaInvalid}
           style={inputStyle}
@@ -146,4 +147,6 @@ export const Input = ({
       ) : null}
     </div>
   );
-};
+});
+
+Input.displayName = 'Input';

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Controller, useForm, useWatch } from 'react-hook-form';
 import { Bell, Loader2, Save, Send } from 'lucide-react';
 import { Button, InlineAlert } from '../common';
 import { SettingsField } from './SettingsField';
@@ -15,11 +16,15 @@ const WECHAT_WEBHOOK_KEY = 'WECHAT_WEBHOOK_URL';
 export function NotificationSettingsView() {
   const [schema, setSchema] = useState<SystemConfigSchemaResponse | null>(null);
   const [config, setConfig] = useState<SystemConfigResponse | null>(null);
-  const [values, setValues] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
+  const { control, handleSubmit, reset } = useForm<Record<string, string>>({
+    defaultValues: {},
+  });
+  const watchedValues = useWatch({ control });
+  const values = useMemo(() => watchedValues ?? {}, [watchedValues]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -31,13 +36,13 @@ export function NotificationSettingsView() {
       ]);
       setSchema(schemaResult);
       setConfig(configResult);
-      setValues(Object.fromEntries(configResult.items.map((item) => [item.key, item.value ?? ''])));
+      reset(Object.fromEntries(configResult.items.map((item) => [item.key, item.value ?? ''])));
     } catch (error) {
       setNotice({ type: 'error', message: error instanceof Error ? error.message : '通知配置加载失败' });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [reset]);
 
   useEffect(() => {
     void load();
@@ -57,7 +62,7 @@ export function NotificationSettingsView() {
     return fields.map((field) => field.key).filter((key) => (values[key] ?? '') !== (original[key] ?? ''));
   }, [config, fields, values]);
 
-  const save = useCallback(async () => {
+  const save = useCallback(async (submittedValues: Record<string, string>) => {
     if (!config || dirtyKeys.length === 0) return;
     setSaving(true);
     setNotice(null);
@@ -66,7 +71,7 @@ export function NotificationSettingsView() {
         configVersion: config.configVersion,
         maskToken: config.maskToken,
         reloadNow: true,
-        items: dirtyKeys.map((key) => ({ key, value: values[key] ?? '' })),
+        items: dirtyKeys.map((key) => ({ key, value: submittedValues[key] ?? '' })),
       });
       setNotice({ type: 'success', message: `已保存 ${result.appliedCount} 项通知配置。` });
       await load();
@@ -81,16 +86,16 @@ export function NotificationSettingsView() {
     } finally {
       setSaving(false);
     }
-  }, [config, dirtyKeys, load, values]);
+  }, [config, dirtyKeys, load]);
 
-  const test = useCallback(async () => {
+  const test = useCallback(async (submittedValues: Record<string, string>) => {
     if (!config) return;
     setTesting(true);
     setNotice(null);
     try {
       const result = await systemConfigApi.testNotificationChannel({
         channel: 'wechat',
-        items: fields.map((field) => ({ key: field.key, value: values[field.key] ?? '' })),
+        items: fields.map((field) => ({ key: field.key, value: submittedValues[field.key] ?? '' })),
         maskToken: config.maskToken,
         title: 'Stock Assistant 通知测试',
         content: '通知渠道已连接，AI 助手可以在你明确要求时发送分析结果。',
@@ -101,20 +106,21 @@ export function NotificationSettingsView() {
     } finally {
       setTesting(false);
     }
-  }, [config, fields, values]);
+  }, [config, fields]);
 
   if (loading) return <div className="flex min-h-[40vh] items-center justify-center"><Loader2 className="size-8 animate-spin text-primary" /></div>;
 
   return (
-    <section className="space-y-5">
+    <form onSubmit={handleSubmit(save)}>
+      <section className="space-y-5">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span className="flex size-9 items-center justify-center rounded-md bg-primary/10 text-primary"><Bell className="size-4" /></span>
           <div><h2 className="text-xl font-semibold text-foreground">企业微信通知</h2><p className="mt-0.5 text-xs text-muted-foreground">粘贴群机器人的 Webhook URL 即可接收通知。</p></div>
         </div>
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={test} disabled={testing} isLoading={testing} loadingText="测试中..."><Send className="size-4" />测试通知</Button>
-          <Button variant="secondary" onClick={save} disabled={saving || dirtyKeys.length === 0} isLoading={saving} loadingText="保存中..."><Save className="size-4" />保存</Button>
+          <Button type="button" variant="secondary" onClick={() => { void handleSubmit(test)(); }} disabled={testing} isLoading={testing} loadingText="测试中..."><Send className="size-4" />测试通知</Button>
+          <Button type="submit" variant="secondary" disabled={saving || dirtyKeys.length === 0} isLoading={saving} loadingText="保存中..."><Save className="size-4" />保存</Button>
         </div>
       </header>
       {notice && <InlineAlert variant={notice.type === 'success' ? 'success' : 'danger'} title={notice.type === 'success' ? '操作成功' : '操作失败'} message={<span className="whitespace-pre-wrap">{notice.message}</span>} />}
@@ -123,20 +129,27 @@ export function NotificationSettingsView() {
       ) : (
         <div className="terminal-card rounded-2xl p-5">
           {fields.map((field) => (
-            <SettingsField
+            <Controller
               key={field.key}
-              field={field}
-              value={values[field.key] ?? ''}
-              onChange={(key, value) => {
-                setValues((current) => ({ ...current, [key]: value }));
-                setNotice(null);
-              }}
-              isMasked={masked.has(field.key)}
-              placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+              name={field.key}
+              control={control}
+              render={({ field: controllerField }) => (
+                <SettingsField
+                  field={field}
+                  value={controllerField.value ?? ''}
+                  onChange={(_, value) => {
+                    controllerField.onChange(value);
+                    setNotice(null);
+                  }}
+                  isMasked={masked.has(field.key)}
+                  placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+                />
+              )}
             />
           ))}
         </div>
       )}
-    </section>
+      </section>
+    </form>
   );
 }
