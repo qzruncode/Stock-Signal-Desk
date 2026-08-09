@@ -51,11 +51,15 @@ export const watchlistApi = {
     return response.data.groups || [];
   },
 
-  async createGroup(name: string, codes: string[] = []): Promise<WatchlistGroup> {
+  async createGroup(
+    name: string,
+    codes: string[] = [],
+    source = 'manual',
+  ): Promise<WatchlistGroup> {
     const response = await apiClient.post<WatchlistGroup>('/api/v1/watchlist/groups', {
       name,
       codes,
-      source: 'manual',
+      source,
     });
     return response.data;
   },

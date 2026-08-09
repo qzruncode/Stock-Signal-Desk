@@ -292,6 +292,7 @@ def _migrate_quant_screen_fields(engine) -> None:
     columns = {c["name"] for c in inspector.get_columns("stock_meta")}
     additions = {
         "revenue_ttm": "FLOAT",
+        "parent_net_profit_ttm": "FLOAT",
         "deducted_net_profit_ttm": "FLOAT",
     }
     missing = [(name, sql_type) for name, sql_type in additions.items() if name not in columns]

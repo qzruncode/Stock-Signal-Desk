@@ -106,6 +106,8 @@ TOOL_MODULES: tuple[str, ...] = (
     "market_snapshot_tools",
     "get_sector_flow",
     "get_stock_capital_flow",
+    # Deterministic all-market screening
+    "screen_atr_volatility_stocks",
     # Company and financial fundamentals
     "get_stock_info",
     "get_financials",

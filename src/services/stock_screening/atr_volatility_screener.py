@@ -59,6 +59,7 @@ _FIELD_META: dict[str, tuple[str, str]] = {
     "qualified_days": ("达标天数", "integer"),
     "qualified_ratio_pct": ("达标比例(%)", "percent"),
     "revenue_ttm": ("营业收入TTM(元)", "currency_yuan"),
+    "parent_net_profit_ttm": ("归母净利润TTM(元)", "currency_yuan"),
     "deducted_net_profit_ttm": ("扣非净利润TTM(元)", "currency_yuan"),
     "debt_ratio": ("资产负债率(%)", "percent"),
     "financial_report_period": ("财务报告期", "date"),
@@ -68,6 +69,7 @@ _FIELD_META: dict[str, tuple[str, str]] = {
 
 _FINANCIAL_LABELS = {
     "revenue_ttm": "营业收入TTM",
+    "parent_net_profit_ttm": "归母净利润TTM",
     "deducted_net_profit_ttm": "扣非净利润TTM",
     "debt_ratio": "资产负债率",
 }

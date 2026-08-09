@@ -138,7 +138,10 @@ def _get_kline_state_copy() -> dict:
 
 
 def _mark_kline_sync_started() -> bool:
-    return _mark_started(_kline_sync_state, _kline_sync_lock, status="syncing_kline")
+    started = _mark_started(_kline_sync_state, _kline_sync_lock, status="syncing_kline")
+    if started:
+        _set_kline_state(message="正在同步全市场 K 线")
+    return started
 
 
 def _set_missing_kline_state(**updates) -> None:
@@ -150,7 +153,10 @@ def _get_missing_kline_state_copy() -> dict:
 
 
 def _mark_missing_kline_sync_started() -> bool:
-    return _mark_started(_missing_kline_sync_state, _missing_kline_sync_lock, status="syncing_kline")
+    started = _mark_started(_missing_kline_sync_state, _missing_kline_sync_lock, status="syncing_kline")
+    if started:
+        _set_missing_kline_state(message="正在补齐缺失 K 线")
+    return started
 
 
 def _get_active_stock_codes() -> list[str]:

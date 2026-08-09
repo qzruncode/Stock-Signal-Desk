@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ArrowLeft, Bell, Box, Hammer, ListFilter, MessageSquareText, Rss } from 'lucide-react';
+import { lazy, useEffect, useState } from 'react';
+import { Activity, ArrowLeft, Bell, Box, Database, Hammer, ListChecks, ListFilter, MessageSquareText, Rss } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
@@ -10,8 +10,12 @@ import { NotificationSettingsView } from '../components/settings/NotificationSet
 import { MobileSettingsNavigation } from '../components/settings/MobileSettingsNavigation';
 import { RssSettingsView } from '../components/settings/RssSettingsView';
 import { StockListSettingsView } from '../components/settings/StockListSettingsView';
+import { DataMaintenanceSettingsView } from '../components/settings/DataMaintenanceSettingsView';
+import { IndicatorScreeningSettingsView } from '../components/settings/IndicatorScreeningSettingsView';
 import { ToolRegistryView } from '../components/tools/ToolRegistryView';
 import { cn } from '../utils/cn';
+
+const RunExplorerSettingsView = lazy(() => import('./RunExplorerPage'));
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
@@ -20,6 +24,13 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: Hammer,
     available: true,
     description: '查看和验证 AI 助手可调用的全部工具',
+  },
+  {
+    id: 'runs',
+    label: '运行记录',
+    icon: ListChecks,
+    available: true,
+    description: '查看工具调用、证据关联与运行质量',
   },
   {
     id: 'notification',
@@ -34,6 +45,20 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: ListFilter,
     available: true,
     description: '浏览全市场股票并管理自选分组',
+  },
+  {
+    id: 'indicator-screening',
+    label: '指标选股',
+    icon: Activity,
+    available: true,
+    description: '使用技术指标筛选股票并保存到自选分组',
+  },
+  {
+    id: 'data-maintenance',
+    label: '数据维护中心',
+    icon: Database,
+    available: true,
+    description: '同步股票、K 线和财务基础数据',
   },
   {
     id: 'rss',
@@ -75,6 +100,7 @@ const SettingPage: React.FC = () => {
   }, []);
 
   const activeCategory = SETTINGS_CATEGORIES.find((category) => category.id === activeId);
+  const isTallCategory = activeCategory?.id === 'stocks' || activeCategory?.id === 'indicator-screening';
   const handleCategorySelect = (id: string) => {
     setActiveId(id);
     setSearchParams({ tab: id }, { replace: true });
@@ -84,7 +110,7 @@ const SettingPage: React.FC = () => {
     <motion.div
       className={cn(
         'mx-auto max-w-6xl py-6',
-        activeCategory?.id === 'stocks'
+        isTallCategory
           ? 'flex h-full min-h-0 flex-col space-y-3 overflow-hidden'
           : 'space-y-6',
       )}
@@ -96,7 +122,7 @@ const SettingPage: React.FC = () => {
       }}
     >
       <header>
-        <div className="flex items-center justify-between lg:block">
+        <div className="relative flex items-center justify-between lg:block">
           <Link
             to="/"
             viewTransition
@@ -105,6 +131,9 @@ const SettingPage: React.FC = () => {
             <ArrowLeft className="h-4 w-4" />
             返回首页
           </Link>
+          <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-base font-semibold text-foreground lg:hidden">
+            {activeCategory?.label}
+          </span>
           <MobileSettingsNavigation
             categories={SETTINGS_CATEGORIES}
             activeId={activeId}
@@ -116,7 +145,7 @@ const SettingPage: React.FC = () => {
 
       <div className={cn(
         'grid grid-cols-1 gap-6 lg:grid-cols-[14rem_1fr]',
-        activeCategory?.id === 'stocks' && 'min-h-0 flex-1',
+        isTallCategory && 'min-h-0 flex-1',
       )}>
         <aside className="hidden lg:sticky lg:top-4 lg:block lg:self-start">
           <SettingsSidebar
@@ -131,7 +160,7 @@ const SettingPage: React.FC = () => {
             key={activeId}
             className={cn(
               'min-w-0',
-              activeCategory?.id === 'stocks' && 'min-h-0 overflow-hidden',
+              isTallCategory && 'min-h-0 overflow-hidden',
             )}
             initial={{ opacity: 0, x: prefersReducedMotion ? 0 : 10 }}
             animate={{ opacity: 1, x: 0 }}
@@ -142,15 +171,9 @@ const SettingPage: React.FC = () => {
             }}
           >
             {activeCategory?.id === 'tools' ? (
-              <section className="space-y-4">
-                <header>
-                  <h2 className="text-lg font-semibold text-foreground">助手工具</h2>
-                  <p className="mt-1 text-sm text-secondary-text">
-                    查看 AI 助手能够自动调用的实时数据、研究与操作工具，也可以展开单个工具验证结果。
-                  </p>
-                </header>
-                <ToolRegistryView />
-              </section>
+              <ToolRegistryView />
+            ) : activeCategory?.id === 'runs' ? (
+              <RunExplorerSettingsView embedded />
             ) : activeCategory?.id === 'model' ? (
               <ModelSettingsView />
             ) : activeCategory?.id === 'prompt' ? (
@@ -159,6 +182,10 @@ const SettingPage: React.FC = () => {
               <NotificationSettingsView />
             ) : activeCategory?.id === 'stocks' ? (
               <StockListSettingsView />
+            ) : activeCategory?.id === 'indicator-screening' ? (
+              <IndicatorScreeningSettingsView />
+            ) : activeCategory?.id === 'data-maintenance' ? (
+              <DataMaintenanceSettingsView />
             ) : activeCategory?.id === 'rss' ? (
               <RssSettingsView />
             ) : null}

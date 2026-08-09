@@ -16,7 +16,6 @@ from api.v1.endpoints import (
     auth,
     history,
     system_config,
-    prompts,
     batches,
     stocks,
     watchlist,
@@ -32,6 +31,7 @@ from api.v1.endpoints import (
     market_themes,
     industry_cycle,
     buy_decision,
+    indicator_screening,
 )
 
 # 创建 v1 版本主路由
@@ -45,7 +45,6 @@ router.include_router(history.router, prefix="/history", tags=["History"])
 
 router.include_router(system_config.router, prefix="/system", tags=["SystemConfig"])
 
-router.include_router(prompts.router, prefix="/prompts", tags=["Prompts"])
 
 router.include_router(batches.router, prefix="/batch", tags=["Batch"])
 
@@ -70,6 +69,12 @@ router.include_router(financials.router, prefix="/stocks", tags=["Stocks"])
 router.include_router(industry_cycle.router, prefix="/stocks", tags=["Stocks"])
 
 router.include_router(buy_decision.router, prefix="/stocks", tags=["Stocks"])
+
+router.include_router(
+    indicator_screening.router,
+    prefix="/indicator-screening",
+    tags=["IndicatorScreening"],
+)
 
 router.include_router(macro.router, prefix="/macro", tags=["Macro"])
 

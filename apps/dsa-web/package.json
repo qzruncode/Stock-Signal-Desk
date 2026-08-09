@@ -11,7 +11,6 @@
     "lint": "eslint .",
     "postinstall": "patch-package",
     "test": "vitest run",
-    "test:smoke": "playwright test",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -27,6 +26,7 @@
     "motion": "^12.36.0",
     "next-themes": "^0.4.6",
     "pdfjs-dist": "^4.10.38",
+    "radix-ui": "^1.6.7",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-hook-form": "^7.85.0",
@@ -40,7 +40,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
-    "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4.1.18",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",

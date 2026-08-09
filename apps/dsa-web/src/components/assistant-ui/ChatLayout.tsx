@@ -7,6 +7,7 @@ import {
   Loader2Icon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
+  RefreshCcwIcon,
   ShieldAlertIcon,
   XIcon,
 } from 'lucide-react';

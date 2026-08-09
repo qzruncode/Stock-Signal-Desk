@@ -10,7 +10,8 @@ export type ToolCategory =
   | 'regulatory'
   | 'events'
   | 'risk'
-  | 'action';
+  | 'action'
+  | 'deterministic_calculation';
 
 export interface ToolParameterSpec {
   name: string;

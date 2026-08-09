@@ -16,6 +16,7 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
   events: '公告',
   risk: '风险',
   action: '操作',
+  deterministic_calculation: '指标计算',
 };
 
 const CATEGORY_VARIANT = {
@@ -31,6 +32,7 @@ const CATEGORY_VARIANT = {
   events: 'info' as const,
   risk: 'warning' as const,
   action: 'warning' as const,
+  deterministic_calculation: 'info' as const,
 };
 
 function formatDefault(value: unknown): string {

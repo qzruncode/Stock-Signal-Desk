@@ -11,6 +11,8 @@ export * from './ScrollArea';
 export * from './ApiErrorAlert';
 export * from './ScoreGauge';
 export * from './Select';
+export * from './CompactSelect';
+export * from './FormControls';
 export * from './Badge';
 export * from './StatusDot';
 export * from './Tooltip';

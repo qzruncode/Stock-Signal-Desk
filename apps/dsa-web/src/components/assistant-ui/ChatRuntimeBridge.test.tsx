@@ -211,7 +211,7 @@ describe('ChatRuntimeBridge', () => {
         metadata?: { unstable_data?: unknown[] };
       }>;
       const events = resetMessages.find((message) => message.metadata?.unstable_data)?.metadata?.unstable_data;
-      expect(events.at(-1)).toBe(detail.resumeState!.latestStage);
+      expect(events?.at(-1)).toBe(detail.resumeState!.latestStage);
     });
   });
 

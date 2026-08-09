@@ -83,6 +83,20 @@ def test_calculate_atr_uses_caller_supplied_sma_periods_and_dynamic_line() -> No
     assert result["qualified_ratio_pct"] == pytest.approx(100.0)
 
 
+def test_calculate_atr_uses_absolute_volatility_threshold_when_provided() -> None:
+    bars = [
+        {"date": f"2026-01-0{i}", "open": 100, "close": 100, "high": high, "low": low}
+        for i, (high, low) in enumerate([(101, 99), (101, 99), (102, 98), (103, 97), (104, 96), (105, 95)], 1)
+    ]
+
+    result = calculate_atr_screen_metrics(bars, make_rule(volatility_threshold_pct=8.5))
+
+    assert result is not None
+    assert result["dynamic_warning_pct"] == pytest.approx(8.5)
+    assert result["qualified_days"] == 1
+    assert result["qualified_ratio_pct"] == pytest.approx(100 / 3)
+
+
 def test_calculate_atr_changes_when_user_changes_average_and_threshold() -> None:
     ranges = [1, 7, 2, 9, 3, 4, 11, 2]
     bars = [
@@ -154,15 +168,15 @@ def test_screen_spec_rejects_incomplete_or_inconsistent_conditions() -> None:
 def test_build_ttm_financials_keeps_available_fields_independently(monkeypatch) -> None:
     rows = {
         "2026-03-31": {
-            "000001": {"TOTALOPERATEREVE": 20, "KCFJCXSYJLR": 4, "ZCFZL": 50},
-            "000002": {"TOTALOPERATEREVE": 30, "KCFJCXSYJLR": None, "ZCFZL": 40},
+            "000001": {"TOTALOPERATEREVE": 20, "PARENTNETPROFIT": 18, "KCFJCXSYJLR": 4, "ZCFZL": 50},
+            "000002": {"TOTALOPERATEREVE": 30, "PARENTNETPROFIT": None, "KCFJCXSYJLR": None, "ZCFZL": 40},
         },
         "2025-12-31": {
-            "000001": {"TOTALOPERATEREVE": 100, "KCFJCXSYJLR": 10},
-            "000002": {"TOTALOPERATEREVE": 80, "KCFJCXSYJLR": None},
+            "000001": {"TOTALOPERATEREVE": 100, "PARENTNETPROFIT": 90, "KCFJCXSYJLR": 10},
+            "000002": {"TOTALOPERATEREVE": 80, "PARENTNETPROFIT": None, "KCFJCXSYJLR": None},
         },
         "2025-03-31": {
-            "000001": {"TOTALOPERATEREVE": 15, "KCFJCXSYJLR": 3},
+            "000001": {"TOTALOPERATEREVE": 15, "PARENTNETPROFIT": 12, "KCFJCXSYJLR": 3},
             "000002": {"TOTALOPERATEREVE": 20, "KCFJCXSYJLR": None},
         },
     }
@@ -172,6 +186,7 @@ def test_build_ttm_financials_keeps_available_fields_independently(monkeypatch) 
 
     assert period == "2026-03-31"
     assert result["000001"]["revenue_ttm"] == 105.0
+    assert result["000001"]["parent_net_profit_ttm"] == 96.0
     assert result["000001"]["deducted_net_profit_ttm"] == 11.0
     assert result["000002"]["revenue_ttm"] == 90.0
     assert "deducted_net_profit_ttm" not in result["000002"]
@@ -184,10 +199,10 @@ def test_sina_fallback_builds_ttm_only_from_four_consecutive_quarters(monkeypatc
     financial_fetcher = importlib.import_module("api.v1.endpoints.financials._fetch_financials")
 
     rows = [
-        {"report_date": "2025-03-31", "revenue": 10, "deducted_profit": 1, "debt_ratio": 41},
-        {"report_date": "2025-06-30", "revenue": 20, "deducted_profit": 2, "debt_ratio": 42},
-        {"report_date": "2025-09-30", "revenue": 30, "deducted_profit": 3, "debt_ratio": 43},
-        {"report_date": "2025-12-31", "revenue": 40, "deducted_profit": 4, "debt_ratio": 44},
+        {"report_date": "2025-03-31", "revenue": 10, "parent_net_profit": 6, "deducted_profit": 1, "debt_ratio": 41},
+        {"report_date": "2025-06-30", "revenue": 20, "parent_net_profit": 7, "deducted_profit": 2, "debt_ratio": 42},
+        {"report_date": "2025-09-30", "revenue": 30, "parent_net_profit": 8, "deducted_profit": 3, "debt_ratio": 43},
+        {"report_date": "2025-12-31", "revenue": 40, "parent_net_profit": 10, "deducted_profit": 4, "debt_ratio": 44},
     ]
     monkeypatch.setattr(financial_fetcher, "_fetch_from_sina", lambda _code, _periods: rows)
 
@@ -198,6 +213,7 @@ def test_sina_fallback_builds_ttm_only_from_four_consecutive_quarters(monkeypatc
         "financial_source": "新浪财经财务摘要补源",
         "debt_ratio": 44.0,
         "revenue_ttm": 100.0,
+        "parent_net_profit_ttm": 31.0,
         "deducted_net_profit_ttm": 10.0,
     }
 

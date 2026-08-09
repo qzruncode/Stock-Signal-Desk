@@ -1,6 +1,6 @@
 import type React from 'react';
 import { Suspense, useEffect } from 'react';
-import { BrowserRouter as Router, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { scheduleIdlePreload } from './utils/routePreload';
@@ -19,7 +19,6 @@ const PageFallback: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const location = useLocation();
   const { isLoading, loadError } = useAuth();
 
   useEffect(() => {
@@ -36,22 +35,11 @@ const AppContent: React.FC = () => {
     );
   }
 
-  if (location.pathname === '/login') {
-    return <Navigate to="/" replace />;
-  }
-
   return (
     <Suspense fallback={<PageFallback />}>
       <Routes>
         <Route element={<Shell />}>
           <Route path="/" element={<ChatHomePage />} />
-          <Route path="/dashboard" element={<Navigate to="/" replace />} />
-          <Route path="/batch/runs/:runId" element={<Navigate to="/" replace />} />
-          <Route path="/stocks" element={<Navigate to="/" replace />} />
-          <Route path="/portfolio" element={<Navigate to="/" replace />} />
-          <Route path="/infos" element={<Navigate to="/" replace />} />
-          <Route path="/tools" element={<Navigate to="/setting?tab=tools" replace />} />
-          <Route path="/workflows" element={<Navigate to="/" replace />} />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="/runs" element={<RunExplorerPage />} />
           <Route path="*" element={<NotFoundPage />} />

@@ -186,6 +186,7 @@ def _build_ttm_financials(reference: date | None = None) -> tuple[dict[str, dict
     financials: dict[str, dict[str, Any]] = {}
     for code, current_row in current.items():
         current_revenue = _safe_float(current_row.get("TOTALOPERATEREVE"))
+        current_parent_profit = _safe_float(current_row.get("PARENTNETPROFIT"))
         current_profit = _safe_float(current_row.get("KCFJCXSYJLR"))
         debt_ratio = _safe_float(current_row.get("ZCFZL"))
         values: dict[str, Any] = {
@@ -197,21 +198,32 @@ def _build_ttm_financials(reference: date | None = None) -> tuple[dict[str, dict
             prior_row = fetched[prior_same_period].get(code)
             if annual_row and prior_row:
                 annual_revenue = _safe_float(annual_row.get("TOTALOPERATEREVE"))
+                annual_parent_profit = _safe_float(annual_row.get("PARENTNETPROFIT"))
                 annual_profit = _safe_float(annual_row.get("KCFJCXSYJLR"))
                 prior_revenue = _safe_float(prior_row.get("TOTALOPERATEREVE"))
+                prior_parent_profit = _safe_float(prior_row.get("PARENTNETPROFIT"))
                 prior_profit = _safe_float(prior_row.get("KCFJCXSYJLR"))
                 if None not in {current_revenue, annual_revenue, prior_revenue}:
                     values["revenue_ttm"] = float(current_revenue + annual_revenue - prior_revenue)
+                if None not in {current_parent_profit, annual_parent_profit, prior_parent_profit}:
+                    values["parent_net_profit_ttm"] = float(
+                        current_parent_profit + annual_parent_profit - prior_parent_profit
+                    )
                 if None not in {current_profit, annual_profit, prior_profit}:
                     values["deducted_net_profit_ttm"] = float(current_profit + annual_profit - prior_profit)
         else:
             if current_revenue is not None:
                 values["revenue_ttm"] = float(current_revenue)
+            if current_parent_profit is not None:
+                values["parent_net_profit_ttm"] = float(current_parent_profit)
             if current_profit is not None:
                 values["deducted_net_profit_ttm"] = float(current_profit)
         if debt_ratio is not None:
             values["debt_ratio"] = float(debt_ratio)
-        if any(field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")):
+        if any(
+            field in values
+            for field in ("revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio")
+        ):
             financials[code] = values
     return financials, current_period
 
@@ -240,6 +252,7 @@ def _fetch_ths_ttm_financial(code: str) -> dict[str, Any] | None:
         return None
 
     current_revenue = metric(current_period, "operating_income_total")
+    current_parent_profit = metric(current_period, "parent_holder_net_profit")
     current_profit = metric(current_period, "index_deduct_holder_net_profit")
     debt_ratio = metric(current_period, "assets_debt_ratio")
     values: dict[str, Any] = {
@@ -249,23 +262,36 @@ def _fetch_ths_ttm_financial(code: str) -> dict[str, Any] | None:
     if current_date.month == 12 and current_date.day == 31:
         if current_revenue is not None:
             values["revenue_ttm"] = float(current_revenue)
+        if current_parent_profit is not None:
+            values["parent_net_profit_ttm"] = float(current_parent_profit)
         if current_profit is not None:
             values["deducted_net_profit_ttm"] = float(current_profit)
     else:
         annual_period = date(current_date.year - 1, 12, 31).isoformat()
         prior_same_period = date(current_date.year - 1, current_date.month, current_date.day).isoformat()
         annual_revenue = metric(annual_period, "operating_income_total")
+        annual_parent_profit = metric(annual_period, "parent_holder_net_profit")
         annual_profit = metric(annual_period, "index_deduct_holder_net_profit")
         prior_revenue = metric(prior_same_period, "operating_income_total")
+        prior_parent_profit = metric(prior_same_period, "parent_holder_net_profit")
         prior_profit = metric(prior_same_period, "index_deduct_holder_net_profit")
         if None not in {current_revenue, annual_revenue, prior_revenue}:
             values["revenue_ttm"] = float(current_revenue + annual_revenue - prior_revenue)
+        if None not in {current_parent_profit, annual_parent_profit, prior_parent_profit}:
+            values["parent_net_profit_ttm"] = float(
+                current_parent_profit + annual_parent_profit - prior_parent_profit
+            )
         if None not in {current_profit, annual_profit, prior_profit}:
             values["deducted_net_profit_ttm"] = float(current_profit + annual_profit - prior_profit)
     if debt_ratio is not None:
         values["debt_ratio"] = float(debt_ratio)
     return (
-        values if any(field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")) else None
+        values
+        if any(
+            field in values
+            for field in ("revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio")
+        )
+        else None
     )
 
 def _quarter_index(report_period: str) -> int | None:
@@ -312,13 +338,19 @@ def _fetch_sina_ttm_financial(code: str) -> dict[str, Any] | None:
     if consecutive:
         for source_field, target_field in (
             ("revenue", "revenue_ttm"),
+            ("parent_net_profit", "parent_net_profit_ttm"),
             ("deducted_profit", "deducted_net_profit_ttm"),
         ):
             amounts = [_safe_float(row.get(source_field)) for row in last_four]
             if all(amount is not None for amount in amounts):
                 values[target_field] = float(sum(float(amount) for amount in amounts))
     return (
-        values if any(field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")) else None
+        values
+        if any(
+            field in values
+            for field in ("revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio")
+        )
+        else None
     )
 
 def _fetch_secondary_ttm_financial(
@@ -352,6 +384,7 @@ def _persist_financials(financials: dict[str, dict[str, Any]], report_period: st
         {
             "code": code,
             "revenue_ttm": values.get("revenue_ttm"),
+            "parent_net_profit_ttm": values.get("parent_net_profit_ttm"),
             "deducted_net_profit_ttm": values.get("deducted_net_profit_ttm"),
             "debt_ratio": values.get("debt_ratio"),
             "financial_fetched_at": now,
@@ -363,6 +396,7 @@ def _persist_financials(financials: dict[str, dict[str, Any]], report_period: st
         session.execute(
             text(
                 "UPDATE stock_meta SET revenue_ttm=COALESCE(:revenue_ttm, revenue_ttm), "
+                "parent_net_profit_ttm=COALESCE(:parent_net_profit_ttm, parent_net_profit_ttm), "
                 "deducted_net_profit_ttm=COALESCE(:deducted_net_profit_ttm, deducted_net_profit_ttm), "
                 "debt_ratio=COALESCE(:debt_ratio, debt_ratio), "
                 "financial_fetched_at=:financial_fetched_at, report_date=:report_date "
@@ -382,7 +416,7 @@ def _load_fresh_cached_financials(
         rows = (
             session.execute(
                 text(
-                    "SELECT code, revenue_ttm, deducted_net_profit_ttm, debt_ratio, "
+                    "SELECT code, revenue_ttm, parent_net_profit_ttm, deducted_net_profit_ttm, debt_ratio, "
                     "report_date, financial_fetched_at FROM stock_meta WHERE status='active'"
                 )
             )
@@ -402,11 +436,14 @@ def _load_fresh_cached_financials(
             "financial_report_period": report_period,
             "financial_source": "本地当日财务缓存",
         }
-        for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"):
+        for field in ("revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio"):
             value = _safe_float(row.get(field))
             if value is not None:
                 values[field] = value
-        if any(field in values for field in ("revenue_ttm", "deducted_net_profit_ttm", "debt_ratio")):
+        if any(
+            field in values
+            for field in ("revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio")
+        ):
             cached[code] = values
             periods.append(report_period)
     return cached, max(periods) if periods else None

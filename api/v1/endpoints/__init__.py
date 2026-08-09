@@ -11,11 +11,10 @@ API v1 Endpoints 模块初始化
 __all__ = [
     "analysis",
     "auth",
-    "batch",
     "buy_decision",
     "history",
+    "indicator_screening",
     "industry_cycle",
-    "prompts",
     "stock_info",
     "system_config",
     "watchlist",

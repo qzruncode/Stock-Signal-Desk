@@ -22,6 +22,7 @@ OutputField = Literal[
     "qualified_days",
     "qualified_ratio_pct",
     "revenue_ttm",
+    "parent_net_profit_ttm",
     "deducted_net_profit_ttm",
     "debt_ratio",
     "financial_report_period",
@@ -36,11 +37,13 @@ SortField = Literal[
     "qualified_days",
     "qualified_ratio_pct",
     "revenue_ttm",
+    "parent_net_profit_ttm",
     "deducted_net_profit_ttm",
     "debt_ratio",
 ]
 FinancialField = Literal[
     "revenue_ttm",
+    "parent_net_profit_ttm",
     "deducted_net_profit_ttm",
     "debt_ratio",
 ]
@@ -54,11 +57,20 @@ class ScreenUniverse(BaseModel):
     include_st: bool
     min_listing_trading_days: int = Field(ge=1, le=1000)
     price_adjustment: Literal["qfq"]
+    # Optional explicit code scope used by the settings-page group filter.
+    # ``None`` means the normal market universe; ``[]`` intentionally means
+    # an empty selected group.
+    codes: list[str] | None = Field(default=None, max_length=5000)
 
     @model_validator(mode="after")
     def _deduplicate_markets(self) -> "ScreenUniverse":
         if len(self.markets) != len(set(self.markets)):
             raise ValueError("markets 不能重复")
+        if self.codes is not None:
+            cleaned = [str(code).strip() for code in self.codes if str(code).strip()]
+            if len(cleaned) != len(set(cleaned)):
+                raise ValueError("codes 不能重复")
+            self.codes = cleaned
         return self
 
 
@@ -72,6 +84,10 @@ class AtrRelativeFrequencyRule(BaseModel):
     baseline_average: Literal["sma", "ema"]
     threshold_operator: Literal["multiply", "divide"]
     threshold_value: float = Field(gt=0, le=100)
+    # The original ATR screener used an absolute ATR/close percentage line
+    # (2.8 by default).  Keep the dynamic baseline fields for compatibility,
+    # but let a supplied absolute threshold take precedence during evaluation.
+    volatility_threshold_pct: float | None = Field(default=None, ge=0.1, le=100)
     daily_comparison: ComparisonOperator
     lookback_days: int = Field(ge=1, le=500)
     min_qualified_days: int | None = Field(ge=0, le=500)
@@ -119,7 +135,7 @@ class QuantitativeScreenSpec(BaseModel):
         if len(self.output_fields) != len(set(self.output_fields)):
             raise ValueError("output_fields 不能重复")
         financial_fields = {item.field for item in self.financial_filters}
-        if self.sort.field in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}:
+        if self.sort.field in {"revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio"}:
             financial_fields.add(self.sort.field)
         # Financial report metadata has no meaning unless at least one
         # financial value is requested, filtered or used for sorting.
@@ -127,7 +143,7 @@ class QuantitativeScreenSpec(BaseModel):
             {"financial_report_period", "financial_source"}.intersection(self.output_fields)
             and not financial_fields.intersection(self.output_fields)
             and not self.financial_filters
-            and self.sort.field not in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}
+            and self.sort.field not in {"revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio"}
         ):
             raise ValueError("请求财务报告期或来源时，必须同时请求至少一个财务指标")
         return self
@@ -135,9 +151,11 @@ class QuantitativeScreenSpec(BaseModel):
     def required_financial_fields(self) -> set[str]:
         fields = {item.field for item in self.financial_filters}
         fields.update(
-            field for field in self.output_fields if field in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}
+            field
+            for field in self.output_fields
+            if field in {"revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio"}
         )
-        if self.sort.field in {"revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"}:
+        if self.sort.field in {"revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio"}:
             fields.add(self.sort.field)
         return fields
 
@@ -170,6 +188,11 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                     "include_st": {"type": "boolean"},
                     "min_listing_trading_days": {"type": "integer", "minimum": 1, "maximum": 1000},
                     "price_adjustment": {"type": "string", "enum": ["qfq"]},
+                    "codes": {
+                        "type": ["array", "null"],
+                        "items": {"type": "string"},
+                        "maxItems": 5000,
+                    },
                 },
                 "required": ["status", "markets", "include_st", "min_listing_trading_days", "price_adjustment"],
             },
@@ -184,6 +207,7 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                     "baseline_average": {"type": "string", "enum": ["sma", "ema"]},
                     "threshold_operator": {"type": "string", "enum": ["multiply", "divide"]},
                     "threshold_value": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+                    "volatility_threshold_pct": {"type": number_or_null, "minimum": 0.1, "maximum": 100},
                     "daily_comparison": {"type": "string", "enum": ["gt", "gte", "lt", "lte", "eq"]},
                     "lookback_days": {"type": "integer", "minimum": 1, "maximum": 500},
                     "min_qualified_days": {"type": integer_or_null, "minimum": 0, "maximum": 500},
@@ -210,7 +234,15 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "field": {"type": "string", "enum": ["revenue_ttm", "deducted_net_profit_ttm", "debt_ratio"]},
+                        "field": {
+                            "type": "string",
+                            "enum": [
+                                "revenue_ttm",
+                                "parent_net_profit_ttm",
+                                "deducted_net_profit_ttm",
+                                "debt_ratio",
+                            ],
+                        },
                         "operator": {"type": "string", "enum": ["gt", "gte", "lt", "lte", "eq"]},
                         "value": {"type": "number"},
                     },
@@ -231,6 +263,7 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                             "qualified_days",
                             "qualified_ratio_pct",
                             "revenue_ttm",
+                            "parent_net_profit_ttm",
                             "deducted_net_profit_ttm",
                             "debt_ratio",
                         ],
@@ -253,6 +286,7 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
                         "qualified_days",
                         "qualified_ratio_pct",
                         "revenue_ttm",
+                        "parent_net_profit_ttm",
                         "deducted_net_profit_ttm",
                         "debt_ratio",
                         "financial_report_period",

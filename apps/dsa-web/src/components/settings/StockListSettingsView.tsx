@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Download,
   FolderPlus,
   Pencil,
   Plus,
@@ -14,8 +15,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { Badge, Button, EmptyState, InlineAlert, Modal } from '../common';
-import { stocksApi, type StockListSyncStatus, type StockMetaItem, type StocksListResponse } from '../../api/stocks';
+import { Badge, Button, ConfirmDialog, EmptyState, Modal } from '../common';
+import { stocksApi, type StockMetaItem, type StocksListResponse } from '../../api/stocks';
 import { watchlistApi, type WatchlistGroup, type WatchlistResponse } from '../../api/watchlist';
 import { useStockIndex } from '../../hooks/useStockIndex';
 import { cn } from '../../utils/cn';
@@ -75,12 +76,6 @@ function readableError(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function displayTime(value: string | null | undefined): string {
-  if (!value) return '暂无同步记录';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
 function uniqueValues(values: string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
@@ -90,6 +85,10 @@ function groupName(group: WatchlistGroup | null): string {
   return !name || name.toLowerCase() === 'null' || name.toLowerCase() === 'undefined'
     ? '未命名分组'
     : name;
+}
+
+function exportFileName(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '-').trim() || '股票分组';
 }
 
 function CompactSelect({
@@ -209,11 +208,6 @@ export function StockListSettingsView() {
   const [marketData, setMarketData] = useState<StocksListResponse | null>(null);
   const [marketLoading, setMarketLoading] = useState(false);
 
-  const [syncStatus, setSyncStatus] = useState<StockListSyncStatus | null>(null);
-  const [syncBusy, setSyncBusy] = useState(false);
-  const syncTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const syncPollFailuresRef = useRef(0);
-
   const [watchlist, setWatchlist] = useState<WatchlistResponse | null>(null);
   const [groups, setGroups] = useState<WatchlistGroup[]>([]);
   const [watchlistLoading, setWatchlistLoading] = useState(true);
@@ -222,7 +216,9 @@ export function StockListSettingsView() {
   const candidateRequestRef = useRef(0);
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<WatchlistGroup | null>(null);
   const [pendingActiveGroupId, setPendingActiveGroupId] = useState<string | null>(null);
+  const [exportConfirming, setExportConfirming] = useState(false);
   const { index: stockIndex } = useStockIndex();
   const stockNameByCode = useMemo(
     () => new Map(stockIndex.map((item) => [item.displayCode, item.nameZh])),
@@ -243,6 +239,12 @@ export function StockListSettingsView() {
   });
   const watchlistValues = useWatch({ control: watchlistForm.control });
   const activeGroupId = watchlistValues.activeGroupId || DEFAULT_GROUP_ID;
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = window.setTimeout(() => setNotice(null), 2800);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   const loadMarket = useCallback(async () => {
     setMarketLoading(true);
@@ -277,64 +279,13 @@ export function StockListSettingsView() {
     }
   }, []);
 
-  const loadSyncStatus = useCallback(async () => {
-    try {
-      const result = await stocksApi.syncListStatus();
-      setSyncStatus(result);
-      return result;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const stopSyncPolling = useCallback(() => {
-    if (syncTimerRef.current) {
-      window.clearInterval(syncTimerRef.current);
-      syncTimerRef.current = null;
-    }
-  }, []);
-
-  const startSyncPolling = useCallback(() => {
-    stopSyncPolling();
-    syncPollFailuresRef.current = 0;
-    syncTimerRef.current = window.setInterval(async () => {
-      const next = await loadSyncStatus();
-      if (!next) {
-        syncPollFailuresRef.current += 1;
-        if (syncPollFailuresRef.current >= 3) {
-          stopSyncPolling();
-          syncPollFailuresRef.current = 0;
-          setSyncStatus(null);
-          setNotice({ type: 'error', message: '同步状态暂时无法获取，请刷新页面确认结果。' });
-        }
-        return;
-      }
-      syncPollFailuresRef.current = 0;
-      if (next.status === 'success' || next.status === 'failed') {
-        stopSyncPolling();
-        if (next.status === 'success') {
-          void loadMarket();
-        } else {
-          setNotice({ type: 'error', message: next.error || next.message || '股票列表同步失败。' });
-        }
-      }
-    }, 2000);
-  }, [loadMarket, loadSyncStatus, stopSyncPolling]);
-
   useEffect(() => {
     void loadMarket();
   }, [loadMarket]);
 
   useEffect(() => {
-    let mounted = true;
     void loadWatchlist();
-    void loadSyncStatus().then((status) => {
-      if (mounted && status?.status === 'running') startSyncPolling();
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [loadSyncStatus, loadWatchlist, startSyncPolling]);
+  }, [loadWatchlist]);
 
   useEffect(() => {
     if (activeGroupId !== DEFAULT_GROUP_ID && !groups.some((group) => group.id === activeGroupId)) {
@@ -348,10 +299,6 @@ export function StockListSettingsView() {
     setPendingActiveGroupId(null);
   }, [groups, pendingActiveGroupId, watchlistForm]);
 
-  useEffect(() => () => {
-    if (syncTimerRef.current) window.clearInterval(syncTimerRef.current);
-  }, []);
-
   const watchlistCodes = useMemo(() => new Set(watchlist?.codes || []), [watchlist]);
   const activeGroup = useMemo<WatchlistGroup | null>(() => {
     if (activeGroupId === DEFAULT_GROUP_ID) {
@@ -364,20 +311,36 @@ export function StockListSettingsView() {
     return groups.find((group) => group.id === activeGroupId) || null;
   }, [activeGroupId, groups, watchlist]);
   const activeCodes = useMemo(() => activeGroup?.codes || [], [activeGroup]);
+  const activeCodeCount = uniqueValues(activeCodes).length;
 
-  const handleSync = useCallback(async () => {
-    setSyncBusy(true);
-    setNotice(null);
-    try {
-      await stocksApi.syncList();
-      await loadSyncStatus();
-      startSyncPolling();
-    } catch (error) {
-      setNotice({ type: 'error', message: readableError(error, '股票列表同步启动失败') });
-    } finally {
-      setSyncBusy(false);
+  const exportActiveGroupMarkdown = useCallback(() => {
+    setExportConfirming(false);
+    if (!activeGroup) return;
+    const codes = uniqueValues(activeCodes);
+    if (!codes.length) {
+      setNotice({ type: 'error', message: '当前分组没有可导出的股票代码。' });
+      return;
     }
-  }, [loadSyncStatus, startSyncPolling]);
+    const markdown = [
+      `# ${groupName(activeGroup)}`,
+      '',
+      `股票数量：${codes.length}`,
+      '',
+      '## 股票代码',
+      '',
+      ...codes.map((code) => `- ${code}`),
+      '',
+    ].join('\n');
+    const blobUrl = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `${exportFileName(groupName(activeGroup))}-股票代码.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(blobUrl);
+    setNotice({ type: 'success', message: `已导出「${groupName(activeGroup)}」的 ${codes.length} 个股票代码。` });
+  }, [activeCodes, activeGroup]);
 
   const submitMarketSearch = useCallback((values: MarketFormValues) => {
     setMarketPage(1);
@@ -548,7 +511,6 @@ export function StockListSettingsView() {
 
   const deleteGroup = useCallback(async (group: WatchlistGroup) => {
     if (group.id === DEFAULT_GROUP_ID) return;
-    if (!window.confirm(`确定删除分组「${groupName(group)}」吗？其中的股票不会从默认自选股中删除。`)) return;
     setBusyAction(`delete-group:${group.id}`);
     setNotice(null);
     try {
@@ -573,25 +535,24 @@ export function StockListSettingsView() {
     await addToActiveGroup(values.batchInput.split(/[\n,，\s]+/));
   }, [addToActiveGroup]);
 
-  const syncLabel = syncStatus?.status === 'running'
-    ? syncStatus.message || `同步中 ${syncStatus.progress}/${syncStatus.total || '…'}`
-    : syncStatus?.status === 'failed'
-      ? syncStatus.error || syncStatus.message || '上次同步失败'
-      : syncStatus?.total
-        ? `已同步 ${syncStatus.total} 只`
-        : '尚未同步';
-  const syncFinishedLabel = syncStatus?.finished_at
-    ? `${syncStatus.status === 'failed' ? '最近失败' : '最近完成'} ${displayTime(syncStatus.finished_at)}`
-    : '支持手动刷新';
-
   return (
     <section className="flex h-full min-h-0 flex-col space-y-3 text-xs">
       {notice ? (
-        <InlineAlert
-          variant={notice.type === 'success' ? 'success' : 'danger'}
-          title={notice.type === 'success' ? '操作成功' : '操作失败'}
-          message={notice.message}
-        />
+        <div className="pointer-events-none fixed inset-x-0 top-2 z-[70] flex justify-center px-3">
+          <div
+            role={notice.type === 'success' ? 'status' : 'alert'}
+            aria-live="polite"
+            className={cn(
+              'flex max-w-[calc(100vw-1.5rem)] items-center gap-2 rounded-full border px-3 py-2 text-[11px] font-medium shadow-lg backdrop-blur-md',
+              notice.type === 'success'
+                ? 'border-success/25 bg-emerald-50/95 text-success'
+                : 'border-danger/25 bg-red-50/95 text-danger',
+            )}
+          >
+            {notice.type === 'success' ? <Check className="size-3.5 shrink-0" /> : <X className="size-3.5 shrink-0" />}
+            <span className="truncate">{notice.message}</span>
+          </div>
+        </div>
       ) : null}
 
       <div className="terminal-card flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl">
@@ -626,32 +587,6 @@ export function StockListSettingsView() {
 
         {view === 'market' ? (
           <div className="flex min-h-0 flex-1 flex-col space-y-2.5 p-2.5 sm:p-3">
-            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-cyan/10 bg-gradient-to-r from-cyan/5 via-white to-white px-3 py-2.5 shadow-sm">
-              <div className="flex min-w-0 items-center gap-2">
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-cyan/10 text-cyan">
-                  <RefreshCw className={cn('size-3.5', syncStatus?.status === 'running' && 'animate-spin')} />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-medium text-foreground">股票主数据</p>
-                  <p className="truncate text-[11px] text-muted-foreground">
-                    {syncLabel} · {syncFinishedLabel}
-                  </p>
-                </div>
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => void handleSync()}
-                disabled={syncBusy || syncStatus?.status === 'running'}
-                isLoading={syncBusy}
-                loadingText="启动中..."
-                className={COMPACT_BUTTON_CLASS}
-              >
-                <RefreshCw className="size-3.5" />
-                同步股票列表
-              </Button>
-            </div>
-
             <form onSubmit={marketForm.handleSubmit(submitMarketSearch)} className="flex shrink-0 flex-wrap items-center gap-1 rounded-xl border border-border/70 bg-white p-1 shadow-sm">
               <div className="relative min-w-[180px] flex-1">
                 <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -771,7 +706,10 @@ export function StockListSettingsView() {
                           manageActions: true,
                         })),
                       ]}
-                      onChange={field.onChange}
+                      onChange={(value) => {
+                        field.onChange(value);
+                        setExportConfirming(false);
+                      }}
                       renderOptionActions={(option, close) => {
                         const group = groups.find((item) => item.id === option.value);
                         if (!group) return null;
@@ -800,7 +738,7 @@ export function StockListSettingsView() {
                               onClick={(event) => {
                                 event.stopPropagation();
                                 close();
-                                void deleteGroup(group);
+                                setDeleteTarget(group);
                               }}
                               disabled={busyAction === `delete-group:${group.id}`}
                               className="inline-flex size-5 items-center justify-center rounded text-muted-foreground transition hover:bg-danger/10 hover:text-danger disabled:opacity-50"
@@ -933,11 +871,66 @@ export function StockListSettingsView() {
                 ) : (
                   <EmptyState title="当前分组暂无股票" description="在本分组上方批量添加，或使用搜索添加股票。" className="flex-1 border-0 py-16" />
                 )}
+                {activeGroup ? (
+                  <div className="flex shrink-0 items-center justify-end border-t border-border/60 bg-white px-2 py-1">
+                    {exportConfirming ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-warning">确认导出 {activeCodeCount} 个代码？</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          type="button"
+                          onClick={() => setExportConfirming(false)}
+                          className={COMPACT_BUTTON_CLASS}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          type="button"
+                          onClick={exportActiveGroupMarkdown}
+                          disabled={!activeCodeCount}
+                          className={COMPACT_BUTTON_CLASS}
+                        >
+                          确认导出
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        type="button"
+                        onClick={() => setExportConfirming(true)}
+                        disabled={!activeCodeCount}
+                        className={COMPACT_BUTTON_CLASS}
+                      >
+                        <Download className="size-3" />
+                        导出 Markdown
+                      </Button>
+                    )}
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        isOpen={deleteTarget !== null}
+        title="删除分组"
+        message={`确定删除分组「${deleteTarget ? groupName(deleteTarget) : ''}」吗？其中的股票不会从默认自选股中删除。`}
+        confirmText="删除分组"
+        cancelText="取消"
+        isDanger
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          void deleteGroup(deleteTarget);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
       <Modal
         isOpen={createGroupOpen}

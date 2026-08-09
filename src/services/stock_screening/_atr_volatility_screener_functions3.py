@@ -87,15 +87,17 @@ def run_atr_volatility_screen(
             .mappings()
             .all()
         )
+    scoped_codes = set(spec.universe.codes) if spec.universe.codes is not None else None
     active = {
         str(row["code"]): row
         for row in rows
-        if _market_for_code(str(row["code"])) in spec.universe.markets
+        if (scoped_codes is None or str(row["code"]) in scoped_codes)
+        and _market_for_code(str(row["code"])) in spec.universe.markets
         and (spec.universe.include_st or not _is_st_name(str(row["name"])))
     }
     if not active:
         return _failure(
-            "股票范围为空；请检查市场和ST范围条件。",
+            "股票范围为空；请检查市场、ST和分组范围条件。",
             stage="universe",
             spec=spec,
         )
@@ -358,6 +360,11 @@ def run_atr_volatility_screen(
         "excluded_by_financial": excluded_financial,
         "complete": True,
     }
+    warning_formula = (
+        f"固定ATR相对波动率阈值 {spec.technical_rule.volatility_threshold_pct:g}%"
+        if spec.technical_rule.volatility_threshold_pct is not None
+        else f"baseline {spec.technical_rule.threshold_operator} {spec.technical_rule.threshold_value:g}"
+    )
     formula = {
         "true_range": "max(high-low, abs(high-prev_close), abs(low-prev_close))",
         "atr": f"TR的{spec.technical_rule.atr_period}日{spec.technical_rule.atr_average}",
@@ -365,9 +372,7 @@ def run_atr_volatility_screen(
         "baseline": (
             f"ATR相对波动率的{spec.technical_rule.baseline_period}日" f"{spec.technical_rule.baseline_average}"
         ),
-        "dynamic_warning": (
-            f"baseline {spec.technical_rule.threshold_operator} " f"{spec.technical_rule.threshold_value:g}"
-        ),
+        "dynamic_warning": warning_formula,
         "daily_comparison": spec.technical_rule.daily_comparison,
     }
     source_parts: list[str] = []

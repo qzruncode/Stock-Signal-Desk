@@ -25,9 +25,9 @@ def test_registry_keeps_atomic_watchlist_operations_only() -> None:
     assert {"manage_watchlist", "manage_watchlist_groups"}.isdisjoint(names)
     assert {
         "filter_watchlist_by_theme",
-        "screen_atr_volatility_stocks",
         "run_batch_analysis",
     }.isdisjoint(names)
+    assert "screen_atr_volatility_stocks" in names
 
 
 def test_list_watchlist_groups_reads_only_persisted_custom_groups() -> None:

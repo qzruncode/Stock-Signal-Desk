@@ -93,6 +93,7 @@ def _fetch_from_ths(symbol: str, periods: int) -> list[dict]:
 _SINA_INDICATOR_MAP = {
     ("常用指标", "营业总收入"): "revenue",
     ("常用指标", "净利润"): "net_profit",
+    ("常用指标", "归属于母公司所有者的净利润"): "parent_net_profit",
     ("常用指标", "扣非净利润"): "deducted_profit",
     ("常用指标", "基本每股收益"): "eps",
     ("常用指标", "每股净资产"): "bps",
@@ -161,7 +162,7 @@ def _fetch_from_sina(symbol: str, periods: int) -> list[dict]:
                     "revenue_yoy",
                 ):
                     item[dst] = _safe_pct(s)
-                elif dst in ("revenue", "net_profit", "deducted_profit"):
+                elif dst in ("revenue", "net_profit", "parent_net_profit", "deducted_profit"):
                     item[dst] = _safe_amount(s)
                 else:
                     item[dst] = _safe_float(s)
@@ -179,7 +180,7 @@ def _fetch_from_sina(symbol: str, periods: int) -> list[dict]:
             continue
         prev = all_items[i - 1]
         single = dict(cur)
-        for field in ("revenue", "net_profit", "deducted_profit"):
+        for field in ("revenue", "net_profit", "parent_net_profit", "deducted_profit"):
             cv = cur.get(field)
             pv = prev.get(field)
             if cv is not None and pv is not None:

@@ -1,7 +1,6 @@
 import type { FC } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIcon,
   EllipsisIcon,
   Loader2Icon,
   MessageSquareIcon,
@@ -289,15 +288,6 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
       </div>
 
       <div className="flex items-center gap-1 border-t border-border/70 bg-white px-3 py-2">
-        <Link
-          to="/runs"
-          viewTransition
-          className="group inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-all duration-200 hover:bg-muted hover:text-foreground active:scale-90"
-          aria-label="查看运行记录"
-          title="查看运行记录"
-        >
-          <ActivityIcon className="size-3.5" />
-        </Link>
         <Link
           to="/setting"
           viewTransition

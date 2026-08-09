@@ -376,10 +376,18 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
             }.isdisjoint(names)
         )
 
-    def test_composite_quantitative_screen_is_not_model_callable(self) -> None:
+    def test_composite_quantitative_screen_is_model_callable(self) -> None:
         registry = ToolRegistry()
-        self.assertNotIn("screen_atr_volatility_stocks", registry.get_tool_names())
-        with self.assertRaises(KeyError):
+        self.assertIn("screen_atr_volatility_stocks", registry.get_tool_names())
+        tool = registry.get_tool("screen_atr_volatility_stocks")
+        self.assertIsNotNone(tool)
+        assert tool is not None
+        self.assertEqual(tool.effect_for({"screen_spec": {}}), "read")
+        self.assertEqual(
+            tool.effect_for({"screen_spec": {}, "save_group_name": "高波动股"}),
+            "side_effect",
+        )
+        with self.assertRaises(ValueError):
             registry.validate_arguments("screen_atr_volatility_stocks", {})
 
     def test_result_contract_completes_nullable_freshness_fields(self) -> None:

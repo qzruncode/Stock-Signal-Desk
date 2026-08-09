@@ -149,6 +149,8 @@ def _compare(left: float, operator: str, right: float) -> bool:
     raise ValueError(f"不支持的比较符: {operator}")
 
 def _dynamic_threshold(mean: float, rule: AtrRelativeFrequencyRule) -> float:
+    if rule.volatility_threshold_pct is not None:
+        return rule.volatility_threshold_pct
     if rule.threshold_operator == "divide":
         return mean / rule.threshold_value
     return mean * rule.threshold_value
@@ -233,6 +235,11 @@ def _column_defs(spec: QuantitativeScreenSpec) -> list[dict[str, str]]:
     rule = spec.technical_rule
     dynamic_labels = {
         "long_term_mean_pct": f"{rule.baseline_period}日长期波动均值(%)",
+        "dynamic_warning_pct": (
+            "ATR相对波动率阈值(%)"
+            if rule.volatility_threshold_pct is not None
+            else "动态警戒线(%)"
+        ),
         "qualified_days": f"近{rule.lookback_days}日达标天数",
         "qualified_ratio_pct": f"近{rule.lookback_days}日达标比例(%)",
     }
@@ -277,7 +284,7 @@ def _spec_fingerprint(spec: QuantitativeScreenSpec) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 def _format_filter_value(field: str, value: float) -> str:
-    if field in {"revenue_ttm", "deducted_net_profit_ttm"}:
+    if field in {"revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm"}:
         return f"{value / 100_000_000:g}亿元"
     if field == "debt_ratio":
         return f"{value:g}%"
@@ -285,11 +292,16 @@ def _format_filter_value(field: str, value: float) -> str:
 
 def _applied_rules(spec: QuantitativeScreenSpec) -> list[str]:
     rule = spec.technical_rule
-    threshold = (
-        f"长期均值/{rule.threshold_value:g}"
-        if rule.threshold_operator == "divide"
-        else f"长期均值*{rule.threshold_value:g}"
-    )
+    if rule.volatility_threshold_pct is not None:
+        threshold_label = "固定阈值"
+        threshold = f"{rule.volatility_threshold_pct:g}%"
+    else:
+        threshold_label = "动态线"
+        threshold = (
+            f"长期均值/{rule.threshold_value:g}"
+            if rule.threshold_operator == "divide"
+            else f"长期均值*{rule.threshold_value:g}"
+        )
     qualification_parts: list[str] = []
     if rule.min_qualified_days is not None:
         qualification_parts.append(f"达标天数>={rule.min_qualified_days}")
@@ -303,8 +315,8 @@ def _applied_rules(spec: QuantitativeScreenSpec) -> list[str]:
         ),
         (
             f"长期波动均值=ATR相对波动率的{rule.baseline_period}日"
-            f"{_AVERAGE_LABELS[rule.baseline_average]}；动态线={threshold}；"
-            f"日达标条件=ATR相对波动率{_OPERATOR_LABELS[rule.daily_comparison]}动态线"
+            f"{_AVERAGE_LABELS[rule.baseline_average]}；{threshold_label}={threshold}；"
+            f"日达标条件=ATR相对波动率{_OPERATOR_LABELS[rule.daily_comparison]}{threshold_label}"
         ),
         f"统计最近{rule.lookback_days}个交易日；" + "且".join(qualification_parts),
         (
@@ -318,6 +330,8 @@ def _applied_rules(spec: QuantitativeScreenSpec) -> list[str]:
             f"上市交易历史>={spec.universe.min_listing_trading_days}日，前复权"
         ),
     ]
+    if spec.universe.codes is not None:
+        rules.append(f"筛选范围=股票分组（{len(spec.universe.codes)}只）")
     rules.extend(
         f"{_FINANCIAL_LABELS[item.field]}{_OPERATOR_LABELS[item.operator]}"
         f"{_format_filter_value(item.field, item.value)}"

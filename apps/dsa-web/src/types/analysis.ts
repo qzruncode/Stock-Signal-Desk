@@ -209,54 +209,6 @@ export interface DuplicateTaskError {
   existingTaskId: string;
 }
 
-// ============ History Types ============
-
-/** History item summary */
-export interface HistoryItem {
-  id: number;  // Record primary key ID, always present for persisted history items
-  queryId: string;  // Linked analysis query ID
-  stockCode: string;
-  stockName?: string;
-  reportType?: ReportType;
-  sentimentScore?: number;
-  operationAdvice?: string;
-  createdAt: string;
-}
-
-/** History list response */
-export interface HistoryListResponse {
-  total: number;
-  page: number;
-  limit: number;
-  items: HistoryItem[];
-}
-
-/** News item */
-export interface NewsIntelItem {
-  title: string;
-  snippet: string;
-  url: string;
-}
-
-/** News response */
-export interface NewsIntelResponse {
-  total: number;
-  items: NewsIntelItem[];
-}
-
-/** History filter parameters */
-export interface HistoryFilters {
-  stockCode?: string;
-  startDate?: string;
-  endDate?: string;
-}
-
-/** History pagination parameters */
-export interface HistoryPagination {
-  page: number;
-  limit: number;
-}
-
 // ============ Error Types ============
 
 export interface ApiError {

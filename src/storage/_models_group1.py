@@ -87,6 +87,7 @@ class StockMeta(Base):
     # Screening-grade trailing-twelve-month fields.  These are deliberately
     # separate from the latest cumulative report-period figures above.
     revenue_ttm = Column(Float)
+    parent_net_profit_ttm = Column(Float)
     deducted_net_profit_ttm = Column(Float)
     debt_ratio = Column(Float)
     financial_fetched_at = Column(DateTime)
@@ -115,6 +116,7 @@ class StockMeta(Base):
             "net_profit_latest": self.net_profit_latest,
             "operating_cf_latest": self.operating_cf_latest,
             "revenue_ttm": self.revenue_ttm,
+            "parent_net_profit_ttm": self.parent_net_profit_ttm,
             "deducted_net_profit_ttm": self.deducted_net_profit_ttm,
             "debt_ratio": self.debt_ratio,
             "financial_fetched_at": self.financial_fetched_at.isoformat() if self.financial_fetched_at else None,

@@ -24,46 +24,6 @@ export interface StocksListResponse {
   total_pages: number;
 }
 
-export interface StockListSyncStatus {
-  status: 'idle' | 'running' | 'success' | 'failed';
-  progress: number;
-  total: number;
-  started_at: string | null;
-  finished_at: string | null;
-  message: string;
-  error: string | null;
-}
-
-export interface KlineBatchResponse {
-  results: Record<string, KlineBatchBar[]>;
-}
-
-export interface KlineBatchBar {
-  date: string;
-  open: number | null;
-  high: number | null;
-  low: number | null;
-  close: number | null;
-  volume: number | null;
-  amount: number | null;
-  pct_chg: number | null;
-  ma5: number | null;
-  ma10: number | null;
-  ma20: number | null;
-  volume_ratio: number | null;
-  data_source: string | null;
-}
-
-export interface FundamentalFilterResponse {
-  data: Record<string, {
-    revenue_latest: number | null;
-    net_profit_latest: number | null;
-    operating_cf_latest: number | null;
-    debt_ratio: number | null;
-    report_date: string | null;
-  }>;
-}
-
 export const stocksApi = {
   async list(params?: {
     page?: number;
@@ -81,31 +41,4 @@ export const stocksApi = {
     return response.data;
   },
 
-  async syncList(): Promise<{ success: boolean; message: string; status: string }> {
-    const response = await apiClient.post('/api/v1/stocks/sync/list');
-    return response.data;
-  },
-
-  async syncListStatus(): Promise<StockListSyncStatus> {
-    const response = await apiClient.get<StockListSyncStatus>('/api/v1/stocks/sync/list/status');
-    return response.data;
-  },
-
-  async getKlineBatch(codes: string[], count: number = 250): Promise<KlineBatchResponse> {
-    const response = await apiClient.post<KlineBatchResponse>(
-      '/api/v1/stocks/kline/batch',
-      { codes, count },
-      { timeout: 30000 },
-    );
-    return response.data;
-  },
-
-  async fundamentalFilter(codes: string[]): Promise<FundamentalFilterResponse> {
-    const response = await apiClient.post<FundamentalFilterResponse>(
-      '/api/v1/stocks/fundamental-filter',
-      { codes },
-      { timeout: 240000 }, // 4min > backend 3min timeout, leave margin for slow fetches
-    );
-    return response.data;
-  },
 };

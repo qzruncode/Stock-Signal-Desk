@@ -26,7 +26,7 @@ import {
   type AgentRunDetail,
   type AgentRunSummary,
 } from '../api/runExplorer';
-import { Badge, Card } from '../components/common';
+import { Badge, Card, CompactSelect, Modal } from '../components/common';
 import { toApiErrorMessage } from '../api/error';
 import { formatDateTime } from '../utils/format';
 import { cn } from '../utils/cn';
@@ -56,14 +56,14 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const DIMENSION_LABELS: Record<string, string> = {
-  control_loop: '控制循环',
-  controlLoop: '控制循环',
-  execution: '执行完整性',
-  evidence_links: '证据关联',
-  evidenceLinks: '证据关联',
-  answer_contract: '回答契约',
-  answerContract: '回答契约',
-  budget: '资源预算',
+  control_loop: '分析过程',
+  controlLoop: '分析过程',
+  execution: '执行完成',
+  evidence_links: '资料对应',
+  evidenceLinks: '资料对应',
+  answer_contract: '回答完整度',
+  answerContract: '回答完整度',
+  budget: '运行资源',
 };
 
 const statusVariant = (status: string) => {
@@ -92,10 +92,51 @@ const numberValue = (value: unknown) => (
   typeof value === 'number' ? value : Number(value || 0)
 );
 
-const RunExplorerPage: React.FC = () => {
+const stringList = (value: unknown): string[] => (
+  Array.isArray(value)
+    ? value.map((item) => text(item)).filter(Boolean)
+    : []
+);
+
+const uniqueStrings = (values: string[]) => Array.from(new Set(values));
+
+const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
+
+const sourceLabel = (value: string) => {
+  const trimmed = value.trim();
+  if (!isHttpUrl(trimmed)) return trimmed.replace(/^www\./i, '');
+  try {
+    return new URL(trimmed).hostname.replace(/^www\./i, '');
+  } catch {
+    return trimmed;
+  }
+};
+
+const displayDataTime = (value: unknown) => {
+  const valueText = text(value);
+  return valueText ? formatDateTime(valueText) : '时间未提供';
+};
+
+const violationLabel = (code: string) => {
+  const labels: Record<string, string> = {
+    execution_contract_failed: '部分执行步骤没有完整结束',
+    evidence_link_contract_failed: '部分结论没有完成逐条资料对应',
+    answer_contract_failed: '回答内容没有完全满足要求',
+    control_loop_contract_failed: '分析过程存在异常或缺少步骤',
+    budget_contract_failed: '本次分析触及运行资源上限',
+  };
+  return labels[code] ?? code.replaceAll('_', ' ');
+};
+
+interface RunExplorerPageProps {
+  embedded?: boolean;
+}
+
+const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) => {
   const [runs, setRuns] = useState<AgentRunSummary[]>([]);
   const [summary, setSummary] = useState<AgentQualitySummary | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [status, setStatus] = useState('');
   const [tool, setTool] = useState('');
@@ -111,6 +152,7 @@ const RunExplorerPage: React.FC = () => {
     const requestId = detailRequestId.current + 1;
     detailRequestId.current = requestId;
     setDetailLoading(true);
+    setDetail(null);
     try {
       const next = await runExplorerApi.getRun(runId);
       if (detailRequestId.current === requestId) {
@@ -159,7 +201,7 @@ const RunExplorerPage: React.FC = () => {
   }, [page, status, tool]);
 
   useEffect(() => {
-    document.title = '运行记录 - Stock Assistant';
+    document.title = '分析记录 - Stock Assistant';
   }, []);
 
   useEffect(() => {
@@ -185,9 +227,22 @@ const RunExplorerPage: React.FC = () => {
   const projection = detail?.snapshot.qualityProjection ?? {};
   const toolResults = projection.toolResults ?? [];
   const evidence = projection.evidence ?? [];
+  const toolNames = uniqueStrings(
+    toolResults.map((item) => text(item.toolName)).filter(Boolean),
+  );
+  const sourceNames = uniqueStrings(
+    evidence.flatMap((item) => stringList(item.sourceRefs)),
+  );
+  const sourceLabels = sourceNames.length > 0
+    ? uniqueStrings(sourceNames.map(sourceLabel))
+    : toolNames;
+  const violationCount = summary
+    ? Object.values(summary.quality.violations).reduce((totalCount, count) => totalCount + numberValue(count), 0)
+    : null;
 
   const selectRun = (runId: string) => {
     setSelectedRunId(runId);
+    setDetailOpen(true);
   };
 
   const saveFeedback = async (rating: -1 | 1) => {
@@ -215,109 +270,117 @@ const RunExplorerPage: React.FC = () => {
   };
 
   return (
-    <div className="mx-auto min-h-full max-w-[1500px] space-y-5 py-6">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div className={cn('min-h-full space-y-3', !embedded && 'mx-auto max-w-[1500px] py-4')}>
+      <header className="flex items-center justify-between gap-3 border-b border-border/70 pb-3">
         <div>
-          <Link
-            to="/"
-            viewTransition
-            className="mb-3 inline-flex items-center gap-1 text-sm text-secondary-text transition hover:text-foreground"
-          >
-            <ArrowLeft className="size-4" />
-            返回助手
-          </Link>
-          <h1 className="text-2xl font-semibold text-foreground">运行记录</h1>
-          <p className="mt-1 text-sm text-secondary-text">
-            查看每次运行中实际发生的工具调用、证据关联、质量评分与反馈。
-          </p>
+          {!embedded ? (
+            <Link
+              to="/"
+              viewTransition
+              className="inline-flex items-center gap-1 text-xs text-secondary-text transition hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5" />
+              返回助手
+            </Link>
+          ) : null}
         </div>
         <button
           type="button"
           onClick={() => void load()}
           disabled={loading}
-          className="btn-secondary inline-flex items-center justify-center gap-2"
+          className="btn-secondary inline-flex h-8 shrink-0 items-center justify-center gap-1.5 px-2.5 text-xs"
         >
-          <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
+          <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
           刷新
         </button>
       </header>
 
       {error ? (
-        <div className="rounded-xl border border-danger/20 bg-danger/8 px-4 py-3 text-sm text-danger">
+        <div className="rounded-lg border border-danger/20 bg-danger/8 px-3 py-2 text-xs text-danger">
           {error}
         </div>
       ) : null}
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Card padding="sm">
-          <p className="text-xs text-secondary-text">近 30 天运行</p>
-          <p className="mt-2 text-2xl font-semibold">{summary?.terminalRuns ?? '—'}</p>
+      <section className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Card padding="none" className="rounded-xl px-3 py-2.5">
+          <p className="text-xs text-secondary-text">近 30 天分析</p>
+          <p className="mt-0.5 text-xl font-semibold leading-6">{summary?.terminalRuns ?? '—'}</p>
         </Card>
-        <Card padding="sm">
-          <p className="text-xs text-secondary-text">平均质量分</p>
-          <p className="mt-2 text-2xl font-semibold">{percent(summary?.quality.averageScore)}</p>
+        <Card padding="none" className="rounded-xl px-3 py-2.5">
+          <p className="text-xs text-secondary-text">核对通过</p>
+          <p className="mt-0.5 text-xl font-semibold leading-6">
+            {summary ? `${summary.quality.passedRuns}/${summary.quality.scoredRuns}` : '—'}
+          </p>
         </Card>
-        <Card padding="sm">
-          <p className="text-xs text-secondary-text">质量通过率</p>
-          <p className="mt-2 text-2xl font-semibold">{percent(summary?.quality.passRate)}</p>
+        <Card padding="none" className="rounded-xl px-3 py-2.5">
+          <p className="text-xs text-secondary-text">待核对问题</p>
+          <p className="mt-0.5 text-xl font-semibold leading-6">{violationCount ?? '—'}</p>
         </Card>
-        <Card padding="sm">
-          <p className="text-xs text-secondary-text">正向反馈率</p>
-          <p className="mt-2 text-2xl font-semibold">{percent(summary?.feedback.positiveRate)}</p>
+        <Card padding="none" className="rounded-xl px-3 py-2.5">
+          <p className="text-xs text-secondary-text">平均核对分</p>
+          <p className="mt-0.5 text-xl font-semibold leading-6">{percent(summary?.quality.averageScore)}</p>
         </Card>
       </section>
 
-      <section className="flex flex-wrap gap-2 rounded-2xl border border-border bg-card p-3">
-        <div className="flex flex-wrap gap-1.5">
-          {STATUS_OPTIONS.map((option) => (
-            <button
-              key={option.value || 'all'}
-              type="button"
-              onClick={() => {
-                setStatus(option.value);
-                setPage(1);
-              }}
-              className={cn(
-                'rounded-lg px-3 py-1.5 text-xs font-medium transition',
-                status === option.value
-                  ? 'bg-foreground text-background'
-                  : 'bg-muted text-secondary-text hover:text-foreground',
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
+      <section className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card p-2">
+        <div className="w-full">
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="text-xs font-semibold text-foreground">筛选分析记录</span>
+            <span className="text-[11px] text-secondary-text">按结果状态或使用的资料入口查找</span>
+          </div>
+          <div className="flex min-w-0 flex-wrap gap-1">
+            {STATUS_OPTIONS.map((option) => (
+              <button
+                key={option.value || 'all'}
+                type="button"
+                onClick={() => {
+                  setStatus(option.value);
+                  setPage(1);
+                }}
+                className={cn(
+                  'rounded-md px-2.5 py-1 text-[11px] font-medium transition',
+                  status === option.value
+                    ? 'bg-foreground text-background'
+                    : 'bg-muted text-secondary-text hover:text-foreground',
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
-        <select
+        <CompactSelect
           value={tool}
-          onChange={(event) => {
-            setTool(event.target.value);
+          onChange={(value) => {
+            setTool(value);
             setPage(1);
           }}
-          className="ml-auto min-w-40 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-cyan"
-          aria-label="按工具筛选"
-        >
-          <option value="">全部工具</option>
-          {availableTools.map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
+          options={[
+            { value: '', label: '全部工具' },
+            ...availableTools.map((item) => ({ value: item, label: item })),
+          ]}
+          ariaLabel="按工具筛选"
+          className="w-full sm:w-44"
+        />
       </section>
 
-      <div className="grid min-h-[620px] gap-4 lg:grid-cols-[minmax(320px,0.8fr)_minmax(0,1.6fr)]">
-        <Card padding="none" className="overflow-hidden">
-          <div className="border-b border-border px-4 py-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">任务列表</h2>
-              <span className="text-xs text-secondary-text">{total} 条</span>
+      <div>
+        <Card padding="none" className="overflow-hidden rounded-xl">
+          <div className="border-b border-border px-3 py-2">
+            <div className="flex items-end justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold">最近分析</h2>
+                <p className="mt-0.5 text-[11px] text-secondary-text">选择一条查看回答、来源和核对结果</p>
+              </div>
+              <span className="shrink-0 text-xs text-secondary-text">{total} 条</span>
             </div>
           </div>
-          <div className="max-h-[720px] divide-y divide-border/70 overflow-y-auto">
+          <div className="max-h-[420px] divide-y divide-border/70 overflow-y-auto">
             {loading && runs.length === 0 ? (
-              <div className="p-8 text-center text-sm text-secondary-text">正在加载运行记录…</div>
+              <div className="p-5 text-center text-xs text-secondary-text">正在加载运行记录…</div>
             ) : null}
             {!loading && runs.length === 0 ? (
-              <div className="p-8 text-center text-sm text-secondary-text">当前筛选下没有运行记录。</div>
+              <div className="p-5 text-center text-xs text-secondary-text">当前筛选下没有运行记录。</div>
             ) : null}
             {runs.map((item) => (
               <button
@@ -325,7 +388,7 @@ const RunExplorerPage: React.FC = () => {
                 type="button"
                 onClick={() => selectRun(item.runId)}
                 className={cn(
-                  'block w-full px-4 py-3 text-left transition hover:bg-muted/60',
+                  'block w-full px-3 py-2 text-left transition hover:bg-muted/60',
                   selectedRunId === item.runId && 'bg-cyan/8',
                 )}
               >
@@ -336,10 +399,10 @@ const RunExplorerPage: React.FC = () => {
                         {STATUS_LABELS[item.status] ?? item.status}
                       </Badge>
                       <span className="text-xs font-medium text-foreground">
-                        质量 {percent(item.qualityScore)}
+                        核对 {percent(item.qualityScore)}
                       </span>
                     </div>
-                    <p className="mt-2 line-clamp-2 text-sm text-foreground/85">
+                    <p className="mt-1 line-clamp-1 text-xs text-foreground/85">
                       {item.finalTextPreview || '尚未生成最终回答'}
                     </p>
                   </div>
@@ -347,20 +410,20 @@ const RunExplorerPage: React.FC = () => {
                     {formatDateTime(item.createdAt)}
                   </span>
                 </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
+                <div className="mt-1 flex flex-wrap gap-1">
                   {item.tools.slice(0, 4).map((itemTool) => (
                     <span
                       key={itemTool}
-                      className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-secondary-text"
+                      className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-secondary-text"
                     >
                       {itemTool}
                     </span>
                   ))}
                 </div>
-                <div className="mt-2 flex gap-3 text-[11px] text-secondary-text">
-                  <span>{item.toolObservationCount} 条工具观察</span>
+                <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-secondary-text">
+                  <span>{item.toolObservationCount} 条资料返回</span>
                   <span>{item.evidenceCount} 条证据</span>
-                  <span>{item.toolCallCount} 次工具调用</span>
+                  <span>{item.toolCallCount} 个资料入口</span>
                   <span>{formatDuration(item.durationMs)}</span>
                 </div>
               </button>
@@ -389,105 +452,204 @@ const RunExplorerPage: React.FC = () => {
           </div>
         </Card>
 
-        <div className="min-w-0 space-y-4">
-          {!selectedRunId ? (
-            <Card className="flex min-h-64 items-center justify-center text-sm text-secondary-text">
-              选择一条运行记录查看详情。
-            </Card>
-          ) : null}
+        <Modal
+          isOpen={detailOpen}
+          onClose={() => setDetailOpen(false)}
+          title="本次分析"
+          width="max-w-4xl"
+        >
           {selectedRunId && detailLoading && !detail ? (
-            <Card className="flex min-h-64 items-center justify-center text-sm text-secondary-text">
+            <div className="flex min-h-32 items-center justify-center rounded-lg border border-border/70 p-3 text-xs text-secondary-text">
               正在加载运行详情…
-            </Card>
+            </div>
+          ) : null}
+          {selectedRunId && !detailLoading && !detail && error ? (
+            <div className="rounded-lg border border-danger/20 bg-danger/8 px-3 py-2 text-xs text-danger">
+              {error}
+            </div>
           ) : null}
           {detail ? (
-            <>
-              <Card>
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="max-h-[calc(100vh-9rem)] space-y-3 overflow-y-auto pr-1">
+              <Card padding="none" className="rounded-xl p-3">
+                <div className="flex flex-col gap-2.5 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={statusVariant(text(run.status))} size="md">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <h2 className="text-sm font-semibold text-foreground">回答结果</h2>
+                      <Badge variant={statusVariant(text(run.status))}>
                         {STATUS_LABELS[text(run.status)] ?? text(run.status)}
                       </Badge>
-                      <span className="font-mono text-xs text-secondary-text">{text(run.runId)}</span>
                     </div>
-                    <p className="mt-3 text-sm text-secondary-text">
-                      创建于 {formatDateTime(text(run.createdAt))}
+                    <p className="mt-1.5 text-xs text-secondary-text">
+                      生成于 {formatDateTime(text(run.createdAt))}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
                     <span className="text-xs text-secondary-text">这次结果有帮助吗？</span>
                     <button
                       type="button"
                       onClick={() => void saveFeedback(1)}
                       className={cn(
-                        'rounded-lg border p-2 transition',
+                        'rounded-md border p-1.5 transition',
                         detail.snapshot.feedback?.rating === 1
                           ? 'border-success/40 bg-success/10 text-success'
                           : 'border-border text-secondary-text hover:text-success',
                       )}
                       aria-label="有帮助"
                     >
-                      <ThumbsUp className="size-4" />
+                      <ThumbsUp className="size-3.5" />
                     </button>
                     <button
                       type="button"
                       onClick={() => void saveFeedback(-1)}
                       className={cn(
-                        'rounded-lg border p-2 transition',
+                        'rounded-md border p-1.5 transition',
                         detail.snapshot.feedback?.rating === -1
                           ? 'border-danger/40 bg-danger/10 text-danger'
                           : 'border-border text-secondary-text hover:text-danger',
                       )}
                       aria-label="没帮助"
                     >
-                      <ThumbsDown className="size-4" />
+                      <ThumbsDown className="size-3.5" />
                     </button>
                   </div>
                 </div>
 
-                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-xl bg-muted/60 p-3">
-                    <Clock3 className="size-4 text-cyan" />
-                    <p className="mt-2 text-xs text-secondary-text">耗时</p>
-                    <p className="mt-1 font-medium">{formatDuration(
+                <div className="mt-3 rounded-lg border border-border/70 bg-muted/35 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-semibold text-foreground">助手给出的结论</p>
+                    <span className={cn(
+                      'text-[11px] font-medium',
+                      detail.score.passed ? 'text-success' : 'text-warning',
+                    )}>
+                      {detail.score.passed ? '资料核对通过' : `有 ${detail.score.violations.length} 个待核对问题`}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-foreground/85">
+                    {text(run.finalText) || '尚未生成最终回答。'}
+                  </div>
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <div className="rounded-lg bg-muted/60 p-2.5">
+                    <Clock3 className="size-3.5 text-cyan" />
+                    <p className="mt-1 text-[11px] text-secondary-text">耗时</p>
+                    <p className="mt-0.5 text-sm font-medium">{formatDuration(
                       text(run.startedAt) && text(run.finishedAt)
                         ? new Date(text(run.finishedAt)).getTime() - new Date(text(run.startedAt)).getTime()
                         : null,
                     )}</p>
                   </div>
-                  <div className="rounded-xl bg-muted/60 p-3">
-                    <ListChecks className="size-4 text-purple" />
-                    <p className="mt-2 text-xs text-secondary-text">工具观察</p>
-                    <p className="mt-1 font-medium">{toolResults.length}</p>
+                  <div className="rounded-lg bg-muted/60 p-2.5">
+                    <ListChecks className="size-3.5 text-purple" />
+                    <p className="mt-1 text-[11px] text-secondary-text">资料返回</p>
+                    <p className="mt-0.5 text-sm font-medium">{toolResults.length}</p>
                   </div>
-                  <div className="rounded-xl bg-muted/60 p-3">
-                    <Database className="size-4 text-emerald-600" />
-                    <p className="mt-2 text-xs text-secondary-text">工具调用</p>
-                    <p className="mt-1 font-medium">{numberValue(run.toolCallCount)}</p>
+                  <div className="rounded-lg bg-muted/60 p-2.5">
+                    <Database className="size-3.5 text-emerald-600" />
+                    <p className="mt-1 text-[11px] text-secondary-text">资料入口</p>
+                    <p className="mt-0.5 text-sm font-medium">{toolNames.length}</p>
                   </div>
-                  <div className="rounded-xl bg-muted/60 p-3">
-                    <Activity className="size-4 text-warning" />
-                    <p className="mt-2 text-xs text-secondary-text">质量分</p>
-                    <p className="mt-1 font-medium">{percent(detail.score.totalScore)}</p>
+                  <div className="rounded-lg bg-muted/60 p-2.5">
+                    <Activity className="size-3.5 text-warning" />
+                    <p className="mt-1 text-[11px] text-secondary-text">核对分</p>
+                    <p className="mt-0.5 text-sm font-medium">{percent(detail.score.totalScore)}</p>
                   </div>
                 </div>
               </Card>
 
-              <Card title="质量检查" subtitle="Deterministic evaluation">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <Card padding="none" className="rounded-xl p-3" title="参考资料" subtitle="回答依据">
+                <p className="text-xs text-secondary-text">
+                  本次回答关联 {sourceLabels.length} 个来源
+                  {sourceNames.length > sourceLabels.length ? `（${sourceNames.length} 条原始引用）` : ''}
+                  ，整理成 {evidence.length} 条可核对证据。
+                </p>
+                {sourceLabels.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {sourceLabels.map((source) => (
+                      <span key={source} className="rounded-md bg-cyan/8 px-2 py-1 text-[11px] text-cyan" title={source}>
+                        {source}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="mt-2 divide-y divide-border/70 rounded-lg border border-border/70">
+                  {evidence.map((item, index) => {
+                    const itemSourceRefs = stringList(item.sourceRefs);
+                    const itemSources = uniqueStrings(itemSourceRefs.map(sourceLabel));
+                    const itemUrls = itemSourceRefs.filter(isHttpUrl);
+                    const evidenceId = text(item.evidenceId) || text(item.id) || `证据 ${index + 1}`;
+                    return (
+                      <div key={evidenceId} className="px-2.5 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className="line-clamp-2 text-xs font-medium text-foreground"
+                            title={itemSourceRefs.join('、')}
+                          >
+                            {itemSources.join('、') || text(item.toolName) || '未标注来源'}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-secondary-text">
+                            {displayDataTime(item.dataTime)}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate font-mono text-[10px] text-secondary-text" title={evidenceId}>
+                          {evidenceId}
+                        </p>
+                        {itemUrls.length > 0 ? (
+                          <details className="mt-1.5 text-[10px] text-secondary-text">
+                            <summary className="cursor-pointer select-none hover:text-foreground">
+                              查看 {itemUrls.length} 条原始链接
+                            </summary>
+                            <div className="mt-1 space-y-0.5 border-l border-border pl-2">
+                              {itemUrls.map((url) => (
+                                <a
+                                  key={url}
+                                  href={url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="block break-all text-cyan hover:underline"
+                                >
+                                  {url}
+                                </a>
+                              ))}
+                            </div>
+                          </details>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  {evidence.length === 0 ? (
+                    <p className="px-2.5 py-2 text-xs text-secondary-text">本次回答没有可展示的资料记录。</p>
+                  ) : null}
+                </div>
+              </Card>
+
+              <Card padding="none" className="rounded-xl p-3" title="结果核对" subtitle="自动检查回答与资料是否对应">
+                <div className={cn(
+                  'rounded-lg px-3 py-2',
+                  detail.score.passed ? 'bg-success/8 text-success' : 'bg-warning/10 text-warning',
+                )}>
+                  <p className="text-xs font-semibold">
+                    {detail.score.passed ? '这次回答的资料核对已通过' : '这次回答还有内容需要核对'}
+                  </p>
+                  <p className="mt-0.5 text-[11px] opacity-85">
+                    {detail.score.passed
+                      ? '回答中的事实已经找到对应的资料记录。'
+                      : '下面列出未完全满足的检查项，阅读结论时请优先关注这些部分。'}
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                   {Object.entries(detail.score.dimensions).map(([name, dimension]) => (
-                    <div key={name} className="rounded-xl border border-border/70 p-3">
+                    <div key={name} className="rounded-lg border border-border/70 p-2.5">
                       <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium">{DIMENSION_LABELS[name] ?? name}</span>
+                        <span className="text-xs font-medium">{DIMENSION_LABELS[name] ?? name}</span>
                         <span className={cn(
-                          'text-sm font-semibold',
+                          'text-xs font-semibold',
                           dimension.score >= 0.85 ? 'text-success' : 'text-warning',
                         )}>
                           {percent(dimension.score)}
                         </span>
                       </div>
-                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted">
                         <div
                           className={cn(
                             'h-full rounded-full',
@@ -500,65 +662,72 @@ const RunExplorerPage: React.FC = () => {
                   ))}
                 </div>
                 {detail.score.violations.length > 0 ? (
-                  <div className="mt-4 space-y-2">
+                  <div className="mt-3 space-y-1.5">
                     {detail.score.violations.map((violation, index) => (
                       <div
                         key={`${violation.code}-${index}`}
-                        className="flex items-start gap-2 rounded-lg bg-warning/8 px-3 py-2 text-sm text-warning"
+                        className="flex items-start gap-2 rounded-md bg-warning/8 px-2.5 py-1.5 text-xs text-warning"
                       >
-                        <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-                        <span>{violation.code}</span>
+                        <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                        <span>{violationLabel(violation.code)}</span>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="mt-4 flex items-center gap-2 text-sm text-success">
-                    <CheckCircle2 className="size-4" />
-                    没有发现质量契约违规
+                  <div className="mt-3 flex items-center gap-2 text-xs text-success">
+                    <CheckCircle2 className="size-3.5" />
+                    暂未发现明显的资料关联问题
                   </div>
                 )}
               </Card>
 
-              <Card title="执行链" subtitle="Actual tool calls → observations → evidence">
-                <div className="space-y-3">
+              <Card padding="none" className="rounded-xl p-3" title="资料获取过程" subtitle="本次回答实际使用的资料入口">
+                <div className="space-y-2">
                   {toolResults.map((result, index) => {
                     const actionId = text(result.actionId) || text(result.toolCallId);
                     const actionEvidence = evidence.filter((item) => text(item.actionId) === text(result.actionId));
+                    const actionSourceRefs = uniqueStrings(
+                      actionEvidence.flatMap((item) => stringList(item.sourceRefs)),
+                    );
+                    const actionSources = uniqueStrings(actionSourceRefs.map(sourceLabel));
                     return (
-                      <div key={actionId || index} className="rounded-xl border border-border/70 p-3">
+                      <div key={actionId || index} className="rounded-lg border border-border/70 p-2.5">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
-                            <p className="text-sm font-medium">
+                            <p className="text-xs font-medium">
                               {text(result.toolName) || '未指定工具'}
                             </p>
-                            <p className="mt-0.5 font-mono text-[11px] text-secondary-text">{actionId}</p>
+                            <p className="mt-0.5 truncate font-mono text-[10px] text-secondary-text" title={actionId}>
+                              调用编号 {actionId}
+                            </p>
                           </div>
                           <Badge variant={result.success === true ? 'success' : 'danger'}>
                             {result.success === true ? '成功' : '失败'}
                           </Badge>
                         </div>
-                        <div className="mt-3 flex flex-wrap gap-4 text-xs text-secondary-text">
-                          <span>类型：{text(result.effect) || 'read'}</span>
-                          <span>证据：{actionEvidence.length} 条</span>
-                          <span>数据时间：{text(result.dataTime) || '未提供'}</span>
+                        <p
+                          className="mt-2 line-clamp-2 text-[11px] text-foreground/75"
+                          title={actionSourceRefs.join('、')}
+                        >
+                          {actionSources.join('、') || '来源未标注'} · {actionEvidence.length} 条证据
+                          {actionSourceRefs.length > 0 ? ` · ${actionSourceRefs.length} 个来源` : ''}
+                        </p>
+                        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-secondary-text">
+                          <span>类型：{text(result.effect) === 'side_effect' ? '外部操作' : '读取资料'}</span>
+                          <span>数据时间：{displayDataTime(result.dataTime || actionEvidence[0]?.dataTime)}</span>
                         </div>
                       </div>
                     );
                   })}
                   {toolResults.length === 0 ? (
-                    <p className="text-sm text-secondary-text">该问题没有调用工具。</p>
+                    <p className="text-xs text-secondary-text">该问题没有调用工具。</p>
                   ) : null}
                 </div>
               </Card>
 
-              <Card title="最终回答" subtitle="Answer snapshot">
-                <div className="whitespace-pre-wrap text-sm leading-7 text-foreground/85">
-                  {text(run.finalText) || '尚未生成最终回答。'}
-                </div>
-              </Card>
-            </>
+            </div>
           ) : null}
-        </div>
+        </Modal>
       </div>
     </div>
   );
