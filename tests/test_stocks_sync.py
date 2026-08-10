@@ -32,19 +32,7 @@ def disable_auth():
 
 
 def _reset_state(state: dict) -> None:
-    state.update(
-        {
-            "status": "idle",
-            "progress": 0,
-            "total": 0,
-            "kline_progress": 0,
-            "kline_total": 0,
-            "started_at": None,
-            "finished_at": None,
-            "message": "",
-            "error": None,
-        }
-    )
+    state.update(sync_mod._initial_state())
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +43,8 @@ def reset_sync_state():
         _reset_state(sync_mod._kline_sync_state)
     with sync_mod._missing_kline_sync_lock:
         _reset_state(sync_mod._missing_kline_sync_state)
+    with sync_mod._financial_sync_lock:
+        _reset_state(sync_mod._financial_sync_state)
     yield
     with sync_mod._list_sync_lock:
         _reset_state(sync_mod._list_sync_state)
@@ -62,6 +52,8 @@ def reset_sync_state():
         _reset_state(sync_mod._kline_sync_state)
     with sync_mod._missing_kline_sync_lock:
         _reset_state(sync_mod._missing_kline_sync_state)
+    with sync_mod._financial_sync_lock:
+        _reset_state(sync_mod._financial_sync_state)
 
 
 def test_mark_list_sync_started_returns_true_when_idle():
@@ -205,6 +197,43 @@ def test_list_sync_status_uses_persisted_running_job(client):
     assert body["status"] == "running"
     assert body["progress"] == 200
     assert body["message"] == "股票列表写入中 200/5000"
+
+
+def test_financial_status_restores_persisted_terminal_counts(client):
+    now = datetime.now()
+    job = sync_mod.DataMaintenanceJob(
+        id="financial-job-1",
+        dataset="financial_reports",
+        scope_key="all",
+        target_data_time="2026-06-30",
+        status="partial",
+        progress=5539,
+        total=5539,
+        message=(
+            "最新财报同步完成：已更新 5530 / 5539 只；无可用财报 0 只；"
+            "失败 0 只；9 只股票没有拿到完整核心字段，本轮未覆盖"
+        ),
+        started_at=now,
+        finished_at=now,
+        created_at=now,
+    )
+    db = MagicMock()
+    session = MagicMock()
+    query = MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = job
+    session.query.return_value = query
+    db.get_session.return_value.__enter__.return_value = session
+
+    with patch.object(sync_mod, "DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value = db
+        resp = client.get("/api/v1/stocks/sync/financial/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "partial"
+    assert body["updated_count"] == 5530
+    assert body["total"] == 5539
+    assert body["incomplete_count"] == 9
 
 
 def test_get_latest_trading_day_skips_weekend():

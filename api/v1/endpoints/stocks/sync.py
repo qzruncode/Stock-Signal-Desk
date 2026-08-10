@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import re
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -43,6 +44,13 @@ def _initial_state() -> dict:
         "finished_at": None,
         "message": "",
         "error": None,
+        "updated_count": 0,
+        "no_data_count": 0,
+        "failed_count": 0,
+        "incomplete_count": 0,
+        "unmatched_count": 0,
+        "report_period": None,
+        "periods_checked": 0,
     }
 
 
@@ -62,6 +70,46 @@ def _set_financial_state(**updates) -> None:
 
 def _get_financial_state_copy() -> dict:
     return _get_state_copy(_financial_sync_state, _financial_sync_lock)
+
+
+def _financial_state_with_db_fallback(state: dict) -> dict:
+    """进程重启后从维护任务审计表恢复最近一次财报终态。"""
+    if state["status"] != "idle" or state["total"] != 0:
+        return state
+    db = DatabaseManager.get_instance()
+    try:
+        with db.get_session() as session:
+            job = (
+                session.query(DataMaintenanceJob)
+                .filter(DataMaintenanceJob.dataset == "financial_reports")
+                .order_by(DataMaintenanceJob.created_at.desc())
+                .first()
+            )
+            if job is None:
+                return state
+            message = job.message or "已恢复最近一次财报同步结果"
+            updated_match = re.search(r"已更新\s+(\d+)\s*/", message)
+            no_data_match = re.search(r"无可用财报\s+(\d+)", message)
+            failed_match = re.search(r"失败\s+(\d+)", message)
+            incomplete_match = re.search(r"(\d+)\s+只股票没有拿到完整核心字段", message)
+            return {
+                **state,
+                "status": job.status,
+                "progress": job.progress or 0,
+                "total": job.total or 0,
+                "updated_count": int(updated_match.group(1)) if updated_match else (job.progress or 0),
+                "no_data_count": int(no_data_match.group(1)) if no_data_match else 0,
+                "failed_count": int(failed_match.group(1)) if failed_match else 0,
+                "incomplete_count": int(incomplete_match.group(1)) if incomplete_match else 0,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+                "message": message,
+                "error": job.error,
+                "report_period": job.target_data_time,
+            }
+    except Exception:
+        logger.warning("读取财报同步终态失败", exc_info=True)
+        return state
 
 
 def _mark_financial_sync_started() -> bool:
@@ -491,29 +539,44 @@ def get_missing_kline_sync_status():
 
 @router.post(
     "/sync/financial",
-    summary="按报告期拉全市场业绩快报写入 stock_meta",
+    summary="为每只 active 股票同步最近可用财务摘要",
     responses={409: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
 )
 def sync_stock_financial(
     service: SystemConfigService = Depends(get_system_config_service),
 ):
-    """按最近一个已披露的报告期（季度/年报）一次拉全市场业绩快报写入 stock_meta。"""
-    if not _get_active_stock_codes():
+    """按活跃股票覆盖同步最近可用财务报告，不以单一报告期返回行数作为总量。"""
+    active_codes = _get_active_stock_codes()
+    if not active_codes:
         raise HTTPException(status_code=400, detail={"error": "stock_list_required", "message": "请先同步股票列表"})
     if not _mark_financial_sync_started():
         raise HTTPException(
             status_code=409, detail={"error": "sync_in_progress", "message": "财报同步正在进行中，请稍后再试"}
-        )
+    )
     period = _financials_sync.latest_report_period()
-    _set_financial_state(message=f"已启动 (报告期 {period})")
-    thread = threading.Thread(target=_financials_sync.run_financial_sync, args=(period,), daemon=True)
+    _set_financial_state(
+        total=len(active_codes),
+        message=f"已启动：将为 {len(active_codes)} 只活跃股票寻找最近可用财报 (首选报告期 {period})",
+        report_period=f"{period[:4]}-{period[4:6]}-{period[6:8]}",
+    )
+    thread = threading.Thread(
+        target=_financials_sync.run_financial_sync,
+        args=(period, active_codes),
+        daemon=True,
+    )
     thread.start()
-    return {"success": True, "message": f"同步财报已启动 (报告期 {period})", "status": "running", "period": period}
+    return {
+        "success": True,
+        "message": f"最新财报同步已启动，将覆盖 {len(active_codes)} 只活跃股票",
+        "status": "running",
+        "period": period,
+        "total": len(active_codes),
+    }
 
 
 @router.get("/sync/financial/status", summary="Get financial sync status")
 def get_stock_financial_sync_status():
-    return _get_financial_state_copy()
+    return _financial_state_with_db_fallback(_get_financial_state_copy())
 
 
 # 注入状态对象给 _financials_sync（必须在 _utc_now_iso 等所有 helper 定义后）

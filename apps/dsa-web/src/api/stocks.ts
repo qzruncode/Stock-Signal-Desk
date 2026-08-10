@@ -24,21 +24,46 @@ export interface StocksListResponse {
   total_pages: number;
 }
 
+export interface StocksListParams {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  market?: string;
+  count?: boolean;
+  signal?: AbortSignal;
+}
+
 export const stocksApi = {
-  async list(params?: {
-    page?: number;
-    page_size?: number;
-    search?: string;
-    market?: string;
-    count?: boolean;
-    signal?: AbortSignal;
-  }): Promise<StocksListResponse & { has_more?: boolean }> {
+  async list(params?: StocksListParams): Promise<StocksListResponse & { has_more?: boolean }> {
     const { signal, ...query } = params || {};
     const response = await apiClient.get<StocksListResponse & { has_more?: boolean }>('/api/v1/stocks', {
       params: query,
       signal,
     });
     return response.data;
+  },
+
+  async listAll(params?: Omit<StocksListParams, 'page' | 'page_size' | 'count'>): Promise<StockMetaItem[]> {
+    const pageSize = 500;
+    const firstPage = await stocksApi.list({
+      ...params,
+      page: 1,
+      page_size: pageSize,
+      count: true,
+    });
+    const items = [...firstPage.items];
+
+    for (let page = 2; page <= firstPage.total_pages; page += 1) {
+      const nextPage = await stocksApi.list({
+        ...params,
+        page,
+        page_size: pageSize,
+        count: true,
+      });
+      items.push(...nextPage.items);
+    }
+
+    return items;
   },
 
 };

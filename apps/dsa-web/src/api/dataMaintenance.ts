@@ -13,6 +13,13 @@ export interface MaintenanceJobStatus {
   message: string;
   error: string | null;
   period?: string | null;
+  updated_count?: number;
+  no_data_count?: number;
+  failed_count?: number;
+  incomplete_count?: number;
+  unmatched_count?: number;
+  report_period?: string | null;
+  periods_checked?: number;
 }
 
 export interface KlineIntegrityStatus {

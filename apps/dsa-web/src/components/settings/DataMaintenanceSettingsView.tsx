@@ -18,13 +18,13 @@ import {
 import { cn } from '../../utils/cn';
 
 type JobName = 'stockList' | 'kline' | 'missingKline' | 'financial';
-type Notice = { message: string } | null;
+type Notice = { type?: 'error' | 'success'; message: string } | null;
 
 const JOB_LABELS: Record<JobName, string> = {
   stockList: '股票主数据',
   kline: '全市场 K 线',
   missingKline: '缺失 K 线',
-  financial: '财务快报',
+  financial: '最新财报',
 };
 
 function isRunning(status: MaintenanceStatus | undefined): boolean {
@@ -34,6 +34,7 @@ function isRunning(status: MaintenanceStatus | undefined): boolean {
 function statusLabel(status: MaintenanceStatus | undefined): string {
   if (status === 'running' || status === 'syncing_kline') return '执行中';
   if (status === 'success') return '已完成';
+  if (status === 'partial') return '部分完成';
   if (status === 'failed') return '失败';
   return '未执行';
 }
@@ -41,6 +42,7 @@ function statusLabel(status: MaintenanceStatus | undefined): string {
 function statusVariant(status: MaintenanceStatus | undefined): 'default' | 'success' | 'warning' | 'danger' {
   if (status === 'success') return 'success';
   if (status === 'failed') return 'danger';
+  if (status === 'partial') return 'warning';
   if (isRunning(status)) return 'warning';
   return 'default';
 }
@@ -84,6 +86,15 @@ function jobMessage(job: MaintenanceJobStatus | null, jobName: JobName): string 
   return message || '尚未执行';
 }
 
+function financialCoverage(job: MaintenanceJobStatus | null): string | null {
+  if (!job || job.status === 'idle' || job.updated_count === undefined) return null;
+  const parts = [`已更新 ${job.updated_count} 只`];
+  if (job.no_data_count !== undefined) parts.push(`无可用 ${job.no_data_count} 只`);
+  if (job.failed_count !== undefined) parts.push(`失败 ${job.failed_count} 只`);
+  if (job.incomplete_count) parts.push(`字段不完整 ${job.incomplete_count} 只`);
+  return parts.join(' · ');
+}
+
 function JobRow({
   jobName,
   job,
@@ -104,6 +115,7 @@ function JobRow({
   const progress = progressOf(job, jobName);
   const running = isRunning(job?.status);
   const completed = job?.status === 'success';
+  const coverage = jobName === 'financial' ? financialCoverage(job) : null;
 
   return (
     <article className="py-2.5 first:pt-0 last:pb-0">
@@ -126,6 +138,7 @@ function JobRow({
             <span className="truncate">{jobMessage(job, jobName)}</span>
             <span className="shrink-0 font-mono">{progressText(job, jobName)}</span>
           </div>
+          {coverage ? <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{coverage}</p> : null}
           {progress !== null ? (
             <div className="mt-1 h-1 overflow-hidden rounded-full bg-border/70">
               <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
@@ -152,6 +165,7 @@ function JobRow({
             <span className="truncate">{jobMessage(job, jobName)}</span>
             <span className="shrink-0 font-mono">{progressText(job, jobName)}</span>
           </div>
+          {coverage ? <p className="mt-0.5 truncate text-[9px] text-muted-foreground">{coverage}</p> : null}
           {progress !== null ? (
             <div className="mt-1 h-1 overflow-hidden rounded-full bg-border/70">
               <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
@@ -292,10 +306,16 @@ export function DataMaintenanceSettingsView() {
         </div>
         <div className="rounded-xl border border-border/70 bg-white px-3 py-2.5 shadow-sm">
           <div className="flex items-baseline justify-between gap-2">
-            <p className="truncate text-[10px] text-muted-foreground">财务快报</p>
-            <p className="text-lg font-semibold leading-6 text-foreground">{statusLabel(jobs.financial?.status)}</p>
+            <p className="truncate text-[10px] text-muted-foreground">最新财报覆盖</p>
+            <p className="text-lg font-semibold leading-6 text-foreground">
+              {jobs.financial?.status !== 'idle' && jobs.financial?.updated_count !== undefined
+                ? `${jobs.financial.updated_count} / ${jobs.financial.total || '—'}`
+                : statusLabel(jobs.financial?.status)}
+            </p>
           </div>
-          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{jobs.financial?.message || '尚未执行'}</p>
+          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+            {jobs.financial?.message || '尚未执行'}
+          </p>
         </div>
       </div>
 
@@ -367,8 +387,8 @@ export function DataMaintenanceSettingsView() {
           <JobRow
             jobName="financial"
             job={jobs.financial}
-            actionLabel="同步财务快报"
-            description="按最近报告期拉取全市场业绩快报。"
+            actionLabel="同步最新财报"
+            description="以活跃股票为分母寻找最近可用报告，必要时回溯报告期并逐股补源。"
             disabled={starting === 'financial'}
             isStarting={starting === 'financial'}
             onAction={() => void startJob('financial')}

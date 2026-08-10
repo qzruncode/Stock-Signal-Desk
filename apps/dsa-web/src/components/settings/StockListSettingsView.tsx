@@ -91,6 +91,21 @@ function exportFileName(value: string): string {
   return value.replace(/[\\/:*?"<>|]/g, '-').trim() || '股票分组';
 }
 
+function downloadMarkdown(markdown: string, fileName: string): void {
+  const blobUrl = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
+}
+
+function markdownCell(value: unknown): string {
+  return String(value ?? '-').replace(/[|\r\n]/g, (character) => (character === '|' ? '\\|' : ' '));
+}
+
 function CompactSelect({
   value,
   options,
@@ -219,6 +234,7 @@ export function StockListSettingsView() {
   const [deleteTarget, setDeleteTarget] = useState<WatchlistGroup | null>(null);
   const [pendingActiveGroupId, setPendingActiveGroupId] = useState<string | null>(null);
   const [exportConfirming, setExportConfirming] = useState(false);
+  const [marketExportConfirming, setMarketExportConfirming] = useState(false);
   const { index: stockIndex } = useStockIndex();
   const stockNameByCode = useMemo(
     () => new Map(stockIndex.map((item) => [item.displayCode, item.nameZh])),
@@ -331,18 +347,52 @@ export function StockListSettingsView() {
       ...codes.map((code) => `- ${code}`),
       '',
     ].join('\n');
-    const blobUrl = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = blobUrl;
-    link.download = `${exportFileName(groupName(activeGroup))}-股票代码.md`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(blobUrl);
+    downloadMarkdown(markdown, `${exportFileName(groupName(activeGroup))}-股票代码.md`);
     setNotice({ type: 'success', message: `已导出「${groupName(activeGroup)}」的 ${codes.length} 个股票代码。` });
   }, [activeCodes, activeGroup]);
 
+  const exportAllMarketMarkdown = useCallback(async () => {
+    setMarketExportConfirming(false);
+    setBusyAction('export-market');
+    setNotice(null);
+    try {
+      const items = await stocksApi.listAll({
+        search: marketSearch || undefined,
+        market: marketFilter || undefined,
+      });
+      if (!items.length) {
+        setNotice({ type: 'error', message: '当前范围没有可导出的股票。' });
+        return;
+      }
+
+      const hasFilter = Boolean(marketSearch || marketFilter);
+      const title = hasFilter ? '全市场股票（当前筛选）' : '全市场股票';
+      const filterLines = [
+        `市场范围：${marketFilter ? marketLabel(marketFilter) : '全部市场'}`,
+        marketSearch ? `搜索条件：${marketSearch}` : null,
+      ].filter(Boolean);
+      const markdown = [
+        `# ${title}`,
+        '',
+        `股票数量：${items.length}`,
+        ...filterLines,
+        '',
+        '| 股票代码 | 股票名称 | 市场 | 行业 | 状态 |',
+        '| --- | --- | --- | --- | --- |',
+        ...items.map((stock) => `| ${markdownCell(stock.code)} | ${markdownCell(stock.name)} | ${markdownCell(marketLabel(stock.market))} | ${markdownCell(stock.sector || '行业未标注')} | ${markdownCell(stock.status === 'active' ? '正常' : stock.status || '未知')} |`),
+        '',
+      ].join('\n');
+      downloadMarkdown(markdown, `${exportFileName(title)}-股票列表.md`);
+      setNotice({ type: 'success', message: `已导出「${title}」的 ${items.length} 只股票。` });
+    } catch (error) {
+      setNotice({ type: 'error', message: readableError(error, '全市场股票导出失败') });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [marketFilter, marketSearch]);
+
   const submitMarketSearch = useCallback((values: MarketFormValues) => {
+    setMarketExportConfirming(false);
     setMarketPage(1);
     setMarketSearch(values.search.trim());
   }, []);
@@ -371,16 +421,16 @@ export function StockListSettingsView() {
     setBusyAction('add-group');
     setNotice(null);
     try {
-      const result = await watchlistApi.add(codes);
-      setWatchlist({
-        codes: result.codes,
-        count: result.count,
-        configVersion: result.configVersion,
-      });
       if (activeGroup.id === DEFAULT_GROUP_ID) {
+        const result = await watchlistApi.add(codes);
+        setWatchlist({
+          codes: result.codes,
+          count: result.count,
+          configVersion: result.configVersion,
+        });
         setNotice({ type: 'success', message: result.added.length ? `已添加 ${result.added.length} 只股票。` : '股票已经在默认自选股中。' });
       } else {
-        const groupCodes = uniqueValues([...activeGroup.codes, ...(result.added.length ? result.added : codes)]);
+        const groupCodes = uniqueValues([...activeGroup.codes, ...codes]);
         await watchlistApi.updateGroup(activeGroup.id, { codes: groupCodes });
         await loadWatchlist();
         setNotice({ type: 'success', message: `已添加到「${groupName(activeGroup)}」。` });
@@ -468,7 +518,10 @@ export function StockListSettingsView() {
 
   const createGroup = useCallback(async (values: WatchlistFormValues) => {
     const name = values.newGroupName.trim();
-    if (!name) return;
+    if (!name) {
+      setNotice({ type: 'error', message: '请输入分组名称。' });
+      return;
+    }
     if (groups.some((group) => group.name === name)) {
       setNotice({ type: 'error', message: `分组「${name}」已经存在。` });
       return;
@@ -562,7 +615,10 @@ export function StockListSettingsView() {
               type="button"
               role="tab"
               aria-selected={view === 'market'}
-              onClick={() => setView('market')}
+              onClick={() => {
+                setMarketExportConfirming(false);
+                setView('market');
+              }}
               className={cn(
                 'rounded-md px-2 py-1 text-[11px] transition',
                 view === 'market' ? 'bg-white font-semibold text-foreground shadow-sm' : 'text-secondary-text hover:text-foreground',
@@ -574,7 +630,10 @@ export function StockListSettingsView() {
               type="button"
               role="tab"
               aria-selected={view === 'watchlist'}
-              onClick={() => setView('watchlist')}
+              onClick={() => {
+                setMarketExportConfirming(false);
+                setView('watchlist');
+              }}
               className={cn(
                 'rounded-md px-2 py-1 text-[11px] transition',
                 view === 'watchlist' ? 'bg-white font-semibold text-foreground shadow-sm' : 'text-secondary-text hover:text-foreground',
@@ -599,7 +658,7 @@ export function StockListSettingsView() {
                   <button
                     type="button"
                     aria-label="清除搜索"
-                    onClick={() => { marketForm.setValue('search', ''); setMarketSearch(''); setMarketPage(1); }}
+                    onClick={() => { marketForm.setValue('search', ''); setMarketSearch(''); setMarketPage(1); setMarketExportConfirming(false); }}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground transition hover:bg-elevated hover:text-foreground"
                   >
                     <X className="size-3" />
@@ -618,6 +677,7 @@ export function StockListSettingsView() {
                       field.onChange(value);
                       setMarketFilter(value);
                       setMarketPage(1);
+                      setMarketExportConfirming(false);
                     }}
                   />
                 )}
@@ -625,6 +685,17 @@ export function StockListSettingsView() {
               <Button type="submit" variant="primary" size="sm" className={COMPACT_BUTTON_CLASS}>
                 <Search className="size-3" />
                 查询
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className={COMPACT_BUTTON_CLASS}
+                disabled={!marketData?.total || marketLoading || busyAction === 'export-market'}
+                onClick={() => setMarketExportConfirming(true)}
+              >
+                <Download className="size-3" />
+                {marketSearch || marketFilter ? '导出当前筛选' : '导出全市场'}
               </Button>
             </form>
 
@@ -665,6 +736,30 @@ export function StockListSettingsView() {
                 <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>共 {marketData.total} 只 · 第 {marketData.page}/{Math.max(1, marketData.total_pages)} 页</span>
                   <div className="flex items-center gap-2">
+                    {marketExportConfirming ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-warning">确认导出 {marketData.total} 只股票？</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          type="button"
+                          onClick={() => setMarketExportConfirming(false)}
+                          className={COMPACT_BUTTON_CLASS}
+                        >
+                          取消
+                        </Button>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          type="button"
+                          onClick={() => void exportAllMarketMarkdown()}
+                          disabled={busyAction === 'export-market'}
+                          className={COMPACT_BUTTON_CLASS}
+                        >
+                          确认导出
+                        </Button>
+                      </div>
+                    ) : null}
                     <Button variant="secondary" size="sm" className={COMPACT_BUTTON_CLASS} disabled={marketPage <= 1} onClick={() => setMarketPage((page) => page - 1)}>
                       <ChevronLeft className="size-3" />上一页
                     </Button>
@@ -823,7 +918,13 @@ export function StockListSettingsView() {
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/60">
                 {activeGroup ? (
                   <div className="flex shrink-0 border-b border-border/60 bg-elevated/35 px-2 py-1">
-                    <form onSubmit={watchlistForm.handleSubmit(submitBatchAdd)} className="flex w-full min-w-0 items-center gap-1 rounded-md bg-white p-0.5 shadow-sm sm:max-w-sm">
+                    <form
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void submitBatchAdd(watchlistValues);
+                      }}
+                      className="flex w-full min-w-0 items-center gap-1 sm:max-w-sm"
+                    >
                       <input
                         {...watchlistForm.register('batchInput')}
                         placeholder="批量代码，逗号/空格分隔"
@@ -833,7 +934,8 @@ export function StockListSettingsView() {
                       <Button
                         variant="primary"
                         size="sm"
-                        type="submit"
+                        type="button"
+                        onClick={() => { void submitBatchAdd(watchlistValues); }}
                         disabled={!watchlistValues.batchInput?.trim() || busyAction === 'add-group'}
                         className={COMPACT_BUTTON_CLASS}
                       >
@@ -963,8 +1065,8 @@ export function StockListSettingsView() {
             <Button
               variant="primary"
               size="sm"
-              type="submit"
-              form="create-group-form"
+              type="button"
+              onClick={() => { void createGroup(watchlistValues); }}
               isLoading={busyAction === 'create-group'}
               loadingText="保存中..."
               className={COMPACT_BUTTON_CLASS}
@@ -1010,8 +1112,8 @@ export function StockListSettingsView() {
             <Button
               variant="primary"
               size="sm"
-              type="submit"
-              form="edit-group-form"
+              type="button"
+              onClick={() => { void renameGroup(watchlistValues); }}
               isLoading={busyAction === 'rename-group'}
               loadingText="保存中..."
               className={COMPACT_BUTTON_CLASS}

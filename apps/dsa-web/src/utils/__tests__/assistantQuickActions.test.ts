@@ -5,14 +5,15 @@ import {
   ASSISTANT_SUGGESTIONS,
 } from '../assistantQuickActions';
 
-describe('generic assistant intent examples', () => {
-  it('contains three unique intent groups with directly usable prompts', () => {
+describe('assistant intent examples', () => {
+  it('contains four unique intent groups with directly usable prompts', () => {
     const items = ASSISTANT_SUGGESTION_GROUPS.flatMap((group) => group.items);
 
     expect(ASSISTANT_SUGGESTION_GROUPS.map((group) => group.id)).toEqual([
-      'general',
       'research',
-      'materials',
+      'stock-tools',
+      'verification',
+      'general',
     ]);
     expect(new Set(items.map((item) => item.label)).size).toBe(items.length);
     expect(items.every((item) => item.prompt.trim().length >= 12)).toBe(true);
@@ -29,13 +30,13 @@ describe('generic assistant intent examples', () => {
     }
   });
 
-  it('teaches long-tail handling and evidence discipline instead of an SOP', () => {
+  it('teaches research and evidence discipline without encoding an SOP', () => {
     const prompts = ASSISTANT_SUGGESTIONS.map((item) => item.prompt).join('\n');
 
-    expect(prompts).toContain('不常见的问题');
-    expect(prompts).toContain('不要套固定模板');
-    expect(prompts).toContain('实体、时间口径、来源和证据缺口');
-    expect(prompts).toContain('一致、冲突和仍无法确认');
+    expect(prompts).toContain('数据时间');
+    expect(prompts).toContain('证据缺口');
+    expect(prompts).toContain('一致、冲突');
+    expect(prompts).toContain('股票分组');
   });
 
   it('contains no removed composite Agent tool names', () => {
