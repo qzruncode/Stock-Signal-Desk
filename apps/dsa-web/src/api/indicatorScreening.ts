@@ -170,6 +170,10 @@ function toSnakePlan(plan: IndicatorScreenPlan): Record<string, unknown> {
   };
 }
 
+function toCamelField(field: string): string {
+  return field.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+}
+
 export const indicatorScreeningApi = {
   async listIndicators(signal?: AbortSignal): Promise<IndicatorCatalogItem[]> {
     const response = await apiClient.get<Record<string, unknown>>(
@@ -186,9 +190,21 @@ export const indicatorScreeningApi = {
   ): Promise<IndicatorScreenResult> {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/indicator-screening/run',
-      { plan: toSnakePlan(plan) },
+      // The settings page is a data browser, so it needs every matched row.
+      // Agent/tool calls keep their normal preview-only response contract.
+      { plan: toSnakePlan(plan), include_all_items: true },
       { timeout: 900000, signal },
     );
-    return toCamelCase<IndicatorScreenResult>(response.data);
+    const payload = toCamelCase<IndicatorScreenResult>(response.data);
+    return {
+      ...payload,
+      // ``items`` is deep-converted to camelCase by toCamelCase, while the
+      // backend keeps column.field as a protocol value inside the array.
+      // Normalize both sides so metric cells do not silently render as "—".
+      columns: payload.columns?.map((column) => ({
+        ...column,
+        field: toCamelField(column.field),
+      })),
+    };
   },
 };

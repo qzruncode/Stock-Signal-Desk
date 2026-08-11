@@ -621,3 +621,18 @@ a {
   font-size: 0.6875rem;
   line-height: 1rem;
 }
+
+.indicator-screening-save-modal {
+  max-height: min(80vh, 36rem);
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.indicator-screening-save-modal > div:first-child {
+  margin-bottom: 0.75rem;
+}
+
+.indicator-screening-save-modal > div:first-child h3 {
+  font-size: 0.9375rem;
+  line-height: 1.25rem;
+}

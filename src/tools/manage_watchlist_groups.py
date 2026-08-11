@@ -5,9 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from src.services.watchlist_service import manage_watchlist as _manage_watchlist
 from src.storage import DatabaseManager
 from src.tools.base import ToolSpec, object_schema
 from src.tools.symbols import resolve_securities_csv
+
+
+DEFAULT_GROUP_ID = "default"
+DEFAULT_GROUP_NAME = "我的自选股"
 
 
 def _now() -> str:
@@ -50,14 +55,99 @@ def _envelope(action: str, **payload: Any) -> dict[str, Any]:
     }
 
 
-def list_watchlist_groups() -> dict[str, Any]:
-    """Read persisted custom groups only; default watchlist has its own tool."""
-    db = DatabaseManager.get_instance()
-    groups = [
-        {**item, "count": len(item.get("codes") or [])}
-        for item in db.list_watchlist_groups()
+def _default_group() -> dict[str, Any]:
+    result = _manage_watchlist("list")
+    codes = [str(code) for code in result.get("codes") or []]
+    return {
+        "id": DEFAULT_GROUP_ID,
+        "name": DEFAULT_GROUP_NAME,
+        "codes": codes,
+        "source": "system",
+    }
+
+
+def _group_summary(group: dict[str, Any], *, kind: str = "custom") -> dict[str, Any]:
+    codes = [str(code) for code in group.get("codes") or []]
+    return {
+        "id": str(group.get("id") or ""),
+        "name": str(group.get("name") or "未命名分组"),
+        "count": len(codes),
+        "source": str(group.get("source") or "manual"),
+        "kind": kind,
+    }
+
+
+def _find_read_group(groups: list[dict[str, Any]], identifier: str) -> dict[str, Any]:
+    value = str(identifier or "").strip()
+    if not value:
+        raise ValueError("必须提供 group，用分组名称或分组 ID 指定目标")
+    if value.lower() in {DEFAULT_GROUP_ID, "watchlist", DEFAULT_GROUP_NAME.lower()}:
+        return _default_group()
+    for group in groups:
+        if str(group.get("id")) == value or str(group.get("name") or "") == value:
+            return {
+                **group,
+                "id": str(group.get("id") or ""),
+                "name": str(group.get("name") or "未命名分组"),
+                "codes": [str(code) for code in group.get("codes") or []],
+            }
+    raise ValueError(f"未找到自选分组: {value}")
+
+
+def _member_rows(codes: list[str]) -> list[dict[str, str]]:
+    try:
+        from src.services.name_to_code_resolver import get_database_stock_indexes
+
+        _, code_to_name = get_database_stock_indexes()
+    except Exception:
+        code_to_name = {}
+    return [
+        {"symbol": code, "name": str(code_to_name.get(code) or "")}
+        for code in codes
     ]
+
+
+def list_watchlist_groups() -> dict[str, Any]:
+    """Read a compact summary of the default and custom stock groups."""
+    db = DatabaseManager.get_instance()
+    groups = [_group_summary(_default_group(), kind="default")]
+    groups.extend(
+        _group_summary(item)
+        for item in db.list_watchlist_groups()
+    )
     return _envelope("list", groups=groups, item_count=len(groups))
+
+
+def read_watchlist_group(group: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+    """Read one stock group and return a bounded page of its members."""
+    clean_offset = max(0, int(offset or 0))
+    clean_limit = min(100, max(1, int(limit or 100)))
+    db = DatabaseManager.get_instance()
+    target = _find_read_group(db.list_watchlist_groups(), group)
+    codes = list(target.get("codes") or [])
+    page = codes[clean_offset : clean_offset + clean_limit]
+    next_offset = clean_offset + len(page)
+    summary = _group_summary(
+        target,
+        kind="default" if str(target.get("id")) == DEFAULT_GROUP_ID else "custom",
+    )
+    return _envelope(
+        "read",
+        group=summary,
+        members=_member_rows(page),
+        offset=clean_offset,
+        limit=clean_limit,
+        returned_count=len(page),
+        has_more=next_offset < len(codes),
+        next_offset=next_offset if next_offset < len(codes) else None,
+        _agent_context={
+            "type": "stock_group",
+            "group_id": summary["id"],
+            "group_name": summary["name"],
+            "member_count": summary["count"],
+            "source": summary["source"],
+        },
+    )
 
 
 def create_watchlist_group(group: str, symbols: str = "") -> dict[str, Any]:
@@ -177,9 +267,23 @@ def manage_watchlist_groups(
 TOOLS = (
     ToolSpec(
         name="list_watchlist_groups",
-        description="读取用户创建的自选分组列表；不读取或修改默认自选股。",
+        description="读取默认自选股和用户创建的自选分组摘要；返回分组名称、ID和股票数量，不修改数据。",
         parameters=object_schema(),
         executor=list_watchlist_groups,
+        category="action",
+    ),
+    ToolSpec(
+        name="read_watchlist_group",
+        description="读取一个指定自选分组中的股票代码；支持按分组名称或 ID 分页读取，不修改数据。",
+        parameters=object_schema(
+            {
+                "group": {"type": "string", "description": "分组名称或 ID；默认自选股可用 default 或 我的自选股"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "成员起始位置"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100, "description": "本次最多读取的成员数量"},
+            },
+            required=("group",),
+        ),
+        executor=read_watchlist_group,
         category="action",
     ),
     ToolSpec(

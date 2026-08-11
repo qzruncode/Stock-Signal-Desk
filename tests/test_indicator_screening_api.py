@@ -356,6 +356,39 @@ def test_indicator_run_returns_runner_result_and_indicator_id(client: TestClient
     )
 
 
+def test_indicator_run_can_request_all_result_rows(client: TestClient) -> None:
+    mocked_result = {
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": [],
+        "items": [{"code": "600519"}, {"code": "600036"}],
+        "matched_codes": ["600519", "600036"],
+        "total": 2,
+    }
+    with patch(
+        "api.v1.endpoints.indicator_screening.run_atr_volatility_screen",
+        return_value=mocked_result,
+    ) as runner:
+        response = client.post(
+            "/api/v1/indicator-screening/run",
+            json={
+                "indicator": "atr_relative_volatility",
+                "screen_spec": {"version": "1.0"},
+                "include_all_items": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == mocked_result["items"]
+    runner.assert_called_once_with(
+        screen_spec={"version": "1.0"},
+        refresh_if_stale=True,
+        include_matched_codes=True,
+        include_all_items=True,
+    )
+
+
 def test_indicator_run_rejects_unknown_indicator(client: TestClient) -> None:
     response = client.post(
         "/api/v1/indicator-screening/run",

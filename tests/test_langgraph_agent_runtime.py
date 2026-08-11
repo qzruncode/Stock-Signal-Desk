@@ -202,6 +202,119 @@ def test_plain_answer_uses_the_standard_model_completion_path() -> None:
     asyncio.run(scenario())
 
 
+def test_successful_group_read_is_kept_as_context_for_the_next_model_turn() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("group-context", "primary"),
+                AIMessage(content="我会继续围绕新能源分组回答【证据 ev_group-context】。"),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            executor=FakeAtomicExecutor(
+                {
+                    "search_source": [
+                        {
+                            "result": {
+                                "_agent_context": {
+                                    "type": "stock_group",
+                                    "group_id": "3",
+                                    "group_name": "新能源",
+                                    "member_count": 12,
+                                    "source": "manual",
+                                }
+                            }
+                        }
+                    ]
+                }
+            ),
+            conversation_id="group-context",
+        )
+
+        assert result.status == "completed"
+        assert result.state["conversation_context"] == {
+            "type": "stock_group",
+            "group_id": "3",
+            "group_name": "新能源",
+            "member_count": 12,
+            "source": "manual",
+        }
+        assert any("新能源" in str(message.content) for message in model.calls[1])
+
+    asyncio.run(scenario())
+
+
+def test_group_context_survives_a_later_turn_on_the_same_checkpoint_thread() -> None:
+    async def scenario() -> None:
+        registry = _registry(_search_operation())
+        executor = FakeAtomicExecutor(
+            {
+                "search_source": [
+                    {
+                        "result": {
+                            "_agent_context": {
+                                "type": "stock_group",
+                                "group_id": "3",
+                                "group_name": "新能源",
+                                "member_count": 12,
+                            }
+                        }
+                    }
+                ]
+            }
+        )
+        manager = LangGraphRuntimeManager(registry=registry)
+        await manager.start(testing=True)
+        try:
+            first = await manager.run_new(
+                messages=[{"role": "user", "content": "读取新能源分组"}],
+                user_text="读取新能源分组",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="run-group-context-1",
+                conversation_id="group-context-persisted",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(
+                    responses=[
+                        _tool_call("group-context-persisted", "primary"),
+                        AIMessage(content="已读取新能源分组【证据 ev_group-context-persisted】"),
+                    ]
+                ),
+                executor=executor,
+            )
+            assert first.state["conversation_context"]["group_name"] == "新能源"
+
+            second_model = ScriptedChatModel(
+                responses=[AIMessage(content="继续围绕刚才的分组回答。")]
+            )
+            second = await manager.run_new(
+                messages=[{"role": "user", "content": "继续刚才的分析"}],
+                user_text="继续刚才的分析",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="run-group-context-2",
+                conversation_id="group-context-persisted",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=second_model,
+                executor=executor,
+            )
+            assert second.state["conversation_context"]["group_name"] == "新能源"
+            assert any("新能源" in str(message.content) for message in second_model.calls[0])
+        finally:
+            await manager.close()
+
+    asyncio.run(scenario())
+
+
 def test_failed_source_is_an_observation_and_model_can_choose_another_source() -> None:
     async def scenario() -> None:
         result, executor = await _run(

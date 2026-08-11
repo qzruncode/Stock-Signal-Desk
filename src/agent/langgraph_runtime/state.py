@@ -68,6 +68,10 @@ class AgentState(LangChainAgentState, total=False):
     user_text: str
     system_prompt: str
     reference_time: str
+    # Small, durable reference context resolved from a successful read tool.
+    # Large member collections remain in the tool observation and are fetched
+    # page-by-page when the model needs them.
+    conversation_context: dict[str, Any] | None
 
     # One record per actual model tool call, not a precompiled action plan.
     tool_results: Annotated[list[dict[str, Any]], merge_records]
@@ -107,6 +111,7 @@ class AgentGraphInput(TypedDict, total=False):
     user_text: str
     system_prompt: str
     reference_time: str
+    conversation_context: dict[str, Any] | None
     engine: str
     tool_results: list[dict[str, Any]]
     evidence: list[dict[str, Any]]

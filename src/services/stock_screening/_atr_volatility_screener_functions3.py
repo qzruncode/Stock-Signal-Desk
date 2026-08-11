@@ -52,6 +52,7 @@ def run_atr_volatility_screen(
     screen_spec: dict[str, Any] | None = None,
     refresh_if_stale: bool = True,
     include_matched_codes: bool = False,
+    include_all_items: bool = False,
 ) -> dict[str, Any]:
     """Execute a caller-supplied, validated screen and echo the exact normalized spec."""
     try:
@@ -395,7 +396,10 @@ def run_atr_volatility_screen(
         "applied_rules": _applied_rules(spec),
         "formula": formula,
         "columns": columns,
-        "items": items[: spec.preview_limit],
+        # The normal Agent/tool contract stays preview-only.  The settings
+        # page can explicitly request all rows for a complete result table;
+        # matched_codes has always remained full for save-to-group actions.
+        "items": items if include_all_items else items[: spec.preview_limit],
         "total": len(items),
         "download_url": download_url,
         "file_id": file_id,

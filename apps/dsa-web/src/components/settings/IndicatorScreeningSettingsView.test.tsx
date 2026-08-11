@@ -204,7 +204,7 @@ describe('IndicatorScreeningSettingsView', () => {
   it('runs the selected indicator and saves all matches into a shared group', async () => {
     render(<IndicatorScreeningSettingsView />);
 
-    expect(await screen.findByRole('heading', { name: '指标选股' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '筛选条件' })).toBeInTheDocument();
     expect(screen.queryByText('添加指标条件，组合后筛选并保存到股票分组。')).not.toBeInTheDocument();
     expect(screen.queryByText('1 条')).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: '组合' })).not.toBeInTheDocument();
@@ -240,12 +240,23 @@ describe('IndicatorScreeningSettingsView', () => {
         })],
       }),
     ));
-    expect(await screen.findByText('命中 1 只股票')).toBeInTheDocument();
+    expect(screen.getByLabelText('命中 1 只股票')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '筛选结果' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: '筛选结果明细' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '查看规则（1 条）' })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: '本次筛选规则（1 条）' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '查看规则（1 条）' }));
+    expect(screen.getByRole('dialog', { name: '本次筛选规则（1 条）' })).toBeInTheDocument();
+    expect(screen.getByText('· 测试规则')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.queryByRole('dialog', { name: '本次筛选规则（1 条）' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '保存到分组' }));
+    expect(screen.getByRole('dialog', { name: '保存筛选结果到分组' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('combobox', { name: '已有分组' }));
     expect(screen.getByRole('option', { name: '已有分组（1）' })).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('或新建分组'), { target: { value: '波动率候选' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存 1 只股票到分组' }));
+    fireEvent.click(screen.getByRole('button', { name: '保存 1 只股票' }));
     await waitFor(() => expect(watchlistApi.createGroup).toHaveBeenCalledWith(
       '波动率候选',
       ['600519'],
@@ -256,7 +267,7 @@ describe('IndicatorScreeningSettingsView', () => {
   it('adds a financial condition and sends its configured threshold', async () => {
     render(<IndicatorScreeningSettingsView />);
 
-    expect(await screen.findByRole('heading', { name: '指标选股' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '筛选条件' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '添加条件' }));
 
     const indicatorSelects = screen.getAllByRole('combobox', { name: '指标' });
@@ -283,7 +294,7 @@ describe('IndicatorScreeningSettingsView', () => {
   it('treats screening scope as a condition and applies the selected group', async () => {
     render(<IndicatorScreeningSettingsView />);
 
-    expect(await screen.findByRole('heading', { name: '指标选股' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '筛选条件' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '添加条件' }));
 
     const indicatorSelects = screen.getAllByRole('combobox', { name: '指标' });
@@ -308,7 +319,7 @@ describe('IndicatorScreeningSettingsView', () => {
   it('disables conditions already used by another row', async () => {
     render(<IndicatorScreeningSettingsView />);
 
-    expect(await screen.findByRole('heading', { name: '指标选股' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '筛选条件' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '添加条件' }));
 
     const indicatorSelects = screen.getAllByRole('combobox', { name: '指标' });

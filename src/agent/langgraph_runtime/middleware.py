@@ -85,6 +85,24 @@ def _tool_message_content(record: Mapping[str, Any], evidence: Mapping[str, Any]
     return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
 
 
+def _conversation_context_from_result(result: Any) -> dict[str, Any] | None:
+    """Accept a small server-owned context reference from a tool result."""
+    if not isinstance(result, Mapping):
+        return None
+    candidate = result.get("_agent_context")
+    if not isinstance(candidate, Mapping):
+        return None
+    context_type = str(candidate.get("type") or "").strip()
+    if not context_type:
+        return None
+    context: dict[str, Any] = {"type": context_type}
+    for key in ("group_id", "group_name", "member_count", "source"):
+        value = candidate.get(key)
+        if value not in (None, ""):
+            context[key] = value
+    return context
+
+
 def _error_tool_message(
     *,
     tool_call_id: str,
@@ -153,6 +171,7 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         evidence = project_evidence_for_model(state.get("evidence") or [])
         observations = project_tool_observations_for_model(state.get("tool_results") or [])
         feedback = str(state.get("evidence_feedback") or "").strip()
+        conversation_context = state.get("conversation_context")
         model_turn = max(0, int(state.get("model_turn_count") or 0)) + 1
         source_catalog = context.catalog.model_context()
         base_prompt = str(state.get("system_prompt") or request.system_prompt or "").strip()
@@ -160,8 +179,14 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
             part
             for part in (
                 base_prompt,
-                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n所有 operation Schema 都已绑定在本轮模型调用中；下面是完整 operation/source 目录，不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。一条调用只能访问一个来源；如果结果失败，阅读错误并自行决定是否需要换一个来源、改写查询或直接说明缺口。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。不要伪造确认字段或声称未执行的操作。""",
+                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n所有 operation Schema 都已绑定在本轮模型调用中；下面是完整 operation/source 目录，不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。一条调用只能访问一个来源；如果结果失败，阅读错误并自行决定是否需要换一个来源、改写查询或直接说明缺口。\n\n当用户询问分组列表时读取分组摘要；当用户询问某个分组的成员，或明确要求任务只针对某个分组时，先读取该分组。后续只在用户仍引用该分组或明确限定范围时使用它，不要把分组上下文自动套用到无关问题；分组名称不明确时先询问。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。不要伪造确认字段或声称未执行的操作。""",
                 "完整 operation/source 目录：\n" + source_catalog,
+                (
+                    "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用，不自动限制无关问题）：\n"
+                    + json.dumps(conversation_context, ensure_ascii=False, default=str)
+                    if isinstance(conversation_context, Mapping)
+                    else ""
+                ),
                 (
                     "当前成功证据（原始数据留在检查点，以下为可回答的紧凑投影）：\n"
                     + json.dumps(evidence, ensure_ascii=False, default=str)
@@ -625,21 +650,27 @@ class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
         record = dict(record)
         record["model_tool_call_id"] = tool_call_id
         success = record.get("success") is True
+        conversation_context = (
+            _conversation_context_from_result(record.get("result"))
+            if success
+            else None
+        )
         tool_message = ToolMessage(
             content=_tool_message_content(record, evidence),
             name=tool_name,
             tool_call_id=tool_call_id,
             status="success" if success else "error",
         )
-        return Command(
-            update={
-                "messages": [tool_message],
-                "tool_results": [record],
-                "evidence": [dict(evidence)] if isinstance(evidence, Mapping) else [],
-                "completed_tool_call_ids": [tool_call_id],
-                "tool_call_count": 1,
-            }
-        )
+        update: dict[str, Any] = {
+            "messages": [tool_message],
+            "tool_results": [record],
+            "evidence": [dict(evidence)] if isinstance(evidence, Mapping) else [],
+            "completed_tool_call_ids": [tool_call_id],
+            "tool_call_count": 1,
+        }
+        if conversation_context is not None:
+            update["conversation_context"] = conversation_context
+        return Command(update=update)
 
 
 class TerminalPublicationMiddleware(AgentMiddleware[AgentState, GraphContext]):

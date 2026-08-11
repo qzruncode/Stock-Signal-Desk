@@ -154,11 +154,19 @@ _FINANCIAL_INDICATOR_CONFIGS: tuple[dict[str, Any], ...] = (
 )
 
 
-def _run_atr_relative_volatility(screen_spec: dict[str, Any]) -> dict[str, Any]:
+def _run_atr_relative_volatility(
+    screen_spec: dict[str, Any],
+    *,
+    include_all_items: bool = False,
+) -> dict[str, Any]:
+    run_options: dict[str, Any] = {}
+    if include_all_items:
+        run_options["include_all_items"] = True
     result = run_atr_volatility_screen(
         screen_spec=screen_spec,
         refresh_if_stale=True,
         include_matched_codes=True,
+        **run_options,
     )
     result.setdefault("matched_codes", [])
     return result
@@ -217,7 +225,7 @@ _CONDITION_ADAPTERS: dict[str, Callable[[IndicatorScreenPlan, Any], dict[str, An
         for config in _FINANCIAL_INDICATOR_CONFIGS
     },
 }
-_CONDITION_RUNNERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+_CONDITION_RUNNERS: dict[str, Callable[..., dict[str, Any]]] = {
     "atr_relative_volatility": _run_atr_relative_volatility,
     **{
         config["id"]: _run_atr_relative_volatility
@@ -238,7 +246,11 @@ def _resolve_scope_codes(plan: IndicatorScreenPlan) -> list[str] | None:
     return [str(code) for code in group.get("codes", [])]
 
 
-def _run_indicator_plan(plan: IndicatorScreenPlan) -> dict[str, Any]:
+def _run_indicator_plan(
+    plan: IndicatorScreenPlan,
+    *,
+    include_all_items: bool = False,
+) -> dict[str, Any]:
     """Run the generic plan through registered condition adapters.
 
     Each adapter owns its indicator-specific execution.  The composition layer
@@ -259,7 +271,7 @@ def _run_indicator_plan(plan: IndicatorScreenPlan) -> dict[str, Any]:
                 mode="json",
                 exclude_none=True,
             )
-        result = runner(screen_spec)
+        result = runner(screen_spec, include_all_items=include_all_items)
         if result.get("success") is not True:
             result["errors"] = [
                 f"条件 {condition.id}（{condition.indicator}）执行失败: {message}"
@@ -288,7 +300,7 @@ def _run_indicator_plan(plan: IndicatorScreenPlan) -> dict[str, Any]:
                 merged_items.append(item)
                 seen_codes.add(code)
     base_result = dict(condition_results[0][1])
-    base_result["items"] = merged_items[: plan.preview_limit]
+    base_result["items"] = merged_items if include_all_items else merged_items[: plan.preview_limit]
     base_result["matched_codes"] = sorted(matched_codes)
     base_result["total"] = len(matched_codes)
     base_result["applied_rules"] = [
@@ -330,7 +342,7 @@ _INDICATORS: tuple[dict[str, Any], ...] = (
     }
     for config in _FINANCIAL_INDICATOR_CONFIGS
 )
-_RUNNERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+_RUNNERS: dict[str, Callable[..., dict[str, Any]]] = {
     "atr_relative_volatility": _run_atr_relative_volatility,
 }
 
@@ -341,6 +353,7 @@ class IndicatorScreenRunRequest(BaseModel):
     indicator: str | None = Field(default=None, min_length=1, max_length=80)
     screen_spec: dict[str, Any] | None = None
     plan: dict[str, Any] | None = None
+    include_all_items: bool = False
 
     @model_validator(mode="after")
     def _validate_payload_shape(self) -> "IndicatorScreenRunRequest":
@@ -367,7 +380,7 @@ def run_indicator_screening(body: IndicatorScreenRunRequest) -> dict[str, Any]:
     if body.plan is not None:
         try:
             plan = IndicatorScreenPlan.model_validate(body.plan)
-            result = _run_indicator_plan(plan)
+            result = _run_indicator_plan(plan, include_all_items=body.include_all_items)
         except (ValidationError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
@@ -389,7 +402,7 @@ def run_indicator_screening(body: IndicatorScreenRunRequest) -> dict[str, Any]:
             detail={"error": "unsupported_indicator", "message": f"不支持的指标选股指标: {body.indicator}"},
         )
     try:
-        result = runner(body.screen_spec)
+        result = runner(body.screen_spec, include_all_items=body.include_all_items)
     except Exception as exc:
         logger.error("Indicator screening failed for %s: %s", body.indicator, exc, exc_info=True)
         raise HTTPException(
