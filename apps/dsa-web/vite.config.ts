@@ -7,6 +7,7 @@ const packageJson = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
 ) as { version?: string }
 const buildTime = new Date().toISOString()
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET?.trim() || 'http://127.0.0.1:8000'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -29,7 +30,7 @@ export default defineConfig({
     allowedHosts: ['.loca.lt', '.trycloudflare.com', '.lhr.life', '.serveousercontent.com', '.pinggy.link', '.pinggy.io', '.pinggy-free.link', '.pinggy.net', '.cpolar.top', '.cpolar.cn'],
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: apiProxyTarget,
         changeOrigin: true,
       },
     },

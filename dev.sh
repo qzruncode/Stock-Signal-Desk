@@ -7,13 +7,15 @@ RSSHUB_DIR="$PROJECT_DIR/services/rsshub"
 FIRECRAWL_DIR="$PROJECT_DIR/services/firecrawl"
 SEARXNG_DIR="$PROJECT_DIR/services/searxng"
 WEBFETCH_DIR="$PROJECT_DIR/services/webfetch"
-BACKEND_PORT=8000
+DEFAULT_BACKEND_PORT=8000
 FRONTEND_PORT=5173
 RSSHUB_PORT=1200
 FIRECRAWL_PORT=3002
 FIRECRAWL_PLAYWRIGHT_PORT=3003
 FIRECRAWL_REDIS_PORT=6380
 SEARXNG_PORT=8888
+BACKEND_PORT_FILE="$PROJECT_DIR/logs/backend.port"
+BACKEND_MANAGED_FILE="$PROJECT_DIR/logs/backend.managed"
 DEV_TUNNEL="${DEV_TUNNEL:-1}"
 TUNNEL_SCREEN_NAME="dsa-web-pinggy"
 TUNNEL_LOG="$PROJECT_DIR/logs/frontend-tunnel.log"
@@ -21,11 +23,78 @@ TUNNEL_URL_FILE="$PROJECT_DIR/logs/frontend-tunnel.url"
 TUNNEL_PID_FILE="$PROJECT_DIR/logs/frontend-tunnel.pid"
 PINGGY_HOST="${PINGGY_HOST:-free.pinggy.io}"
 
+read_env_value() {
+    local key="$1"
+    [[ -f "$PROJECT_DIR/.env" ]] || return 0
+
+    awk -F= -v wanted="$key" '
+        /^[[:space:]]*#/ || !index($0, "=") { next }
+        {
+            name = $1
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            if (name != wanted) { next }
+            value = substr($0, index($0, "=") + 1)
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+#.*$/, "", value)
+            gsub(/["\047]/, "", value)
+            print value
+            exit
+        }
+    ' "$PROJECT_DIR/.env"
+}
+
+BACKEND_PORT_ENV_OVERRIDE="${BACKEND_PORT:-}"
+WEBUI_PORT_ENV_OVERRIDE="${WEBUI_PORT:-}"
+ENV_WEBUI_PORT="$(read_env_value WEBUI_PORT)"
+CONFIGURED_BACKEND_PORT="${BACKEND_PORT_ENV_OVERRIDE:-${WEBUI_PORT_ENV_OVERRIDE:-${ENV_WEBUI_PORT:-$DEFAULT_BACKEND_PORT}}}"
+BACKEND_PORT="$CONFIGURED_BACKEND_PORT"
+BACKEND_MANAGED=1
+
 if [[ -n "${NVM_BIN:-}" ]]; then
     export PATH="$NVM_BIN:$PATH"
 fi
 
 log() { echo "[$(date '+%H:%M:%S')] $*"; }
+
+port_is_valid() {
+    [[ "$1" =~ ^[0-9]+$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535))
+}
+
+save_backend_state() {
+    mkdir -p "$PROJECT_DIR/logs"
+    printf '%s\n' "$BACKEND_PORT" > "$BACKEND_PORT_FILE"
+    printf '%s\n' "$BACKEND_MANAGED" > "$BACKEND_MANAGED_FILE"
+}
+
+load_backend_state() {
+    local state_port state_managed discovered
+
+    if [[ -z "$BACKEND_PORT_ENV_OVERRIDE" && -z "$WEBUI_PORT_ENV_OVERRIDE" && -z "$ENV_WEBUI_PORT" && -s "$BACKEND_PORT_FILE" ]]; then
+        state_port=$(tr -d '[:space:]' < "$BACKEND_PORT_FILE")
+        if port_is_valid "$state_port"; then
+            BACKEND_PORT="$state_port"
+        fi
+    fi
+
+    if [[ -s "$BACKEND_MANAGED_FILE" ]]; then
+        state_managed=$(tr -d '[:space:]' < "$BACKEND_MANAGED_FILE")
+        if [[ "$state_managed" == "0" || "$state_managed" == "1" ]]; then
+            BACKEND_MANAGED="$state_managed"
+        fi
+    fi
+
+    if [[ ! -s "$BACKEND_PORT_FILE" && -z "$BACKEND_PORT_ENV_OVERRIDE" && -z "$WEBUI_PORT_ENV_OVERRIDE" && -z "$ENV_WEBUI_PORT" ]]; then
+        discovered=$(find_project_backend_ports | head -n 1 || true)
+        if [[ -n "$discovered" ]]; then
+            BACKEND_PORT="$discovered"
+            BACKEND_MANAGED=0
+        fi
+    fi
+}
+
+clear_backend_state() {
+    rm -f "$BACKEND_PORT_FILE" "$BACKEND_MANAGED_FILE"
+}
 
 start_detached() {
     local workdir="$1"
@@ -46,6 +115,86 @@ os.execvp(sys.argv[1], sys.argv[1:])
 
 get_pids() {
     lsof -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true
+}
+
+find_project_backend_ports() {
+    local listener_pids pid cmd cwd
+
+    listener_pids=$(lsof -tiTCP -sTCP:LISTEN 2>/dev/null | sort -u || true)
+    while IFS= read -r pid; do
+        [[ -n "$pid" ]] || continue
+        cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+        if [[ "$cmd" != *"uvicorn"* || "$cmd" != *"server:app"* ]] && \
+            [[ "$cmd" != *"main.py --serve"* && "$cmd" != *"main.py --webui"* ]]; then
+            continue
+        fi
+
+        cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)
+        [[ "$cwd" == "$PROJECT_DIR" || "$cwd" == "$PROJECT_DIR/"* ]] || continue
+
+        lsof -a -p "$pid" -iTCP -sTCP:LISTEN -Fn 2>/dev/null | \
+            sed -n 's/^n.*:\([0-9][0-9]*\)$/\1/p'
+    done <<< "$listener_pids" | sort -nu
+}
+
+backend_http_ready() {
+    local port="$1"
+    local body
+
+    body=$(curl --max-time 2 --silent --fail "http://127.0.0.1:$port/api/health" 2>/dev/null) || return 1
+    [[ "$body" == *'"status":"ok"'* || "$body" == *'"status": "ok"'* ]]
+}
+
+find_free_backend_port() {
+    local port="$1"
+
+    while ((port <= 65535)); do
+        if [[ -z "$(get_pids "$port")" ]]; then
+            printf '%s\n' "$port"
+            return 0
+        fi
+        port=$((port + 1))
+    done
+    return 1
+}
+
+resolve_backend_port() {
+    local discovered preferred
+    BACKEND_ALREADY_RUNNING=0
+
+    if ! port_is_valid "$BACKEND_PORT"; then
+        log "错误: 后端端口无效: $BACKEND_PORT"
+        return 1
+    fi
+
+    # 未显式指定端口时，优先复用当前工作区已经启动的 FastAPI 后端。
+    if [[ -z "$BACKEND_PORT_ENV_OVERRIDE" && -z "$WEBUI_PORT_ENV_OVERRIDE" && -z "$ENV_WEBUI_PORT" ]]; then
+        discovered=$(find_project_backend_ports | head -n 1 || true)
+        if [[ -n "$discovered" ]]; then
+            BACKEND_PORT="$discovered"
+            BACKEND_ALREADY_RUNNING=1
+            log "检测到本项目后端已在 port $BACKEND_PORT 运行，将复用它"
+            return 0
+        fi
+    fi
+
+    # 允许通过 WEBUI_PORT 或 BACKEND_PORT 指向一个已启动且健康的后端。
+    if backend_http_ready "$BACKEND_PORT"; then
+        BACKEND_ALREADY_RUNNING=1
+        log "检测到后端健康接口已在 port $BACKEND_PORT 就绪，将复用它"
+        return 0
+    fi
+
+    # 默认端口被其他程序占用时，自动向后寻找空闲端口，并把该端口传给 Vite。
+    if [[ -n "$(get_pids "$BACKEND_PORT")" ]]; then
+        preferred="$BACKEND_PORT"
+        BACKEND_PORT=$(find_free_backend_port "$preferred" || true)
+        if [[ -z "$BACKEND_PORT" ]]; then
+            log "错误: 从 port $preferred 开始没有可用的后端端口"
+            return 1
+        fi
+        log "后端端口 $preferred 已被其他进程占用，自动改用 port $BACKEND_PORT"
+    fi
 }
 
 frontend_tunnel_running() {
@@ -264,8 +413,26 @@ wait_for_port() {
     return 1
 }
 
+wait_for_backend() {
+    local timeout="${1:-30}"
+    local waited=0
+
+    while [[ "$waited" -lt "$timeout" ]]; do
+        if backend_http_ready "$BACKEND_PORT"; then
+            log "backend 已启动 (port $BACKEND_PORT)"
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    log "警告: backend 未在 ${timeout}s 内通过健康检查，请检查 logs/backend.log"
+    return 1
+}
+
 stop_services() {
     local backend_pids frontend_pids rsshub_pids firecrawl_pids searxng_pids tunnel_pids
+    load_backend_state
     backend_pids=$(get_pids "$BACKEND_PORT")
     frontend_pids=$(get_pids "$FRONTEND_PORT")
     rsshub_pids=$(get_pids "$RSSHUB_PORT")
@@ -282,14 +449,25 @@ stop_services() {
     stop_firecrawl
     stop_searxng
     [[ -n "$rsshub_pids" ]] && { log "停止 RSSHub (port $RSSHUB_PORT)..."; kill $rsshub_pids 2>/dev/null || true; }
-    [[ -n "$backend_pids" ]] && { log "停止后端 (port $BACKEND_PORT)..."; kill $backend_pids 2>/dev/null || true; }
+    if [[ -n "$backend_pids" ]]; then
+        if [[ "$BACKEND_MANAGED" == "1" ]]; then
+            log "停止后端 (port $BACKEND_PORT)..."
+            kill $backend_pids 2>/dev/null || true
+        else
+            log "保留已存在的后端 (port $BACKEND_PORT)，该进程不是由本次脚本启动"
+        fi
+    fi
     [[ -n "$frontend_pids" ]] && { log "停止前端 (port $FRONTEND_PORT)..."; kill $frontend_pids 2>/dev/null || true; }
 
     sleep 1
 
     # 强制清理残留进程
     local remaining
-    remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$RSSHUB_PORT"; get_pids "$BACKEND_PORT"; get_pids "$FRONTEND_PORT")
+    if [[ "$BACKEND_MANAGED" == "1" ]]; then
+        remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$RSSHUB_PORT"; get_pids "$BACKEND_PORT"; get_pids "$FRONTEND_PORT")
+    else
+        remaining=$(get_pids "$FIRECRAWL_PORT"; get_pids "$FIRECRAWL_PLAYWRIGHT_PORT"; get_pids "$FIRECRAWL_REDIS_PORT"; get_pids "$SEARXNG_PORT"; get_pids "$RSSHUB_PORT"; get_pids "$FRONTEND_PORT")
+    fi
     if [[ -n "$remaining" ]]; then
         log "强制清理残留进程..."
         kill -9 $remaining 2>/dev/null || true
@@ -297,10 +475,15 @@ stop_services() {
     fi
 
     log "服务已停止"
+    clear_backend_state
+    BACKEND_PORT="$CONFIGURED_BACKEND_PORT"
+    BACKEND_MANAGED=1
 }
 
 start_services() {
-    if [[ -n "$(get_pids "$FIRECRAWL_PORT")" || -n "$(get_pids "$FIRECRAWL_PLAYWRIGHT_PORT")" || -n "$(get_pids "$FIRECRAWL_REDIS_PORT")" || -n "$(get_pids "$SEARXNG_PORT")" ]] || [[ -n "$(get_pids "$RSSHUB_PORT")" || -n "$(get_pids "$BACKEND_PORT")" || -n "$(get_pids "$FRONTEND_PORT")" ]]; then
+    resolve_backend_port || return 1
+
+    if [[ -n "$(get_pids "$FIRECRAWL_PORT")" || -n "$(get_pids "$FIRECRAWL_PLAYWRIGHT_PORT")" || -n "$(get_pids "$FIRECRAWL_REDIS_PORT")" || -n "$(get_pids "$SEARXNG_PORT")" ]] || [[ -n "$(get_pids "$RSSHUB_PORT")" || -n "$(get_pids "$FRONTEND_PORT")" ]]; then
         log "端口已被占用，请先运行: $0 restart"
         return 1
     fi
@@ -330,44 +513,51 @@ start_services() {
         start_detached "$RSSHUB_DIR" "$PROJECT_DIR/logs/RSSHub.log" env PORT="$RSSHUB_PORT" npm start
     fi
 
-    log "启动后端 FastAPI (port $BACKEND_PORT)..."
-    start_detached "$PROJECT_DIR" "$PROJECT_DIR/logs/backend.log" \
-        uvicorn server:app \
-            --reload \
-            --reload-dir "$PROJECT_DIR/api" \
-            --reload-dir "$PROJECT_DIR/src" \
-            --timeout-graceful-shutdown 3 \
-            --host 0.0.0.0 \
-            --port "$BACKEND_PORT"
+    if [[ "$BACKEND_ALREADY_RUNNING" == "1" ]]; then
+        BACKEND_MANAGED=0
+    else
+        BACKEND_MANAGED=1
+        log "启动后端 FastAPI (port $BACKEND_PORT)..."
+        start_detached "$PROJECT_DIR" "$PROJECT_DIR/logs/backend.log" \
+            uvicorn server:app \
+                --reload \
+                --reload-dir "$PROJECT_DIR/api" \
+                --reload-dir "$PROJECT_DIR/src" \
+                --timeout-graceful-shutdown 3 \
+                --host 0.0.0.0 \
+                --port "$BACKEND_PORT"
+    fi
+    save_backend_state
 
     log "启动前端 Vite Dev (port $FRONTEND_PORT)..."
+    local api_proxy_target="${VITE_API_PROXY_TARGET:-http://127.0.0.1:$BACKEND_PORT}"
     if [[ "$DEV_TUNNEL" == "0" ]]; then
         if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
             start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
-                bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run dev -- --host 0.0.0.0'
+                env VITE_API_PROXY_TARGET="$api_proxy_target" bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run dev -- --host 0.0.0.0'
         else
             start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
-                npm run dev -- --host 0.0.0.0
+                env VITE_API_PROXY_TARGET="$api_proxy_target" npm run dev -- --host 0.0.0.0
         fi
     else
         if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
             start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
-                bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run dev:tunnel'
+                env VITE_API_PROXY_TARGET="$api_proxy_target" bash -lc 'source "$HOME/.nvm/nvm.sh"; nvm use 24 >/dev/null; npm run dev:tunnel'
         else
             start_detached "$FRONTEND_DIR" "$PROJECT_DIR/logs/frontend.log" \
-                npm run dev:tunnel
+                env VITE_API_PROXY_TARGET="$api_proxy_target" npm run dev:tunnel
         fi
     fi
 
     wait_for_firecrawl 180 || true
     wait_for_port "$RSSHUB_PORT" "RSSHub" 90 || true
-    wait_for_port "$BACKEND_PORT" "backend" 30 || true
+    wait_for_backend 30 || true
     wait_for_port "$FRONTEND_PORT" "frontend" 30 || true
     if [[ -n "$(get_pids "$FRONTEND_PORT")" ]]; then
         start_frontend_tunnel || true
     fi
 
-    if searxng_http_ready && firecrawl_http_ready && [[ -n "$(get_pids "$RSSHUB_PORT")" && -n "$(get_pids "$BACKEND_PORT")" && -n "$(get_pids "$FRONTEND_PORT")" ]]; then
+    if searxng_http_ready && firecrawl_http_ready && backend_http_ready "$BACKEND_PORT" && [[ -n "$(get_pids "$RSSHUB_PORT")" && -n "$(get_pids "$FRONTEND_PORT")" ]]; then
         log "服务启动成功!"
         log "  SearXNG: http://localhost:$SEARXNG_PORT"
         log "  Firecrawl: http://localhost:$FIRECRAWL_PORT"
@@ -386,6 +576,7 @@ start_services() {
 
 status() {
     local rp bp fp
+    load_backend_state
     rp=$(get_pids "$RSSHUB_PORT")
     bp=$(get_pids "$BACKEND_PORT")
     fp=$(get_pids "$FRONTEND_PORT")
@@ -408,10 +599,12 @@ status() {
         log "RSSHub 未运行"
     fi
 
-    if [[ -n "$bp" ]]; then
+    if backend_http_ready "$BACKEND_PORT"; then
         log "后端运行中 (port $BACKEND_PORT, PID: $(echo $bp | tr '\n' ' '))"
+    elif [[ -n "$bp" ]]; then
+        log "后端端口被占用但健康检查未通过 (port $BACKEND_PORT, PID: $(echo $bp | tr '\n' ' '))"
     else
-        log "后端未运行"
+        log "后端未运行 (默认/配置端口 $BACKEND_PORT)"
     fi
 
     if [[ -n "$fp" ]]; then
@@ -472,6 +665,9 @@ case "${1:-}" in
         echo "环境变量:"
         echo "  DEV_TUNNEL=0     跳过前端公网隧道"
         echo "  PINGGY_HOST=...  覆盖 Pinggy SSH 入口，默认 free.pinggy.io"
+        echo "  BACKEND_PORT=... 指定后端端口，未指定时读取 WEBUI_PORT/.env 或自动选择"
+        echo "  WEBUI_PORT=...   指定后端端口（与 main.py 配置保持一致）"
+        echo "  VITE_API_PROXY_TARGET=... 覆盖前端开发代理目标"
         exit 1
         ;;
 esac
