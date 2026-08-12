@@ -16,6 +16,7 @@ function lazyWithPreload<T extends { default: React.ComponentType }>(factory: ()
 }
 
 export const ChatHomePage = lazyWithPreload(() => import('../pages/ChatHomePage'));
+export const LoginPage = lazyWithPreload(() => import('../pages/LoginPage'));
 export const NotFoundPage = lazyWithPreload(() => import('../pages/NotFoundPage'));
 export const SettingPage = lazyWithPreload(() => import('../pages/SettingPage'));
 export const RunExplorerPage = lazyWithPreload(() => import('../pages/RunExplorerPage'));

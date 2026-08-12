@@ -161,6 +161,10 @@ class ConfigManager:
             file_obj.flush()
             os.fsync(file_obj.fileno())
 
+        # Configuration files can contain API keys and webhook credentials.
+        # Keep the replacement private even with a permissive process umask.
+        os.chmod(temp_path, 0o600)
+
         try:
             os.replace(temp_path, self._env_path)
         except OSError as exc:
@@ -182,6 +186,7 @@ class ConfigManager:
             file_obj.write(content)
             file_obj.flush()
             os.fsync(file_obj.fileno())
+        os.chmod(self._env_path, 0o600)
 
     def _read_entries(self) -> List[ConfigLineEntry]:
         if not self._env_path.exists():

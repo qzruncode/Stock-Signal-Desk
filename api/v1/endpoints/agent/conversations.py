@@ -14,6 +14,7 @@ from api.v1.endpoints.agent import router
 from src.agent.run_registry import active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
+from src.agent.runtime_safety import AgentRequestValidationError, validate_conversation_snapshot_body
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -348,8 +349,13 @@ def sync_agent_conversation_snapshot(
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
     service = _session_service(request, db_manager)
-    raw_messages = payload.get("messages") if "messages" in payload else None
-    messages = raw_messages if isinstance(raw_messages, list) else ([] if raw_messages is not None else None)
+    try:
+        messages = validate_conversation_snapshot_body(payload)
+    except AgentRequestValidationError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"error": exc.code, "message": str(exc)},
+        ) from exc
     # ``thread_state`` was an assistant-ui renderer export, not durable Agent
     # state.  Older clients may still send it, but accepting it here lets an
     # arbitrarily large historical tool tree re-enter storage and later cost a

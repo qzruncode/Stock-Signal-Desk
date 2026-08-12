@@ -107,7 +107,7 @@ export interface ChatConversationDetail extends ChatConversationItem {
 const CLIENT_TRACE_MAX_CHARACTERS = 180_000;
 const CLIENT_TRACE_MAX_DEPTH = 7;
 const CLIENT_TRACE_MAX_OBJECT_KEYS = 24;
-const CLIENT_TRACE_MAX_TEXT = 2_400;
+const CLIENT_TRACE_MAX_TEXT = 1_600;
 const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   ['stages', 'stages', 120],
   ['actions', 'actions', 32],

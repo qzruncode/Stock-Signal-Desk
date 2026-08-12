@@ -105,3 +105,23 @@ def test_empty_successful_sources_are_not_converted_to_no_risk_conclusion() -> N
     assert result["has_risk_events"] is None
     assert result["item_count"] == 0
     assert result["warnings"]
+
+
+def test_force_refresh_policy_reaches_news_and_announcement_sources() -> None:
+    calls: dict[str, bool] = {}
+
+    def news(*args, **kwargs):
+        calls["news"] = kwargs["use_cache"]
+        return {"success": True, "items": [], "errors": [], "warnings": []}
+
+    def announcements(*args, **kwargs):
+        calls["announcements"] = kwargs["use_cache"]
+        return {"success": True, "items": [], "errors": [], "warnings": []}
+
+    with (
+        patch("src.tools.search_news.search_news", side_effect=news),
+        patch("src.tools.get_announcements.get_announcements", side_effect=announcements),
+    ):
+        get_risk_events("600519", use_cache=False)
+
+    assert calls == {"news": False, "announcements": False}

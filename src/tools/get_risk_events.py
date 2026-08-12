@@ -61,6 +61,7 @@ def get_risk_events(
     days: int = 90,
     limit: int = 30,
     include_structured: bool = False,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     code = bare_symbol(symbol)
     if len(code) != 6 or not code.isdecimal():
@@ -79,12 +80,14 @@ def get_risk_events(
         code,
         days=min(days, 365),
         limit=min(max(limit * 2, 20), 50),
+        use_cache=use_cache,
     )
     announcements = get_announcements(
         code,
         days=days,
         type="all",
         limit=min(max(limit * 2, 30), 100),
+        use_cache=use_cache,
     )
     structured_requested = bool(include_structured)
     try:

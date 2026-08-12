@@ -25,6 +25,7 @@ async def analyze_buy_criteria(
     symbol: str = Query(..., description="股票代码"),
     pre_fetched: str | None = Query(
         None,
+        max_length=65536,
         description="Base64url-encoded JSON of pre-fetched data (e.g. valuation)",
     ),
 ):
@@ -35,11 +36,14 @@ async def analyze_buy_criteria(
     pre_fetched_data: dict[str, Any] | None = None
     if pre_fetched:
         try:
-            padded = pre_fetched + "=" * (4 - len(pre_fetched) % 4)
-            decoded = base64.urlsafe_b64decode(padded).decode("utf-8")
-            pre_fetched_data = json.loads(decoded)
+            padded = pre_fetched + "=" * (-len(pre_fetched) % 4)
+            decoded = base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8")
+            parsed = json.loads(decoded)
+            if not isinstance(parsed, dict):
+                raise ValueError("payload must be a JSON object")
+            pre_fetched_data = parsed
         except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid pre_fetched data: {exc}")
+            raise HTTPException(status_code=400, detail="Invalid pre_fetched data") from exc
 
     from src.services.buy_criteria.orchestrator import CriterionOrchestrator
 

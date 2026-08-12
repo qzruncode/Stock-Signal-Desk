@@ -2,6 +2,7 @@ import type { FC } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   EllipsisIcon,
+  ListChecksIcon,
   Loader2Icon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
@@ -28,6 +29,7 @@ export interface ThreadListSidebarProps {
   onSelect: (conversationId: string) => void;
   onRename: (conversation: ChatConversationItem) => void;
   onDelete: (conversation: ChatConversationItem) => void;
+  onBatchDelete: (conversationIds: string[]) => void;
   onClearAll: () => void;
   isClearingAll?: boolean;
   onCollapse?: () => void;
@@ -44,6 +46,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   onSelect,
   onRename,
   onDelete,
+  onBatchDelete,
   onClearAll,
   isClearingAll = false,
   onCollapse,
@@ -51,6 +54,8 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   const [isTouchMode, setIsTouchMode] = useState(false);
   const [actionConversation, setActionConversation] = useState<ChatConversationItem | null>(null);
   const [actionMenuPosition, setActionMenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedConversationIds, setSelectedConversationIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const sidebarRef = useRef<HTMLDivElement | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
@@ -131,6 +136,22 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
     setActionMenuPosition(null);
   };
 
+  const exitBatchMode = () => {
+    setIsBatchMode(false);
+    setSelectedConversationIds([]);
+  };
+
+  const toggleConversationSelection = (conversationId: string) => {
+    setSelectedConversationIds((current) => (
+      current.includes(conversationId)
+        ? current.filter((id) => id !== conversationId)
+        : [...current, conversationId]
+    ));
+  };
+
+  const allSelected = conversations.length > 0
+    && conversations.every((conversation) => selectedConversationIds.includes(conversation.id));
+
   const visibleConversations = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase();
     if (!query) return conversations;
@@ -140,6 +161,10 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
   }, [conversations, searchQuery]);
 
   const handleSelectConversation = (conversationId: string) => {
+    if (isBatchMode) {
+      toggleConversationSelection(conversationId);
+      return;
+    }
     if (longPressTriggeredRef.current) {
       longPressTriggeredRef.current = false;
       return;
@@ -170,10 +195,42 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
         <div className="flex items-center gap-0.5">
           {conversations.length > 0 ? (
             <TooltipIconButton
-              tooltip="清除全部会话历史"
+              tooltip={isBatchMode ? '退出批量管理' : '批量管理'}
+              className={cn(
+                'size-7 rounded-md disabled:cursor-not-allowed disabled:opacity-50',
+                isBatchMode && 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+              )}
+              disabled={isClearingAll}
+              onClick={() => {
+                if (isBatchMode) {
+                  exitBatchMode();
+                  return;
+                }
+                dismissConversationActions();
+                setIsBatchMode(true);
+              }}
+            >
+              <ListChecksIcon className="size-3.5" />
+            </TooltipIconButton>
+          ) : null}
+          {conversations.length > 0 ? (
+            <TooltipIconButton
+              tooltip={isBatchMode && selectedConversationIds.length > 0
+                ? `删除选中（${selectedConversationIds.length}）`
+                : '清除全部会话历史'}
               className="size-7 rounded-md text-red-500 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={isClearingAll}
-              onClick={onClearAll}
+              onClick={() => {
+                if (isBatchMode && selectedConversationIds.length > 0) {
+                  onBatchDelete(selectedConversationIds);
+                  exitBatchMode();
+                  return;
+                }
+                if (isBatchMode) {
+                  exitBatchMode();
+                }
+                onClearAll();
+              }}
             >
               {isClearingAll ? <Loader2Icon className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Trash2Icon className="size-3.5" />}
             </TooltipIconButton>
@@ -201,6 +258,29 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
         </label>
       </div>
 
+      {isBatchMode ? (
+        <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (allSelected) {
+                setSelectedConversationIds([]);
+                return;
+              }
+              setSelectedConversationIds(conversations.map((conversation) => conversation.id));
+            }}
+            className="text-[11px] text-muted-foreground transition hover:text-foreground"
+          >
+            {allSelected ? '取消全选' : '全选'}
+          </button>
+          <span className="text-[11px] text-muted-foreground">
+            {selectedConversationIds.length > 0
+              ? `已选择 ${selectedConversationIds.length} 个`
+              : '未选择，删除按钮将清除全部'}
+          </span>
+        </div>
+      ) : null}
+
       <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-1.5">
         {isLoading ? (
           <div className="px-2 py-5 text-[11px] text-muted-foreground">加载对话中...</div>
@@ -217,23 +297,48 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
         {visibleConversations.map((conversation) => {
           const isActive = conversation.id === selectedConversationId;
           const isLoadingConversation = conversation.id === loadingConversationId;
+          const isSelected = selectedConversationIds.includes(conversation.id);
           return (
             <div
               key={conversation.id}
               data-conversation-row="true"
               className={cn(
                 'group/item relative flex items-center gap-1.5 rounded-md border-l-2 border-transparent px-2 py-1.5 transition-colors',
+                isBatchMode && isSelected && 'bg-emerald-50',
                 isActive ? 'border-emerald-500 bg-emerald-50/90 text-emerald-800' : 'hover:bg-muted/70',
               )}
               onContextMenu={(event) => {
+                if (isBatchMode) {
+                  event.preventDefault();
+                  return;
+                }
                 event.preventDefault();
                 openConversationActions(conversation, event.currentTarget.getBoundingClientRect());
               }}
             >
+              {isBatchMode ? (
+                <button
+                  type="button"
+                  onClick={() => toggleConversationSelection(conversation.id)}
+                  className={cn(
+                    'flex size-3.5 shrink-0 items-center justify-center rounded border transition',
+                    isSelected
+                      ? 'border-primary bg-primary text-primary-foreground'
+                      : 'border-border bg-background text-transparent',
+                  )}
+                  aria-label={`${isSelected ? '取消选择' : '选择'}对话：${conversation.title || '新对话'}`}
+                  aria-pressed={isSelected}
+                >
+                  <span className="text-[9px] leading-none">✓</span>
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => handleSelectConversation(conversation.id)}
                 onTouchStart={(event) => {
+                  if (isBatchMode) {
+                    return;
+                  }
                   scheduleLongPress(conversation, event.currentTarget.closest('[data-conversation-row="true"]') as HTMLDivElement | null);
                 }}
                 onTouchEnd={clearLongPressTimer}
@@ -254,7 +359,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
               </button>
               <TooltipIconButton
                 tooltip="重命名"
-                className={cn(itemActionButtonClassName, isTouchMode && 'hidden')}
+                className={cn(itemActionButtonClassName, (isTouchMode || isBatchMode) && 'hidden')}
                 disabled={isClearingAll}
                 onClick={() => onRename(conversation)}
               >
@@ -262,13 +367,13 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
               </TooltipIconButton>
               <TooltipIconButton
                 tooltip="删除对话"
-                className={cn(itemActionButtonClassName, isTouchMode && 'hidden')}
+                className={cn(itemActionButtonClassName, (isTouchMode || isBatchMode) && 'hidden')}
                 disabled={isClearingAll}
                 onClick={() => onDelete(conversation)}
               >
                 <Trash2Icon className="size-3.5" />
               </TooltipIconButton>
-              {isTouchMode ? (
+              {isTouchMode && !isBatchMode ? (
                 <button
                   type="button"
                   className={cn(

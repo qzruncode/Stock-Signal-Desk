@@ -256,11 +256,13 @@ def get_risk_events(
 
     days_value = days if isinstance(days, int) else 90
     include_value = include_structured if isinstance(include_structured, bool) else True
+    force_value = force if isinstance(force, bool) else False
     return tool_get_risk_events(
         _normalize_symbol(symbol),
         days=days_value,
         limit=50,
         include_structured=include_value,
+        use_cache=not force_value,
     )
 
 
@@ -277,13 +279,15 @@ def get_sentiment(
 ):
     """获取供模型研判舆情的资讯和研报证据，不在程序中做词典投票。"""
     symbol = _normalize_symbol(symbol)
-    cache_part = f"d{days}"
-    if not force:
+    days_value = days if isinstance(days, int) else 90
+    force_value = force if isinstance(force, bool) else False
+    cache_part = f"d{days_value}"
+    if not force_value:
         cached = _daily_cache_get(SENTIMENT_CACHE_KEY, symbol, cache_part)
         if cached:
             cached["_cached"] = True
             return cached
-    data = _fetch_sentiment(symbol, days)
+    data = _fetch_sentiment(symbol, days_value)
     _daily_cache_put(SENTIMENT_CACHE_KEY, symbol, data, cache_part)
     return data
 

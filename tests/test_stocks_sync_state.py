@@ -6,20 +6,8 @@ from fastapi import HTTPException
 from api.v1.endpoints.stocks import sync as stocks
 
 
-class _DeferredThread:
-    started = 0
-
-    def __init__(self, target, daemon):
-        self.target = target
-        self.daemon = daemon
-
-    def start(self):
-        type(self).started += 1
-
-
 class StocksSyncStateTest(unittest.TestCase):
     def setUp(self):
-        _DeferredThread.started = 0
         stocks._set_list_state(
             status="idle",
             progress=0,
@@ -33,17 +21,21 @@ class StocksSyncStateTest(unittest.TestCase):
         )
 
     def test_list_sync_is_marked_running_before_background_thread_runs(self):
-        with patch.object(stocks.threading, "Thread", _DeferredThread):
+        with (
+            patch.object(stocks, "_latest_stock_universe_status", return_value=None),
+            patch.object(stocks, "_claim_persisted_sync_job", return_value=("list-job-1", True)),
+            patch.object(stocks, "_launch_detached_worker") as launch_worker,
+        ):
             result = stocks.sync_stock_list(service=None)
 
             self.assertTrue(result["success"])
-            self.assertEqual(_DeferredThread.started, 1)
+            launch_worker.assert_called_once_with("src.services.stock_list_sync_worker", "list-job-1")
             self.assertEqual(stocks._get_list_state_copy()["status"], "running")
 
             with self.assertRaises(HTTPException) as ctx:
                 stocks.sync_stock_list(service=None)
             self.assertEqual(ctx.exception.status_code, 409)
-            self.assertEqual(_DeferredThread.started, 1)
+            launch_worker.assert_called_once_with("src.services.stock_list_sync_worker", "list-job-1")
 
     def test_list_sync_status_returns_a_snapshot(self):
         stocks._set_list_state(status="running", total=1)

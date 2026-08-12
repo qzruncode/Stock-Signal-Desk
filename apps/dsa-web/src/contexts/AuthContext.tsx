@@ -58,11 +58,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSetupState(status.setupState);
     } catch (err) {
       setLoadError(getParsedApiError(err));
-      setAuthEnabled(false);
-      setLoggedIn(false);
-      setPasswordSet(false);
-      setPasswordChangeable(false);
-      setSetupState('no_password');
     } finally {
       setIsLoading(false);
     }

@@ -10,12 +10,15 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from src.services.stock_screening.atr_volatility_screener import run_atr_volatility_screen
+from src.services.stock_screening.financial_screening import run_financial_screen
 from src.services.stock_screening.indicator_plan import (
     IndicatorScreenPlan,
     indicator_screen_plan_schema,
 )
 from src.services.stock_screening.screen_spec import (
+    FinancialScreenSpec,
     QuantitativeScreenSpec,
+    financial_screen_spec_schema,
     quantitative_screen_spec_schema,
 )
 from src.storage import DatabaseManager
@@ -57,11 +60,9 @@ def _default_atr_screen_spec() -> dict[str, Any]:
                 "strategy": "atr_relative_frequency",
                 **_default_atr_parameters(),
             },
-            "financial_filters": [
-                {"field": "revenue_ttm", "operator": "gt", "value": 500_000_000},
-                {"field": "deducted_net_profit_ttm", "operator": "gt", "value": 0},
-                {"field": "debt_ratio", "operator": "lt", "value": 70},
-            ],
+            # Financial gates are explicit conditions in the indicator plan;
+            # do not silently attach them to an ATR-only selection.
+            "financial_filters": [],
             "sort": {"field": "qualified_ratio_pct", "order": "desc"},
             "output_fields": [
                 "current_atr_pct",
@@ -172,6 +173,19 @@ def _run_atr_relative_volatility(
     return result
 
 
+def _run_financial_indicator(
+    screen_spec: dict[str, Any],
+    *,
+    include_all_items: bool = False,
+) -> dict[str, Any]:
+    result = run_financial_screen(
+        screen_spec=screen_spec,
+        include_all_items=include_all_items,
+    )
+    result.setdefault("matched_codes", [])
+    return result
+
+
 def _atr_condition_to_screen_spec(plan: IndicatorScreenPlan, condition: Any) -> dict[str, Any]:
     """Adapt one catalog condition to the existing audited ATR executor."""
     if condition.indicator != "atr_relative_volatility":
@@ -180,14 +194,37 @@ def _atr_condition_to_screen_spec(plan: IndicatorScreenPlan, condition: Any) -> 
     # volatility threshold is surfaced by the settings page; all other ATR
     # calculation and qualification parameters stay fixed in the preset.
     screen_spec = _default_atr_screen_spec()
+    screen_spec["financial_filters"] = [
+        item.model_dump(mode="json") for item in plan.financial_filters
+    ]
     threshold = condition.parameters.get("volatility_threshold_pct")
     if threshold is not None:
         screen_spec["technical_rule"]["volatility_threshold_pct"] = threshold
     return QuantitativeScreenSpec.model_validate(screen_spec).model_dump(mode="json", exclude_none=True)
 
 
+def _default_financial_screen_spec(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the UI defaults for a financial-only condition."""
+    return FinancialScreenSpec.model_validate(
+        {
+            "version": "1.0",
+            "universe": {
+                "status": "active",
+                "markets": ["sh", "sz", "bj"],
+                "include_st": False,
+                "min_listing_trading_days": 250,
+                "price_adjustment": "qfq",
+            },
+            "financial_filters": [],
+            "sort": {"field": config["field"], "order": "desc"},
+            "output_fields": [config["field"], "financial_report_period", "financial_source"],
+            "preview_limit": 20,
+        }
+    ).model_dump(mode="json", exclude_none=True)
+
+
 def _financial_condition_to_screen_spec(plan: IndicatorScreenPlan, condition: Any) -> dict[str, Any]:
-    """Adapt a financial catalog condition to the shared ATR screen executor."""
+    """Adapt a financial catalog condition to the financial-only executor."""
     config = next(
         (item for item in _FINANCIAL_INDICATOR_CONFIGS if item["id"] == condition.indicator),
         None,
@@ -205,17 +242,41 @@ def _financial_condition_to_screen_spec(plan: IndicatorScreenPlan, condition: An
     if "value" not in parameters:
         value = defaults["value"]
 
-    screen_spec = _default_atr_screen_spec()
-    # The ATR preset has three historical financial gates.  When the user
-    # explicitly adds one of these indicators, replace that gate so the new
-    # condition is the source of truth for the selected field.
-    screen_spec["financial_filters"] = [
-        item for item in screen_spec["financial_filters"] if item["field"] != config["field"]
+    sort_field = plan.sort.field if plan.sort.field in {
+        "code",
+        "revenue_ttm",
+        "parent_net_profit_ttm",
+        "deducted_net_profit_ttm",
+        "debt_ratio",
+    } else config["field"]
+    output_fields = [
+        field for field in plan.output_fields if field in {
+            "revenue_ttm",
+            "parent_net_profit_ttm",
+            "deducted_net_profit_ttm",
+            "debt_ratio",
+            "financial_report_period",
+            "financial_source",
+        }
+    ] or [config["field"], "financial_report_period", "financial_source"]
+    financial_filters = [
+        item.model_dump(mode="json")
+        for item in plan.financial_filters
+        if item.field != config["field"]
     ]
-    screen_spec["financial_filters"].append(
+    financial_filters.append(
         {"field": config["field"], "operator": operator, "value": value}
     )
-    return QuantitativeScreenSpec.model_validate(screen_spec).model_dump(mode="json", exclude_none=True)
+    return FinancialScreenSpec.model_validate(
+        {
+            "version": "1.0",
+            "universe": plan.universe.model_dump(mode="json", exclude_none=True),
+            "financial_filters": financial_filters,
+            "sort": {"field": sort_field, "order": plan.sort.order},
+            "output_fields": output_fields,
+            "preview_limit": plan.preview_limit,
+        }
+    ).model_dump(mode="json", exclude_none=True)
 
 
 _CONDITION_ADAPTERS: dict[str, Callable[[IndicatorScreenPlan, Any], dict[str, Any]]] = {
@@ -228,7 +289,7 @@ _CONDITION_ADAPTERS: dict[str, Callable[[IndicatorScreenPlan, Any], dict[str, An
 _CONDITION_RUNNERS: dict[str, Callable[..., dict[str, Any]]] = {
     "atr_relative_volatility": _run_atr_relative_volatility,
     **{
-        config["id"]: _run_atr_relative_volatility
+        config["id"]: _run_financial_indicator
         for config in _FINANCIAL_INDICATOR_CONFIGS
     },
 }
@@ -267,7 +328,12 @@ def _run_indicator_plan(
         screen_spec = adapter(plan, condition)
         if scope_codes is not None:
             screen_spec["universe"]["codes"] = scope_codes
-            screen_spec = QuantitativeScreenSpec.model_validate(screen_spec).model_dump(
+            validator = (
+                QuantitativeScreenSpec
+                if condition.indicator == "atr_relative_volatility"
+                else FinancialScreenSpec
+            )
+            screen_spec = validator.model_validate(screen_spec).model_dump(
                 mode="json",
                 exclude_none=True,
             )
@@ -337,13 +403,17 @@ _INDICATORS: tuple[dict[str, Any], ...] = (
         "available": True,
         "parameter_schema": list(config["parameter_schema"]),
         "combination_ready": True,
-        "spec_schema": quantitative_screen_spec_schema(),
-        "default_spec": _default_atr_screen_spec(),
+        "spec_schema": financial_screen_spec_schema(),
+        "default_spec": _default_financial_screen_spec(config),
     }
     for config in _FINANCIAL_INDICATOR_CONFIGS
 )
 _RUNNERS: dict[str, Callable[..., dict[str, Any]]] = {
     "atr_relative_volatility": _run_atr_relative_volatility,
+    **{
+        config["id"]: _run_financial_indicator
+        for config in _FINANCIAL_INDICATOR_CONFIGS
+    },
 }
 
 

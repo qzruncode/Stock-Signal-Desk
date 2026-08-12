@@ -15,6 +15,7 @@ import concurrent.futures
 import logging
 import re
 import threading
+import time
 import uuid
 from datetime import date, datetime
 from typing import Any
@@ -31,6 +32,7 @@ _lock_holder: threading.Lock | None = None
 _set_state_fn = None
 _initial_state_fn = None
 _utc_now_iso_fn = None
+_last_job_persist: tuple[float, int] = (0.0, -1)
 
 _REPORT_PERIOD_CANDIDATES: tuple[tuple[int, int], ...] = (
     (12, 31),
@@ -73,6 +75,44 @@ def attach_state(
 def _set(**updates) -> None:
     if _set_state_fn:
         _set_state_fn(**updates)
+    _persist_running_job()
+
+
+def _persist_running_job() -> None:
+    """Persist a throttled heartbeat so financial progress survives API restarts."""
+    global _last_job_persist
+    if _state_holder is None or _lock_holder is None:
+        return
+    with _lock_holder:
+        snapshot = dict(_state_holder)
+    job_id = snapshot.get("job_id")
+    if not job_id:
+        return
+    progress = int(snapshot.get("progress") or 0)
+    status = snapshot.get("status")
+    now_monotonic = time.monotonic()
+    last_time, last_progress = _last_job_persist
+    terminal = status in {"success", "failed", "partial"}
+    if not terminal and progress == last_progress and now_monotonic - last_time < 1.0:
+        return
+    db = DatabaseManager.get_instance()
+    try:
+        with db.get_session() as session:
+            values = {
+                "status": status,
+                "progress": progress,
+                "total": int(snapshot.get("total") or 0),
+                "message": snapshot.get("message") or "",
+                "error": snapshot.get("error"),
+                "updated_at": datetime.now(),
+            }
+            if terminal:
+                values["finished_at"] = datetime.now()
+            session.query(DataMaintenanceJob).filter(DataMaintenanceJob.id == job_id).update(values)
+            session.commit()
+        _last_job_persist = (now_monotonic, progress)
+    except Exception:
+        logger.warning("[FinancialSync] 保存运行中任务心跳失败: %s", job_id, exc_info=True)
 
 
 def latest_report_period(reference: date | None = None) -> str:
@@ -398,6 +438,7 @@ def _active_codes() -> list[str]:
 
 def _record_terminal_job(
     *,
+    job_id: str | None = None,
     period: str | None,
     status: str,
     progress: int,
@@ -413,15 +454,18 @@ def _record_terminal_job(
     db = DatabaseManager.get_instance()
     try:
         with db.get_session() as session:
-            job = (
-                session.query(DataMaintenanceJob)
-                .filter(
-                    DataMaintenanceJob.dataset == "financial_reports",
+            query = session.query(DataMaintenanceJob).filter(DataMaintenanceJob.dataset == "financial_reports")
+            if job_id:
+                job = query.filter(DataMaintenanceJob.id == job_id).one_or_none()
+            else:
+                job = query.filter(
                     DataMaintenanceJob.scope_key == "all",
                     DataMaintenanceJob.target_data_time == period,
-                )
-                .one_or_none()
-            )
+                ).one_or_none()
+            # A reclaimed job has a new id.  An older worker must not write its
+            # terminal result into the newer run's unique period row.
+            if job_id and job is None:
+                return
             if job is None:
                 job = DataMaintenanceJob(
                     id=str(uuid.uuid4()),
@@ -446,6 +490,7 @@ def _record_terminal_job(
 def run_financial_sync(
     period: str | None = None,
     active_codes: list[str] | None = None,
+    job_id: str | None = None,
 ) -> None:
     """同步每只 active 股票最近可用的一期财务摘要。"""
     codes = sorted({_normalize_code(code) for code in (active_codes or _active_codes()) if re.fullmatch(r"\d{6}", _normalize_code(code))})
@@ -489,6 +534,7 @@ def run_financial_sync(
             finished_at=_utc_now_iso_fn() if _utc_now_iso_fn else None,
         )
         _record_terminal_job(
+            job_id=job_id,
             period=primary_period,
             status="failed",
             progress=0,
@@ -633,6 +679,7 @@ def run_financial_sync(
             error=("；".join(source_errors + list(fallback_failed.values())))[:300] if failed_count else None,
         )
         _record_terminal_job(
+            job_id=job_id,
             period=primary_period,
             status=status,
             progress=min(processed, len(codes)),
@@ -661,6 +708,7 @@ def run_financial_sync(
             error=str(exc)[:300],
         )
         _record_terminal_job(
+            job_id=job_id,
             period=primary_period,
             status="failed",
             progress=0,

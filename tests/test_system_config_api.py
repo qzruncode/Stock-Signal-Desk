@@ -71,11 +71,12 @@ class SystemConfigApiTestCase(unittest.TestCase):
             os.environ["DATABASE_PATH"] = self._orig_database_path
         self.temp_dir.cleanup()
 
-    def test_get_config_returns_raw_secret_value(self) -> None:
+    def test_get_config_masks_secret_value(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
         item_map = {item["key"]: item for item in payload["items"]}
-        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "secret-key-value")
-        self.assertFalse(item_map["GEMINI_API_KEY"]["is_masked"])
+        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "******")
+        self.assertTrue(item_map["GEMINI_API_KEY"]["is_masked"])
+        self.assertNotIn("secret-key-value", repr(payload))
 
     def test_get_config_schema_includes_help_metadata(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)

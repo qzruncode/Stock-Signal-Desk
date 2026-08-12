@@ -41,6 +41,21 @@ SortField = Literal[
     "deducted_net_profit_ttm",
     "debt_ratio",
 ]
+FinancialOutputField = Literal[
+    "revenue_ttm",
+    "parent_net_profit_ttm",
+    "deducted_net_profit_ttm",
+    "debt_ratio",
+    "financial_report_period",
+    "financial_source",
+]
+FinancialSortField = Literal[
+    "code",
+    "revenue_ttm",
+    "parent_net_profit_ttm",
+    "deducted_net_profit_ttm",
+    "debt_ratio",
+]
 FinancialField = Literal[
     "revenue_ttm",
     "parent_net_profit_ttm",
@@ -158,6 +173,72 @@ class QuantitativeScreenSpec(BaseModel):
         if self.sort.field in {"revenue_ttm", "parent_net_profit_ttm", "deducted_net_profit_ttm", "debt_ratio"}:
             fields.add(self.sort.field)
         return fields
+
+
+class FinancialScreenSort(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field: FinancialSortField
+    order: Literal["asc", "desc"]
+
+
+class FinancialScreenSpec(BaseModel):
+    """Complete executable contract for a financial-only indicator screen.
+
+    Financial indicators must not be adapted into the ATR contract: doing so
+    silently fetches daily bars and applies an unrelated volatility rule.  A
+    separate contract keeps the data requirements and the result provenance
+    honest while retaining the same universe/filter/output vocabulary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["1.0"]
+    universe: ScreenUniverse
+    financial_filters: list[FinancialFilter] = Field(max_length=8)
+    sort: FinancialScreenSort
+    output_fields: list[FinancialOutputField] = Field(min_length=1, max_length=8)
+    preview_limit: int = Field(ge=1, le=20)
+
+    @model_validator(mode="after")
+    def _validate_fields(self) -> "FinancialScreenSpec":
+        if len(self.output_fields) != len(set(self.output_fields)):
+            raise ValueError("output_fields 不能重复")
+        numeric_fields = {
+            "revenue_ttm",
+            "parent_net_profit_ttm",
+            "deducted_net_profit_ttm",
+            "debt_ratio",
+        }
+        if not (
+            self.financial_filters
+            or self.sort.field in numeric_fields
+            or numeric_fields.intersection(self.output_fields)
+        ):
+            raise ValueError("财务筛选至少需要一个财务数值字段作为条件、排序或输出")
+        return self
+
+    def required_financial_fields(self) -> set[str]:
+        fields = {item.field for item in self.financial_filters}
+        fields.update(
+            field
+            for field in self.output_fields
+            if field in {
+                "revenue_ttm",
+                "parent_net_profit_ttm",
+                "deducted_net_profit_ttm",
+                "debt_ratio",
+            }
+        )
+        if self.sort.field != "code":
+            fields.add(self.sort.field)
+        return fields
+
+
+def financial_screen_spec_schema() -> dict[str, Any]:
+    """Return the JSON schema for the financial-only screen contract."""
+
+    return FinancialScreenSpec.model_json_schema()
 
 
 def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]:
@@ -315,8 +396,11 @@ def quantitative_screen_spec_schema(*, nullable: bool = False) -> dict[str, Any]
 __all__ = [
     "AtrRelativeFrequencyRule",
     "FinancialFilter",
+    "FinancialScreenSpec",
+    "FinancialScreenSort",
     "QuantitativeScreenSpec",
     "ScreenSort",
     "ScreenUniverse",
     "quantitative_screen_spec_schema",
+    "financial_screen_spec_schema",
 ]

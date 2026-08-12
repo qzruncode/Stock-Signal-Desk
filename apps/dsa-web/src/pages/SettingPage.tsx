@@ -4,18 +4,18 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
 import type { SettingsCategory } from '../components/settings/SettingsSidebar';
-import { ModelSettingsView } from '../components/settings/ModelSettingsView';
-import { AgentPromptView } from '../components/agentPrompts/AgentPromptView';
-import { NotificationSettingsView } from '../components/settings/NotificationSettingsView';
 import { MobileSettingsNavigation } from '../components/settings/MobileSettingsNavigation';
-import { RssSettingsView } from '../components/settings/RssSettingsView';
-import { StockListSettingsView } from '../components/settings/StockListSettingsView';
-import { DataMaintenanceSettingsView } from '../components/settings/DataMaintenanceSettingsView';
-import { IndicatorScreeningSettingsView } from '../components/settings/IndicatorScreeningSettingsView';
-import { ToolRegistryView } from '../components/tools/ToolRegistryView';
 import { cn } from '../utils/cn';
 
 const RunExplorerSettingsView = lazy(() => import('./RunExplorerPage'));
+const ToolRegistryView = lazy(() => import('../components/tools/ToolRegistryView'));
+const ModelSettingsView = lazy(() => import('../components/settings/ModelSettingsView'));
+const AgentPromptView = lazy(() => import('../components/agentPrompts/AgentPromptView'));
+const NotificationSettingsView = lazy(() => import('../components/settings/NotificationSettingsView'));
+const RssSettingsView = lazy(() => import('../components/settings/RssSettingsView'));
+const StockListSettingsView = lazy(() => import('../components/settings/StockListSettingsView'));
+const DataMaintenanceSettingsView = lazy(() => import('../components/settings/DataMaintenanceSettingsView'));
+const IndicatorScreeningSettingsView = lazy(() => import('../components/settings/IndicatorScreeningSettingsView'));
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {

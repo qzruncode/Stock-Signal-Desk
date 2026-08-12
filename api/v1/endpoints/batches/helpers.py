@@ -4,17 +4,25 @@
 import json
 import logging
 import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 
 from src.batch_runner import BATCH_REPORTS_DIR, BatchRunControl, BatchRunState, _write_aggregated_report
 from src.config import get_config
-from src.storage import DatabaseManager
+from src.storage import DataMaintenanceJob, DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+_BATCH_LEASE_DATASET = "batch_analysis"
+_BATCH_LEASE_SCOPE = "all"
+_BATCH_LEASE_TARGET = "active"
+_BATCH_LEASE_STALE_AFTER = timedelta(seconds=90)
 
 # In-memory progress tracker (shared with run.py)
 _running_batch: Optional[dict] = None
@@ -119,20 +127,32 @@ def resume_incomplete_batches_on_startup() -> bool:
         runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
         control = BatchRunControl()
         run_id = run["run_id"]
-        _start_batch_thread(
-            lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, system_prompt=system_prompt, template_name=template_name, analysis_mode=analysis_mode, run=run: runner.resume(
-                run_id=run_id,
-                stock_codes=stock_codes,
-                system_prompt=system_prompt,
-                template_name=template_name,
-                analysis_mode=analysis_mode,
-                started_at=_parse_started_at(run.get("started_at")),
-                existing_results=existing_results,
-                control=control,
-                on_progress=on_progress,
-            ),
-            control=control,
+        lease_id, claimed = _claim_batch_execution(
+            trigger="startup",
+            total=len(stock_codes),
         )
+        if not claimed:
+            continue
+        try:
+            _start_batch_thread(
+                lambda on_progress, run_id=run_id, stock_codes=stock_codes, existing_results=existing_results, system_prompt=system_prompt, template_name=template_name, analysis_mode=analysis_mode, run=run: runner.resume(
+                    run_id=run_id,
+                    stock_codes=stock_codes,
+                    system_prompt=system_prompt,
+                    template_name=template_name,
+                    analysis_mode=analysis_mode,
+                    started_at=_parse_started_at(run.get("started_at")),
+                    existing_results=existing_results,
+                    control=control,
+                    on_progress=on_progress,
+                ),
+                control=control,
+                lease_id=lease_id,
+            )
+        except Exception as exc:
+            _persist_batch_lease(lease_id, "failed", message="启动自动续跑失败", error=str(exc))
+            logger.exception("Failed to auto-resume batch run: %s", run_id)
+            continue
         logger.info("Auto-resumed interrupted batch run: run_id=%s", run_id)
         return True
     return False
@@ -140,7 +160,226 @@ def resume_incomplete_batches_on_startup() -> bool:
 
 def _is_batch_running() -> bool:
     global _running_batch
-    return bool(_running_batch and _running_batch.get("running"))
+    if _running_batch and _running_batch.get("running"):
+        return True
+    try:
+        return _get_active_batch_lease() is not None
+    except Exception:
+        logger.exception("Failed to inspect persisted batch lease")
+        return False
+
+
+def _get_active_batch_lease() -> Optional[dict]:
+    """Return the live cross-process batch lease, if one exists."""
+    db = DatabaseManager.get_instance()
+    with db.get_session() as session:
+        lease = (
+            session.query(DataMaintenanceJob)
+            .filter(
+                DataMaintenanceJob.dataset == _BATCH_LEASE_DATASET,
+                DataMaintenanceJob.scope_key == _BATCH_LEASE_SCOPE,
+                DataMaintenanceJob.target_data_time == _BATCH_LEASE_TARGET,
+            )
+            .one_or_none()
+        )
+        if lease is None or lease.status not in {"running", "queued"}:
+            return None
+        heartbeat_at = lease.updated_at or lease.started_at or lease.created_at
+        if heartbeat_at and datetime.now() - heartbeat_at >= _BATCH_LEASE_STALE_AFTER:
+            return None
+        return {
+            "id": lease.id,
+            "status": lease.status,
+            "updated_at": heartbeat_at.isoformat() if heartbeat_at else None,
+        }
+
+
+def _batch_lease_is_current(lease_id: Optional[str]) -> bool:
+    """Check that a worker still owns the durable batch lease."""
+    if not lease_id:
+        return True
+    try:
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            lease = session.query(DataMaintenanceJob).filter(DataMaintenanceJob.id == lease_id).one_or_none()
+            return lease is not None and lease.status in {"running", "queued"}
+    except Exception:
+        # A transient database outage must not make an otherwise live worker
+        # self-cancel; the normal lease heartbeat will report the outage.
+        logger.warning("Failed to verify batch lease ownership: %s", lease_id, exc_info=True)
+        return True
+
+
+def _claim_batch_execution(*, trigger: str, total: int = 0) -> tuple[str, bool]:
+    """Atomically claim the singleton batch execution slot across processes."""
+    lease_id = uuid.uuid4().hex
+    now = datetime.now()
+    db = DatabaseManager.get_instance()
+    with db.get_session() as session:
+        existing = (
+            session.query(DataMaintenanceJob)
+            .filter(
+                DataMaintenanceJob.dataset == _BATCH_LEASE_DATASET,
+                DataMaintenanceJob.scope_key == _BATCH_LEASE_SCOPE,
+                DataMaintenanceJob.target_data_time == _BATCH_LEASE_TARGET,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            heartbeat_at = existing.updated_at or existing.started_at or existing.created_at
+            if (
+                existing.status in {"running", "queued"}
+                and heartbeat_at
+                and now - heartbeat_at < _BATCH_LEASE_STALE_AFTER
+            ):
+                return existing.id, False
+            old_id = existing.id
+            claim_query = session.query(DataMaintenanceJob).filter(
+                DataMaintenanceJob.id == old_id,
+                DataMaintenanceJob.status == existing.status,
+            )
+            if existing.updated_at is not None:
+                claim_query = claim_query.filter(DataMaintenanceJob.updated_at == existing.updated_at)
+            claimed_rows = claim_query.update(
+                {
+                    # Rotate the lease id on stale takeover so an old worker
+                    # cannot keep heartbeating the newly claimed execution.
+                    "id": lease_id,
+                    "status": "running",
+                    "trigger": trigger,
+                    "progress": 0,
+                    "total": max(0, int(total)),
+                    "message": "跑批任务已启动",
+                    "error": None,
+                    "started_at": now,
+                    "finished_at": None,
+                    "updated_at": now,
+                },
+                synchronize_session=False,
+            )
+            if claimed_rows != 1:
+                session.rollback()
+                current = (
+                    session.query(DataMaintenanceJob)
+                    .filter(
+                        DataMaintenanceJob.dataset == _BATCH_LEASE_DATASET,
+                        DataMaintenanceJob.scope_key == _BATCH_LEASE_SCOPE,
+                        DataMaintenanceJob.target_data_time == _BATCH_LEASE_TARGET,
+                    )
+                    .one_or_none()
+                )
+                return (current.id, False) if current is not None else (lease_id, False)
+            session.commit()
+            return lease_id, True
+        try:
+            session.add(
+                DataMaintenanceJob(
+                    id=lease_id,
+                    dataset=_BATCH_LEASE_DATASET,
+                    scope_key=_BATCH_LEASE_SCOPE,
+                    target_data_time=_BATCH_LEASE_TARGET,
+                    trigger=trigger,
+                    status="running",
+                    total=max(0, int(total)),
+                    message="跑批任务已启动",
+                    started_at=now,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            return lease_id, True
+        except IntegrityError:
+            session.rollback()
+            existing = (
+                session.query(DataMaintenanceJob)
+                .filter(
+                    DataMaintenanceJob.dataset == _BATCH_LEASE_DATASET,
+                    DataMaintenanceJob.scope_key == _BATCH_LEASE_SCOPE,
+                    DataMaintenanceJob.target_data_time == _BATCH_LEASE_TARGET,
+                )
+                .one_or_none()
+            )
+            return (existing.id, False) if existing is not None else (lease_id, False)
+
+
+def _persist_batch_lease(
+    lease_id: Optional[str],
+    status: str,
+    *,
+    message: str = "",
+    error: Optional[str] = None,
+    progress: Optional[int] = None,
+    total: Optional[int] = None,
+) -> None:
+    if not lease_id:
+        return
+    terminal = status in {"success", "partial", "failed"}
+    try:
+        db = DatabaseManager.get_instance()
+        with db.get_session() as session:
+            values = {
+                "status": status,
+                "message": message,
+                "error": error,
+                "updated_at": datetime.now(),
+            }
+            if progress is not None:
+                values["progress"] = max(0, int(progress))
+            if total is not None:
+                values["total"] = max(0, int(total))
+            if terminal:
+                values["finished_at"] = datetime.now()
+            session.query(DataMaintenanceJob).filter(DataMaintenanceJob.id == lease_id).update(values)
+            session.commit()
+    except Exception:
+        logger.warning("Failed to persist batch lease state: %s", lease_id, exc_info=True)
+
+
+def _get_running_batch_snapshot() -> Optional[dict]:
+    """Return a detached snapshot of the process-local batch state."""
+    with _running_lock:
+        if _running_batch is None:
+            return None
+        snapshot = dict(_running_batch)
+        state = snapshot.get("state")
+        if isinstance(state, dict):
+            snapshot["state"] = dict(state)
+        return snapshot
+
+
+def _build_batch_state_from_record(run: dict) -> dict:
+    """Reconstruct the public progress shape from a persisted batch record."""
+    results = _parse_results_json(run.get("results_json"))
+    total = max(int(run.get("stock_count") or 0), len(results))
+    success = max(int(run.get("success_count") or 0), sum(1 for item in results.values() if item.get("success")))
+    failed = max(int(run.get("fail_count") or 0), sum(1 for item in results.values() if not item.get("success")))
+    completed = min(total, success + failed) if total else success + failed
+    status = run.get("status") or ("completed" if run.get("completed_at") else "running")
+    messages = {
+        "running": "后台跑批中（已恢复持久化进度）",
+        "paused": "跑批已暂停（持久化状态）",
+        "stopping": "跑批正在终止（持久化状态）",
+        "stopped": "跑批已终止",
+        "completed": "跑批已完成",
+    }
+    return {
+        "run_id": run.get("run_id"),
+        "total": total,
+        "completed": completed,
+        "success": min(success, total) if total else success,
+        "failed": min(failed, total) if total else failed,
+        "current_stock": None,
+        "current_message": messages.get(status, f"跑批状态：{status}"),
+        "status": status,
+        "paused": status == "paused",
+        "stopping": status == "stopping",
+        "active_stocks": [],
+        "results": results,
+    }
+
+
+def _is_persisted_batch_active(run: dict) -> bool:
+    return not run.get("completed_at") and run.get("status") in {"running", "paused", "stopping"}
 
 
 def _mark_batch_stopped():
@@ -179,32 +418,135 @@ def _persist_current_status(status: str):
         return
     try:
         DatabaseManager.get_instance().update_batch_run_status(run_id, status)
+        lease_id = _running_batch.get("lease_id")
+        if lease_id:
+            _persist_batch_lease(
+                lease_id,
+                "running",
+                message=state.get("current_message") or status,
+                progress=state.get("completed"),
+                total=state.get("total"),
+            )
     except Exception:
         logger.exception("Failed to persist batch status: %s", status)
 
 
-def _start_batch_thread(run_factory, control: Optional[BatchRunControl] = None):
+def _start_batch_thread(
+    run_factory,
+    control: Optional[BatchRunControl] = None,
+    lease_id: Optional[str] = None,
+):
     global _running_batch
     with _running_lock:
         if _running_batch and _running_batch.get("running"):
             raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
-        _running_batch = {"running": True, "state": None, "control": control}
+        _running_batch = {
+            "running": True,
+            "state": None,
+            "control": control,
+            "lease_id": lease_id,
+        }
 
     def on_progress(state):
+        if lease_id and control is not None and not _batch_lease_is_current(lease_id):
+            control.stop()
         if _running_batch is not None:
             _running_batch["state"] = state.to_dict()
+        if lease_id:
+            now_monotonic = time.monotonic()
+            last_heartbeat = getattr(on_progress, "_last_heartbeat", 0.0)
+            if now_monotonic - last_heartbeat >= 10.0 or state.status in {"paused", "stopping"}:
+                _persist_batch_lease(
+                    lease_id,
+                    "running",
+                    message=state.current_message,
+                    progress=state.completed,
+                    total=state.total,
+                )
+                on_progress._last_heartbeat = now_monotonic
 
     def _run():
         global _running_batch
         try:
+            if lease_id and not _batch_lease_is_current(lease_id):
+                raise RuntimeError("批处理租约已被其他进程接管")
             state = run_factory(on_progress)
             if _running_batch is not None:
                 _running_batch["state"] = state.to_dict()
+            final_status = getattr(state, "status", "completed")
+            lease_status = "success" if final_status == "completed" else "partial"
+            _persist_batch_lease(
+                lease_id,
+                lease_status,
+                message=(state.current_message if hasattr(state, "current_message") else "跑批结束"),
+            )
+        except Exception as exc:
+            logger.exception("Batch worker failed")
+            _persist_batch_lease(lease_id, "failed", message="跑批执行异常", error=str(exc))
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=1.0)
             _mark_batch_stopped()
 
+    heartbeat_stop = threading.Event()
+
+    def _sync_control_from_persisted_state(snapshot: dict) -> None:
+        control_state = snapshot.get("control")
+        state = snapshot.get("state") or {}
+        run_id = state.get("run_id")
+        if not isinstance(control_state, BatchRunControl) or not run_id:
+            return
+        try:
+            persisted = DatabaseManager.get_instance().get_batch_run(run_id)
+            status = persisted.get("status") if persisted else None
+            if status == "paused" and not control_state.paused:
+                control_state.pause()
+            elif status == "running" and control_state.paused:
+                control_state.resume()
+            elif status in {"stopping", "stopped"} and not control_state.stopping:
+                control_state.stop()
+        except Exception:
+            logger.debug("Failed to reconcile persisted batch control", exc_info=True)
+
+    def _heartbeat() -> None:
+        last_lease_persist = 0.0
+        while not heartbeat_stop.wait(timeout=2.0):
+            if lease_id and control is not None and not _batch_lease_is_current(lease_id):
+                control.stop()
+            snapshot = _get_running_batch_snapshot() or {}
+            _sync_control_from_persisted_state(snapshot)
+            state = snapshot.get("state") or {}
+            now_monotonic = time.monotonic()
+            if now_monotonic - last_lease_persist >= 20.0:
+                _persist_batch_lease(
+                    lease_id,
+                    "running",
+                    message=state.get("current_message") or "跑批执行中",
+                    progress=state.get("completed"),
+                    total=state.get("total"),
+                )
+                last_lease_persist = now_monotonic
+
+    heartbeat_thread = None
+    if lease_id:
+        heartbeat_thread = threading.Thread(
+            target=_heartbeat,
+            name="batch-lease-heartbeat",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+
     thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1.0)
+        _mark_batch_stopped()
+        _persist_batch_lease(lease_id, "failed", message="跑批线程启动失败", error=str(exc))
+        raise
 
 
 def _parse_results_json(raw: Optional[str]) -> dict:

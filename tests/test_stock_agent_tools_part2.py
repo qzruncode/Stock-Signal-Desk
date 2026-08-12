@@ -39,6 +39,7 @@ from src.tools.websearch import (
     _firecrawl_search,
     _mcp_text,
     _provider_order,
+    _redact_secret_text,
     websearch,
 )
 
@@ -308,6 +309,28 @@ def test_opencode_mcp_parser_supports_json_and_sse() -> None:
 
     assert _mcp_text(payload) == "found"
     assert _mcp_text(f"event: message\ndata: {payload}\n\n") == "found"
+
+
+def test_remote_search_errors_redact_credentials_from_provider_urls(monkeypatch) -> None:
+    secret = "exa-secret-1234"
+    monkeypatch.setenv("EXA_API_KEY", secret)
+
+    with patch(
+        "src.tools.websearch._mcp_call",
+        side_effect=RuntimeError(f"request failed: https://mcp.exa.ai/mcp?exaApiKey={secret}"),
+    ):
+        result = _exa_search(
+            "query",
+            limit=5,
+            livecrawl="fallback",
+            search_type="auto",
+            context_max_characters=None,
+        )
+
+    assert result["success"] is False
+    assert secret not in result["error"]
+    assert "exaApiKey=[REDACTED]" in result["error"]
+    assert secret not in _redact_secret_text(f"Authorization: Bearer {secret}", (secret,))
 
 def test_exa_uses_its_own_key_and_opencode_arguments() -> None:
     with (

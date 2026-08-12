@@ -153,3 +153,5 @@ export function NotificationSettingsView() {
     </form>
   );
 }
+
+export default NotificationSettingsView;

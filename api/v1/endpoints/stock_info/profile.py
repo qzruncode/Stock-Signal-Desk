@@ -40,8 +40,9 @@ def get_stock_info(
     symbol: str = Query(..., description="股票代码，如 000001、600519"),
     force: bool = Query(False, description="强制实时拉取，跳过缓存"),
 ):
+    force_value = force if isinstance(force, bool) else False
     try:
-        result = _tool_get_stock_info(symbol, use_cache=not force)
+        result = _tool_get_stock_info(symbol, use_cache=not force_value)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail={"error": "invalid_symbol", "message": str(exc)}) from exc
     if not result.get("success"):

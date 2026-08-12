@@ -186,7 +186,15 @@ def _save_batch_run_progress(run_id: str, state: BatchRunState, status: str = "r
                 record.success_count = state.success
                 record.fail_count = state.failed
                 record.results_json = json.dumps(state.results, ensure_ascii=False)
-                record.status = status
+                # A pause/stop request may arrive from another API worker while
+                # an in-flight stock is finishing. Do not let that progress
+                # write erase the durable control command.
+                next_status = (
+                    getattr(record, "status", status)
+                    if status == "running" and getattr(record, "status", None) in {"paused", "stopping", "stopped"}
+                    else status
+                )
+                record.status = next_status
                 session.commit()
     except Exception:
         logger.exception("Failed to save batch run progress record")

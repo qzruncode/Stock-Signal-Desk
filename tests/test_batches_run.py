@@ -44,10 +44,8 @@ def disable_auth():
 def reset_running_batch():
     """Isolate batch run state between tests."""
     h._running_batch = None
-    run_mod._running_batch = None
     yield
     h._running_batch = None
-    run_mod._running_batch = None
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +64,7 @@ def test_trigger_run_rejects_empty_stock_list(client):
 def test_trigger_run_buy_criteria_starts_without_template(client):
     captured = {}
 
-    def _fake_start(run_factory, control=None):
+    def _fake_start(run_factory, control=None, lease_id=None):
         captured["started"] = True
         # mimic the state assignment the real thread would do
         state = run_factory(lambda s: None)
@@ -76,6 +74,7 @@ def test_trigger_run_buy_criteria_starts_without_template(client):
         patch("api.v1.endpoints.batches.run._start_batch_thread", side_effect=_fake_start),
         patch("api.v1.endpoints.batches.run.BatchRunner") as runner_cls,
         patch("api.v1.endpoints.batches.run._is_batch_running", return_value=False),
+        patch("api.v1.endpoints.batches.run._claim_batch_execution", return_value=("lease-1", True)),
     ):
         runner = MagicMock()
         state = MagicMock()
@@ -133,7 +132,7 @@ def test_current_status_idle_when_no_state(client):
 
 
 def test_current_status_running_returns_state(client):
-    run_mod._running_batch = {
+    h._running_batch = {
         "running": True,
         "state": {"run_id": "r1", "completed": 5},
     }
@@ -145,7 +144,7 @@ def test_current_status_running_returns_state(client):
 
 
 def test_current_status_finished_returns_terminal_state(client):
-    run_mod._running_batch = {
+    h._running_batch = {
         "running": False,
         "state": {"run_id": "r1", "completed": 10, "status": "completed"},
     }
@@ -153,6 +152,78 @@ def test_current_status_finished_returns_terminal_state(client):
     body = resp.json()
     assert body["running"] is False
     assert body["state"]["status"] == "completed"
+
+
+def test_current_status_falls_back_to_persisted_progress(client):
+    persisted = {
+        "run_id": "r-persisted",
+        "stock_count": 3,
+        "success_count": 1,
+        "fail_count": 0,
+        "completed_at": None,
+        "status": "running",
+        "results_json": '{"000001": {"success": true, "text": "ok"}}',
+    }
+    with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value.get_batch_runs.return_value = [persisted]
+        resp = client.get("/api/v1/batch/runs/current")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["running"] is True
+    assert body["state"]["run_id"] == "r-persisted"
+    assert body["state"]["completed"] == 1
+    assert body["state"]["results"]["000001"]["success"] is True
+
+
+def test_current_status_does_not_hide_new_local_worker_behind_old_terminal_row(client):
+    h._running_batch = {"running": True, "state": None}
+    persisted = {
+        "run_id": "old-run",
+        "stock_count": 1,
+        "success_count": 1,
+        "fail_count": 0,
+        "completed_at": "2026-08-11T10:00:00",
+        "status": "completed",
+        "results_json": '{"000001": {"success": true}}',
+    }
+    with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value.get_batch_runs.return_value = [persisted]
+        resp = client.get("/api/v1/batch/runs/current")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["running"] is True
+    assert body["state"] is None
+
+
+def test_current_status_prefers_older_active_row_over_newer_terminal_row(client):
+    active = {
+        "run_id": "recovered-run",
+        "stock_count": 2,
+        "success_count": 1,
+        "fail_count": 0,
+        "completed_at": None,
+        "status": "running",
+        "results_json": '{"000001": {"success": true}}',
+    }
+    terminal = {
+        "run_id": "newer-terminal-run",
+        "stock_count": 1,
+        "success_count": 1,
+        "fail_count": 0,
+        "completed_at": "2026-08-12T10:00:00",
+        "status": "completed",
+        "results_json": '{"000002": {"success": true}}',
+    }
+    with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value.get_batch_runs.return_value = [terminal, active]
+        resp = client.get("/api/v1/batch/runs/current")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["running"] is True
+    assert body["state"]["run_id"] == "recovered-run"
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +237,47 @@ def test_pause_returns_404_when_no_running_batch(client):
 
 
 def test_resume_returns_404_when_no_running_batch(client):
-    # /runs/current/resume matches /runs/{run_id}/resume with run_id="current",
-    # so it needs the BatchRunResumeRequest body; control is None -> 404.
-    resp = client.post("/api/v1/batch/runs/current/resume", json={"stock_codes": []})
+    resp = client.post("/api/v1/batch/runs/current/resume")
     assert resp.status_code == 404
 
 
 def test_stop_returns_404_when_no_running_batch(client):
     resp = client.post("/api/v1/batch/runs/current/stop")
     assert resp.status_code == 404
+
+
+def test_remote_pause_persists_control_when_worker_is_in_another_process(client):
+    active_run = {
+        "run_id": "remote-run",
+        "completed_at": None,
+        "status": "running",
+    }
+    with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+        db = db_cls.get_instance.return_value
+        db.get_batch_runs.return_value = [active_run]
+        db.update_batch_run_status.return_value = True
+
+        resp = client.post("/api/v1/batch/runs/current/pause")
+
+    assert resp.status_code == 200
+    db.update_batch_run_status.assert_called_once_with("remote-run", "paused")
+
+
+def test_remote_stop_persists_stopping_until_worker_finishes(client):
+    active_run = {
+        "run_id": "remote-run",
+        "completed_at": None,
+        "status": "running",
+    }
+    with patch("api.v1.endpoints.batches.run.DatabaseManager") as db_cls:
+        db = db_cls.get_instance.return_value
+        db.get_batch_runs.return_value = [active_run]
+        db.update_batch_run_status.return_value = True
+
+        resp = client.post("/api/v1/batch/runs/current/stop")
+
+    assert resp.status_code == 200
+    db.update_batch_run_status.assert_called_once_with("remote-run", "stopping")
 
 
 def test_pause_invokes_control_and_persists(client):
@@ -194,7 +297,7 @@ def test_stop_invokes_control_and_persists(client):
         resp = client.post("/api/v1/batch/runs/current/stop")
     assert resp.status_code == 200
     control.stop.assert_called_once()
-    persist.assert_called_once_with("stopped")
+    persist.assert_called_once_with("stopping")
 
 
 # ---------------------------------------------------------------------------

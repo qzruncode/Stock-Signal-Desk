@@ -1,4 +1,5 @@
 import threading
+from unittest.mock import MagicMock, patch
 
 from api.v1.endpoints import batches
 from api.v1.endpoints.batches.helpers import (
@@ -7,6 +8,7 @@ from api.v1.endpoints.batches.helpers import (
     _resolve_resume_stock_codes,
 )
 from src.batch_runner import (
+    BatchRunner,
     BatchRunState,
     _build_batch_notification_content,
     _extract_structured_decision,
@@ -14,6 +16,26 @@ from src.batch_runner import (
     _save_batch_run_progress,
     _with_batch_decision_schema,
 )
+
+
+def test_batch_runner_marks_normal_completion_as_terminal():
+    analyzer = MagicMock()
+    analyzer.is_available.return_value = True
+    runner = BatchRunner(max_concurrent=1)
+    runner._analyze_one = MagicMock(return_value=(True, "ok", "test-model", None))
+
+    with (
+        patch("src.batch_runner.get_analyzer", return_value=analyzer),
+        patch("src.batch_runner._save_batch_run_start"),
+        patch("src.batch_runner._save_batch_run_progress"),
+        patch("src.batch_runner._write_aggregated_report", return_value="/tmp/report.md"),
+        patch("src.batch_runner._save_batch_run_end"),
+        patch("src.batch_runner._send_batch_notification"),
+    ):
+        state = runner.run(["000001"], "prompt")
+
+    assert state.status == "completed"
+    assert state.completed == 1
 
 
 def test_batch_progress_callback_can_snapshot_without_deadlock():

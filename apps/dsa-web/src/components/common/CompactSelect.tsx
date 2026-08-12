@@ -161,7 +161,6 @@ export function CompactSelect({
 
   return (
     <SelectPrimitive.Root
-      modal={false}
       value={toRadixValue(value)}
       onValueChange={(nextValue) => {
         selectionHandledRef.current = true;

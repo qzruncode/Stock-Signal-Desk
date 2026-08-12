@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { scheduleIdlePreload } from './utils/routePreload';
 import {
   ChatHomePage,
+  LoginPage,
   NotFoundPage,
   RunExplorerPage,
   SettingPage,
@@ -19,7 +20,7 @@ const PageFallback: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const { isLoading, loadError } = useAuth();
+  const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
 
   useEffect(() => {
     if (!isLoading && !loadError) {
@@ -32,6 +33,32 @@ const AppContent: React.FC = () => {
       <div className="flex min-h-screen items-center justify-center bg-base">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyan/20 border-t-cyan" />
       </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-base px-4 py-10">
+        <section className="terminal-card w-full max-w-md rounded-2xl p-6 shadow-soft-card" role="alert">
+          <h1 className="text-lg font-semibold text-foreground">无法确认登录状态</h1>
+          <p className="mt-2 text-sm text-secondary-text">{loadError.message}</p>
+          <button
+            type="button"
+            onClick={() => void refreshStatus()}
+            className="mt-5 inline-flex h-10 items-center justify-center rounded-xl border border-cyan/25 bg-transparent px-4 text-sm font-medium text-cyan transition hover:bg-cyan/10"
+          >
+            重试
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (authEnabled && !loggedIn) {
+    return (
+      <Suspense fallback={<PageFallback />}>
+        <LoginPage />
+      </Suspense>
     );
   }
 

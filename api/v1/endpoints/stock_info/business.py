@@ -27,8 +27,9 @@ def get_stock_business(
 ):
     """Get stock business analysis with LLM insights. Returns cached data if available."""
     normalized = _normalize_symbol(symbol)
+    force_value = force if isinstance(force, bool) else False
 
-    if not force:
+    if not force_value:
         cached = _business_cache_get(normalized)
         if cached:
             return cached

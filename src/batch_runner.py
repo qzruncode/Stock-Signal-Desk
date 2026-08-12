@@ -371,6 +371,7 @@ class BatchRunner:
         if not analyzer.is_available():
             logger.error("Batch run aborted: LLM not available")
             state.abort_all("LLM 未配置，无法执行跑批")
+            state.set_status("completed", "跑批已结束：LLM 未配置，所有股票均未完成分析")
             _save_batch_run_end(run_id, state, started_at)
             return state
 
@@ -434,6 +435,11 @@ class BatchRunner:
             state.set_status("stopped", f"已终止：保留 {state.completed}/{state.total} 个结果")
             _save_batch_run_progress(run_id, state, status="stopped")
             return state
+
+        state.set_status(
+            "completed",
+            f"跑批完成：成功 {state.success}，失败 {state.failed}",
+        )
 
         # Generate aggregated MD
         report_path = _write_aggregated_report(

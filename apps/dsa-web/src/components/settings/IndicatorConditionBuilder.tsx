@@ -48,7 +48,7 @@ function renderParameter(
         labelClassName="w-28"
         ariaLabel={definition.label}
         value={String(value ?? '')}
-        onChange={onChange}
+        onChange={(nextValue) => onChange(nextValue)}
         options={definition.options || []}
         density="compact"
         controlClassName="indicator-screening-field"
@@ -63,7 +63,7 @@ function renderParameter(
         labelClassName="w-28"
         ariaLabel={definition.label}
         checked={value === true}
-        onChange={onChange}
+        onChange={(nextValue) => onChange(nextValue)}
       />
     );
   }
@@ -76,8 +76,8 @@ function renderParameter(
       min={definition.min}
       max={definition.max}
       step={definition.step}
-      value={value ?? ''}
-      onChange={onChange}
+      value={typeof value === 'boolean' ? '' : value ?? ''}
+      onChange={(nextValue) => onChange(nextValue)}
       hint={definition.hint}
       controlClassName="indicator-screening-field"
     />

@@ -2,10 +2,8 @@
 """Batch run endpoints — trigger, pause, resume, stop, query runs."""
 
 import logging
-import threading
 from pathlib import Path
-from typing import Optional
-from datetime import datetime
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -16,6 +14,11 @@ from api.v1.endpoints.batches.helpers import (
     _is_batch_running,
     _mark_batch_stopped,
     _get_running_control,
+    _get_running_batch_snapshot,
+    _build_batch_state_from_record,
+    _is_persisted_batch_active,
+    _claim_batch_execution,
+    _persist_batch_lease,
     _set_running_status,
     _persist_current_status,
     _start_batch_thread,
@@ -43,16 +46,13 @@ from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-# In-memory progress tracker
-_running_batch: Optional[dict] = None
-_running_lock = threading.Lock()
-
 
 class BatchRunTriggerRequest(BaseModel):
     stock_codes: list[str] = Field(..., description="股票代码列表")
     template_id: str = Field("", description="提示词模板 ID（模板分析模式必填）")
     analysis_mode: str = Field("template", description="分析模式：template / buy_criteria")
     force_refresh: bool = Field(False, description="买入判断模式下是否绕过当日缓存重新分析")
+    triggered_by: Literal["manual", "scheduled"] = Field("manual", description="跑批触发来源")
 
 
 class BatchRunItem(BaseModel):
@@ -118,6 +118,12 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
 
     runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
     control = BatchRunControl()
+    lease_id, claimed = _claim_batch_execution(
+        trigger=request.triggered_by,
+        total=len(stock_codes),
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
 
     try:
         _start_batch_thread(
@@ -126,16 +132,18 @@ async def trigger_batch_run(request: BatchRunTriggerRequest):
                 system_prompt=system_prompt,
                 template_name=template_name,
                 template_id=template_id,
-                triggered_by="manual",
+                triggered_by=request.triggered_by,
                 analysis_mode=analysis_mode,
                 force_refresh=request.force_refresh,
                 control=control,
                 on_progress=on_progress,
             ),
             control=control,
+            lease_id=lease_id,
         )
     except Exception as exc:
         _mark_batch_stopped()
+        _persist_batch_lease(lease_id, "failed", message="启动跑批失败", error=str(exc))
         raise HTTPException(status_code=500, detail=f"启动跑批失败: {exc}")
 
     return {"message": "跑批已启动", "stock_count": len(stock_codes), "template_name": template_name}
@@ -152,13 +160,72 @@ async def list_batch_runs(limit: int = 20):
 @router.get("/runs/current")
 async def get_current_batch_status():
     """获取当前正在执行的跑批进度。"""
-    global _running_batch
-    if _running_batch is None:
-        return {"running": False, "state": None}
-    if _running_batch.get("running"):
-        state = _running_batch.get("state", {})
+    local_state = _get_running_batch_snapshot()
+    local_running = bool(local_state and local_state.get("running"))
+    if local_state is not None:
+        if local_running:
+            state = local_state.get("state", {})
+            if isinstance(state, dict) and state:
+                return {"running": True, "state": state}
+        else:
+            return {"running": False, "state": local_state.get("state")}
+
+    # The worker may live in another process, or the API process may have
+    # restarted after progress was persisted.  Surface that durable state
+    # instead of reporting an idle run while work is still recoverable.
+    try:
+        runs = DatabaseManager.get_instance().get_batch_runs(limit=20)
+    except Exception:
+        logger.exception("Failed to read persisted current batch status")
+        return {"running": local_running, "state": None}
+    if not runs:
+        return {"running": local_running, "state": None}
+    # A stale-worker takeover can leave an older active row beside a newer
+    # terminal row. Prefer recoverable work over recency in that case.
+    run = next((candidate for candidate in runs if _is_persisted_batch_active(candidate)), runs[0])
+    state = _build_batch_state_from_record(run)
+    if _is_persisted_batch_active(run):
         return {"running": True, "state": state}
-    return {"running": False, "state": _running_batch.get("state")}
+    if local_running:
+        # The worker thread can be visible locally before it has created the
+        # durable BatchRun row. Do not let an older terminal row hide it.
+        return {"running": True, "state": local_state.get("state")}
+    return {"running": False, "state": state}
+
+
+def _find_persisted_active_batch_run() -> Optional[dict]:
+    try:
+        runs = DatabaseManager.get_instance().get_batch_runs(limit=20)
+    except Exception as exc:
+        logger.exception("Failed to inspect persisted active batch runs")
+        raise HTTPException(status_code=503, detail="无法读取跑批状态，请稍后重试") from exc
+    return next((run for run in runs if _is_persisted_batch_active(run)), None)
+
+
+def _update_persisted_current_batch_status(status: str) -> bool:
+    try:
+        run = _find_persisted_active_batch_run()
+        if run is None:
+            return False
+        return bool(DatabaseManager.get_instance().update_batch_run_status(run["run_id"], status))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to persist remote batch control: %s", status)
+        raise HTTPException(status_code=503, detail="无法写入跑批控制状态，请稍后重试") from exc
+
+
+@router.post("/runs/current/resume")
+async def resume_current_batch_run():
+    control = _get_running_control()
+    if control is None:
+        if not _update_persisted_current_batch_status("running"):
+            raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+        return {"message": "跑批已继续，控制指令已写入持久化状态"}
+    control.resume()
+    _set_running_status("running", "继续跑批中...")
+    _persist_current_status("running")
+    return {"message": "跑批已继续"}
 
 
 @router.get("/runs/{run_id}")
@@ -208,6 +275,12 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
     pending_count = len([code for code in stock_codes if code not in existing_results])
     runner = BatchRunner(max_concurrent=1 if analysis_mode == "buy_criteria" else None)
     control = BatchRunControl()
+    lease_id, claimed = _claim_batch_execution(
+        trigger="resume",
+        total=len(stock_codes),
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="已有跑批正在执行，请等待完成")
 
     try:
         _start_batch_thread(
@@ -223,9 +296,11 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
                 on_progress=on_progress,
             ),
             control=control,
+            lease_id=lease_id,
         )
     except Exception as exc:
         _mark_batch_stopped()
+        _persist_batch_lease(lease_id, "failed", message="启动续跑失败", error=str(exc))
         raise HTTPException(status_code=500, detail=f"启动续跑失败: {exc}")
 
     return {
@@ -240,32 +315,25 @@ async def resume_batch_run(run_id: str, request: BatchRunResumeRequest):
 async def pause_current_batch_run():
     control = _get_running_control()
     if control is None:
-        raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+        if not _update_persisted_current_batch_status("paused"):
+            raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+        return {"message": "跑批已暂停，控制指令已写入持久化状态"}
     control.pause()
     _set_running_status("paused", "已暂停：正在执行中的请求会先收尾")
     _persist_current_status("paused")
     return {"message": "跑批已暂停"}
 
 
-@router.post("/runs/current/resume")
-async def resume_current_batch_run():
-    control = _get_running_control()
-    if control is None:
-        raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
-    control.resume()
-    _set_running_status("running", "继续跑批中...")
-    _persist_current_status("running")
-    return {"message": "跑批已继续"}
-
-
 @router.post("/runs/current/stop")
 async def stop_current_batch_run():
     control = _get_running_control()
     if control is None:
-        raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+        if not _update_persisted_current_batch_status("stopping"):
+            raise HTTPException(status_code=404, detail="当前没有正在执行的跑批")
+        return {"message": "跑批正在终止，控制指令已写入持久化状态"}
     control.stop()
     _set_running_status("stopping", "正在终止：已开始的请求会先收尾")
-    _persist_current_status("stopped")
+    _persist_current_status("stopping")
     return {"message": "跑批正在终止"}
 
 
@@ -341,11 +409,16 @@ async def notify_batch_run(run_id: str):
 
 @router.delete("/runs/{run_id}", status_code=204)
 async def delete_batch_run(run_id: str):
-    global _running_batch
-    if _running_batch and _running_batch.get("running"):
-        state = _running_batch.get("state") or {}
+    running_batch = _get_running_batch_snapshot()
+    if running_batch and running_batch.get("running"):
+        state = running_batch.get("state") or {}
         if state.get("run_id") == run_id:
             raise HTTPException(status_code=409, detail="当前跑批正在执行，请先终止后再删除")
+    # A process-local state can be empty during startup, or can describe a
+    # different worker. Always consult the durable record before deleting.
+    persisted = _find_persisted_active_batch_run()
+    if persisted and persisted.get("run_id") == run_id:
+        raise HTTPException(status_code=409, detail="当前跑批正在执行，请先终止后再删除")
 
     db = DatabaseManager.get_instance()
     run = db.get_batch_run(run_id)

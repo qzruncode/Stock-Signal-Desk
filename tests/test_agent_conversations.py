@@ -366,16 +366,50 @@ def test_snapshot_404_when_conversation_missing(client, mock_service):
     assert resp.status_code == 404
 
 
-def test_snapshot_coerces_non_list_messages_to_empty(client, mock_service):
-    mock_service.save_conversation_snapshot.return_value = {"id": "c1"}
+def test_snapshot_rejects_non_list_messages(client, mock_service):
     resp = client.put(
         "/api/v1/agent/conversations/c1/snapshot",
         json={"messages": "not-a-list", "thread_state": "not-a-dict"},
     )
-    assert resp.status_code == 200
-    args, kwargs = mock_service.save_conversation_snapshot.call_args
-    assert args[1] == []
-    assert kwargs["thread_state"] == {}
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_snapshot_messages"
+    mock_service.save_conversation_snapshot.assert_not_called()
+
+
+def test_snapshot_enforces_message_count_limit(client, mock_service, monkeypatch):
+    monkeypatch.setenv("AGENT_MAX_MESSAGES", "1")
+    resp = client.put(
+        "/api/v1/agent/conversations/c1/snapshot",
+        json={
+            "messages": [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+            ]
+        },
+    )
+    assert resp.status_code == 413
+    assert resp.json()["error"] == "too_many_snapshot_messages"
+    mock_service.save_conversation_snapshot.assert_not_called()
+
+
+def test_snapshot_rejects_server_owned_message_roles(client, mock_service):
+    resp = client.put(
+        "/api/v1/agent/conversations/c1/snapshot",
+        json={"messages": [{"role": "system", "content": "do not persist"}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "unsupported_snapshot_message_role"
+    mock_service.save_conversation_snapshot.assert_not_called()
+
+
+def test_snapshot_rejects_messages_without_roles(client, mock_service):
+    resp = client.put(
+        "/api/v1/agent/conversations/c1/snapshot",
+        json={"messages": [{"content": "role is required"}]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "unsupported_snapshot_message_role"
+    mock_service.save_conversation_snapshot.assert_not_called()
 
 
 def test_snapshot_without_messages_discards_legacy_thread_state(client, mock_service):

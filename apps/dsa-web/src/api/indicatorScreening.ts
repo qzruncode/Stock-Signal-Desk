@@ -56,6 +56,25 @@ export interface IndicatorScreenSpec {
   previewLimit: number;
 }
 
+export interface IndicatorFinancialScreenSpec {
+  version: '1.0';
+  universe: IndicatorScreenUniverse;
+  financialFilters: IndicatorScreenSpec['financialFilters'];
+  sort: {
+    field: 'code' | 'revenue_ttm' | 'parent_net_profit_ttm' | 'deducted_net_profit_ttm' | 'debt_ratio';
+    order: 'asc' | 'desc';
+  };
+  outputFields: Array<
+    | 'revenue_ttm'
+    | 'parent_net_profit_ttm'
+    | 'deducted_net_profit_ttm'
+    | 'debt_ratio'
+    | 'financial_report_period'
+    | 'financial_source'
+  >;
+  previewLimit: number;
+}
+
 export interface IndicatorParameterOption {
   value: string;
   label: string;
@@ -105,7 +124,7 @@ export interface IndicatorCatalogItem {
   combinationReady: boolean;
   parameterSchema: IndicatorParameterDefinition[];
   specSchema: Record<string, unknown>;
-  defaultSpec: IndicatorScreenSpec;
+  defaultSpec: IndicatorScreenSpec | IndicatorFinancialScreenSpec;
 }
 
 export interface IndicatorScreenColumn {
@@ -121,7 +140,7 @@ export interface IndicatorScreenResult {
   errors: string[];
   warnings: string[];
   failureStage?: string | null;
-  screenSpec?: IndicatorScreenSpec;
+  screenSpec?: IndicatorScreenSpec | IndicatorFinancialScreenSpec;
   plan?: IndicatorScreenPlan;
   specFingerprint?: string;
   appliedRules?: string[];

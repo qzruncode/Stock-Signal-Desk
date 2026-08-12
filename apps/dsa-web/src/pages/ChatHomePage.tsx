@@ -1,7 +1,6 @@
 import type React from 'react';
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AssistantRuntimeProvider,
   useThreadRuntime,
   CompositeAttachmentAdapter,
   SimpleTextAttachmentAdapter,
@@ -11,8 +10,8 @@ import {
 import { useDataStreamRuntime } from '@assistant-ui/react-data-stream';
 import { agentApi, type ChatConversationDetail, type ChatConversationItem } from '../api/agent';
 import { toApiErrorMessage } from '../api/error';
-import { ChatRuntimeBridge } from '../components/assistant-ui/ChatRuntimeBridge';
-import { ChatLayout } from '../components/assistant-ui/ChatLayout';
+import { ChatHomeRuntimeSurface } from '../components/assistant-ui/ChatHomeRuntimeSurface';
+import { ConfirmDialog } from '../components/common';
 import {
   removeUserTurnFromThread,
   repositoryToConversationSnapshotMessages,
@@ -23,30 +22,17 @@ import {
   readThrownStreamErrorMessage,
 } from '../utils/chatStreamError';
 import { currentUserRequest } from '../utils/agentRequestTransport';
+import {
+  MAX_CACHED_CONVERSATIONS,
+  TERMINAL_RUN_STATUSES,
+  type ActiveStream,
+  type ConversationLoadState,
+} from '../utils/chatHomeConstants';
 
-type ConversationLoadState = {
-  conversationId: string;
-  status: 'loading' | 'error';
-  message?: string;
-} | null;
-
-type ActiveStream = {
-  conversationId: string;
-  resumeExisting: boolean;
-  /** The durable snapshot shown when the browser stream was attached. */
-  initialRunId: string | null;
-  /** A new user turn may start while this still describes the prior run. */
-  startedFromTerminalSnapshot: boolean;
+type PendingBatchDeletion = {
+  ids: string[];
+  titles: string[];
 };
-
-const MAX_CACHED_CONVERSATIONS = 12;
-const TERMINAL_RUN_STATUSES = new Set([
-  'completed',
-  'partial',
-  'failed',
-  'cancelled',
-  'blocked',
-]);
 
 const ChatHomePage: React.FC = () => {
   const [conversations, setConversations] = useState<ChatConversationItem[]>([]);
@@ -56,6 +42,10 @@ const ChatHomePage: React.FC = () => {
   const [conversationLoadAttempt, setConversationLoadAttempt] = useState(0);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [isClearingConversations, setIsClearingConversations] = useState(false);
+  const [isDeletingConversations, setIsDeletingConversations] = useState(false);
+  const [pendingConversationDeletion, setPendingConversationDeletion] = useState<ChatConversationItem | null>(null);
+  const [pendingBatchDeletion, setPendingBatchDeletion] = useState<PendingBatchDeletion | null>(null);
+  const [isConfirmingClearAll, setIsConfirmingClearAll] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
   const [approvalDecision, setApprovalDecision] = useState<'approve' | 'reject' | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
@@ -504,10 +494,19 @@ const ChatHomePage: React.FC = () => {
   }, [loadConversationDetail, refreshConversations, selectedConversationId]);
 
   const handleDeleteConversation = useCallback((conversation: ChatConversationItem) => {
-    const confirmed = window.confirm(`确认删除对话“${conversation.title || '新对话'}”吗？`);
-    if (!confirmed) {
+    if (isClearingConversations || isDeletingConversations) {
       return;
     }
+    setPendingConversationDeletion(conversation);
+  }, [isClearingConversations, isDeletingConversations]);
+
+  const confirmDeleteConversation = useCallback(() => {
+    const conversation = pendingConversationDeletion;
+    if (!conversation || isClearingConversations || isDeletingConversations) {
+      return;
+    }
+    setPendingConversationDeletion(null);
+    setIsDeletingConversations(true);
     void (async () => {
       try {
         await agentApi.deleteConversation(conversation.id);
@@ -525,21 +524,81 @@ const ChatHomePage: React.FC = () => {
         }
       } catch (error) {
         setStreamError(toApiErrorMessage(error, '删除会话失败，请稍后重试'));
+      } finally {
+        setIsDeletingConversations(false);
       }
     })();
-  }, [beginConversationSelection, createConversation, refreshConversations, selectedConversationId]);
+  }, [beginConversationSelection, createConversation, isClearingConversations, isDeletingConversations, pendingConversationDeletion, refreshConversations, selectedConversationId]);
+
+  const handleBatchDeleteConversations = useCallback((conversationIds: string[]) => {
+    if (isClearingConversations || isDeletingConversations || conversationIds.length === 0) {
+      return;
+    }
+    const ids = Array.from(new Set(conversationIds));
+    const titles = conversations
+      .filter((conversation) => ids.includes(conversation.id))
+      .map((conversation) => conversation.title || '新对话');
+    setPendingBatchDeletion({ ids, titles });
+  }, [conversations, isClearingConversations, isDeletingConversations]);
+
+  const confirmBatchDeleteConversations = useCallback(() => {
+    const pendingDeletion = pendingBatchDeletion;
+    if (!pendingDeletion || isClearingConversations || isDeletingConversations) {
+      return;
+    }
+    setPendingBatchDeletion(null);
+    setIsDeletingConversations(true);
+
+    const currentConversationId = selectedConversationIdRef.current;
+    const isDeletingCurrentConversation = Boolean(
+      currentConversationId && pendingDeletion.ids.includes(currentConversationId),
+    );
+    if (isDeletingCurrentConversation) {
+      activeStreamRef.current = null;
+      resumeExistingRef.current = null;
+      threadRuntimeRef.current?.cancelRun();
+    }
+
+    void (async () => {
+      try {
+        await Promise.all(pendingDeletion.ids.map((conversationId) => agentApi.deleteConversation(conversationId)));
+        pendingDeletion.ids.forEach((conversationId) => {
+          conversationDetailCacheRef.current.delete(conversationId);
+        });
+        const items = await refreshConversations();
+        if (!isDeletingCurrentConversation) {
+          return;
+        }
+        if (items.length === 0) {
+          await createConversation();
+          return;
+        }
+        setSelectedConversationDetail(null);
+        setConversationLoadState(null);
+        if (items[0]?.id) {
+          beginConversationSelection(items[0].id);
+        }
+      } catch (error) {
+        setStreamError(toApiErrorMessage(error, '批量删除会话失败，请稍后重试'));
+        void refreshConversations().catch(() => undefined);
+      } finally {
+        setIsDeletingConversations(false);
+      }
+    })();
+  }, [beginConversationSelection, createConversation, isClearingConversations, isDeletingConversations, pendingBatchDeletion, refreshConversations]);
 
   const handleClearAllConversations = useCallback(() => {
-    if (isClearingConversations || conversations.length === 0) {
+    if (isClearingConversations || isDeletingConversations || conversations.length === 0) {
       return;
     }
-    const confirmed = window.confirm(
-      `确认清除全部 ${conversations.length} 个会话及其历史记录吗？\n此操作不可恢复。`,
-    );
-    if (!confirmed) {
-      return;
-    }
+    setIsConfirmingClearAll(true);
+  }, [conversations.length, isClearingConversations, isDeletingConversations]);
 
+  const confirmClearAllConversations = useCallback(() => {
+    if (!isConfirmingClearAll || isClearingConversations || isDeletingConversations) {
+      return;
+    }
+    setIsConfirmingClearAll(false);
     setIsClearingConversations(true);
     activeStreamRef.current = null;
     resumeExistingRef.current = null;
@@ -567,7 +626,7 @@ const ChatHomePage: React.FC = () => {
         setIsClearingConversations(false);
       }
     })();
-  }, [beginConversationSelection, conversations.length, createConversation, isClearingConversations, refreshConversations]);
+  }, [beginConversationSelection, createConversation, isClearingConversations, isConfirmingClearAll, isDeletingConversations, refreshConversations]);
 
   const isConversationSwitching = Boolean(
     selectedConversationId
@@ -580,41 +639,80 @@ const ChatHomePage: React.FC = () => {
   )
     ? conversationLoadState.message || '会话内容加载失败，请稍后重试'
     : null;
-
+  const batchDeletionMessage = pendingBatchDeletion
+    ? [
+      `确定删除 ${pendingBatchDeletion.ids.length} 个选中的对话吗？`,
+      ...pendingBatchDeletion.titles.slice(0, 5),
+      ...(pendingBatchDeletion.titles.length > 5 ? ['...'] : []),
+    ].join('\n')
+    : '';
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ChatRuntimeBridge
-        conversationDetail={selectedConversationDetail}
-        onPrepareResumeExisting={prepareResumeExisting}
-        shouldDetachTerminalStream={shouldDetachTerminalStream}
-        onThreadRuntime={(threadRuntime) => {
-          threadRuntimeRef.current = threadRuntime;
+    <>
+      <ChatHomeRuntimeSurface
+        runtime={runtime}
+        bridgeProps={{
+          conversationDetail: selectedConversationDetail,
+          onPrepareResumeExisting: prepareResumeExisting,
+          shouldDetachTerminalStream,
+          onThreadRuntime: (threadRuntime) => {
+            threadRuntimeRef.current = threadRuntime;
+          },
+        }}
+        layoutProps={{
+          streamError,
+          onDismissError: () => setStreamError(null),
+          conversations,
+          selectedConversationId,
+          isLoadingConversations,
+          isConversationSwitching,
+          conversationSwitchError,
+          onRetryConversation: handleRetryConversation,
+          onCreateConversation: handleCreateConversation,
+          onSelectConversation: handleSelectConversation,
+          onRenameConversation: handleRenameConversation,
+          onDeleteConversation: handleDeleteConversation,
+          onBatchDeleteConversations: handleBatchDeleteConversations,
+          onDeleteUserTurn: handleDeleteUserTurn,
+          onCancelRun: handleUserCancelRun,
+          isClearingConversations: isClearingConversations || isDeletingConversations,
+          onClearAllConversations: handleClearAllConversations,
+          pendingInterrupt: selectedConversationDetail?.pendingInterrupt ?? null,
+          approvalDecision,
+          approvalError,
+          onInterruptDecision: handleInterruptDecision,
         }}
       />
-      <ChatLayout
-        streamError={streamError}
-        onDismissError={() => setStreamError(null)}
-        conversations={conversations}
-        selectedConversationId={selectedConversationId}
-        isLoadingConversations={isLoadingConversations}
-        isConversationSwitching={isConversationSwitching}
-        conversationSwitchError={conversationSwitchError}
-        onRetryConversation={handleRetryConversation}
-        onCreateConversation={handleCreateConversation}
-        onSelectConversation={handleSelectConversation}
-        onRenameConversation={handleRenameConversation}
-        onDeleteConversation={handleDeleteConversation}
-        onDeleteUserTurn={handleDeleteUserTurn}
-        onCancelRun={handleUserCancelRun}
-        isClearingConversations={isClearingConversations}
-        onClearAllConversations={handleClearAllConversations}
-        pendingInterrupt={selectedConversationDetail?.pendingInterrupt ?? null}
-        approvalDecision={approvalDecision}
-        approvalError={approvalError}
-        onInterruptDecision={handleInterruptDecision}
+      <ConfirmDialog
+        isOpen={pendingConversationDeletion !== null}
+        title="删除对话"
+        message={`确定删除对话“${pendingConversationDeletion?.title || '新对话'}”吗？`}
+        confirmText="删除"
+        cancelText="取消"
+        isDanger
+        onConfirm={confirmDeleteConversation}
+        onCancel={() => setPendingConversationDeletion(null)}
       />
-    </AssistantRuntimeProvider>
+      <ConfirmDialog
+        isOpen={pendingBatchDeletion !== null}
+        title="删除选中的对话"
+        message={batchDeletionMessage}
+        confirmText="删除"
+        cancelText="取消"
+        isDanger
+        onConfirm={confirmBatchDeleteConversations}
+        onCancel={() => setPendingBatchDeletion(null)}
+      />
+      <ConfirmDialog
+        isOpen={isConfirmingClearAll}
+        title="清除全部会话历史"
+        message={`确定清除全部 ${conversations.length} 个会话及其历史记录吗？\n此操作不可恢复。`}
+        confirmText="清除全部"
+        cancelText="取消"
+        isDanger
+        onConfirm={confirmClearAllConversations}
+        onCancel={() => setIsConfirmingClearAll(false)}
+      />
+    </>
   );
 };
-
 export default ChatHomePage;

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.services import data_maintenance
+from src.storage import DataMaintenanceJob
 from src.services.stock_universe_service import sync_stock_universe
 from src.tools.get_data_health import get_data_health
 from src.tools.manage_watchlist import manage_watchlist
@@ -50,6 +52,54 @@ def test_force_refreshes_stale_stock_universe_and_records_job() -> None:
     assert result["changes"] == changes
     sync.assert_called_once()
     assert update.call_args_list[-1].kwargs["status"] == "success"
+
+
+def test_force_refresh_target_fits_maintenance_job_schema() -> None:
+    stale = {"total": 5100, "data_time": "2026-07-18T08:00:00", "is_stale": True}
+    with (
+        patch.object(data_maintenance, "_universe_snapshot", side_effect=[stale, stale, stale]),
+        patch.object(data_maintenance, "_claim_job", return_value=("job-1", True)) as claim,
+        patch.object(data_maintenance, "run_stock_universe_maintenance_job", return_value={"total": 5100}),
+    ):
+        data_maintenance.ensure_stock_universe(trigger="test", force=True)
+
+    target = claim.call_args.args[1]
+    assert len(target) <= 32
+
+
+def test_stale_maintenance_takeover_rotates_job_id_to_fence_old_worker() -> None:
+    now = datetime.now()
+    old_job = DataMaintenanceJob(
+        id="old-maintenance-job",
+        dataset="stock_universe",
+        scope_key="all",
+        target_data_time="2026-08-12",
+        status="running",
+        started_at=now - timedelta(minutes=5),
+        updated_at=now - timedelta(minutes=2),
+        created_at=now - timedelta(minutes=5),
+    )
+    db = MagicMock()
+    session = MagicMock()
+    query = MagicMock()
+    query.filter.return_value = query
+    query.one_or_none.return_value = old_job
+    query.update.return_value = 1
+    session.query.return_value = query
+    db.get_session.return_value.__enter__.return_value = session
+
+    with patch.object(data_maintenance, "DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value = db
+        job_id, claimed = data_maintenance._claim_job(
+            "stock_universe",
+            "2026-08-12",
+            "test",
+        )
+
+    assert claimed is True
+    assert job_id != old_job.id
+    assert len(job_id) == 36
+    assert query.update.call_args.args[0]["id"] == job_id
 
 
 def test_stale_stock_universe_returns_immediately_and_starts_background_job() -> None:

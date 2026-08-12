@@ -8,7 +8,8 @@ import threading
 import time
 import uuid
 from datetime import date, datetime, timedelta
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -47,7 +48,14 @@ def _universe_snapshot() -> dict[str, Any]:
 
 
 def _claim_job(dataset: str, target_data_time: str, trigger: str) -> tuple[str, bool]:
+    """Claim the singleton maintenance job and fence stale workers.
+
+    A takeover must get a new id.  Reusing the old primary key lets a worker
+    from the previous attempt continue writing progress after a stale lease
+    has been reclaimed by another process.
+    """
     job_id = str(uuid.uuid4())
+    now = datetime.now()
     db = DatabaseManager.get_instance()
     with db.get_session() as session:
         existing = (
@@ -62,33 +70,51 @@ def _claim_job(dataset: str, target_data_time: str, trigger: str) -> tuple[str, 
         if existing is not None:
             if existing.status == "running":
                 heartbeat_at = existing.updated_at or existing.started_at or existing.created_at
-                if heartbeat_at and datetime.now() - heartbeat_at < _RUNNING_JOB_STALE_AFTER:
+                if heartbeat_at and now - heartbeat_at < _RUNNING_JOB_STALE_AFTER:
                     return existing.id, False
-                existing.trigger = trigger
-                existing.progress = 0
-                existing.total = 0
-                existing.message = "正在接管已中断的股票基础库维护任务"
-                existing.error = None
-                existing.finished_at = None
-                existing.started_at = datetime.now()
-                session.commit()
-                return existing.id, True
             recently_failed = (
                 existing.status == "failed"
                 and existing.updated_at is not None
-                and datetime.now() - existing.updated_at < timedelta(minutes=10)
+                and now - existing.updated_at < timedelta(minutes=10)
             )
             if recently_failed:
                 return existing.id, False
-            if existing.status in {"success", "partial", "failed"}:
-                existing.status = "running"
-                existing.trigger = trigger
-                existing.error = None
-                existing.finished_at = None
-                existing.started_at = datetime.now()
-                session.commit()
-                return existing.id, True
-            return existing.id, False
+            old_id = existing.id
+            claim_query = session.query(DataMaintenanceJob).filter(
+                DataMaintenanceJob.id == old_id,
+                DataMaintenanceJob.status == existing.status,
+            )
+            if existing.updated_at is not None:
+                claim_query = claim_query.filter(DataMaintenanceJob.updated_at == existing.updated_at)
+            claimed_rows = claim_query.update(
+                {
+                    "id": job_id,
+                    "status": "running",
+                    "trigger": trigger,
+                    "progress": 0,
+                    "total": 0,
+                    "message": "正在接管已中断的股票基础库维护任务",
+                    "error": None,
+                    "finished_at": None,
+                    "started_at": now,
+                    "updated_at": now,
+                },
+                synchronize_session=False,
+            )
+            if claimed_rows != 1:
+                session.rollback()
+                current = (
+                    session.query(DataMaintenanceJob)
+                    .filter(
+                        DataMaintenanceJob.dataset == dataset,
+                        DataMaintenanceJob.scope_key == "all",
+                        DataMaintenanceJob.target_data_time == target_data_time,
+                    )
+                    .one_or_none()
+                )
+                return (current.id, False) if current is not None else (job_id, False)
+            session.commit()
+            return job_id, True
         try:
             session.add(
                 DataMaintenanceJob(
@@ -98,7 +124,7 @@ def _claim_job(dataset: str, target_data_time: str, trigger: str) -> tuple[str, 
                     target_data_time=target_data_time,
                     trigger=trigger,
                     status="running",
-                    started_at=datetime.now(),
+                    started_at=now,
                 )
             )
             session.commit()
@@ -191,6 +217,7 @@ def _launch_stock_universe_worker(job_id: str) -> None:
         stderr=subprocess.DEVNULL,
         close_fds=True,
         start_new_session=True,
+        cwd=str(Path(__file__).resolve().parents[2]),
     )
 
 
@@ -216,7 +243,13 @@ def ensure_stock_universe(
         if not force and current["total"] > 0 and not current["is_stale"]:
             return {**current, "refreshed": False, "maintenance_status": "reused"}
 
-        target = date.today().isoformat() if not force else f"{date.today().isoformat()}:{uuid.uuid4()}"
+        # ``target_data_time`` is VARCHAR(32); keep forced attempts unique
+        # without overflowing the schema on PostgreSQL.
+        target = (
+            date.today().isoformat()
+            if not force
+            else f"{date.today().isoformat()}:{uuid.uuid4().hex[:16]}"
+        )
         job_id, claimed = _claim_job("stock_universe", target, trigger)
 
         if not force:

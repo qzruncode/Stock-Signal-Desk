@@ -38,6 +38,7 @@ export type ChatLayoutProps = {
   onSelectConversation: (conversationId: string) => void;
   onRenameConversation: (conversation: ChatConversationItem) => void;
   onDeleteConversation: (conversation: ChatConversationItem) => void;
+  onBatchDeleteConversations: (conversationIds: string[]) => void;
   onDeleteUserTurn: (messageId: string) => void;
   onCancelRun: () => void;
   isClearingConversations: boolean;
@@ -61,6 +62,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   onSelectConversation,
   onRenameConversation,
   onDeleteConversation,
+  onBatchDeleteConversations,
   onDeleteUserTurn,
   onCancelRun,
   isClearingConversations,
@@ -133,6 +135,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               onSelect={onSelectConversation}
               onRename={onRenameConversation}
               onDelete={onDeleteConversation}
+              onBatchDelete={onBatchDeleteConversations}
               isClearingAll={isClearingConversations}
               onClearAll={onClearAllConversations}
               onCollapse={() => setIsDesktopSidebarCollapsed(true)}
@@ -190,6 +193,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
               }}
               onRename={onRenameConversation}
               onDelete={onDeleteConversation}
+              onBatchDelete={onBatchDeleteConversations}
               isClearingAll={isClearingConversations}
               onClearAll={() => {
                 setMobileSidebarState('closing');

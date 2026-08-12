@@ -310,6 +310,8 @@ def get_sector_list(
 
     按天缓存，首次请求拉取后缓存到数据库，后续请求直接返回缓存。
     """
+    # Keep direct Python calls consistent with FastAPI-injected booleans.
+    force = force if isinstance(force, bool) else False
     sector_type = type.strip().lower()
     if sector_type not in ("industry", "concept", "region"):
         sector_type = "industry"
@@ -322,8 +324,10 @@ def get_sector_list(
             for item in cached_items:
                 item["_cached"] = True
 
-            # Background refresh (same pattern as market_status)
-            if _lock.acquire(blocking=False):
+            # Refresh only an older fallback entry.  A hit on today's cache is
+            # already the intended daily snapshot; refreshing it on every
+            # request turns a cache into a provider-flooding loop.
+            if is_fallback and _lock.acquire(blocking=False):
 
                 def _bg_refresh():
                     try:

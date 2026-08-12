@@ -47,7 +47,7 @@ def test_indicator_catalog_exposes_atr_preset(client: TestClient) -> None:
     assert item["default_spec"]["technical_rule"]["min_qualified_days"] == 175
     assert item["default_spec"]["technical_rule"]["min_qualified_ratio_pct"] == 70
     assert item["default_spec"]["technical_rule"]["volatility_threshold_pct"] == 2.8
-    assert len(item["default_spec"]["financial_filters"]) == 3
+    assert item["default_spec"]["financial_filters"] == []
     assert item["parameter_schema"] == [{
         "key": "volatility_threshold_pct",
         "label": "ATR 相对波动率阈值 (%)",
@@ -112,15 +112,18 @@ def test_indicator_plan_adapts_financial_conditions(
         "preview_limit": 20,
     }
     with patch(
-        "api.v1.endpoints.indicator_screening.run_atr_volatility_screen",
+        "api.v1.endpoints.indicator_screening.run_financial_screen",
         return_value=mocked_result,
     ) as runner:
         response = client.post("/api/v1/indicator-screening/run", json={"plan": plan})
 
     assert response.status_code == 200
     screen_spec = runner.call_args.kwargs["screen_spec"]
+    assert "technical_rule" not in screen_spec
+    assert screen_spec["sort"] == {"field": field, "order": "desc"}
     matching_filters = [item for item in screen_spec["financial_filters"] if item["field"] == field]
     assert matching_filters == [{"field": field, "operator": operator, "value": value}]
+    assert screen_spec["output_fields"] == [field, "financial_report_period", "financial_source"]
 
 
 def test_indicator_plan_uses_fixed_atr_defaults_and_surfaces_threshold(client: TestClient) -> None:
@@ -189,11 +192,7 @@ def test_indicator_plan_uses_fixed_atr_defaults_and_surfaces_threshold(client: T
                 "min_qualified_days": 175,
                 "min_qualified_ratio_pct": 70,
             },
-            "financial_filters": [
-                {"field": "revenue_ttm", "operator": "gt", "value": 500_000_000},
-                {"field": "deducted_net_profit_ttm", "operator": "gt", "value": 0},
-                {"field": "debt_ratio", "operator": "lt", "value": 70},
-            ],
+            "financial_filters": [],
             "sort": {"field": "qualified_ratio_pct", "order": "desc"},
             "output_fields": [
                 "current_atr_pct",
@@ -259,6 +258,43 @@ def test_indicator_plan_limits_runner_to_selected_watchlist_group(client: TestCl
     screen_spec = runner.call_args.kwargs["screen_spec"]
     assert screen_spec["universe"]["codes"] == ["600000", "000001"]
     assert response.json()["plan"]["scope"] == {"type": "watchlist_group", "group_id": "7"}
+
+
+def test_legacy_financial_indicator_uses_financial_executor(client: TestClient) -> None:
+    mocked_result = {
+        "success": True,
+        "partial": False,
+        "errors": [],
+        "warnings": [],
+        "items": [],
+        "matched_codes": [],
+        "total": 0,
+    }
+    screen_spec = {
+        "version": "1.0",
+        "universe": {
+            "status": "active",
+            "markets": ["sh", "sz", "bj"],
+            "include_st": False,
+            "min_listing_trading_days": 1,
+            "price_adjustment": "qfq",
+        },
+        "financial_filters": [{"field": "debt_ratio", "operator": "lt", "value": 70}],
+        "sort": {"field": "debt_ratio", "order": "asc"},
+        "output_fields": ["debt_ratio", "financial_report_period"],
+        "preview_limit": 20,
+    }
+    with patch(
+        "api.v1.endpoints.indicator_screening.run_financial_screen",
+        return_value=mocked_result,
+    ) as runner:
+        response = client.post(
+            "/api/v1/indicator-screening/run",
+            json={"indicator": "debt_ratio", "screen_spec": screen_spec},
+        )
+
+    assert response.status_code == 200
+    runner.assert_called_once_with(screen_spec=screen_spec, include_all_items=False)
 
 
 def test_indicator_plan_composes_condition_match_sets(client: TestClient) -> None:

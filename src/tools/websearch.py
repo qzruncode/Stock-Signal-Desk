@@ -94,6 +94,15 @@ def _attempt(provider: str, started: float, **values: Any) -> dict[str, Any]:
     }
 
 
+def _redact_secret_text(value: object, secrets: list[str] | tuple[str, ...] = ()) -> str:
+    """Keep provider diagnostics from echoing credentials embedded in URLs."""
+    text = str(value or "")
+    for secret in secrets:
+        if secret and len(secret) >= 4:
+            text = text.replace(secret, "[REDACTED]")
+    return re.sub(r"(?i)([?&](?:exaApiKey|api[_-]?key)=)[^&\s]+", r"\1[REDACTED]", text)
+
+
 def _host(url: str, fallback: str) -> str:
     try:
         return httpx.URL(url).host or fallback
@@ -263,10 +272,11 @@ def _exa_search(
     context_max_characters: int | None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    api_key = os.getenv("EXA_API_KEY", "").strip()
     try:
         url = EXA_MCP_URL
-        if os.getenv("EXA_API_KEY"):
-            url = f"{url}?{urlencode({'exaApiKey': os.environ['EXA_API_KEY']})}"
+        if api_key:
+            url = f"{url}?{urlencode({'exaApiKey': api_key})}"
         arguments: dict[str, Any] = {
             "query": query,
             "type": search_type,
@@ -284,7 +294,7 @@ def _exa_search(
             error=None,
             results=_results_from_mcp_text(output, "exa", limit),
             output=output,
-            authenticated=bool(os.getenv("EXA_API_KEY")),
+            authenticated=bool(api_key),
         )
     except Exception as exc:
         return _attempt(
@@ -292,7 +302,7 @@ def _exa_search(
             started,
             success=False,
             skipped=False,
-            error=str(exc),
+            error=_redact_secret_text(str(exc), (api_key,)),
             results=[],
             output="",
         )
@@ -333,7 +343,7 @@ def _parallel_search(query: str, *, limit: int, session_id: str) -> dict[str, An
             started,
             success=False,
             skipped=False,
-            error=str(exc),
+            error=_redact_secret_text(str(exc), (key,)),
             results=[],
             output="",
         )

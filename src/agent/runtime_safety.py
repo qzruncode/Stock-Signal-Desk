@@ -183,6 +183,62 @@ def validate_chat_request_body(body: Any) -> tuple[list[dict[str, Any]], str | N
     return messages, conversation_id, resume_existing
 
 
+def validate_conversation_snapshot_body(body: Any) -> list[dict[str, Any]] | None:
+    """Validate the bounded transcript payload used by the edit/snapshot API.
+
+    A snapshot may intentionally omit ``messages`` when it only asks the
+    server to prune legacy Agent context.  When messages are present, apply
+    the same request envelope and role/shape checks as the live chat route so
+    the persistence endpoint cannot become an unbounded JSON sink.
+    """
+    if not isinstance(body, dict):
+        raise AgentRequestValidationError("请求体必须是 JSON 对象", status_code=400)
+
+    limits = get_agent_runtime_limits()
+    if _serialized_chars(body) > limits.max_request_chars:
+        raise AgentRequestValidationError(
+            f"快照内容过大，最多允许 {limits.max_request_chars} 个字符",
+            code="snapshot_too_large",
+            status_code=413,
+        )
+
+    if "messages" not in body:
+        return None
+    raw_messages = body.get("messages")
+    if not isinstance(raw_messages, list):
+        raise AgentRequestValidationError("messages 必须是数组", code="invalid_snapshot_messages", status_code=400)
+    if len(raw_messages) > limits.max_messages:
+        raise AgentRequestValidationError(
+            f"快照消息过多，单次最多允许 {limits.max_messages} 条",
+            code="too_many_snapshot_messages",
+            status_code=413,
+        )
+
+    messages: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_messages):
+        if not isinstance(raw, dict):
+            raise AgentRequestValidationError(
+                f"messages[{index}] 必须是对象",
+                code="invalid_snapshot_message",
+                status_code=400,
+            )
+        role = str(raw.get("role") or "").strip().lower()
+        if role not in _ALLOWED_MESSAGE_ROLES:
+            raise AgentRequestValidationError(
+                f"messages[{index}].role 不支持: {role or '(empty)'}",
+                code="unsupported_snapshot_message_role",
+            )
+        message_limit = limits.max_message_chars if role == "user" else limits.max_request_chars
+        if _serialized_chars(raw) > message_limit:
+            raise AgentRequestValidationError(
+                f"messages[{index}] 内容过大，最多允许 {message_limit} 个字符",
+                code="snapshot_message_too_large",
+                status_code=413,
+            )
+        messages.append(dict(raw))
+    return messages
+
+
 class AgentRequestRateLimiter:
     """Admission limiter with a database-shared production path."""
 
@@ -346,4 +402,5 @@ __all__ = [
     "get_agent_runtime_limits",
     "is_production_environment",
     "validate_chat_request_body",
+    "validate_conversation_snapshot_body",
 ]

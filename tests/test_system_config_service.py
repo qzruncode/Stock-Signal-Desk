@@ -58,14 +58,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
-    def test_get_config_returns_raw_sensitive_values(self) -> None:
+    def test_get_config_masks_sensitive_values_server_side(self) -> None:
         payload = self.service.get_config(include_schema=True)
         items = {item["key"]: item for item in payload["items"]}
 
         self.assertIn("GEMINI_API_KEY", items)
-        self.assertEqual(items["GEMINI_API_KEY"]["value"], "secret-key-value")
-        self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
+        self.assertEqual(items["GEMINI_API_KEY"]["value"], "******")
+        self.assertTrue(items["GEMINI_API_KEY"]["is_masked"])
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
+        self.assertNotIn("secret-key-value", repr(payload))
+
+    def test_config_manager_hardens_rewritten_env_permissions(self) -> None:
+        old_version = self.manager.get_config_version()
+        self.service.update(
+            config_version=old_version,
+            items=[{"key": "STOCK_LIST", "value": "600519,300750"}],
+            reload_now=False,
+        )
+
+        self.assertEqual(self.env_path.stat().st_mode & 0o777, 0o600)
 
     def test_get_config_uses_switch_default_for_missing_report_model_toggle(self) -> None:
         payload = self.service.get_config(include_schema=True)

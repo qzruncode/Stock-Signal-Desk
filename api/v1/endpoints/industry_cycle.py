@@ -17,7 +17,8 @@ def get_industry_cycle(
     force: bool = Query(False, description="强制刷新，跳过缓存"),
 ):
     service = IndustryCycleService()
-    return service.get_report(symbol=symbol, force=force)
+    force_value = force if isinstance(force, bool) else False
+    return service.get_report(symbol=symbol, force=force_value)
 
 
 @router.get("/industry-cycle/report", summary="获取个股行业周期模型报告")
@@ -26,7 +27,8 @@ def get_industry_cycle_report(
     force: bool = Query(False, description="强制刷新，跳过缓存"),
 ):
     service = IndustryCycleService()
-    return service.get_report(symbol=symbol, force=force)
+    force_value = force if isinstance(force, bool) else False
+    return service.get_report(symbol=symbol, force=force_value)
 
 
 @router.post("/industry-cycle/report/tasks", summary="提交个股行业周期模型报告任务")
@@ -35,7 +37,8 @@ def create_industry_cycle_report_task(
     force: bool = Query(True, description="是否强制拉取最新证据并重新生成"),
 ):
     service = IndustryCycleService()
-    task = service.submit_report_task(symbol=symbol, force=force)
+    force_value = force if isinstance(force, bool) else True
+    task = service.submit_report_task(symbol=symbol, force=force_value)
     return JSONResponse(
         status_code=202,
         content={
@@ -51,4 +54,5 @@ def create_industry_cycle_report_task_via_get(
     symbol: str = Query(..., description="股票代码"),
     force: bool = Query(True, description="是否强制拉取最新证据并重新生成"),
 ):
-    return create_industry_cycle_report_task(symbol=symbol, force=force)
+    force_value = force if isinstance(force, bool) else True
+    return create_industry_cycle_report_task(symbol=symbol, force=force_value)

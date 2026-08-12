@@ -82,12 +82,17 @@ def test_sync_stock_list_rejects_when_already_running(client):
 
 
 def test_sync_stock_list_starts_when_idle(client):
-    with patch("api.v1.endpoints.stocks.sync._run_list_sync"):
+    with (
+        patch("api.v1.endpoints.stocks.sync._latest_stock_universe_status", return_value=None),
+        patch("api.v1.endpoints.stocks.sync._claim_persisted_sync_job", return_value=("list-job-1", True)),
+        patch("api.v1.endpoints.stocks.sync._launch_detached_worker") as launch_worker,
+    ):
         resp = client.post("/api/v1/stocks/sync/list")
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
     assert body["status"] == "running"
+    launch_worker.assert_called_once_with("src.services.stock_list_sync_worker", "list-job-1")
 
 
 def test_sync_stock_list_rejects_when_persistent_job_is_running(client):
@@ -197,6 +202,160 @@ def test_list_sync_status_uses_persisted_running_job(client):
     assert body["status"] == "running"
     assert body["progress"] == 200
     assert body["message"] == "股票列表写入中 200/5000"
+
+
+def test_list_sync_status_prefers_terminal_state_for_same_job_id(client):
+    sync_mod._set_list_state(
+        status="running",
+        job_id="job-1",
+        started_at="2026-08-12T10:00:00+00:00",
+        total=5000,
+        progress=200,
+    )
+    persisted = {
+        "job_id": "job-1",
+        "status": "success",
+        "started_at": "2026-08-12T09:59:59+00:00",
+        "finished_at": "2026-08-12T10:02:00+00:00",
+        "progress": 5000,
+        "total": 5000,
+        "message": "股票基础库已自动更新",
+        "error": None,
+    }
+    with patch.object(sync_mod, "_latest_stock_universe_status", return_value=persisted):
+        resp = client.get("/api/v1/stocks/sync/list/status")
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "success"
+    assert resp.json()["progress"] == 5000
+
+
+def test_claim_persisted_kline_job_rejects_fresh_running_job():
+    now = datetime.now()
+    job = sync_mod.DataMaintenanceJob(
+        id="kline-job-1",
+        dataset="kline",
+        scope_key="all",
+        target_data_time="2026-08-12",
+        status="running",
+        started_at=now,
+        updated_at=now,
+        created_at=now,
+    )
+    db = MagicMock()
+    session = MagicMock()
+    query = MagicMock()
+    query.filter.return_value.one_or_none.return_value = job
+    session.query.return_value = query
+    db.get_session.return_value.__enter__.return_value = session
+
+    with patch.object(sync_mod, "DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value = db
+        job_id, claimed = sync_mod._claim_persisted_sync_job(
+            dataset="kline",
+            scope_key="all",
+            target_data_time="2026-08-12",
+            total=10,
+            trigger="test",
+        )
+
+    assert job_id == "kline-job-1"
+    assert claimed is False
+    session.commit.assert_not_called()
+
+
+def test_claim_persisted_sync_job_rotates_stale_job_id_within_schema_limit():
+    now = datetime.now()
+    job = sync_mod.DataMaintenanceJob(
+        id="old-job-id",
+        dataset="kline",
+        scope_key="all",
+        target_data_time="2026-08-12",
+        status="success",
+        started_at=now,
+        updated_at=now,
+        created_at=now,
+    )
+    db = MagicMock()
+    session = MagicMock()
+    query = MagicMock()
+    query.filter.return_value = query
+    query.one_or_none.return_value = job
+    query.update.return_value = 1
+    session.query.return_value = query
+    db.get_session.return_value.__enter__.return_value = session
+
+    with patch.object(sync_mod, "DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value = db
+        job_id, claimed = sync_mod._claim_persisted_sync_job(
+            dataset="kline",
+            scope_key="all",
+            target_data_time="2026-08-12",
+            total=10,
+            trigger="test",
+        )
+
+    assert claimed is True
+    assert job_id != job.id
+    assert len(job_id) == 36
+    update_values = query.update.call_args.args[0]
+    assert update_values["id"] == job_id
+
+
+def test_kline_status_restores_persisted_terminal_job(client):
+    now = datetime.now()
+    job = sync_mod.DataMaintenanceJob(
+        id="kline-job-2",
+        dataset="kline",
+        scope_key="all",
+        target_data_time="2026-08-12",
+        status="success",
+        progress=2,
+        total=2,
+        message="K线同步完成: 更新 2, 跳过 0, 失败 0",
+        started_at=now,
+        finished_at=now,
+        created_at=now,
+    )
+    db = MagicMock()
+    session = MagicMock()
+    query = MagicMock()
+    query.filter.return_value.order_by.return_value.first.return_value = job
+    session.query.return_value = query
+    db.get_session.return_value.__enter__.return_value = session
+
+    with patch.object(sync_mod, "DatabaseManager") as db_cls:
+        db_cls.get_instance.return_value = db
+        response = client.get("/api/v1/stocks/sync/kline/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_id"] == "kline-job-2"
+    assert body["status"] == "success"
+    assert body["kline_progress"] == 2
+    assert body["kline_total"] == 2
+
+
+def test_sync_stock_financial_launches_detached_worker(client):
+    with (
+        patch.object(sync_mod, "_get_active_stock_codes", return_value=["000001", "000002"]),
+        patch.object(sync_mod, "_latest_persisted_sync_state", return_value=None),
+        patch.object(sync_mod._financials_sync, "latest_report_period", return_value="20260630"),
+        patch.object(sync_mod, "_claim_persisted_sync_job", return_value=("financial-job-1", True)),
+        patch.object(sync_mod, "_mark_financial_sync_started", return_value=True),
+        patch.object(sync_mod, "_set_financial_state"),
+        patch.object(sync_mod, "_launch_detached_worker") as launch_worker,
+    ):
+        response = client.post("/api/v1/stocks/sync/financial")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    launch_worker.assert_called_once_with(
+        "src.services.financial_sync_worker",
+        "financial-job-1",
+        "20260630",
+        "000001,000002",
+    )
 
 
 def test_financial_status_restores_persisted_terminal_counts(client):

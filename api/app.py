@@ -162,6 +162,16 @@ async def app_lifespan(app: FastAPI):
     except Exception:
         logger.exception("Failed to auto-resume incomplete batch runs")
     try:
+        from src.services.batch_scheduler import run_batch_scheduler
+
+        batch_scheduler_task = asyncio.create_task(
+            run_batch_scheduler(),
+            name="batch-scheduler",
+        )
+    except Exception:
+        batch_scheduler_task = None
+        logger.exception("Failed to initialize batch scheduler")
+    try:
         from api.v1.endpoints.agent.chat import recover_interrupted_agent_runs
         from src.agent.runtime_maintenance import run_agent_runtime_maintenance
 
@@ -180,6 +190,9 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if batch_scheduler_task is not None:
+            batch_scheduler_task.cancel()
+            await asyncio.gather(batch_scheduler_task, return_exceptions=True)
         if maintenance_task is not None:
             maintenance_task.cancel()
             await asyncio.gather(maintenance_task, return_exceptions=True)
