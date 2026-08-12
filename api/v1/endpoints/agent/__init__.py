@@ -18,6 +18,7 @@ from api.v1.endpoints.agent import quality  # noqa: E402, F401
 from api.v1.endpoints.agent import financial_lifecycle  # noqa: E402, F401
 from api.v1.endpoints.agent import run_explorer  # noqa: E402, F401
 from api.v1.endpoints.agent import resources  # noqa: E402, F401
+from api.v1.endpoints.agent import checkpoints  # noqa: E402, F401
 
 # The LangGraph tool catalog is exposed for metadata/readiness endpoints.
 from api.v1.endpoints.agent.chat import _registry  # noqa: E402, F401

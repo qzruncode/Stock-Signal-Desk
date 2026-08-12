@@ -64,6 +64,57 @@ export interface AgentExecutionTrace {
   clientTraceTruncated?: boolean;
 }
 
+export interface AgentCheckpointTaskSummary {
+  id?: string | null;
+  name?: string | null;
+  interruptCount: number;
+  hasError: boolean;
+  errorType?: string | null;
+}
+
+export interface AgentCheckpointMetadata {
+  source?: string | null;
+  step?: number | null;
+  writeKeys: string[];
+}
+
+export interface AgentCheckpointStateSummary {
+  runId?: string | null;
+  conversationId?: string | null;
+  status?: string | null;
+  messageCount: number;
+  toolResultCount: number;
+  evidenceCount: number;
+  modelTurnCount: number;
+  toolCallCount: number;
+  evidenceRepairCount: number;
+  hasPendingInterrupt: boolean;
+  hasAnswer: boolean;
+}
+
+/** Bounded, read-only projection of a native LangGraph checkpoint. */
+export interface AgentCheckpointSummary {
+  checkpointId?: string | null;
+  parentCheckpointId?: string | null;
+  createdAt?: string | null;
+  metadata: AgentCheckpointMetadata;
+  next: string[];
+  tasks: AgentCheckpointTaskSummary[];
+  state: AgentCheckpointStateSummary;
+}
+
+export interface AgentCheckpointHistoryResponse {
+  conversationId: string;
+  threadId: string;
+  currentCheckpointId?: string | null;
+  checkpointAuthority: string;
+  runLifecycleAuthority: string;
+  readOnly: boolean;
+  items: AgentCheckpointSummary[];
+  hasMore: boolean;
+  nextBeforeCheckpointId?: string | null;
+}
+
 export interface PendingAgentInterrupt {
   interruptId: string;
   runId: string;
@@ -272,6 +323,26 @@ export const agentApi = {
   async getConversation(conversationId: string): Promise<ChatConversationDetail> {
     const response = await apiClient.get<Record<string, unknown>>(`/api/v1/agent/conversations/${conversationId}`);
     return normalizeConversationDetail(response.data);
+  },
+
+  async getConversationCheckpoints(
+    conversationId: string,
+    params: { limit?: number; beforeCheckpointId?: string | null } = {},
+  ): Promise<AgentCheckpointHistoryResponse> {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/agent/conversations/${conversationId}/checkpoints`,
+      {
+        params: {
+          limit: params.limit,
+          before_checkpoint_id: params.beforeCheckpointId || undefined,
+        },
+      },
+    );
+    const data = toCamelCase<AgentCheckpointHistoryResponse>(response.data);
+    return {
+      ...data,
+      items: (data.items || []).map((item) => toCamelCase<AgentCheckpointSummary>(item)),
+    };
   },
 
   async syncConversationSnapshot(

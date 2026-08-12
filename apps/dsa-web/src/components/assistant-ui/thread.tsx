@@ -103,7 +103,7 @@ const EmptyState: FC = () => {
   const secondaryGroups = ASSISTANT_SUGGESTION_GROUPS.filter((group) => !PRIMARY_SUGGESTION_GROUP_IDS.includes(group.id));
 
   return (
-    <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-1 flex-col items-center overflow-hidden px-2 pb-1 pt-1 text-center sm:pt-4">
+    <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-1 flex-col items-center overflow-x-hidden overflow-y-auto px-2 pb-1 pt-1 text-center [scrollbar-gutter:stable] [scrollbar-width:thin] sm:pt-4">
       <div className="hidden size-12 items-center justify-center rounded-2xl border border-primary/20 bg-card text-primary shadow-[0_18px_50px_hsl(var(--primary)/0.14)] sm:flex">
         <SparklesIcon className="size-6" />
       </div>
@@ -139,7 +139,7 @@ const EmptyState: FC = () => {
           <p className="shrink-0 text-xs font-medium text-muted-foreground">你可以这样问</p>
           <span className="min-w-0 truncate text-[10px] text-muted-foreground">点击后补充标的、行业或资料对象</span>
         </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-2 [scrollbar-gutter:stable] [scrollbar-width:thin]">
+        <div className="w-full flex-none space-y-3 pr-2">
           {primaryGroups.map((group) => <SuggestionGroup key={group.id} group={group} />)}
 
           {secondaryGroups.length > 0 ? (

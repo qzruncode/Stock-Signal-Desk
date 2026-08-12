@@ -22,8 +22,8 @@ Contract、Capability Graph、按关键词选 Workflow、固定股票分析 SOP 
   答案草稿与终态。
 - 数据库连接、模型客户端、工具注册表、事件广播器、取消控制器和锁位于运行时 context，
   不写入检查点。
-- 运行表负责并发占位、状态查询、租约和审计；事件表负责前端断线续流；工具步骤和 Outbox
-  负责幂等与副作用的最多一次执行。
+- 运行表负责并发占位、状态查询、租约和审计；事件表负责前端断线续流；副作用工具步骤和
+  Outbox 负责幂等与最多一次执行，只读结果由 LangGraph checkpoint 持久化。
 - 新会话回合会清空上回合的工具、证据、审批和事实映射。旧 V2 会话产物只读可查，旧引擎
   未完成 Run 会在切换时标记为 `cancelled`，不迁移检查点。
 
@@ -36,7 +36,8 @@ Contract、Capability Graph、按关键词选 Workflow、固定股票分析 SOP 
 RSS 以通用 `read_rss_source(source_id, ...)` 表达：全部 RSS 数据源是一个来源目录，而不是
 几十个独立的模型函数。模型能看到完整目录；没有 BM25 初筛、top-N schema 加载或静态工具组。
 
-只读且彼此独立的工具调用由 LangGraph 并行执行。副作用工具严格串行，并且必须经过审批。
+只读且彼此独立的工具调用由 LangGraph 原生 ToolNode/Send handler 并行执行；应用层只保留结果、证据与必要的工具隔离适配。
+副作用工具仍经过 LangGraph interrupt、服务端批准、幂等 Outbox 和单次运行内的串行锁。
 
 ## 审批与幂等
 

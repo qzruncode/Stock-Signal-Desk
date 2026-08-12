@@ -4,6 +4,7 @@ import {
   ActivityIcon,
   AlertTriangleIcon,
   CheckCircle2Icon,
+  HistoryIcon,
   Loader2Icon,
   PanelLeftCloseIcon,
   PanelLeftIcon,
@@ -20,6 +21,7 @@ import { useTaskStream } from '../../hooks/useTaskStream';
 import type { TaskInfo } from '../../types/analysis';
 import { isFloatingAnalysisTaskVisible } from '../../utils/analysisTaskVisibility';
 import { cn } from '../../utils/cn';
+import { CheckpointHistoryDrawer } from './CheckpointHistoryDrawer';
 import { QuestionNavigator } from './QuestionNavigator';
 import { ThreadListSidebar } from './threadlist-sidebar';
 
@@ -75,6 +77,7 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
   const [isDesktop, setIsDesktop] = useState(false);
   const [isDesktopSidebarCollapsed, setIsDesktopSidebarCollapsed] = useState(false);
   const [mobileSidebarState, setMobileSidebarState] = useState<'closed' | 'open' | 'closing'>('closed');
+  const [isCheckpointHistoryOpen, setIsCheckpointHistoryOpen] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -104,6 +107,10 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
     const timeout = window.setTimeout(() => setMobileSidebarState('closed'), 180);
     return () => window.clearTimeout(timeout);
   }, [mobileSidebarState]);
+
+  useEffect(() => {
+    setIsCheckpointHistoryOpen(false);
+  }, [selectedConversationId]);
 
   const mobileSidebarOpen = mobileSidebarState !== 'closed';
 
@@ -208,6 +215,23 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
         <AnalysisTaskActivity />
         <div className="relative z-30 flex shrink-0 items-center justify-end gap-3 px-3 pb-2 pt-1 lg:px-6 lg:py-1">
           <div className="flex items-center gap-3">
+            {selectedConversationId ? (
+              <button
+                type="button"
+                onClick={() => setIsCheckpointHistoryOpen(true)}
+                className={cn(
+                  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-border',
+                  'bg-card text-muted-foreground shadow-sm transition hover:border-primary/30 hover:text-foreground',
+                  'sm:h-8 sm:w-8',
+                  isCheckpointHistoryOpen && 'border-primary/30 text-primary shadow-md',
+                )}
+                aria-label="查看 Checkpoint 历史"
+                aria-expanded={isCheckpointHistoryOpen}
+                title="Checkpoint 历史"
+              >
+                <HistoryIcon className="size-3.5" />
+              </button>
+            ) : null}
             <QuestionNavigator />
             {!isDesktop ? (
               <button
@@ -264,6 +288,11 @@ export const ChatLayout: React.FC<ChatLayoutProps> = ({
           ) : null}
         </div>
       </div>
+      <CheckpointHistoryDrawer
+        isOpen={isCheckpointHistoryOpen}
+        conversationId={selectedConversationId}
+        onClose={() => setIsCheckpointHistoryOpen(false)}
+      />
     </div>
   );
 };

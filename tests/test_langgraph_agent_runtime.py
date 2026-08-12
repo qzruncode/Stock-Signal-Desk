@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict, defaultdict
+from dataclasses import replace
 from typing import Any, Mapping
 
 import pytest
@@ -12,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
+from src.agent.langgraph_runtime.executor import action_fingerprint
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.tools.base import ToolSpec, object_schema
 from src.tools.registry import ToolRegistry
@@ -55,8 +57,18 @@ class FakeAtomicExecutor:
             self.outcomes[name].extend(dict(value) for value in values)
         self.delay_seconds = delay_seconds
         self.calls: list[dict[str, Any]] = []
+        self.native_calls: list[dict[str, Any]] = []
         self.active = 0
         self.max_active = 0
+
+    async def execute_native_read(
+        self,
+        action: Mapping[str, Any],
+        *,
+        approved: bool = False,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        self.native_calls.append(dict(action))
+        return await self.execute(action, approved=approved)
 
     async def execute(
         self,
@@ -375,8 +387,59 @@ def test_independent_read_operations_run_in_parallel() -> None:
         )
         assert result.status == "completed"
         assert len(executor.calls) == 2
+        assert len(executor.native_calls) == 2
         assert executor.max_active == 2
         assert result.state["tool_call_count"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_native_read_handler_uses_the_production_read_adapter() -> None:
+    async def scenario() -> None:
+        evidence_id = (
+            "ev_"
+            + action_fingerprint(
+                run_id="run-native-read-adapter",
+                action_id="native-read",
+                tool_name="search_source",
+                arguments={"source_id": "primary", "query": "测试问题"},
+            )[:20]
+        )
+        operation = replace(
+            _search_operation(),
+            executor=lambda **_kwargs: {
+                "success": True,
+                "url": "https://source.example/native",
+                "data_time": "2026-08-08",
+            },
+        )
+        manager = LangGraphRuntimeManager(registry=_registry(operation))
+        await manager.start(testing=True)
+        try:
+            result = await manager.run_new(
+                messages=[{"role": "user", "content": "测试问题"}],
+                user_text="测试问题",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="run-native-read-adapter",
+                conversation_id="native-read-adapter",
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(
+                    responses=[
+                        _tool_call("native-read", "primary"),
+                        AIMessage(content=f"读取完成【证据 {evidence_id}】"),
+                    ]
+                ),
+            )
+            assert result.status == "completed"
+            assert result.state["tool_results"][0]["success"] is True
+            assert result.state["evidence"]
+        finally:
+            await manager.close()
 
     asyncio.run(scenario())
 

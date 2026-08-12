@@ -18,6 +18,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langgraph.types import Command, interrupt
 
+from .agent_tools import NATIVE_TOOL_RESULT_MARKER, native_tool_context
 from .evidence import project_evidence_for_model, project_tool_observations_for_model
 from .claim_evidence import build_claim_evidence_ledger
 from .events import redact_arguments
@@ -115,6 +116,24 @@ def _error_tool_message(
         tool_call_id=tool_call_id,
         status="error",
     )
+
+
+def _native_tool_result(response: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Decode the envelope returned by a native LangGraph tool handler."""
+    content = getattr(response, "content", None)
+    payload: Any = content
+    if isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("native tool handler returned invalid JSON") from exc
+    if not isinstance(payload, Mapping) or payload.get(NATIVE_TOOL_RESULT_MARKER) is not True:
+        raise RuntimeError("native tool handler returned no application result envelope")
+    record = payload.get("record")
+    if not isinstance(record, Mapping):
+        raise RuntimeError("native tool handler returned an invalid result record")
+    evidence = payload.get("evidence")
+    return dict(record), dict(evidence) if isinstance(evidence, Mapping) else None
 
 
 def _failed_record(
@@ -588,7 +607,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
 
 class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
-    """Execute each model call through the existing atomic-executor boundary."""
+    """Keep native read execution and guard side effects at the app boundary."""
 
     name = "atomic_tool_execution"
 
@@ -611,16 +630,24 @@ class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
             approved = tool_call_id in set(state.get("approved_tool_call_ids") or [])
             if effect == "side_effect" and not approved:
                 raise PermissionError("side-effect operation requires a server-approved interrupt")
-            action = {
-                "action_id": tool_call_id,
-                "tool_name": tool_name,
-                "arguments": arguments,
-            }
-            if effect == "side_effect" and context.side_effect_lock is not None:
-                async with context.side_effect_lock:
-                    record, evidence = await context.executor.execute(action, approved=approved)
+            if effect == "read":
+                # Let the compiled create_agent/ToolNode invoke the real
+                # StructuredTool.  The tool adapter preserves the application
+                # result/evidence envelope without taking over fan-out.
+                with native_tool_context(context, tool_call_id):
+                    response = await handler(request)
+                record, evidence = _native_tool_result(response)
             else:
-                record, evidence = await context.executor.execute(action, approved=approved)
+                action = {
+                    "action_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                }
+                if context.side_effect_lock is not None:
+                    async with context.side_effect_lock:
+                        record, evidence = await context.executor.execute(action, approved=approved)
+                else:
+                    record, evidence = await context.executor.execute(action, approved=approved)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

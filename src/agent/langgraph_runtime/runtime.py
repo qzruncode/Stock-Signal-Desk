@@ -76,6 +76,80 @@ def _sqlite_checkpoint_path(database_url: str) -> Path:
     return (Path.cwd() / ".agent-checkpoints" / "langgraph.sqlite3").resolve()
 
 
+def _checkpoint_id(config: Mapping[str, Any] | None) -> str | None:
+    """Return a checkpoint id without exposing the rest of a runnable config."""
+    if not isinstance(config, Mapping):
+        return None
+    configurable = config.get("configurable")
+    if not isinstance(configurable, Mapping):
+        return None
+    value = str(configurable.get("checkpoint_id") or "").strip()
+    return value or None
+
+
+def _checkpoint_task_summary(task: Any) -> dict[str, Any]:
+    """Project Pregel tasks to safe lifecycle hints for diagnostics."""
+    interrupts = getattr(task, "interrupts", ()) or ()
+    error = getattr(task, "error", None)
+    return {
+        "id": str(getattr(task, "id", "") or "") or None,
+        "name": str(getattr(task, "name", "") or "") or None,
+        "interrupt_count": len(interrupts),
+        "has_error": error is not None,
+        "error_type": type(error).__name__ if error is not None else None,
+    }
+
+
+def _checkpoint_summary(snapshot: Any) -> dict[str, Any]:
+    """Build a bounded, read-only summary of one LangGraph checkpoint.
+
+    The full values remain in the native saver.  The diagnostic endpoint only
+    needs enough information to identify a graph revision and understand where
+    it stopped; returning raw messages/tool payloads here would duplicate the
+    conversation and could expose sensitive tool arguments.
+    """
+    values = getattr(snapshot, "values", {})
+    values = dict(values) if isinstance(values, Mapping) else {}
+    metadata = getattr(snapshot, "metadata", {})
+    metadata = dict(metadata) if isinstance(metadata, Mapping) else {}
+    writes = metadata.get("writes")
+    write_keys = (
+        sorted(str(key) for key in writes)
+        if isinstance(writes, Mapping)
+        else []
+    )
+    messages = values.get("messages")
+    tool_results = values.get("tool_results")
+    evidence = values.get("evidence")
+    tasks = getattr(snapshot, "tasks", ()) or ()
+    created_at = getattr(snapshot, "created_at", None)
+    return {
+        "checkpoint_id": _checkpoint_id(getattr(snapshot, "config", None)),
+        "parent_checkpoint_id": _checkpoint_id(getattr(snapshot, "parent_config", None)),
+        "created_at": str(created_at) if created_at is not None else None,
+        "metadata": {
+            "source": str(metadata.get("source") or "") or None,
+            "step": metadata.get("step"),
+            "write_keys": write_keys,
+        },
+        "next": [str(item) for item in (getattr(snapshot, "next", ()) or ())],
+        "tasks": [_checkpoint_task_summary(task) for task in tasks],
+        "state": {
+            "run_id": str(values.get("run_id") or "") or None,
+            "conversation_id": str(values.get("conversation_id") or "") or None,
+            "status": str(values.get("status") or "") or None,
+            "message_count": len(messages) if isinstance(messages, (list, tuple)) else 0,
+            "tool_result_count": len(tool_results) if isinstance(tool_results, (list, tuple)) else 0,
+            "evidence_count": len(evidence) if isinstance(evidence, (list, tuple)) else 0,
+            "model_turn_count": int(values.get("model_turn_count") or 0),
+            "tool_call_count": int(values.get("tool_call_count") or 0),
+            "evidence_repair_count": int(values.get("evidence_repair_count") or 0),
+            "has_pending_interrupt": isinstance(values.get("pending_interrupt"), Mapping),
+            "has_answer": bool(str(values.get("answer_final") or values.get("answer_draft") or "").strip()),
+        },
+    }
+
+
 def _evidence_repair_limit() -> int:
     try:
         return max(0, min(8, int(str(os.getenv("AGENT_EVIDENCE_REPAIR_LIMIT") or "2").strip())))
@@ -298,6 +372,54 @@ class LangGraphRuntimeManager:
                 error_code="provider_budget_exceeded",
                 message="本轮模型调用、Token 或费用预算已耗尽；已保留已有工具观察和证据。",
             )
+
+    async def get_state_history(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 20,
+        before_checkpoint_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read native LangGraph checkpoint history without mutating a thread.
+
+        ``agent_runs`` remains the authority for request ownership and worker
+        lifecycle.  This method deliberately reads the graph thread directly
+        so diagnostics can distinguish a durable Run state from the latest
+        graph revision.  It does not call ``update_state`` or execute tools.
+        """
+        graph = self._require_graph()
+        safe_limit = max(1, min(100, int(limit)))
+        config = self.graph_config(conversation_id)
+        before_config: Mapping[str, Any] | None = None
+        normalized_before = str(before_checkpoint_id or "").strip()
+        if normalized_before:
+            before_config = self.graph_config(conversation_id)
+            before_config["configurable"]["checkpoint_id"] = normalized_before
+
+        snapshots: list[dict[str, Any]] = []
+        async for snapshot in graph.aget_state_history(
+            config,
+            before=before_config,
+            limit=safe_limit + 1,
+        ):
+            snapshots.append(_checkpoint_summary(snapshot))
+
+        has_more = len(snapshots) > safe_limit
+        items = snapshots[:safe_limit]
+        current = await graph.aget_state(config)
+        return {
+            "conversation_id": conversation_id,
+            "thread_id": self.thread_id(conversation_id),
+            "current_checkpoint_id": _checkpoint_id(getattr(current, "config", None)),
+            "checkpoint_authority": "langgraph_checkpointer",
+            "run_lifecycle_authority": "agent_runs",
+            "read_only": True,
+            "items": items,
+            "has_more": has_more,
+            "next_before_checkpoint_id": (
+                items[-1].get("checkpoint_id") if has_more and items else None
+            ),
+        }
 
     async def _terminate_partial(
         self,
