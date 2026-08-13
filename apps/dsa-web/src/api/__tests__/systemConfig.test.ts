@@ -96,4 +96,41 @@ describe('systemConfigApi', () => {
     expect(result.nextStepKey).toBe('llm_primary');
     expect(result.checks[0].nextStep).toBe('打开系统设置');
   });
+
+  it('sends model connectivity tests with the current form values', async () => {
+    post.mockResolvedValueOnce({
+      data: {
+        success: true,
+        message: '模型连接成功',
+        error_code: null,
+        stage: 'model_response',
+        retryable: false,
+        latency_ms: 21,
+      },
+    });
+
+    const result = await systemConfigApi.testModelConnection({
+      items: [
+        { key: 'ANTHROPIC_BASE_URL', value: 'https://gw.example.com' },
+        { key: 'ANTHROPIC_AUTH_TOKEN', value: 'secret-token' },
+        { key: 'ANTHROPIC_MODEL', value: 'openai/glm-5.2' },
+      ],
+      maskToken: '******',
+      timeoutSeconds: 9,
+    });
+
+    expect(post).toHaveBeenCalledWith(
+      '/api/v1/system/config/model/test-connection',
+      {
+        items: [
+          { key: 'ANTHROPIC_BASE_URL', value: 'https://gw.example.com' },
+          { key: 'ANTHROPIC_AUTH_TOKEN', value: 'secret-token' },
+          { key: 'ANTHROPIC_MODEL', value: 'openai/glm-5.2' },
+        ],
+        mask_token: '******',
+        timeout_seconds: 9,
+      },
+    );
+    expect(result.latencyMs).toBe(21);
+  });
 });

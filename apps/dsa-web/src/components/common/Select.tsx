@@ -1,5 +1,6 @@
 import React from 'react';
 import { FormSelect } from './FormControls';
+import type { CompactSelectDensity } from './CompactSelect';
 
 export interface SelectOption {
   value: string;
@@ -19,6 +20,7 @@ export interface SelectProps {
   searchable?: boolean;
   searchPlaceholder?: string;
   emptyText?: string;
+  density?: CompactSelectDensity;
 }
 
 /**
@@ -35,6 +37,7 @@ export const Select: React.FC<SelectProps> = (props) => {
     placeholder,
     disabled,
     className,
+    density = 'regular',
   } = props;
 
   return (
@@ -48,7 +51,7 @@ export const Select: React.FC<SelectProps> = (props) => {
       placeholder={placeholder}
       disabled={disabled}
       className={className}
-      density="regular"
+      density={density}
     />
   );
 };

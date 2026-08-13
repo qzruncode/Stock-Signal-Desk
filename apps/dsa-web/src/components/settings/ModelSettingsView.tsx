@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
-import { ChevronDown, ClipboardPaste, Loader2, RotateCcw, Save } from 'lucide-react';
+import { ChevronDown, ClipboardPaste, Loader2, PlugZap, RotateCcw, Save } from 'lucide-react';
 import { Button, InlineAlert } from '../common';
 import { SettingsField } from './SettingsField';
 import {
@@ -30,7 +30,7 @@ const TARGET_KEYS = [
 
 const TARGET_KEY_SET = new Set<string>(TARGET_KEYS);
 
-type SaveStatus = { type: 'success' | 'error'; message: string } | null;
+type SaveStatus = { type: 'success' | 'error'; title: string; message: string } | null;
 type ModelFormValues = Record<string, string>;
 
 function collectValuesFromPaste(text: string): Record<string, string> | null {
@@ -60,6 +60,7 @@ export const ModelSettingsView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
   const { control, getValues, handleSubmit, reset, setValue } = useForm<ModelFormValues>({
     defaultValues: { pasteText: '' },
@@ -69,7 +70,7 @@ export const ModelSettingsView: React.FC = () => {
 
   const [pasteOpen, setPasteOpen] = useState(false);
 
-  // 表单 -> JSON：fieldValues 变化时把 7 个目标字段拼成 JSON 回显
+  // 表单 -> JSON：fieldValues 变化时把模型字段拼成 JSON 回显
   useEffect(() => {
     const obj: Record<string, string> = {};
     for (const key of TARGET_KEYS) {
@@ -98,7 +99,7 @@ export const ModelSettingsView: React.FC = () => {
     try {
       const [schemaRes, configRes] = await Promise.all([
         systemConfigApi.getSchema(),
-        systemConfigApi.getConfig(true),
+        systemConfigApi.getConfig(true, true),
       ]);
       setSchema(schemaRes);
       setConfig(configRes);
@@ -184,10 +185,11 @@ export const ModelSettingsView: React.FC = () => {
 
       setSaveStatus({
         type: 'success',
+        title: '保存成功',
         message: `已保存 ${result.appliedCount} 项配置（${result.updatedKeys.join(', ')}）。配置已重新加载。`,
       });
 
-      const newConfig = await systemConfigApi.getConfig(true);
+      const newConfig = await systemConfigApi.getConfig(true, true);
       setConfig(newConfig);
       const values: Record<string, string> = { ...submittedValues };
       for (const item of newConfig.items) {
@@ -199,20 +201,45 @@ export const ModelSettingsView: React.FC = () => {
     } catch (err: unknown) {
       if (err instanceof SystemConfigValidationError) {
         const fieldIssues = err.issues.map((i) => `${i.key}: ${i.message}`).join('\n');
-        setSaveStatus({ type: 'error', message: `校验失败:\n${fieldIssues}` });
+        setSaveStatus({ type: 'error', title: '保存失败', message: `校验失败:\n${fieldIssues}` });
       } else if (err instanceof SystemConfigConflictError) {
         setSaveStatus({
           type: 'error',
+          title: '保存失败',
           message: '配置已在别处修改，请刷新页面后重试。',
         });
       } else {
         const msg = err instanceof Error ? err.message : '保存失败';
-        setSaveStatus({ type: 'error', message: msg });
+        setSaveStatus({ type: 'error', title: '保存失败', message: msg });
       }
     } finally {
       setSaving(false);
     }
   }, [config, dirtyKeys, reset]);
+
+  const handleTest = useCallback(async (submittedValues: ModelFormValues) => {
+    if (!config) return;
+
+    setTesting(true);
+    setSaveStatus(null);
+    try {
+      const result = await systemConfigApi.testModelConnection({
+        items: TARGET_KEYS.map((key) => ({ key, value: submittedValues[key] ?? '' })),
+        maskToken: config.maskToken,
+        timeoutSeconds: 30,
+      });
+      setSaveStatus({
+        type: result.success ? 'success' : 'error',
+        title: result.success ? '测试成功' : '测试失败',
+        message: result.message,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '模型测试失败';
+      setSaveStatus({ type: 'error', title: '测试失败', message: msg });
+    } finally {
+      setTesting(false);
+    }
+  }, [config]);
 
   if (loading) {
     return (
@@ -239,69 +266,89 @@ export const ModelSettingsView: React.FC = () => {
 
   return (
     <form onSubmit={handleSubmit(handleSave)}>
-      <section className="space-y-5">
-      <header className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-primary/10 text-primary">
-            <span className="font-mono text-sm font-semibold">M</span>
-          </span>
-          <h2 className="text-xl font-semibold text-foreground">模型设置</h2>
-        </div>
-        <Button
-          variant="secondary"
-          type="submit"
-          disabled={saving || dirtyKeys.length === 0}
-          isLoading={saving}
-          loadingText="保存中..."
-        >
-          <Save className="h-4 w-4" />
-          保存
-        </Button>
-      </header>
-
-      <details
-        className="terminal-card rounded-2xl"
-        open={pasteOpen}
-        onToggle={(e) => setPasteOpen((e.currentTarget as HTMLDetailsElement).open)}
-      >
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <ClipboardPaste className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium text-foreground">JSON</span>
+      <section className="space-y-6">
+        <header className="flex items-end justify-between gap-4 border-b border-border/60 pb-4">
+          <div className="min-w-0">
+            <p className="mb-1 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              运行时配置
+            </p>
+            <h2 className="text-lg font-semibold tracking-tight text-foreground">模型设置</h2>
+            <p className="mt-1 text-xs text-secondary-text">
+              配置 Anthropic 兼容网关、模型名称和 Claude Code 参数。
+            </p>
           </div>
-          <ChevronDown
-            className={
-              'h-4 w-4 text-muted-foreground transition-transform ' +
-              (pasteOpen ? 'rotate-180' : 'rotate-0')
-            }
-          />
-        </summary>
-        <div className="space-y-3 border-t border-border/40 px-4 py-3">
-          <Controller
-            name="pasteText"
-            control={control}
-            render={({ field }) => (
-              <textarea
-                {...field}
-                onChange={(e) => handlePasteChange(e.target.value)}
-                rows={5}
-                className="input-surface w-full rounded-xl border border-border/55 bg-elevated/40 px-3 py-2 font-mono text-xs leading-relaxed transition focus:border-cyan/40 focus:outline-none"
-                spellCheck={false}
-              />
-            )}
-          />
-        </div>
-      </details>
+          <div className="flex shrink-0 gap-1.5">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 rounded-md border border-border/70 px-2.5 text-xs"
+              type="button"
+              onClick={() => { void handleSubmit(handleTest)(); }}
+              disabled={saving || testing}
+              isLoading={testing}
+              loadingText="测试中"
+            >
+              <PlugZap className="h-3.5 w-3.5" />
+              测试连接
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-8 rounded-md border-foreground/15 bg-foreground px-3 text-xs text-background hover:bg-foreground/90 hover:text-background"
+              type="submit"
+              disabled={saving || testing || dirtyKeys.length === 0}
+              isLoading={saving}
+              loadingText="保存中"
+            >
+              <Save className="h-3.5 w-3.5" />
+              保存
+            </Button>
+          </div>
+        </header>
 
-      {saveStatus ? (
-        <InlineAlert
-          variant={saveStatus.type === 'success' ? 'success' : 'danger'}
-          title={saveStatus.type === 'success' ? '保存成功' : '保存失败'}
-          message={<pre className="whitespace-pre-wrap font-sans">{saveStatus.message}</pre>}
-        />
-      ) : null}
+        <details
+          className="group border-y border-border/60"
+          open={pasteOpen}
+          onToggle={(e) => setPasteOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-2.5 text-xs text-secondary-text">
+            <span className="flex items-center gap-2">
+              <ClipboardPaste className="h-3.5 w-3.5" />
+              <span className="font-medium text-foreground">原始配置</span>
+              <span className="font-mono text-[10px] text-muted-foreground">JSON</span>
+            </span>
+            <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              {pasteOpen ? '收起' : '展开'}
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+            </span>
+          </summary>
+          <div className="border-t border-border/50 py-3">
+            <Controller
+              name="pasteText"
+              control={control}
+              render={({ field }) => (
+                <textarea
+                  {...field}
+                  onChange={(e) => handlePasteChange(e.target.value)}
+                  rows={4}
+                  className="input-surface w-full rounded-md border border-border/70 bg-background/40 px-3 py-2 font-mono text-[11px] leading-5 shadow-none transition focus:border-foreground/30 focus:outline-none"
+                  spellCheck={false}
+                  aria-label="原始模型配置 JSON"
+                />
+              )}
+            />
+          </div>
+        </details>
 
-      <div className="terminal-card space-y-5 rounded-2xl p-5">
+        {saveStatus ? (
+          <InlineAlert
+            variant={saveStatus.type === 'success' ? 'success' : 'danger'}
+            title={saveStatus.title}
+            className="rounded-md border px-3 py-2 shadow-none [&_p]:text-xs [&_pre]:text-xs"
+            message={<pre className="whitespace-pre-wrap font-sans">{saveStatus.message}</pre>}
+          />
+        ) : null}
+
         {orderedFields.length === 0 ? (
           <InlineAlert
             variant="warning"
@@ -309,26 +356,48 @@ export const ModelSettingsView: React.FC = () => {
             message="schema 中没有这些字段，请确认后端 registry 配置。"
           />
         ) : (
-          orderedFields.map((fieldSchema) => (
-            <Controller
-              key={fieldSchema.key}
-              name={fieldSchema.key}
-              control={control}
-              render={({ field }) => (
-                <SettingsField
-                  field={fieldSchema}
-                  value={field.value ?? ''}
-                  onChange={(_, value) => {
-                    field.onChange(value);
-                    setSaveStatus(null);
-                  }}
-                  isMasked={maskedKeys.has(fieldSchema.key)}
+          <div className="divide-y divide-border/50 border-y border-border/60">
+            {orderedFields.map((fieldSchema) => (
+              <div
+                key={fieldSchema.key}
+                className="grid grid-cols-1 gap-2.5 py-3.5 sm:grid-cols-[minmax(12rem,0.42fr)_minmax(0,1fr)] sm:items-start sm:gap-8"
+              >
+                <div className="min-w-0 pt-0.5">
+                  <p className="text-[13px] font-medium leading-5 text-foreground">
+                    {fieldSchema.title ?? fieldSchema.key}
+                  </p>
+                  <p className="mt-0.5 font-mono text-[10px] leading-4 text-muted-foreground">
+                    {fieldSchema.key}
+                  </p>
+                  {fieldSchema.description ? (
+                    <p className="mt-1 text-[11px] leading-4 text-secondary-text">
+                      {fieldSchema.description}
+                    </p>
+                  ) : null}
+                </div>
+                <Controller
+                  name={fieldSchema.key}
+                  control={control}
+                  render={({ field }) => (
+                    <SettingsField
+                      field={fieldSchema}
+                      value={field.value ?? ''}
+                      onChange={(_, value) => {
+                        field.onChange(value);
+                        setSaveStatus(null);
+                      }}
+                      isMasked={maskedKeys.has(fieldSchema.key)}
+                      showSensitiveValue
+                      compact
+                      showLabel={false}
+                      showHint={false}
+                    />
+                  )}
                 />
-              )}
-            />
-          ))
+              </div>
+            ))}
+          </div>
         )}
-      </div>
       </section>
     </form>
   );

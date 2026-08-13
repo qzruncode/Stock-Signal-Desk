@@ -9,6 +9,8 @@ import type {
   SystemConfigValidationErrorResponse,
   TestNotificationChannelRequest,
   TestNotificationChannelResponse,
+  TestModelConnectionRequest,
+  TestModelConnectionResponse,
   UpdateSystemConfigRequest,
   UpdateSystemConfigResponse,
 } from '../types/systemConfig';
@@ -76,9 +78,9 @@ function toSnakeNotificationTestPayload(payload: TestNotificationChannelRequest)
 }
 
 export const systemConfigApi = {
-  async getConfig(includeSchema = true): Promise<SystemConfigResponse> {
+  async getConfig(includeSchema = true, revealSensitive = false): Promise<SystemConfigResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config', {
-      params: { include_schema: includeSchema },
+      params: { include_schema: includeSchema, reveal_sensitive: revealSensitive },
     });
     return toCamelCase<SystemConfigResponse>(response.data);
   },
@@ -99,6 +101,21 @@ export const systemConfigApi = {
       toSnakeNotificationTestPayload(payload),
     );
     return toCamelCase<TestNotificationChannelResponse>(response.data);
+  },
+
+  async testModelConnection(payload: TestModelConnectionRequest): Promise<TestModelConnectionResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/model/test-connection',
+      {
+        items: (payload.items || []).map((item) => ({
+          key: item.key,
+          value: item.value,
+        })),
+        mask_token: payload.maskToken ?? '******',
+        timeout_seconds: payload.timeoutSeconds ?? 30,
+      },
+    );
+    return toCamelCase<TestModelConnectionResponse>(response.data);
   },
 
   async update(payload: UpdateSystemConfigRequest): Promise<UpdateSystemConfigResponse> {

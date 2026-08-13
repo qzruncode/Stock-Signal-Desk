@@ -10,6 +10,10 @@ interface SettingsFieldProps {
   value: string;
   onChange: (key: string, value: string) => void;
   isMasked?: boolean;
+  showSensitiveValue?: boolean;
+  compact?: boolean;
+  showLabel?: boolean;
+  showHint?: boolean;
   placeholder?: string;
 }
 
@@ -31,6 +35,10 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   value,
   onChange,
   isMasked = false,
+  showSensitiveValue = false,
+  compact = false,
+  showLabel = true,
+  showHint = true,
   placeholder,
 }) => {
   const fieldId = useId();
@@ -46,13 +54,14 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   const label = field.title ?? field.key;
   const description = field.description ?? '';
   const examples = fieldExamples(field);
-  const hint = description || examples || undefined;
+  const hint = showHint ? (description || examples || undefined) : undefined;
+  const visualLabel = showLabel ? label : undefined;
 
   // Masked sensitive field: show "Configured" badge with reveal button
   if (isMasked && field.isSensitive && !revealed) {
     return (
       <div className="flex flex-col gap-1.5">
-        <label className="text-sm font-medium text-foreground">{label}</label>
+        <label className={showLabel ? 'text-[13px] font-medium text-foreground' : 'sr-only'}>{label}</label>
         <div className="flex items-center gap-3">
           <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1.5 text-xs font-medium text-success">
             <span className="h-1.5 w-1.5 rounded-full bg-success" />
@@ -81,7 +90,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
     return (
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col">
-          <span className="text-sm font-medium text-foreground">{label}</span>
+          <span className={cn('text-[13px] font-medium text-foreground', !showLabel && 'sr-only')}>{label}</span>
           {hint && <span className="text-xs text-secondary-text">{hint}</span>}
         </div>
         <button
@@ -110,17 +119,21 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   if (field.uiControl === 'textarea') {
     return (
       <div className="flex flex-col">
-        {label && (
-          <label htmlFor={fieldId} className="mb-2 text-sm font-medium text-foreground">
-            {label}
+        {visualLabel && (
+          <label htmlFor={fieldId} className={cn('font-medium text-foreground', compact ? 'mb-1 text-[13px]' : 'mb-2 text-sm')}>
+            {visualLabel}
           </label>
         )}
         <textarea
           id={fieldId}
+          aria-label={!showLabel ? label : undefined}
           value={value}
           onChange={(e) => handleChange(e.target.value)}
-          rows={3}
-          className="input-surface input-focus-glow w-full rounded-xl border bg-transparent px-4 py-3 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          rows={compact ? 2 : 3}
+          className={cn(
+            'input-surface input-focus-glow w-full border bg-transparent transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60',
+            compact ? 'rounded-md px-3 py-2 text-xs shadow-none' : 'rounded-xl px-4 py-3 text-sm',
+          )}
           placeholder={field.defaultValue ?? undefined}
         />
         {hint && <p className="mt-2 text-xs text-secondary-text">{hint}</p>}
@@ -133,10 +146,12 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
     const options = fieldOptions(field);
     return (
       <Select
-        label={label}
+        label={visualLabel}
+        ariaLabel={label}
         value={value}
         onChange={handleChange}
         options={options}
+        density={compact ? 'compact' : 'regular'}
         placeholder={field.defaultValue ?? '请选择'}
       />
     );
@@ -148,11 +163,13 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
     const max = field.validation?.max as number | undefined;
     return (
       <Input
-        label={label}
+        label={visualLabel}
+        aria-label={!showLabel ? label : undefined}
         type="number"
         value={value}
         onChange={(e) => handleChange(e.target.value)}
         hint={hint}
+        density={compact ? 'compact' : 'regular'}
         min={min}
         max={max}
         step={field.validation?.step as number | undefined}
@@ -165,13 +182,15 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   if (field.uiControl === 'password' || field.isSensitive) {
     return (
       <Input
-        label={label}
-        type="password"
+        label={visualLabel}
+        aria-label={!showLabel ? label : undefined}
+        type={showSensitiveValue ? 'text' : 'password'}
         value={revealed ? value : value}
         onChange={(e) => handleChange(e.target.value)}
         hint={hint}
+        density={compact ? 'compact' : 'regular'}
         iconType="key"
-        allowTogglePassword
+        allowTogglePassword={!showSensitiveValue}
         placeholder={value ? '' : (placeholder ?? field.defaultValue ?? '输入敏感配置')}
       />
     );
@@ -180,11 +199,13 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   // Default: text input
   return (
     <Input
-      label={label}
+      label={visualLabel}
+      aria-label={!showLabel ? label : undefined}
       type="text"
       value={value}
       onChange={(e) => handleChange(e.target.value)}
       hint={hint}
+      density={compact ? 'compact' : 'regular'}
       placeholder={placeholder ?? field.defaultValue ?? undefined}
     />
   );

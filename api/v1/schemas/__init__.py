@@ -46,6 +46,8 @@ from api.v1.schemas.system_config import (
     ConfigValidationIssue,
     SystemConfigValidationErrorResponse,
     SystemConfigConflictResponse,
+    TestModelConnectionRequest,
+    TestModelConnectionResponse,
 )
 
 __all__ = [
@@ -84,4 +86,6 @@ __all__ = [
     "ConfigValidationIssue",
     "SystemConfigValidationErrorResponse",
     "SystemConfigConflictResponse",
+    "TestModelConnectionRequest",
+    "TestModelConnectionResponse",
 ]

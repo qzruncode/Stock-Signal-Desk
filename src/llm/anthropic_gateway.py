@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 
 class AnthropicGatewayConfigError(RuntimeError):
@@ -56,15 +56,18 @@ def _parse_model_context_window(model_name: str) -> tuple[str, int]:
     return model_name, _DEFAULT_CONTEXT_WINDOW
 
 
-def resolve_anthropic_gateway_config() -> Dict[str, Any]:
-    """Resolve the Anthropic gateway model config from env (ANTHROPIC_*).
+def resolve_anthropic_gateway_config(values: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    """Resolve the Anthropic gateway model config from env or explicit values.
 
     仅使用「设置 - 模型设置」保存的接入地址、鉴权令牌和主模型；三者任一
     缺失即报错，不回落到 AGENT_LITELLM_MODEL / litellm_model 等其他来源。
+    ``values`` 供设置页的非持久化连通性测试使用，不会修改当前进程环境。
     """
-    base_url = (os.getenv("ANTHROPIC_BASE_URL") or "").strip()
-    auth_token = (os.getenv("ANTHROPIC_AUTH_TOKEN") or "").strip()
-    raw_model = os.getenv("ANTHROPIC_MODEL") or ""
+    source: Mapping[str, Any] = values if values is not None else os.environ
+
+    base_url = str(source.get("ANTHROPIC_BASE_URL") or "").strip()
+    auth_token = str(source.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
+    raw_model = str(source.get("ANTHROPIC_MODEL") or "")
 
     missing = []
     if not base_url:

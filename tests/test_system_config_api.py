@@ -15,6 +15,7 @@ ensure_litellm_stub()
 
 from api.v1.endpoints import system_config
 from api.v1.schemas.system_config import (
+    TestModelConnectionRequest as ModelConnectionTestRequest,
     TestNotificationChannelRequest as NotificationChannelTestRequest,
     UpdateSystemConfigRequest,
 )
@@ -77,6 +78,16 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "******")
         self.assertTrue(item_map["GEMINI_API_KEY"]["is_masked"])
         self.assertNotIn("secret-key-value", repr(payload))
+
+    def test_get_config_can_reveal_secret_value_when_requested(self) -> None:
+        payload = system_config.get_system_config(
+            include_schema=True,
+            reveal_sensitive=True,
+            service=self.service,
+        ).model_dump(by_alias=True)
+        item_map = {item["key"]: item for item in payload["items"]}
+        self.assertEqual(item_map["GEMINI_API_KEY"]["value"], "secret-key-value")
+        self.assertFalse(item_map["GEMINI_API_KEY"]["is_masked"])
 
     def test_get_config_schema_includes_help_metadata(self) -> None:
         payload = system_config.get_system_config(include_schema=True, service=self.service).model_dump(by_alias=True)
@@ -258,6 +269,36 @@ class SystemConfigApiTestCase(unittest.TestCase):
         self.assertEqual(payload["attempts"][0]["latency_ms"], 42)
         mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["channel"], "wechat")
+        self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
+
+    def test_test_model_connection_endpoint_returns_service_payload(self) -> None:
+        with patch.object(
+            self.service,
+            "test_model_connection",
+            return_value={
+                "success": True,
+                "message": "模型连接成功",
+                "error_code": None,
+                "stage": "model_response",
+                "retryable": False,
+                "latency_ms": 42,
+            },
+        ) as mock_test:
+            payload = system_config.test_model_connection(
+                request=ModelConnectionTestRequest(
+                    items=[
+                        {"key": "ANTHROPIC_BASE_URL", "value": "https://gw.example.com"},
+                        {"key": "ANTHROPIC_AUTH_TOKEN", "value": "secret-token"},
+                        {"key": "ANTHROPIC_MODEL", "value": "openai/glm-5.2"},
+                    ],
+                    timeout_seconds=5,
+                ),
+                service=self.service,
+            ).model_dump()
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["latency_ms"], 42)
+        mock_test.assert_called_once()
         self.assertEqual(mock_test.call_args.kwargs["timeout_seconds"], 5)
 
     def test_test_notification_channel_schema_accepts_p6_channels(self) -> None:

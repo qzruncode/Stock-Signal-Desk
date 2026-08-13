@@ -8,6 +8,8 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   hint?: string;
   error?: string;
+  /** Controls the control density for compact settings rows. */
+  density?: 'regular' | 'compact';
   trailingAction?: React.ReactNode;
   /** Enables the built-in password visibility toggle. */
   allowTogglePassword?: boolean;
@@ -23,6 +25,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
   label,
   hint,
   error,
+  density = 'regular',
   className = '',
   id,
   trailingAction,
@@ -32,6 +35,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
   onPasswordVisibleChange,
   ...props
 }, ref) => {
+  const isCompact = density === 'compact';
   const generatedId = useId();
   const inputId = id ?? props.name ?? generatedId;
   const hintId = hint ? `${inputId}-hint` : undefined;
@@ -94,7 +98,11 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
       {label ? (
         <label
           htmlFor={inputId}
-          className="mb-2 text-sm font-medium text-foreground"
+          className={cn(
+            isCompact
+              ? 'mb-1 text-[13px] font-medium leading-5 text-foreground'
+              : 'mb-2 text-sm font-medium text-foreground',
+          )}
         >
           {label}
         </label>
@@ -112,11 +120,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
           aria-invalid={ariaInvalid}
           style={inputStyle}
           className={cn(
-            'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all',
+            'input-surface input-focus-glow w-full border bg-transparent transition-all',
+            isCompact
+              ? 'h-9 rounded-md px-3 text-xs'
+              : 'h-11 rounded-xl px-4 text-sm',
             'focus:outline-none',
             error ? 'border-danger/30' : '',
-            leadingIcon ? 'pl-10' : '',
-            finalTrailingAction ? 'pr-12' : '',
+            leadingIcon ? (isCompact ? 'pl-9' : 'pl-10') : '',
+            finalTrailingAction ? (isCompact ? 'pr-10' : 'pr-12') : '',
             'disabled:cursor-not-allowed disabled:opacity-60',
             className,
           )}
@@ -133,14 +144,14 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
         <p
           id={errorId}
           role="alert"
-          className="mt-2 text-xs text-danger"
+          className={isCompact ? 'mt-1 text-[11px] leading-4 text-danger' : 'mt-2 text-xs text-danger'}
         >
           {error}
         </p>
       ) : hint ? (
         <p
           id={hintId}
-          className="mt-2 text-xs text-secondary-text"
+          className={isCompact ? 'mt-1 text-[11px] leading-4 text-secondary-text' : 'mt-2 text-xs text-secondary-text'}
         >
           {hint}
         </p>

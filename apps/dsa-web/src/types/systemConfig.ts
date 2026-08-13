@@ -83,6 +83,21 @@ export interface SystemConfigResponse {
   updatedAt?: string;
 }
 
+export interface TestModelConnectionRequest {
+  items?: SystemConfigUpdateItem[];
+  maskToken?: string;
+  timeoutSeconds?: number;
+}
+
+export interface TestModelConnectionResponse {
+  success: boolean;
+  message: string;
+  errorCode?: string | null;
+  stage?: string | null;
+  retryable: boolean;
+  latencyMs?: number | null;
+}
+
 export interface SetupStatusCheck {
   key: string;
   title: string;

@@ -197,8 +197,14 @@ class ChatSessionService:
         incoming_messages: List[Dict[str, Any]],
         *,
         parent_message_id: Optional[str] = None,
+        edit_message_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Attach a fresh client turn to the canonical server transcript."""
+        """Attach a fresh client turn to the canonical server transcript.
+
+        An assistant-ui edit is represented as a new branch message.  It must
+        replace the edited message and everything after it in the canonical
+        transcript instead of being appended as another user turn.
+        """
         detail = self.get_conversation(conversation_id) or {}
         historical = [
             {
@@ -218,7 +224,26 @@ class ChatSessionService:
             )
         ]
         clean_parent = str(parent_message_id or "").strip()
-        if clean_parent:
+        clean_edit = str(edit_message_id or "").strip()
+        if clean_edit:
+            edit_index = next(
+                (index for index, message in enumerate(historical) if message["id"] == clean_edit),
+                None,
+            )
+            if edit_index is not None:
+                historical = historical[:edit_index]
+            elif clean_parent:
+                # A repeated edit can arrive after an earlier edit already
+                # replaced the source id.  Preserve the same branch boundary
+                # rather than appending a duplicate turn.
+                parent_index = next(
+                    (index for index, message in enumerate(historical) if message["id"] == clean_parent),
+                    None,
+                )
+                historical = historical[: parent_index + 1] if parent_index is not None else []
+            else:
+                historical = []
+        elif clean_parent:
             parent_index = next(
                 (index for index, message in enumerate(historical) if message["id"] == clean_parent),
                 None,

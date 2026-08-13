@@ -35,6 +35,7 @@ from src.core.config_registry import (
 
 from src.services.system_config._display import DisplayMixin
 from src.services.system_config._notifications import NotificationsMixin
+from src.services.system_config._model_test import ModelTestMixin
 from src.services.system_config._setup_status import SetupStatusMixin
 from src.services.system_config._validation import ValidationMixin
 
@@ -70,6 +71,7 @@ class SystemConfigService(
     SetupStatusMixin,
     ValidationMixin,
     DisplayMixin,
+    ModelTestMixin,
 ):
     """Service layer for reading, validating, and updating runtime configuration."""
 
@@ -80,8 +82,13 @@ class SystemConfigService(
         """Return grouped schema metadata for UI rendering."""
         return build_schema_response()
 
-    def get_config(self, include_schema: bool = True, mask_token: str = "******") -> Dict[str, Any]:
-        """Return current config values without exposing sensitive values."""
+    def get_config(
+        self,
+        include_schema: bool = True,
+        mask_token: str = "******",
+        reveal_sensitive: bool = False,
+    ) -> Dict[str, Any]:
+        """Return current config values, optionally revealing sensitive values."""
         config_map = self._build_display_config_map(self._manager.read_config_map())
         registered_keys = set(get_registered_field_keys())
         all_keys = set(config_map.keys()) | registered_keys
@@ -98,7 +105,7 @@ class SystemConfigService(
             raw_value = config_map.get(key, "")
             field_schema = schema_by_key[key]
             is_sensitive = bool(field_schema.get("is_sensitive", False))
-            is_masked = raw_value_exists and is_sensitive and bool(raw_value)
+            is_masked = raw_value_exists and is_sensitive and bool(raw_value) and not reveal_sensitive
             display_value = (
                 mask_token
                 if is_masked

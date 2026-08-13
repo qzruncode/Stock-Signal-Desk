@@ -140,7 +140,7 @@ const SettingPage: React.FC = () => {
             onSelect={handleCategorySelect}
           />
         </div>
-        <h1 className="hidden text-2xl font-semibold text-foreground lg:block">AI 助手设置</h1>
+        <h1 className="hidden text-2xl font-semibold text-foreground lg:block">设置</h1>
       </header>
 
       <div className={cn(

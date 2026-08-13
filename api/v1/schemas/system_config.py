@@ -196,6 +196,25 @@ class TestNotificationChannelResponse(BaseModel):
     attempts: List[NotificationTestAttempt] = Field(default_factory=list)
 
 
+class TestModelConnectionRequest(BaseModel):
+    """Request payload for a non-persistent model connectivity test."""
+
+    items: List[SystemConfigUpdateItem] = Field(default_factory=list)
+    mask_token: str = "******"
+    timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+
+
+class TestModelConnectionResponse(BaseModel):
+    """Response payload for a model connectivity test."""
+
+    success: bool
+    message: str
+    error_code: Optional[str] = None
+    stage: Optional[str] = None
+    retryable: bool = False
+    latency_ms: Optional[int] = None
+
+
 class SystemConfigValidationErrorResponse(BaseModel):
     """Error payload for failed update validation."""
 

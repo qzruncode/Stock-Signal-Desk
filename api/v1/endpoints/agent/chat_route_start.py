@@ -26,6 +26,20 @@ from src.llm.anthropic_gateway import AnthropicGatewayConfigError as AgentModelC
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_edit_message_id(body: Mapping[str, Any]) -> str | None:
+    """Read the source message id stamped by the assistant-ui edit composer."""
+    run_config = body.get("runConfig") or body.get("run_config")
+    if not isinstance(run_config, Mapping):
+        return None
+    custom = run_config.get("custom")
+    if not isinstance(custom, Mapping):
+        return None
+    value = custom.get("editMessageId") or custom.get("edit_message_id")
+    text = str(value or "").strip()
+    return text or None
+
+
 async def agent_chat_impl(
     request: Request,
     db_manager: DatabaseManager,
@@ -88,6 +102,7 @@ async def agent_chat_impl(
         tenant_id=str(getattr(request.state, "tenant_id", "local")),
         owner_id=str(getattr(request.state, "owner_id", "admin")),
     )
+    edit_message_id = _extract_edit_message_id(body)
 
     # The current chat UI has one integrated execution timeline.  It does not
     # render legacy assistant-ui tool cards, so a reconnect must not replay a
@@ -212,6 +227,7 @@ async def agent_chat_impl(
             conv_id,
             list(messages),
             parent_message_id=body.get("history_parent_id"),
+            edit_message_id=edit_message_id,
         )
     # 原子地「判定无活跃 run + 创建新 run」(锁内)。把判定与创建合并,消除
     # is_active(无锁)与 start_or_get(锁内)之间的竞态窗口:两个并发请求不会

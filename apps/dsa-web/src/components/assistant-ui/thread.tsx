@@ -298,6 +298,7 @@ const UserMessage: FC<{ onDeleteTurn?: (messageId: string) => void }> = ({ onDel
 
 const EditComposerSendButton: FC = () => {
   const aui = useAui();
+  const messageId = useMessage((state) => state.id);
   const isEmpty = useAuiState((s) => s.composer.isEmpty);
 
   return (
@@ -306,7 +307,18 @@ const EditComposerSendButton: FC = () => {
       className="flex h-8 items-center rounded-lg bg-primary px-3 text-xs text-primary-foreground transition hover:bg-primary/90 disabled:opacity-30"
       title="重新发送"
       disabled={isEmpty}
-      onClick={() => aui.composer().send({ startRun: true })}
+      onClick={() => {
+        const composer = aui.composer();
+        const runConfig = composer.getState().runConfig;
+        composer.setRunConfig({
+          ...runConfig,
+          custom: {
+            ...(runConfig.custom || {}),
+            editMessageId: messageId,
+          },
+        });
+        composer.send({ startRun: true });
+      }}
     >
       发送
     </button>

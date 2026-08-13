@@ -16,6 +16,8 @@ from api.v1.schemas.system_config import (
     SystemConfigValidationErrorResponse,
     TestNotificationChannelRequest,
     TestNotificationChannelResponse,
+    TestModelConnectionRequest,
+    TestModelConnectionResponse,
     UpdateSystemConfigRequest,
     UpdateSystemConfigResponse,
 )
@@ -39,14 +41,15 @@ router = APIRouter()
         500: {"description": "Internal server error", "model": ErrorResponse},
     },
     summary="Get system configuration",
-    description="Read current configuration from .env; sensitive values are masked server-side.",
+    description="Read current configuration from .env; sensitive values are masked unless explicitly revealed.",
 )
 def get_system_config(
     include_schema: bool = Query(True, description="Whether to include schema metadata"),
+    reveal_sensitive: bool = False,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> SystemConfigResponse:
     try:
-        payload = service.get_config(include_schema=include_schema)
+        payload = service.get_config(include_schema=include_schema, reveal_sensitive=reveal_sensitive)
         return SystemConfigResponse.model_validate(payload)
     except Exception as exc:
         logger.error("Failed to load system configuration: %s", exc, exc_info=True)
@@ -161,6 +164,34 @@ def test_notification_channel(
         logger.error("Failed to test notification channel: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500, detail={"error": "internal_error", "message": "Failed to test notification channel"}
+        )
+
+
+@router.post(
+    "/config/model/test-connection",
+    response_model=TestModelConnectionResponse,
+    responses={
+        200: {"description": "Model connectivity test completed"},
+        500: {"description": "Internal server error", "model": ErrorResponse},
+    },
+    summary="Test model connection",
+    description="Send a tiny model request using saved or currently entered model configuration without persisting it.",
+)
+def test_model_connection(
+    request: TestModelConnectionRequest,
+    service: SystemConfigService = Depends(get_system_config_service),
+) -> TestModelConnectionResponse:
+    try:
+        payload = service.test_model_connection(
+            items=[item.model_dump() for item in request.items],
+            mask_token=request.mask_token,
+            timeout_seconds=request.timeout_seconds,
+        )
+        return TestModelConnectionResponse.model_validate(payload)
+    except Exception as exc:
+        logger.error("Failed to test model connection (%s)", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail={"error": "internal_error", "message": "Failed to test model connection"}
         )
 
 

@@ -523,3 +523,26 @@ def test_server_history_drops_legacy_terminal_status_message():
         )
 
     assert [message["id"] for message in messages] == ["user-1", "user-2"]
+
+
+def test_server_history_replaces_the_edited_message_branch():
+    service = object.__new__(ChatSessionService)
+    with patch.object(
+        service,
+        "get_conversation",
+        return_value={
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "旧问题"},
+                {"id": "assistant-1", "role": "assistant", "content": "旧回答"},
+                {"id": "user-2", "role": "user", "content": "后续问题"},
+            ]
+        },
+    ):
+        messages = service.compose_request_with_server_history(
+            "conversation-1",
+            [{"id": "edited-user", "role": "user", "content": "编辑后的问题"}],
+            parent_message_id=None,
+            edit_message_id="user-1",
+        )
+
+    assert [message["id"] for message in messages] == ["edited-user"]

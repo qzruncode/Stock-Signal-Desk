@@ -68,6 +68,45 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertTrue(items["GEMINI_API_KEY"]["raw_value_exists"])
         self.assertNotIn("secret-key-value", repr(payload))
 
+    def test_get_config_can_reveal_sensitive_values_for_model_settings(self) -> None:
+        payload = self.service.get_config(include_schema=True, reveal_sensitive=True)
+        items = {item["key"]: item for item in payload["items"]}
+
+        self.assertEqual(items["GEMINI_API_KEY"]["value"], "secret-key-value")
+        self.assertFalse(items["GEMINI_API_KEY"]["is_masked"])
+
+    def test_model_connection_uses_submitted_values_without_persisting(self) -> None:
+        import litellm
+
+        with patch.object(litellm, "completion", return_value=self._mock_completion_response("OK")) as mock_completion:
+            result = self.service.test_model_connection(
+                items=[
+                    {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
+                    {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
+                    {"key": "ANTHROPIC_MODEL", "value": "openai/glm-5.2"},
+                ],
+                timeout_seconds=9,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["stage"], "model_response")
+        kwargs = mock_completion.call_args.kwargs
+        self.assertEqual(kwargs["api_base"], "https://submitted.example.com")
+        self.assertEqual(kwargs["api_key"], "submitted-secret")
+        self.assertEqual(kwargs["model"], "openai/glm-5.2")
+        self.assertEqual(kwargs["timeout"], 9.0)
+        self.assertNotIn("submitted-secret", self.env_path.read_text(encoding="utf-8"))
+
+    def test_model_connection_reports_missing_required_values_without_calling_provider(self) -> None:
+        import litellm
+
+        with patch.object(litellm, "completion") as mock_completion:
+            result = self.service.test_model_connection(items=[])
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "config_missing")
+        mock_completion.assert_not_called()
+
     def test_config_manager_hardens_rewritten_env_permissions(self) -> None:
         old_version = self.manager.get_config_version()
         self.service.update(
