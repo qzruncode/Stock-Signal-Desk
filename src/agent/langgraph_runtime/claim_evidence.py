@@ -25,13 +25,34 @@ _SENTENCE_BOUNDARY = re.compile(
 )
 _EXPLICIT_DATE = re.compile(
     r"(?<!\d)(?:(?:19|20)\d{2}(?:[-/.]\d{1,2}(?:[-/.]\d{1,2})?)?|"
-    r"(?:19|20)\d{2}年(?:\d{1,2}月(?:\d{1,2}日?)?)?)(?!\d)"
+    r"(?:19|20)\d{2}年(?:\d{1,2}月(?:\d{1,2}日?)?)?|"
+    r"\d{1,2}\s*月\s*\d{1,2}\s*日?)(?!\d)"
 )
 _RELATIVE_TIME = re.compile(
     r"(?:最新|当前|今日|今天|截至|本周|本月|latest|current|today|as\s+of)",
     re.IGNORECASE,
 )
+_RELATIVE_NEGATION = re.compile(
+    r"(?:不宜|不应|不能|不可|无法|未能|没有|无|尚未|尚无|并非|不是|不代表|不等于|"
+    r"缺少|缺乏|未返回|未知|不确定).{0,20}(?:最新|当前|今日|今天|截至|本周|本月|"
+    r"latest|current|today|as\s+of)"
+    r"|(?:最新|当前|今日|今天|截至|本周|本月|latest|current|today|as\s+of).{0,20}"
+    r"(?:无法|不能|不可|未能|没有|无|尚未|尚无|并非|不是|不代表|不等于|缺少|缺乏|"
+    r"未返回|未知|不确定)",
+    re.IGNORECASE,
+)
+_FRESHNESS_DISCLAIMER = re.compile(
+    r"(?:无法确认|无法保证|时效(?:性)?(?:无法确认|未知|不明|有限|受限|限制|不足)|"
+    r"未返回[^。！？\n]{0,32}(?:时间|时间戳|quote_time|trade_time)|"
+    r"不宜(?:直接)?(?:表述|称|当作)|不能(?:直接)?(?:表述|称|当作))",
+    re.IGNORECASE,
+)
 _COMPACT_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]+[A-Za-z0-9_-]*\d[A-Za-z0-9_-]*|\d{6,})(?![A-Za-z0-9_])")
+_NON_ENTITY_IDENTIFIER = re.compile(
+    r"^(?:Q[1-4](?:-Q[1-4])?|[1-4]Q(?:-[1-4]Q)?|"
+    r"(?:MA|EMA|SMA|RSI|ATR|PE|PB|PEG)\d*|FY\d{2,4}|H[12])$",
+    re.IGNORECASE,
+)
 _INFERENCE_MARKER = re.compile(r"(?:^|[\s：:])(?:推断|推测|inference|inferred)(?:[：:]|\s)", re.IGNORECASE)
 _SENSITIVE_FIELDS = frozenset(
     {
@@ -105,7 +126,24 @@ def _compact_time(value: str) -> str:
 
 def _time_mentions(claim: str) -> tuple[list[str], bool]:
     explicit = _unique(_EXPLICIT_DATE.findall(claim))
-    return explicit, bool(_RELATIVE_TIME.search(claim))
+    if _FRESHNESS_DISCLAIMER.search(claim):
+        return explicit, False
+    relative = any(
+        not _RELATIVE_NEGATION.search(
+            claim[max(0, match.start() - 24) : min(len(claim), match.end() + 24)]
+        )
+        for match in _RELATIVE_TIME.finditer(claim)
+    )
+    return explicit, relative
+
+
+def _is_heading_only(candidate: str) -> bool:
+    """Do not audit a Markdown section label as if it were a data claim."""
+    return bool(
+        re.match(r"^#{1,6}\s+", candidate)
+        and not _EVIDENCE_REFERENCE.search(candidate)
+        and not _EXPLICIT_DATE.search(candidate)
+    )
 
 
 def _supports_explicit_time(value: str, evidence: Sequence[Mapping[str, Any]]) -> bool:
@@ -140,7 +178,97 @@ def _explicit_identifiers(claim: str) -> list[str]:
     """
     without_citations = _EVIDENCE_REFERENCE.sub("", claim)
     compact = _COMPACT_IDENTIFIER.findall(without_citations)
-    return _unique(compact)[:16]
+    return _unique(
+        [value for value in compact if not _NON_ENTITY_IDENTIFIER.fullmatch(value)]
+    )[:16]
+
+
+def _is_source_note_block(block: str) -> bool:
+    """Whether a block is an attribution that can support the block above it.
+
+    Models commonly put one source line below an entire Markdown table or a
+    short section instead of repeating the same citation on every row.  That
+    is still an explicit citation boundary.  Do not treat arbitrary prose
+    containing an evidence ID as a source note; doing so would let an
+    unrelated paragraph borrow a later citation.
+    """
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    if not lines or not _EVIDENCE_REFERENCE.search(block):
+        return False
+    first = lines[0]
+    return bool(
+        re.match(r"^(?:>|来源|资料来源|数据来源|source|citation)\s*", first, re.IGNORECASE)
+    )
+
+
+def _is_structured_block(block: str) -> bool:
+    """Keep tables/lists together while auditing their shared source note."""
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    if not lines:
+        return False
+    table_lines = sum(
+        1
+        for line in lines
+        if line.startswith("|") and line.endswith("|")
+    )
+    list_lines = sum(
+        1
+        for line in lines
+        if re.match(r"^(?:[-*+]\s+|\d+[.)]\s+)", line)
+    )
+    return table_lines >= 1 or list_lines >= 1 or _is_source_note_block(block)
+
+
+def _logical_answer_blocks(answer: str) -> list[tuple[str, bool]]:
+    """Build citation-aware blocks before sentence-level auditing.
+
+    A source note placed below a table/list/paragraph is a normal Markdown
+    presentation pattern.  The old line-level splitter treated every dated
+    table row as an independent uncited claim, even though the following
+    source note clearly covered the table.  Merge only an explicit attribution
+    block with its immediate predecessor; unrelated prose still cannot borrow
+    a citation from later in the answer.
+    """
+    raw_blocks: list[str] = []
+    current: list[str] = []
+    for line in answer.splitlines():
+        if line.strip():
+            current.append(line)
+        elif current:
+            raw_blocks.append("\n".join(current))
+            current = []
+    if current:
+        raw_blocks.append("\n".join(current))
+
+    blocks: list[tuple[str, bool]] = []
+    for block in raw_blocks:
+        source_note = _is_source_note_block(block)
+        if source_note and blocks:
+            previous, _ = blocks[-1]
+            blocks[-1] = (
+                previous + "\n" + block,
+                True,
+            )
+            continue
+        blocks.append((block, _is_structured_block(block)))
+
+    # A cited section heading or source-intro line is also a common scope for
+    # the table/list immediately below it.  Only allow this one-way merge from
+    # an unstructured block, so an unrelated later paragraph cannot borrow a
+    # citation merely because it follows a cited table.
+    scoped: list[tuple[str, bool]] = []
+    for block, structured in blocks:
+        if (
+            structured
+            and scoped
+            and not scoped[-1][1]
+            and _EVIDENCE_REFERENCE.search(scoped[-1][0])
+        ):
+            previous, _ = scoped[-1]
+            scoped[-1] = (previous + "\n" + block, True)
+        else:
+            scoped.append((block, structured))
+    return scoped
 
 
 def _claim_fragments(answer: str) -> list[str]:
@@ -154,21 +282,82 @@ def _claim_fragments(answer: str) -> list[str]:
     answer.
     """
     fragments: list[str] = []
-    for raw in _SENTENCE_BOUNDARY.split(answer):
-        candidate = raw.strip()
-        explicit_times, relative_time = _time_mentions(candidate)
-        if candidate and (
-            _EVIDENCE_REFERENCE.search(candidate)
-            or explicit_times
-            or relative_time
-        ):
-            fragments.append(candidate)
+    for block, structured in _logical_answer_blocks(answer):
+        candidates = (
+            [" ".join(line.strip() for line in block.splitlines() if line.strip())]
+            if structured
+            else _SENTENCE_BOUNDARY.split(block)
+        )
+        for raw in candidates:
+            candidate = raw.strip()
+            explicit_times, relative_time = _time_mentions(candidate)
+            if candidate and not _is_heading_only(candidate) and (
+                _EVIDENCE_REFERENCE.search(candidate)
+                or explicit_times
+                or relative_time
+            ):
+                fragments.append(candidate)
     # A malformed answer can place a citation immediately after a heading or
     # in a line without a sentence boundary.  Preserve it as one auditable
     # fragment rather than silently dropping the citation from the ledger.
     if not fragments and _EVIDENCE_REFERENCE.search(answer):
         fragments.append(answer.strip())
     return fragments
+
+
+def _inherited_evidence_ids(
+    explicit_times: Sequence[str],
+    prior_cited_ids: Sequence[str],
+    successful: Mapping[str, Mapping[str, Any]],
+    *,
+    relative_time: bool = False,
+) -> list[str]:
+    """Reuse a prior visible citation for an exact repeated date claim.
+
+    A later caution paragraph often repeats a date already cited in the
+    preceding source table.  Requiring the model to repeat the same ID on
+    every warning makes otherwise traceable answers fail, while borrowing an
+    unrelated later citation is unsafe.  Therefore inheritance is limited to
+    dates that are mechanically present in an evidence item whose ID has
+    already appeared earlier in the answer.
+    """
+    if not explicit_times or not prior_cited_ids:
+        return []
+
+    candidate_ids = list(prior_cited_ids)
+    if relative_time:
+        # A month/day-only phrase such as "7 月 13 日" can occur in an older
+        # IPO date and in a newer announcement.  For a relative claim such as
+        # "最新公告", prefer the already-cited evidence that carries a valid
+        # source timestamp instead of the first lexical match.
+        candidate_ids.sort(
+            key=lambda evidence_id: 0
+            if (
+                successful.get(evidence_id, {}).get("data_time")
+                and successful.get(evidence_id, {}).get("freshness_unknown") is not True
+                and successful.get(evidence_id, {}).get("is_stale") is not True
+            )
+            else 1
+        )
+
+    selected: list[str] = []
+    remaining = list(explicit_times)
+    for evidence_id in candidate_ids:
+        item = successful.get(evidence_id)
+        if item is None:
+            continue
+        supported = [
+            value
+            for value in remaining
+            if _supports_explicit_time(value, [item])
+        ]
+        if not supported:
+            continue
+        selected.append(evidence_id)
+        remaining = [value for value in remaining if value not in supported]
+        if not remaining:
+            break
+    return selected if not remaining else []
 
 
 def build_claim_evidence_ledger(
@@ -210,8 +399,17 @@ def build_claim_evidence_ledger(
         for evidence_id in cited_evidence_ids
         if evidence_id in successful
     ]
+    prior_cited_ids: list[str] = []
     for index, fragment in enumerate(_claim_fragments(answer), start=1):
-        evidence_ids = _unique(_EVIDENCE_REFERENCE.findall(fragment))
+        direct_evidence_ids = _unique(_EVIDENCE_REFERENCE.findall(fragment))
+        explicit_times, relative_time = _time_mentions(fragment)
+        inherited_ids = _inherited_evidence_ids(
+            explicit_times,
+            prior_cited_ids,
+            successful,
+            relative_time=relative_time,
+        )
+        evidence_ids = _unique([*direct_evidence_ids, *inherited_ids])
         missing = [value for value in evidence_ids if value not in successful]
         if missing:
             issues.append("引用了不存在或失败的 evidence_id: " + ", ".join(missing))
@@ -232,7 +430,6 @@ def build_claim_evidence_ledger(
         )
         source_ok = bool(source_refs)
         entity_scope_ok = bool(entity_fields) or bool(source_refs)
-        explicit_times, relative_time = _time_mentions(fragment)
         temporal_claim = bool(explicit_times) or relative_time
         if temporal_claim and not evidence_ids:
             issues.append(
@@ -277,12 +474,17 @@ def build_claim_evidence_ledger(
         if relative_time and not _supports_relative_time(supporting):
             issues.append("结论使用了当前/最新时间口径，但引用证据没有可用数据时间")
 
+        prior_cited_ids = _unique([*prior_cited_ids, *direct_evidence_ids])
+
         claims.append(
             {
                 "claim_id": f"claim_{index}",
                 "text": fragment[:2_000],
                 "kind": "inference" if _INFERENCE_MARKER.search(fragment) else "fact",
                 "evidence_ids": evidence_ids,
+                "citation_mode": "direct" if direct_evidence_ids else (
+                    "inherited" if inherited_ids else "missing"
+                ),
                 "entity_fields": entity_fields,
                 "time_references": explicit_times,
                 "uses_relative_time": relative_time,

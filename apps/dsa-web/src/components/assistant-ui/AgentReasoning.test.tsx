@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useMessage } from '@assistant-ui/react';
 import { AgentExecutionTimeline } from './AgentReasoning';
@@ -224,6 +224,36 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.getByText('模型已给出候选回答，正在检查其证据关联')).toBeInTheDocument();
     expect(screen.queryByText(/候选回答正文不应/)).not.toBeInTheDocument();
     expect(screen.queryByText(/候选回答摘录/)).not.toBeInTheDocument();
+  });
+
+  it('does not repeat the latest stage summary in the expanded header', () => {
+    const summary = '第 1 轮：模型正在基于当前问题、工具观察和证据决定下一步';
+    mockMessage({
+      status: { type: 'running' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-summary',
+            stage: 'model',
+            status: 'started',
+            summary,
+            details: { model_turn: 1 },
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    const header = screen.getByRole('button', { name: /执行过程/ });
+    expect(header).not.toHaveTextContent(summary);
+    expect(screen.getByText(summary)).toBeInTheDocument();
+
+    fireEvent.click(header);
+
+    expect(screen.getByRole('button', { name: new RegExp(summary) })).toBeInTheDocument();
   });
 
   it('lists exact historical references instead of calling their length a source count', () => {

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.storage import DatabaseManager
-from src.agent.progress import strip_agent_progress
+from src.agent.progress import is_non_answer_agent_message, strip_agent_progress
 
 
 class ChatSessionService:
@@ -123,7 +123,14 @@ class ChatSessionService:
         )
         if not conversation:
             return None
-        messages = self.db.get_chat_messages(conversation_id)
+        messages = [
+            message
+            for message in self.db.get_chat_messages(conversation_id)
+            if not (
+                str(getattr(message, "role", "")) == "assistant"
+                and is_non_answer_agent_message(getattr(message, "content", ""))
+            )
+        ]
         thread_state = None
         if include_thread_state and getattr(conversation, "thread_state_json", None):
             try:
@@ -201,7 +208,14 @@ class ChatSessionService:
                 "created_at": message.get("created_at"),
             }
             for message in detail.get("messages") or []
-            if (isinstance(message, dict) and not str(message.get("id") or "").endswith("-assistant-pending"))
+            if (
+                isinstance(message, dict)
+                and not str(message.get("id") or "").endswith("-assistant-pending")
+                and not (
+                    str(message.get("role") or "") == "assistant"
+                    and is_non_answer_agent_message(message.get("content", ""))
+                )
+            )
         ]
         clean_parent = str(parent_message_id or "").strip()
         if clean_parent:
@@ -364,6 +378,8 @@ class ChatSessionService:
             content = self._extract_text(raw.get("content"))
             if role == "assistant":
                 content = strip_agent_progress(content)
+                if is_non_answer_agent_message(content):
+                    continue
             if not content:
                 continue
             normalized_messages.append(

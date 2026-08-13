@@ -113,3 +113,100 @@ def test_claim_ledger_does_not_treat_ordinary_quoted_prose_as_an_identifier() ->
     )
 
     assert not any("显式标识" in issue for issue in ledger["issues"])
+
+
+def test_claim_ledger_binds_a_source_note_to_the_preceding_markdown_table() -> None:
+    ledger = build_claim_evidence_ledger(
+        "| 日期 | 事项 |\n"
+        "|---|---|\n"
+        "| 2026-07-13 | 股份质押 |\n"
+        "| 2026-07-03 | 2025 年度再融资文件 |\n\n"
+        "> 来源：公司公告【证据 ev_robot】",
+        [
+            _evidence(
+                result={
+                    "items": [
+                        {"date": "2026-07-13", "title": "股份质押"},
+                        {"date": "2026-07-03", "title": "2025 年度再融资文件"},
+                    ]
+                }
+            )
+        ],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["evidence_ids"] == ["ev_robot"]
+    assert ledger["claims"][0]["time_references"] == ["2026-07-13", "2026-07-03", "2025"]
+
+
+def test_claim_ledger_binds_a_cited_section_intro_to_the_following_table() -> None:
+    ledger = build_claim_evidence_ledger(
+        "### 产品维度（2025 年全年）【证据 ev_robot】\n\n"
+        "| 产品 | 收入占比 |\n"
+        "|---|---|\n"
+        "| 核心业务 | 54.3% |",
+        [_evidence(result={"items": [{"period": "2025 年全年", "share": "54.3%"}]})],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["evidence_ids"] == ["ev_robot"]
+
+
+def test_claim_ledger_does_not_treat_common_period_or_indicator_labels_as_entities() -> None:
+    ledger = build_claim_evidence_ledger(
+        "2025Q4 的 MA20 与 RSI14 均已列入说明【证据 ev_robot】",
+        [_evidence(result={"summary": "周期与指标说明"})],
+        [_tool_result()],
+    )
+
+    assert not any("显式标识" in issue for issue in ledger["issues"])
+
+
+def test_claim_ledger_ignores_a_heading_only_current_label() -> None:
+    ledger = build_claim_evidence_ledger(
+        "## 当前市场主线\n\n后续内容待补充。",
+        [_evidence()],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"] == []
+
+
+def test_claim_ledger_accepts_a_cited_freshness_disclaimer_without_source_time() -> None:
+    ledger = build_claim_evidence_ledger(
+        "### 当前估值快照\n\n"
+        "报价为 12.3 元；该来源未返回交易时间戳，时效性无法确认。"
+        "【证据 ev_robot】",
+        [_evidence(data_time=None, freshness_unknown=True, is_stale=None)],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["uses_relative_time"] is False
+
+
+def test_claim_ledger_does_not_require_freshness_for_a_negative_latest_warning() -> None:
+    ledger = build_claim_evidence_ledger(
+        '该来源未返回交易时间，不宜直接表述为“最新价”。【证据 ev_robot】',
+        [_evidence(data_time=None, freshness_unknown=True, is_stale=None)],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["uses_relative_time"] is False
+
+
+def test_claim_ledger_reuses_an_earlier_visible_citation_for_a_repeated_date() -> None:
+    ledger = build_claim_evidence_ledger(
+        "截至2026-08-08，主来源已返回可用材料【证据 ev_robot】\n\n"
+        "补充说明：这组材料对应 2026-08-08。",
+        [_evidence()],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][1]["citation_mode"] == "inherited"
+    assert ledger["claims"][1]["evidence_ids"] == ["ev_robot"]

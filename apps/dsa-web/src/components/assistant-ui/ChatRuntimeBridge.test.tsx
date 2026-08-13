@@ -91,6 +91,32 @@ describe('ChatRuntimeBridge', () => {
     });
   });
 
+  it('does not hydrate a terminal status as an assistant answer', async () => {
+    const detail = makeDetail(false);
+    detail.messages.splice(1, 0, {
+      id: 'assistant-timeout',
+      conversationId: detail.id,
+      role: 'assistant',
+      content: '上游模型服务返回超时；已保留已有工具观察和证据。',
+      sequence: 1,
+      createdAt: '2026-07-17T10:00:30Z',
+    });
+
+    render(
+      <ChatRuntimeBridge
+        conversationDetail={detail}
+        onThreadRuntime={vi.fn()}
+        onPrepareResumeExisting={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      const hydrated = vi.mocked(runtime.reset).mock.calls.at(-1)?.[0] as Array<{ id?: string }>;
+      expect(hydrated?.some((message) => message.id === 'assistant-timeout')).toBe(false);
+      expect(hydrated?.some((message) => message.id === 'assistant-1')).toBe(true);
+    });
+  });
+
   it('ignores opaque tool thread state and restores canonical messages', async () => {
     render(
       <ChatRuntimeBridge

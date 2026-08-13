@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict, defaultdict
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
@@ -210,6 +211,78 @@ def test_plain_answer_uses_the_standard_model_completion_path() -> None:
         assert result.final_text == "这是无需外部取证的解释。"
         assert executor.calls == []
         assert [item["stage"] for item in result.stage_history or []] == ["model", "model", "publish"]
+
+    asyncio.run(scenario())
+
+
+def test_partial_provider_status_is_not_promoted_to_an_assistant_answer() -> None:
+    class Graph:
+        def __init__(self) -> None:
+            self.update: dict[str, Any] | None = None
+
+        async def aget_state(self, _config: Mapping[str, Any]) -> Any:
+            return SimpleNamespace(values={"answer_final": "", "answer_draft": ""})
+
+        async def aupdate_state(self, _config: Mapping[str, Any], update: Mapping[str, Any]) -> None:
+            self.update = dict(update)
+
+    class Events:
+        def __init__(self) -> None:
+            self.stages: list[tuple[str, ...]] = []
+            self.texts: list[str] = []
+
+        def close_open_stages(self, **_kwargs: Any) -> None:
+            return None
+
+        def stage(self, *args: Any, **_kwargs: Any) -> None:
+            self.stages.append(tuple(str(arg) for arg in args))
+
+        def text(self, value: str) -> None:
+            self.texts.append(value)
+
+    async def scenario() -> None:
+        graph = Graph()
+        events = Events()
+        manager = LangGraphRuntimeManager(registry=_registry())
+        result = await manager._terminate_partial(
+            graph,
+            config={},
+            context=SimpleNamespace(events=events),
+            error_code="model_provider_timeout",
+            message="上游模型服务返回超时；已保留已有工具观察和证据。",
+        )
+
+        assert result["answer_final"] == ""
+        assert graph.update == {
+            "answer_final": "",
+            "status": "partial",
+            "error_code": "model_provider_timeout",
+        }
+        assert events.texts == []
+        assert events.stages[-1] == ("publish", "failed", "上游模型服务返回超时；已保留已有工具观察和证据。")
+
+    asyncio.run(scenario())
+
+
+def test_model_stage_reports_prompt_footprint_without_imposing_a_new_limit() -> None:
+    async def scenario() -> None:
+        result, _executor = await _run(
+            model=ScriptedChatModel(responses=[AIMessage(content="这是一个可用的回答。")]),
+            registry=_registry(_search_operation()),
+            conversation_id="prompt-footprint",
+        )
+
+        model_started = next(
+            item
+            for item in result.stage_history or []
+            if item["stage"] == "model" and item["status"] == "started"
+        )
+        details = model_started["details"]
+        assert details["operation_count"] == 1
+        assert details["bound_tool_count"] == 1
+        assert details["directory_character_count"] > 0
+        assert details["system_prompt_character_count"] > 0
+        assert result.status == "completed"
 
     asyncio.run(scenario())
 

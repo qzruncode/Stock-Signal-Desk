@@ -60,6 +60,26 @@ class ToolDescriptor:
             entry["sources"] = list(self.sources)
         return entry
 
+    def model_entry(self) -> dict[str, Any]:
+        """Return metadata that is not already in the bound tool schema.
+
+        ``create_agent`` sends each operation's description and argument schema
+        through the provider ``tools`` payload. Repeating those fields in the
+        system prompt made the model read the same contract twice. The prompt
+        still needs the source directory and effect classification, so keep
+        those here while treating the bound schema as the authority for
+        arguments and operation descriptions.
+        """
+        entry: dict[str, Any] = {
+            "operation": self.name,
+            "effect": self.effect,
+        }
+        if self.category != "data":
+            entry["category"] = self.category
+        if self.sources:
+            entry["sources"] = list(self.sources)
+        return entry
+
 
 class ToolCatalog:
     """Static view of all model-callable operations and their source IDs."""
@@ -83,6 +103,12 @@ class ToolCatalog:
             )
         self._descriptors = tuple(descriptors)
         self._by_name = {item.name: item for item in descriptors}
+        self._model_context = json.dumps(
+            [item.model_entry() for item in self._descriptors],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
 
     @property
     def size(self) -> int:
@@ -97,13 +123,14 @@ class ToolCatalog:
         return item.compact() if item is not None else None
 
     def model_context(self) -> str:
-        """Return all available operations and sources in one compact payload."""
-        return json.dumps(
-            self.compact_catalog(),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            default=str,
-        )
+        """Return the complete, non-ranked source/effect directory.
+
+        Operation descriptions and parameter fields are intentionally omitted:
+        they are already present in every bound LangChain tool schema. This
+        keeps every operation callable while avoiding a second copy of the same
+        model contract in the system prompt.
+        """
+        return self._model_context
 
 
 __all__ = ["ToolCatalog", "ToolDescriptor"]

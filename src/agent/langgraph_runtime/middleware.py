@@ -48,6 +48,31 @@ def _message_text(message: AIMessage) -> str:
     return str(content or "").strip()
 
 
+def _serialized_character_count(value: Any) -> int:
+    """Return a cheap prompt-footprint metric without changing the payload."""
+    try:
+        return len(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            )
+        )
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+def _message_character_count(messages: Sequence[BaseMessage]) -> int:
+    total = 0
+    for message in messages:
+        total += _serialized_character_count(getattr(message, "content", ""))
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            total += _serialized_character_count(tool_calls)
+    return total
+
+
 def _bounded(value: Any, *, depth: int = 0) -> Any:
     """Make a useful ToolMessage observation without inflating the next prompt."""
     if depth >= 4:
@@ -198,8 +223,8 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
             part
             for part in (
                 base_prompt,
-                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n所有 operation Schema 都已绑定在本轮模型调用中；下面是完整 operation/source 目录，不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。一条调用只能访问一个来源；如果结果失败，阅读错误并自行决定是否需要换一个来源、改写查询或直接说明缺口。\n\n当用户询问分组列表时读取分组摘要；当用户询问某个分组的成员，或明确要求任务只针对某个分组时，先读取该分组。后续只在用户仍引用该分组或明确限定范围时使用它，不要把分组上下文自动套用到无关问题；分组名称不明确时先询问。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。不要伪造确认字段或声称未执行的操作。""",
-                "完整 operation/source 目录：\n" + source_catalog,
+                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n本轮所有 operation schema 都已绑定到模型调用中；绑定 schema 是 operation 描述和参数的唯一权威来源。下面的紧凑 operation/source 目录只补充 effect、source_id 和来源用途，不是另一份参数 schema，也不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。一条调用只能访问一个来源；如果结果失败，阅读错误并自行决定是否需要换一个来源、改写查询或直接说明缺口。\n\n当用户询问分组列表时读取分组摘要；当用户询问某个分组的成员，或明确要求任务只针对某个分组时，先读取该分组。后续只在用户仍引用该分组或明确限定范围时使用它，不要把分组上下文自动套用到无关问题；分组名称不明确时先询问。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。不要伪造确认字段或声称未执行的操作。""",
+                "紧凑 operation/source 目录：\n" + source_catalog,
                 (
                     "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用，不自动限制无关问题）：\n"
                     + json.dumps(conversation_context, ensure_ascii=False, default=str)
@@ -235,8 +260,14 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
             details={
                 "model_turn": model_turn,
                 "operation_count": context.catalog.size,
+                "bound_tool_count": len(getattr(request, "tools", ()) or ()),
+                "directory_character_count": len(source_catalog),
+                "system_prompt_character_count": len(system_prompt),
+                "message_character_count": _message_character_count(state.get("messages") or []),
                 "evidence_count": len(evidence),
+                "evidence_character_count": _serialized_character_count(evidence),
                 "prior_tool_observation_count": len(observations),
+                "observation_character_count": _serialized_character_count(observations),
                 "has_evidence_feedback": bool(feedback),
             },
         )
@@ -546,7 +577,34 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         }
 
         if issues and int(state.get("evidence_repair_count") or 0) < int(state.get("evidence_repair_limit") or 0):
-            feedback = "；".join(issues)
+            repair_targets = [
+                {
+                    "text": str(claim.get("text") or "")[:600],
+                    "evidence_ids": list(claim.get("evidence_ids") or []),
+                    "checks": dict(claim.get("checks") or {}),
+                }
+                for claim in ledger["claims"]
+                if not all(bool(value) for value in (claim.get("checks") or {}).values())
+            ][:12]
+            target_text = "\n".join(
+                "- "
+                + target["text"]
+                + (
+                    "（已有证据：" + "、".join(target["evidence_ids"]) + "）"
+                    if target["evidence_ids"]
+                    else "（尚无证据引用）"
+                )
+                for target in repair_targets
+            )
+            feedback = (
+                "；".join(issues)
+                + "\n可用 evidence_id："
+                + "、".join(available_ids)
+                + "\n修订要求：只修复真实的证据关联问题，不要因为引用位于表格后的来源行而删除表格内容；"
+                "表格或连续列表可由紧随其后的来源行统一引用。重复已核实事实时，沿用对应的已有 evidence_id；"
+                "否定性时效说明（例如无法确认最新价）不要改写成当前/最新事实。"
+                + ("\n需要处理的片段：\n" + target_text if target_text else "")
+            )
             context.events.stage(
                 "evidence",
                 "started",
@@ -555,6 +613,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     **audit_details,
                     "issues": issues,
                     "available_evidence_ids": available_ids,
+                    "repair_targets": repair_targets,
                 },
             )
             return {

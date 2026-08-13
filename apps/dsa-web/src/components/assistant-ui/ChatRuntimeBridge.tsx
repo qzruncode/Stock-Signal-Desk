@@ -14,6 +14,12 @@ import { type AgentExecutionTrace, type ChatConversationDetail } from '../../api
  */
 
 const PENDING_ASSISTANT_SUFFIX = '-assistant-pending';
+const NON_ANSWER_ASSISTANT_MESSAGES = new Set([
+  '上游模型服务返回超时；已保留已有工具观察和证据。',
+  '模型服务暂时不可用；已保留已有工具观察和证据。',
+  '本轮工具/循环预算已耗尽；已保留已有观察并停止继续调用。',
+  '本轮模型调用、Token 或费用预算已耗尽；已保留已有工具观察和证据。',
+]);
 const TERMINAL_RUN_STATUSES = new Set([
   'completed',
   'partial',
@@ -88,17 +94,21 @@ const toRuntimeMessages = (
   includeTracePlaceholder = false,
 ): ThreadMessageLike[] => {
   const persistedStages = persistedStageEvents(latestStage, executionTrace);
+  const renderableMessages = messages.filter((message) => (
+    message.role !== 'assistant'
+    || !NON_ANSWER_ASSISTANT_MESSAGES.has((message.content || '').trim())
+  ));
   // A durable trace belongs to the assistant message created by that same
   // terminal run, never merely to the latest historical assistant message.
   // This prevents a failed/cancelled turn with no answer text from decorating
   // a previous answer as if it were still executing.
   const normalizedAssistantText = (assistantText || '').trim();
   const traceAssistantId = normalizedAssistantText
-    ? [...messages].reverse().find((message) => (
+    ? [...renderableMessages].reverse().find((message) => (
         message.role === 'assistant' && (message.content || '').trim() === normalizedAssistantText
       ))?.id
     : undefined;
-  const runtimeMessages = messages
+  const runtimeMessages = renderableMessages
     .filter((message) => (message.content || '').trim().length > 0)
     .map((message) => {
       const stages = message.id === traceAssistantId ? persistedStages : [];

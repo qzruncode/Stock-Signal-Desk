@@ -394,7 +394,9 @@ export const AgentExecutionTimeline: FC = () => {
           />
           <span className="text-sm font-medium text-foreground">执行过程</span>
           <span className="text-xs text-muted-foreground">{rows.length} 条实际记录</span>
-          {latest?.summary ? <span className="min-w-0 break-words text-xs text-muted-foreground">· {latest.summary}</span> : null}
+          {latest?.summary && !expanded ? (
+            <span className="min-w-0 break-words text-xs text-muted-foreground">· {latest.summary}</span>
+          ) : null}
         </span>
         <ChevronDownIcon className={cn('size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-180')} />
       </button>

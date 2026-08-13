@@ -21,6 +21,7 @@ from src.agent.model_runtime import (
     ModelProviderReportedTimeoutError,
     ModelProviderUnavailableError,
 )
+from src.agent.progress import is_non_answer_agent_message
 from src.agent.run_registry import active_run_registry
 from src.agent.runtime_safety import get_agent_runtime_limits
 from src.tools.registry import ToolRegistry
@@ -433,8 +434,8 @@ class LangGraphRuntimeManager:
         snapshot = await graph.aget_state(config)
         state = dict(snapshot.values or {})
         answer = str(state.get("answer_final") or state.get("answer_draft") or "").strip()
-        if not answer:
-            answer = message
+        if is_non_answer_agent_message(answer):
+            answer = ""
         update = {"answer_final": answer, "status": "partial", "error_code": error_code}
         try:
             await graph.aupdate_state(config, update)
@@ -442,7 +443,8 @@ class LangGraphRuntimeManager:
             pass
         context.events.close_open_stages(status="failed", reason=message, error_code=error_code)
         context.events.stage("publish", "failed", message, error_code=error_code)
-        context.events.text(answer)
+        if answer:
+            context.events.text(answer)
         return {**state, **update}
 
     async def run_new(

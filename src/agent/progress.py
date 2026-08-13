@@ -14,6 +14,18 @@ PROGRESS_MARKERS = (
     "正在汇总标准任务结果...",
 )
 
+# These strings describe a terminal run status.  They are useful in the
+# execution trace, but they are not an assistant answer and must not become a
+# normal message in the conversation transcript.
+NON_ANSWER_AGENT_MESSAGES = frozenset(
+    {
+        "上游模型服务返回超时；已保留已有工具观察和证据。",
+        "模型服务暂时不可用；已保留已有工具观察和证据。",
+        "本轮工具/循环预算已耗尽；已保留已有观察并停止继续调用。",
+        "本轮模型调用、Token 或费用预算已耗尽；已保留已有工具观察和证据。",
+    }
+)
+
 
 def strip_agent_progress(text: str) -> str:
     cleaned = str(text or "")
@@ -22,4 +34,14 @@ def strip_agent_progress(text: str) -> str:
     return cleaned.strip()
 
 
-__all__ = ["PROGRESS_MARKERS", "strip_agent_progress"]
+def is_non_answer_agent_message(text: str) -> bool:
+    """Return whether text is a runtime status, rather than an answer."""
+    return str(text or "").strip() in NON_ANSWER_AGENT_MESSAGES
+
+
+__all__ = [
+    "NON_ANSWER_AGENT_MESSAGES",
+    "PROGRESS_MARKERS",
+    "is_non_answer_agent_message",
+    "strip_agent_progress",
+]

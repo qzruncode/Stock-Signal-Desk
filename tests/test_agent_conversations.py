@@ -7,6 +7,7 @@ api.v1.endpoints.agent.conversations.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -452,3 +453,73 @@ def test_assistant_progress_copy_is_not_persisted():
         ]
     )
     assert messages[0]["content"] == "## 最终结论\n证据充分。"
+
+
+def test_terminal_status_is_not_persisted_as_assistant_answer():
+    service = object.__new__(ChatSessionService)
+    messages = service._normalize_messages(
+        [
+            {"id": "user-1", "role": "user", "content": "问题"},
+            {
+                "id": "assistant-timeout",
+                "role": "assistant",
+                "content": "上游模型服务返回超时；已保留已有工具观察和证据。",
+            },
+            {"id": "assistant-1", "role": "assistant", "content": "真实回答"},
+        ]
+    )
+
+    assert [message["id"] for message in messages] == ["user-1", "assistant-1"]
+
+
+def test_get_conversation_hides_legacy_terminal_status_message():
+    service = object.__new__(ChatSessionService)
+    service.db = MagicMock()
+    service.db.get_chat_conversation.return_value = SimpleNamespace(
+        thread_state_json=None,
+        to_dict=lambda: {"id": "conversation-1"},
+    )
+    service.db.get_chat_messages.return_value = [
+        SimpleNamespace(
+            role="user",
+            content="问题",
+            to_dict=lambda: {"id": "user-1", "role": "user", "content": "问题"},
+        ),
+        SimpleNamespace(
+            role="assistant",
+            content="上游模型服务返回超时；已保留已有工具观察和证据。",
+            to_dict=lambda: {
+                "id": "assistant-timeout",
+                "role": "assistant",
+                "content": "上游模型服务返回超时；已保留已有工具观察和证据。",
+            },
+        ),
+    ]
+
+    detail = service.get_conversation("conversation-1")
+
+    assert [message["id"] for message in detail["messages"]] == ["user-1"]
+
+
+def test_server_history_drops_legacy_terminal_status_message():
+    service = object.__new__(ChatSessionService)
+    with patch.object(
+        service,
+        "get_conversation",
+        return_value={
+            "messages": [
+                {"id": "user-1", "role": "user", "content": "旧问题"},
+                {
+                    "id": "assistant-timeout",
+                    "role": "assistant",
+                    "content": "上游模型服务返回超时；已保留已有工具观察和证据。",
+                },
+            ]
+        },
+    ):
+        messages = service.compose_request_with_server_history(
+            "conversation-1",
+            [{"id": "user-2", "role": "user", "content": "新问题"}],
+        )
+
+    assert [message["id"] for message in messages] == ["user-1", "user-2"]
