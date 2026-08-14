@@ -155,14 +155,37 @@ class ModelTestMixin:
         first_choice = choices[0]
         if isinstance(first_choice, dict):
             message = first_choice.get("message") or {}
-            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(message, dict):
+                content = message.get("content")
+                reasoning_content = message.get("reasoning_content")
+            else:
+                content = None
+                reasoning_content = None
         else:
             message = getattr(first_choice, "message", None)
             content = getattr(message, "content", None) if message is not None else None
 
-        if isinstance(content, list):
-            return any(str(part).strip() for part in content)
-        return bool(str(content or "").strip())
+            reasoning_content = (
+                getattr(message, "reasoning_content", None) if message is not None else None
+            )
+
+        return any(
+            ModelTestMixin._has_non_empty_response_part(value)
+            for value in (content, reasoning_content)
+        )
+
+    @staticmethod
+    def _has_non_empty_response_part(value: Any) -> bool:
+        """Accept text returned in content, reasoning, or structured text blocks."""
+        if isinstance(value, list):
+            return any(ModelTestMixin._has_non_empty_response_part(part) for part in value)
+        if isinstance(value, dict):
+            return any(
+                ModelTestMixin._has_non_empty_response_part(value.get(key))
+                for key in ("text", "thinking", "content", "reasoning_content")
+                if key in value
+            )
+        return bool(str(value or "").strip())
 
     @classmethod
     def _safe_model_error_message(cls, exc: Exception, effective_map: Dict[str, str]) -> str:

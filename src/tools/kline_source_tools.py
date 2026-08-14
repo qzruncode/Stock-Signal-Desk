@@ -1,8 +1,8 @@
-"""Internal one-provider daily K-line adapter.
+"""Internal daily K-line adapter.
 
-Only ``source_operations`` defines the model-visible operations.  Keeping this
-module as raw source I/O prevents generated per-provider tool schemas from
-reappearing beside the generic ``source_id`` operation contract.
+Only ``source_operations`` defines the model-visible operations.  This module
+keeps the provider adapters and strict single-source path; recent-bar reads
+additionally use the shared completed-bar gateway when fallback is enabled.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from src.tools._kline import (
     _kline_is_stale,
     _normalize_kline_df,
 )
+from src.tools.kline_gateway import read_reliable_kline
 from src.tools.symbols import resolve_local_symbol
 
 
@@ -60,10 +61,19 @@ def _read_source(
     end_date: str,
     requested_count: int | None,
     range_mode: bool,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
     code = _resolve_a_share_symbol(symbol)
     source_label, fetcher = _SOURCES[source_key]
     now = datetime.now().astimezone()
+    if not range_mode and requested_count is not None and allow_fallback:
+        return read_reliable_kline(
+            code,
+            preferred_source=source_key,
+            count=requested_count,
+            sources=_SOURCES,
+            allow_fallback=True,
+        )
     try:
         frame = fetcher(code, start_date, end_date)
         records = _normalize_kline_df(frame, code, source_key)

@@ -255,6 +255,8 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         schemas = {item["function"]["name"]: item["function"]["parameters"] for item in registry.get_all_schemas()}
 
         self.assertEqual(schemas["read_recent_kline"]["properties"]["count"]["default"], 60)
+        self.assertTrue(schemas["read_recent_kline"]["properties"]["allow_fallback"]["default"])
+        self.assertTrue(schemas["calculate_technical_indicator"]["properties"]["allow_fallback"]["default"])
         self.assertEqual(schemas["read_core_financial_indicators_ths"]["properties"]["periods"]["default"], 6)
         self.assertEqual(schemas["get_balance_sheet"]["properties"]["periods"]["default"], 4)
         self.assertEqual(schemas["read_company_news_akshare"]["properties"]["days"]["default"], 30)

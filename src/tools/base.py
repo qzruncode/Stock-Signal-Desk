@@ -36,8 +36,9 @@ ToolEffectResolver = Callable[[Mapping[str, Any]], ToolEffect]
 # A model never chooses an operation, workflow, capability, or provider route
 # through an arbitrary argument.  ``source_id`` is the one intentional
 # exception: generic read operations use it to name one entry from their
-# declared, model-visible source catalog.  One invocation still calls exactly
-# that source and never falls back to another one.
+# declared, model-visible source catalog.  Most source operations remain
+# strict; the completed daily-bar operations may use their declared fallback
+# gateway and report the actual provider in the result.
 MODEL_TOOL_SELECTOR_FIELDS = frozenset(
     {
         "action",

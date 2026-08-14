@@ -1,9 +1,10 @@
-"""Internal one-source, one-indicator calculation adapter.
+"""Internal one-indicator calculation adapter.
 
 The only model-visible contract is
 ``source_operations.calculate_technical_indicator``.  This module contains
-the deterministic math and one-provider data read behind that contract; it
-does not manufacture a second, per-provider tool catalogue.
+the deterministic math and preferred-provider data read behind that contract;
+transient failures may use the shared daily-bar gateway without manufacturing
+a second, per-provider tool catalogue.
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ from src.tools._kline import (
     _kline_is_stale,
     _normalize_kline_df,
 )
+from src.tools._trading_calendar import latest_completed_trade_day
+from src.tools.kline_gateway import read_reliable_kline
 from src.tools.symbols import resolve_local_symbol
 
 
@@ -43,15 +46,30 @@ def _resolve_a_share_symbol(symbol: str) -> str:
     return code
 
 
-def _read_source_rows(code: str, *, source_key: str, count: int) -> dict[str, Any]:
+def _read_source_rows(
+    code: str,
+    *,
+    source_key: str,
+    count: int,
+    allow_fallback: bool = True,
+) -> dict[str, Any]:
     source_label, fetcher = _SOURCES[source_key]
     now = datetime.now().astimezone()
+    if allow_fallback:
+        return read_reliable_kline(
+            code,
+            preferred_source=source_key,
+            count=count,
+            sources=_SOURCES,
+            allow_fallback=True,
+        )
     lookback_days = max(160, int(count * 1.7) + 45)
+    end_date = latest_completed_trade_day(now).strftime("%Y%m%d")
     try:
         frame = fetcher(
             code,
             (now - timedelta(days=lookback_days)).strftime("%Y%m%d"),
-            now.strftime("%Y%m%d"),
+            end_date,
         )
         records = _normalize_kline_df(frame, code, source_key)
     except Exception as exc:
@@ -111,24 +129,29 @@ def _failure(
     raw: dict[str, Any],
     error: str,
 ) -> dict[str, Any]:
-    source_label, _ = _SOURCES[source_key]
+    actual_source_key = str(raw.get("source_key") or source_key)
+    source_label = str(raw.get("source") or _SOURCES[source_key][0])
     return {
         "success": False,
-        "partial": False,
+        "partial": bool(raw.get("partial")),
         "symbol": code,
         "indicator": indicator,
         "calculation": {},
         "source": source_label,
-        "source_scope": f"{source_key}_daily_qfq_kline_plus_{indicator}",
+        "source_key": actual_source_key,
+        "source_origin": raw.get("source_origin"),
+        "source_scope": f"{actual_source_key}_daily_qfq_kline_plus_{indicator}",
         "data_time": raw.get("data_time"),
         "data_time_provenance": raw.get("data_time_provenance", "unavailable"),
         "data_time_note": raw.get("data_time_note"),
         "is_stale": raw.get("is_stale"),
         "freshness_unknown": raw.get("freshness_unknown", True),
-        "fallback_used": False,
+        "fallback_used": bool(raw.get("fallback_used")),
+        "fallback_provider": raw.get("fallback_provider"),
+        "source_attempts": list(raw.get("source_attempts") or []),
         "errors": [*list(raw.get("errors") or []), error],
         "warnings": list(raw.get("warnings") or []),
-        "_cached": False,
+        "_cached": bool(raw.get("_cached")),
         "_fetched_at": raw.get("_fetched_at"),
     }
 
@@ -142,29 +165,34 @@ def _success(
     frame: pd.DataFrame,
     calculation: dict[str, Any],
 ) -> dict[str, Any]:
-    source_label, _ = _SOURCES[source_key]
+    actual_source_key = str(raw.get("source_key") or source_key)
+    source_label = str(raw.get("source") or _SOURCES[source_key][0])
     latest = frame.iloc[-1]
     return {
         "success": True,
-        "partial": False,
+        "partial": bool(raw.get("partial")),
         "symbol": code,
         "date": str(latest.get("date") or raw.get("data_time") or "")[:10] or None,
         "close": _round(latest["close"]),
         "indicator": indicator,
         "calculation": calculation,
         "source": source_label,
-        "source_scope": f"{source_key}_daily_qfq_kline_plus_{indicator}",
+        "source_key": actual_source_key,
+        "source_origin": raw.get("source_origin"),
+        "source_scope": f"{actual_source_key}_daily_qfq_kline_plus_{indicator}",
         "data_time": raw.get("data_time"),
         "data_time_provenance": raw.get("data_time_provenance", "unavailable"),
         "data_time_note": raw.get("data_time_note"),
         "is_stale": raw.get("is_stale"),
         "freshness_unknown": raw.get("freshness_unknown", True),
-        "fallback_used": False,
+        "fallback_used": bool(raw.get("fallback_used")),
+        "fallback_provider": raw.get("fallback_provider"),
         "adjust": "qfq",
         "period": "daily",
         "errors": [],
         "warnings": list(raw.get("warnings") or []),
-        "_cached": False,
+        "source_attempts": list(raw.get("source_attempts") or []),
+        "_cached": bool(raw.get("_cached")),
         "_fetched_at": raw.get("_fetched_at"),
     }
 
@@ -174,12 +202,18 @@ def _read_and_calculate(
     symbol: str,
     count: int,
     source_key: str,
+    allow_fallback: bool,
     indicator: str,
     calculate: Callable[[pd.DataFrame], dict[str, Any]],
 ) -> dict[str, Any]:
     bounded_count = max(_MIN_COUNT, min(int(count), _MAX_COUNT))
     code = _resolve_a_share_symbol(symbol)
-    raw = _read_source_rows(code, source_key=source_key, count=bounded_count)
+    raw = _read_source_rows(
+        code,
+        source_key=source_key,
+        count=bounded_count,
+        allow_fallback=allow_fallback,
+    )
     frame = _normalized_frame(raw)
     if not raw.get("success"):
         return _failure(
@@ -218,11 +252,17 @@ def _require_window(frame: pd.DataFrame, window: int, *, label: str, extra_rows:
 
 
 def _moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
-    def execute(symbol: str, count: int = 120, window: int = 20) -> dict[str, Any]:
+    def execute(
+        symbol: str,
+        count: int = 120,
+        window: int = 20,
+        allow_fallback: bool = True,
+    ) -> dict[str, Any]:
         return _read_and_calculate(
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="moving_average",
             calculate=lambda frame: (
                 _require_window(frame, window, label="window")
@@ -235,11 +275,17 @@ def _moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[
 
 
 def _exponential_moving_average_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
-    def execute(symbol: str, count: int = 120, window: int = 20) -> dict[str, Any]:
+    def execute(
+        symbol: str,
+        count: int = 120,
+        window: int = 20,
+        allow_fallback: bool = True,
+    ) -> dict[str, Any]:
         return _read_and_calculate(
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="exponential_moving_average",
             calculate=lambda frame: (
                 _require_window(frame, window, label="window")
@@ -261,6 +307,7 @@ def _macd_executor(source_key: str) -> Callable[[str, int, int, int, int], dict[
         fast_period: int = 12,
         slow_period: int = 26,
         signal_period: int = 9,
+        allow_fallback: bool = True,
     ) -> dict[str, Any]:
         def calculate(frame: pd.DataFrame) -> dict[str, Any]:
             if not 2 <= int(fast_period) < int(slow_period) <= _MAX_COUNT:
@@ -284,6 +331,7 @@ def _macd_executor(source_key: str) -> Callable[[str, int, int, int, int], dict[
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="macd",
             calculate=calculate,
         )
@@ -293,7 +341,12 @@ def _macd_executor(source_key: str) -> Callable[[str, int, int, int, int], dict[
 
 
 def _rsi_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
-    def execute(symbol: str, count: int = 120, period: int = 14) -> dict[str, Any]:
+    def execute(
+        symbol: str,
+        count: int = 120,
+        period: int = 14,
+        allow_fallback: bool = True,
+    ) -> dict[str, Any]:
         def calculate(frame: pd.DataFrame) -> dict[str, Any]:
             _require_window(frame, period, label="period", extra_rows=1)
             delta = frame["close"].diff()
@@ -309,6 +362,7 @@ def _rsi_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="rsi",
             calculate=calculate,
         )
@@ -318,7 +372,12 @@ def _rsi_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
 
 
 def _atr_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
-    def execute(symbol: str, count: int = 120, period: int = 14) -> dict[str, Any]:
+    def execute(
+        symbol: str,
+        count: int = 120,
+        period: int = 14,
+        allow_fallback: bool = True,
+    ) -> dict[str, Any]:
         def calculate(frame: pd.DataFrame) -> dict[str, Any]:
             _require_window(frame, period, label="period", extra_rows=1)
             previous_close = frame["close"].shift(1)
@@ -342,6 +401,7 @@ def _atr_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="atr",
             calculate=calculate,
         )
@@ -356,6 +416,7 @@ def _bollinger_executor(source_key: str) -> Callable[[str, int, int, float], dic
         count: int = 120,
         period: int = 20,
         standard_deviations: float = 2.0,
+        allow_fallback: bool = True,
     ) -> dict[str, Any]:
         def calculate(frame: pd.DataFrame) -> dict[str, Any]:
             _require_window(frame, period, label="period")
@@ -376,6 +437,7 @@ def _bollinger_executor(source_key: str) -> Callable[[str, int, int, float], dic
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="bollinger_bands",
             calculate=calculate,
         )
@@ -385,7 +447,12 @@ def _bollinger_executor(source_key: str) -> Callable[[str, int, int, float], dic
 
 
 def _period_return_executor(source_key: str) -> Callable[[str, int, int], dict[str, Any]]:
-    def execute(symbol: str, count: int = 120, period: int = 20) -> dict[str, Any]:
+    def execute(
+        symbol: str,
+        count: int = 120,
+        period: int = 20,
+        allow_fallback: bool = True,
+    ) -> dict[str, Any]:
         def calculate(frame: pd.DataFrame) -> dict[str, Any]:
             _require_window(frame, period, label="period", extra_rows=1)
             latest = float(frame["close"].iloc[-1])
@@ -398,6 +465,7 @@ def _period_return_executor(source_key: str) -> Callable[[str, int, int], dict[s
             symbol=symbol,
             count=count,
             source_key=source_key,
+            allow_fallback=allow_fallback,
             indicator="period_return",
             calculate=calculate,
         )
@@ -429,8 +497,9 @@ def calculate_indicator(
     slow_period: int | None = None,
     signal_period: int | None = None,
     standard_deviations: float | None = None,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Read exactly one source and calculate exactly one requested indicator."""
+    """Calculate one indicator from completed bars, preferring one source."""
     selected_source = str(source_key or "").strip()
     selected_indicator = str(indicator or "").strip()
     if selected_source not in _SOURCES:
@@ -462,6 +531,7 @@ def calculate_indicator(
                 "standard_deviations": 2.0 if standard_deviations is None else float(standard_deviations),
             }
         )
+    arguments["allow_fallback"] = bool(allow_fallback)
     return execute(**arguments)
 
 

@@ -6,6 +6,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { scheduleIdlePreload } from './utils/routePreload';
 import {
   ChatHomePage,
+  AgentMonitoringPage,
   LoginPage,
   NotFoundPage,
   RunExplorerPage,
@@ -69,6 +70,7 @@ const AppContent: React.FC = () => {
           <Route path="/" element={<ChatHomePage />} />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="/runs" element={<RunExplorerPage />} />
+          <Route path="/monitoring" element={<AgentMonitoringPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

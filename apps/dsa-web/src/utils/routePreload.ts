@@ -20,11 +20,13 @@ export const LoginPage = lazyWithPreload(() => import('../pages/LoginPage'));
 export const NotFoundPage = lazyWithPreload(() => import('../pages/NotFoundPage'));
 export const SettingPage = lazyWithPreload(() => import('../pages/SettingPage'));
 export const RunExplorerPage = lazyWithPreload(() => import('../pages/RunExplorerPage'));
+export const AgentMonitoringPage = lazyWithPreload(() => import('../pages/AgentMonitoringPage'));
 
 const ROUTE_PRELOAD_MAP: Record<string, () => Promise<unknown>> = {
   '/': ChatHomePage.preload!,
   '/setting': SettingPage.preload!,
   '/runs': RunExplorerPage.preload!,
+  '/monitoring': AgentMonitoringPage.preload!,
 };
 
 export const preloadRoute = (path: string): void => {

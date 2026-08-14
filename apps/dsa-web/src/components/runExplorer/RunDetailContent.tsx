@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import type React from 'react';
-import { Activity, CheckCircle2, Clock3, Database, ListChecks, ThumbsDown, ThumbsUp, TriangleAlert } from 'lucide-react';
+import { Activity, CheckCircle2, Clock3, Copy, Database, ListChecks, LoaderCircle, ThumbsDown, ThumbsUp, TriangleAlert } from 'lucide-react';
 import type { AgentRunDetail } from '../../api/runExplorer';
 import { Badge, Card } from '../common';
 import { cn } from '../../utils/cn';
@@ -8,18 +9,15 @@ import { formatDateTime } from '../../utils/format';
 type RunDetailContentProps = {
   detail: AgentRunDetail;
   onFeedback: (rating: -1 | 1) => void;
+  onLoadToolPayloads?: () => void;
+  toolPayloadsLoading?: boolean;
+  toolPayloadsLoaded?: boolean;
 };
 
 const STATUS_LABELS: Record<string, string> = {
   queued: '排队中', running: '运行中', recovering: '恢复中', interrupted: '等待审批',
   completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消', blocked: '已阻止',
   succeeded: '已完成',
-};
-
-const DIMENSION_LABELS: Record<string, string> = {
-  control_loop: '分析过程', controlLoop: '分析过程', execution: '执行完成',
-  evidence_links: '资料对应', evidenceLinks: '资料对应', answer_contract: '回答完整度',
-  answerContract: '回答完整度', budget: '运行资源',
 };
 
 const statusVariant = (status: string) => {
@@ -39,6 +37,43 @@ const formatDuration = (durationMs?: number | null) => {
 };
 const stringList = (value: unknown) => (Array.isArray(value) ? value.map(text).filter(Boolean) : []);
 const uniqueStrings = (values: string[]) => Array.from(new Set(values));
+const record = (value: unknown): Record<string, unknown> => (
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+);
+const errorString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+const errorStringList = (value: unknown): string[] => (
+  Array.isArray(value)
+    ? value.flatMap(errorStringList)
+    : errorString(value)
+      ? [errorString(value)]
+      : []
+);
+const errorDetailsFrom = (value: unknown) => {
+  const item = record(value);
+  const nestedResult = record(item.result);
+  return uniqueStrings([
+    ...errorStringList(item.errors),
+    ...errorStringList(item.errorMessages),
+    errorString(item.errorDetail),
+    errorString(item.error_detail),
+    errorString(item.error),
+    errorString(item.message),
+    ...errorStringList(nestedResult.errors),
+    ...errorStringList(nestedResult.errorMessages),
+    errorString(nestedResult.errorDetail),
+    errorString(nestedResult.error_detail),
+    errorString(nestedResult.error),
+    errorString(nestedResult.message),
+  ].filter(Boolean));
+};
+const errorCodeFrom = (value: unknown) => {
+  const item = record(value);
+  const nestedResult = record(item.result);
+  return errorString(item.errorCode)
+    || errorString(item.error_code)
+    || errorString(nestedResult.errorCode)
+    || errorString(nestedResult.error_code);
+};
 const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
 const sourceLabel = (value: string) => {
   const trimmed = value.trim();
@@ -50,6 +85,61 @@ const sourceLabel = (value: string) => {
   }
 };
 const displayDataTime = (value: unknown) => (text(value) ? formatDateTime(text(value)) : '时间未提供');
+const hasValue = (value: unknown) => value !== null && value !== undefined;
+const field = (value: unknown, keys: string[]) => {
+  const item = record(value);
+  for (const key of keys) {
+    if (hasValue(item[key])) return item[key];
+  }
+  return undefined;
+};
+const numberValue = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return null;
+};
+const jsonString = (value: unknown) => {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? text(value);
+  } catch {
+    return text(value);
+  }
+};
+const previewJson = (value: unknown, limit = 20_000) => {
+  const serialized = jsonString(value);
+  return serialized.length > limit
+    ? `${serialized.slice(0, limit)}\n…[预览已截断，复制按钮仍保留当前脱敏后的完整内容]`
+    : serialized;
+};
+const arrayFrom = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) return value;
+  const item = record(value);
+  for (const key of ['data', 'items', 'rows', 'records', 'resultItems', 'result_items']) {
+    if (Array.isArray(item[key])) return item[key];
+  }
+  return [];
+};
+const sourceAttemptList = (value: unknown) => (
+  Array.isArray(value) ? value.map(record).filter((item) => Object.keys(item).length > 0) : []
+);
+const findStepForTool = (
+  steps: Array<Record<string, unknown>>,
+  result: Record<string, unknown>,
+  actionId: string,
+) => {
+  const toolCallId = text(result.toolCallId) || text(result.tool_call_id);
+  const exact = steps.find((step) => {
+    const ids = [
+      text(step.stepId), text(step.step_id), text(step.idempotencyKey), text(step.idempotency_key),
+    ].filter(Boolean);
+    return ids.includes(actionId) || (toolCallId && ids.includes(toolCallId));
+  });
+  if (exact) return exact;
+  const toolName = text(result.toolName) || text(result.tool_name);
+  const sameTool = steps.filter((step) => text(step.toolName) === toolName || text(step.tool_name) === toolName);
+  return sameTool.length === 1 ? sameTool[0] : undefined;
+};
 const violationLabel = (code: string) => ({
   execution_contract_failed: '部分执行步骤没有完整结束',
   evidence_link_contract_failed: '部分结论没有完成逐条资料对应',
@@ -58,18 +148,173 @@ const violationLabel = (code: string) => ({
   budget_contract_failed: '本次分析触及运行资源上限',
 }[code] ?? code.replaceAll('_', ' '));
 
-export function RunDetailContent({ detail, onFeedback }: RunDetailContentProps) {
+type QualityIssue = {
+  key: string;
+  title: string;
+  detail: string;
+  tone: 'danger' | 'warning';
+  target?: 'evidence' | 'failed-tool' | 'tools';
+  actionLabel?: string;
+};
+
+const dimensionFor = (score: AgentRunDetail['score'], name: string) => (
+  score.dimensions[name]
+  ?? score.dimensions[name.replace(/_([a-z])/g, (_match, character: string) => character.toUpperCase())]
+);
+
+const dimensionDetails = (score: AgentRunDetail['score'], name: string) => (
+  dimensionFor(score, name)?.details ?? {}
+);
+
+const detailList = (details: Record<string, unknown>, name: string) => (
+  stringList(field(details, [name, name.replace(/_([a-z])/g, (_match, character: string) => character.toUpperCase())]))
+);
+
+function buildQualityIssues(
+  score: AgentRunDetail['score'],
+  failedToolResults: Array<Record<string, unknown>>,
+  failedSteps: Array<Record<string, unknown>>,
+): QualityIssue[] {
+  const issues: QualityIssue[] = [];
+  const execution = dimensionFor(score, 'execution');
+  if (failedToolResults.length > 0 || failedSteps.length > 0 || (execution && execution.score < 1)) {
+    const failedTools = uniqueStrings([
+      ...failedToolResults.map((item) => text(item.toolName)),
+      ...failedSteps.map((item) => text(item.toolName) || text(item.tool_name)),
+    ].filter(Boolean));
+    const status = text(field(dimensionDetails(score, 'execution'), ['status']));
+    issues.push({
+      key: 'execution',
+      title: '工具执行没有全部完成',
+      detail: failedTools.length > 0
+        ? `${failedTools.slice(0, 3).join('、')}${failedTools.length > 3 ? ` 等 ${failedTools.length} 个入口` : ''}存在失败或未完成记录。`
+        : `本次运行状态为“${status || '异常'}”，没有完整结束。`,
+      tone: 'danger',
+      target: 'failed-tool',
+      actionLabel: '定位失败工具',
+    });
+  }
+
+  const evidence = dimensionFor(score, 'evidence_links');
+  const evidenceDetails = dimensionDetails(score, 'evidence_links');
+  const evidenceWithoutSource = detailList(evidenceDetails, 'evidence_without_source');
+  const unknownCitations = detailList(evidenceDetails, 'unknown_citations');
+  const unmappedCitations = detailList(evidenceDetails, 'unmapped_citations');
+  const failedClaimChecks = detailList(evidenceDetails, 'failed_claim_checks');
+  if (evidence && evidence.score < 1) {
+    const problems = [
+      evidenceWithoutSource.length > 0 ? `${evidenceWithoutSource.length} 条证据缺少来源` : '',
+      unknownCitations.length > 0 ? `${unknownCitations.length} 个引用找不到对应证据` : '',
+      unmappedCitations.length > 0 ? `${unmappedCitations.length} 个引用没有映射到证据台账` : '',
+      failedClaimChecks.length > 0 ? `${failedClaimChecks.length} 个结论检查未通过` : '',
+    ].filter(Boolean);
+    issues.push({
+      key: 'evidence',
+      title: '部分结论还不能直接核对',
+      detail: problems.join('；') || `资料对应度为 ${percent(evidence.score)}，建议检查引用和来源。`,
+      tone: 'warning',
+      target: 'evidence',
+      actionLabel: '查看参考资料',
+    });
+  }
+
+  const answer = dimensionFor(score, 'answer_contract');
+  const answerDetails = dimensionDetails(score, 'answer_contract');
+  const missingTerms = detailList(answerDetails, 'missing_required_terms');
+  const forbiddenTerms = detailList(answerDetails, 'present_forbidden_terms');
+  if (answer && answer.score < 1) {
+    const problems = [
+      missingTerms.length > 0 ? `缺少：${missingTerms.join('、')}` : '',
+      forbiddenTerms.length > 0 ? `出现不应出现的内容：${forbiddenTerms.join('、')}` : '',
+    ].filter(Boolean);
+    issues.push({
+      key: 'answer',
+      title: '回答内容还有待补全',
+      detail: problems.join('；') || `回答完整度为 ${percent(answer.score)}。`,
+      tone: 'warning',
+    });
+  }
+
+  const budget = dimensionFor(score, 'budget');
+  const budgetDetails = dimensionDetails(score, 'budget');
+  const exceeded = record(field(budgetDetails, ['exceeded']));
+  if (budget && budget.score < 1) {
+    const exceededNames = Object.keys(exceeded);
+    issues.push({
+      key: 'budget',
+      title: '本次运行触及资源限制',
+      detail: exceededNames.length > 0
+        ? `超出：${exceededNames.join('、')}`
+        : text(field(budgetDetails, ['work_budget_detail'])) || '运行资源已用尽，结果可能不完整。',
+      tone: 'warning',
+    });
+  }
+
+  if (issues.length === 0 && score.violations.length > 0) {
+    score.violations.forEach((violation, index) => issues.push({
+      key: `${violation.code}-${index}`,
+      title: violationLabel(violation.code),
+      detail: '系统发现需要进一步核对的项目。',
+      tone: 'warning',
+    }));
+  }
+  return issues;
+}
+
+const focusSection = (target: QualityIssue['target']) => {
+  if (!target) return;
+  const elementId = target === 'failed-tool' ? 'run-failed-tool' : `run-${target}`;
+  document.getElementById(elementId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+
+export function RunDetailContent({
+  detail,
+  onFeedback,
+  onLoadToolPayloads,
+  toolPayloadsLoading = false,
+  toolPayloadsLoaded = false,
+}: RunDetailContentProps) {
   const run = detail.snapshot.run ?? {};
   const projection = detail.snapshot.qualityProjection ?? {};
   const toolResults = projection.toolResults ?? [];
   const evidence = projection.evidence ?? [];
+  const steps = detail.snapshot.steps ?? [];
   const toolNames = uniqueStrings(toolResults.map((item) => text(item.toolName)).filter(Boolean));
   const sourceNames = uniqueStrings(evidence.flatMap((item) => stringList(item.sourceRefs)));
   const sourceLabels = sourceNames.length > 0 ? uniqueStrings(sourceNames.map(sourceLabel)) : toolNames;
   const feedbackRating = detail.snapshot.feedback?.rating;
+  const failedToolResults = toolResults.filter((result) => result.success !== true);
+  const firstFailedToolIndex = toolResults.findIndex((result) => result.success !== true);
+  const failedSteps = steps.filter((step) => (
+    text(step.status) === 'failed' || Boolean(errorCodeFrom(step)) || errorDetailsFrom(step).length > 0
+  ));
+  const runErrorCodes = uniqueStrings([
+    errorCodeFrom(run),
+    errorCodeFrom(detail.snapshot.trace),
+    ...failedSteps.map(errorCodeFrom),
+    ...failedToolResults.map(errorCodeFrom),
+  ].filter(Boolean));
+  const runErrorDetails = uniqueStrings([
+    ...errorDetailsFrom(run),
+    ...errorDetailsFrom(detail.snapshot.trace),
+    ...failedSteps.flatMap((step) => {
+      const label = text(step.toolName) || text(step.tool_name) || text(step.stepId) || text(step.step_id);
+      return errorDetailsFrom(step).map((error) => label ? `${label}: ${error}` : error);
+    }),
+    ...failedToolResults.flatMap((result) => {
+      const label = text(result.toolName) || '工具调用';
+      return errorDetailsFrom(result).map((error) => `${label}: ${error}`);
+    }),
+  ]);
+  const runStatus = text(run.status);
+  const hasRunFailure = ['partial', 'failed', 'blocked', 'cancelled'].includes(runStatus)
+    || runErrorCodes.length > 0
+    || runErrorDetails.length > 0;
   const durationMs = text(run.startedAt) && text(run.finishedAt)
     ? new Date(text(run.finishedAt)).getTime() - new Date(text(run.startedAt)).getTime()
     : null;
+  const qualityIssues = buildQualityIssues(detail.score, failedToolResults, failedSteps);
+  const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
 
   return (
     <div className="max-h-[calc(100vh-9rem)] space-y-3 overflow-y-auto pr-1">
@@ -97,6 +342,26 @@ export function RunDetailContent({ detail, onFeedback }: RunDetailContentProps) 
           </div>
           <div className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-foreground/85">{text(run.finalText) || '尚未生成最终回答。'}</div>
         </div>
+        {hasRunFailure ? <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 p-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold text-danger">本次运行存在失败记录</p>
+              <p className="mt-0.5 text-[11px] text-foreground/70">
+                {failedToolResults.length > 0
+                  ? `有 ${failedToolResults.length} 个资料入口失败，可展开查看具体原因。`
+                  : '本次运行未正常结束，可展开查看具体错误。'}
+              </p>
+            </div>
+            <Badge variant="danger">{STATUS_LABELS[runStatus] ?? '异常'}</Badge>
+          </div>
+          <ErrorDetails
+            title="查看运行错误详情"
+            errorCode={runErrorCodes.join('、')}
+            details={runErrorDetails}
+            defaultOpen={runStatus === 'failed'}
+            fallback="运行记录中没有返回具体错误文本，请结合调用编号和服务端日志继续排查。"
+          />
+        </div> : null}
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Metric icon={<Clock3 className="size-3.5 text-cyan" />} label="耗时" value={formatDuration(durationMs)} />
           <Metric icon={<ListChecks className="size-3.5 text-purple" />} label="资料返回" value={String(toolResults.length)} />
@@ -105,41 +370,321 @@ export function RunDetailContent({ detail, onFeedback }: RunDetailContentProps) 
         </div>
       </Card>
 
-      <Card padding="none" className="rounded-xl p-3" title="参考资料" subtitle="回答依据">
-        <p className="text-xs text-secondary-text">
-          本次回答关联 {sourceLabels.length} 个来源{sourceNames.length > sourceLabels.length ? `（${sourceNames.length} 条原始引用）` : ''}，整理成 {evidence.length} 条可核对证据。
-        </p>
-        {sourceLabels.length > 0 ? <div className="mt-2 flex flex-wrap gap-1">{sourceLabels.map((source) => <span key={source} className="rounded-md bg-cyan/8 px-2 py-1 text-[11px] text-cyan" title={source}>{source}</span>)}</div> : null}
-        <div className="mt-2 divide-y divide-border/70 rounded-lg border border-border/70">
-          {evidence.map((item, index) => <EvidenceRow key={text(item.evidenceId) || text(item.id) || index} item={item} index={index} />)}
-          {evidence.length === 0 ? <p className="px-2.5 py-2 text-xs text-secondary-text">本次回答没有可展示的资料记录。</p> : null}
-        </div>
+      <div id="run-evidence" className="scroll-mt-3">
+        <Card padding="none" className="rounded-xl p-3" title="参考资料" subtitle="回答依据">
+          <p className="text-xs text-secondary-text">
+            本次回答关联 {sourceLabels.length} 个来源{sourceNames.length > sourceLabels.length ? `（${sourceNames.length} 条原始引用）` : ''}，整理成 {evidence.length} 条可核对证据。
+          </p>
+          {sourceLabels.length > 0 ? <div className="mt-2 flex flex-wrap gap-1">{sourceLabels.map((source) => <span key={source} className="rounded-md bg-cyan/8 px-2 py-1 text-[11px] text-cyan" title={source}>{source}</span>)}</div> : null}
+          <div className="mt-2 divide-y divide-border/70 rounded-lg border border-border/70">
+            {evidence.map((item, index) => <EvidenceRow key={text(item.evidenceId) || text(item.id) || index} item={item} index={index} />)}
+            {evidence.length === 0 ? <p className="px-2.5 py-2 text-xs text-secondary-text">本次回答没有可展示的资料记录。</p> : null}
+          </div>
+        </Card>
+      </div>
+
+      <Card padding="none" className="rounded-xl p-3" title="需要处理的核对问题" subtitle="只显示会影响结果可信度的项目">
+        {qualityIssues.length > 0 ? <div className="space-y-1.5">
+          {qualityIssues.map((issue) => <div key={issue.key} className={cn('rounded-lg border px-3 py-2', issue.tone === 'danger' ? 'border-danger/20 bg-danger/5' : 'border-warning/20 bg-warning/8')}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <TriangleAlert className={cn('mt-0.5 size-3.5 shrink-0', issue.tone === 'danger' ? 'text-danger' : 'text-warning')} />
+                <div className="min-w-0">
+                  <p className={cn('text-xs font-medium', issue.tone === 'danger' ? 'text-danger' : 'text-warning')}>{issue.title}</p>
+                  <p className="mt-0.5 text-[11px] leading-5 text-foreground/75">{issue.detail}</p>
+                </div>
+              </div>
+              {issue.target ? <button type="button" onClick={() => focusSection(issue.target)} className="shrink-0 rounded-md border border-border/70 bg-card px-2 py-1 text-[10px] text-secondary-text transition hover:text-foreground">{issue.actionLabel}</button> : null}
+            </div>
+          </div>)}
+        </div> : <div className="flex items-center gap-2 rounded-lg bg-success/8 px-3 py-2 text-xs text-success"><CheckCircle2 className="size-3.5" />这次没有需要用户继续处理的核对问题。</div>}
       </Card>
 
-      <Card padding="none" className="rounded-xl p-3" title="结果核对" subtitle="自动检查回答与资料是否对应">
-        <div className={cn('rounded-lg px-3 py-2', detail.score.passed ? 'bg-success/8 text-success' : 'bg-warning/10 text-warning')}>
-          <p className="text-xs font-semibold">{detail.score.passed ? '这次回答的资料核对已通过' : '这次回答还有内容需要核对'}</p>
-          <p className="mt-0.5 text-[11px] opacity-85">{detail.score.passed ? '回答中的事实已经找到对应的资料记录。' : '下面列出未完全满足的检查项，阅读结论时请优先关注这些部分。'}</p>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-          {Object.entries(detail.score.dimensions).map(([name, dimension]) => <div key={name} className="rounded-lg border border-border/70 p-2.5"><div className="flex items-center justify-between"><span className="text-xs font-medium">{DIMENSION_LABELS[name] ?? name}</span><span className={cn('text-xs font-semibold', dimension.score >= 0.85 ? 'text-success' : 'text-warning')}>{percent(dimension.score)}</span></div><div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted"><div className={cn('h-full rounded-full', dimension.score >= 0.85 ? 'bg-success' : 'bg-warning')} style={{ width: `${Math.round(dimension.score * 100)}%` }} /></div></div>)}
-        </div>
-        {detail.score.violations.length > 0 ? <div className="mt-3 space-y-1.5">{detail.score.violations.map((violation, index) => <div key={`${violation.code}-${index}`} className="flex items-start gap-2 rounded-md bg-warning/8 px-2.5 py-1.5 text-xs text-warning"><TriangleAlert className="mt-0.5 size-3.5 shrink-0" /><span>{violationLabel(violation.code)}</span></div>)}</div> : <div className="mt-3 flex items-center gap-2 text-xs text-success"><CheckCircle2 className="size-3.5" />暂未发现明显的资料关联问题</div>}
-      </Card>
-
-      <Card padding="none" className="rounded-xl p-3" title="资料获取过程" subtitle="本次回答实际使用的资料入口">
+      <div id="run-tools" className="scroll-mt-3">
+        <Card padding="none" className="rounded-xl p-3" title="资料获取过程" subtitle="本次回答实际使用的资料入口">
         <div className="space-y-2">
           {toolResults.map((result, index) => {
             const actionId = text(result.actionId) || text(result.toolCallId);
             const actionEvidence = evidence.filter((item) => text(item.actionId) === text(result.actionId));
             const actionSources = uniqueStrings(actionEvidence.flatMap((item) => stringList(item.sourceRefs)).map(sourceLabel));
-            return <div key={actionId || index} className="rounded-lg border border-border/70 p-2.5"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-medium">{text(result.toolName) || '未指定工具'}</p><p className="mt-0.5 truncate font-mono text-[10px] text-secondary-text" title={actionId}>调用编号 {actionId}</p></div><Badge variant={result.success === true ? 'success' : 'danger'}>{result.success === true ? '成功' : '失败'}</Badge></div><p className="mt-2 line-clamp-2 text-[11px] text-foreground/75">{actionSources.join('、') || '来源未标注'} · {actionEvidence.length} 条证据</p><div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-secondary-text"><span>类型：{text(result.effect) === 'side_effect' ? '外部操作' : '读取资料'}</span><span>数据时间：{displayDataTime(result.dataTime || actionEvidence[0]?.dataTime)}</span></div></div>;
+            const toolErrorDetails = errorDetailsFrom(result);
+            const toolErrorCode = errorCodeFrom(result);
+            const step = findStepForTool(steps, result, actionId);
+            const expanded = expandedActionId === actionId;
+            const hasStepPayload = Boolean(step && (hasValue(step.arguments) || hasValue(step.result)));
+            const canLoadPayloads = Boolean(onLoadToolPayloads) && !toolPayloadsLoaded && !hasStepPayload;
+            return <div id={index === firstFailedToolIndex ? 'run-failed-tool' : undefined} key={actionId || index} className="rounded-lg border border-border/70 p-2.5 scroll-mt-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium">{text(result.toolName) || '未指定工具'}</p>
+                  <p className="mt-0.5 truncate font-mono text-[10px] text-secondary-text" title={actionId}>调用编号 {actionId}</p>
+                </div>
+                <Badge variant={result.success === true ? 'success' : 'danger'}>{result.success === true ? '成功' : '失败'}</Badge>
+              </div>
+              <p className="mt-2 line-clamp-2 text-[11px] text-foreground/75">{actionSources.join('、') || '来源未标注'} · {actionEvidence.length} 条证据</p>
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-secondary-text">
+                <span>类型：{text(result.effect) === 'side_effect' ? '外部操作' : '读取资料'}</span>
+                <span>数据时间：{displayDataTime(result.dataTime || actionEvidence[0]?.dataTime)}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => {
+                    setExpandedActionId((current) => current === actionId ? null : actionId);
+                    if (canLoadPayloads) onLoadToolPayloads?.();
+                  }}
+                  className="rounded-md border border-cyan/30 bg-cyan/8 px-2 py-1 text-[11px] font-medium text-cyan transition hover:bg-cyan/15"
+                >
+                  {expanded ? '收起请求与返回' : canLoadPayloads ? '加载请求与返回' : '查看请求与返回'}
+                </button>
+                {canLoadPayloads && toolPayloadsLoading ? <span className="inline-flex items-center gap-1 text-[10px] text-secondary-text"><LoaderCircle className="size-3 animate-spin" />正在加载原始记录…</span> : null}
+              </div>
+              {expanded ? <ToolObservationDetails
+                result={result}
+                step={step}
+                actionSources={actionSources}
+                payloadsLoaded={toolPayloadsLoaded || hasStepPayload}
+                payloadsLoading={toolPayloadsLoading}
+                onLoadPayloads={onLoadToolPayloads}
+              /> : null}
+              {result.success !== true ? <ErrorDetails title={toolErrorDetails.length > 0 || toolErrorCode ? '查看错误详情' : '查看失败记录'} errorCode={toolErrorCode} details={toolErrorDetails} fallback="该工具调用标记为失败，但运行记录没有返回具体错误文本。" /> : null}
+            </div>;
           })}
           {toolResults.length === 0 ? <p className="text-xs text-secondary-text">该问题没有调用工具。</p> : null}
         </div>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
+}
+
+function ToolObservationDetails({
+  result,
+  step,
+  actionSources,
+  payloadsLoaded,
+  payloadsLoading,
+  onLoadPayloads,
+}: {
+  result: Record<string, unknown>;
+  step?: Record<string, unknown>;
+  actionSources: string[];
+  payloadsLoaded: boolean;
+  payloadsLoading: boolean;
+  onLoadPayloads?: () => void;
+}) {
+  const stepResult = field(step, ['result']);
+  const rawProjectedResult = field(result, ['result', 'response']);
+  const displayProjectedResult = field(result, ['displayResult', 'display_result']);
+  const projectedResult = rawProjectedResult ?? displayProjectedResult;
+  const response = hasValue(stepResult) ? stepResult : projectedResult;
+  const responseRecord = record(response);
+  const stepArguments = field(step, ['arguments']);
+  const request = hasValue(stepArguments)
+    ? stepArguments
+    : field(result, ['arguments', 'request', 'input']);
+  const rawResponse = hasValue(stepResult) ? stepResult : hasValue(projectedResult) ? projectedResult : result;
+  const fullResponseLoaded = hasValue(stepResult) || hasValue(rawProjectedResult);
+
+  const source = text(field(responseRecord, ['source', 'sourceLabel', 'source_label']))
+    || text(field(result, ['source', 'sourceLabel', 'source_label']))
+    || actionSources[0];
+  const sourceKey = text(field(responseRecord, ['sourceKey', 'source_key']))
+    || text(field(result, ['sourceKey', 'source_key']));
+  const sourceOrigin = text(field(responseRecord, ['sourceOrigin', 'source_origin']))
+    || text(field(result, ['sourceOrigin', 'source_origin']));
+  const sourceScope = text(field(responseRecord, ['sourceScope', 'source_scope']))
+    || text(field(result, ['sourceScope', 'source_scope']));
+  const dataTime = field(responseRecord, ['dataTime', 'data_time'])
+    ?? field(result, ['dataTime', 'data_time']);
+  const dataTimeProvenance = text(field(responseRecord, ['dataTimeProvenance', 'data_time_provenance']))
+    || text(field(result, ['dataTimeProvenance', 'data_time_provenance']));
+  const rows = arrayFrom(response);
+  const count = numberValue(
+    field(responseRecord, ['count', 'resultCount', 'result_count', 'total'])
+      ?? field(result, ['count', 'resultCount', 'result_count'])
+      ?? (rows.length > 0 ? rows.length : undefined),
+  );
+  const success = field(responseRecord, ['success']) ?? result.success;
+  const partial = field(responseRecord, ['partial']) ?? result.partial;
+  const fallbackUsed = field(responseRecord, ['fallbackUsed', 'fallback_used'])
+    ?? field(result, ['fallbackUsed', 'fallback_used']);
+  const fallbackProvider = text(field(responseRecord, ['fallbackProvider', 'fallback_provider']))
+    || text(field(result, ['fallbackProvider', 'fallback_provider']));
+  const cached = field(responseRecord, ['_cached', 'cached']) ?? field(result, ['_cached', 'cached']);
+  const stale = field(responseRecord, ['isStale', 'is_stale']) ?? field(result, ['isStale', 'is_stale']);
+  const freshnessUnknown = field(responseRecord, ['freshnessUnknown', 'freshness_unknown'])
+    ?? field(result, ['freshnessUnknown', 'freshness_unknown']);
+  const barComplete = field(responseRecord, ['barComplete', 'bar_complete'])
+    ?? field(result, ['barComplete', 'bar_complete']);
+  const warnings = uniqueStrings([
+    ...errorStringList(field(responseRecord, ['warnings', 'warning'])),
+    ...errorStringList(field(result, ['warnings', 'warning'])),
+  ]);
+  const errors = uniqueStrings([
+    ...errorStringList(field(responseRecord, ['errors', 'error'])),
+    ...errorStringList(field(result, ['errors', 'error'])),
+  ]);
+  const attempts = sourceAttemptList(
+    field(responseRecord, ['sourceAttempts', 'source_attempts'])
+      ?? field(result, ['sourceAttempts', 'source_attempts']),
+  );
+  const refs = uniqueStrings([
+    ...stringList(field(responseRecord, ['sourceRefs', 'source_refs'])),
+    ...stringList(field(result, ['sourceRefs', 'source_refs'])),
+  ]);
+  const links = uniqueStrings([
+    ...stringList(field(responseRecord, ['referenceLinks', 'reference_links'])),
+    ...stringList(field(result, ['referenceLinks', 'reference_links'])),
+    ...refs,
+  ]).filter(isHttpUrl);
+  const sampleRows = rows.length > 6
+    ? [...rows.slice(0, 3), '… 中间数据省略 …', ...rows.slice(-3)]
+    : rows;
+
+  return <div className="mt-2 space-y-2 rounded-lg border border-cyan/20 bg-cyan/5 p-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <p className="text-[11px] font-semibold text-foreground">请求与返回审计</p>
+        <p className="mt-0.5 text-[10px] text-secondary-text">
+          {fullResponseLoaded ? '已加载执行账本中的实际请求与规范化返回。' : '当前先展示运行摘要；点击加载后可核对完整返回。'}
+        </p>
+      </div>
+      {!payloadsLoaded && onLoadPayloads ? <button
+        type="button"
+        onClick={onLoadPayloads}
+        disabled={payloadsLoading}
+        className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[10px] text-secondary-text transition hover:text-foreground disabled:opacity-60"
+      >
+        <LoaderCircle className={cn('size-3', payloadsLoading && 'animate-spin')} />
+        {payloadsLoading ? '加载中…' : '重新加载原始记录'}
+      </button> : null}
+    </div>
+
+    <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+      <AuditField label="实际来源" value={source || '未标注'} />
+      <AuditField label="来源标识" value={sourceKey || '未提供'} />
+      <AuditField label="返回数量" value={count == null ? '未提供' : `${count} 条`} />
+      <AuditField label="数据时间" value={dataTime ? `${displayDataTime(dataTime)}${dataTimeProvenance ? `（${dataTimeProvenance}）` : ''}` : '未提供'} />
+      <AuditField label="请求完成" value={booleanLabel(success, '成功', '失败')} tone={success === true ? 'success' : success === false ? 'danger' : 'neutral'} />
+      <AuditField label="数据状态" value={
+        fallbackUsed === true
+          ? `已降级${fallbackProvider ? `：${fallbackProvider}` : ''}`
+          : stale === true
+            ? '过期数据'
+            : freshnessUnknown === true
+              ? '新鲜度未知'
+              : partial === true || barComplete === false
+                ? '不完整'
+                : '未发现异常标记'
+      } tone={fallbackUsed === true || stale === true || freshnessUnknown === true || partial === true || barComplete === false ? 'warning' : 'neutral'} />
+    </div>
+    {sourceOrigin || sourceScope || cached === true ? <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-secondary-text">
+      {sourceOrigin ? <span>原始来源：{sourceOrigin}</span> : null}
+      {sourceScope ? <span>来源范围：{sourceScope}</span> : null}
+      {cached === true ? <span>本次使用缓存</span> : null}
+    </div> : null}
+
+    {attempts.length > 0 ? <div className="rounded-md border border-border/70 bg-card/70 p-2">
+      <p className="text-[10px] font-semibold text-foreground">来源尝试链路</p>
+      <div className="mt-1 space-y-1">
+        {attempts.map((attempt, index) => <div key={`${text(attempt.source) || text(attempt.label) || 'source'}-${index}`} className="flex flex-wrap items-start justify-between gap-2 text-[10px]">
+          <span className="font-medium">{text(attempt.label) || text(attempt.source) || `来源 ${index + 1}`}</span>
+          <span className={cn('text-right', text(attempt.status) === 'success' ? 'text-success' : 'text-danger')}>
+            {text(attempt.status) === 'success' ? `成功${numberValue(attempt.count) == null ? '' : ` · ${numberValue(attempt.count)} 条`}` : text(attempt.error) || text(attempt.errorType) || text(attempt.error_type) || '未返回'}
+          </span>
+        </div>)}
+      </div>
+    </div> : null}
+
+    {warnings.length > 0 ? <NoticeList title="返回警告" items={warnings} tone="warning" /> : null}
+    {errors.length > 0 ? <NoticeList title="返回错误" items={errors} tone="danger" /> : null}
+    <JsonBlock title="实际请求参数" value={request} empty="执行账本没有保存可展示的请求参数。" />
+    {sampleRows.length > 0 ? <JsonBlock title={`返回数据样本（${rows.length} 条中展示 ${Math.min(rows.length, 6)} 条）`} value={sampleRows} /> : null}
+    <JsonBlock title={fullResponseLoaded ? '规范化返回 JSON（已脱敏）' : '返回摘要 JSON'} value={rawResponse} empty="该工具没有返回可展示的响应体。" />
+    {links.length > 0 ? <div className="rounded-md border border-border/70 bg-card/70 p-2">
+      <p className="text-[10px] font-semibold text-foreground">原始资料链接</p>
+      <div className="mt-1 space-y-0.5 border-l border-border pl-2">
+        {links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer" className="block break-all text-[10px] text-cyan hover:underline">{link}</a>)}
+      </div>
+    </div> : refs.length > 0 ? <p className="text-[10px] text-secondary-text">来源引用：{refs.join('、')}</p> : null}
+  </div>;
+}
+
+function booleanLabel(value: unknown, yes: string, no: string) {
+  if (value === true || text(value).toLowerCase() === 'true') return yes;
+  if (value === false || text(value).toLowerCase() === 'false') return no;
+  return '未说明';
+}
+
+function AuditField({
+  label,
+  value,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  tone?: 'neutral' | 'success' | 'warning' | 'danger';
+}) {
+  return <div className="rounded-md border border-border/70 bg-card/70 px-2 py-1.5">
+    <p className="text-[10px] text-secondary-text">{label}</p>
+    <p className={cn('mt-0.5 line-clamp-2 break-all text-[11px] font-medium', tone === 'success' ? 'text-success' : tone === 'warning' ? 'text-warning' : tone === 'danger' ? 'text-danger' : 'text-foreground')} title={value}>{value}</p>
+  </div>;
+}
+
+function NoticeList({ title, items, tone }: { title: string; items: string[]; tone: 'warning' | 'danger' }) {
+  return <div className={cn('rounded-md border px-2 py-1.5', tone === 'danger' ? 'border-danger/25 bg-danger/5' : 'border-warning/25 bg-warning/5')}>
+    <p className={cn('text-[10px] font-semibold', tone === 'danger' ? 'text-danger' : 'text-warning')}>{title}</p>
+    <ul className="mt-1 space-y-0.5 pl-3 text-[10px] leading-4 text-foreground/80">
+      {items.map((item, index) => <li key={`${item}-${index}`} className="list-disc break-words">{item}</li>)}
+    </ul>
+  </div>;
+}
+
+function JsonBlock({ title, value, empty = '没有可展示的数据。' }: { title: string; value: unknown; empty?: string }) {
+  const [copied, setCopied] = useState(false);
+  const hasContent = hasValue(value);
+  const serialized = hasContent ? jsonString(value) : '';
+  const copy = async () => {
+    if (!serialized || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(serialized);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return <div className="rounded-md border border-border/70 bg-card/70 p-2">
+    <div className="flex items-center justify-between gap-2">
+      <p className="text-[10px] font-semibold text-foreground">{title}</p>
+      {serialized ? <button type="button" onClick={() => void copy()} className="inline-flex items-center gap-1 text-[10px] text-secondary-text transition hover:text-foreground" title="复制脱敏后的 JSON">
+        <Copy className="size-3" />{copied ? '已复制' : '复制 JSON'}
+      </button> : null}
+    </div>
+    {serialized ? <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 p-2 font-mono text-[10px] leading-4 text-foreground/80">{previewJson(value)}</pre> : <p className="mt-1.5 text-[10px] text-secondary-text">{empty}</p>}
+  </div>;
+}
+
+function ErrorDetails({
+  title,
+  errorCode,
+  details,
+  defaultOpen = false,
+  fallback,
+}: {
+  title: string;
+  errorCode: string;
+  details: string[];
+  defaultOpen?: boolean;
+  fallback: string;
+}) {
+  const content = [errorCode ? `错误代码：${errorCode}` : '', ...details].filter(Boolean).join('\n') || fallback;
+  return <details open={defaultOpen} className="mt-2 rounded-md border border-danger/25 bg-danger/5 px-2.5 py-2 text-danger">
+    <summary className="cursor-pointer select-none text-[11px] font-medium hover:opacity-80">{title}</summary>
+    <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-foreground/80">{content}</pre>
+  </details>;
 }
 
 function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {

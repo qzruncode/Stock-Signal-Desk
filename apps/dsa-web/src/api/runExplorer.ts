@@ -123,8 +123,13 @@ export const runExplorerApi = {
     return toCamelCase<AgentRunListResponse>(response.data);
   },
 
-  async getRun(runId: string): Promise<AgentRunDetail> {
-    const response = await apiClient.get<Record<string, unknown>>(`/api/v1/agent/runs/${runId}`);
+  async getRun(
+    runId: string,
+    options: { includePayloads?: boolean } = {},
+  ): Promise<AgentRunDetail> {
+    const response = await apiClient.get<Record<string, unknown>>(`/api/v1/agent/runs/${runId}`, {
+      params: options.includePayloads ? { include_payloads: true } : undefined,
+    });
     return toCamelCase<AgentRunDetail>(response.data);
   },
 

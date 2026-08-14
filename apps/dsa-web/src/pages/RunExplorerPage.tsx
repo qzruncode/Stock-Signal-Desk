@@ -6,7 +6,7 @@ import {
   useState,
 } from 'react';
 import { ArrowLeft, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   runExplorerApi,
   type AgentQualitySummary,
@@ -21,7 +21,9 @@ import { RunDetailContent } from '../components/runExplorer/RunDetailContent';
 
 const STATUS_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: '全部' },
+  { value: 'queued', label: '排队中' },
   { value: 'running', label: '运行中' },
+  { value: 'recovering', label: '恢复中' },
   { value: 'interrupted', label: '等待审批' },
   { value: 'completed', label: '已完成' },
   { value: 'partial', label: '部分完成' },
@@ -70,17 +72,20 @@ interface RunExplorerPageProps {
 }
 
 const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) => {
+  const [searchParams] = useSearchParams();
   const [runs, setRuns] = useState<AgentRunSummary[]>([]);
   const [summary, setSummary] = useState<AgentQualitySummary | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
-  const [status, setStatus] = useState('');
-  const [tool, setTool] = useState('');
+  const [status, setStatus] = useState(() => searchParams.get('status') ?? '');
+  const [tool, setTool] = useState(() => searchParams.get('tool') ?? '');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailPayloadsLoading, setDetailPayloadsLoading] = useState(false);
+  const [detailPayloadsLoaded, setDetailPayloadsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const detailRequestId = useRef(0);
   const limit = 30;
@@ -89,6 +94,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
     const requestId = detailRequestId.current + 1;
     detailRequestId.current = requestId;
     setDetailLoading(true);
+    setDetailPayloadsLoading(false);
+    setDetailPayloadsLoaded(false);
     setDetail(null);
     try {
       const next = await runExplorerApi.getRun(runId);
@@ -105,6 +112,28 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
       }
     }
   }, []);
+
+  const loadDetailPayloads = useCallback(async () => {
+    if (!selectedRunId || detailPayloadsLoaded || detailPayloadsLoading) return;
+    const requestId = detailRequestId.current + 1;
+    detailRequestId.current = requestId;
+    setDetailPayloadsLoading(true);
+    try {
+      const next = await runExplorerApi.getRun(selectedRunId, { includePayloads: true });
+      if (detailRequestId.current === requestId) {
+        setDetail(next);
+        setDetailPayloadsLoaded(true);
+      }
+    } catch (requestError) {
+      if (detailRequestId.current === requestId) {
+        setError(toApiErrorMessage(requestError, '工具请求与返回加载失败'));
+      }
+    } finally {
+      if (detailRequestId.current === requestId) {
+        setDetailPayloadsLoading(false);
+      }
+    }
+  }, [detailPayloadsLoaded, detailPayloadsLoading, selectedRunId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,6 +179,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
       void loadDetail(selectedRunId);
     } else {
       detailRequestId.current += 1;
+      setDetailPayloadsLoading(false);
+      setDetailPayloadsLoaded(false);
       setDetailLoading(false);
       setDetail(null);
     }
@@ -395,6 +426,9 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
           {detail ? (
             <RunDetailContent
               detail={detail}
+              onLoadToolPayloads={() => { void loadDetailPayloads(); }}
+              toolPayloadsLoading={detailPayloadsLoading}
+              toolPayloadsLoaded={detailPayloadsLoaded}
               onFeedback={(rating) => { void saveFeedback(rating); }}
             />
           ) : null}

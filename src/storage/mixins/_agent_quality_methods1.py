@@ -248,6 +248,7 @@ class _AgentQualityMethods1:
                     "status": run.status,
                     "final_text": run.final_text or "",
                     "error_code": run.error_code,
+                    "error_detail": run.error_detail,
                     "attempt": int(run.attempt or 1),
                     "tool_call_count": int(run.tool_call_count or 0),
                     "provider_call_count": int(run.provider_call_count or 0),

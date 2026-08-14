@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -205,6 +205,47 @@ def test_quality_evaluator_rejects_unlinked_evidence(database) -> None:
     assert any(item["code"] == "evidence_link_contract_failed" for item in result["violations"])
 
 
+def test_quality_snapshot_exposes_terminal_error_detail(database) -> None:
+    run_id = "run-runtime-error"
+    conversation_id = "conversation-runtime-error"
+    database.create_chat_conversation(
+        conversation_id,
+        tenant_id="tenant-a",
+        owner_id="owner-a",
+    )
+    claimed = database.claim_agent_run(
+        run_id=run_id,
+        conversation_id=conversation_id,
+        request_payload={"engine": "langgraph_agent_loop", "messages": []},
+        worker_id="worker-a",
+        tenant_id="tenant-a",
+        owner_id="owner-a",
+    )
+    assert claimed["claimed"] is True
+
+    assert database.commit_agent_run_terminal(
+        run_id=run_id,
+        conversation_id=conversation_id,
+        status="failed",
+        final_text="",
+        messages=[{"role": "user", "content": "核验 600519"}],
+        agent_context={},
+        error_code="agent_runtime_failed",
+        error_detail="ConnectionError: upstream closed the connection",
+        worker_id="worker-a",
+        trace={"engine": "langgraph_agent_loop", "status": "failed"},
+    )
+
+    snapshot = database.get_agent_run_quality_snapshot(
+        run_id,
+        tenant_id="tenant-a",
+        owner_id="owner-a",
+    )
+    assert snapshot is not None
+    assert snapshot["run"]["error_code"] == "agent_runtime_failed"
+    assert snapshot["run"]["error_detail"] == "ConnectionError: upstream closed the connection"
+
+
 def test_completed_no_tool_general_answer_can_pass_generic_quality_contract() -> None:
     result = score_agent_run_snapshot(
         {
@@ -302,3 +343,54 @@ def test_run_explorer_list_uses_tool_filter_and_owner_scope(api_client) -> None:
         page=1,
         limit=30,
     )
+
+
+def test_run_explorer_detail_payloads_are_opt_in(api_client) -> None:
+    client, fake_db = api_client
+    def snapshot() -> dict:
+        return {
+            "run": {"status": "completed", "final_text": ""},
+            "trace": {},
+            "quality_projection": {
+                "tool_results": [{
+                    "action_id": "action-1",
+                    "tool_name": "read_source",
+                    "success": True,
+                    "arguments": {"symbol": "000682", "secret": "should-not-be-in-summary"},
+                    "display_arguments": {"symbol": "000682"},
+                    "result": {"data": [{"close": 1}]},
+                    "display_result": {"result_summary": "1 条"},
+                }],
+                "evidence": [{
+                    "evidence_id": "ev-1",
+                    "success": True,
+                    "result": {"data": [{"close": 1}]},
+                }],
+            },
+            "steps": [],
+            "artifacts": [],
+            "feedback": None,
+        }
+
+    fake_db.get_agent_run_quality_snapshot.side_effect = [snapshot(), snapshot()]
+
+    summary_response = client.get("/api/v1/agent/runs/run-1")
+    assert summary_response.status_code == 200
+    summary_projection = summary_response.json()["snapshot"]["quality_projection"]
+    assert summary_projection["tool_results"][0]["arguments"] == {"symbol": "000682"}
+    assert "result" not in summary_projection["tool_results"][0]
+    assert "result" not in summary_projection["evidence"][0]
+
+    response = client.get(
+        "/api/v1/agent/runs/run-1",
+        params={"include_payloads": "true"},
+    )
+
+    assert response.status_code == 200
+    full_projection = response.json()["snapshot"]["quality_projection"]
+    assert full_projection["tool_results"][0]["arguments"]["secret"] == "should-not-be-in-summary"
+    assert full_projection["tool_results"][0]["result"]["data"][0]["close"] == 1
+    assert fake_db.get_agent_run_quality_snapshot.call_args_list == [
+        call("run-1", tenant_id="local", owner_id="admin", include_evidence_payloads=False),
+        call("run-1", tenant_id="local", owner_id="admin", include_evidence_payloads=True),
+    ]

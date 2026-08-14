@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from unittest.mock import patch
 
 import pandas as pd
 
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
+from src.tools._trading_calendar import latest_completed_trade_day
+from src.tools.kline_gateway import read_reliable_kline
 from src.tools.registry import ToolRegistry
 
 
@@ -23,6 +26,13 @@ def _kline_frame(rows: int) -> pd.DataFrame:
             "换手率": [1.0] * rows,
         }
     )
+
+
+def _completed_kline_frame(rows: int = 20) -> pd.DataFrame:
+    dates = pd.date_range(end="2026-08-13", periods=rows, freq="B")
+    frame = _kline_frame(rows)
+    frame["日期"] = dates.strftime("%Y-%m-%d")
+    return frame
 
 
 def test_direct_quote_calls_only_the_selected_provider() -> None:
@@ -53,7 +63,7 @@ def test_direct_quote_calls_only_the_selected_provider() -> None:
     assert result["source_scope"] == "test_quote"
 
 
-def test_direct_kline_does_not_read_cache_or_switch_source() -> None:
+def test_strict_kline_mode_does_not_read_cache_or_switch_source() -> None:
     calls: list[tuple[str, str, str]] = []
 
     def selected_provider(symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -69,7 +79,12 @@ def test_direct_kline_does_not_read_cache_or_switch_source() -> None:
     ):
         result = ToolRegistry().execute(
             "read_recent_kline",
-            {"source_id": "eastmoney", "symbol": "600519", "count": 60},
+            {
+                "source_id": "eastmoney",
+                "symbol": "600519",
+                "count": 60,
+                "allow_fallback": False,
+            },
         )
 
     assert len(calls) == 1
@@ -102,6 +117,7 @@ def test_direct_indicator_calculation_is_one_source_one_indicator() -> None:
                 "symbol": "600519",
                 "count": 120,
                 "window": 20,
+                "allow_fallback": False,
             },
         )
 
@@ -112,3 +128,50 @@ def test_direct_indicator_calculation_is_one_source_one_indicator() -> None:
     assert result["calculation"]["window"] == 20
     assert result["calculation"]["value"] is not None
     assert result["source_scope"] == "eastmoney_daily_qfq_kline_plus_moving_average"
+
+
+def test_reliable_kline_falls_back_and_records_provider_attempts() -> None:
+    calls: list[str] = []
+
+    def eastmoney(_symbol: str, _start: str, _end: str) -> pd.DataFrame:
+        calls.append("eastmoney")
+        raise ConnectionError("RemoteDisconnected")
+
+    def tencent(_symbol: str, _start: str, _end: str) -> pd.DataFrame:
+        calls.append("tencent")
+        return _completed_kline_frame()
+
+    with (
+        patch("src.tools.kline_gateway.latest_completed_trade_day", return_value=date(2026, 8, 13)),
+        patch("src.tools.kline_gateway._get_kline_from_stock_daily", return_value=None),
+        patch("src.tools.kline_gateway._get_kline_from_cache", return_value=None),
+        patch("src.tools.kline_gateway._save_kline_to_cache"),
+        patch("src.tools.kline_gateway._save_to_stock_daily"),
+    ):
+        result = read_reliable_kline(
+            "600519",
+            preferred_source="eastmoney",
+            count=20,
+            sources={
+                "eastmoney": ("东方财富", eastmoney),
+                "tencent": ("腾讯财经", tencent),
+            },
+        )
+
+    assert calls == ["eastmoney", "tencent"]
+    assert result["success"] is True
+    assert result["source_key"] == "tencent"
+    assert result["fallback_used"] is True
+    assert result["source_attempts"][0]["error_type"] == "ConnectionError"
+    assert result["source_attempts"][-1]["status"] == "success"
+
+
+def test_completed_trade_day_excludes_intraday_bar() -> None:
+    calendar = [date(2026, 8, 13), date(2026, 8, 14)]
+
+    assert latest_completed_trade_day(
+        datetime(2026, 8, 14, 11, 0), calendar
+    ) == date(2026, 8, 13)
+    assert latest_completed_trade_day(
+        datetime(2026, 8, 14, 15, 0), calendar
+    ) == date(2026, 8, 14)

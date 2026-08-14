@@ -1,10 +1,10 @@
 """Generic atomic operations over explicitly named data sources.
 
 The Agent sees stable operations such as ``read_rss_source`` and the complete
-source directory for each operation.  ``source_id`` names one source from that
-directory; it is not a hidden provider fallback or a way to choose another
-workflow.  Every executor below invokes one source implementation exactly
-once, then returns its raw normalized observation.
+source directory for each operation.  ``source_id`` names one preferred source
+from that directory.  Daily-bar operations may record and use a declared
+fallback source, while strict single-provider reads remain available for
+diagnostics.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 
 from src.tools._rss_agent import rss_options_schema
 from src.tools.base import ToolSpec, object_schema, report_tool_progress
+from src.tools._trading_calendar import latest_completed_trade_day
 from src.tools.kline_source_tools import _read_source as _read_kline_source
 from src.tools.realtime_quote_source_tools import _read_source as _read_quote_source
 from src.tools.read_rss_feed import read_rss_feed
@@ -192,19 +193,31 @@ def _valid_kline_source(source_id: str) -> str:
     return normalized
 
 
-def read_recent_kline(source_id: str, symbol: str, count: int = 60) -> dict[str, Any]:
-    """Read one source's recent daily bars only."""
+def read_recent_kline(
+    source_id: str,
+    symbol: str,
+    count: int = 60,
+    allow_fallback: bool = True,
+) -> dict[str, Any]:
+    """Read recent completed bars, preferring the selected source.
+
+    Agent runs enable fallback by default so one transient provider disconnect
+    does not make the whole analysis fail.  Set it to false for strict
+    single-provider diagnostics.
+    """
     from datetime import datetime, timedelta
 
     bounded = max(20, min(int(count), 500))
     now = datetime.now().astimezone()
+    end_date = latest_completed_trade_day(now).strftime("%Y%m%d")
     return _read_kline_source(
         symbol=str(symbol),
         source_key=_valid_kline_source(source_id),
         start_date=(now - timedelta(days=max(120, int(bounded * 1.7) + 30))).strftime("%Y%m%d"),
-        end_date=now.strftime("%Y%m%d"),
+        end_date=end_date,
         requested_count=bounded,
         range_mode=False,
+        allow_fallback=bool(allow_fallback),
     )
 
 
@@ -251,8 +264,9 @@ def calculate_technical_indicator(
     slow_period: int | None = None,
     signal_period: int | None = None,
     standard_deviations: float | None = None,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Read one source's bars and calculate one requested deterministic indicator."""
+    """Calculate one indicator from completed bars, preferring one source."""
     return _calculate_indicator(
         source_key=_valid_kline_source(source_id),
         indicator=str(indicator or "").strip(),
@@ -264,6 +278,7 @@ def calculate_technical_indicator(
         slow_period=slow_period,
         signal_period=signal_period,
         standard_deviations=standard_deviations,
+        allow_fallback=bool(allow_fallback),
     )
 
 
@@ -388,12 +403,17 @@ TOOLS = (
     ),
     ToolSpec(
         name="read_recent_kline",
-        description="读取一个明确指定来源的一只 A 股近期前复权日线；不计算指标或改查来源。",
+        description="读取一只 A 股最近已完成的前复权日线；优先使用指定来源，临时失败时可切换备用来源。",
         parameters=object_schema(
             {
                 "source_id": {**_SOURCE_ID, "enum": _source_enum(KLINE_SOURCE_CATALOG)},
                 "symbol": {"type": "string", "description": "A 股代码或名称"},
                 "count": {"type": "integer", "minimum": 20, "maximum": 500, "default": 60},
+                "allow_fallback": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "临时失败时是否切换到备用来源；排错时可设为 false。",
+                },
             },
             ["source_id", "symbol"],
         ),
@@ -421,7 +441,7 @@ TOOLS = (
     ),
     ToolSpec(
         name="calculate_technical_indicator",
-        description="从一个明确指定日线来源读取数据，并计算一个明确指定的技术指标；不输出指标组合或交易结论。",
+        description="从最近已完成的前复权日线计算一个技术指标；优先使用指定来源，临时失败时可切换备用来源。",
         parameters=object_schema(
             {
                 "source_id": {**_SOURCE_ID, "enum": _source_enum(KLINE_SOURCE_CATALOG)},
@@ -434,6 +454,11 @@ TOOLS = (
                 "slow_period": {"type": "integer", "minimum": 3, "maximum": 250},
                 "signal_period": {"type": "integer", "minimum": 2, "maximum": 120},
                 "standard_deviations": {"type": "number", "exclusiveMinimum": 0, "maximum": 5},
+                "allow_fallback": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "临时失败时是否切换到备用来源；排错时可设为 false。",
+                },
             },
             ["source_id", "indicator", "symbol"],
         ),

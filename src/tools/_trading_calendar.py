@@ -53,6 +53,28 @@ def fallback_trade_day(now: datetime) -> date:
     return day
 
 
+def latest_completed_trade_day(
+    now: datetime | None = None,
+    calendar: list[date] | None = None,
+) -> date:
+    """Return the latest daily-bar date that is safe to use for indicators.
+
+    A-share daily endpoints may expose an incomplete bar during the session.
+    The current trading date therefore becomes eligible only after 15:00;
+    before then we deliberately use the previous trading date.
+    """
+    now = now or datetime.now().astimezone()
+    try:
+        active = sorted(day for day in (calendar or trade_dates()) if day <= now.date())
+    except Exception:
+        return fallback_trade_day(now)
+    if now.time() < time(15, 0):
+        active = [day for day in active if day < now.date()]
+    if active:
+        return active[-1]
+    return fallback_trade_day(now)
+
+
 def is_trading_time(now: datetime | None = None, calendar: list[date] | None = None) -> bool:
     """Whether *now* is inside an official A-share continuous session."""
     now = now or datetime.now().astimezone()
@@ -75,6 +97,7 @@ __all__ = [
     "trade_dates",
     "expected_trade_day",
     "fallback_trade_day",
+    "latest_completed_trade_day",
     "is_trading_time",
     "_fetch_trade_dates",
     "_fallback_trade_day",

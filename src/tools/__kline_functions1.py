@@ -386,6 +386,7 @@ def _fetch_kline_em(symbol: str, start_date: str, end_date: str):
             start_date=start_date,
             end_date=end_date,
             adjust="qfq",
+            timeout=15,
         ),
     )
     elapsed = time.time() - t0

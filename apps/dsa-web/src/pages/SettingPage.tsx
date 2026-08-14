@@ -1,5 +1,5 @@
-import { lazy, useEffect, useState } from 'react';
-import { Activity, ArrowLeft, Bell, Box, Database, Hammer, ListChecks, ListFilter, MessageSquareText, Rss } from 'lucide-react';
+import { lazy, useEffect } from 'react';
+import { Activity, ArrowLeft, Bell, Box, Database, Hammer, ListChecks, ListFilter, MessageSquareText, Monitor, Rss } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
@@ -9,6 +9,7 @@ import { Button } from '../components/ui/button';
 import { cn } from '../utils/cn';
 
 const RunExplorerSettingsView = lazy(() => import('./RunExplorerPage'));
+const AgentMonitoringSettingsView = lazy(() => import('./AgentMonitoringPage'));
 const ToolRegistryView = lazy(() => import('../components/tools/ToolRegistryView'));
 const ModelSettingsView = lazy(() => import('../components/settings/ModelSettingsView'));
 const AgentPromptView = lazy(() => import('../components/agentPrompts/AgentPromptView'));
@@ -32,6 +33,13 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     icon: ListChecks,
     available: true,
     description: '查看工具调用、证据关联与运行质量',
+  },
+  {
+    id: 'monitoring',
+    label: '系统运行监控',
+    icon: Monitor,
+    available: true,
+    description: '查看整体运行状态、告警与工具健康度',
   },
   {
     id: 'notification',
@@ -87,23 +95,20 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
 const SettingPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const prefersReducedMotion = useReducedMotion();
-  const [activeId, setActiveId] = useState<string>(() => {
-    const requested = searchParams.get('tab');
-    if (requested && SETTINGS_CATEGORIES.some((category) => category.id === requested && category.available)) {
-      return requested;
-    }
-    const firstAvailable = SETTINGS_CATEGORIES.find((category) => category.available);
-    return firstAvailable?.id ?? SETTINGS_CATEGORIES[0].id;
-  });
 
   useEffect(() => {
     document.title = '设置 - Stock Assistant';
   }, []);
 
+  const requestedTab = searchParams.get('tab');
+  const firstAvailable = SETTINGS_CATEGORIES.find((category) => category.available);
+  const activeId = requestedTab && SETTINGS_CATEGORIES.some((category) => category.id === requestedTab && category.available)
+    ? requestedTab
+    : firstAvailable?.id ?? SETTINGS_CATEGORIES[0].id;
+
   const activeCategory = SETTINGS_CATEGORIES.find((category) => category.id === activeId);
   const isTallCategory = activeCategory?.id === 'stocks' || activeCategory?.id === 'indicator-screening';
   const handleCategorySelect = (id: string) => {
-    setActiveId(id);
     setSearchParams({ tab: id }, { replace: true });
   };
 
@@ -173,6 +178,8 @@ const SettingPage: React.FC = () => {
               <ToolRegistryView />
             ) : activeCategory?.id === 'runs' ? (
               <RunExplorerSettingsView embedded />
+            ) : activeCategory?.id === 'monitoring' ? (
+              <AgentMonitoringSettingsView embedded />
             ) : activeCategory?.id === 'model' ? (
               <ModelSettingsView />
             ) : activeCategory?.id === 'prompt' ? (

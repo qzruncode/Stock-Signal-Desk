@@ -54,8 +54,14 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.service = SystemConfigService(manager=self.manager)
 
     @staticmethod
-    def _mock_completion_response(content: str = "OK", tool_calls=None):
-        message = SimpleNamespace(content=content, tool_calls=tool_calls or [])
+    def _mock_completion_response(
+        content: Optional[str] = "OK", tool_calls=None, reasoning_content=None
+    ):
+        message = SimpleNamespace(
+            content=content,
+            reasoning_content=reasoning_content,
+            tool_calls=tool_calls or [],
+        )
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
     def test_get_config_masks_sensitive_values_server_side(self) -> None:
@@ -106,6 +112,25 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "config_missing")
         mock_completion.assert_not_called()
+
+    def test_model_connection_accepts_reasoning_only_response(self) -> None:
+        import litellm
+
+        with patch.object(
+            litellm,
+            "completion",
+            return_value=self._mock_completion_response(content=None, reasoning_content="OK"),
+        ):
+            result = self.service.test_model_connection(
+                items=[
+                    {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
+                    {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
+                    {"key": "ANTHROPIC_MODEL", "value": "ai/glm-5.2"},
+                ]
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["stage"], "model_response")
 
     def test_config_manager_hardens_rewritten_env_permissions(self) -> None:
         old_version = self.manager.get_config_version()
