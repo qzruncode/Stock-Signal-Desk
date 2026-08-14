@@ -1,8 +1,8 @@
-import { Select as SelectPrimitive } from 'radix-ui';
 import type { ReactNode } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '../../utils/cn';
+import { SelectPrimitive } from '../ui/select';
 
 export interface CompactSelectOption {
   value: string;
@@ -82,7 +82,7 @@ export function CompactSelect({
       sideOffset={6}
       align="start"
       className={cn(
-        'z-[70] overflow-hidden rounded-xl border border-border/70 bg-white/95 p-1 text-foreground shadow-[0_16px_40px_rgba(15,23,42,0.16)] backdrop-blur-xl',
+        'z-[70] overflow-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md',
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         menuBehavior === 'flow'
           ? 'relative mt-1.5 w-full'
@@ -99,12 +99,12 @@ export function CompactSelect({
               disabled={option.disabled}
               textValue={option.label}
               className={cn(
-                'group relative flex w-full items-center justify-between gap-2 rounded-md outline-none transition',
+                'group relative flex w-full items-center justify-between gap-2 rounded-sm outline-none transition',
                 isRegular
                   ? 'min-h-9 px-3 py-1.5 text-sm'
                   : 'min-h-7 px-2 py-1 text-[11px]',
-                'text-secondary-text data-[highlighted]:bg-cyan/10 data-[highlighted]:text-foreground',
-                'data-[state=checked]:bg-cyan/10 data-[state=checked]:font-medium data-[state=checked]:text-cyan',
+                'text-secondary-text data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground',
+                'data-[state=checked]:bg-accent data-[state=checked]:font-medium data-[state=checked]:text-accent-foreground',
                 'data-[disabled]:cursor-not-allowed data-[disabled]:text-muted-foreground/45',
               )}
               onPointerDown={(event) => {
@@ -175,12 +175,13 @@ export function CompactSelect({
         <SelectPrimitive.Trigger
           id={id}
           aria-label={ariaLabel}
+          data-slot="select-trigger"
           className={cn(
             isRegular
-              ? 'input-surface input-focus-glow flex h-11 w-full items-center justify-between gap-2 rounded-xl border px-4 py-2.5 text-sm text-foreground transition-all'
-              : 'input-surface flex h-8 w-full items-center justify-between gap-1.5 rounded-md border px-2 text-[11px] text-foreground transition',
-            'group hover:border-cyan/40 hover:bg-cyan/5 focus:outline-none focus:ring-2 focus:ring-cyan/15',
-            'data-[state=open]:border-cyan/50 data-[state=open]:bg-cyan/5',
+              ? 'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground shadow-sm transition-colors'
+              : 'flex h-8 w-full items-center justify-between gap-1.5 rounded-md border border-input bg-background px-2 text-[11px] text-foreground shadow-sm transition-colors',
+            'group hover:border-primary/40 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1',
+            'data-[state=open]:border-primary/50 data-[state=open]:bg-accent/30',
             'disabled:cursor-not-allowed disabled:opacity-60',
           )}
         >

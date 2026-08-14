@@ -16,6 +16,7 @@ export * from './FormControls';
 export * from './Badge';
 export * from './StatusDot';
 export * from './Tooltip';
+export * from './Toast';
 export * from './ConfirmDialog';
 export * from './Modal';
 export * from '../layout/Shell';

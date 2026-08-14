@@ -1,5 +1,6 @@
 import type React from 'react';
 import { cn } from '../../utils/cn';
+import { Card as ShadcnCard } from '../ui/card';
 
 interface CardProps {
   title?: string;
@@ -12,9 +13,7 @@ interface CardProps {
   padding?: 'none' | 'sm' | 'md' | 'lg';
 }
 
-/**
- * Card component with terminal-inspired variants and optional hover styling.
- */
+/** Backwards-compatible project card backed by the shadcn/ui surface primitive. */
 export const Card: React.FC<CardProps> = ({
   title,
   subtitle,
@@ -33,41 +32,43 @@ export const Card: React.FC<CardProps> = ({
   };
 
   const variantStyles = {
-    default: 'terminal-card',
-    bordered: 'terminal-card',
-    gradient: 'gradient-border-card',
+    default: '',
+    bordered: 'bg-card',
+    gradient: 'border-primary/20',
   };
 
-  const hoverStyles = hoverable ? 'terminal-card-hover cursor-pointer' : '';
+  const hoverStyles = hoverable
+    ? 'cursor-pointer transition-shadow hover:border-primary/30 hover:shadow-md'
+    : '';
 
   if (variant === 'gradient') {
     return (
-      <div className={cn(variantStyles.gradient, className)} style={style}>
-        <div className={cn('gradient-border-card-inner', paddingStyles[padding])}>
+      <ShadcnCard className={cn(variantStyles.gradient, className)} style={style}>
+        <div className={cn(paddingStyles[padding])}>
           {(title || subtitle) && (
             <div className="mb-3">
-              {subtitle ? <span className="label-uppercase">{subtitle}</span> : null}
+              {subtitle ? <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{subtitle}</span> : null}
               {title ? <h3 className="mt-1 text-lg font-semibold text-foreground">{title}</h3> : null}
             </div>
           )}
           {children}
         </div>
-      </div>
+      </ShadcnCard>
     );
   }
 
   return (
-    <div
+    <ShadcnCard
       style={style}
-      className={cn('rounded-2xl', variantStyles[variant], hoverStyles, paddingStyles[padding], className)}
+      className={cn(variantStyles[variant], hoverStyles, paddingStyles[padding], className)}
     >
       {(title || subtitle) && (
         <div className="mb-3">
-          {subtitle ? <span className="label-uppercase">{subtitle}</span> : null}
+          {subtitle ? <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{subtitle}</span> : null}
           {title ? <h3 className="mt-1 text-lg font-semibold text-foreground">{title}</h3> : null}
         </div>
       )}
       {children}
-    </div>
+    </ShadcnCard>
   );
 };

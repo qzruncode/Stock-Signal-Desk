@@ -5,6 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
 import type { SettingsCategory } from '../components/settings/SettingsSidebar';
 import { MobileSettingsNavigation } from '../components/settings/MobileSettingsNavigation';
+import { Button } from '../components/ui/button';
 import { cn } from '../utils/cn';
 
 const RunExplorerSettingsView = lazy(() => import('./RunExplorerPage'));
@@ -123,14 +124,12 @@ const SettingPage: React.FC = () => {
     >
       <header>
         <div className="relative flex items-center justify-between lg:block">
-          <Link
-            to="/"
-            viewTransition
-            className="inline-flex items-center gap-1 text-sm text-secondary-text transition hover:text-foreground lg:mb-3"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            返回首页
-          </Link>
+          <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-0 text-sm text-secondary-text hover:bg-transparent hover:text-foreground lg:mb-3">
+            <Link to="/" viewTransition>
+              <ArrowLeft className="h-4 w-4" />
+              返回首页
+            </Link>
+          </Button>
           <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 whitespace-nowrap text-base font-semibold text-foreground lg:hidden">
             {activeCategory?.label}
           </span>

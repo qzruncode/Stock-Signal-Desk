@@ -47,6 +47,16 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   }, []);
 
   useEffect(() => {
+    document.documentElement.classList.add('app-shell-lock-scroll');
+    document.body.classList.add('app-shell-lock-scroll');
+
+    return () => {
+      document.documentElement.classList.remove('app-shell-lock-scroll');
+      document.body.classList.remove('app-shell-lock-scroll');
+    };
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined' || !window.matchMedia('(pointer: coarse)').matches) {
       return undefined;
     }

@@ -296,6 +296,11 @@
     overflow-x: hidden;
   }
 
+  html.app-shell-lock-scroll,
+  body.app-shell-lock-scroll {
+    overflow-y: hidden;
+  }
+
   body {
     margin: 0;
     width: 100%;
@@ -546,4 +551,3 @@
   border-left: 2px solid var(--border-accent);
   padding-left: 10px;
 }
-

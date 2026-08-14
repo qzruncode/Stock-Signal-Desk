@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Controller, useForm, useWatch } from 'react-hook-form';
-import { ChevronDown, ClipboardPaste, Loader2, PlugZap, RotateCcw, Save } from 'lucide-react';
-import { Button, InlineAlert } from '../common';
+import { ChevronDown, Info, ClipboardPaste, Loader2, PlugZap, RotateCcw, Save } from 'lucide-react';
+import { Button, InlineAlert, Tooltip } from '../common';
+import { Textarea } from '../ui/textarea';
+import { useToast } from '../common/ToastContext';
 import { SettingsField } from './SettingsField';
 import {
   SystemConfigConflictError,
@@ -30,7 +32,6 @@ const TARGET_KEYS = [
 
 const TARGET_KEY_SET = new Set<string>(TARGET_KEYS);
 
-type SaveStatus = { type: 'success' | 'error'; title: string; message: string } | null;
 type ModelFormValues = Record<string, string>;
 
 function collectValuesFromPaste(text: string): Record<string, string> | null {
@@ -55,13 +56,13 @@ function collectValuesFromPaste(text: string): Record<string, string> | null {
 }
 
 export const ModelSettingsView: React.FC = () => {
+  const { toast } = useToast();
   const [schema, setSchema] = useState<SystemConfigSchemaResponse | null>(null);
   const [config, setConfig] = useState<SystemConfigResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>(null);
   const { control, getValues, handleSubmit, reset, setValue } = useForm<ModelFormValues>({
     defaultValues: { pasteText: '' },
   });
@@ -90,7 +91,6 @@ export const ModelSettingsView: React.FC = () => {
     for (const key of TARGET_KEYS) {
       setValue(key, key in matched ? matched[key] : '', { shouldDirty: true });
     }
-    setSaveStatus(null);
   }, [setValue]);
 
   const fetchConfig = useCallback(async () => {
@@ -111,10 +111,11 @@ export const ModelSettingsView: React.FC = () => {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to load configuration';
       setLoadError(msg);
+      toast({ title: '模型配置加载失败', description: msg, variant: 'error' });
     } finally {
       setLoading(false);
     }
-  }, [reset]);
+  }, [reset, toast]);
 
   useEffect(() => {
     void fetchConfig();
@@ -168,7 +169,6 @@ export const ModelSettingsView: React.FC = () => {
     if (!config || dirtyKeys.length === 0) return;
 
     setSaving(true);
-    setSaveStatus(null);
 
     try {
       const items = dirtyKeys.map((key) => ({
@@ -183,10 +183,10 @@ export const ModelSettingsView: React.FC = () => {
         reloadNow: true,
       });
 
-      setSaveStatus({
-        type: 'success',
+      toast({
         title: '保存成功',
-        message: `已保存 ${result.appliedCount} 项配置（${result.updatedKeys.join(', ')}）。配置已重新加载。`,
+        description: '已保存 ' + result.appliedCount + ' 项配置（' + result.updatedKeys.join(', ') + '）。配置已重新加载。',
+        variant: 'success',
       });
 
       const newConfig = await systemConfigApi.getConfig(true, true);
@@ -201,45 +201,44 @@ export const ModelSettingsView: React.FC = () => {
     } catch (err: unknown) {
       if (err instanceof SystemConfigValidationError) {
         const fieldIssues = err.issues.map((i) => `${i.key}: ${i.message}`).join('\n');
-        setSaveStatus({ type: 'error', title: '保存失败', message: `校验失败:\n${fieldIssues}` });
+        toast({ title: '保存失败', description: '校验失败:\n' + fieldIssues, variant: 'error' });
       } else if (err instanceof SystemConfigConflictError) {
-        setSaveStatus({
-          type: 'error',
+        toast({
           title: '保存失败',
-          message: '配置已在别处修改，请刷新页面后重试。',
+          description: '配置已在别处修改，请刷新页面后重试。',
+          variant: 'error',
         });
       } else {
         const msg = err instanceof Error ? err.message : '保存失败';
-        setSaveStatus({ type: 'error', title: '保存失败', message: msg });
+        toast({ title: '保存失败', description: msg, variant: 'error' });
       }
     } finally {
       setSaving(false);
     }
-  }, [config, dirtyKeys, reset]);
+  }, [config, dirtyKeys, reset, toast]);
 
   const handleTest = useCallback(async (submittedValues: ModelFormValues) => {
     if (!config) return;
 
     setTesting(true);
-    setSaveStatus(null);
     try {
       const result = await systemConfigApi.testModelConnection({
         items: TARGET_KEYS.map((key) => ({ key, value: submittedValues[key] ?? '' })),
         maskToken: config.maskToken,
         timeoutSeconds: 30,
       });
-      setSaveStatus({
-        type: result.success ? 'success' : 'error',
+      toast({
         title: result.success ? '测试成功' : '测试失败',
-        message: result.message,
+        description: result.message,
+        variant: result.success ? 'success' : 'error',
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '模型测试失败';
-      setSaveStatus({ type: 'error', title: '测试失败', message: msg });
+      toast({ title: '测试失败', description: msg, variant: 'error' });
     } finally {
       setTesting(false);
     }
-  }, [config]);
+  }, [config, toast]);
 
   if (loading) {
     return (
@@ -327,11 +326,11 @@ export const ModelSettingsView: React.FC = () => {
               name="pasteText"
               control={control}
               render={({ field }) => (
-                <textarea
+                <Textarea
                   {...field}
                   onChange={(e) => handlePasteChange(e.target.value)}
                   rows={4}
-                  className="input-surface w-full rounded-md border border-border/70 bg-background/40 px-3 py-2 font-mono text-[11px] leading-5 shadow-none transition focus:border-foreground/30 focus:outline-none"
+                  className="input-surface w-full bg-background/40 px-3 py-2 font-mono text-[11px] leading-5 shadow-none transition focus:border-foreground/30"
                   spellCheck={false}
                   aria-label="原始模型配置 JSON"
                 />
@@ -339,15 +338,6 @@ export const ModelSettingsView: React.FC = () => {
             />
           </div>
         </details>
-
-        {saveStatus ? (
-          <InlineAlert
-            variant={saveStatus.type === 'success' ? 'success' : 'danger'}
-            title={saveStatus.title}
-            className="rounded-md border px-3 py-2 shadow-none [&_p]:text-xs [&_pre]:text-xs"
-            message={<pre className="whitespace-pre-wrap font-sans">{saveStatus.message}</pre>}
-          />
-        ) : null}
 
         {orderedFields.length === 0 ? (
           <InlineAlert
@@ -363,17 +353,27 @@ export const ModelSettingsView: React.FC = () => {
                 className="grid grid-cols-1 gap-2.5 py-3.5 sm:grid-cols-[minmax(12rem,0.42fr)_minmax(0,1fr)] sm:items-start sm:gap-8"
               >
                 <div className="min-w-0 pt-0.5">
-                  <p className="text-[13px] font-medium leading-5 text-foreground">
-                    {fieldSchema.title ?? fieldSchema.key}
-                  </p>
-                  <p className="mt-0.5 font-mono text-[10px] leading-4 text-muted-foreground">
-                    {fieldSchema.key}
-                  </p>
-                  {fieldSchema.description ? (
-                    <p className="mt-1 text-[11px] leading-4 text-secondary-text">
-                      {fieldSchema.description}
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[13px] font-medium leading-5 text-foreground">
+                      {fieldSchema.title ?? fieldSchema.key}
                     </p>
-                  ) : null}
+                    <Tooltip
+                      focusable
+                      ariaLabel={'查看 ' + (fieldSchema.title ?? fieldSchema.key) + ' 配置说明'}
+                      content={
+                        <div className="space-y-1 whitespace-normal">
+                          <p className="font-mono text-[10px] text-muted-foreground">{fieldSchema.key}</p>
+                          {fieldSchema.description ? <p>{fieldSchema.description}</p> : null}
+                          {fieldSchema.examples?.length ? (
+                            <p className="text-muted-foreground">例：{fieldSchema.examples.join('、')}</p>
+                          ) : null}
+                        </div>
+                      }
+                      contentClassName="min-w-0 max-w-[20rem] whitespace-normal"
+                    >
+                      <Info className="size-3.5 cursor-help text-muted-foreground transition-colors hover:text-primary" aria-hidden="true" />
+                    </Tooltip>
+                  </div>
                 </div>
                 <Controller
                   name={fieldSchema.key}
@@ -384,7 +384,6 @@ export const ModelSettingsView: React.FC = () => {
                       value={field.value ?? ''}
                       onChange={(_, value) => {
                         field.onChange(value);
-                        setSaveStatus(null);
                       }}
                       isMasked={maskedKeys.has(fieldSchema.key)}
                       showSensitiveValue

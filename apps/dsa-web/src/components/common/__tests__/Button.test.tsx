@@ -15,7 +15,8 @@ describe('Button', () => {
     const button = screen.getByRole('button', { name: 'Delete' });
     expect(button).toHaveAttribute('type', 'button');
     expect(button).toHaveAttribute('data-variant', 'danger');
-    expect(button.className).toContain('bg-danger');
+    expect(button.className).toContain('bg-destructive');
+    expect(button).toHaveAttribute('data-slot', 'button');
   });
 
   it('disables the button when loading and shows loading text', () => {
@@ -28,10 +29,10 @@ describe('Button', () => {
   });
 
   it.each([
-    ['primary', 'bg-primary-gradient'],
-    ['secondary', 'bg-white'],
-    ['ghost', 'bg-transparent'],
-    ['danger', 'bg-danger'],
+    ['primary', 'bg-primary'],
+    ['secondary', 'bg-secondary'],
+    ['ghost', 'hover:bg-accent'],
+    ['danger', 'bg-destructive'],
   ] as const)('supports the %s variant with expected styling', (variant, expectedClass) => {
     render(<Button variant={variant}>Action</Button>);
 

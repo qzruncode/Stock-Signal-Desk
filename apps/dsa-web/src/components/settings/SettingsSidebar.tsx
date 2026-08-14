@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '../../utils/cn';
+import { Button } from '../ui/button';
 
 export interface SettingsCategory {
   id: string;
@@ -30,9 +31,10 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
         const isActive = category.id === activeId;
         const isDisabled = !category.available;
         return (
-          <button
+          <Button
             key={category.id}
             type="button"
+            variant="ghost"
             onClick={() => {
               if (!isDisabled) onSelect(category.id);
             }}
@@ -40,7 +42,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
             aria-current={isActive ? 'page' : undefined}
             title={isDisabled ? '尚未实现' : undefined}
             className={cn(
-              'flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition',
+              'h-auto w-full justify-start gap-3 rounded-lg px-3 py-2 text-left text-sm',
               isDisabled && 'cursor-not-allowed opacity-50',
               !isDisabled && isActive && 'bg-primary/10 text-primary',
               !isDisabled && !isActive && 'text-secondary-text hover:bg-accent hover:text-foreground',
@@ -62,7 +64,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
                 即将推出
               </span>
             ) : null}
-          </button>
+          </Button>
         );
       })}
     </nav>

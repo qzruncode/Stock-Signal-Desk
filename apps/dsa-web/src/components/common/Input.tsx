@@ -3,6 +3,8 @@ import type React from 'react';
 import { Lock, Key } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { EyeToggleIcon } from './EyeToggleIcon';
+import { Input as ShadcnInput } from '../ui/input';
+import { Label } from '../ui/label';
 
 interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
@@ -96,7 +98,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
   return (
     <div className="flex flex-col">
       {label ? (
-        <label
+        <Label
           htmlFor={inputId}
           className={cn(
             isCompact
@@ -105,7 +107,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
           )}
         >
           {label}
-        </label>
+        </Label>
       ) : null}
       <div className="relative flex items-center">
         {leadingIcon && (
@@ -113,7 +115,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(({
             {leadingIcon}
           </div>
         )}
-        <input
+        <ShadcnInput
           id={inputId}
           ref={ref}
           aria-describedby={describedBy}

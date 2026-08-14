@@ -1,7 +1,5 @@
 import { useId } from 'react';
 import type { ReactNode } from 'react';
-import { Check } from 'lucide-react';
-import { Checkbox as CheckboxPrimitive } from 'radix-ui';
 import { cn } from '../../utils/cn';
 import { CompactSelect } from './CompactSelect';
 import type {
@@ -11,6 +9,7 @@ import type {
   CompactSelectMenuBehavior,
 } from './CompactSelect';
 import { Input } from './Input';
+import { Checkbox } from '../ui/checkbox';
 
 export type FormFieldLayout = 'inline' | 'stacked';
 
@@ -195,24 +194,13 @@ export function FormCheckbox({
       className={className}
       labelClassName={labelClassName}
     >
-      <CheckboxPrimitive.Root
+      <Checkbox
         id={resolvedId}
         aria-label={resolvedAriaLabel}
         checked={checked}
         disabled={disabled}
         onCheckedChange={(nextChecked) => onChange(nextChecked === true)}
-        className={cn(
-          'inline-flex size-4 items-center justify-center rounded border transition focus:outline-none focus:ring-2 focus:ring-cyan/20',
-          checked
-            ? 'border-cyan bg-cyan text-white'
-            : 'border-border/80 bg-elevated/30 text-transparent hover:border-cyan/50',
-          disabled && 'cursor-not-allowed opacity-60',
-        )}
-      >
-        <CheckboxPrimitive.Indicator>
-          <Check className="size-3" />
-        </CheckboxPrimitive.Indicator>
-      </CheckboxPrimitive.Root>
+      />
     </FormField>
   );
 }

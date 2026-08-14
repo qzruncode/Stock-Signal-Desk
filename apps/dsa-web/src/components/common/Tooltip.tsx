@@ -8,6 +8,7 @@ interface TooltipProps {
   children: React.ReactNode;
   side?: 'top' | 'bottom';
   focusable?: boolean;
+  ariaLabel?: string;
   className?: string;
   contentClassName?: string;
 }
@@ -22,6 +23,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
   children,
   side = 'top',
   focusable = false,
+  ariaLabel,
   className = '',
   contentClassName = '',
 }) => {
@@ -116,6 +118,7 @@ export const Tooltip: React.FC<TooltipProps> = ({
           }
         }}
         tabIndex={focusable ? 0 : undefined}
+        aria-label={ariaLabel}
         aria-describedby={open ? tooltipId : undefined}
       >
         {children}

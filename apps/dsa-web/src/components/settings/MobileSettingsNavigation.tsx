@@ -1,6 +1,7 @@
 import { Menu } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Drawer } from '../common';
+import { Button } from '../ui/button';
 import { SettingsSidebar } from './SettingsSidebar';
 import type { SettingsCategory } from './SettingsSidebar';
 
@@ -36,16 +37,18 @@ export const MobileSettingsNavigation: React.FC<MobileSettingsNavigationProps> =
 
   return (
     <div className="lg:hidden">
-      <button
+      <Button
+        variant="ghost"
+        size="icon"
         type="button"
         onClick={() => setIsOpen(true)}
         aria-label="打开设置菜单"
         aria-haspopup="dialog"
         aria-expanded={isOpen}
-        className="group inline-flex h-10 w-10 items-center justify-center rounded-lg text-secondary-text transition-all duration-200 hover:bg-hover hover:text-foreground active:scale-90"
+        className="group h-10 w-10 rounded-lg text-secondary-text transition-all duration-200 hover:bg-hover hover:text-foreground active:scale-90"
       >
         <Menu className="h-5 w-5 transition-transform duration-200 group-hover:scale-110" />
-      </button>
+      </Button>
 
       <Drawer
         isOpen={isOpen}

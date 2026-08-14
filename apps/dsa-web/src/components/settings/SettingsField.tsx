@@ -3,6 +3,10 @@ import { Eye } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { Input } from '../common/Input';
 import { Select } from '../common/Select';
+import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
+import { Switch } from '../ui/switch';
+import { Textarea } from '../ui/textarea';
 import type { SystemConfigFieldSchema, SystemConfigOption } from '../../types/systemConfig';
 
 interface SettingsFieldProps {
@@ -63,21 +67,23 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
       <div className="flex flex-col gap-1.5">
         <label className={showLabel ? 'text-[13px] font-medium text-foreground' : 'sr-only'}>{label}</label>
         <div className="flex items-center gap-3">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-3 py-1.5 text-xs font-medium text-success">
+          <Badge variant="success" className="gap-1.5 px-3 py-1.5 text-xs">
             <span className="h-1.5 w-1.5 rounded-full bg-success" />
             已配置（隐藏）
-          </span>
-          <button
+          </Badge>
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 gap-1 rounded-md px-2.5 text-xs text-secondary-text hover:border-warning/40 hover:bg-warning/5 hover:text-warning"
             onClick={() => {
               setRevealed(true);
               onChange(field.key, '');
             }}
-            className="inline-flex items-center gap-1 rounded-lg border border-border/50 bg-elevated px-2.5 py-1.5 text-xs text-secondary-text transition hover:border-warning/40 hover:text-warning"
           >
             <Eye className="h-3.5 w-3.5" />
             修改
-          </button>
+          </Button>
         </div>
         {hint && <p className="text-xs text-secondary-text">{hint}</p>}
       </div>
@@ -93,24 +99,11 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
           <span className={cn('text-[13px] font-medium text-foreground', !showLabel && 'sr-only')}>{label}</span>
           {hint && <span className="text-xs text-secondary-text">{hint}</span>}
         </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={isOn}
+        <Switch
+          checked={isOn}
           aria-label={label}
-          onClick={() => handleChange(isOn ? 'false' : 'true')}
-          className={cn(
-            'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan/15',
-            isOn ? 'bg-cyan' : 'bg-border/60',
-          )}
-        >
-          <span
-            className={cn(
-              'inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-200',
-              isOn ? 'translate-x-6' : 'translate-x-1',
-            )}
-          />
-        </button>
+          onCheckedChange={(checked) => handleChange(checked ? 'true' : 'false')}
+        />
       </div>
     );
   }
@@ -124,14 +117,14 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
             {visualLabel}
           </label>
         )}
-        <textarea
+        <Textarea
           id={fieldId}
           aria-label={!showLabel ? label : undefined}
           value={value}
           onChange={(e) => handleChange(e.target.value)}
           rows={compact ? 2 : 3}
           className={cn(
-            'input-surface input-focus-glow w-full border bg-transparent transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60',
+            'input-surface w-full bg-transparent shadow-none transition-all disabled:cursor-not-allowed disabled:opacity-60',
             compact ? 'rounded-md px-3 py-2 text-xs shadow-none' : 'rounded-xl px-4 py-3 text-sm',
           )}
           placeholder={field.defaultValue ?? undefined}
