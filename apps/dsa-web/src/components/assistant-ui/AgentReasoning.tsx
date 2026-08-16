@@ -366,6 +366,16 @@ export const AgentExecutionTimeline: FC = () => {
     return output;
   }, [events, results]);
   const [expanded, setExpanded] = useState(true);
+  const [expandedDetailKeys, setExpandedDetailKeys] = useState<Set<string>>(() => new Set());
+
+  const toggleDetail = (rowKey: string) => {
+    setExpandedDetailKeys((current) => {
+      const next = new Set(current);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
 
   if (rows.length === 0) return null;
   const latest = events.at(-1) || null;
@@ -404,7 +414,7 @@ export const AgentExecutionTimeline: FC = () => {
       {expanded ? (
         <div className="border-t border-primary/10 px-3 py-2">
           <ol className="space-y-1">
-            {rows.map((row) => {
+            {rows.map((row, rowIndex) => {
               const event = row.event;
               const status = row.kind === 'tool' ? toolStatus(row.result, event) : (event?.status || 'started');
               const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
@@ -416,6 +426,8 @@ export const AgentExecutionTimeline: FC = () => {
                 ? toolSummary(row.result, event)
                 : (event?.summary || '正在处理');
               const detailLines = row.kind === 'tool' ? toolDetails(row.result, event) : stageDetails(event!);
+              const detailsExpanded = expandedDetailKeys.has(row.key);
+              const detailId = `execution-detail-${rowIndex}`;
               return (
                 <li key={row.key} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
                   <StatusIcon status={status} problem={problem} className={cn(
@@ -427,26 +439,40 @@ export const AgentExecutionTimeline: FC = () => {
                     <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
                     <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
                     {detailLines.length > 0 ? (
-                      <div className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
-                        {detailLines.map((detail) => (
-                          <div key={detail.key} className="whitespace-pre-wrap break-words">
-                            <span>{detail.text}</span>
-                            {detail.href ? (
-                              <>
-                                <span> · </span>
-                                <a
-                                  href={detail.href}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="break-all text-primary underline-offset-2 hover:underline"
-                                >
-                                  {detail.href}
-                                </a>
-                              </>
-                            ) : null}
+                      <>
+                        <button
+                          type="button"
+                          aria-expanded={detailsExpanded}
+                          aria-controls={detailId}
+                          onClick={() => toggleDetail(row.key)}
+                          className="mt-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-primary transition hover:bg-primary/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+                        >
+                          <ChevronDownIcon className={cn('size-3 transition-transform', detailsExpanded && 'rotate-180')} />
+                          {detailsExpanded ? '收起详细' : `查看详细（${detailLines.length} 项）`}
+                        </button>
+                        {detailsExpanded ? (
+                          <div id={detailId} className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
+                            {detailLines.map((detail) => (
+                              <div key={detail.key} className="whitespace-pre-wrap break-words">
+                                <span>{detail.text}</span>
+                                {detail.href ? (
+                                  <>
+                                    <span> · </span>
+                                    <a
+                                      href={detail.href}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="break-all text-primary underline-offset-2 hover:underline"
+                                    >
+                                      {detail.href}
+                                    </a>
+                                  </>
+                                ) : null}
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        ) : null}
+                      </>
                     ) : null}
                   </div>
                 </li>
