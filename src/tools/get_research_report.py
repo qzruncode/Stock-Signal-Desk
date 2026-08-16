@@ -304,6 +304,11 @@ def read_company_research_reports_akshare(
     items.sort(key=lambda row: row.get("publish_date") or "", reverse=True)
     items = items[:limit]
     latest = next((item.get("publish_date") for item in items if item.get("publish_date")), None)
+    reference_links = [
+        str(item.get("url") or "").strip()
+        for item in items
+        if str(item.get("url") or "").strip()
+    ]
     return {
         "symbol": code,
         "days": days,
@@ -313,6 +318,13 @@ def read_company_research_reports_akshare(
         "has_reports": bool(items),
         "source": "AKShare/东方财富个股研报",
         "source_scope": "broker_individual_stock_research_reports",
+        "content_access": {
+            "mode": "reference_only",
+            "content_read": False,
+            "content_extracted": False,
+            "content_read_required": bool(reference_links),
+        },
+        "reference_links": reference_links,
         "success": True,
         "partial": False,
         "errors": [],
@@ -331,6 +343,8 @@ TOOLS = (
         description=(
             "从 AKShare/东方财富的单一券商个股研报源读取一只 A 股的研报；"
             "返回日期、机构、评级、PDF 链接和原始预测字段，不搜索 RSS 或混合其他研究来源。"
+            "这是 reference-only 来源索引，不包含 PDF 正文；若要用研报内容支撑实质性结论，"
+            "必须继续调用 read_web_source 读取对应 URL。"
         ),
         parameters=object_schema(
             {

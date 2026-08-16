@@ -39,7 +39,7 @@ from src.tools.webfetch import (
     WEBFETCH_DESCRIPTION,
  )
 
-__all__ = ['_accept_header_for', '_allow_private', '_validate_public_url', '_extract_text_from_html', '_markdownify', '_metadata_from_soup', '_normalized_similarity', '_semantic_candidate', '_extract_html', '_challenge_reason', '_quality_warning', '_decode_text', '_document_extension', '_convert_document', '_timed_result', '_html_result']
+__all__ = ['_accept_header_for', '_allow_private', '_validate_public_url', '_extract_text_from_html', '_markdownify', '_metadata_from_soup', '_normalized_similarity', '_semantic_candidate', '_extract_html', '_challenge_reason', '_quality_warning', '_decode_text', '_document_extension', '_convert_document', '_unusable_document_reason', '_timed_result', '_html_result']
 
 def _accept_header_for(fmt: str) -> str:
     if fmt == "markdown":
@@ -345,10 +345,35 @@ def _decode_text(body: bytes, encoding: str | None) -> str:
         logger.debug("Character-set detection failed", exc_info=True)
     return body.decode("utf-8", errors="replace")
 
-def _document_extension(url: str, mime: str) -> str | None:
+def _document_extension(
+    url: str,
+    mime: str,
+    *,
+    body: bytes = b"",
+    content_disposition: str = "",
+) -> str | None:
+    """Resolve a document type even when a download URL hides its filename.
+
+    Research-report endpoints frequently return a signed URL without a file
+    suffix and ``application/octet-stream``. In that case the response
+    headers and the PDF magic bytes are more reliable than the visible URL.
+    """
     extension = PurePosixPath(unquote(urlparse(url).path)).suffix.lower()
     if extension in _DOCUMENT_EXTENSIONS:
         return extension
+
+    disposition_match = re.search(
+        r"(?:^|;)\s*filename\*?\s*=\s*(?:UTF-8''|\"?)([^;\"]+)",
+        content_disposition or "",
+        flags=re.IGNORECASE,
+    )
+    if disposition_match:
+        disposition_extension = PurePosixPath(
+            unquote(disposition_match.group(1).strip().strip('"'))
+        ).suffix.lower()
+        if disposition_extension in _DOCUMENT_EXTENSIONS:
+            return disposition_extension
+
     by_mime = {
         "application/pdf": ".pdf",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
@@ -356,7 +381,15 @@ def _document_extension(url: str, mime: str) -> str | None:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
         "application/vnd.ms-excel": ".xls",
     }
-    return by_mime.get(mime)
+    extension = by_mime.get(mime)
+    if extension:
+        return extension
+
+    # A PDF signature is unambiguous enough for the generic/octet-stream
+    # responses used by several research-report hosts.
+    if body[:5] == b"%PDF-":
+        return ".pdf"
+    return None
 
 def _convert_document(body: bytes, extension: str, fmt: str, url: str) -> tuple[str, str]:
     from markitdown import MarkItDown
@@ -375,6 +408,38 @@ def _convert_document(body: bytes, extension: str, fmt: str, url: str) -> tuple[
         except ImportError:
             return f"<pre>{markdown}</pre>", "markitdown"
     return markdown, "markitdown"
+
+
+def _unusable_document_reason(
+    content: str,
+    *,
+    content_type: str = "",
+    document_extension: str | None = None,
+    extraction_method: str = "",
+) -> str | None:
+    """Reject a document response that was returned as binary/text garbage.
+
+    A provider can report HTTP success while decoding a PDF body as text.  A
+    non-empty string is not enough evidence that a document was extracted: the
+    raw PDF signature, NUL bytes, and replacement-character runs are strong
+    indicators that the model would receive an unreadable payload.  MarkItDown
+    output is the explicit successful document-extraction path.
+    """
+    text = str(content or "")
+    if not text.strip():
+        return None
+    extraction = str(extraction_method or "").strip().lower()
+    mime = str(content_type or "").split(";", 1)[0].strip().lower()
+    if "markitdown" in extraction:
+        return None
+    head = text.lstrip()[:4_096]
+    if head.startswith("%PDF-") or "\x00" in head or head.count("\ufffd") >= 4:
+        return "返回了原始文档二进制，未提取出可读正文"
+    if mime in _DOCUMENT_MIMES:
+        return "返回了文档附件，但没有通过文档解析器提取正文"
+    if document_extension in _DOCUMENT_EXTENSIONS:
+        return "返回了文档内容，但没有通过文档解析器提取正文"
+    return None
 
 def _timed_result(provider: str, started: float, **values: Any) -> dict[str, Any]:
     return {"provider": provider, "duration_ms": int((time.perf_counter() - started) * 1000), **values}

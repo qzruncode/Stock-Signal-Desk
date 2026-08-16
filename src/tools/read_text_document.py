@@ -187,6 +187,14 @@ def read_text_document(
     return {
         "success": success,
         "partial": False,
+        "content_access": {
+            "mode": "content_read",
+            "content_read": success,
+            "content_extracted": bool(chunks),
+            "content_read_required": True,
+            "content_length": sum(len(str(chunk.get("text") or "")) for chunk in chunks),
+            "resource_id": str(resource.get("resource_id") or ""),
+        },
         "resource": resource,
         "resources": [resource],
         "chunks": chunks,

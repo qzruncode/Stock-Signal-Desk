@@ -76,6 +76,14 @@ def read_financial_article(
             or resolved.get("link")
         ),
         "partial": has_more,
+        "content_access": {
+            "mode": "content_read",
+            "content_read": bool(segment),
+            "content_extracted": bool(segment),
+            "content_read_required": True,
+            "content_length": len(full_text),
+            "requested_url": str(link or ""),
+        },
         "title": resolved.get("title") or title,
         "link": resolved.get("link") or link,
         "published": published_value,

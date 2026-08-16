@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type React from 'react';
-import { Activity, CheckCircle2, Clock3, Copy, Database, ListChecks, LoaderCircle, ThumbsDown, ThumbsUp, TriangleAlert } from 'lucide-react';
-import type { AgentRunDetail } from '../../api/runExplorer';
+import { Activity, CheckCircle2, Clock3, Copy, Database, Link2, ListChecks, LoaderCircle, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert } from 'lucide-react';
+import type { AgentBehaviorAudit, AgentRunDetail, AgentSourceSampleResponse } from '../../api/runExplorer';
 import { Badge, Card } from '../common';
 import { cn } from '../../utils/cn';
 import { formatDateTime } from '../../utils/format';
@@ -12,6 +12,9 @@ type RunDetailContentProps = {
   onLoadToolPayloads?: () => void;
   toolPayloadsLoading?: boolean;
   toolPayloadsLoaded?: boolean;
+  onSampleSources?: () => void;
+  sourceSampling?: boolean;
+  sourceSample?: AgentSourceSampleResponse | null;
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -75,6 +78,29 @@ const errorCodeFrom = (value: unknown) => {
     || errorString(nestedResult.error_code);
 };
 const isHttpUrl = (value: string) => /^https?:\/\//i.test(value);
+const REFERENCE_ONLY_TOOLS = new Set(['read_company_research_reports_akshare', 'read_company_news_akshare']);
+const CONTENT_READER_TOOLS = new Set(['read_web_source', 'read_text_document', 'read_financial_article', 'read_rss_item', 'read_registered_rss_item']);
+const accessModeFor = (toolName: string, result?: Record<string, unknown>) => {
+  const access = record(field(result, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit']));
+  const explicit = text(field(access, ['mode', 'accessMode', 'access_mode']));
+  if (explicit) return explicit;
+  if (REFERENCE_ONLY_TOOLS.has(toolName)) return 'reference_only';
+  if (CONTENT_READER_TOOLS.has(toolName)) return 'content_read';
+  return 'structured_data';
+};
+const accessLabelFor = (mode: string, result?: Record<string, unknown>) => {
+  const access = record(field(result, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit']));
+  const extracted = field(access, ['contentExtracted', 'content_extracted']) === true;
+  const contentRead = field(access, ['contentRead', 'content_read']);
+  if (mode === 'reference_only') return '仅来源引用';
+  if (mode === 'content_read') {
+    if (contentRead === false) return '读取失败';
+    if (extracted) return '已读取并提取';
+    if (contentRead === true) return '已读取正文';
+    return '读取状态未记录';
+  }
+  return '结构化数据';
+};
 const sourceLabel = (value: string) => {
   const trimmed = value.trim();
   if (!isHttpUrl(trimmed)) return trimmed.replace(/^www\./i, '');
@@ -273,11 +299,16 @@ export function RunDetailContent({
   onLoadToolPayloads,
   toolPayloadsLoading = false,
   toolPayloadsLoaded = false,
+  onSampleSources,
+  sourceSampling = false,
+  sourceSample = null,
 }: RunDetailContentProps) {
   const run = detail.snapshot.run ?? {};
   const projection = detail.snapshot.qualityProjection ?? {};
+  const behaviorAudit = detail.snapshot.behaviorAudit;
   const toolResults = projection.toolResults ?? [];
   const evidence = projection.evidence ?? [];
+  const claimEvidence = projection.claimEvidence ?? [];
   const steps = detail.snapshot.steps ?? [];
   const toolNames = uniqueStrings(toolResults.map((item) => text(item.toolName)).filter(Boolean));
   const sourceNames = uniqueStrings(evidence.flatMap((item) => stringList(item.sourceRefs)));
@@ -314,6 +345,12 @@ export function RunDetailContent({
     ? new Date(text(run.finishedAt)).getTime() - new Date(text(run.startedAt)).getTime()
     : null;
   const qualityIssues = buildQualityIssues(detail.score, failedToolResults, failedSteps);
+  const behaviorReviewCount = (behaviorAudit?.dangerCount ?? 0) + (behaviorAudit?.warningCount ?? 0);
+  const answerStatusTone = !detail.score.passed || behaviorReviewCount > 0
+    ? 'text-warning'
+    : behaviorAudit?.status === 'info'
+      ? 'text-cyan'
+      : 'text-success';
   const [expandedActionId, setExpandedActionId] = useState<string | null>(null);
 
   return (
@@ -336,8 +373,16 @@ export function RunDetailContent({
         <div className="mt-3 rounded-lg border border-border/70 bg-muted/35 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="text-xs font-semibold text-foreground">助手给出的结论</p>
-            <span className={cn('text-[11px] font-medium', detail.score.passed ? 'text-success' : 'text-warning')}>
-              {detail.score.passed ? '资料核对通过' : `有 ${detail.score.violations.length} 个待核对问题`}
+            <span className={cn('text-[11px] font-medium', answerStatusTone)}>
+              {behaviorAudit?.status === 'danger'
+                ? `自动巡检发现 ${behaviorAudit.dangerCount} 个高风险问题`
+                : behaviorAudit?.status === 'warning'
+                  ? `质量分通过，但有 ${behaviorReviewCount} 个行为待核对`
+                  : behaviorAudit?.status === 'info'
+                    ? `质量分通过，有 ${behaviorAudit.infoCount ?? 0} 个自动检查提示`
+                  : detail.score.passed
+                    ? '资料核对通过'
+                    : `有 ${detail.score.violations.length} 个待核对问题`}
             </span>
           </div>
           <div className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-foreground/85">{text(run.finalText) || '尚未生成最终回答。'}</div>
@@ -369,6 +414,10 @@ export function RunDetailContent({
           <Metric icon={<Activity className="size-3.5 text-warning" />} label="核对分" value={percent(detail.score.totalScore)} />
         </div>
       </Card>
+
+      <BehaviorAuditCard audit={behaviorAudit} onSampleSources={onSampleSources} sourceSampling={sourceSampling} sourceSample={sourceSample} />
+
+      <ClaimEvidenceCard claims={claimEvidence} />
 
       <div id="run-evidence" className="scroll-mt-3">
         <Card padding="none" className="rounded-xl p-3" title="参考资料" subtitle="回答依据">
@@ -410,16 +459,21 @@ export function RunDetailContent({
             const toolErrorDetails = errorDetailsFrom(result);
             const toolErrorCode = errorCodeFrom(result);
             const step = findStepForTool(steps, result, actionId);
+            const toolName = text(result.toolName) || '未指定工具';
+            const accessMode = accessModeFor(toolName, result);
             const expanded = expandedActionId === actionId;
             const hasStepPayload = Boolean(step && (hasValue(step.arguments) || hasValue(step.result)));
             const canLoadPayloads = Boolean(onLoadToolPayloads) && !toolPayloadsLoaded && !hasStepPayload;
             return <div id={index === firstFailedToolIndex ? 'run-failed-tool' : undefined} key={actionId || index} className="rounded-lg border border-border/70 p-2.5 scroll-mt-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <p className="text-xs font-medium">{text(result.toolName) || '未指定工具'}</p>
+                  <p className="text-xs font-medium">{toolName}</p>
                   <p className="mt-0.5 truncate font-mono text-[10px] text-secondary-text" title={actionId}>调用编号 {actionId}</p>
                 </div>
-                <Badge variant={result.success === true ? 'success' : 'danger'}>{result.success === true ? '成功' : '失败'}</Badge>
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <Badge variant={result.success === true ? 'success' : 'danger'}>{result.success === true ? '成功' : '失败'}</Badge>
+                  <Badge variant={accessMode === 'reference_only' ? 'warning' : accessMode === 'content_read' ? 'info' : 'default'}>{accessLabelFor(accessMode, result)}</Badge>
+                </div>
               </div>
               <p className="mt-2 line-clamp-2 text-[11px] text-foreground/75">{actionSources.join('、') || '来源未标注'} · {actionEvidence.length} 条证据</p>
               <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-secondary-text">
@@ -486,6 +540,16 @@ function ToolObservationDetails({
     : field(result, ['arguments', 'request', 'input']);
   const rawResponse = hasValue(stepResult) ? stepResult : hasValue(projectedResult) ? projectedResult : result;
   const fullResponseLoaded = hasValue(stepResult) || hasValue(rawProjectedResult);
+  const toolName = text(field(result, ['toolName', 'tool_name']));
+  const accessMode = accessModeFor(toolName, result);
+  const accessRecord = record(
+    field(responseRecord, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit'])
+      ?? field(result, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit']),
+  );
+  const contentLength = numberValue(field(accessRecord, ['contentLength', 'content_length']) ?? field(responseRecord, ['contentLength', 'content_length']));
+  const extractionMethod = text(field(accessRecord, ['extractionMethod', 'extraction_method']) ?? field(responseRecord, ['extractionMethod', 'extraction_method']));
+  const contentRead = field(accessRecord, ['contentRead', 'content_read']);
+  const contentExtracted = field(accessRecord, ['contentExtracted', 'content_extracted']);
 
   const source = text(field(responseRecord, ['source', 'sourceLabel', 'source_label']))
     || text(field(result, ['source', 'sourceLabel', 'source_label']))
@@ -565,6 +629,15 @@ function ToolObservationDetails({
     <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
       <AuditField label="实际来源" value={source || '未标注'} />
       <AuditField label="来源标识" value={sourceKey || '未提供'} />
+      <AuditField
+        label="正文访问"
+        value={accessMode === 'reference_only'
+          ? '仅来源引用，未访问正文'
+          : accessMode === 'content_read'
+            ? `${contentRead === false ? '读取失败' : contentExtracted === true ? '已读取并提取' : contentRead === true ? '已读取但未提取正文' : '读取状态未记录'}${contentLength == null ? '' : ` · ${contentLength} 字`}${extractionMethod ? ` · ${extractionMethod}` : ''}`
+            : '结构化数据，不适用正文读取'}
+        tone={accessMode === 'reference_only' || contentRead === false || (accessMode === 'content_read' && contentExtracted !== true) ? 'warning' : accessMode === 'content_read' ? 'success' : 'neutral'}
+      />
       <AuditField label="返回数量" value={count == null ? '未提供' : `${count} 条`} />
       <AuditField label="数据时间" value={dataTime ? `${displayDataTime(dataTime)}${dataTimeProvenance ? `（${dataTimeProvenance}）` : ''}` : '未提供'} />
       <AuditField label="请求完成" value={booleanLabel(success, '成功', '失败')} tone={success === true ? 'success' : success === false ? 'danger' : 'neutral'} />
@@ -604,7 +677,7 @@ function ToolObservationDetails({
     {sampleRows.length > 0 ? <JsonBlock title={`返回数据样本（${rows.length} 条中展示 ${Math.min(rows.length, 6)} 条）`} value={sampleRows} /> : null}
     <JsonBlock title={fullResponseLoaded ? '规范化返回 JSON（已脱敏）' : '返回摘要 JSON'} value={rawResponse} empty="该工具没有返回可展示的响应体。" />
     {links.length > 0 ? <div className="rounded-md border border-border/70 bg-card/70 p-2">
-      <p className="text-[10px] font-semibold text-foreground">原始资料链接</p>
+      <p className="text-[10px] font-semibold text-foreground">{accessMode === 'reference_only' ? '来源引用（不代表已访问）' : accessMode === 'content_read' ? '已读取来源' : '来源链接'}</p>
       <div className="mt-1 space-y-0.5 border-l border-border pl-2">
         {links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer" className="block break-all text-[10px] text-cyan hover:underline">{link}</a>)}
       </div>
@@ -689,6 +762,130 @@ function ErrorDetails({
 
 function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return <div className="rounded-lg bg-muted/60 p-2.5">{icon}<p className="mt-1 text-[11px] text-secondary-text">{label}</p><p className="mt-0.5 text-sm font-medium">{value}</p></div>;
+}
+
+function BehaviorAuditCard({
+  audit,
+  onSampleSources,
+  sourceSampling = false,
+  sourceSample,
+}: {
+  audit?: AgentBehaviorAudit;
+  onSampleSources?: () => void;
+  sourceSampling?: boolean;
+  sourceSample?: AgentSourceSampleResponse | null;
+}) {
+  if (!audit) return null;
+  const statusLabel = audit.status === 'danger' ? '存在执行异常' : audit.status === 'warning' ? '需要重点核对' : audit.status === 'info' ? '有自动检查提示' : '自动检查通过';
+  const statusTone = audit.status === 'danger' ? 'danger' : audit.status === 'warning' ? 'warning' : audit.status === 'info' ? 'info' : 'success';
+  const statusIcon = audit.status === 'clear'
+    ? <ShieldCheck className="size-4 text-success" />
+    : audit.status === 'info'
+      ? <Activity className="size-4 text-cyan" />
+      : <TriangleAlert className={cn('size-4', audit.status === 'danger' ? 'text-danger' : 'text-warning')} />;
+  return <div id="run-behavior-audit" className="scroll-mt-3">
+      <Card padding="none" className="rounded-xl p-3" title="自动巡检结论" subtitle="系统先核对可观察执行行为，开发人员只需处理异常项">
+      <div className={cn('flex items-start justify-between gap-2 rounded-lg border px-3 py-2.5', audit.status === 'danger' ? 'border-danger/25 bg-danger/5' : audit.status === 'warning' ? 'border-warning/25 bg-warning/8' : audit.status === 'info' ? 'border-cyan/25 bg-cyan/5' : 'border-success/25 bg-success/8')}>
+        <div className="flex min-w-0 items-start gap-2">
+          {statusIcon}
+          <div className="min-w-0">
+            <p className={cn('text-xs font-semibold', audit.status === 'danger' ? 'text-danger' : audit.status === 'warning' ? 'text-warning' : audit.status === 'info' ? 'text-cyan' : 'text-success')}>{statusLabel}</p>
+            <p className="mt-0.5 text-[11px] leading-5 text-foreground/75">
+              {audit.dangerCount + audit.warningCount > 0
+                ? `发现 ${audit.dangerCount + audit.warningCount} 个需处理的核对项（高风险 ${audit.dangerCount}，待核对 ${audit.warningCount}${audit.infoCount ? `；另有 ${audit.infoCount} 个提示` : ''}）。`
+                : audit.infoCount
+                  ? `发现 ${audit.infoCount} 个自动检查提示，暂未判定为异常。`
+                  : '当前运行没有发现需要人工处理的异常。'}
+              {' '}自动检查通过不等于事实绝对正确，表示结构、来源和执行链路暂未发现明显异常。
+            </p>
+          </div>
+        </div>
+        <Badge variant={statusTone}>{audit.riskScore} 风险分</Badge>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+        <Metric icon={<Activity className="size-3.5 text-cyan" />} label="模型轮次 / 工具调用" value={`${audit.modelTurnCount} / ${audit.toolCallCount}`} />
+        <Metric icon={<Link2 className="size-3.5 text-purple" />} label="候选链接 / 未读取" value={`${audit.referenceLinkCount} / ${audit.unreadReferenceCount}`} />
+        <Metric icon={<Database className="size-3.5 text-emerald-600" />} label="正文读取 / 提取" value={`${audit.contentReadCallCount} / ${audit.contentExtractedCallCount}`} />
+        <Metric icon={<CheckCircle2 className="size-3.5 text-success" />} label="证据 / 结论" value={`${audit.evidenceCount} / ${audit.claimCount}`} />
+      </div>
+      {audit.findings.length > 0 ? <div className="mt-2 space-y-1.5">
+        {audit.findings.map((finding) => <div key={`${finding.code}-${finding.title}`} className={cn('rounded-lg border px-3 py-2', finding.severity === 'danger' ? 'border-danger/20 bg-danger/5' : finding.severity === 'info' ? 'border-cyan/20 bg-cyan/5' : 'border-warning/20 bg-warning/8')}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 items-start gap-2">
+              {finding.severity === 'info' ? <Activity className="mt-0.5 size-3.5 shrink-0 text-cyan" /> : <TriangleAlert className={cn('mt-0.5 size-3.5 shrink-0', finding.severity === 'danger' ? 'text-danger' : 'text-warning')} />}
+              <div className="min-w-0">
+                <p className={cn('text-xs font-medium', finding.severity === 'danger' ? 'text-danger' : finding.severity === 'info' ? 'text-cyan' : 'text-warning')}>{finding.title}</p>
+                <p className="mt-0.5 text-[11px] leading-5 text-foreground/75">{finding.detail}</p>
+                {finding.remediation ? <p className="mt-1 text-[10px] leading-4 text-secondary-text">建议：{finding.remediation}</p> : null}
+              </div>
+            </div>
+            <button type="button" onClick={() => document.getElementById('run-tools')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="shrink-0 rounded-md border border-border/70 bg-card px-2 py-1 text-[10px] text-secondary-text transition hover:text-foreground">查看调用链</button>
+          </div>
+          {finding.links && finding.links.length > 0 ? <details className="mt-1.5 pl-5 text-[10px] text-secondary-text">
+            <summary className="cursor-pointer select-none hover:text-foreground">查看 {finding.links.length} 条关联来源（仅展示，不代表已读取）</summary>
+            <div className="mt-1 space-y-0.5 border-l border-border pl-2">{finding.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer" className="block break-all text-cyan hover:underline">{link}</a>)}</div>
+          </details> : null}
+        </div>)}
+      </div> : null}
+      <details className="mt-2 rounded-md border border-border/70 bg-card/60 px-2.5 py-2">
+        <summary className="cursor-pointer select-none text-[10px] font-medium text-secondary-text hover:text-foreground">查看自动检查项</summary>
+        <div className="mt-1.5 grid gap-1 sm:grid-cols-2">{audit.checks.map((check) => <div key={check.code} className="flex items-start gap-1.5 text-[10px]">
+          <span className={cn('mt-0.5 size-1.5 shrink-0 rounded-full', check.status === 'danger' ? 'bg-danger' : check.status === 'warning' ? 'bg-warning' : check.status === 'info' ? 'bg-cyan' : 'bg-success')} />
+          <span><span className="font-medium text-foreground">{check.label}</span><span className="ml-1 text-secondary-text">{check.detail}</span></span>
+        </div>)}</div>
+      </details>
+      {audit.sampling?.available && onSampleSources ? <div className="mt-2 rounded-lg border border-cyan/20 bg-cyan/5 px-3 py-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-semibold text-foreground">系统自动抽检</p>
+            <p className="mt-0.5 text-[10px] text-secondary-text">抽检最多 {audit.sampling.sampleLimit} 条来源，只验证链接可访问和正文能否提取，不代表模型原分析时阅读过。</p>
+          </div>
+          <button type="button" onClick={onSampleSources} disabled={sourceSampling} className="inline-flex items-center gap-1 rounded-md border border-cyan/30 bg-card px-2 py-1 text-[10px] font-medium text-cyan transition hover:bg-cyan/8 disabled:opacity-60">
+            {sourceSampling ? <LoaderCircle className="size-3 animate-spin" /> : <Link2 className="size-3" />}
+            {sourceSampling ? '抽检中…' : '抽检来源'}
+          </button>
+        </div>
+        {sourceSample ? <div className="mt-2 space-y-1 border-t border-cyan/15 pt-2">
+          {sourceSample.items.map((item) => <div key={item.url} className="rounded-md bg-card/70 px-2 py-1.5 text-[10px]">
+            <div className="flex items-start justify-between gap-2"><span className="min-w-0 break-all text-foreground"><span className="mr-1 text-secondary-text">{item.kind === 'document' ? 'PDF/文档' : '文章'}</span>{item.url}</span><span className={item.success ? 'shrink-0 text-success' : 'shrink-0 text-danger'}>{item.success ? '可读取' : '不可读取'}</span></div>
+            <p className="mt-0.5 text-secondary-text">{item.contentLength ? `${item.contentLength} 字` : '无正文'}{item.extractionMethod ? ` · ${item.extractionMethod}` : ''}{item.errors?.length ? ` · ${item.errors[0]}` : ''}</p>
+            {item.contentPreview ? <details className="mt-1"><summary className="cursor-pointer text-secondary-text">查看抽检正文预览</summary><p className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-words text-foreground/75">{item.contentPreview}</p></details> : null}
+          </div>)}
+          <p className="text-[10px] text-secondary-text">{sourceSample.note}</p>
+        </div> : null}
+      </div> : null}
+    </Card>
+  </div>;
+}
+
+function ClaimEvidenceCard({ claims }: { claims: Array<Record<string, unknown>> }) {
+  if (claims.length === 0) return null;
+  const checkLabels: Record<string, string> = {
+    toolSuccess: '工具成功',
+    source: '来源',
+    entityScope: '主体',
+    time: '时间',
+  };
+  return <Card padding="none" className="rounded-xl p-3" title="回答与证据核对" subtitle="自动检查结论是否能追溯到工具返回和来源">
+    <div className="space-y-1.5">
+      {claims.slice(0, 40).map((claim, index) => {
+        const checks = record(claim.checks);
+        const evidenceIds = stringList(claim.evidenceIds ?? claim.evidence_ids);
+        const failed = Object.values(checks).some((value) => value === false);
+        return <div key={text(claim.claimId ?? claim.claim_id) || index} className={cn('rounded-lg border px-2.5 py-2', failed || evidenceIds.length === 0 ? 'border-warning/20 bg-warning/8' : 'border-border/70 bg-card/60')}>
+          <div className="flex items-start justify-between gap-2">
+            <p className="line-clamp-3 text-xs leading-5 text-foreground">{text(claim.text) || '未记录结论文本'}</p>
+            <Badge variant={failed || evidenceIds.length === 0 ? 'warning' : 'success'}>{evidenceIds.length > 0 ? `${evidenceIds.length} 条证据` : '无证据'}</Badge>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-secondary-text">
+            {Object.entries(checks).map(([key, value]) => <span key={key} className={value === true ? 'text-success' : 'text-danger'}>{checkLabels[key] ?? key}：{value === true ? '通过' : '未通过'}</span>)}
+            {evidenceIds.length > 0 ? <span className="font-mono">{evidenceIds.slice(0, 3).join('、')}</span> : null}
+          </div>
+        </div>;
+      })}
+    </div>
+    {claims.length > 40 ? <p className="mt-1.5 text-[10px] text-secondary-text">其余 {claims.length - 40} 条结论已折叠。</p> : null}
+  </Card>;
 }
 
 function EvidenceRow({ item, index }: { item: Record<string, unknown>; index: number }) {

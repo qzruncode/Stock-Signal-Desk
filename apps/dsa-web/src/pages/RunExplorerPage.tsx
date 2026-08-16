@@ -12,6 +12,7 @@ import {
   type AgentQualitySummary,
   type AgentRunDetail,
   type AgentRunSummary,
+  type AgentSourceSampleResponse,
 } from '../api/runExplorer';
 import { Badge, Card, CompactSelect, Modal } from '../components/common';
 import { toApiErrorMessage } from '../api/error';
@@ -86,6 +87,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailPayloadsLoading, setDetailPayloadsLoading] = useState(false);
   const [detailPayloadsLoaded, setDetailPayloadsLoaded] = useState(false);
+  const [sourceSampling, setSourceSampling] = useState(false);
+  const [sourceSample, setSourceSample] = useState<AgentSourceSampleResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const detailRequestId = useRef(0);
   const limit = 30;
@@ -96,6 +99,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
     setDetailLoading(true);
     setDetailPayloadsLoading(false);
     setDetailPayloadsLoaded(false);
+    setSourceSampling(false);
+    setSourceSample(null);
     setDetail(null);
     try {
       const next = await runExplorerApi.getRun(runId);
@@ -134,6 +139,20 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
       }
     }
   }, [detailPayloadsLoaded, detailPayloadsLoading, selectedRunId]);
+
+  const sampleSources = useCallback(async () => {
+    if (!selectedRunId || sourceSampling) return;
+    setSourceSampling(true);
+    setError(null);
+    try {
+      const sampled = await runExplorerApi.sampleSources(selectedRunId, 3);
+      setSourceSample(sampled);
+    } catch (requestError) {
+      setError(toApiErrorMessage(requestError, '来源自动抽检失败'));
+    } finally {
+      setSourceSampling(false);
+    }
+  }, [selectedRunId, sourceSampling]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -183,6 +202,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
       setDetailPayloadsLoaded(false);
       setDetailLoading(false);
       setDetail(null);
+      setSourceSampling(false);
+      setSourceSample(null);
     }
   }, [loadDetail, selectedRunId]);
 
@@ -194,6 +215,10 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
   const violationCount = summary
     ? Object.values(summary.quality.violations).reduce((totalCount, count) => totalCount + numberValue(count), 0)
     : null;
+  const behaviorReviewRuns = summary?.behavior
+    ? summary.behavior.warningRuns + summary.behavior.dangerRuns
+    : null;
+  const behaviorInfoRuns = summary?.behavior?.infoRuns ?? null;
 
   const selectRun = (runId: string) => {
     setSelectedRunId(runId);
@@ -270,6 +295,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
         <Card padding="none" className="rounded-xl px-3 py-2.5">
           <p className="text-xs text-secondary-text">待核对问题</p>
           <p className="mt-0.5 text-xl font-semibold leading-6">{violationCount ?? '—'}</p>
+          {behaviorReviewRuns != null ? <p className="mt-0.5 text-[10px] text-warning">自动巡检异常运行 {behaviorReviewRuns} 条</p> : null}
+          {behaviorInfoRuns ? <p className="mt-0.5 text-[10px] text-cyan">另有检查提示 {behaviorInfoRuns} 条</p> : null}
         </Card>
         <Card padding="none" className="rounded-xl px-3 py-2.5">
           <p className="text-xs text-secondary-text">平均核对分</p>
@@ -356,6 +383,15 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
                       <span className="text-xs font-medium text-foreground">
                         核对 {percent(item.qualityScore)}
                       </span>
+                      {item.unreadDocumentCount ? <Badge variant="warning">候选未读取文档 {item.unreadDocumentCount}</Badge> : null}
+                      {item.unreadArticleCount ? <Badge variant="warning">候选未读取文章 {item.unreadArticleCount}</Badge> : null}
+                      {(item.behaviorWarningCount ?? 0) + (item.behaviorDangerCount ?? 0) > 0 ? (
+                        <Badge variant={item.behaviorStatus === 'danger' ? 'danger' : 'warning'}>
+                          行为待核对 {(item.behaviorWarningCount ?? 0) + (item.behaviorDangerCount ?? 0)}
+                        </Badge>
+                      ) : item.behaviorInfoCount ? (
+                        <Badge variant="info">检查提示 {item.behaviorInfoCount}</Badge>
+                      ) : null}
                     </div>
                     <p className="mt-1 line-clamp-1 text-xs text-foreground/85">
                       {item.finalTextPreview || '尚未生成最终回答'}
@@ -379,6 +415,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
                   <span>{item.toolObservationCount} 条资料返回</span>
                   <span>{item.evidenceCount} 条证据</span>
                   <span>{item.toolCallCount} 个资料入口</span>
+                  {item.contentReadCallCount != null ? <span>正文读取 {item.contentReadCallCount} 次</span> : null}
+                  {item.failedToolCount ? <span className="text-danger">失败工具 {item.failedToolCount}</span> : null}
                   <span>{formatDuration(item.durationMs)}</span>
                 </div>
               </button>
@@ -429,6 +467,9 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
               onLoadToolPayloads={() => { void loadDetailPayloads(); }}
               toolPayloadsLoading={detailPayloadsLoading}
               toolPayloadsLoaded={detailPayloadsLoaded}
+              onSampleSources={() => { void sampleSources(); }}
+              sourceSampling={sourceSampling}
+              sourceSample={sourceSample}
               onFeedback={(rating) => { void saveFeedback(rating); }}
             />
           ) : null}

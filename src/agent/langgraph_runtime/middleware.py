@@ -19,6 +19,14 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolM
 from langgraph.types import Command, interrupt
 
 from .agent_tools import NATIVE_TOOL_RESULT_MARKER, native_tool_context
+from .content_access import (
+    DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT,
+    build_content_access_targets,
+    canonical_url,
+    content_read_call_urls,
+    required_content_access_targets,
+    successful_content_read_urls,
+)
 from .evidence import project_evidence_for_model, project_tool_observations_for_model
 from .claim_evidence import build_claim_evidence_ledger
 from .events import redact_arguments
@@ -73,6 +81,38 @@ def _message_character_count(messages: Sequence[BaseMessage]) -> int:
     return total
 
 
+def _claim_evidence_for_partial_answer(
+    state: AgentState,
+    answer: str,
+) -> list[dict[str, Any]]:
+    """Keep the evidence ledger populated when a guard publishes a partial answer.
+
+    Content-access and budget guards can terminate the normal ``_check_answer``
+    path before the claim ledger is built.  The answer still contains the
+    model's evidence markers, so a partial run must retain the same mechanical
+    claim-to-evidence projection for the Run Explorer audit.
+    """
+    factual_evidence = [
+        item
+        for item in state.get("evidence") or []
+        if isinstance(item, Mapping)
+        and item.get("success") is True
+        and str(item.get("effect") or "read") != "side_effect"
+    ]
+    if not factual_evidence:
+        return []
+    ledger = build_claim_evidence_ledger(
+        answer,
+        factual_evidence,
+        [
+            item
+            for item in state.get("tool_results") or []
+            if isinstance(item, Mapping)
+        ],
+    )
+    return list(ledger.get("claims") or [])
+
+
 def _bounded(value: Any, *, depth: int = 0) -> Any:
     """Make a useful ToolMessage observation without inflating the next prompt."""
     if depth >= 4:
@@ -95,6 +135,26 @@ def _bounded(value: Any, *, depth: int = 0) -> Any:
     return str(value)[:1_200]
 
 
+def _tool_result_observation(record: Mapping[str, Any], result: Mapping[str, Any]) -> Any:
+    """Keep a usable body preview for the next model turn.
+
+    Generic tool observations stay small, but a 1,200-character slice is too
+    short for the model to use a fetched article or a MarkItDown PDF result.
+    The complete result remains in the checkpoint and can be loaded by the
+    Run Explorer; this only enlarges the immediate reader observation.
+    """
+    projected = _bounded(result)
+    if str(record.get("tool_name") or "") != "read_web_source" or not isinstance(projected, Mapping):
+        return projected
+    content = str(result.get("content") or "")
+    if len(content) <= 1_200:
+        return projected
+    projected = dict(projected)
+    projected["content"] = content[:12_000] + ("…[正文预览已截断]" if len(content) > 12_000 else "")
+    projected["content_preview_length"] = len(content)
+    return projected
+
+
 def _tool_message_content(record: Mapping[str, Any], evidence: Mapping[str, Any] | None) -> str:
     result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
     payload = {
@@ -106,7 +166,7 @@ def _tool_message_content(record: Mapping[str, Any], evidence: Mapping[str, Any]
         "data_time_provenance": record.get("data_time_provenance"),
         "source_refs": [str(item)[:500] for item in list(record.get("source_refs") or [])[:8]],
         "errors": [str(item)[:800] for item in list(record.get("errors") or [])[:6]],
-        "result": _bounded(result),
+        "result": _tool_result_observation(record, result),
     }
     return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
 
@@ -215,6 +275,14 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         evidence = project_evidence_for_model(state.get("evidence") or [])
         observations = project_tool_observations_for_model(state.get("tool_results") or [])
         feedback = str(state.get("evidence_feedback") or "").strip()
+        content_feedback = str(state.get("content_access_feedback") or "").strip()
+        content_targets, pending_content_reads = build_content_access_targets(
+            tool_results=state.get("tool_results") or [],
+            existing_targets=state.get("content_access_targets") or [],
+        )
+        target_urls = {canonical_url(item.get("url")) for item in content_targets}
+        successful_target_reads = successful_content_read_urls(state.get("tool_results") or []) & target_urls
+        needs_content_instruction = bool(pending_content_reads) or not successful_target_reads
         conversation_context = state.get("conversation_context")
         model_turn = max(0, int(state.get("model_turn_count") or 0)) + 1
         source_catalog = context.catalog.model_context()
@@ -223,7 +291,7 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
             part
             for part in (
                 base_prompt,
-                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n本轮所有 operation schema 都已绑定到模型调用中；绑定 schema 是 operation 描述和参数的唯一权威来源。下面的紧凑 operation/source 目录只补充 effect、source_id 和来源用途，不是另一份参数 schema，也不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。一条调用只能访问一个来源；如果结果失败，阅读错误并自行决定是否需要换一个来源、改写查询或直接说明缺口。\n\n当用户询问分组列表时读取分组摘要；当用户询问某个分组的成员，或明确要求任务只针对某个分组时，先读取该分组。后续只在用户仍引用该分组或明确限定范围时使用它，不要把分组上下文自动套用到无关问题；分组名称不明确时先询问。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。不要伪造确认字段或声称未执行的操作。""",
+                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n本轮所有 operation schema 都已绑定到模型调用中；绑定 schema 是 operation 描述和参数的唯一权威来源。下面的紧凑 operation/source 目录只补充 effect、source_id 和来源用途，不是另一份参数 schema，也不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。显式 source_id 只访问该来源；如果目录提供了 auto source，则 auto 会按该来源自己的声明执行故障切换或非交易时段降级，并在结果中保留实际来源和时间口径。其他失败结果要被如实读取并自行决定是否需要换来源、改写查询或说明缺口。\n\n当用户询问分组列表时读取分组摘要；当用户询问某个分组的成员，或明确要求任务只针对某个分组时，先读取该分组。后续只在用户仍引用该分组或明确限定范围时使用它，不要把分组上下文自动套用到无关问题；分组名称不明确时先询问。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。表格或连续列表可以由紧随其后的来源行统一引用，建议写成“来源：…【证据 ev_...】”，不要把来源链接、标题或摘要误写成已读取正文。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。标记为 reference_only 的工具结果只表示来源索引，不表示文章或 PDF 正文已读取。不要伪造确认字段或声称未执行的操作。""",
                 "紧凑 operation/source 目录：\n" + source_catalog,
                 (
                     "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用，不自动限制无关问题）：\n"
@@ -241,6 +309,27 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     "已有工具观察（失败也是观察，不代表任务失败）：\n"
                     + json.dumps(observations, ensure_ascii=False, default=str)
                     if observations
+                    else ""
+                ),
+                (
+                    "系统正文读取要求：\n"
+                    + (
+                        content_feedback
+                        or (
+                            "请从以下候选来源中选择与当前问题直接相关的 URL，"
+                            "调用 read_web_source（通常使用 source_id=auto）成功提取非空正文；"
+                            "如果最终答案引用了 reference-only evidence，系统会反向核对该次索引返回的全部链接，"
+                            "这些链接必须全部成功读取后才能完成。"
+                            if not pending_content_reads
+                            else "以下已选择来源尚未成功提取正文，请重试或选择合适的来源读取器。"
+                        )
+                    )
+                    + "\n全部候选来源：\n"
+                    + json.dumps(content_targets, ensure_ascii=False, default=str)
+                    + "\n已成功读取正文的候选数量："
+                    + str(len(successful_target_reads))
+                    + "。未选择的来源只能作为链接/索引，不能声称已经阅读其正文。"
+                    if content_targets and needs_content_instruction
                     else ""
                 ),
                 (
@@ -269,6 +358,10 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "prior_tool_observation_count": len(observations),
                 "observation_character_count": _serialized_character_count(observations),
                 "has_evidence_feedback": bool(feedback),
+                "content_access_candidate_count": len(content_targets),
+                "content_access_successful_count": len(successful_target_reads),
+                "pending_content_read_count": len(pending_content_reads),
+                "has_content_access_feedback": bool(content_feedback),
             },
         )
         response = await handler(
@@ -327,7 +420,7 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
 
 class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
-    """Enforce tool budgets and side-effect approval without choosing tools."""
+    """Enforce budgets, approval, and selected source-body access before finalization."""
 
     name = "operation_policy"
 
@@ -342,7 +435,10 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         if last is None:
             return None
         if not last.tool_calls:
-            return self._check_answer(state, context, last)
+            content_access_update, blocked = self._content_access_gate(state, context, last)
+            if blocked:
+                return content_access_update
+            return {**content_access_update, **self._check_answer(state, context, last)}
 
         used = max(0, int(state.get("tool_call_count") or 0))
         remaining = max(0, int(state.get("tool_call_limit") or 0) - used)
@@ -507,6 +603,207 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             updates["pending_interrupt"] = None
             return updates
         raise ValueError("approval decision must be approve or reject")
+
+    @staticmethod
+    def _content_access_partial(
+        *,
+        state: AgentState,
+        context: GraphContext,
+        message: AIMessage,
+        targets: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+        required: list[dict[str, Any]],
+        reason: str,
+        error_code: str,
+    ) -> dict[str, Any]:
+        answer = _message_text(message).rstrip()
+        if not answer:
+            answer = "已获取来源索引，但本轮未完成正文读取。"
+        claim_evidence = _claim_evidence_for_partial_answer(state, answer)
+        suffix = (
+            "\n\n[正文取证未完成："
+            + reason
+            + "以上结论仅基于来源链接、标题/摘要或结构化字段，正文未核验。]"
+        )
+        context.events.stage(
+            "content_access",
+            "failed",
+            "正文读取未完成，已阻止无正文核验的完整回答",
+            error_code=error_code,
+            details={
+                "target_count": len(targets),
+                "required_count": len(required),
+                "pending_count": len(pending),
+                "pending_urls": [str(item.get("url") or "") for item in pending],
+                "reason": reason,
+            },
+        )
+        return {
+            "content_access_targets": targets,
+            "required_content_reads": required,
+            "pending_content_reads": pending,
+            "content_access_feedback": "",
+            "claim_evidence": claim_evidence,
+            "answer_draft": answer,
+            "answer_final": answer + suffix,
+            "status": "partial",
+            "error_code": error_code,
+        }
+
+    @classmethod
+    def _content_access_gate(
+        cls,
+        state: AgentState,
+        context: GraphContext,
+        message: AIMessage,
+    ) -> tuple[dict[str, Any], bool]:
+        """Keep reference-only results from silently becoming body-backed facts."""
+        targets, pending = build_content_access_targets(
+            tool_results=state.get("tool_results") or [],
+            existing_targets=state.get("content_access_targets") or [],
+        )
+        answer = _message_text(message)
+        required = required_content_access_targets(
+            answer=answer,
+            evidence=state.get("evidence") or [],
+            tool_results=state.get("tool_results") or [],
+            targets=targets,
+        )
+        base_update = {
+            "content_access_targets": targets,
+            "required_content_reads": required,
+            "pending_content_reads": pending,
+            "content_access_feedback": "",
+        }
+        if not targets:
+            return {}, False
+        target_urls = {canonical_url(item.get("url")) for item in targets}
+        selected_target_reads = content_read_call_urls(state.get("tool_results") or []) & target_urls
+        successful_target_reads = successful_content_read_urls(state.get("tool_results") or []) & target_urls
+        successful_required_reads = successful_target_reads & {
+            canonical_url(item.get("url")) for item in required
+        }
+        required_pending = [
+            item
+            for item in required
+            if canonical_url(item.get("url")) not in successful_target_reads
+        ]
+        pending_urls = {
+            canonical_url(item.get("url"))
+            for item in required_pending
+        }
+        pending = [
+            *required_pending,
+            *[
+                item
+                for item in pending
+                if canonical_url(item.get("url")) not in pending_urls
+            ],
+        ]
+        if not pending:
+            if successful_target_reads:
+                context.events.stage(
+                    "content_access",
+                    "completed",
+                    "最终答案引用的正文来源已完成反向读取核对，允许进入最终回答检查",
+                    details={
+                        "candidate_count": len(targets),
+                        "required_count": len(required),
+                        "required_successful_count": len(successful_required_reads),
+                        "selected_count": len(selected_target_reads),
+                        "successful_count": len(successful_target_reads),
+                        "pending_count": 0,
+                    },
+                )
+                return base_update, False
+        if required_pending:
+            feedback = (
+                "当前不能结束回答。最终答案引用了 reference-only evidence；"
+                "该来源索引返回的全部链接都必须先调用 read_web_source 成功提取非空正文。"
+                "以下链接尚未完成正文读取：\n"
+                + json.dumps(required_pending, ensure_ascii=False, default=str)
+            )
+        elif not selected_target_reads:
+            feedback = (
+                "当前不能结束回答。reference-only 工具只提供了候选来源链接。"
+                "请从候选来源中选择与当前问题直接相关的 URL，"
+                "调用 read_web_source（通常使用 source_id=auto）成功提取非空正文；"
+                "最终答案引用 reference-only evidence 时，系统会要求该来源索引返回的全部链接均成功读取。\n"
+                "全部候选来源：\n"
+                + json.dumps(targets, ensure_ascii=False, default=str)
+                + "\n未选择的来源只能作为链接/索引，不能声称已经阅读其正文。"
+            )
+        else:
+            feedback = (
+                "当前不能结束回答。你已经选择了部分来源，但以下已选择 URL 尚未成功提取非空正文。"
+                "请重试 read_web_source 或选择合适的来源读取器；未选择的候选来源不需要读取。\n"
+                "待完成的已选择来源：\n"
+                + json.dumps(pending, ensure_ascii=False, default=str)
+            )
+        if bool(state.get("work_budget_exhausted")):
+            return (
+                cls._content_access_partial(
+                    state=state,
+                    context=context,
+                    message=message,
+                    targets=targets,
+                    pending=pending,
+                    required=required,
+                    reason="工具调用预算已用尽；未成功读取的候选来源只能作为标题/摘要或结构化字段，",
+                    error_code="content_access_budget_exceeded",
+                ),
+                True,
+            )
+
+        repair_count = max(0, int(state.get("content_access_repair_count") or 0))
+        repair_limit = max(
+            0,
+            int(
+                state.get("content_access_repair_limit")
+                if state.get("content_access_repair_limit") is not None
+                else DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT
+            ),
+        )
+        if repair_count >= repair_limit:
+            return (
+                cls._content_access_partial(
+                    state=state,
+                    context=context,
+                    message=message,
+                    targets=targets,
+                    pending=pending,
+                    required=required,
+                    reason="正文读取失败、被忽略或达到取证重试上限；未成功读取的候选来源只能作为标题/摘要或结构化字段，",
+                    error_code="content_access_incomplete",
+                ),
+                True,
+            )
+
+        context.events.stage(
+            "content_access",
+            "started",
+            "发现未完成的正文取证，要求模型继续选择或读取来源",
+            details={
+                "candidate_count": len(targets),
+                "required_count": len(required),
+                "required_pending_count": len(required_pending),
+                "selected_count": len(selected_target_reads),
+                "successful_count": len(successful_target_reads),
+                "pending_count": len(pending),
+                "pending_urls": [str(item.get("url") or "") for item in pending],
+                "repair_count": repair_count + 1,
+                "repair_limit": repair_limit,
+            },
+        )
+        return (
+            {
+                **base_update,
+                "content_access_feedback": feedback,
+                "content_access_repair_count": 1,
+                "jump_to": "model",
+            },
+            True,
+        )
 
     @staticmethod
     def _check_answer(

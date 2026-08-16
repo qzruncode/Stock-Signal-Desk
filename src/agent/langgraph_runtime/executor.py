@@ -813,6 +813,7 @@ class AtomicToolExecutor:
             "errors": list(result.get("errors") or []),
             "error_code": result.get("error_code"),
             "data_time": result.get("data_time"),
+            "data_time_applicable": result.get("data_time_applicable", True),
             "data_time_provenance": result.get("data_time_provenance"),
             "data_time_note": result.get("data_time_note"),
             "is_stale": result.get("is_stale"),
@@ -821,6 +822,8 @@ class AtomicToolExecutor:
             "reused": reused,
             "completed_at": now,
         }
+        if isinstance(result.get("content_access"), Mapping):
+            record["content_access"] = dict(result["content_access"])
         if not success:
             return record, None
         evidence_id = f"ev_{fingerprint[:20]}"
@@ -835,6 +838,7 @@ class AtomicToolExecutor:
             "partial": bool(result.get("partial")),
             "entities": _request_context(arguments),
             "data_time": result.get("data_time"),
+            "data_time_applicable": result.get("data_time_applicable", True),
             "data_time_provenance": result.get("data_time_provenance"),
             "data_time_note": result.get("data_time_note"),
             "is_stale": result.get("is_stale"),

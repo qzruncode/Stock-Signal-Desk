@@ -116,6 +116,116 @@ def _fetch_eastmoney_capital(code: str) -> dict[str, Any]:
     }
 
 
+def _shares_from_market_cap(market_cap: Any, latest_price: Any) -> float | None:
+    """Infer share count from a live quote when a quote endpoint omits f84/f85."""
+    market_cap_value = _number(market_cap)
+    price_value = _number(latest_price)
+    if market_cap_value is None or market_cap_value <= 0 or price_value is None or price_value <= 0:
+        return None
+    return round(market_cap_value / price_value, 2)
+
+
+def _capital_from_live_quote(
+    code: str,
+    quote: Any,
+    *,
+    source_id: str,
+    source_label: str,
+) -> dict[str, Any] | None:
+    """Normalize a live quote into the capital-snapshot shape without cache."""
+    if quote is None or not quote.has_basic_data():
+        return None
+
+    latest_price = _number(getattr(quote, "price", None))
+    total_market_cap = _number(getattr(quote, "total_mv", None))
+    circulating_market_cap = _number(getattr(quote, "circ_mv", None))
+    total_shares = _shares_from_market_cap(total_market_cap, latest_price)
+    circulating_shares = _shares_from_market_cap(circulating_market_cap, latest_price)
+    return {
+        "symbol": code,
+        "market_code": _market(code)[0],
+        "short_name": _text(getattr(quote, "name", None)),
+        "industry_eastmoney": None,
+        "listing_date_eastmoney": None,
+        "latest_price": latest_price,
+        "quote_time": _text(getattr(quote, "trade_time", None)),
+        "total_shares": total_shares,
+        "circulating_shares": circulating_shares,
+        "total_market_cap": total_market_cap,
+        "circulating_market_cap": circulating_market_cap,
+        "_source_id": source_id,
+        "_source_label": source_label,
+        "_shares_inferred": total_shares is not None or circulating_shares is not None,
+    }
+
+
+def _fetch_live_capital_fallback(code: str) -> dict[str, Any]:
+    """Try independent live quote endpoints; deliberately never reads a cache."""
+    from data_provider.fetchers import realtime as realtime_fetchers
+
+    sources = (
+        (
+            "eastmoney_push",
+            "东方财富 Push 实时行情",
+            realtime_fetchers._get_stock_realtime_quote_em_push,
+        ),
+        (
+            "tencent",
+            "腾讯财经实时行情",
+            realtime_fetchers._get_stock_realtime_quote_tencent,
+        ),
+        (
+            "sina",
+            "新浪财经实时行情",
+            realtime_fetchers._get_stock_realtime_quote_sina,
+        ),
+    )
+    attempts: list[dict[str, Any]] = []
+    for source_id, source_label, fetcher in sources:
+        try:
+            quote = fetcher(code)
+        except Exception as exc:
+            attempts.append(
+                {
+                    "source_id": source_id,
+                    "source": source_label,
+                    "success": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            continue
+        snapshot = _capital_from_live_quote(
+            code,
+            quote,
+            source_id=source_id,
+            source_label=source_label,
+        )
+        if snapshot is not None:
+            attempts.append(
+                {
+                    "source_id": source_id,
+                    "source": source_label,
+                    "success": True,
+                    "cached": False,
+                }
+            )
+            snapshot["_source_attempts"] = attempts
+            return snapshot
+        attempts.append(
+            {
+                "source_id": source_id,
+                "source": source_label,
+                "success": False,
+                "error": "未返回有效实时价格",
+            }
+        )
+
+    detail = "；".join(
+        f"{item['source']}：{item.get('error') or '未返回有效报价'}" for item in attempts
+    )
+    raise RuntimeError(f"实时股本快照备用来源均不可用{f'（{detail}）' if detail else ''}")
+
+
 def _website(value: Any) -> str | None:
     text = _text(value)
     if not text:
@@ -276,6 +386,7 @@ def read_company_profile_cninfo(symbol: str, *, use_cache: bool = True) -> dict[
             "errors": [],
             "warnings": [],
             "data_time": None,
+            "data_time_applicable": False,
             "is_stale": None,
             "freshness_unknown": True,
             "_cached": cached,
@@ -290,22 +401,103 @@ def read_stock_capital_snapshot_eastmoney(
     *,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """Read exactly one Eastmoney quote/capital snapshot."""
+    """Read a live Eastmoney quote/capital snapshot with explicit live fallback."""
     code = bare_local_symbol(symbol)
     if not re.fullmatch(r"\d{6}", code):
         raise ValueError("symbol 必须能解析为 6 位股票代码")
     now = datetime.now().astimezone()
     ttl = 120 if is_trading_time(now) else 30 * 60
-    snapshot, cached = (
-        cached_call(
-            f"stock-capital:eastmoney:v1:{code}",
-            lambda: _fetch_eastmoney_capital(code),
-            ttl_seconds=ttl,
-            attempts=2,
+    errors: list[str] = []
+    warnings: list[str] = []
+    source_attempts: list[dict[str, Any]] = []
+    fallback_used = False
+    fallback_provider: str | None = None
+    source = "东方财富证券快照"
+    try:
+        snapshot, cached = (
+            cached_call(
+                f"stock-capital:eastmoney:v1:{code}",
+                lambda: _fetch_eastmoney_capital(code),
+                ttl_seconds=ttl,
+                attempts=2,
+            )
+            if use_cache
+            else (_fetch_eastmoney_capital(code), False)
         )
-        if use_cache
-        else (_fetch_eastmoney_capital(code), False)
-    )
+        source_attempts.append(
+            {
+                "source_id": "eastmoney_capital",
+                "source": source,
+                "success": True,
+                "cached": cached,
+            }
+        )
+    except Exception as exc:
+        errors.append(f"东方财富证券快照失败: {type(exc).__name__}: {exc}")
+        source_attempts.append(
+            {
+                "source_id": "eastmoney_capital",
+                "source": source,
+                "success": False,
+                "cached": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        try:
+            snapshot = _fetch_live_capital_fallback(code)
+        except Exception as fallback_exc:
+            errors.append(f"实时备用来源失败: {type(fallback_exc).__name__}: {fallback_exc}")
+            return {
+                "symbol": code,
+                "short_name": None,
+                "market_code": _market(code)[0],
+                "industry_eastmoney": None,
+                "listing_date_eastmoney": None,
+                "latest_price": None,
+                "total_shares": None,
+                "circulating_shares": None,
+                "total_market_cap": None,
+                "circulating_market_cap": None,
+                "price_unit": "人民币元",
+                "share_unit": "股",
+                "market_cap_unit": "元",
+                "source": "东方财富证券快照及实时备用来源",
+                "source_scope": "stock_capital_snapshot",
+                "success": False,
+                "partial": False,
+                "errors": errors,
+                "warnings": [],
+                "data_time": None,
+                "data_time_provenance": "unavailable",
+                "data_time_note": "东方财富及实时备用来源均未返回 quote_time；_fetched_at 仅表示本服务获取时间。",
+                "is_stale": None,
+                "freshness_unknown": True,
+                "fallback_used": False,
+                "fallback_provider": None,
+                "source_attempts": source_attempts,
+                "_cached": False,
+                "_fetched_at": now.isoformat(),
+            }
+        fallback_used = True
+        cached = False
+        fallback_provider = str(snapshot.pop("_source_id", "") or "") or None
+        source = str(snapshot.pop("_source_label", "实时行情备用来源") or "实时行情备用来源")
+        source_attempts.extend(list(snapshot.pop("_source_attempts", []) or []))
+        warnings.append(f"{errors[0]}；已切换到{source}，未使用历史缓存。")
+        if snapshot.pop("_shares_inferred", False):
+            warnings.append("备用实时行情未直接返回股本，total_shares 和 circulating_shares 由市值/最新价推导，需以正式股本披露复核。")
+        missing_fields = [
+            label
+            for key, label in (
+                ("total_market_cap", "总市值"),
+                ("circulating_market_cap", "流通市值"),
+                ("total_shares", "总股本"),
+                ("circulating_shares", "流通股本"),
+            )
+            if snapshot.get(key) is None
+        ]
+        if missing_fields:
+            warnings.append(f"{source} 未返回：{'、'.join(missing_fields)}。")
     # `quote_time` is the only provider-originated timestamp for this
     # snapshot.  `_fetched_at` records when our service made the request and
     # must never be presented as a market-data timestamp.
@@ -324,20 +516,28 @@ def read_stock_capital_snapshot_eastmoney(
         "price_unit": "人民币元",
         "share_unit": "股",
         "market_cap_unit": "元",
-        "source": "东方财富证券快照",
+        "source": source,
         "source_scope": "stock_capital_snapshot",
         "success": True,
-        "errors": [],
-        "warnings": [],
+        "partial": bool(errors),
+        "errors": errors,
+        "warnings": warnings,
         "data_time": data_time,
         "data_time_provenance": "source" if data_time else "unavailable",
         "data_time_note": (
             None
             if data_time
-            else "东方财富快照未返回 quote_time；_fetched_at 仅表示本服务获取时间。"
+            else f"{source}未返回 quote_time；_fetched_at 仅表示本服务获取时间。"
         ),
         "is_stale": None,
         "freshness_unknown": data_time is None,
+        "fallback_used": fallback_used,
+        "fallback_provider": fallback_provider,
+        "source_attempts": source_attempts,
+        "share_capital_inferred": bool(
+            snapshot.get("total_shares") is not None or snapshot.get("circulating_shares") is not None
+        )
+        and fallback_used,
         "_cached": cached,
         "_fetched_at": now.isoformat(),
     }
@@ -360,7 +560,9 @@ TOOLS = (
     ToolSpec(
         name="read_stock_capital_snapshot_eastmoney",
         description=(
-            "从东方财富读取一只 A 股的当前价格、总/流通股本和总/流通市值快照；"
+            "读取一只 A 股的当前价格、总/流通股本和总/流通市值快照；"
+            "优先使用东方财富证券快照，连接失败时只切换到其他实时行情接口，"
+            "不把旧缓存作为失败时的备用结果，并明确返回实际来源和缺失字段；"
             "不读取公司档案或估值历史。"
         ),
         parameters=object_schema(

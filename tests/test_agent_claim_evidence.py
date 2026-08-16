@@ -140,6 +140,20 @@ def test_claim_ledger_binds_a_source_note_to_the_preceding_markdown_table() -> N
     assert ledger["claims"][0]["time_references"] == ["2026-07-13", "2026-07-03", "2025"]
 
 
+def test_claim_ledger_binds_a_bold_citation_only_line_to_the_preceding_table() -> None:
+    ledger = build_claim_evidence_ledger(
+        "| 年度 | 收入 |\n"
+        "|---|---|\n"
+        "| 2025 | 100 |\n\n"
+        "**【ev_robot】**",
+        [_evidence(result={"items": [{"year": "2025", "revenue": 100}]})],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["claims"][0]["evidence_ids"] == ["ev_robot"]
+
+
 def test_claim_ledger_binds_a_cited_section_intro_to_the_following_table() -> None:
     ledger = build_claim_evidence_ledger(
         "### 产品维度（2025 年全年）【证据 ev_robot】\n\n"
@@ -210,3 +224,38 @@ def test_claim_ledger_reuses_an_earlier_visible_citation_for_a_repeated_date() -
     assert ledger["issues"] == []
     assert ledger["claims"][1]["citation_mode"] == "inherited"
     assert ledger["claims"][1]["evidence_ids"] == ["ev_robot"]
+
+
+def test_claim_ledger_does_not_use_transport_fetch_time_as_source_date() -> None:
+    ledger = build_claim_evidence_ledger(
+        "机构共识认为2026Q1业绩会改善。",
+        [
+            _evidence(
+                data_time=None,
+                freshness_unknown=True,
+                is_stale=None,
+                result={
+                    "profile": "公司基础档案",
+                    "_fetched_at": "2026-08-15T20:22:29+08:00",
+                    "source_refs": ["https://example.test/report/2026-08-15"],
+                },
+            )
+        ],
+        [_tool_result()],
+    )
+
+    assert ledger["claims"][0]["evidence_ids"] == []
+    assert ledger["claims"][0]["citation_mode"] == "missing"
+    assert any("紧邻的 evidence_id" in issue for issue in ledger["issues"])
+
+
+def test_claim_ledger_does_not_inherit_a_bare_year_or_quarter() -> None:
+    ledger = build_claim_evidence_ledger(
+        "截至2026-08-08，主来源已返回可用材料【证据 ev_robot】\n\n"
+        "机构共识认为2026Q1业绩会改善。",
+        [_evidence()],
+        [_tool_result()],
+    )
+
+    assert ledger["claims"][1]["evidence_ids"] == []
+    assert ledger["claims"][1]["citation_mode"] == "missing"

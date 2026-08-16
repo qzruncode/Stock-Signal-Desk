@@ -113,6 +113,7 @@ def search_stocks(
         "data_source": "local_stock_meta",
         "source_scope": "local_security_master_identity_lookup",
         "data_time": None,
+        "data_time_applicable": False,
         "data_time_provenance": "unavailable",
         "data_time_note": "本工具只读取本地证券主数据，不把本地同步时间当作上游证券信息时间。",
         "is_stale": None,

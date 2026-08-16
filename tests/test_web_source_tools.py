@@ -5,11 +5,113 @@ from unittest.mock import patch
 import pytest
 
 from src.tools.web_source_tools import (
+    read_web_auto,
     read_web_firecrawl,
+    read_web_http,
     read_web_patchright,
     search_web_exa,
     search_web_firecrawl_searxng,
 )
+from src.tools.registry import ToolRegistry
+
+
+def test_model_visible_web_reader_defaults_to_auto_source_selection() -> None:
+    tool = ToolRegistry().get_tool("read_web_source")
+    assert tool is not None
+    assert "url" in (tool.parameters or {}).get("required", [])
+    assert "source_id" not in (tool.parameters or {}).get("required", [])
+    assert (tool.parameters or {}).get("properties", {}).get("source_id", {}).get("default") == "auto"
+
+
+def test_auto_reader_uses_fallback_result_and_exposes_content_access_contract() -> None:
+    raw = {
+        "url": "https://example.com/article",
+        "final_url": "https://example.com/article",
+        "format": "markdown",
+        "content_type": "text/markdown",
+        "title": "文章",
+        "content": "# 正文\n\n自动 fallback 读取的正文。",
+        "attachments": None,
+        "success": True,
+        "provider": "patchright",
+        "attempts": [
+            {"provider": "http", "success": False, "error": "blocked"},
+            {"provider": "patchright", "success": True, "error": None},
+        ],
+        "content_time": "2026-08-08T08:00:00+08:00",
+        "fallback_used": True,
+        "extraction_method": "patchright_browser+semantic_dom",
+        "errors": [],
+        "warnings": ["blocked"],
+    }
+    with (
+        patch("src.tools.web_source_tools._validate_public_url"),
+        patch("src.tools.web_source_tools.fetch_url", return_value=raw) as fetch,
+    ):
+        result = read_web_auto("https://example.com/article")
+
+    fetch.assert_called_once_with(
+        url="https://example.com/article",
+        format="markdown",
+        timeout=30,
+    )
+    assert result["provider"] == "patchright"
+    assert result["source_scope"] == "automatic_web_fetch"
+    assert result["fallback_used"] is True
+    assert result["data_time"] == "2026-08-08T08:00:00+08:00"
+    assert result["data_time_provenance"] == "source"
+    assert result["content_access"]["content_extracted"] is True
+    assert result["content_access"]["content_length"] > 0
+
+
+def test_attachment_fetch_is_not_marked_as_extracted_body() -> None:
+    raw = {
+        "provider": "http",
+        "success": True,
+        "duration_ms": 31,
+        "content": "Binary file fetched successfully",
+        "attachments": [{"type": "file", "mime": "application/octet-stream"}],
+        "final_url": "https://example.com/file.bin",
+        "title": "文件",
+        "content_type": "application/octet-stream",
+        "extraction_method": "direct_http_attachment",
+    }
+    with (
+        patch("src.tools.web_source_tools._validate_public_url"),
+        patch("src.tools.web_source_tools._http_fetch", return_value=raw),
+    ):
+        result = read_web_http("https://example.com/file.bin")
+
+    assert result["success"] is True
+    assert result["content_access"]["content_read"] is True
+    assert result["content_access"]["content_extracted"] is False
+    assert result["content_access"]["content_length"] == 0
+
+
+def test_raw_pdf_bytes_are_not_marked_as_extracted_body() -> None:
+    raw = {
+        "provider": "scrapling",
+        "success": True,
+        "duration_ms": 31,
+        "content": "%PDF-1.7\x00\\ufffd\\ufffd raw binary",
+        "attachments": None,
+        "final_url": "https://example.com/report.pdf",
+        "title": "研报",
+        "content_type": "text/html",
+        "document_extension": ".pdf",
+        "extraction_method": "scrapling_http+full_page_fallback",
+    }
+    with (
+        patch("src.tools.web_source_tools._validate_public_url"),
+        patch("src.tools.web_source_tools.fetch_url", return_value=raw),
+    ):
+        result = read_web_auto("https://example.com/report.pdf")
+
+    assert result["success"] is False
+    assert result["content"] == ""
+    assert result["content_access"]["content_read"] is False
+    assert result["content_access"]["content_extracted"] is False
+    assert "原始文档二进制" in result["errors"][0]
 
 
 def test_firecrawl_search_is_one_explicit_source_without_provider_fallback() -> None:

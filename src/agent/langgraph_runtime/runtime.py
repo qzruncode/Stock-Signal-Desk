@@ -27,6 +27,14 @@ from src.agent.runtime_safety import get_agent_runtime_limits
 from src.tools.registry import ToolRegistry
 
 from .catalog import ToolCatalog
+from .claim_evidence import build_claim_evidence_ledger
+from .content_access import (
+    DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT,
+    build_content_access_targets,
+    canonical_url,
+    required_content_access_targets,
+    successful_content_read_urls,
+)
 from .events import GraphEventBridge
 from .executor import AtomicToolExecutor
 from .graph import build_agent_graph
@@ -145,6 +153,9 @@ def _checkpoint_summary(snapshot: Any) -> dict[str, Any]:
             "model_turn_count": int(values.get("model_turn_count") or 0),
             "tool_call_count": int(values.get("tool_call_count") or 0),
             "evidence_repair_count": int(values.get("evidence_repair_count") or 0),
+            "content_access_repair_count": int(values.get("content_access_repair_count") or 0),
+            "required_content_read_count": len(values.get("required_content_reads") or []),
+            "pending_content_read_count": len(values.get("pending_content_reads") or []),
             "has_pending_interrupt": isinstance(values.get("pending_interrupt"), Mapping),
             "has_answer": bool(str(values.get("answer_final") or values.get("answer_draft") or "").strip()),
         },
@@ -156,6 +167,22 @@ def _evidence_repair_limit() -> int:
         return max(0, min(8, int(str(os.getenv("AGENT_EVIDENCE_REPAIR_LIMIT") or "2").strip())))
     except ValueError:
         return 2
+
+
+def _content_access_repair_limit() -> int:
+    try:
+        return max(
+            0,
+            min(
+                8,
+                int(
+                    str(os.getenv("AGENT_CONTENT_ACCESS_REPAIR_LIMIT") or DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT)
+                    .strip()
+                ),
+            ),
+        )
+    except ValueError:
+        return DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT
 
 
 @dataclass(frozen=True)
@@ -436,7 +463,77 @@ class LangGraphRuntimeManager:
         answer = str(state.get("answer_final") or state.get("answer_draft") or "").strip()
         if is_non_answer_agent_message(answer):
             answer = ""
-        update = {"answer_final": answer, "status": "partial", "error_code": error_code}
+        content_targets, pending_content_reads = build_content_access_targets(
+            tool_results=state.get("tool_results") or [],
+            existing_targets=state.get("content_access_targets") or [],
+        )
+        required_content_reads = required_content_access_targets(
+            answer=answer,
+            evidence=state.get("evidence") or [],
+            tool_results=state.get("tool_results") or [],
+            targets=content_targets,
+        )
+        target_urls = {canonical_url(item.get("url")) for item in content_targets}
+        successful_urls = successful_content_read_urls(state.get("tool_results") or []) & target_urls
+        required_pending = [
+            item
+            for item in required_content_reads
+            if canonical_url(item.get("url")) not in successful_urls
+        ]
+        pending_urls = {canonical_url(item.get("url")) for item in required_pending}
+        pending_content_reads = [
+            *required_pending,
+            *[
+                item
+                for item in pending_content_reads
+                if canonical_url(item.get("url")) not in pending_urls
+            ],
+        ]
+        if pending_content_reads and "正文未核验" not in answer:
+            if not answer:
+                answer = "已获取来源索引，但本轮未完成正文读取。"
+            answer = (
+                answer.rstrip()
+                + "\n\n[正文取证未完成："
+                + message
+                + "以上结论仅基于来源链接、标题/摘要或结构化字段，正文未核验。]"
+            )
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if isinstance(item, Mapping)
+            and item.get("success") is True
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        claim_evidence = (
+            build_claim_evidence_ledger(
+                answer,
+                factual_evidence,
+                [
+                    item
+                    for item in state.get("tool_results") or []
+                    if isinstance(item, Mapping)
+                ],
+            ).get("claims")
+            if factual_evidence
+            else []
+        )
+        update = {
+            "answer_final": answer,
+            "status": "partial",
+            "error_code": error_code,
+        }
+        if factual_evidence:
+            update["claim_evidence"] = list(claim_evidence or [])
+        if content_targets or pending_content_reads:
+            update.update(
+                {
+                    "content_access_targets": content_targets,
+                    "required_content_reads": required_content_reads,
+                    "pending_content_reads": pending_content_reads,
+                    "content_access_feedback": "",
+                }
+            )
         try:
             await graph.aupdate_state(config, update)
         except Exception:
@@ -495,11 +592,17 @@ class LangGraphRuntimeManager:
             "tool_call_count": Overwrite(0),
             "model_turn_count": Overwrite(0),
             "evidence_repair_count": Overwrite(0),
+            "content_access_repair_count": Overwrite(0),
             "tool_call_limit": limits.max_tool_calls,
             "evidence_repair_limit": _evidence_repair_limit(),
+            "content_access_repair_limit": _content_access_repair_limit(),
             "work_budget_exhausted": False,
             "work_budget_detail": "",
             "evidence_feedback": "",
+            "content_access_targets": [],
+            "required_content_reads": [],
+            "pending_content_reads": [],
+            "content_access_feedback": "",
             "pending_interrupt": None,
             "answer_draft": "",
             "answer_final": "",

@@ -219,6 +219,14 @@ def read_rss_item(
     return {
         "success": success,
         "partial": used_list_item_fallback,
+        "content_access": {
+            "mode": "content_read",
+            "content_read": success,
+            "content_extracted": bool(content_text),
+            "content_read_required": True,
+            "content_length": len(content_text),
+            "requested_url": str(detail.get("link") or ref.link or ""),
+        },
         "item_ref": ref.model_dump(mode="json"),
         "title": detail.get("title") or ref.title,
         "link": detail.get("link") or ref.link,

@@ -19,6 +19,8 @@ _RSS_ROUTE = "/eastmoney/search/:keyword"
 DESCRIPTION = (
     "从 AKShare 的 stock_news_em 单一来源读取一只 A 股/北交所公司的相关新闻，"
     "按公司名称或代码校验主体、去重并限制返回量；不会调用 RSSHub 或其他新闻来源。"
+    "这是 reference-only 来源索引，不包含新闻正文；若要用新闻内容支撑实质性结论，"
+    "必须继续调用 read_web_source 读取对应 URL。"
 )
 
 
@@ -304,6 +306,13 @@ def read_company_news_akshare(
             "source": "AKShare stock_news_em",
             "errors": [f"akshare_news: {type(exc).__name__}: {exc}"],
             "warnings": [],
+            "content_access": {
+                "mode": "reference_only",
+                "content_read": False,
+                "content_extracted": False,
+                "content_read_required": False,
+            },
+            "reference_links": [],
             "data_time": None,
             "is_stale": None,
             "freshness_unknown": True,
@@ -332,6 +341,11 @@ def read_company_news_akshare(
         warnings.append(f"包含 {undated_count} 条无可验证发布时间的结果")
     if not name:
         warnings.append("本地股票索引未找到公司简称，仅能按代码校验主体")
+    reference_links = [
+        str(item.get("url") or "").strip()
+        for item in items
+        if str(item.get("url") or "").strip()
+    ]
     return {
         "success": True,
         "partial": False,
@@ -344,6 +358,13 @@ def read_company_news_akshare(
         "unverified_entity_mention_count": weak_mentions,
         "source": "AKShare stock_news_em",
         "sources": ["akshare_stock_news_em"],
+        "content_access": {
+            "mode": "reference_only",
+            "content_read": False,
+            "content_extracted": False,
+            "content_read_required": bool(reference_links),
+        },
+        "reference_links": reference_links,
         "data_time": latest.isoformat() if latest else None,
         "freshness_unknown": latest is None,
         "is_stale": latest < cutoff if latest else None,

@@ -169,6 +169,60 @@ def _tool_call(call_id: str, source_id: str) -> AIMessage:
     )
 
 
+def _named_tool_call(call_id: str, tool_name: str, arguments: Mapping[str, Any]) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": tool_name,
+                "args": dict(arguments),
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def _company_news_operation() -> ToolSpec:
+    return ToolSpec(
+        name="read_company_news_akshare",
+        description="返回新闻来源链接，不包含正文。",
+        parameters=object_schema(
+            {"symbol": {"type": "string"}},
+            required=("symbol",),
+        ),
+        executor=lambda **_kwargs: {"success": True},
+    )
+
+
+def _company_research_operation() -> ToolSpec:
+    return ToolSpec(
+        name="read_company_research_reports_akshare",
+        description="返回研报来源链接，不包含正文。",
+        parameters=object_schema(
+            {"symbol": {"type": "string"}},
+            required=("symbol",),
+        ),
+        executor=lambda **_kwargs: {"success": True},
+    )
+
+
+def _web_source_operation() -> ToolSpec:
+    return ToolSpec(
+        name="read_web_source",
+        description="读取指定 URL 的正文。",
+        parameters=object_schema(
+            {
+                "source_id": {"type": "string", "enum": ["http"]},
+                "url": {"type": "string"},
+            },
+            required=("source_id", "url"),
+        ),
+        executor=lambda **_kwargs: {"success": True},
+        source_catalog=({"id": "http", "name": "HTTP", "purpose": "测试"},),
+    )
+
+
 async def _run(
     *,
     model: ScriptedChatModel,
@@ -535,6 +589,271 @@ def test_missing_evidence_link_reenters_model_without_a_fixed_verify_workflow() 
             for item in result.stage_history or []
         )
         assert result.final_text.endswith("【证据 ev_evidence】")
+
+    asyncio.run(scenario())
+
+
+def test_reference_only_source_requires_successful_web_body_read_before_final_answer() -> None:
+    async def scenario() -> None:
+        url = "https://example.test/news/1"
+        unselected_url = "https://example.test/news/2"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "company-news",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                AIMessage(content="候选回答：公司近期有利好消息。"),
+                _named_tool_call(
+                    "read-content",
+                    "read_web_source",
+                    {"source_id": "http", "url": url},
+                ),
+                AIMessage(content="正文确认了该消息【证据 ev_read-content】"),
+            ]
+        )
+        result, executor = await _run(
+            model=model,
+            registry=_registry(_company_news_operation(), _web_source_operation()),
+            executor=FakeAtomicExecutor(
+                {
+                    "read_company_news_akshare": [
+                        {
+                            "source_refs": [url, unselected_url],
+                            "result": {
+                                "success": True,
+                                "items": [
+                                    {"title": "模型选择的新闻", "url": url},
+                                    {"title": "未选择的新闻", "url": unselected_url},
+                                ],
+                                "content_access": {
+                                    "mode": "reference_only",
+                                    "content_read": False,
+                                    "content_extracted": False,
+                                    "content_read_required": True,
+                                },
+                                "reference_links": [url, unselected_url],
+                            },
+                        }
+                    ],
+                    "read_web_source": [
+                        {
+                            "source_refs": [url],
+                            "result": {
+                                "success": True,
+                                "url": url,
+                                "final_url": url,
+                                "content": "这是新闻正文。",
+                                "extraction_method": "http+markdown",
+                            },
+                        }
+                    ],
+                }
+            ),
+            conversation_id="content-access-success",
+        )
+
+        assert result.status == "completed"
+        assert [call["tool_name"] for call in executor.calls] == [
+            "read_company_news_akshare",
+            "read_web_source",
+        ]
+        assert result.state["content_access_targets"] == [
+            {
+                "url": url,
+                "kind": "article",
+                "title": "模型选择的新闻",
+                "tool_name": "read_company_news_akshare",
+                "action_id": "company-news",
+            },
+            {
+                "url": unselected_url,
+                "kind": "article",
+                "title": "未选择的新闻",
+                "tool_name": "read_company_news_akshare",
+                "action_id": "company-news",
+            }
+        ]
+        assert result.state["pending_content_reads"] == []
+        assert result.state["content_access_repair_count"] == 1
+        assert len(model.calls) == 4
+        assert any(
+            "read_web_source" in str(message.content) and url in str(message.content)
+            for message in model.calls[2]
+            if getattr(message, "type", "") == "system"
+        )
+        assert any(
+            item["stage"] == "content_access" and item["status"] == "started"
+            for item in result.stage_history or []
+        )
+
+    asyncio.run(scenario())
+
+
+def test_reference_body_gate_is_scoped_to_the_cited_tool_call() -> None:
+    async def scenario() -> None:
+        news_url = "https://example.test/news/1"
+        report_url = "https://example.test/report/1.pdf"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "news-call",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                _named_tool_call(
+                    "report-call",
+                    "read_company_research_reports_akshare",
+                    {"symbol": "600519"},
+                ),
+                AIMessage(content="新闻结论【证据 ev_news-call】"),
+                _named_tool_call(
+                    "read-news",
+                    "read_web_source",
+                    {"source_id": "http", "url": news_url},
+                ),
+                AIMessage(content="新闻结论已核对【证据 ev_news-call】"),
+            ]
+        )
+        result, executor = await _run(
+            model=model,
+            registry=_registry(
+                _company_news_operation(),
+                _company_research_operation(),
+                _web_source_operation(),
+            ),
+            executor=FakeAtomicExecutor(
+                {
+                    "read_company_news_akshare": [
+                        {
+                            "source_refs": [news_url],
+                            "result": {
+                                "success": True,
+                                "items": [{"title": "新闻", "url": news_url}],
+                                "reference_links": [news_url],
+                                "content_access": {
+                                    "mode": "reference_only",
+                                    "content_read": False,
+                                    "content_extracted": False,
+                                    "content_read_required": True,
+                                },
+                            },
+                        }
+                    ],
+                    "read_company_research_reports_akshare": [
+                        {
+                            "source_refs": [report_url],
+                            "result": {
+                                "success": True,
+                                "items": [{"title": "研报", "url": report_url}],
+                                "reference_links": [report_url],
+                                "content_access": {
+                                    "mode": "reference_only",
+                                    "content_read": False,
+                                    "content_extracted": False,
+                                    "content_read_required": True,
+                                },
+                            },
+                        }
+                    ],
+                    "read_web_source": [
+                        {
+                            "source_refs": [news_url],
+                            "result": {
+                                "success": True,
+                                "url": news_url,
+                                "content": "新闻正文",
+                            },
+                        }
+                    ],
+                }
+            ),
+            conversation_id="content-access-per-tool-call",
+        )
+
+        assert result.status == "completed"
+        assert [call["tool_name"] for call in executor.calls] == [
+            "read_company_news_akshare",
+            "read_company_research_reports_akshare",
+            "read_web_source",
+        ]
+        assert [item["url"] for item in result.state["required_content_reads"]] == [news_url]
+        assert result.state["pending_content_reads"] == []
+        assert len(model.calls) == 5
+
+    asyncio.run(scenario())
+
+
+def test_failed_content_read_keeps_pending_url_and_publishes_unverified_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_CONTENT_ACCESS_REPAIR_LIMIT", "1")
+
+    async def scenario() -> None:
+        url = "https://example.test/report.pdf"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "company-news",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                AIMessage(content="仅基于标题作出的候选结论【证据 ev_company-news】。"),
+                _named_tool_call(
+                    "read-content",
+                    "read_web_source",
+                    {"source_id": "http", "url": url},
+                ),
+                AIMessage(content="正文读取失败，但仍尝试给出结论【证据 ev_company-news】。"),
+            ]
+        )
+        result, executor = await _run(
+            model=model,
+            registry=_registry(_company_news_operation(), _web_source_operation()),
+            executor=FakeAtomicExecutor(
+                {
+                    "read_company_news_akshare": [
+                        {
+                            "source_refs": [url],
+                            "result": {
+                                "success": True,
+                                "items": [{"title": "测试研报", "url": url}],
+                                "content_access": {
+                                    "mode": "reference_only",
+                                    "content_read": False,
+                                    "content_extracted": False,
+                                    "content_read_required": True,
+                                },
+                                "reference_links": [url],
+                            },
+                        }
+                    ],
+                    "read_web_source": [
+                        {
+                            "success": False,
+                            "source_refs": [url],
+                            "errors": ["正文解析失败"],
+                            "result": {
+                                "success": False,
+                                "url": url,
+                                "content": "",
+                            },
+                        }
+                    ],
+                }
+            ),
+            conversation_id="content-access-failure",
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "content_access_incomplete"
+        assert "正文未核验" in result.final_text
+        assert result.state["pending_content_reads"][0]["url"] == url
+        assert result.state["claim_evidence"]
+        assert result.state["claim_evidence"][0]["evidence_ids"] == ["ev_company-news"]
+        assert [call["tool_name"] for call in executor.calls] == [
+            "read_company_news_akshare",
+            "read_web_source",
+        ]
 
     asyncio.run(scenario())
 

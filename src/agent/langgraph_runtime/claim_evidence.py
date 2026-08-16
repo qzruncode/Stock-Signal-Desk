@@ -20,6 +20,11 @@ from typing import Any, Mapping, Sequence
 
 
 _EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
+_CITATION_ONLY_BLOCK = re.compile(
+    r"^(?:(?:\*\*|__)\s*)?"
+    r"(?:【\s*(?:证据\s*)?ev_[A-Za-z0-9_-]+\s*】\s*)+"
+    r"(?:(?:\*\*|__)\s*)?$"
+)
 _SENTENCE_BOUNDARY = re.compile(
     r"(?<=[。！？!?])\s*(?![【\[]\s*(?:证据\s*)?ev_)|(?<=[】\]])\s*(?=[^\n])|\n+"
 )
@@ -66,6 +71,46 @@ _SENSITIVE_FIELDS = frozenset(
         "token",
     }
 )
+_TRANSPORT_TIME_FIELDS = frozenset(
+    {
+        "_fetched_at",
+        "fetched_at",
+        "retrieved_at",
+        "retrieval_time",
+        "completed_at",
+        "created_at",
+        "updated_at",
+        "_updated_at",
+        "started_at",
+        "finished_at",
+        "requested_at",
+        "observed_at",
+        "cache_time",
+        "cached_at",
+        "last_sync_at",
+    }
+)
+_PROVENANCE_FIELDS = frozenset(
+    {
+        "source_refs",
+        "reference_links",
+        "referenceLinks",
+        "url",
+        "link",
+        "source_url",
+        "requested_url",
+        "final_url",
+    }
+)
+_INHERITABLE_DATE = re.compile(
+    r"(?:(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|"
+    r"(?:19|20)\d{2}年\d{1,2}月\d{1,2}日?|"
+    r"\d{1,2}\s*月\s*\d{1,2}\s*日?)"
+)
+_OMITTED = object()
+_SUPPORT_OMIT_FIELDS = frozenset(
+    field.lower() for field in _TRANSPORT_TIME_FIELDS | _PROVENANCE_FIELDS
+)
 
 
 def _id(item: Mapping[str, Any]) -> str:
@@ -108,6 +153,35 @@ def _entity_fields(item: Mapping[str, Any]) -> list[str]:
     ][:24]
 
 
+def _sanitize_support_value(value: Any, *, key: str | None = None) -> Any:
+    """Keep source content while removing transport/provenance timestamps.
+
+    A fetched-at timestamp is an observation about this service, not a date
+    contained in the source.  Likewise, dates embedded in a URL or source
+    reference must not satisfy a claim's explicit-time check.  The raw result
+    remains untouched in the checkpoint; this sanitizer only feeds the
+    mechanical comparison view.
+    """
+    normalized_key = str(key or "").strip().lower()
+    if normalized_key in _SUPPORT_OMIT_FIELDS:
+        return _OMITTED
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            child = _sanitize_support_value(raw_value, key=str(raw_key))
+            if child is not _OMITTED:
+                sanitized[str(raw_key)] = child
+        return sanitized
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [
+            child
+            for raw_value in value
+            for child in [_sanitize_support_value(raw_value)]
+            if child is not _OMITTED
+        ]
+    return value
+
+
 def _support_text(item: Mapping[str, Any]) -> str:
     """Build an internal comparison view; it is never emitted to the client."""
     payload = {
@@ -117,7 +191,8 @@ def _support_text(item: Mapping[str, Any]) -> str:
         "source_refs": item.get("source_refs"),
         "result": item.get("result"),
     }
-    return json.dumps(payload, ensure_ascii=False, default=str).casefold()
+    sanitized = _sanitize_support_value(payload)
+    return json.dumps(sanitized, ensure_ascii=False, default=str).casefold()
 
 
 def _compact_time(value: str) -> str:
@@ -168,6 +243,11 @@ def _supports_relative_time(evidence: Sequence[Mapping[str, Any]]) -> bool:
     return False
 
 
+def _is_inheritable_date(value: str) -> bool:
+    """Only inherit a complete date, never a bare year or quarter token."""
+    return bool(_INHERITABLE_DATE.fullmatch(str(value or "").strip()))
+
+
 def _explicit_identifiers(claim: str) -> list[str]:
     """Extract mechanically checkable identifiers, not ordinary quoted prose.
 
@@ -195,6 +275,9 @@ def _is_source_note_block(block: str) -> bool:
     lines = [line.strip() for line in block.splitlines() if line.strip()]
     if not lines or not _EVIDENCE_REFERENCE.search(block):
         return False
+    citation_only = " ".join(lines)
+    if len(lines) == 1 and _CITATION_ONLY_BLOCK.fullmatch(citation_only):
+        return True
     first = lines[0]
     return bool(
         re.match(r"^(?:>|来源|资料来源|数据来源|source|citation)\s*", first, re.IGNORECASE)
@@ -321,7 +404,8 @@ def _inherited_evidence_ids(
     dates that are mechanically present in an evidence item whose ID has
     already appeared earlier in the answer.
     """
-    if not explicit_times or not prior_cited_ids:
+    inheritable_times = [value for value in explicit_times if _is_inheritable_date(value)]
+    if not inheritable_times or not prior_cited_ids:
         return []
 
     candidate_ids = list(prior_cited_ids)
@@ -341,7 +425,7 @@ def _inherited_evidence_ids(
         )
 
     selected: list[str] = []
-    remaining = list(explicit_times)
+    remaining = list(inheritable_times)
     for evidence_id in candidate_ids:
         item = successful.get(evidence_id)
         if item is None:

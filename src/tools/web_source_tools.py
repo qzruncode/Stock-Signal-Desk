@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Internal, single-provider public-web source adapters.
+"""Internal public-web readers used by the model-visible web operation.
 
-``source_operations`` is the sole model-visible surface and selects a declared
-``source_id``.  A failure here is returned to the generic agent loop as an
-observation; this module never switches providers or creates its own tools.
+``source_operations`` is the sole model-visible surface.  ``source_id=auto``
+uses the local fallback chain; an explicit provider remains available when a
+caller needs deterministic diagnostics.
 """
 
 from __future__ import annotations
@@ -20,7 +20,9 @@ from src.tools.webfetch import (
     _firecrawl_fetch,
     _http_fetch,
     _scrapling_fetch,
+    _unusable_document_reason,
     _validate_public_url,
+    fetch_url,
 )
 from src.tools.websearch import (
     _compact_results,
@@ -33,6 +35,12 @@ from src.tools.websearch import (
 
 _MAX_SEARCH_CONTEXT_CHARACTERS = 24_000
 _MAX_WEB_CONTENT_CHARACTERS = 60_000
+_ATTACHMENT_ONLY_MESSAGES = frozenset(
+    {
+        "Image fetched successfully",
+        "Binary file fetched successfully",
+    }
+)
 
 
 # The provider-level reader already rejects empty pages and low-quality HTML.
@@ -128,6 +136,51 @@ def _source_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return parsed
+
+
+def _content_access(
+    *,
+    success: bool,
+    content: str,
+    attachments: Any,
+    extraction_method: Any,
+    requested_url: str,
+    final_url: str,
+    provider: str,
+    content_type: str,
+    document_extension: Any = None,
+    error: str = "",
+) -> dict[str, Any]:
+    """Describe whether a fetch produced usable textual source content."""
+    text = str(content or "").strip()
+    extraction = str(extraction_method or "").strip()
+    attachment_only = bool(attachments) and (
+        extraction.endswith("attachment") or text in _ATTACHMENT_ONLY_MESSAGES
+    )
+    document_error = _unusable_document_reason(
+        text,
+        content_type=content_type,
+        document_extension=document_extension,
+        extraction_method=extraction,
+    )
+    content_extracted = bool(success and text and not attachment_only and not document_error)
+    return {
+        "mode": "content_read",
+        "content_read": bool(success),
+        "content_extracted": content_extracted,
+        "content_read_required": True,
+        "content_length": len(text) if content_extracted else 0,
+        "requested_url": requested_url,
+        "final_url": final_url,
+        "provider": provider,
+        "content_type": content_type,
+        "extraction_method": extraction or None,
+        "note": (
+            "读取到了附件，但没有提取出可供正文分析的文本。"
+            if success and not content_extracted
+            else (document_error or error or None)
+        ),
+    }
 
 
 def _search_attempt(raw: Mapping[str, Any], provider: str) -> dict[str, Any]:
@@ -295,7 +348,8 @@ def _single_provider_fetch(
     timeout_seconds = max(5, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
     report_tool_progress(f"正在读取公开网页来源 {provider}", progress=10)
     raw = dict(execute(url, fmt, timeout_seconds))
-    content = str(raw.get("content") or "")
+    raw_content = str(raw.get("content") or "")
+    content = raw_content
     truncated = False
     if len(content) > _MAX_WEB_CONTENT_CHARACTERS:
         content = content[:_MAX_WEB_CONTENT_CHARACTERS].rstrip() + "…"
@@ -303,6 +357,17 @@ def _single_provider_fetch(
     success = raw.get("success") is True
     error = str(raw.get("error") or "").strip()
     content_type = str(raw.get("content_type") or "")
+    document_extension = raw.get("document_extension")
+    unusable_document = _unusable_document_reason(
+        raw_content,
+        content_type=content_type,
+        document_extension=document_extension,
+        extraction_method=str(raw.get("extraction_method") or ""),
+    )
+    if success and unusable_document:
+        success = False
+        error = unusable_document
+        content = ""
     # A provider may report HTTP success while returning an anti-bot page.
     # Validate the returned body here as well so a future provider adapter
     # cannot accidentally turn an access challenge into Claim-Evidence input.
@@ -320,15 +385,18 @@ def _single_provider_fetch(
             data_time, label = explicit_time
             content_time_note = f"网页正文中明确标注的来源时间字段：{label}。"
     warning = str(raw.get("quality_warning") or "").strip()
+    final_url = str(raw.get("final_url") or url)
+    extraction_method = raw.get("extraction_method")
     report_tool_progress(f"公开网页来源 {provider} 已返回", progress=100)
     attempt = _search_attempt(raw, provider)
     attempt["success"] = success
     attempt["error"] = error or None
-    return {
+    result = {
         "url": url,
-        "final_url": str(raw.get("final_url") or url),
+        "final_url": final_url,
         "format": fmt,
         "content_type": content_type,
+        "document_extension": document_extension,
         "title": str(raw.get("title") or ""),
         "content": content,
         "attachments": raw.get("attachments"),
@@ -337,7 +405,7 @@ def _single_provider_fetch(
         "provider": provider,
         "source": {
             "provider": provider,
-            "url": str(raw.get("final_url") or url),
+            "url": final_url,
             "operation": "web_fetch",
         },
         "source_scope": "single_provider_web_fetch",
@@ -357,13 +425,126 @@ def _single_provider_fetch(
         "content_time": data_time,
         "is_stale": None,
         "freshness_unknown": data_time is None,
-        "extraction_method": raw.get("extraction_method"),
+        "extraction_method": extraction_method,
         "fallback_used": False,
         "_truncated": bool(raw.get("_truncated")) or truncated,
         "errors": [] if success else ([error] if error else [f"{provider} 未返回网页内容"]),
         "warnings": [warning] if success and warning else [],
         "failure_kind": "challenge" if challenge else raw.get("failure_kind"),
     }
+    result["content_access"] = _content_access(
+        success=success,
+        content=content,
+        attachments=result["attachments"],
+        extraction_method=extraction_method,
+        requested_url=url,
+        final_url=final_url,
+        provider=provider,
+        content_type=content_type,
+        document_extension=document_extension,
+        error=error,
+    )
+    return result
+
+
+def read_web_auto(
+    url: str,
+    format: str = "markdown",
+    timeout: int | None = DEFAULT_TIMEOUT,
+) -> dict[str, Any]:
+    """Read one URL with the local provider fallback chain."""
+    fmt = str(format or "markdown")
+    if fmt not in {"markdown", "text", "html"}:
+        raise ValueError("format 必须是 markdown、text 或 html")
+    _validate_public_url(url)
+    timeout_seconds = max(5, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
+    report_tool_progress("正在自动选择公开网页读取来源", progress=10)
+    raw = dict(fetch_url(url=str(url), format=fmt, timeout=timeout_seconds))
+    raw_content = str(raw.get("content") or "")
+    content = raw_content
+    truncated = False
+    if len(content) > _MAX_WEB_CONTENT_CHARACTERS:
+        content = content[:_MAX_WEB_CONTENT_CHARACTERS].rstrip() + "…"
+        truncated = True
+    success = raw.get("success") is True
+    final_url = str(raw.get("final_url") or url)
+    provider = str(raw.get("provider") or "none")
+    content_type = str(raw.get("content_type") or "")
+    document_extension = raw.get("document_extension")
+    unusable_document = _unusable_document_reason(
+        raw_content,
+        content_type=content_type,
+        document_extension=document_extension,
+        extraction_method=str(raw.get("extraction_method") or ""),
+    )
+    errors = [str(item) for item in list(raw.get("errors") or []) if str(item).strip()]
+    if success and unusable_document:
+        success = False
+        content = ""
+        errors.insert(0, unusable_document)
+    content_time = raw.get("content_time")
+    data_time = str(content_time).strip() if content_time not in (None, "") else None
+    content_time_note: str | None = None
+    if not data_time:
+        explicit_time = _explicit_content_time(content)
+        if explicit_time is not None:
+            data_time, label = explicit_time
+            content_time_note = f"网页正文中明确标注的来源时间字段：{label}。"
+    warnings = [str(item) for item in list(raw.get("warnings") or []) if str(item).strip()]
+    report_tool_progress("公开网页自动读取完成", progress=100)
+    result = {
+        "url": str(url),
+        "final_url": final_url,
+        "format": fmt,
+        "content_type": content_type,
+        "document_extension": document_extension,
+        "title": str(raw.get("title") or ""),
+        "content": content,
+        "attachments": raw.get("attachments"),
+        "success": success,
+        "partial": bool(success and (raw.get("partial") or raw.get("_truncated") or truncated)),
+        "provider": provider,
+        "source": {
+            "provider": provider,
+            "url": final_url,
+            "operation": "web_fetch",
+        },
+        "source_scope": "automatic_web_fetch",
+        "attempts": list(raw.get("attempts") or []),
+        "retrieved_at": datetime.now().astimezone().isoformat(),
+        "data_time": data_time,
+        "data_time_provenance": "source" if data_time else "unavailable",
+        "data_time_note": (
+            content_time_note
+            if content_time_note
+            else (
+                None
+                if data_time
+                else "网页未提供可识别的发布日期或更新时间；抓取完成时间不作为数据时间。"
+            )
+        ),
+        "content_time": data_time,
+        "is_stale": None,
+        "freshness_unknown": data_time is None,
+        "extraction_method": raw.get("extraction_method"),
+        "fallback_used": bool(raw.get("fallback_used")),
+        "_truncated": bool(raw.get("_truncated")) or truncated,
+        "errors": errors if not success else [],
+        "warnings": warnings,
+    }
+    result["content_access"] = _content_access(
+        success=success,
+        content=content,
+        attachments=result["attachments"],
+        extraction_method=result["extraction_method"],
+        requested_url=str(url),
+        final_url=final_url,
+        provider=provider,
+        content_type=content_type,
+        document_extension=document_extension,
+        error=(errors[0] if errors else ""),
+    )
+    return result
 
 
 def read_web_http(
@@ -437,6 +618,7 @@ def read_web_firecrawl(
 
 
 __all__ = [
+    "read_web_auto",
     "read_web_firecrawl",
     "read_web_http",
     "read_web_patchright",

@@ -22,6 +22,99 @@ export interface AgentRunFeedback {
   updatedAt?: string | null;
 }
 
+export type AgentBehaviorStatus = 'clear' | 'info' | 'warning' | 'danger';
+
+export interface AgentBehaviorFinding {
+  code: string;
+  severity: 'info' | 'warning' | 'danger';
+  category: string;
+  title: string;
+  detail: string;
+  remediation?: string;
+  confidence?: number;
+  toolNames?: string[];
+  actionIds?: string[];
+  links?: string[];
+}
+
+export interface AgentBehaviorCheck {
+  code: string;
+  label: string;
+  status: AgentBehaviorStatus;
+  detail: string;
+}
+
+export interface AgentBehaviorStep {
+  actionId?: string;
+  toolName?: string;
+  success?: boolean;
+  behavior?: string;
+  accessStatus?: string;
+  referenceLinkCount?: number;
+  contentExtracted?: boolean;
+  evidenceCount?: number;
+  resultCount?: number | null;
+}
+
+export interface AgentBehaviorAudit {
+  status: AgentBehaviorStatus;
+  attentionLevel: 'none' | 'review' | 'urgent';
+  riskScore: number;
+  issueCount: number;
+  dangerCount: number;
+  warningCount: number;
+  infoCount?: number;
+  modelTurnCount: number;
+  toolCallCount: number;
+  toolObservationCount: number;
+  contentReadCallCount: number;
+  contentExtractedCallCount: number;
+  referenceOnlyToolCount: number;
+  referenceLinkCount: number;
+  unreadReferenceCount: number;
+  unreadDocumentCount: number;
+  unreadArticleCount: number;
+  citedReferenceToolCount?: number;
+  citedUnreadReferenceCount?: number;
+  failedToolCount: number;
+  evidenceCount: number;
+  claimCount: number;
+  checks: AgentBehaviorCheck[];
+  findings: AgentBehaviorFinding[];
+  toolChain: AgentBehaviorStep[];
+  sampling?: {
+    mode: 'on_demand' | string;
+    available: boolean;
+    sampleLimit: number;
+    targets: Array<{ url: string; kind?: string }>;
+    note?: string;
+  };
+}
+
+export interface AgentSourceSampleResult {
+  url: string;
+  kind?: string | null;
+  success: boolean;
+  status: 'readable' | 'unreadable' | string;
+  finalUrl?: string | null;
+  contentType?: string | null;
+  extractionMethod?: string | null;
+  contentLength?: number;
+  contentPreview?: string | null;
+  errors?: string[];
+  warnings?: string[];
+}
+
+export interface AgentSourceSampleResponse {
+  runId: string;
+  mode: string;
+  sampledAt: string;
+  sampleLimit: number;
+  sampledCount: number;
+  items: AgentSourceSampleResult[];
+  note: string;
+}
+
 export interface AgentRunSummary {
   runId: string;
   conversationId: string;
@@ -34,6 +127,18 @@ export interface AgentRunSummary {
   evidenceLinksVerified: boolean;
   qualityScore: number;
   qualityStatus: 'passed' | 'failed';
+  behaviorStatus?: AgentBehaviorStatus;
+  behaviorAttentionLevel?: 'none' | 'review' | 'urgent';
+  behaviorIssueCount?: number;
+  behaviorDangerCount?: number;
+  behaviorWarningCount?: number;
+  behaviorInfoCount?: number;
+  behaviorRiskScore?: number;
+  unreadReferenceCount?: number;
+  unreadDocumentCount?: number;
+  unreadArticleCount?: number;
+  contentReadCallCount?: number;
+  failedToolCount?: number;
   feedback?: AgentRunFeedback | null;
   toolCallCount: number;
   providerCallCount: number;
@@ -77,9 +182,11 @@ export interface AgentRunDetail {
     qualityProjection: {
       toolResults?: Array<Record<string, unknown>>;
       evidence?: Array<Record<string, unknown>>;
+      claimEvidence?: Array<Record<string, unknown>>;
       loop?: Record<string, unknown>;
       completedToolCallIds?: string[];
     };
+    behaviorAudit?: AgentBehaviorAudit;
     steps: Array<Record<string, unknown>>;
     artifacts: Array<Record<string, unknown>>;
     feedback?: AgentRunFeedback | null;
@@ -97,6 +204,16 @@ export interface AgentQualitySummary {
     averageScore?: number | null;
     dimensionScores: Record<string, number>;
     violations: Record<string, number>;
+  };
+  behavior?: {
+    auditedRuns: number;
+    clearRuns: number;
+    warningRuns: number;
+    dangerRuns: number;
+    infoRuns: number;
+    unreadReferenceCount: number;
+    contentReadCallCount: number;
+    issues: Record<string, number>;
   };
   feedback: {
     total: number;
@@ -131,6 +248,15 @@ export const runExplorerApi = {
       params: options.includePayloads ? { include_payloads: true } : undefined,
     });
     return toCamelCase<AgentRunDetail>(response.data);
+  },
+
+  async sampleSources(runId: string, limit = 3): Promise<AgentSourceSampleResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      `/api/v1/agent/runs/${runId}/audit/sample`,
+      undefined,
+      { params: { limit } },
+    );
+    return toCamelCase<AgentSourceSampleResponse>(response.data);
   },
 
   async getQualitySummary(days = 30): Promise<AgentQualitySummary> {

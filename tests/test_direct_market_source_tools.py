@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
+from src.tools._kline import _normalize_kline_df
 from src.tools._trading_calendar import latest_completed_trade_day
 from src.tools.kline_gateway import read_reliable_kline
 from src.tools.registry import ToolRegistry
@@ -61,6 +62,96 @@ def test_direct_quote_calls_only_the_selected_provider() -> None:
     assert result["success"] is True
     assert result["fallback_used"] is False
     assert result["source_scope"] == "test_quote"
+
+
+def test_auto_quote_uses_the_trading_aware_gateway() -> None:
+    gateway_result = {
+        "success": True,
+        "partial": False,
+        "items": [
+            {
+                "code": "600519",
+                "price": 1500.0,
+                "source": "eastmoney_push",
+                "trade_time": "2026-08-14T15:00:00+08:00",
+                "quote_mode": "latest_trading_day_snapshot",
+            }
+        ],
+        "total": 1,
+        "data_time": "2026-08-14T15:00:00+08:00",
+        "data_time_provenance": "source",
+        "data_time_note": None,
+        "is_stale": False,
+        "freshness_unknown": False,
+        "quote_mode": "latest_trading_day_snapshot",
+        "quote_mode_label": "非交易时段的最近交易日快照，不是当前时刻实时成交",
+        "fallback_used": False,
+        "errors": [],
+        "warnings": [],
+    }
+    with patch("src.tools.get_realtime_quotes.get_realtime_quotes", return_value=gateway_result) as gateway:
+        result = ToolRegistry().execute(
+            "read_realtime_quote",
+            {"symbol": "600519"},
+        )
+
+    gateway.assert_called_once_with(["600519"])
+    assert result["success"] is True
+    assert result["source_scope"] == "realtime_quote_auto"
+    assert result["quote_mode"] == "latest_trading_day_snapshot"
+    assert result["data_time"] == "2026-08-14T15:00:00+08:00"
+
+
+def test_auto_quote_falls_back_to_the_latest_completed_close() -> None:
+    with (
+        patch(
+            "src.tools.get_realtime_quotes.get_realtime_quotes",
+            return_value={
+                "success": False,
+                "partial": False,
+                "items": [],
+                "total": 0,
+                "data_time": None,
+                "data_time_provenance": "unavailable",
+                "data_time_note": "无有效报价",
+                "is_stale": None,
+                "freshness_unknown": True,
+                "fallback_used": False,
+                "errors": ["实时行情无数据: 600519"],
+                "warnings": [],
+            },
+        ),
+        patch(
+            "src.tools.kline_gateway.read_reliable_kline",
+            return_value={
+                "success": True,
+                "data": [
+                    {"date": "2026-08-13", "close": 1490.0},
+                    {"date": "2026-08-14", "close": 1500.0},
+                ],
+                "data_time": "2026-08-14",
+                "data_time_provenance": "source",
+                "is_stale": False,
+                "source": "东方财富日线（AKShare）",
+                "source_attempts": [],
+                "warnings": [],
+                "_cached": True,
+                "_fetched_at": "2026-08-15T17:42:00+08:00",
+            },
+        ),
+    ):
+        result = ToolRegistry().execute(
+            "read_realtime_quote",
+            {"symbol": "600519"},
+        )
+
+    assert result["success"] is True
+    assert result["fallback_used"] is True
+    assert result["items"][0]["price"] == 1500.0
+    assert result["quote_mode"] == "latest_completed_bar"
+    assert result["data_time"] == "2026-08-14"
+    assert result["errors"] == []
+    assert any("收盘快照" in warning for warning in result["warnings"])
 
 
 def test_strict_kline_mode_does_not_read_cache_or_switch_source() -> None:
@@ -164,6 +255,30 @@ def test_reliable_kline_falls_back_and_records_provider_attempts() -> None:
     assert result["fallback_used"] is True
     assert result["source_attempts"][0]["error_type"] == "ConnectionError"
     assert result["source_attempts"][-1]["status"] == "success"
+
+
+def test_fresh_stock_daily_cache_is_not_marked_as_provider_fallback() -> None:
+    local_records = _normalize_kline_df(_completed_kline_frame(), "600519", "eastmoney")
+    with (
+        patch("src.tools.kline_gateway.latest_completed_trade_day", return_value=date(2026, 8, 13)),
+        patch("src.tools.kline_gateway._get_kline_from_stock_daily", return_value=local_records),
+        patch("src.tools.kline_gateway._get_kline_from_cache") as get_cache,
+        patch("src.tools.kline_gateway._fetch_kline_em") as eastmoney,
+    ):
+        result = read_reliable_kline(
+            "600519",
+            preferred_source="eastmoney",
+            count=20,
+            sources={"eastmoney": ("东方财富", eastmoney)},
+        )
+
+    assert result["success"] is True
+    assert result["partial"] is False
+    assert result["is_stale"] is False
+    assert result["fallback_used"] is False
+    assert result["source_key"] == "stock_daily"
+    get_cache.assert_not_called()
+    eastmoney.assert_not_called()
 
 
 def test_completed_trade_day_excludes_intraday_bar() -> None:

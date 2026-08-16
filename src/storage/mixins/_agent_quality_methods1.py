@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import src.storage.mixins.agent_quality as _base
+from src.agent.behavior_audit import build_behavior_audit
 
 for _name, _value in vars(_base).items():
     if not _name.startswith("__"):
@@ -132,6 +133,13 @@ class _AgentQualityMethods1:
                     "feedback": _feedback_dict(feedback_by_run.get(run.id)),
                 }
             )
+            behavior_audit = build_behavior_audit(
+                {
+                    "run": {"status": run.status},
+                    "quality_projection": projection,
+                    "steps": steps_by_run.get(run.id, []),
+                }
+            )
             evidence_links_score = float(
                 _mapping(_mapping(score.get("dimensions")).get("evidence_links")).get(
                     "score",
@@ -157,6 +165,18 @@ class _AgentQualityMethods1:
                     "evidence_links_verified": evidence_links_score >= 1.0,
                     "quality_score": score["total_score"],
                     "quality_status": score["status"],
+                    "behavior_status": behavior_audit["status"],
+                    "behavior_attention_level": behavior_audit["attention_level"],
+                    "behavior_issue_count": behavior_audit["issue_count"],
+                    "behavior_danger_count": behavior_audit["danger_count"],
+                    "behavior_warning_count": behavior_audit["warning_count"],
+                    "behavior_info_count": behavior_audit["info_count"],
+                    "behavior_risk_score": behavior_audit["risk_score"],
+                    "unread_reference_count": behavior_audit["unread_reference_count"],
+                    "unread_document_count": behavior_audit["unread_document_count"],
+                    "unread_article_count": behavior_audit["unread_article_count"],
+                    "content_read_call_count": behavior_audit["content_read_call_count"],
+                    "failed_tool_count": behavior_audit["failed_tool_count"],
                     "feedback": _feedback_dict(feedback_by_run.get(run.id)),
                     "tool_call_count": int(run.tool_call_count or 0),
                     "provider_call_count": int(run.provider_call_count or 0),
@@ -316,7 +336,10 @@ class _AgentQualityMethods1:
                 ],
                 "feedback": _feedback_dict(feedback),
             }
-            return redact_agent_trace(snapshot)
+            redacted = redact_agent_trace(snapshot)
+            if isinstance(redacted, dict):
+                redacted["behavior_audit"] = build_behavior_audit(redacted)
+            return redacted
 
 
 __all__ = ["_AgentQualityMethods1"]

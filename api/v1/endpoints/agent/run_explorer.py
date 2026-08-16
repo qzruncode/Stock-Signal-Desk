@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+
 from fastapi import Depends, HTTPException, Query, Request
 
 from api.deps import get_database_manager
 from api.v1.endpoints.agent import router
 from src.agent.evaluation import score_agent_run_snapshot
 from src.storage import DatabaseManager
+from src.tools.web_source_tools import read_web_http
 
 
 def _summary_snapshot(snapshot: dict) -> dict:
@@ -97,4 +101,80 @@ def get_agent_run_explorer_detail(
     return {
         "snapshot": snapshot,
         "score": score_agent_run_snapshot(snapshot),
+    }
+
+
+@router.post("/agent/runs/{run_id}/audit/sample")
+def sample_agent_run_sources(
+    run_id: str,
+    request: Request,
+    limit: int = Query(3, ge=1, le=3),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    """Bounded, read-only source sampling for developer-side quality checks."""
+    tenant_id, owner_id = _owner_scope(request)
+    snapshot = db_manager.get_agent_run_quality_snapshot(
+        run_id,
+        tenant_id=tenant_id,
+        owner_id=owner_id,
+        include_evidence_payloads=False,
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Agent 运行不存在")
+    audit = snapshot.get("behavior_audit") or {}
+    sampling = audit.get("sampling") if isinstance(audit, dict) else {}
+    targets = [
+        item
+        for item in (sampling.get("targets") if isinstance(sampling, dict) else [])
+        if isinstance(item, dict) and str(item.get("url") or "").startswith(("http://", "https://"))
+    ][:limit]
+
+    def sample(target: dict) -> dict:
+        url = str(target["url"])
+        try:
+            result = read_web_http(url=url, format="text", timeout=12)
+            content = str(result.get("content") or "")
+            success = result.get("success") is True and bool(content.strip())
+            return {
+                "url": url,
+                "kind": target.get("kind"),
+                "success": success,
+                "status": "readable" if success else "unreadable",
+                "final_url": result.get("final_url") or url,
+                "content_type": result.get("content_type"),
+                "extraction_method": result.get("extraction_method"),
+                "content_length": len(content),
+                "content_preview": content[:800] if content else None,
+                "errors": list(result.get("errors") or []),
+                "warnings": list(result.get("warnings") or []),
+            }
+        except Exception as exc:  # pragma: no cover - provider/network dependent
+            return {
+                "url": url,
+                "kind": target.get("kind"),
+                "success": False,
+                "status": "unreadable",
+                "final_url": url,
+                "content_type": None,
+                "extraction_method": None,
+                "content_length": 0,
+                "content_preview": None,
+                "errors": [f"{type(exc).__name__}: {exc}"],
+                "warnings": [],
+            }
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max(1, min(len(targets), 3))) as executor:
+        futures = [executor.submit(sample, target) for target in targets]
+        for future in as_completed(futures):
+            results.append(future.result())
+    results.sort(key=lambda item: str(item.get("url") or ""))
+    return {
+        "run_id": run_id,
+        "mode": "system_sample",
+        "sampled_at": datetime.now().astimezone().isoformat(),
+        "sample_limit": limit,
+        "sampled_count": len(results),
+        "items": results,
+        "note": "这是系统事后抽检，不代表模型在原分析过程中阅读过这些来源。",
     }

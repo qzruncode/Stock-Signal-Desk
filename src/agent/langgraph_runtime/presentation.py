@@ -344,6 +344,25 @@ def project_tool_result_for_timeline(
         "result_items": items,
         "reference_links": links[:16],
     }
+    access = result.get("content_access") or result.get("retrieval_audit")
+    if isinstance(access, Mapping):
+        compact_access: dict[str, Any] = {}
+        for key in (
+            "mode",
+            "content_read",
+            "content_extracted",
+            "content_read_required",
+            "reference_link_count",
+            "content_length",
+            "extraction_method",
+            "requested_url",
+            "final_url",
+            "note",
+        ):
+            if key in access and access[key] not in (None, ""):
+                compact_access[key] = access[key]
+        if compact_access:
+            projected["content_access"] = compact_access
     if result_count is not None:
         projected["result_count"] = result_count
     if omitted:

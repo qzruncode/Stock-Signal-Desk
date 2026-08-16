@@ -101,7 +101,13 @@ def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
                 extraction_method="direct_http_attachment",
             )
 
-        extension = _document_extension(final_url, mime)
+        content_disposition = response.headers.get("content-disposition", "")
+        extension = _document_extension(
+            final_url,
+            mime,
+            body=body,
+            content_disposition=content_disposition,
+        )
         if extension or mime in _DOCUMENT_MIMES:
             if not extension:
                 raise ValueError(f"无法识别文档格式: {mime}")
@@ -117,6 +123,7 @@ def _http_fetch(url: str, fmt: str, timeout: int) -> dict[str, Any]:
                 final_url=final_url,
                 title=title,
                 content_type=content_type,
+                document_extension=extension,
                 extraction_method=method,
                 quality_warning=_quality_warning(content, fmt),
             )
@@ -173,6 +180,10 @@ def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict
     provider = "patchright" if browser else "scrapling"
     started = time.perf_counter()
     try:
+        raw: str | bytes = ""
+        document_body: bytes | None = None
+        content_type = ""
+        content_disposition = ""
         if browser:
             from patchright.sync_api import TimeoutError as PatchrightTimeoutError
             from patchright.sync_api import sync_playwright
@@ -200,7 +211,22 @@ def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict
                         route.continue_()
 
                 page.route("**/*", handle_route)
-                page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                response = page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+                response_headers = getattr(response, "headers", {}) or {}
+                content_type = str(response_headers.get("content-type") or "")
+                content_disposition = str(response_headers.get("content-disposition") or "")
+                candidate_extension = _document_extension(
+                    url,
+                    content_type.split(";", 1)[0].strip().lower(),
+                    content_disposition=content_disposition,
+                )
+                if candidate_extension and response is not None:
+                    try:
+                        response_body = response.body()
+                    except Exception:
+                        response_body = None
+                    if isinstance(response_body, bytes):
+                        document_body = response_body
                 try:
                     page.wait_for_load_state("networkidle", timeout=min(10_000, timeout * 1000))
                 except PatchrightTimeoutError:
@@ -226,15 +252,62 @@ def _scrapling_fetch(url: str, fmt: str, timeout: int, *, browser: bool) -> dict
             status = int(getattr(page, "status", None) or getattr(page, "status_code", None) or 200)
             if status >= 400:
                 raise ValueError(f"HTTP {status}")
+            response_headers = getattr(page, "headers", {}) or getattr(page, "response_headers", {}) or {}
+            content_type = str(response_headers.get("content-type") or "")
+            content_disposition = str(response_headers.get("content-disposition") or "")
             raw = getattr(page, "body", None) or getattr(page, "text", None)
             if isinstance(raw, bytes):
-                raw = _decode_text(raw, "utf-8")
+                document_body = raw
             if not raw and hasattr(page, "get"):
                 raw = page.get()
-            raw = str(raw or "")
+            if isinstance(raw, bytes):
+                document_body = raw
             final_url = str(getattr(page, "url", None) or url)
             rendered_text = None
         _validate_public_url(final_url)
+        extension = _document_extension(
+            final_url,
+            content_type.split(";", 1)[0].strip().lower(),
+            body=document_body or b"",
+            content_disposition=content_disposition,
+        )
+        if extension:
+            if not document_body:
+                return _timed_result(
+                    provider,
+                    started,
+                    success=False,
+                    skipped=False,
+                    error="检测到文档响应，但未取得文档二进制内容",
+                    failure_kind="content",
+                    final_url=final_url,
+                    content_type=content_type or "application/octet-stream",
+                    document_extension=extension,
+                )
+            content, extraction_method = _convert_document(
+                document_body,
+                extension,
+                fmt,
+                final_url,
+            )
+            return _timed_result(
+                provider,
+                started,
+                success=True,
+                skipped=False,
+                error=None,
+                content=content,
+                attachments=None,
+                final_url=final_url,
+                title=f"{final_url} ({content_type or extension})",
+                content_type=content_type or "application/octet-stream",
+                document_extension=extension,
+                extraction_method=f"{provider}+{extraction_method}",
+                quality_warning=_quality_warning(content, fmt),
+            )
+        if isinstance(raw, bytes):
+            raw = _decode_text(raw, "utf-8")
+        raw = str(raw or "")
         return _html_result(
             provider,
             started,
@@ -363,6 +436,20 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
 
     def run(candidate: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         current = candidate()
+        unusable_document = _unusable_document_reason(
+            str(current.get("content") or ""),
+            content_type=str(current.get("content_type") or ""),
+            document_extension=current.get("document_extension"),
+            extraction_method=str(current.get("extraction_method") or ""),
+        )
+        if current.get("success") is True and unusable_document:
+            current = {
+                **current,
+                "success": False,
+                "error": unusable_document,
+                "failure_kind": "content",
+                "content": "",
+            }
         attempts.append(_attempt_view(current))
         return current
 
@@ -432,13 +519,17 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
             "final_url": url,
             "format": fmt,
             "content_type": "",
+            "document_extension": None,
             "title": "",
             "content": "",
             "attachments": None,
             "success": False,
             "provider": "none",
             "attempts": attempts,
-            "data_time": now,
+            "retrieved_at": now,
+            "data_time": None,
+            "data_time_provenance": "unavailable",
+            "data_time_note": "网页读取失败；抓取完成时间不作为数据时间。",
             "content_time": None,
             "fallback_used": False,
             "is_stale": None,
@@ -456,13 +547,22 @@ def fetch_url(url: str, format: str = "markdown", timeout: int | None = None) ->
         "final_url": result.get("final_url") or url,
         "format": fmt,
         "content_type": result.get("content_type") or "",
+        "document_extension": result.get("document_extension"),
         "title": result.get("title") or "",
         "content": result.get("content") or "",
         "attachments": result.get("attachments"),
         "success": True,
+        "partial": bool(result.get("partial") or result.get("_truncated")),
         "provider": provider,
         "attempts": attempts,
-        "data_time": now,
+        "retrieved_at": now,
+        "data_time": result.get("content_time"),
+        "data_time_provenance": "source" if result.get("content_time") else "unavailable",
+        "data_time_note": (
+            None
+            if result.get("content_time")
+            else "网页未提供可识别的发布日期或更新时间；抓取完成时间不作为数据时间。"
+        ),
         "content_time": result.get("content_time"),
         "fallback_used": provider != "http",
         "is_stale": None,

@@ -148,3 +148,52 @@ def test_webfetch_open_http_contract_parses_pdf_instead_of_decoding_binary() -> 
     assert result["success"] is True
     assert result["content"] == "# 年报\n\n正文"
     assert result["extraction_method"] == "markitdown"
+
+
+@pytest.mark.parametrize(
+    ("url", "headers", "body"),
+    [
+        (
+            "https://example.com/download?id=report-1",
+            {"content-type": "application/octet-stream"},
+            b"%PDF-1.7 hidden filename",
+        ),
+        (
+            "https://example.com/download?id=report-2",
+            {
+                "content-type": "application/octet-stream",
+                "content-disposition": 'attachment; filename="report.pdf"',
+            },
+            b"not a real PDF body for this routing test",
+        ),
+    ],
+)
+def test_webfetch_detects_pdf_downloads_without_a_pdf_url_suffix(
+    url: str,
+    headers: dict[str, str],
+    body: bytes,
+) -> None:
+    pdf_response = Mock(
+        status_code=200,
+        headers=headers,
+        content=body,
+        encoding=None,
+        url=url,
+    )
+    pdf_response.raise_for_status.return_value = None
+    client = Mock()
+    client.get.return_value = pdf_response
+    context = Mock()
+    context.__enter__ = Mock(return_value=client)
+    context.__exit__ = Mock(return_value=False)
+
+    with (
+        patch("src.tools.webfetch._validate_public_url"),
+        patch("src.tools.webfetch.httpx.Client", return_value=context),
+        patch("src.tools.webfetch._convert_document", return_value=("# 研报正文", "markitdown")) as convert,
+    ):
+        result = _http_fetch(url, "markdown", 30)
+
+    assert result["success"] is True
+    assert result["document_extension"] == ".pdf"
+    convert.assert_called_once_with(body, ".pdf", "markdown", url)

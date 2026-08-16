@@ -27,6 +27,7 @@ from src.tools.rss_route_tools import (
 from src.tools.rss_sources import RSS_SOURCE_DEFINITIONS, RssSourceDefinition
 from src.tools.technical_indicator_source_tools import calculate_indicator as _calculate_indicator
 from src.tools.web_source_tools import (
+    read_web_auto,
     read_web_firecrawl,
     read_web_http,
     read_web_patchright,
@@ -165,6 +166,11 @@ def list_rss_source_catalog(
 
 
 QUOTE_SOURCE_CATALOG = (
+    {
+        "id": "auto",
+        "name": "自动实时行情",
+        "purpose": "交易时段多源故障切换；非交易时段优先使用最近交易日快照",
+    },
     {"id": "eastmoney_push", "name": "东方财富 Push 实时行情", "purpose": "A 股单证券实时行情"},
     {"id": "sina", "name": "新浪财经实时行情", "purpose": "A 股单证券实时行情"},
     {"id": "tencent", "name": "腾讯财经实时行情", "purpose": "A 股单证券实时行情"},
@@ -172,11 +178,16 @@ QUOTE_SOURCE_CATALOG = (
 )
 
 
-def read_realtime_quote(source_id: str, symbol: str) -> dict[str, Any]:
-    """Read one source's single-security quote; no cache or fallback provider."""
-    if str(source_id or "").strip() not in {item["id"] for item in QUOTE_SOURCE_CATALOG}:
+def read_realtime_quote(symbol: str, source_id: str = "auto") -> dict[str, Any]:
+    """Read one A-share quote, preferring the selected source or auto gateway."""
+    normalized_source = str(source_id or "auto").strip() or "auto"
+    if normalized_source not in {item["id"] for item in QUOTE_SOURCE_CATALOG}:
         raise ValueError(f"未知实时行情 source_id: {source_id}")
-    return _read_quote_source(str(symbol), str(source_id))
+    if normalized_source == "auto":
+        from src.tools.realtime_quote_source_tools import _read_auto_source
+
+        return _read_auto_source(str(symbol))
+    return _read_quote_source(str(symbol), normalized_source)
 
 
 KLINE_SOURCE_CATALOG = (
@@ -318,12 +329,14 @@ def search_web_source(
 
 
 WEB_READ_SOURCE_CATALOG = (
+    {"id": "auto", "name": "自动网页读取", "purpose": "按页面类型和失败情况自动尝试多个读取器"},
     {"id": "http", "name": "标准 HTTP", "purpose": "公开 URL 直接读取"},
     {"id": "scrapling", "name": "Scrapling", "purpose": "公开 URL HTTP 渲染读取"},
     {"id": "patchright", "name": "Patchright", "purpose": "公开 URL JavaScript 浏览器渲染读取"},
     {"id": "firecrawl", "name": "Firecrawl", "purpose": "公开 URL 抓取"},
 )
 _WEB_READERS = {
+    "auto": read_web_auto,
     "http": read_web_http,
     "scrapling": read_web_scrapling,
     "patchright": read_web_patchright,
@@ -332,12 +345,12 @@ _WEB_READERS = {
 
 
 def read_web_source(
-    source_id: str,
-    url: str,
+    source_id: str = "auto",
+    url: str = "",
     format: str = "markdown",
     timeout: int | None = None,
 ) -> dict[str, Any]:
-    """Read one explicit public-web source, without provider fallback."""
+    """Read one public URL, using automatic fallback unless a provider is explicit."""
     reader = _WEB_READERS.get(str(source_id or "").strip())
     if reader is None:
         raise ValueError(f"未知网页读取 source_id: {source_id}")
@@ -388,13 +401,22 @@ TOOLS = (
     ),
     ToolSpec(
         name="read_realtime_quote",
-        description="读取一个明确指定来源的一只 A 股实时行情；不改查其他来源。",
+        description=(
+            "读取一只 A 股行情；默认使用 auto，交易时段自动进行多源故障切换，"
+            "非交易时段优先返回最近交易日快照并明确标注，不把快照当作当前实时成交。"
+            "只有排查单一 provider 时才显式指定 eastmoney_push、sina、tencent 或 xueqiu。"
+        ),
         parameters=object_schema(
             {
-                "source_id": {**_SOURCE_ID, "enum": _source_enum(QUOTE_SOURCE_CATALOG)},
+                "source_id": {
+                    **_SOURCE_ID,
+                    "enum": _source_enum(QUOTE_SOURCE_CATALOG),
+                    "default": "auto",
+                    "description": "通常使用 auto；仅在排查单一来源时选择其他 source_id",
+                },
                 "symbol": {"type": "string", "description": "A 股代码或名称"},
             },
-            ["source_id", "symbol"],
+            ["symbol"],
         ),
         executor=read_realtime_quote,
         category="source_read",
@@ -489,15 +511,25 @@ TOOLS = (
     ),
     ToolSpec(
         name="read_web_source",
-        description="通过一个明确指定的公开网页读取来源读取 URL；失败时不跨来源兜底。",
+        description=(
+            "读取一个公开 URL 并提取正文；默认 source_id=auto，"
+            "会按页面类型和失败情况自动尝试 HTTP、Scrapling、Patchright、Firecrawl。"
+            "如需排查或强制使用单一来源，可显式指定 source_id；"
+            "优先读取前置 reference-only 工具返回的 URL。"
+        ),
         parameters=object_schema(
             {
-                "source_id": {**_SOURCE_ID, "enum": _source_enum(WEB_READ_SOURCE_CATALOG)},
+                "source_id": {
+                    **_SOURCE_ID,
+                    "enum": _source_enum(WEB_READ_SOURCE_CATALOG),
+                    "default": "auto",
+                    "description": "通常使用 auto；仅在需要指定读取方式时选择其他 source_id",
+                },
                 "url": {"type": "string", "description": "公开 http(s) URL"},
                 "format": {"type": "string", "enum": ["markdown", "text", "html"], "default": "markdown"},
                 "timeout": {"type": "integer", "minimum": 5, "maximum": 120},
             },
-            ["source_id", "url"],
+            ["url"],
         ),
         executor=read_web_source,
         category="source_read",

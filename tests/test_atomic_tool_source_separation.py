@@ -5,9 +5,13 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.tools.get_financials import read_core_financial_indicators_ths
 from src.tools.get_index_data import read_index_daily_history_sina, read_index_quote_sina
-from src.tools.get_stock_info import read_stock_capital_snapshot_eastmoney
+from src.tools.get_stock_info import (
+    _fetch_live_capital_fallback,
+    read_stock_capital_snapshot_eastmoney,
+)
 from src.tools.get_stock_capital_flow import (
     read_stock_capital_flow_history_eastmoney,
     read_stock_capital_flow_quote_eastmoney,
@@ -180,6 +184,83 @@ def test_stock_capital_snapshot_never_uses_fetch_time_as_quote_time() -> None:
     assert result["data_time_provenance"] == "unavailable"
     assert "quote_time" in result["data_time_note"]
     assert result["freshness_unknown"] is True
+
+
+def test_live_capital_fallback_uses_tencent_without_cache_and_derives_shares() -> None:
+    quote = UnifiedRealtimeQuote(
+        code="603529",
+        name="爱玛科技",
+        source=RealtimeSource.AKSHARE_TENCENT,
+        trade_time="2026-08-14T15:00:00+08:00",
+        price=20.0,
+        total_mv=10_000_000_000.0,
+        circ_mv=8_000_000_000.0,
+    )
+    with (
+        patch(
+            "data_provider.fetchers.realtime._get_stock_realtime_quote_em_push",
+            return_value=None,
+        ) as eastmoney_push,
+        patch(
+            "data_provider.fetchers.realtime._get_stock_realtime_quote_tencent",
+            return_value=quote,
+        ) as tencent,
+        patch(
+            "data_provider.fetchers.realtime._get_stock_realtime_quote_sina",
+        ) as sina,
+    ):
+        result = _fetch_live_capital_fallback("603529")
+
+    eastmoney_push.assert_called_once_with("603529")
+    tencent.assert_called_once_with("603529")
+    sina.assert_not_called()
+    assert result["_source_id"] == "tencent"
+    assert result["_source_attempts"][-1]["cached"] is False
+    assert result["total_shares"] == 500_000_000.0
+    assert result["circulating_shares"] == 400_000_000.0
+
+
+def test_stock_capital_snapshot_falls_back_to_live_source_not_old_cache() -> None:
+    fallback = {
+        "symbol": "603529",
+        "market_code": "sh",
+        "short_name": "爱玛科技",
+        "latest_price": 20.0,
+        "total_shares": 500_000_000.0,
+        "circulating_shares": 400_000_000.0,
+        "total_market_cap": 10_000_000_000.0,
+        "circulating_market_cap": 8_000_000_000.0,
+        "quote_time": "2026-08-14T15:00:00+08:00",
+        "_source_id": "tencent",
+        "_source_label": "腾讯财经实时行情",
+        "_source_attempts": [
+            {"source_id": "tencent", "source": "腾讯财经实时行情", "success": True, "cached": False}
+        ],
+        "_shares_inferred": True,
+    }
+    with (
+        patch(
+            "src.tools.get_stock_info._fetch_eastmoney_capital",
+            side_effect=RuntimeError("ConnectError: SSL EOF"),
+        ) as eastmoney,
+        patch(
+            "src.tools.get_stock_info._fetch_live_capital_fallback",
+            return_value=fallback,
+        ) as live_fallback,
+    ):
+        result = read_stock_capital_snapshot_eastmoney("603529", use_cache=False)
+
+    eastmoney.assert_called_once_with("603529")
+    live_fallback.assert_called_once_with("603529")
+    assert result["success"] is True
+    assert result["partial"] is True
+    assert result["fallback_used"] is True
+    assert result["fallback_provider"] == "tencent"
+    assert result["source"] == "腾讯财经实时行情"
+    assert result["_cached"] is False
+    assert result["data_time"] == "2026-08-14T15:00:00+08:00"
+    assert "SSL EOF" in result["errors"][0]
+    assert any("未使用历史缓存" in warning for warning in result["warnings"])
 
 
 def test_inferred_market_breadth_time_is_not_treated_as_source_time() -> None:

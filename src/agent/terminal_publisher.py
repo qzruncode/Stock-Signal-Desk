@@ -14,6 +14,7 @@ from src.agent.langgraph_runtime.presentation import (
     project_arguments_for_timeline,
     project_tool_result_for_timeline,
 )
+from src.agent.behavior_audit import describe_tool_access, describe_tool_quality
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -95,8 +96,20 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     text_limit=800,
                 ),
                 "data_time": _short_text(item.get("data_time"), 160) or None,
+                "data_time_provenance": _short_text(item.get("data_time_provenance"), 80) or None,
+                "data_time_applicable": raw_result.get("data_time_applicable", True),
                 "is_stale": item.get("is_stale"),
                 "freshness_unknown": bool(item.get("freshness_unknown")),
+                "partial_result": bool(item.get("partial")),
+                "fallback_used": bool(item.get("fallback_used") or raw_result.get("fallback_used")),
+                "fallback_provider": _short_text(item.get("fallback_provider") or raw_result.get("fallback_provider"), 160) or None,
+                "source_scope": _short_text(item.get("source_scope"), 240) or None,
+                "source_origin": _short_text(item.get("source_origin"), 240) or None,
+                "warnings": _short_list(
+                    item.get("warnings") or raw_result.get("warnings"),
+                    item_limit=8,
+                    text_limit=800,
+                ),
                 # These are provenance identifiers and links, not a source count.
                 "source_refs": source_refs,
                 "source_labels": _short_list(
@@ -121,6 +134,14 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     display_result.get("reference_links"),
                     item_limit=16,
                     text_limit=1_000,
+                ),
+                "content_access": describe_tool_access(
+                    _short_text(item.get("tool_name"), 128),
+                    item,
+                ),
+                "data_quality": describe_tool_quality(
+                    _short_text(item.get("tool_name"), 128),
+                    item,
                 ),
             }
         )
@@ -203,6 +224,11 @@ def _execution_trace(
             "tool_call_limit": int(state.get("tool_call_limit") or 0),
             "evidence_repair_count": int(state.get("evidence_repair_count") or 0),
             "evidence_repair_limit": int(state.get("evidence_repair_limit") or 0),
+            "content_access_repair_count": int(state.get("content_access_repair_count") or 0),
+            "content_access_repair_limit": int(state.get("content_access_repair_limit") or 0),
+            "content_access_target_count": len(state.get("content_access_targets") or []),
+            "required_content_read_count": len(state.get("required_content_reads") or []),
+            "pending_content_read_count": len(state.get("pending_content_reads") or []),
             "work_budget_exhausted": bool(state.get("work_budget_exhausted")),
             "work_budget_detail": _short_text(state.get("work_budget_detail"), 500) or None,
         },

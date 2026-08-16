@@ -46,6 +46,8 @@ _SOURCES: dict[str, tuple[str, str, _SourceFetcher]] = {
     ),
 }
 
+_AUTO_SOURCE_ID = "auto"
+
 
 def _resolve_a_share_symbol(symbol: str) -> str:
     code = resolve_local_symbol(symbol)
@@ -151,4 +153,112 @@ def _read_source(symbol: str, source_key: str) -> dict[str, Any]:
     }
 
 
-__all__ = ["_read_source"]
+def _read_auto_source(symbol: str) -> dict[str, Any]:
+    """Read a quote through the trading-session-aware multi-source gateway."""
+    code = _resolve_a_share_symbol(symbol)
+    from src.tools.get_realtime_quotes import get_realtime_quotes
+
+    result = dict(get_realtime_quotes([code]))
+    if result.get("success") is not True:
+        result = _fallback_to_completed_close(code, result)
+    result.update(
+        {
+            "symbol": code,
+            "source_scope": "realtime_quote_auto",
+            "requested_symbols": [code],
+            "fallback_used": bool(result.get("fallback_used")),
+        }
+    )
+    result.setdefault("partial", bool(result.get("success") and result.get("errors")))
+    result.setdefault("warnings", [])
+    result.setdefault("errors", [])
+    return result
+
+
+def _fallback_to_completed_close(symbol: str, failed_result: dict[str, Any]) -> dict[str, Any]:
+    """Use the latest completed daily bar when no quote provider has a price."""
+    try:
+        from src.tools.kline_gateway import read_reliable_kline
+        from src.tools.kline_source_tools import _SOURCES as kline_sources
+
+        kline = read_reliable_kline(
+            symbol,
+            preferred_source="eastmoney",
+            count=20,
+            sources=kline_sources,
+            allow_fallback=True,
+        )
+    except Exception:
+        return failed_result
+    records = list(kline.get("data") or [])
+    if not kline.get("success") or not records:
+        return failed_result
+    latest = records[-1]
+    close = latest.get("close")
+    try:
+        close_value = float(close)
+    except (TypeError, ValueError):
+        return failed_result
+    if close_value <= 0:
+        return failed_result
+    previous_close = records[-2].get("close") if len(records) > 1 else None
+    item: dict[str, Any] = {
+        "code": symbol,
+        "name": "",
+        "source": str(kline.get("source") or "最近完成交易日 K 线收盘快照"),
+        "trade_time": str(latest.get("date") or "") or None,
+        "price": close_value,
+        "quote_mode": "latest_completed_bar",
+        "quote_mode_label": "非交易时段的最近完成交易日收盘快照，不是当前时刻实时成交",
+        "_cached": bool(kline.get("_cached")),
+        "_fetched_at": kline.get("_fetched_at"),
+    }
+    if previous_close not in (None, ""):
+        try:
+            previous_value = float(previous_close)
+        except (TypeError, ValueError):
+            previous_value = None
+        if previous_value and previous_value > 0:
+            item["pre_close"] = previous_value
+            item["change_pct"] = round((close_value / previous_value - 1) * 100, 4)
+    for source_key, target_key in (("volume", "volume"), ("amount", "amount"), ("turnover_rate", "turnover_rate"), ("pct_chg", "change_pct")):
+        if target_key not in item and latest.get(source_key) not in (None, ""):
+            item[target_key] = latest.get(source_key)
+    data_time = str(kline.get("data_time") or latest.get("date") or "").strip() or None
+    prior_warnings = [str(value) for value in list(failed_result.get("warnings") or []) if str(value).strip()]
+    prior_errors = [str(value) for value in list(failed_result.get("errors") or []) if str(value).strip()]
+    return {
+        **failed_result,
+        "success": True,
+        "partial": False,
+        "items": [item],
+        "total": 1,
+        "data_time": data_time,
+        "data_time_provenance": "source" if data_time else "unavailable",
+        "data_time_note": (
+            f"实时行情未返回有效报价，已降级为最近完成交易日 {data_time} 的收盘价；不是当前时刻实时成交。"
+            if data_time
+            else "实时行情未返回有效报价，且最近完成交易日收盘数据没有有效日期。"
+        ),
+        "is_stale": kline.get("is_stale") if data_time else None,
+        "freshness_unknown": data_time is None,
+        "quote_mode": "latest_completed_bar",
+        "quote_mode_label": "非交易时段的最近完成交易日收盘快照，不是当前时刻实时成交",
+        "fallback_used": True,
+        "source": item["source"],
+        "source_scope": "completed_daily_close_snapshot",
+        "source_attempts": list(kline.get("source_attempts") or []),
+        "missing_symbols": [],
+        "errors": [],
+        "warnings": [
+            *prior_warnings,
+            *(prior_errors[:3]),
+            "实时行情 provider 未返回有效报价，已使用最近完成交易日收盘快照。",
+            *[str(value) for value in list(kline.get("warnings") or []) if str(value).strip()],
+        ],
+        "_cached": bool(kline.get("_cached")),
+        "_fetched_at": kline.get("_fetched_at"),
+    }
+
+
+__all__ = ["_read_source", "_read_auto_source"]

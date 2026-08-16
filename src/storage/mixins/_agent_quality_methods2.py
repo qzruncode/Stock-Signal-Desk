@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import src.storage.mixins.agent_quality as _base
+from src.agent.behavior_audit import build_behavior_audit
 
 for _name, _value in vars(_base).items():
     if not _name.startswith("__"):
@@ -373,6 +374,7 @@ class _AgentQualityMethods2:
             feedback.run_id: feedback for feedback in feedback_rows
         }
         scores: list[dict[str, Any]] = []
+        behavior_audits: list[dict[str, Any]] = []
         for run in runs:
             trace = trace_by_run.get(run.id)
             snapshot = {
@@ -402,6 +404,7 @@ class _AgentQualityMethods2:
                 ),
             }
             scores.append(score_agent_run_snapshot(snapshot))
+            behavior_audits.append(build_behavior_audit(snapshot))
 
         dimension_totals: Counter[str] = Counter()
         for score in scores:
@@ -411,6 +414,11 @@ class _AgentQualityMethods2:
             str(violation.get("code") or "unknown")
             for score in scores
             for violation in score["violations"]
+        )
+        behavior_issue_counts = Counter(
+            str(finding.get("code") or "unknown")
+            for audit in behavior_audits
+            for finding in audit["findings"]
         )
         positive = sum(row.rating == 1 for row in feedback_rows)
         passed_evaluations = sum(
@@ -457,6 +465,16 @@ class _AgentQualityMethods2:
                 if scores
                 else {},
                 "violations": dict(violation_counts),
+            },
+            "behavior": {
+                "audited_runs": len(behavior_audits),
+                "clear_runs": sum(audit["status"] == "clear" for audit in behavior_audits),
+                "warning_runs": sum(audit["status"] == "warning" for audit in behavior_audits),
+                "danger_runs": sum(audit["status"] == "danger" for audit in behavior_audits),
+                "info_runs": sum(audit["status"] == "info" for audit in behavior_audits),
+                "unread_reference_count": sum(audit["unread_reference_count"] for audit in behavior_audits),
+                "content_read_call_count": sum(audit["content_read_call_count"] for audit in behavior_audits),
+                "issues": dict(behavior_issue_counts),
             },
             "feedback": {
                 "total": len(feedback_rows),

@@ -87,14 +87,24 @@ class AgentState(LangChainAgentState, total=False):
     tool_call_count: Annotated[int, operator.add]
     model_turn_count: Annotated[int, operator.add]
     evidence_repair_count: Annotated[int, operator.add]
+    content_access_repair_count: Annotated[int, operator.add]
     tool_call_limit: int
     evidence_repair_limit: int
+    content_access_repair_limit: int
     work_budget_exhausted: bool
     work_budget_detail: str
 
     # Feedback injected into the next model turn when deterministic evidence
     # checks find a repairable issue.
     evidence_feedback: str
+    # Complete reference candidates plus the subset of model-selected URLs
+    # whose source body still needs a successful read.
+    content_access_targets: list[dict[str, Any]]
+    # Links belonging to reference-only tool calls cited by the candidate
+    # answer; this is scoped per cited tool action, not to the whole run.
+    required_content_reads: list[dict[str, Any]]
+    pending_content_reads: list[dict[str, Any]]
+    content_access_feedback: str
     pending_interrupt: dict[str, Any] | None
     answer_draft: str
     answer_final: str
@@ -122,11 +132,17 @@ class AgentGraphInput(TypedDict, total=False):
     tool_call_count: int
     model_turn_count: int
     evidence_repair_count: int
+    content_access_repair_count: int
     tool_call_limit: int
     evidence_repair_limit: int
+    content_access_repair_limit: int
     work_budget_exhausted: bool
     work_budget_detail: str
     evidence_feedback: str
+    content_access_targets: list[dict[str, Any]]
+    required_content_reads: list[dict[str, Any]]
+    pending_content_reads: list[dict[str, Any]]
+    content_access_feedback: str
     pending_interrupt: dict[str, Any] | None
     answer_draft: str
     answer_final: str
