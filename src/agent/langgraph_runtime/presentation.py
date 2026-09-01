@@ -115,7 +115,7 @@ def _argument_value(
     if isinstance(value, str):
         return value[:1_000]
     if depth >= 4:
-        return "[嵌套参数已折叠]"
+        return "[嵌套参数已截断]"
     if isinstance(value, Mapping):
         projected: dict[str, Any] = {}
         for raw_key, item in list(value.items())[:20]:
@@ -140,7 +140,7 @@ def _argument_value(
             for item in list(value)[:20]
         ]
         if len(value) > len(projected):
-            projected.append(f"[其余 {len(value) - len(projected)} 项已折叠]")
+            projected.append(f"[其余 {len(value) - len(projected)} 项已截断]")
         return projected
     return str(value)[:1_000]
 

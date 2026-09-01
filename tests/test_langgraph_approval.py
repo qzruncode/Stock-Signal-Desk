@@ -131,7 +131,6 @@ def test_approval_executes_exactly_once_even_if_the_resume_is_replayed() -> None
             )
             assert completed.status == "completed"
             assert len(executor.calls) == 1
-            assert executor.native_calls == []
             assert executor.calls[0]["approved"] is True
 
             replay = await _resume(

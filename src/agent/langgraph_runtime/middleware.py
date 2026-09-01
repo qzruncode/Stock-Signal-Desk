@@ -23,11 +23,11 @@ from .content_access import (
     DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT,
     build_content_access_targets,
     canonical_url,
+    cited_reference_action_ids,
     content_read_call_urls,
     required_content_access_targets,
     successful_content_read_urls,
 )
-from .evidence import project_evidence_for_model, project_tool_observations_for_model
 from .claim_evidence import build_claim_evidence_ledger
 from .events import redact_arguments
 from .executor import action_fingerprint
@@ -116,7 +116,7 @@ def _claim_evidence_for_partial_answer(
 def _bounded(value: Any, *, depth: int = 0) -> Any:
     """Make a useful ToolMessage observation without inflating the next prompt."""
     if depth >= 4:
-        return "[内容已折叠]"
+        return "[内容已截断]"
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -157,17 +157,63 @@ def _tool_result_observation(record: Mapping[str, Any], result: Mapping[str, Any
 
 def _tool_message_content(record: Mapping[str, Any], evidence: Mapping[str, Any] | None) -> str:
     result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
+    tool_name = str(record.get("tool_name") or "")
+    result_count = result.get("result_count")
+    empty_result = (
+        result_count == 0
+        or (isinstance(result.get("items"), Sequence) and not result.get("items"))
+        or (isinstance(result.get("results"), Sequence) and not result.get("results"))
+    )
+    stale = result.get("is_stale") is True or record.get("is_stale") is True
+    freshness_unknown = bool(
+        result.get("freshness_unknown")
+        or record.get("freshness_unknown")
+    )
+    failed = record.get("success") is not True or result.get("success") is False
+    fallback_recommended = bool(result.get("fallback_recommended"))
+    observation_status = (
+        "failed"
+        if failed
+        else "stale"
+        if stale
+        else "empty"
+        if empty_result
+        else "freshness_unknown"
+        if freshness_unknown
+        else "ok"
+    )
     payload = {
         "success": record.get("success") is True,
         "partial": bool(record.get("partial")),
-        "tool": str(record.get("tool_name") or ""),
+        "tool": tool_name,
         "evidence_id": str((evidence or {}).get("evidence_id") or "") or None,
         "data_time": record.get("data_time"),
         "data_time_provenance": record.get("data_time_provenance"),
+        "is_stale": record.get("is_stale", result.get("is_stale")),
+        "freshness_unknown": freshness_unknown,
+        "observation_status": observation_status,
         "source_refs": [str(item)[:500] for item in list(record.get("source_refs") or [])[:8]],
         "errors": [str(item)[:800] for item in list(record.get("errors") or [])[:6]],
         "result": _tool_result_observation(record, result),
     }
+    if failed or stale or empty_result or freshness_unknown or fallback_recommended:
+        if tool_name == "search_web_source":
+            next_action = (
+                "若用户需要最新资料，请改写查询或读取本次返回的相关 URL；"
+                "不要把本次空、失败、过期或时间未知的搜索结果表述为最新事实。"
+            )
+        elif tool_name == "read_web_source":
+            next_action = (
+                "若正文读取失败或不可用，请按错误类型重试 source_id=auto，"
+                "或换一个可访问的相关 URL；不要声称已经读取正文。"
+            )
+        else:
+            next_action = (
+                "如果用户问题要求最新外部事实，请显式调用 search_web_source(source_id=auto) 获取网页来源；"
+                "若已有相关 URL，再调用 read_web_source(source_id=auto)。"
+                "保留本次失败/空/过期观察，并禁止把它当作最新事实。"
+            )
+        payload["next_action"] = next_action
     return json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":"))
 
 
@@ -272,8 +318,8 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
     ) -> ModelResponse | ExtendedModelResponse:
         context = request.runtime.context
         state = request.state
-        evidence = project_evidence_for_model(state.get("evidence") or [])
-        observations = project_tool_observations_for_model(state.get("tool_results") or [])
+        evidence = [item for item in state.get("evidence") or [] if isinstance(item, Mapping)]
+        observations = [item for item in state.get("tool_results") or [] if isinstance(item, Mapping)]
         feedback = str(state.get("evidence_feedback") or "").strip()
         content_feedback = str(state.get("content_access_feedback") or "").strip()
         content_targets, pending_content_reads = build_content_access_targets(
@@ -282,54 +328,51 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         )
         target_urls = {canonical_url(item.get("url")) for item in content_targets}
         successful_target_reads = successful_content_read_urls(state.get("tool_results") or []) & target_urls
-        needs_content_instruction = bool(pending_content_reads) or not successful_target_reads
         conversation_context = state.get("conversation_context")
         model_turn = max(0, int(state.get("model_turn_count") or 0)) + 1
+        context.events.begin_model_turn(model_turn)
         source_catalog = context.catalog.model_context()
         base_prompt = str(state.get("system_prompt") or request.system_prompt or "").strip()
-        system_prompt = "\n\n".join(
+        prompt_parts = [
             part
             for part in (
                 base_prompt,
-                """你是一个通用、证据驱动的助手。直接围绕本轮用户问题推理，不要套用行业、股票或任何预设分析流程。工具是可选的：只有外部事实、实时数据或用户明确要求检索时才调用。\n\n本轮所有 operation schema 都已绑定到模型调用中；绑定 schema 是 operation 描述和参数的唯一权威来源。下面的紧凑 operation/source 目录只补充 effect、source_id 和来源用途，不是另一份参数 schema，也不存在隐藏的工具筛选或默认来源。source_id 必须从对应 operation 的 sources 中选择。显式 source_id 只访问该来源；如果目录提供了 auto source，则 auto 会按该来源自己的声明执行故障切换或非交易时段降级，并在结果中保留实际来源和时间口径。其他失败结果要被如实读取并自行决定是否需要换来源、改写查询或说明缺口。\n\n当用户询问分组列表时读取分组摘要；当用户询问某个分组的成员，或明确要求任务只针对某个分组时，先读取该分组。后续只在用户仍引用该分组或明确限定范围时使用它，不要把分组上下文自动套用到无关问题；分组名称不明确时先询问。\n\n将基于外部工具结果的实质性事实紧邻标注为【证据 ev_...】。表格或连续列表可以由紧随其后的来源行统一引用，建议写成“来源：…【证据 ev_...】”，不要把来源链接、标题或摘要误写成已读取正文。只能引用本轮成功返回的 evidence_id；数据日期只能使用证据中的 data_time，不能把检索时间写成数据发生时间。若证据没有可用且未过期的 data_time，不得把结果表述为“最新”“当前”“今日”或“截至某时点”，应改为说明时效无法确认或继续取证。标记为 reference_only 的工具结果只表示来源索引，不表示文章或 PDF 正文已读取。不要伪造确认字段或声称未执行的操作。""",
-                "紧凑 operation/source 目录：\n" + source_catalog,
+                """你是通用的证据驱动助手，只围绕本轮用户问题工作，不套用预设行业流程。
+
+所有 operation schema 已直接绑定到本次模型调用，是名称、参数和 source_id 的唯一权威。工具是可选的；需要外部事实、实时数据或用户明确要求检索时才调用。
+
+对需要多步取证的问题：第一次工具调用前，用一小段简洁的用户可见文字说明目标、准备做的步骤和下一步；每轮工具返回后，先简洁总结已完成的工作，再说明下一步。不要输出隐藏的 chain-of-thought，只输出可供用户理解的计划、阶段总结和行动说明。
+
+外部事实必须紧邻标注本轮成功的【证据 ev_...】；只能使用证据里的 data_time，不能把检索时间当成数据时间。没有可用 data_time 时，不要称为“最新/当前/今日”，应继续取证或明确时效未知。失败、空结果、过期结果和 freshness_unknown 都必须如实读取：若用户需要最新事实，改用 search_web_source(source_id=auto)；已有 URL 则用 read_web_source(source_id=auto)。不要把失败或过期观察当成最新事实。
+
+reference-only 结果只是标题、摘要或来源索引，不是正文。只有在确实需要文章/PDF内容时，选择相关 URL 调用 read_web_source；不要为了满足规则读取全部候选链接。没有正文时只能按索引事实表述，并明确正文未读取。表格或连续列表可由紧随其后的来源行统一引用，不要因引用位置而删除已核实内容。""",
                 (
-                    "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用，不自动限制无关问题）：\n"
+                    "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用）：\n"
                     + json.dumps(conversation_context, ensure_ascii=False, default=str)
                     if isinstance(conversation_context, Mapping)
                     else ""
                 ),
                 (
-                    "当前成功证据（原始数据留在检查点，以下为可回答的紧凑投影）：\n"
-                    + json.dumps(evidence, ensure_ascii=False, default=str)
-                    if evidence
+                    "待处理的正文读取反馈：\n" + content_feedback
+                    if content_feedback
                     else ""
                 ),
                 (
-                    "已有工具观察（失败也是观察，不代表任务失败）：\n"
-                    + json.dumps(observations, ensure_ascii=False, default=str)
-                    if observations
-                    else ""
-                ),
-                (
-                    "系统正文读取要求：\n"
-                    + (
-                        content_feedback
-                        or (
-                            "请从以下候选来源中选择与当前问题直接相关的 URL，"
-                            "调用 read_web_source（通常使用 source_id=auto）成功提取非空正文；"
-                            "如果最终答案引用了 reference-only evidence，系统会反向核对该次索引返回的全部链接，"
-                            "这些链接必须全部成功读取后才能完成。"
-                            if not pending_content_reads
-                            else "以下已选择来源尚未成功提取正文，请重试或选择合适的来源读取器。"
-                        )
+                    "可选的参考来源候选（只选择与当前问题相关的 URL，不要求全部读取）：\n"
+                    + json.dumps(
+                        [
+                            {
+                                key: item.get(key)
+                                for key in ("url", "title", "kind", "tool_name", "action_id")
+                                if item.get(key) not in (None, "")
+                            }
+                            for item in content_targets[:24]
+                        ],
+                        ensure_ascii=False,
+                        default=str,
                     )
-                    + "\n全部候选来源：\n"
-                    + json.dumps(content_targets, ensure_ascii=False, default=str)
-                    + "\n已成功读取正文的候选数量："
-                    + str(len(successful_target_reads))
-                    + "。未选择的来源只能作为链接/索引，不能声称已经阅读其正文。"
-                    if content_targets and needs_content_instruction
+                    + (f"\n其余候选数量：{len(content_targets) - 24}" if len(content_targets) > 24 else "")
+                    if content_targets and (content_feedback or pending_content_reads or not successful_target_reads)
                     else ""
                 ),
                 (
@@ -341,7 +384,8 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 ),
             )
             if part
-        )
+        ]
+        system_prompt = "\n\n".join(prompt_parts)
         context.events.stage(
             "model",
             "started",
@@ -397,6 +441,7 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 details={
                     "model_turn": model_turn,
                     "operations": operations,
+                    "progress_preview": _message_text(last)[:1_200] if _message_text(last) else None,
                 },
             )
         else:
@@ -638,6 +683,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "reason": reason,
             },
         )
+        context.events.commit_model_answer(answer + suffix)
         return {
             "content_access_targets": targets,
             "required_content_reads": required,
@@ -700,12 +746,17 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 if canonical_url(item.get("url")) not in pending_urls
             ],
         ]
+        cited_reference_actions = cited_reference_action_ids(
+            answer=answer,
+            evidence=state.get("evidence") or [],
+            tool_results=state.get("tool_results") or [],
+        )
         if not pending:
-            if successful_target_reads:
+            if successful_target_reads or required:
                 context.events.stage(
                     "content_access",
                     "completed",
-                    "最终答案引用的正文来源已完成反向读取核对，允许进入最终回答检查",
+                    "已完成模型选定正文来源的读取核对，允许进入最终回答检查",
                     details={
                         "candidate_count": len(targets),
                         "required_count": len(required),
@@ -716,22 +767,26 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     },
                 )
                 return base_update, False
+            # A reference-only result may contain many candidates.  If the
+            # answer cites it without selecting a body URL, ask the model to
+            # choose the relevant page; never manufacture an all-links read
+            # fan-out.  This keeps the body contract strict for cited claims
+            # without turning unrelated candidates into false gaps.
+            if not cited_reference_actions:
+                return base_update, False
+            feedback = (
+                "当前答案引用了 reference-only 来源，但还没有选择要核验的正文 URL。"
+                "请只选择与当前问题直接相关的 URL，调用 read_web_source（通常使用 source_id=auto）；"
+                "不要求读取未选择的候选链接。若只需来源索引，请明确按标题/摘要或索引信息表述。\n"
+                "候选来源：\n"
+                + json.dumps(targets[:24], ensure_ascii=False, default=str)
+                + (f"\n其余候选数量：{len(targets) - 24}" if len(targets) > 24 else "")
+            )
         if required_pending:
             feedback = (
-                "当前不能结束回答。最终答案引用了 reference-only evidence；"
-                "该来源索引返回的全部链接都必须先调用 read_web_source 成功提取非空正文。"
-                "以下链接尚未完成正文读取：\n"
+                "当前不能结束回答。你已选定正文来源，但该 URL 尚未成功提取非空正文。"
+                "请重试 read_web_source 或改选一个相关 URL；不要求读取未选择的候选链接。\n"
                 + json.dumps(required_pending, ensure_ascii=False, default=str)
-            )
-        elif not selected_target_reads:
-            feedback = (
-                "当前不能结束回答。reference-only 工具只提供了候选来源链接。"
-                "请从候选来源中选择与当前问题直接相关的 URL，"
-                "调用 read_web_source（通常使用 source_id=auto）成功提取非空正文；"
-                "最终答案引用 reference-only evidence 时，系统会要求该来源索引返回的全部链接均成功读取。\n"
-                "全部候选来源：\n"
-                + json.dumps(targets, ensure_ascii=False, default=str)
-                + "\n未选择的来源只能作为链接/索引，不能声称已经阅读其正文。"
             )
         else:
             feedback = (
@@ -818,27 +873,29 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         budget_detail = str(state.get("work_budget_detail") or "").strip()
 
         def _budget_partial(payload: dict[str, Any]) -> dict[str, Any]:
-            if not budget_exhausted:
-                return payload
             final_answer = str(payload.get("answer_final") or answer).rstrip()
-            suffix = (
-                "\n\n[本轮未完成全部取证："
-                + (budget_detail or "工具调用预算已用尽")
-                + "]"
-            )
-            context.events.stage(
-                "evidence",
-                "failed",
-                "工具调用预算已用尽，已保留现有证据并明确未完成的取证缺口",
-                error_code="tool_call_budget_exceeded",
-                details={"detail": budget_detail or "tool call budget exhausted"},
-            )
-            return {
-                **payload,
-                "answer_final": final_answer + suffix,
-                "status": "partial",
-                "error_code": "tool_call_budget_exceeded",
-            }
+            if budget_exhausted:
+                suffix = (
+                    "\n\n[本轮未完成全部取证："
+                    + (budget_detail or "工具调用预算已用尽")
+                    + "]"
+                )
+                final_answer += suffix
+                payload = {
+                    **payload,
+                    "answer_final": final_answer,
+                    "status": "partial",
+                    "error_code": "tool_call_budget_exceeded",
+                }
+                context.events.stage(
+                    "evidence",
+                    "failed",
+                    "工具调用预算已用尽，已保留现有证据并明确未完成的取证缺口",
+                    error_code="tool_call_budget_exceeded",
+                    details={"detail": budget_detail or "tool call budget exhausted"},
+                )
+            context.events.commit_model_answer(final_answer)
+            return payload
 
         if not factual_evidence:
             return _budget_partial(
@@ -963,7 +1020,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
 
 class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
-    """Keep native read execution and guard side effects at the app boundary."""
+    """Keep native tool dispatch and guard side effects at the app boundary."""
 
     name = "atomic_tool_execution"
 

@@ -256,15 +256,15 @@ def required_content_access_targets(
     tool_results: Sequence[Mapping[str, Any]],
     targets: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return links behind reference-only evidence cited by the answer.
+    """Return only explicitly selected body reads behind cited references.
 
-    Evidence IDs for a list/search operation represent the whole returned
-    source index, not one particular row.  If the final answer cites such an
-    ID, the runtime cannot safely infer which row was used.  It therefore
-    requires every link from that cited reference operation to have a
-    successful body read before allowing completion.  Uncited candidate rows
-    remain optional, so a search result does not force arbitrary unrelated
-    pages into the run.
+    A reference-only operation can return a list of many candidate URLs.  The
+    runtime must not turn that list into an implicit fan-out requirement: doing
+    so caused unrelated pages to become false "missing data" errors.  A URL is
+    required here only after the model explicitly selected it with
+    ``read_web_source`` and cited the reference operation that produced it.
+    Unselected candidates remain valid index metadata and are not silently
+    treated as unread failures.
     """
     cited_ids = set(_EVIDENCE_REFERENCE.findall(str(answer or "")))
     if not cited_ids:
@@ -287,9 +287,10 @@ def required_content_access_targets(
     if not cited_reference_actions:
         return []
 
-    required: list[dict[str, Any]] = []
+    selected_urls = content_read_call_urls(tool_results)
+    action_target_counts: dict[str, int] = {}
     for raw_target in targets:
-        target = dict(raw_target) if isinstance(raw_target, Mapping) else {}
+        target = raw_target if isinstance(raw_target, Mapping) else {}
         action_ids = {
             _text(target.get("action_id"), 120),
             *{
@@ -298,9 +299,62 @@ def required_content_access_targets(
                 if _text(value, 120)
             },
         }
-        if action_ids & cited_reference_actions:
+        for action_id in action_ids & cited_reference_actions:
+            action_target_counts[action_id] = action_target_counts.get(action_id, 0) + 1
+    required: list[dict[str, Any]] = []
+    for raw_target in targets:
+        target = dict(raw_target) if isinstance(raw_target, Mapping) else {}
+        target_url = canonical_url(target.get("url"))
+        action_ids = {
+            _text(target.get("action_id"), 120),
+            *{
+                _text(value, 120)
+                for value in target.get("action_ids", [])
+                if _text(value, 120)
+            },
+        }
+        cited_target_actions = action_ids & cited_reference_actions
+        if not cited_target_actions:
+            continue
+        if target_url in selected_urls:
+            required.append(target)
+            continue
+        # A single-link reference is unambiguous and can be required directly.
+        # With several links, wait for the model to choose the relevant one;
+        # never manufacture an all-links read fan-out.
+        if any(action_target_counts.get(action_id) == 1 for action_id in cited_target_actions):
             required.append(target)
     return required
+
+
+def cited_reference_action_ids(
+    *,
+    answer: str,
+    evidence: Sequence[Mapping[str, Any]],
+    tool_results: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    """Return cited reference-only action ids without imposing a read queue."""
+    cited_ids = set(_EVIDENCE_REFERENCE.findall(str(answer or "")))
+    if not cited_ids:
+        return set()
+    records_by_action = {
+        _text(record.get("action_id") or record.get("id"), 120): record
+        for raw_record in tool_results
+        if isinstance(raw_record, Mapping)
+        for record in [raw_record]
+        if _text(record.get("action_id") or record.get("id"), 120)
+    }
+    return {
+        action_id
+        for raw_evidence in evidence
+        if isinstance(raw_evidence, Mapping)
+        for evidence_id in [_text(raw_evidence.get("evidence_id") or raw_evidence.get("id"), 120)]
+        for action_id in [_text(raw_evidence.get("action_id"), 120)]
+        if evidence_id in cited_ids
+        and action_id
+        and action_id in records_by_action
+        and _reference_read_required(records_by_action[action_id])
+    }
 
 
 def build_content_access_targets(
@@ -351,6 +405,7 @@ __all__ = [
     "REFERENCE_ONLY_TOOL_KINDS",
     "build_content_access_targets",
     "canonical_url",
+    "cited_reference_action_ids",
     "content_read_call_urls",
     "required_content_access_targets",
     "reference_candidates",

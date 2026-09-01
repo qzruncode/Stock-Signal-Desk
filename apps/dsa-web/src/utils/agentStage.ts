@@ -58,7 +58,7 @@ const boundedStageValue = (
   budget: DetailBudget,
   depth = 0,
 ): unknown => {
-  if (budget.remaining <= 0 || depth >= 8) return '[详情已折叠]';
+  if (budget.remaining <= 0 || depth >= 8) return '[详情已截断]';
   if (value === null || value === undefined || typeof value === 'boolean' || typeof value === 'number') {
     budget.remaining -= 16;
     return value;
@@ -75,7 +75,7 @@ const boundedStageValue = (
       if (budget.remaining <= 0) break;
       items.push(boundedStageValue(item, budget, depth + 1));
     }
-    if (value.length > items.length) items.push(`[其余 ${value.length - items.length} 项已折叠]`);
+    if (value.length > items.length) items.push(`[其余 ${value.length - items.length} 项已截断]`);
     return items;
   }
   if (isRecord(value)) {

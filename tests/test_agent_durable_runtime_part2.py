@@ -308,6 +308,49 @@ def test_model_runtime_does_not_cancel_slow_provider_reasoning(database, monkeyp
     assert database.get_agent_run(run_id="run-model-unbounded")["provider_call_count"] == 1
     assert database.agent_runtime_metrics()["active_resource_leases"] == 0
 
+
+def test_provider_token_estimate_is_telemetry_not_a_completion_gate(database, monkeypatch) -> None:
+    conversation_id = _conversation(database, "model-accounting-only")
+    _claim(database, conversation_id, run_id="run-model-accounting-only")
+    monkeypatch.setenv("AGENT_PROVIDER_MAX_ATTEMPTS", "1")
+    monkeypatch.setenv("AGENT_MAX_ESTIMATED_TOKENS", "1")
+    monkeypatch.setenv("AGENT_MAX_ESTIMATED_COST_MICROS", "1")
+    reservation_kwargs = []
+    original_reserve = database.reserve_agent_run_budget
+
+    def reserve(*args, **kwargs):
+        reservation_kwargs.append(dict(kwargs))
+        return original_reserve(*args, **kwargs)
+
+    monkeypatch.setattr(database, "reserve_agent_run_budget", reserve)
+
+    async def completion(**_kwargs):
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    runtime = GuardedModelRuntime(
+        database=database,
+        run_id="run-model-accounting-only",
+        worker_id="worker-a",
+        model="test-model",
+        token_estimator=lambda messages, model: 10_000,
+    )
+    result = asyncio.run(
+        runtime.complete(
+            completion,
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=20,
+        )
+    )
+
+    assert result["choices"][0]["message"]["content"] == "ok"
+    assert reservation_kwargs == [{
+        "provider_calls": 1,
+        "estimated_tokens": 10_020,
+        "estimated_cost_micros": 50_100,
+    }]
+    assert database.get_agent_run(run_id="run-model-accounting-only")["estimated_token_count"] == 10_020
+
+
 def test_model_stream_close_releases_the_shared_provider_slot(
     database,
     monkeypatch,

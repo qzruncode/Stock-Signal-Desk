@@ -9,11 +9,12 @@ second, hand-written structured-output loop.
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable, Mapping
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, convert_to_openai_messages
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.language_models.chat_models import BaseChatModel, agenerate_from_stream
+from langchain_core.messages import AIMessageChunk, BaseMessage, convert_to_openai_messages
+from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import ConfigDict, Field
@@ -36,35 +37,6 @@ def _content(value: Any) -> str | list[dict[str, Any]]:
     return str(value)
 
 
-def _tool_calls(message: Any) -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-    for index, raw_call in enumerate(_field(message, "tool_calls") or []):
-        function = _field(raw_call, "function") or {}
-        name = str(_field(function, "name") or _field(raw_call, "name") or "").strip()
-        raw_arguments = _field(function, "arguments")
-        if raw_arguments is None:
-            raw_arguments = _field(raw_call, "arguments")
-        if isinstance(raw_arguments, Mapping):
-            arguments = dict(raw_arguments)
-        else:
-            try:
-                parsed = json.loads(str(raw_arguments or "{}"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                parsed = {}
-            arguments = dict(parsed) if isinstance(parsed, Mapping) else {}
-        if not name:
-            continue
-        calls.append(
-            {
-                "name": name,
-                "args": arguments,
-                "id": str(_field(raw_call, "id") or f"call_{index}"),
-                "type": "tool_call",
-            }
-        )
-    return calls
-
-
 def _response_metadata(response: Any) -> dict[str, Any]:
     choice = next(iter(_field(response, "choices") or []), None)
     usage = _field(response, "usage") or {}
@@ -77,6 +49,73 @@ def _response_metadata(response: Any) -> dict[str, Any]:
             if _field(usage, key) is not None
         },
     }
+
+
+def _tool_call_chunks(value: Any) -> list[dict[str, Any]]:
+    """Translate provider tool-call deltas to LangChain's standard chunks."""
+    chunks: list[dict[str, Any]] = []
+    for position, raw_call in enumerate(value or []):
+        function = _field(raw_call, "function") or {}
+        name = _field(function, "name") or _field(raw_call, "name")
+        arguments = _field(function, "arguments")
+        if arguments is None:
+            arguments = _field(raw_call, "arguments")
+        if isinstance(arguments, Mapping):
+            arguments = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+        raw_index = _field(raw_call, "index")
+        try:
+            index = int(raw_index) if raw_index is not None else position
+        except (TypeError, ValueError):
+            index = position
+        chunks.append(
+            {
+                "name": str(name) if name else None,
+                "args": str(arguments) if arguments is not None else "",
+                "id": str(_field(raw_call, "id")) if _field(raw_call, "id") else None,
+                "index": index,
+            }
+        )
+    return chunks
+
+
+def _generation_chunk(response: Any) -> ChatGenerationChunk:
+    """Map one LiteLLM/OpenAI stream item to a native LangChain chunk.
+
+    LiteLLM returns OpenAI-compatible objects, but different providers expose
+    them as dictionaries or pydantic objects and may put reasoning in either
+    ``reasoning_content`` or ``reasoning``.  Keeping this translation at the
+    model adapter boundary lets LangGraph and LangChain use their normal
+    streaming/callback machinery without an application-specific stream
+    protocol.
+    """
+    choices = _field(response, "choices") or []
+    choice = next(iter(choices), None)
+    delta = _field(choice, "delta")
+    message = _field(choice, "message") if delta is None else None
+    payload = delta if delta is not None else (message or {})
+    reasoning = _field(payload, "reasoning_content") or _field(payload, "reasoning")
+    additional_kwargs: dict[str, Any] = {}
+    if reasoning:
+        additional_kwargs["reasoning_content"] = str(reasoning)
+
+    raw_calls = _field(payload, "tool_calls")
+    tool_call_chunks = _tool_call_chunks(raw_calls)
+    # A non-stream response can still be returned by a proxy that ignores
+    # ``stream=true``.  Convert its complete tool calls to the same chunk
+    # representation so the standard LangChain merge path remains valid.
+    if not tool_call_chunks and message is not None:
+        tool_call_chunks = _tool_call_chunks(_field(message, "tool_calls"))
+
+    metadata = _response_metadata(response)
+    chunk_id = _field(response, "id") or _field(payload, "id")
+    ai_chunk = AIMessageChunk(
+        content=_content(_field(payload, "content")),
+        additional_kwargs=additional_kwargs,
+        response_metadata=metadata,
+        id=str(chunk_id) if chunk_id else None,
+        tool_call_chunks=tool_call_chunks,
+    )
+    return ChatGenerationChunk(message=ai_chunk)
 
 
 class LiteLLMGateway:
@@ -157,6 +196,61 @@ class LiteLLMChatModel(BaseChatModel):
     ) -> ChatResult:
         raise NotImplementedError("LiteLLMChatModel is async-only")
 
+    def _request(
+        self,
+        messages: list[BaseMessage],
+        *,
+        stream: bool,
+        stop: list[str] | None,
+        kwargs: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Build the provider request once for both invoke and stream paths."""
+        options = dict(kwargs)
+        request: dict[str, Any] = {
+            "stream": stream,
+            "messages": convert_to_openai_messages(messages),
+            "temperature": options.pop("temperature", self.llm_config.get("temperature", 0.1)),
+            "max_tokens": int(options.pop("max_tokens", self.llm_config.get("max_tokens", 8_000))),
+        }
+        if stop:
+            request["stop"] = stop
+        for field in ("tools", "tool_choice", "parallel_tool_calls", "response_format"):
+            if field in options and options[field] is not None:
+                request[field] = options[field]
+        return request
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: Any | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Use LangChain's standard async stream contract over LiteLLM.
+
+        ``BaseChatModel.astream`` owns callback dispatch.  ``_agenerate``
+        below dispatches the same callbacks for LangGraph's native
+        ``model.ainvoke`` path, which is why graph ``messages`` streaming and
+        ordinary LangChain streaming observe the same chunks.
+        """
+        del run_manager
+        request = self._request(messages, stream=True, stop=stop, kwargs=kwargs)
+        response = await self.gateway.complete(
+            **build_litellm_kwargs(self.llm_config, **request)
+        )
+        if hasattr(response, "__aiter__"):
+            try:
+                async for item in response:
+                    if item is not None:
+                        yield _generation_chunk(item)
+            finally:
+                closer = getattr(response, "aclose", None)
+                if callable(closer):
+                    await closer()
+            return
+        if response is not None:
+            yield _generation_chunk(response)
+
     async def _agenerate(
         self,
         messages: list[BaseMessage],
@@ -164,33 +258,16 @@ class LiteLLMChatModel(BaseChatModel):
         run_manager: Any | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        request: dict[str, Any] = {
-            "stream": False,
-            "messages": convert_to_openai_messages(messages),
-            "temperature": kwargs.pop("temperature", self.llm_config.get("temperature", 0.1)),
-            "max_tokens": int(kwargs.pop("max_tokens", self.llm_config.get("max_tokens", 8_000))),
-        }
-        if stop:
-            request["stop"] = stop
-        for field in ("tools", "tool_choice", "parallel_tool_calls", "response_format"):
-            if field in kwargs and kwargs[field] is not None:
-                request[field] = kwargs[field]
-        response = await self.gateway.complete(
-            **build_litellm_kwargs(self.llm_config, **request)
-        )
-        choice = next(iter(_field(response, "choices") or []), None)
-        message = _field(choice, "message") or {}
-        additional_kwargs: dict[str, Any] = {}
-        reasoning = _field(message, "reasoning_content")
-        if reasoning:
-            additional_kwargs["reasoning_content"] = str(reasoning)
-        ai_message = AIMessage(
-            content=_content(_field(message, "content")),
-            tool_calls=_tool_calls(message),
-            additional_kwargs=additional_kwargs,
-            response_metadata=_response_metadata(response),
-        )
-        return ChatResult(generations=[ChatGeneration(message=ai_message)])
+        async def callback_stream() -> AsyncIterator[ChatGenerationChunk]:
+            async for chunk in self._astream(messages, stop=stop, **kwargs):
+                if run_manager is not None:
+                    await run_manager.on_llm_new_token(
+                        chunk.message.content,
+                        chunk=chunk,
+                    )
+                yield chunk
+
+        return await agenerate_from_stream(callback_stream())
 
 
 __all__ = ["LiteLLMChatModel", "LiteLLMGateway"]

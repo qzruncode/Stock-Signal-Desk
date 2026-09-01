@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useMessage } from '@assistant-ui/react';
 import { AgentExecutionTimeline } from './AgentReasoning';
@@ -106,25 +106,15 @@ describe('AgentExecutionTimeline', () => {
 
     expect(screen.getByText('执行过程')).toBeInTheDocument();
     expect(screen.getByText('search_web_source')).toBeInTheDocument();
-    expect(screen.queryByText(/请求：source_id=exa · query=人形机器人产业链 · num_results=2/)).not.toBeInTheDocument();
-    const detailToggle = screen.getAllByRole('button', { name: /查看详细/ })[1];
-    expect(detailToggle).toHaveAttribute('aria-expanded', 'false');
-    fireEvent.click(detailToggle);
     expect(screen.getByText(/请求：source_id=exa · query=人形机器人产业链 · num_results=2/)).toBeInTheDocument();
     expect(screen.getByText(/返回 2 条结果 · 数据来源：Exa、证券时报、财联社/)).toBeInTheDocument();
     expect(screen.getByText(/数据时间：2026-08-08/)).toBeInTheDocument();
-    expect(screen.getByText(/证据：ev_call-news/)).toBeInTheDocument();
+    expect(screen.getByText(/结果：.*证据：ev_call-news/)).toBeInTheDocument();
     expect(screen.getByText(/1\. 人形机器人供应链进展 · 证券时报 · 2026-08-08/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'https://example.test/robotics-1' })).toBeInTheDocument();
     expect(screen.getByText(/2\. 灵巧手产业观察 · 财联社 · 2026-08-07/)).toBeInTheDocument();
-    expect(screen.queryByText(/1 条结论（事实 1、推断 0）/)).not.toBeInTheDocument();
-    const evidenceToggle = screen.getAllByRole('button', { name: /查看详细/ })[1];
-    fireEvent.click(evidenceToggle);
     expect(screen.getByText(/1 条结论（事实 1、推断 0）/)).toBeInTheDocument();
-    expect(detailToggle).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.click(detailToggle);
-    expect(screen.queryByText(/请求：source_id=exa · query=人形机器人产业链 · num_results=2/)).not.toBeInTheDocument();
-    expect(screen.queryByText('查看详情')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /查看详细|收起详细|查看详情/ })).not.toBeInTheDocument();
   });
 
   it('shows a rejected operation as not executed rather than a runtime failure', () => {
@@ -194,9 +184,6 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    const detailToggle = screen.getByRole('button', { name: /查看详细/ });
-    expect(screen.queryByText(`缺口 1：${fullIssue}`)).not.toBeInTheDocument();
-    fireEvent.click(detailToggle);
     expect(screen.getByText('关联证据')).toBeInTheDocument();
     expect(screen.getByText(`缺口 1：${fullIssue}`)).toBeInTheDocument();
     expect(screen.getByText(`缺口 1：${fullIssue}`)).not.toHaveClass('truncate');
@@ -239,7 +226,7 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.queryByText(/候选回答摘录/)).not.toBeInTheDocument();
   });
 
-  it('does not repeat the latest stage summary in the expanded header', () => {
+  it('keeps the latest stage summary visible without a collapsible header', () => {
     const summary = '第 1 轮：模型正在基于当前问题、工具观察和证据决定下一步';
     mockMessage({
       status: { type: 'running' },
@@ -260,13 +247,11 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    const header = screen.getByRole('button', { name: /执行过程/ });
+    const header = screen.getByRole('status');
     expect(header).not.toHaveTextContent(summary);
     expect(screen.getByText(summary)).toBeInTheDocument();
-
-    fireEvent.click(header);
-
-    expect(screen.getByRole('button', { name: new RegExp(summary) })).toBeInTheDocument();
+    expect(header.tagName).not.toBe('BUTTON');
+    expect(screen.queryByRole('button', { name: /查看详细|收起详细|查看详情/ })).not.toBeInTheDocument();
   });
 
   it('lists exact historical references instead of calling their length a source count', () => {
@@ -312,9 +297,6 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    const detailToggle = screen.getByRole('button', { name: /查看详细/ });
-    expect(screen.queryByText(/数据来源：firecrawl_searxng/)).not.toBeInTheDocument();
-    fireEvent.click(detailToggle);
     expect(screen.getByText(/数据来源：firecrawl_searxng/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'https://finance.example.test/article-1' })).toBeInTheDocument();
     expect(screen.queryByText('来源 3 个')).not.toBeInTheDocument();

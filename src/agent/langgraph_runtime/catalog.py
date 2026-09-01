@@ -1,9 +1,9 @@
-"""Complete operation and source directory supplied to every Agent turn.
+"""Complete operation and source directory metadata for the Agent runtime.
 
 There is deliberately no lexical pre-ranking, capability bucket, or
-``load_schemas`` phase.  ``create_agent`` binds every operation schema and the
-model receives this compact directory to understand each operation's available
-sources before it decides whether to call a tool.
+``load_schemas`` phase.  ``create_agent`` binds every operation schema; this
+catalog remains the application-owned diagnostic/source view and does not
+duplicate the bound argument contract in the model prompt.
 """
 
 from __future__ import annotations

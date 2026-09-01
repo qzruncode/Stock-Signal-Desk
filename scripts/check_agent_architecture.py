@@ -136,6 +136,23 @@ def _class_names(path: Path) -> set[str]:
     return {item.name for item in ast.walk(tree) if isinstance(item, ast.ClassDef)}
 
 
+def _schema_enum_values(schema: Any) -> set[str]:
+    """Read enum values from direct or nullable Pydantic JSON-schema forms."""
+    if not isinstance(schema, dict):
+        return set()
+    values = schema.get("enum")
+    if isinstance(values, list):
+        return {str(value) for value in values}
+    for key in ("anyOf", "oneOf"):
+        choices = schema.get(key)
+        if isinstance(choices, list):
+            for choice in choices:
+                values = _schema_enum_values(choice)
+                if values:
+                    return values
+    return set()
+
+
 def audit_architecture() -> dict[str, Any]:
     from src.agent.langgraph_runtime.catalog import ToolCatalog
     from src.tools.registry import TOOL_MODULES, ToolRegistry
@@ -207,7 +224,9 @@ def audit_architecture() -> dict[str, Any]:
         issues.append("read_rss_source is unavailable")
     else:
         source_ids = {str(item.get("id") or "") for item in rss.source_catalog}
-        schema_ids = set((rss.model_parameters().get("properties", {}).get("source_id", {}) or {}).get("enum") or [])
+        schema_ids = _schema_enum_values(
+            rss.model_parameters().get("properties", {}).get("source_id", {})
+        )
         if len(source_ids) != len(RSS_SOURCE_CATALOG):
             issues.append(f"RSS source directory count differs: {len(source_ids)}")
         if source_ids != schema_ids:
@@ -231,7 +250,9 @@ def audit_architecture() -> dict[str, Any]:
             issues.append(f"operation exposes undeclared source_id: {name}")
         if spec.source_catalog:
             ids = {str(item.get("id") or "") for item in spec.source_catalog}
-            enum = set((spec.model_parameters().get("properties", {}).get("source_id", {}) or {}).get("enum") or [])
+            enum = _schema_enum_values(
+                spec.model_parameters().get("properties", {}).get("source_id", {})
+            )
             if not ids or ids != enum:
                 issues.append(f"operation source catalog/schema mismatch: {name}")
         leaked_controls = fields & set(spec.server_controlled_fields)

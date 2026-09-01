@@ -58,18 +58,8 @@ class FakeAtomicExecutor:
             self.outcomes[name].extend(dict(value) for value in values)
         self.delay_seconds = delay_seconds
         self.calls: list[dict[str, Any]] = []
-        self.native_calls: list[dict[str, Any]] = []
         self.active = 0
         self.max_active = 0
-
-    async def execute_native_read(
-        self,
-        action: Mapping[str, Any],
-        *,
-        approved: bool = False,
-    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        self.native_calls.append(dict(action))
-        return await self.execute(action, approved=approved)
 
     async def execute(
         self,
@@ -514,14 +504,13 @@ def test_independent_read_operations_run_in_parallel() -> None:
         )
         assert result.status == "completed"
         assert len(executor.calls) == 2
-        assert len(executor.native_calls) == 2
         assert executor.max_active == 2
         assert result.state["tool_call_count"] == 2
 
     asyncio.run(scenario())
 
 
-def test_native_read_handler_uses_the_production_read_adapter() -> None:
+def test_native_tool_handler_reuses_the_application_executor_contract() -> None:
     async def scenario() -> None:
         evidence_id = (
             "ev_"
@@ -604,7 +593,7 @@ def test_reference_only_source_requires_successful_web_body_read_before_final_an
                     "read_company_news_akshare",
                     {"symbol": "600519"},
                 ),
-                AIMessage(content="候选回答：公司近期有利好消息。"),
+                AIMessage(content="候选回答：公司近期有利好消息【证据 ev_company-news】。"),
                 _named_tool_call(
                     "read-content",
                     "read_web_source",
@@ -676,6 +665,8 @@ def test_reference_only_source_requires_successful_web_body_read_before_final_an
             }
         ]
         assert result.state["pending_content_reads"] == []
+        # A cited reference-only result asks the model to select one relevant
+        # URL.  Content access never fans out to the unselected candidate.
         assert result.state["content_access_repair_count"] == 1
         assert len(model.calls) == 4
         assert any(
@@ -936,5 +927,232 @@ def test_tool_budget_stops_with_a_partial_answer_and_explicit_gap(monkeypatch: p
         assert [call["action_id"] for call in executor.calls] == ["within-budget"]
         assert result.state["work_budget_exhausted"] is True
         assert "未完成全部取证" in result.final_text
+
+    asyncio.run(scenario())
+
+
+def _matrix_tool_call(action_id: str, source_id: str = "primary") -> AIMessage:
+    return _tool_call(action_id, source_id)
+
+
+def _matrix_parallel_call(action_ids: list[str]) -> AIMessage:
+    return AIMessage(
+        content="先完成这一轮独立来源核验。",
+        tool_calls=[
+            {
+                "name": "search_source",
+                "args": {"source_id": "primary" if index % 2 == 0 else "secondary", "query": "测试问题"},
+                "id": action_id,
+                "type": "tool_call",
+            }
+            for index, action_id in enumerate(action_ids)
+        ],
+    )
+
+
+def _matrix_case(
+    case_id: int,
+) -> tuple[ScriptedChatModel, ToolRegistry, FakeAtomicExecutor, int]:
+    if case_id in {1, 19}:
+        return (
+            ScriptedChatModel(responses=[AIMessage(content=f"第 {case_id} 轮无需外部取证。")]),
+            _registry(),
+            FakeAtomicExecutor(),
+            0,
+        )
+
+    if case_id == 18:
+        auto_operation = ToolSpec(
+            name="search_source",
+            description="从自动来源检索公开材料",
+            parameters=object_schema(
+                {
+                    "source_id": {"type": "string", "enum": ["auto"]},
+                    "query": {"type": "string"},
+                },
+                required=("source_id", "query"),
+            ),
+            executor=lambda **_kwargs: {"success": True},
+            source_catalog=(
+                {"id": "auto", "name": "自动来源", "purpose": "测试来源"},
+            ),
+            max_attempts=1,
+        )
+        return (
+            ScriptedChatModel(
+                responses=[
+                    _matrix_tool_call("matrix-auto", "auto"),
+                    AIMessage(content="自动来源已返回结果【证据 ev_matrix-auto】"),
+                ]
+            ),
+            _registry(auto_operation),
+            FakeAtomicExecutor(),
+            1,
+        )
+
+    if case_id == 11:
+        return (
+            ScriptedChatModel(
+                responses=[
+                    _matrix_tool_call("matrix-evidence-repair"),
+                    AIMessage(content="候选回答暂未标注来源。"),
+                    AIMessage(content="修订后保留可追溯结论【证据 ev_matrix-evidence-repair】"),
+                ]
+            ),
+            _registry(_search_operation()),
+            FakeAtomicExecutor(),
+            1,
+        )
+
+    action_ids = {
+        2: ["matrix-single"],
+        3: ["matrix-sequence-a", "matrix-sequence-b"],
+        4: ["matrix-parallel-a", "matrix-parallel-b"],
+        5: ["matrix-parallel-1", "matrix-parallel-2", "matrix-parallel-3"],
+        6: ["matrix-failed", "matrix-alternate"],
+        7: ["matrix-empty", "matrix-empty-alternate"],
+        8: ["matrix-stale", "matrix-stale-alternate"],
+        9: ["matrix-unknown", "matrix-unknown-alternate"],
+        10: ["matrix-partial"],
+        12: ["matrix-dated"],
+        13: ["matrix-context"],
+        14: ["matrix-cited-a", "matrix-cited-b"],
+        15: ["matrix-repeat-a", "matrix-repeat-b"],
+        16: ["matrix-empty-only"],
+        17: ["matrix-stale-only"],
+        20: ["matrix-plan-a", "matrix-plan-b"],
+    }[case_id]
+    cited_ids = {
+        6: ["matrix-alternate"],
+        8: ["matrix-stale-alternate"],
+        9: ["matrix-unknown-alternate"],
+    }.get(case_id, action_ids)
+    final_ids = "、".join(f"【证据 ev_{action_id}】" for action_id in cited_ids)
+
+    if case_id in {4, 5, 14}:
+        responses = [_matrix_parallel_call(action_ids), AIMessage(content=f"本轮已完成核验{final_ids}")]
+    elif case_id == 20:
+        responses = [
+            AIMessage(content="先规划：先读取基础资料，再交叉核对。", tool_calls=[
+                {
+                    "name": "search_source",
+                    "args": {"source_id": "primary", "query": "测试问题"},
+                    "id": action_ids[0],
+                    "type": "tool_call",
+                }
+            ]),
+            AIMessage(content="上一轮已完成基础读取，下一步核对备用来源。", tool_calls=[
+                {
+                    "name": "search_source",
+                    "args": {"source_id": "secondary", "query": "测试问题"},
+                    "id": action_ids[1],
+                    "type": "tool_call",
+                }
+            ]),
+            AIMessage(content=f"已完成两轮交叉核验{final_ids}"),
+        ]
+    else:
+        responses = []
+        for index, action_id in enumerate(action_ids):
+            responses.append(_matrix_tool_call(action_id, "primary" if index % 2 == 0 else "secondary"))
+        responses.append(AIMessage(content=f"本轮已完成处理{final_ids}"))
+
+    outcomes: dict[str, list[Mapping[str, Any]]] = {}
+    if case_id == 6:
+        outcomes["search_source"] = [
+            {"success": False, "errors": ["primary unavailable"], "error_code": "provider_unavailable"},
+            {"result": {"headline": "备用来源结果"}},
+        ]
+    elif case_id == 7:
+        outcomes["search_source"] = [
+            {"result": {"result_count": 0, "items": []}},
+            {"result": {"headline": "备用来源结果"}},
+        ]
+    elif case_id == 8:
+        outcomes["search_source"] = [
+            {"data_time": "2025-01-01", "result": {"is_stale": True, "headline": "过期结果"}},
+            {"result": {"headline": "新来源结果"}},
+        ]
+    elif case_id == 9:
+        outcomes["search_source"] = [
+            {"data_time": None, "result": {"freshness_unknown": True, "headline": "时间未知"}},
+            {"result": {"headline": "已确认结果"}},
+        ]
+    elif case_id == 10:
+        outcomes["search_source"] = [{"partial": True, "result": {"headline": "部分结果"}}]
+    elif case_id == 13:
+        outcomes["search_source"] = [{
+            "result": {
+                "_agent_context": {
+                    "type": "stock_group",
+                    "group_id": "matrix",
+                    "group_name": "测试分组",
+                    "member_count": 3,
+                }
+            }
+        }]
+    elif case_id == 16:
+        outcomes["search_source"] = [{"result": {"result_count": 0, "items": []}}]
+    elif case_id == 17:
+        outcomes["search_source"] = [{"data_time": "2025-01-01", "result": {"is_stale": True}}]
+
+    if case_id == 12:
+        responses[-1] = AIMessage(content="截至 2026-08-08，资料已返回【证据 ev_matrix-dated】")
+    elif case_id == 13:
+        responses[-1] = AIMessage(content="测试分组已读取【证据 ev_matrix-context】")
+    elif case_id == 16:
+        responses[-1] = AIMessage(content="本次搜索没有返回结果，不能据此得出外部事实【证据 ev_matrix-empty-only】")
+    elif case_id == 17:
+        responses[-1] = AIMessage(content="该来源只有较早资料，时效不能确认【证据 ev_matrix-stale-only】")
+
+    return (
+        ScriptedChatModel(responses=responses),
+        _registry(_search_operation()),
+        FakeAtomicExecutor(outcomes),
+        len(action_ids),
+    )
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    list(range(1, 21)),
+    ids=[
+        "plain-1",
+        "single-read",
+        "sequential-reads",
+        "parallel-2",
+        "parallel-3",
+        "failed-then-alternate",
+        "empty-then-alternate",
+        "stale-then-alternate",
+        "freshness-unknown-then-alternate",
+        "partial-result",
+        "evidence-repair",
+        "dated-evidence",
+        "context-handoff",
+        "multiple-citations",
+        "repeated-source-rounds",
+        "empty-only-honest-answer",
+        "stale-only-honest-answer",
+        "auto-source",
+        "plain-2",
+        "visible-plan-rounds",
+    ],
+)
+def test_native_agent_loop_20_behavior_scenarios(case_id: int) -> None:
+    async def scenario() -> None:
+        model, registry, executor, expected_tool_count = _matrix_case(case_id)
+        result, executor = await _run(
+            model=model,
+            registry=registry,
+            executor=executor,
+            conversation_id=f"matrix-{case_id}",
+        )
+        assert result.status == "completed"
+        assert len(executor.calls) == expected_tool_count
+        assert result.final_text.strip()
+        assert any(item["stage"] == "publish" for item in result.stage_history or [])
+        if expected_tool_count:
+            assert result.state["tool_call_count"] == expected_tool_count
 
     asyncio.run(scenario())

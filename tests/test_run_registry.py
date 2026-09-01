@@ -75,6 +75,31 @@ def test_broadcast_to_multiple_subscribers():
     asyncio.new_event_loop().run_until_complete(run())
 
 
+def test_assistant_text_snapshot_tracks_only_committed_text_for_reconnect():
+    async def run():
+        persisted = []
+
+        def sink(run_id, start_sequence, chunks):
+            persisted.append((run_id, start_sequence, chunks))
+
+        broadcaster = RunBroadcaster(
+            run_id="run-snapshot",
+            event_batch_sink=sink,
+        )
+        broadcaster.append_text("先输出")
+        assert broadcaster.assistant_text_snapshot == ""
+
+        await broadcaster.drain()
+        assert broadcaster.assistant_text_snapshot == "先输出"
+        assert persisted and persisted[0][0] == "run-snapshot"
+
+        broadcaster.append_text("，再继续")
+        await broadcaster.drain()
+        assert broadcaster.assistant_text_snapshot == "先输出，再继续"
+
+    asyncio.run(run())
+
+
 def test_unsubscribe_stops_receiving():
     """unsubscribe 后不再收到后续 chunk(但不影响已 emit 的)。"""
 

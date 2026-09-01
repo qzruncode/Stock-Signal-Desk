@@ -9,7 +9,6 @@ import os
 from typing import Any, Awaitable, Callable
 
 from src.agent.resource_scheduler import agent_resource_lease
-from src.agent.runtime_safety import get_agent_runtime_limits
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -248,6 +247,15 @@ class GuardedModelRuntime:
         raise last_error
 
     async def _reserve_budget(self, kwargs: dict[str, Any]) -> None:
+        """Record provider usage without making model completion a token gate.
+
+        Tool-call/graph safeguards bound runaway work at the orchestration
+        layer.  Provider token and cost estimates are accounting telemetry,
+        not a reason to terminate an otherwise valid answer halfway through.
+        The database API is still used so existing run usage reporting remains
+        intact; omitting the optional maxima deliberately disables the old
+        aggregate token/cost rejection path.
+        """
         if self.database is None:
             return
         estimated_tokens = self.token_estimator(
@@ -260,19 +268,18 @@ class GuardedModelRuntime:
             minimum=0,
             maximum=10_000_000,
         )
-        limits = get_agent_runtime_limits()
         budget = await asyncio.to_thread(
             self.database.reserve_agent_run_budget,
             self.run_id,
             provider_calls=1,
             estimated_tokens=estimated_tokens,
             estimated_cost_micros=int(estimated_tokens / 1000.0 * micros_per_1k),
-            max_provider_calls=limits.max_provider_calls,
-            max_estimated_tokens=limits.max_estimated_tokens,
-            max_estimated_cost_micros=limits.max_estimated_cost_micros,
         )
+        # A run can finish between the provider request and this accounting
+        # write.  That historical race is harmless; provider availability and
+        # graph/tool limits remain the actual execution guards.
         if not budget.get("allowed") and budget.get("reason") != "run_not_found":
-            raise RuntimeError("Agent provider budget exceeded: " f"{budget.get('reason')}")
+            return
 
 
 __all__ = [

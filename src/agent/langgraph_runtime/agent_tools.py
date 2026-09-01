@@ -39,9 +39,8 @@ def _native_tool_coroutine(
     """Build one real async tool callable for LangGraph's native handler.
 
     Middleware sets a task-local run context immediately before it calls
-    LangGraph's handler.  A test or embedding executor may only expose the
-    legacy ``execute`` method; production's ``AtomicToolExecutor`` exposes
-    ``execute_native_read`` so read calls do not enter its durable scheduler.
+    LangGraph's handler.  The application executor remains the single owner
+    of validation, idempotency, isolation, retries, and evidence persistence.
     """
 
     async def execute(**arguments: Any) -> dict[str, Any]:
@@ -61,14 +60,7 @@ def _native_tool_coroutine(
             "tool_name": tool_name,
             "arguments": dict(arguments),
         }
-        native_read = getattr(context.executor, "execute_native_read", None)
-        if callable(native_read):
-            record, evidence = await native_read(action, approved=False)
-        else:
-            # Keep injected test/embedding executors compatible with the
-            # native handler path while production uses the read-specific
-            # adapter above.
-            record, evidence = await context.executor.execute(action, approved=False)
+        record, evidence = await context.executor.execute(action, approved=False)
         return {
             NATIVE_TOOL_RESULT_MARKER: True,
             "record": dict(record),

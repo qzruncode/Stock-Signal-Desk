@@ -40,6 +40,32 @@ def test_read_web_source_tool_message_keeps_a_useful_body_preview() -> None:
     assert payload["result"]["content_preview_length"] == len(content)
 
 
+def test_tool_observation_preserves_empty_stale_and_fallback_state_for_the_model() -> None:
+    payload = json.loads(
+        _tool_message_content(
+            {
+                "tool_name": "search_web_source",
+                "success": True,
+                "data_time": None,
+                "freshness_unknown": True,
+                "result": {
+                    "success": True,
+                    "result_count": 0,
+                    "is_stale": True,
+                    "fallback_recommended": True,
+                    "items": [],
+                },
+            },
+            None,
+        )
+    )
+
+    assert payload["observation_status"] == "stale"
+    assert payload["freshness_unknown"] is True
+    assert payload["next_action"]
+    assert "最新" in payload["next_action"]
+
+
 def test_reference_only_results_keep_all_links_as_model_selectable_candidates() -> None:
     news_url = "https://example.test/news/1"
     report_url = "https://example.test/report/1.pdf"

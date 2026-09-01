@@ -81,7 +81,6 @@ def test_legacy_search_helpers_have_no_intent_router_and_are_not_registered() ->
         "read_rss_cls_telegraph",
         "read_rss_eastmoney_reports",
         "list_rss_cls_subjects",
-        "read_rss_item",
         "search_web_firecrawl_searxng",
         "search_web_exa",
         "search_web_parallel",
@@ -89,7 +88,7 @@ def test_legacy_search_helpers_have_no_intent_router_and_are_not_registered() ->
         "read_web_scrapling",
         "read_web_patchright",
         "read_web_firecrawl",
-    } <= registered
+    }.isdisjoint(registered)
     assert {
         "discover_rss_sources",
         "inspect_rss_source",

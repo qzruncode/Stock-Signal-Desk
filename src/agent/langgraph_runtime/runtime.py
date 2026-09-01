@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from langchain_core.messages import convert_to_messages
+from langchain_core.messages import AIMessage, AIMessageChunk, convert_to_messages
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -365,7 +365,25 @@ class LangGraphRuntimeManager:
     ) -> Mapping[str, Any] | None:
         config = self.graph_config(conversation_id)
         try:
-            return await graph.ainvoke(graph_input, config, context=context)
+            last_update: Mapping[str, Any] | None = None
+            async for chunk in graph.astream(
+                graph_input,
+                config,
+                context=context,
+                stream_mode=["messages", "updates"],
+                version="v2",
+            ):
+                if not isinstance(chunk, Mapping):
+                    continue
+                chunk_type = str(chunk.get("type") or "")
+                data = chunk.get("data")
+                if chunk_type == "messages" and isinstance(data, (list, tuple)) and data:
+                    message = data[0]
+                    if isinstance(message, (AIMessageChunk, AIMessage)):
+                        context.events.model_message(message)
+                elif chunk_type == "updates" and isinstance(data, Mapping):
+                    last_update = data
+            return last_update
         except ModelProviderReportedTimeoutError:
             return await self._terminate_partial(
                 graph,
@@ -389,16 +407,6 @@ class LangGraphRuntimeManager:
                 context=context,
                 error_code="agent_loop_budget_exceeded",
                 message="本轮工具/循环预算已耗尽；已保留已有观察并停止继续调用。",
-            )
-        except RuntimeError as exc:
-            if "agent provider budget exceeded" not in str(exc).lower():
-                raise
-            return await self._terminate_partial(
-                graph,
-                config=config,
-                context=context,
-                error_code="provider_budget_exceeded",
-                message="本轮模型调用、Token 或费用预算已耗尽；已保留已有工具观察和证据。",
             )
 
     async def get_state_history(
@@ -692,6 +700,12 @@ class LangGraphRuntimeManager:
         interrupts = list(raw_output.pop("__interrupt__", []) or [])
         snapshot = await graph.aget_state(self.graph_config(conversation_id))
         state = dict(snapshot.values or raw_output)
+        if not interrupts:
+            # ``astream(version="v2")`` may expose an interrupt inside an
+            # updates chunk rather than as the return value of ``ainvoke``.
+            # The checkpointer is the authoritative source for both forms.
+            for task in getattr(snapshot, "tasks", ()) or ():
+                interrupts.extend(getattr(task, "interrupts", ()) or ())
         if interrupts:
             item = interrupts[0]
             value = dict(getattr(item, "value", {}) or {})

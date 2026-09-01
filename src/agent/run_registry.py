@@ -68,7 +68,7 @@ _TOOL_RESULT_STREAM_MIN_REMAINING_BYTES = 1_024
 # These are presentation limits only, not model-thinking timeouts.
 _REASONING_STREAM_MAX_CHARACTERS = 12_000
 _REASONING_STREAM_MAX_CHUNKS = 64
-_REASONING_STREAM_TRUNCATION_NOTICE = "\n（其余内部过程已折叠；执行步骤仍会继续更新。）"
+_REASONING_STREAM_TRUNCATION_NOTICE = "\n（其余内部过程已截断；执行步骤仍会继续更新。）"
 
 
 def _serialized_bytes(value: Any) -> int:
@@ -95,7 +95,7 @@ def _bounded_stream_value(
 ) -> Any:
     """Build a JSON-safe browser projection without changing durable data."""
     if depth >= 10:
-        return "[详情已折叠]"
+        return "[详情已截断]"
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -628,6 +628,11 @@ class RunBroadcaster:
     def _publish_committed(self, chunk: AssistantStreamChunk) -> None:
         self._history.append(chunk)
         self._history_next_index += 1
+        if isinstance(chunk, TextDeltaChunk):
+            # Keep the reconnect snapshot in lockstep with the durable stream.
+            # Updating it at emission time would expose text that has not yet
+            # been persisted and could make a resumed client duplicate data.
+            self.assistant_text_snapshot += chunk.text_delta
         if isinstance(
             chunk,
             (ToolCallBeginChunk, ToolCallDeltaChunk, ToolResultChunk),

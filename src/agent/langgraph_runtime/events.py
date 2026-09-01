@@ -6,6 +6,8 @@ from datetime import datetime
 import json
 from typing import Any, Mapping, Sequence
 
+from langchain_core.messages import AIMessage, AIMessageChunk
+
 
 _CLIENT_STAGE_HISTORY_MAX_EVENTS = 120
 _CLIENT_STAGE_HISTORY_MAX_BYTES = 160_000
@@ -21,7 +23,7 @@ def _client_stage_value(value: Any, *, depth: int = 0) -> Any:
     multi-megabyte React tree.
     """
     if depth >= 7:
-        return "[详情已折叠]"
+        return "[详情已截断]"
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
@@ -132,9 +134,90 @@ class GraphEventBridge:
         self.run_id = run_id
         self._stage_history: list[dict[str, Any]] = []
         self._round_id: str | None = None
+        # Model content is buffered until LangGraph has produced the complete
+        # AI message.  A tool-call turn is then published as user-visible
+        # progress, while a no-tool candidate is committed only after the
+        # universal evidence/content checks accept it.  This is the important
+        # append-only boundary: a repair turn can never replace text already
+        # rendered by the browser.
+        self._pending_model_text = ""
+        self._model_chunks_seen = False
+        self._last_committed_answer: str | None = None
 
     def set_round(self, round_id: str | int | None) -> None:
         self._round_id = str(round_id) if round_id not in (None, "") else None
+
+    @staticmethod
+    def _message_text(message: Any) -> str:
+        content = getattr(message, "content", message)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, (list, tuple)):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, Mapping):
+                    value = item.get("text") or item.get("content")
+                    if value:
+                        parts.append(str(value))
+                elif item:
+                    parts.append(str(item))
+            return "".join(parts)
+        return str(content or "")
+
+    def begin_model_turn(self, _model_turn: int | str | None = None) -> None:
+        """Start an isolated model-output buffer for one native graph turn."""
+        self._pending_model_text = ""
+        self._model_chunks_seen = False
+
+    def model_message(self, message: AIMessage | AIMessageChunk) -> None:
+        """Observe native LangChain message chunks without replacing output."""
+        if isinstance(message, AIMessageChunk):
+            self._model_chunks_seen = True
+            self._pending_model_text += self._message_text(message)
+            # Provider streams usually emit the natural-language plan before
+            # the first tool-call delta.  Once LangChain has identified that
+            # this is a tool turn, publish that plan immediately; later
+            # chunks still append to the same durable stream.
+            if getattr(message, "tool_call_chunks", None):
+                self.flush_model_progress()
+            return
+        if not isinstance(message, AIMessage):
+            return
+        # The final AIMessage follows callback chunks in LangGraph's standard
+        # ``messages`` stream.  Only use its content when no chunks were
+        # delivered (for example a deterministic test/adapter model).
+        if not self._model_chunks_seen:
+            self._pending_model_text = self._message_text(message)
+        if message.tool_calls:
+            self.flush_model_progress()
+
+    def flush_model_progress(self) -> None:
+        """Publish a completed tool-call turn as one append-only text delta."""
+        pending = self._pending_model_text
+        self._pending_model_text = ""
+        if pending:
+            self._publish_text_delta(pending)
+
+    def commit_model_answer(self, answer: str) -> None:
+        """Commit an accepted candidate/final answer exactly once."""
+        normalized = str(answer or "")
+        if not normalized:
+            self.flush_model_progress()
+            return
+        if normalized == self._last_committed_answer:
+            self._pending_model_text = ""
+            return
+        # A no-tool candidate may have been buffered while policy checks ran.
+        # Publish the accepted server-owned answer, not the unverified buffer.
+        self._pending_model_text = ""
+        self._publish_text_delta(normalized)
+        self._last_committed_answer = normalized
+
+    def _publish_text_delta(self, value: str) -> None:
+        text = str(value or "")
+        if not text or self.controller is None:
+            return
+        self.controller.append_text(text)
 
     @staticmethod
     def _safe_detail(value: Any, *, depth: int = 0) -> Any:
@@ -290,8 +373,7 @@ class GraphEventBridge:
             self.controller.append_reasoning(text)
 
     def text(self, text: str) -> None:
-        if self.controller is not None and text:
-            self.controller.append_text(text)
+        self.commit_model_answer(text)
 
     def error(self, text: str) -> None:
         if self.controller is not None and text:

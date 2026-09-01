@@ -1,9 +1,8 @@
 import type { FC } from 'react';
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useMessage } from '@assistant-ui/react';
 import {
   CheckCircle2Icon,
-  ChevronDownIcon,
   CircleAlertIcon,
   Loader2Icon,
 } from 'lucide-react';
@@ -116,9 +115,10 @@ const stageDetails = (event: AgentStageEvent): DetailLine[] => {
   const details = event.details || {};
   if (event.stage === 'model') {
     const operations = recordsFrom(recordValue(details, 'operations'));
-    if (operations.length > 0) {
-      return operations
-        .map((operation, index) => {
+    const progress = text(recordValue(details, 'progress_preview'), 2_400);
+    return [
+      ...(progress ? [{ key: 'progress', text: `过程说明：${progress}` }] : []),
+      ...operations.map((operation, index) => {
           const name = toolName(operation) || '原子操作';
           const argumentsText = argumentSummary(recordValue(operation, 'arguments'));
           const argumentKeys = recordValue(operation, 'argument_keys', 'argumentKeys');
@@ -127,12 +127,8 @@ const stageDetails = (event: AgentStageEvent): DetailLine[] => {
             : [];
           const request = argumentsText || (keys.length > 0 ? `参数字段：${keys.join('、')}` : '无参数');
           return { key: `operation-${index}`, text: `操作 ${index + 1}：${name} · ${request}` };
-        });
-    }
-    // The candidate answer is already represented by the stage summary and
-    // will be published directly below the timeline. Rendering its body here
-    // duplicates the answer once per evidence-repair round.
-    return [];
+        }),
+    ];
   }
   if (event.stage === 'evidence') {
     const evidenceIds = recordValue(details, 'evidence_ids', 'evidenceIds');
@@ -365,18 +361,6 @@ export const AgentExecutionTimeline: FC = () => {
     }
     return output;
   }, [events, results]);
-  const [expanded, setExpanded] = useState(true);
-  const [expandedDetailKeys, setExpandedDetailKeys] = useState<Set<string>>(() => new Set());
-
-  const toggleDetail = (rowKey: string) => {
-    setExpandedDetailKeys((current) => {
-      const next = new Set(current);
-      if (next.has(rowKey)) next.delete(rowKey);
-      else next.add(rowKey);
-      return next;
-    });
-  };
-
   if (rows.length === 0) return null;
   const latest = events.at(-1) || null;
   const terminalProblem = Boolean(latest?.errorCode)
@@ -390,12 +374,7 @@ export const AgentExecutionTimeline: FC = () => {
 
   return (
     <section className="mb-3 overflow-hidden rounded-xl border border-primary/15 bg-primary/[0.035]" aria-label="执行过程">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
-        aria-expanded={expanded}
-      >
+      <div className="flex w-full items-center justify-between gap-3 px-3 py-2" role="status">
         <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
           <StatusIcon
             status={headerStatus}
@@ -404,83 +383,61 @@ export const AgentExecutionTimeline: FC = () => {
           />
           <span className="text-sm font-medium text-foreground">执行过程</span>
           <span className="text-xs text-muted-foreground">{rows.length} 条实际记录</span>
-          {latest?.summary && !expanded ? (
-            <span className="min-w-0 break-words text-xs text-muted-foreground">· {latest.summary}</span>
-          ) : null}
         </span>
-        <ChevronDownIcon className={cn('size-4 shrink-0 text-muted-foreground transition-transform', expanded && 'rotate-180')} />
-      </button>
+      </div>
 
-      {expanded ? (
-        <div className="border-t border-primary/10 px-3 py-2">
-          <ol className="space-y-1">
-            {rows.map((row, rowIndex) => {
-              const event = row.event;
-              const status = row.kind === 'tool' ? toolStatus(row.result, event) : (event?.status || 'started');
-              const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
-                || Boolean(row.kind === 'stage' && event?.errorCode);
-              const label = row.kind === 'tool'
-                ? (toolName(row.result) || text(recordValue(event?.details, 'tool_name', 'toolName'), 120) || '原子工具')
-                : `${agentStageLabel(event?.stage || '')}${row.modelTurn ? ` · 第 ${row.modelTurn} 轮` : ''}`;
-              const summary = row.kind === 'tool'
-                ? toolSummary(row.result, event)
-                : (event?.summary || '正在处理');
-              const detailLines = row.kind === 'tool' ? toolDetails(row.result, event) : stageDetails(event!);
-              const detailsExpanded = expandedDetailKeys.has(row.key);
-              const detailId = `execution-detail-${rowIndex}`;
-              return (
-                <li key={row.key} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
-                  <StatusIcon status={status} problem={problem} className={cn(
-                    'mt-0.5 size-3.5 shrink-0',
-                    problem ? 'text-amber-600' : status === 'completed' || status === 'succeeded' ? 'text-emerald-600' : 'animate-spin text-primary',
-                  )} />
-                  <div className="min-w-0 flex-1 leading-5">
-                    <span className="font-medium text-foreground">{label}</span>
-                    <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
-                    <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
-                    {detailLines.length > 0 ? (
-                      <>
-                        <button
-                          type="button"
-                          aria-expanded={detailsExpanded}
-                          aria-controls={detailId}
-                          onClick={() => toggleDetail(row.key)}
-                          className="mt-1 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-primary transition hover:bg-primary/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-                        >
-                          <ChevronDownIcon className={cn('size-3 transition-transform', detailsExpanded && 'rotate-180')} />
-                          {detailsExpanded ? '收起详细' : `查看详细（${detailLines.length} 项）`}
-                        </button>
-                        {detailsExpanded ? (
-                          <div id={detailId} className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
-                            {detailLines.map((detail) => (
-                              <div key={detail.key} className="whitespace-pre-wrap break-words">
-                                <span>{detail.text}</span>
-                                {detail.href ? (
-                                  <>
-                                    <span> · </span>
-                                    <a
-                                      href={detail.href}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="break-all text-primary underline-offset-2 hover:underline"
-                                    >
-                                      {detail.href}
-                                    </a>
-                                  </>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </>
-                    ) : null}
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
-        </div>
-      ) : null}
+      <div className="border-t border-primary/10 px-3 py-2">
+        <ol className="space-y-1">
+          {rows.map((row) => {
+            const event = row.event;
+            const status = row.kind === 'tool' ? toolStatus(row.result, event) : (event?.status || 'started');
+            const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
+              || Boolean(row.kind === 'stage' && event?.errorCode);
+            const label = row.kind === 'tool'
+              ? (toolName(row.result) || text(recordValue(event?.details, 'tool_name', 'toolName'), 120) || '原子工具')
+              : `${agentStageLabel(event?.stage || '')}${row.modelTurn ? ` · 第 ${row.modelTurn} 轮` : ''}`;
+            const summary = row.kind === 'tool'
+              ? toolSummary(row.result, event)
+              : (event?.summary || '正在处理');
+            const detailLines = row.kind === 'tool' ? toolDetails(row.result, event) : stageDetails(event!);
+            return (
+              <li key={row.key} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
+                <StatusIcon status={status} problem={problem} className={cn(
+                  'mt-0.5 size-3.5 shrink-0',
+                  problem ? 'text-amber-600' : status === 'completed' || status === 'succeeded' ? 'text-emerald-600' : 'animate-spin text-primary',
+                )} />
+                <div className="min-w-0 flex-1 leading-5">
+                  <span className="font-medium text-foreground">{label}</span>
+                  <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
+                  <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
+                  {detailLines.length > 0 ? (
+                    <div className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
+                      {detailLines.map((detail) => (
+                        <div key={detail.key} className="whitespace-pre-wrap break-words">
+                          <span>{detail.text}</span>
+                          {detail.href ? (
+                            <>
+                              <span> · </span>
+                              <a
+                                href={detail.href}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="break-all text-primary underline-offset-2 hover:underline"
+                              >
+                                {detail.href}
+                              </a>
+                            </>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
     </section>
   );
 };
@@ -507,22 +464,18 @@ export const AgentStageIndicator: FC<{ event: AgentStageEventV2 }> = ({ event })
 };
 
 export const AssistantReasoning: FC<{ text: string }> = ({ text: rawText }) => {
-  const [expanded, setExpanded] = useState(false);
   const messageRunning = useMessage((state) => state.status?.type === 'running');
   const stageData = useMessage((state) => state.metadata?.unstable_data);
   const latest = useMemo(
     () => reconcileTerminalStageEvents(agentStageEvents(stageData)).at(-1) ?? null,
     [stageData],
   );
-  const text = rawText.length > 12_000 ? `${rawText.slice(-12_000)}\n[较早过程已折叠]` : rawText;
-  if (!text.trim()) return null;
+  const visibleText = rawText.length > 12_000 ? `${rawText.slice(-12_000)}\n[较早过程已截断]` : rawText;
+  if (!visibleText.trim()) return null;
   return (
     <div className="mb-3 rounded-lg border border-border/70 bg-muted/25 px-3 py-2">
-      <button type="button" onClick={() => setExpanded((value) => !value)} className="flex w-full items-center justify-between text-xs text-muted-foreground">
-        <span>运行日志 · {reasoningStatusLabel(messageRunning, latest)}</span>
-        <ChevronDownIcon className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />
-      </button>
-      {expanded ? <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{text}</pre> : null}
+      <div className="text-xs text-muted-foreground">运行日志 · {reasoningStatusLabel(messageRunning, latest)}</div>
+      <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{visibleText}</pre>
     </div>
   );
 };

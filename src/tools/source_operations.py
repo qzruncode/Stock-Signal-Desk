@@ -36,6 +36,7 @@ from src.tools.web_source_tools import (
     search_web_firecrawl_searxng,
     search_web_parallel,
 )
+from src.tools.websearch import websearch
 
 
 def _rss_source_id(source: RssSourceDefinition) -> str:
@@ -294,6 +295,7 @@ def calculate_technical_indicator(
 
 
 WEB_SEARCH_SOURCE_CATALOG = (
+    {"id": "auto", "name": "自动网页搜索", "purpose": "按项目内置顺序自动切换公开网页搜索来源"},
     {"id": "firecrawl_searxng", "name": "Firecrawl + SearXNG", "purpose": "公开网页搜索"},
     {"id": "exa", "name": "Exa", "purpose": "公开网页搜索"},
     {"id": "parallel", "name": "Parallel", "purpose": "公开网页搜索"},
@@ -313,8 +315,22 @@ def search_web_source(
     livecrawl: str = "fallback",
     search_type: str = "auto",
 ) -> dict[str, Any]:
-    """Search one explicit public-web source, without cross-provider fallback."""
+    """Search a declared public-web source.
+
+    ``auto`` delegates to the project's existing ``websearch`` fallback
+    chain.  Explicit provider ids remain single-provider diagnostics.  The
+    fallback is therefore visible in the returned attempts instead of being a
+    hidden second tool call.
+    """
     source = str(source_id or "").strip()
+    if source == "auto":
+        return websearch(
+            query=str(query),
+            num_results=max(1, min(int(num_results), 20)),
+            context_max_characters=max(1_000, int(context_max_characters)),
+            livecrawl=str(livecrawl),
+            search_type=str(search_type),
+        )
     searcher = _WEB_SEARCHERS.get(source)
     if searcher is None:
         raise ValueError(f"未知网页搜索 source_id: {source_id}")
@@ -491,7 +507,10 @@ TOOLS = (
     ),
     ToolSpec(
         name="search_web_source",
-        description="通过一个明确指定的公开网页搜索来源检索；失败时不跨来源兜底。",
+        description=(
+            "通过公开网页搜索来源检索；source_id=auto 时复用项目内置的多来源故障切换，"
+            "显式指定 provider 时只诊断该单一来源。"
+        ),
         parameters=object_schema(
             {
                 "source_id": {**_SOURCE_ID, "enum": _source_enum(WEB_SEARCH_SOURCE_CATALOG)},

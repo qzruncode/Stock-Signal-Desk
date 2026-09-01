@@ -13,6 +13,7 @@ import pytest
 
 import src.tools.search_financial_news as financial_news_module
 import src.tools.search_research_library as research_library_module
+import src.tools.source_operations as source_operations
 
 from src.tools.get_consensus_estimates import get_consensus_estimates
 from src.tools.get_peer_comparison import get_peer_comparison
@@ -105,6 +106,35 @@ def test_websearch_is_generic_and_preserves_the_original_query() -> None:
 
     assert _engine_query(query) == query
     assert _provider_order(query) == ["firecrawl", "exa", "parallel"]
+
+
+def test_search_web_source_auto_reuses_the_existing_fallback_chain() -> None:
+    expected = {
+        "success": True,
+        "provider": "exa",
+        "fallback_used": True,
+        "attempts": [{"provider": "firecrawl_searxng", "success": False}],
+        "results": [{"title": "结果", "url": "https://example.com/result"}],
+    }
+    with patch.object(source_operations, "websearch", return_value=expected) as fallback:
+        result = source_operations.search_web_source(
+            source_id="auto",
+            query="最新产业进展",
+            num_results=99,
+            context_max_characters=100,
+            livecrawl="fallback",
+            search_type="auto",
+        )
+
+    assert result is expected
+    fallback.assert_called_once_with(
+        query="最新产业进展",
+        num_results=20,
+        context_max_characters=1_000,
+        livecrawl="fallback",
+        search_type="auto",
+    )
+
 
 def test_websearch_does_not_spend_remote_fallback_when_local_search_succeeds() -> None:
     local = {
