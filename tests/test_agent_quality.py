@@ -263,6 +263,25 @@ def test_completed_no_tool_general_answer_can_pass_generic_quality_contract() ->
     assert result["total_score"] == 1.0
 
 
+def test_failed_run_without_final_answer_does_not_duplicate_execution_failure() -> None:
+    result = score_agent_run_snapshot(
+        {
+            "run": {"status": "failed", "final_text": ""},
+            "quality_projection": {
+                "engine": "langgraph_agent_loop",
+                "tool_results": [],
+                "evidence": [],
+                "loop": {"tool_call_count": 0, "work_budget_exhausted": False},
+            },
+            "steps": [],
+        }
+    )
+
+    assert result["dimensions"]["answer_contract"]["score"] == 1.0
+    assert result["dimensions"]["answer_contract"]["details"]["not_applicable"] is True
+    assert [item["code"] for item in result["violations"]] == ["execution_contract_failed"]
+
+
 def test_legacy_capability_expectations_are_not_executable() -> None:
     result = score_agent_run_snapshot(
         {

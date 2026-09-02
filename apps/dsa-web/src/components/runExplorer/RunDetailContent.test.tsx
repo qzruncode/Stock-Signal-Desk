@@ -51,6 +51,7 @@ describe('RunDetailContent', () => {
     expect(screen.getAllByText(/The upstream service did not return a response/).length).toBeGreaterThan(0);
     expect(screen.getByText(/错误代码：tool_execution_failed/)).toBeInTheDocument();
     expect(screen.getByText('工具执行没有全部完成')).toBeInTheDocument();
+    expect(screen.queryByText('回答内容还有待补全')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '定位失败工具' })).toBeInTheDocument();
     expect(screen.getByText('查看错误详情').closest('details')).toBeInTheDocument();
   });
@@ -167,7 +168,38 @@ describe('RunDetailContent', () => {
 
     expect(screen.getByText('自动巡检结论')).toBeInTheDocument();
     expect(screen.getByText('发现文档来源，但没有对应正文读取')).toBeInTheDocument();
-    expect(screen.getByText('仅来源引用')).toBeInTheDocument();
-    expect(screen.getByText(/质量分通过，但有 1 个行为待核对/)).toBeInTheDocument();
+    expect(screen.getByText('调用完成 · 来源索引')).toBeInTheDocument();
+    expect(screen.getByText(/有 1 个需要处理的核对问题/)).toBeInTheDocument();
+  });
+
+  it('renders one normalized tool outcome instead of contradictory status badges', () => {
+    const outcomeDetail: AgentRunDetail = {
+      ...detail,
+      snapshot: {
+        ...detail.snapshot,
+        run: { status: 'completed', finalText: '结论' },
+        qualityProjection: {
+          ...detail.snapshot.qualityProjection,
+          toolResults: [{
+            actionId: 'call-empty',
+            toolName: 'read_web_source',
+            success: true,
+            outcome: {
+              executionStatus: 'completed',
+              accessStatus: 'content_unavailable',
+              dataStatus: 'empty',
+              usable: false,
+              qualityStatus: 'warning',
+            },
+          }],
+        },
+      },
+    };
+
+    render(<RunDetailContent detail={outcomeDetail} onFeedback={vi.fn()} />);
+
+    expect(screen.getByText('调用完成 · 空结果')).toBeInTheDocument();
+    expect(screen.queryByText('成功')).not.toBeInTheDocument();
+    expect(screen.queryByText('读取失败')).not.toBeInTheDocument();
   });
 });

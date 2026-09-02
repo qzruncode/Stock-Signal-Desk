@@ -27,6 +27,7 @@ export type AgentBehaviorStatus = 'clear' | 'info' | 'warning' | 'danger';
 export interface AgentBehaviorFinding {
   code: string;
   severity: 'info' | 'warning' | 'danger';
+  disposition?: 'action_required' | 'advisory' | string;
   category: string;
   title: string;
   detail: string;
@@ -54,13 +55,23 @@ export interface AgentBehaviorStep {
   contentExtracted?: boolean;
   evidenceCount?: number;
   resultCount?: number | null;
+  outcome?: {
+    executionStatus?: 'completed' | 'failed' | string;
+    accessStatus?: string;
+    dataStatus?: string;
+    usable?: boolean;
+    qualityStatus?: string;
+  };
 }
 
 export interface AgentBehaviorAudit {
+  schemaVersion?: string;
   status: AgentBehaviorStatus;
   attentionLevel: 'none' | 'review' | 'urgent';
   riskScore: number;
   issueCount: number;
+  actionRequiredCount?: number;
+  advisoryCount?: number;
   dangerCount: number;
   warningCount: number;
   infoCount?: number;
@@ -134,9 +145,13 @@ export interface AgentRunSummary {
   behaviorWarningCount?: number;
   behaviorInfoCount?: number;
   behaviorRiskScore?: number;
+  behaviorActionRequiredCount?: number;
+  behaviorAdvisoryCount?: number;
   unreadReferenceCount?: number;
   unreadDocumentCount?: number;
   unreadArticleCount?: number;
+  citedReferenceToolCount?: number;
+  citedUnreadReferenceCount?: number;
   contentReadCallCount?: number;
   failedToolCount?: number;
   feedback?: AgentRunFeedback | null;
@@ -180,6 +195,7 @@ export interface AgentRunDetail {
     run: Record<string, unknown>;
     trace: Record<string, unknown>;
     qualityProjection: {
+      inspectionSchemaVersion?: string;
       toolResults?: Array<Record<string, unknown>>;
       evidence?: Array<Record<string, unknown>>;
       claimEvidence?: Array<Record<string, unknown>>;
@@ -211,6 +227,8 @@ export interface AgentQualitySummary {
     warningRuns: number;
     dangerRuns: number;
     infoRuns: number;
+    actionRequiredCount: number;
+    advisoryCount: number;
     unreadReferenceCount: number;
     contentReadCallCount: number;
     issues: Record<string, number>;

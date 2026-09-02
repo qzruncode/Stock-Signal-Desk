@@ -88,19 +88,83 @@ const accessModeFor = (toolName: string, result?: Record<string, unknown>) => {
   if (CONTENT_READER_TOOLS.has(toolName)) return 'content_read';
   return 'structured_data';
 };
-const accessLabelFor = (mode: string, result?: Record<string, unknown>) => {
-  const access = record(field(result, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit']));
-  const extracted = field(access, ['contentExtracted', 'content_extracted']) === true;
-  const contentRead = field(access, ['contentRead', 'content_read']);
-  if (mode === 'reference_only') return '仅来源引用';
-  if (mode === 'content_read') {
-    if (contentRead === false) return '读取失败';
-    if (extracted) return '已读取并提取';
-    if (contentRead === true) return '已读取正文';
-    return '读取状态未记录';
-  }
-  return '结构化数据';
+type ToolOutcome = {
+  executionStatus: string;
+  accessStatus: string;
+  dataStatus: string;
+  usable: boolean;
+  qualityStatus: string;
 };
+const toolOutcomeFor = (toolName: string, result?: Record<string, unknown>): ToolOutcome => {
+  const explicit = record(result?.outcome);
+  if (text(explicit.executionStatus) || text(explicit.dataStatus) || text(explicit.accessStatus)) {
+    return {
+      executionStatus: text(explicit.executionStatus) || (result?.success === true ? 'completed' : 'failed'),
+      accessStatus: text(explicit.accessStatus) || accessModeFor(toolName, result),
+      dataStatus: text(explicit.dataStatus) || 'usable',
+      usable: explicit.usable === true,
+      qualityStatus: text(explicit.qualityStatus) || 'clear',
+    };
+  }
+  const success = result?.success === true;
+  const accessMode = accessModeFor(toolName, result);
+  const access = record(field(result, ['contentAccess', 'content_access', 'retrievalAudit', 'retrieval_audit']));
+  const contentExtracted = field(access, ['contentExtracted', 'content_extracted']) === true;
+  const resultCount = numberValue(field(result, ['resultCount', 'result_count', 'count', 'itemCount', 'item_count']));
+  const dataStatus = !success
+    ? 'error'
+    : resultCount === 0 || (accessMode === 'content_read' && !contentExtracted)
+      ? 'empty'
+      : field(result, ['isStale', 'is_stale']) === true
+        ? 'stale'
+        : field(result, ['partial', 'partialResult', 'partial_result']) === true
+          ? 'partial'
+          : field(result, ['fallbackUsed', 'fallback_used']) === true
+            ? 'fallback'
+            : field(result, ['freshnessUnknown', 'freshness_unknown']) === true
+              ? 'freshness_unknown'
+              : 'usable';
+  const accessStatus = !success && accessMode === 'content_read'
+    ? 'content_unavailable'
+    : contentExtracted
+      ? 'content_extracted'
+      : accessMode;
+  return {
+    executionStatus: success ? 'completed' : 'failed',
+    accessStatus,
+    dataStatus,
+    usable: success && dataStatus !== 'empty',
+    qualityStatus: 'unknown',
+  };
+};
+const toolOutcomeLabel = (outcome: ToolOutcome) => {
+  if (outcome.executionStatus !== 'completed') return '调用失败';
+  const dataLabels: Record<string, string> = {
+    empty: '空结果',
+    stale: '数据过期',
+    partial: '返回不完整',
+    fallback: '已降级',
+    freshness_unknown: '数据时间未知',
+  };
+  if (dataLabels[outcome.dataStatus]) return `调用完成 · ${dataLabels[outcome.dataStatus]}`;
+  const accessLabels: Record<string, string> = {
+    content_extracted: '正文已提取',
+    content_unavailable: '正文不可用',
+    content_read: '正文已读取',
+    reference_only: '来源索引',
+    structured_data: '结构化数据',
+  };
+  return `调用完成 · ${accessLabels[outcome.accessStatus] ?? '已返回'}`;
+};
+const toolOutcomeVariant = (outcome: ToolOutcome) => (
+  outcome.executionStatus !== 'completed'
+    ? 'danger' as const
+    : ['empty', 'stale', 'partial'].includes(outcome.dataStatus)
+      ? 'warning' as const
+      : ['fallback', 'freshness_unknown'].includes(outcome.dataStatus)
+        ? 'info' as const
+        : 'success' as const
+);
 const sourceLabel = (value: string) => {
   const trimmed = value.trim();
   if (!isHttpUrl(trimmed)) return trimmed.replace(/^www\./i, '');
@@ -200,10 +264,20 @@ function buildQualityIssues(
   score: AgentRunDetail['score'],
   failedToolResults: Array<Record<string, unknown>>,
   failedSteps: Array<Record<string, unknown>>,
+  behaviorAudit?: AgentBehaviorAudit,
+  runStatus = '',
 ): QualityIssue[] {
   const issues: QualityIssue[] = [];
   const execution = dimensionFor(score, 'execution');
-  if (failedToolResults.length > 0 || failedSteps.length > 0 || (execution && execution.score < 1)) {
+  const hasActionableExecutionFinding = behaviorAudit?.findings.some((finding) => (
+    finding.category === 'execution' && finding.disposition !== 'advisory'
+  ));
+  if (
+    (behaviorAudit
+      ? hasActionableExecutionFinding
+      : failedToolResults.length > 0 || failedSteps.length > 0)
+    || (execution && execution.score < 1)
+  ) {
     const failedTools = uniqueStrings([
       ...failedToolResults.map((item) => text(item.toolName)),
       ...failedSteps.map((item) => text(item.toolName) || text(item.tool_name)),
@@ -248,7 +322,10 @@ function buildQualityIssues(
   const answerDetails = dimensionDetails(score, 'answer_contract');
   const missingTerms = detailList(answerDetails, 'missing_required_terms');
   const forbiddenTerms = detailList(answerDetails, 'present_forbidden_terms');
-  if (answer && answer.score < 1) {
+  const terminalFailureWithoutAnswer = ['partial', 'failed', 'blocked', 'cancelled'].includes(runStatus)
+    && field(answerDetails, ['has_answer', 'hasAnswer']) !== true
+    && !text(field(answerDetails, ['answer', 'final_text', 'finalText']));
+  if (answer && answer.score < 1 && !terminalFailureWithoutAnswer) {
     const problems = [
       missingTerms.length > 0 ? `缺少：${missingTerms.join('、')}` : '',
       forbiddenTerms.length > 0 ? `出现不应出现的内容：${forbiddenTerms.join('、')}` : '',
@@ -314,8 +391,12 @@ export function RunDetailContent({
   const sourceNames = uniqueStrings(evidence.flatMap((item) => stringList(item.sourceRefs)));
   const sourceLabels = sourceNames.length > 0 ? uniqueStrings(sourceNames.map(sourceLabel)) : toolNames;
   const feedbackRating = detail.snapshot.feedback?.rating;
-  const failedToolResults = toolResults.filter((result) => result.success !== true);
-  const firstFailedToolIndex = toolResults.findIndex((result) => result.success !== true);
+  const failedToolResults = toolResults.filter((result) => (
+    toolOutcomeFor(text(result.toolName), result).executionStatus !== 'completed'
+  ));
+  const firstFailedToolIndex = toolResults.findIndex((result) => (
+    toolOutcomeFor(text(result.toolName), result).executionStatus !== 'completed'
+  ));
   const failedSteps = steps.filter((step) => (
     text(step.status) === 'failed' || Boolean(errorCodeFrom(step)) || errorDetailsFrom(step).length > 0
   ));
@@ -344,8 +425,10 @@ export function RunDetailContent({
   const durationMs = text(run.startedAt) && text(run.finishedAt)
     ? new Date(text(run.finishedAt)).getTime() - new Date(text(run.startedAt)).getTime()
     : null;
-  const qualityIssues = buildQualityIssues(detail.score, failedToolResults, failedSteps);
-  const behaviorReviewCount = (behaviorAudit?.dangerCount ?? 0) + (behaviorAudit?.warningCount ?? 0);
+  const qualityIssues = buildQualityIssues(detail.score, failedToolResults, failedSteps, behaviorAudit, runStatus);
+  const behaviorReviewCount = behaviorAudit?.actionRequiredCount
+    ?? (behaviorAudit?.dangerCount ?? 0) + (behaviorAudit?.warningCount ?? 0);
+  const behaviorAdvisoryCount = behaviorAudit?.advisoryCount ?? behaviorAudit?.infoCount ?? 0;
   const answerStatusTone = !detail.score.passed || behaviorReviewCount > 0
     ? 'text-warning'
     : behaviorAudit?.status === 'info'
@@ -375,11 +458,11 @@ export function RunDetailContent({
             <p className="text-xs font-semibold text-foreground">助手给出的结论</p>
             <span className={cn('text-[11px] font-medium', answerStatusTone)}>
               {behaviorAudit?.status === 'danger'
-                ? `自动巡检发现 ${behaviorAudit.dangerCount} 个高风险问题`
+                ? `自动巡检发现 ${behaviorReviewCount} 个需要处理的问题`
                 : behaviorAudit?.status === 'warning'
-                  ? `质量分通过，但有 ${behaviorReviewCount} 个行为待核对`
+                  ? `有 ${behaviorReviewCount} 个需要处理的核对问题`
                   : behaviorAudit?.status === 'info'
-                    ? `质量分通过，有 ${behaviorAudit.infoCount ?? 0} 个自动检查提示`
+                    ? `运行完成，有 ${behaviorAdvisoryCount} 个观察提示`
                   : detail.score.passed
                     ? '资料核对通过'
                     : `有 ${detail.score.violations.length} 个待核对问题`}
@@ -460,10 +543,10 @@ export function RunDetailContent({
             const toolErrorCode = errorCodeFrom(result);
             const step = findStepForTool(steps, result, actionId);
             const toolName = text(result.toolName) || '未指定工具';
-            const accessMode = accessModeFor(toolName, result);
             const expanded = expandedActionId === actionId;
             const hasStepPayload = Boolean(step && (hasValue(step.arguments) || hasValue(step.result)));
             const canLoadPayloads = Boolean(onLoadToolPayloads) && !toolPayloadsLoaded && !hasStepPayload;
+            const outcome = toolOutcomeFor(toolName, result);
             return <div id={index === firstFailedToolIndex ? 'run-failed-tool' : undefined} key={actionId || index} className="rounded-lg border border-border/70 p-2.5 scroll-mt-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
@@ -471,8 +554,7 @@ export function RunDetailContent({
                   <p className="mt-0.5 truncate font-mono text-[10px] text-secondary-text" title={actionId}>调用编号 {actionId}</p>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
-                  <Badge variant={result.success === true ? 'success' : 'danger'}>{result.success === true ? '成功' : '失败'}</Badge>
-                  <Badge variant={accessMode === 'reference_only' ? 'warning' : accessMode === 'content_read' ? 'info' : 'default'}>{accessLabelFor(accessMode, result)}</Badge>
+                  <Badge variant={toolOutcomeVariant(outcome)}>{toolOutcomeLabel(outcome)}</Badge>
                 </div>
               </div>
               <p className="mt-2 line-clamp-2 text-[11px] text-foreground/75">{actionSources.join('、') || '来源未标注'} · {actionEvidence.length} 条证据</p>
@@ -502,7 +584,7 @@ export function RunDetailContent({
                 payloadsLoading={toolPayloadsLoading}
                 onLoadPayloads={onLoadToolPayloads}
               /> : null}
-              {result.success !== true ? <ErrorDetails title={toolErrorDetails.length > 0 || toolErrorCode ? '查看错误详情' : '查看失败记录'} errorCode={toolErrorCode} details={toolErrorDetails} fallback="该工具调用标记为失败，但运行记录没有返回具体错误文本。" /> : null}
+              {outcome.executionStatus !== 'completed' ? <ErrorDetails title={toolErrorDetails.length > 0 || toolErrorCode ? '查看错误详情' : '查看失败记录'} errorCode={toolErrorCode} details={toolErrorDetails} fallback="该工具调用标记为失败，但运行记录没有返回具体错误文本。" /> : null}
             </div>;
           })}
           {toolResults.length === 0 ? <p className="text-xs text-secondary-text">该问题没有调用工具。</p> : null}
@@ -776,7 +858,17 @@ function BehaviorAuditCard({
   sourceSample?: AgentSourceSampleResponse | null;
 }) {
   if (!audit) return null;
-  const statusLabel = audit.status === 'danger' ? '存在执行异常' : audit.status === 'warning' ? '需要重点核对' : audit.status === 'info' ? '有自动检查提示' : '自动检查通过';
+  const actionCount = audit.actionRequiredCount ?? audit.dangerCount + audit.warningCount;
+  const advisoryCount = audit.advisoryCount ?? audit.infoCount ?? 0;
+  const actionableFindings = audit.findings.filter((finding) => finding.disposition !== 'advisory');
+  const advisoryFindings = audit.findings.filter((finding) => finding.disposition === 'advisory');
+  const statusLabel = audit.status === 'danger'
+    ? '存在需要处理的执行或数据问题'
+    : audit.status === 'warning'
+      ? '有需要处理的核对问题'
+      : audit.status === 'info'
+        ? '运行完成，有观察提示'
+        : '自动核对通过';
   const statusTone = audit.status === 'danger' ? 'danger' : audit.status === 'warning' ? 'warning' : audit.status === 'info' ? 'info' : 'success';
   const statusIcon = audit.status === 'clear'
     ? <ShieldCheck className="size-4 text-success" />
@@ -791,12 +883,10 @@ function BehaviorAuditCard({
           <div className="min-w-0">
             <p className={cn('text-xs font-semibold', audit.status === 'danger' ? 'text-danger' : audit.status === 'warning' ? 'text-warning' : audit.status === 'info' ? 'text-cyan' : 'text-success')}>{statusLabel}</p>
             <p className="mt-0.5 text-[11px] leading-5 text-foreground/75">
-              {audit.dangerCount + audit.warningCount > 0
-                ? `发现 ${audit.dangerCount + audit.warningCount} 个需处理的核对项（高风险 ${audit.dangerCount}，待核对 ${audit.warningCount}${audit.infoCount ? `；另有 ${audit.infoCount} 个提示` : ''}）。`
-                : audit.infoCount
-                  ? `发现 ${audit.infoCount} 个自动检查提示，暂未判定为异常。`
-                  : '当前运行没有发现需要人工处理的异常。'}
-              {' '}自动检查通过不等于事实绝对正确，表示结构、来源和执行链路暂未发现明显异常。
+              {actionCount > 0
+                ? `发现 ${actionCount} 个需要处理的核对项（高风险 ${audit.dangerCount}，待核对 ${Math.max(0, actionCount - audit.dangerCount)}）。`
+                : `当前没有需要人工处理的异常${advisoryCount ? `，保留 ${advisoryCount} 条观察提示供排查。` : '。'} `}
+              自动检查通过不等于事实绝对正确，表示结构、来源和执行链路暂未发现需要处理的异常。
             </p>
           </div>
         </div>
@@ -804,31 +894,14 @@ function BehaviorAuditCard({
       </div>
       <div className="mt-2 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
         <Metric icon={<Activity className="size-3.5 text-cyan" />} label="模型轮次 / 工具调用" value={`${audit.modelTurnCount} / ${audit.toolCallCount}`} />
-        <Metric icon={<Link2 className="size-3.5 text-purple" />} label="候选链接 / 未读取" value={`${audit.referenceLinkCount} / ${audit.unreadReferenceCount}`} />
+        <Metric icon={<Link2 className="size-3.5 text-purple" />} label="候选 / 未读取（未选不等于失败）" value={`${audit.referenceLinkCount} / ${audit.unreadReferenceCount}`} />
         <Metric icon={<Database className="size-3.5 text-emerald-600" />} label="正文读取 / 提取" value={`${audit.contentReadCallCount} / ${audit.contentExtractedCallCount}`} />
         <Metric icon={<CheckCircle2 className="size-3.5 text-success" />} label="证据 / 结论" value={`${audit.evidenceCount} / ${audit.claimCount}`} />
       </div>
-      {audit.findings.length > 0 ? <div className="mt-2 space-y-1.5">
-        {audit.findings.map((finding) => <div key={`${finding.code}-${finding.title}`} className={cn('rounded-lg border px-3 py-2', finding.severity === 'danger' ? 'border-danger/20 bg-danger/5' : finding.severity === 'info' ? 'border-cyan/20 bg-cyan/5' : 'border-warning/20 bg-warning/8')}>
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 items-start gap-2">
-              {finding.severity === 'info' ? <Activity className="mt-0.5 size-3.5 shrink-0 text-cyan" /> : <TriangleAlert className={cn('mt-0.5 size-3.5 shrink-0', finding.severity === 'danger' ? 'text-danger' : 'text-warning')} />}
-              <div className="min-w-0">
-                <p className={cn('text-xs font-medium', finding.severity === 'danger' ? 'text-danger' : finding.severity === 'info' ? 'text-cyan' : 'text-warning')}>{finding.title}</p>
-                <p className="mt-0.5 text-[11px] leading-5 text-foreground/75">{finding.detail}</p>
-                {finding.remediation ? <p className="mt-1 text-[10px] leading-4 text-secondary-text">建议：{finding.remediation}</p> : null}
-              </div>
-            </div>
-            <button type="button" onClick={() => document.getElementById('run-tools')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="shrink-0 rounded-md border border-border/70 bg-card px-2 py-1 text-[10px] text-secondary-text transition hover:text-foreground">查看调用链</button>
-          </div>
-          {finding.links && finding.links.length > 0 ? <details className="mt-1.5 pl-5 text-[10px] text-secondary-text">
-            <summary className="cursor-pointer select-none hover:text-foreground">查看 {finding.links.length} 条关联来源（仅展示，不代表已读取）</summary>
-            <div className="mt-1 space-y-0.5 border-l border-border pl-2">{finding.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer" className="block break-all text-cyan hover:underline">{link}</a>)}</div>
-          </details> : null}
-        </div>)}
-      </div> : null}
+      {actionableFindings.length > 0 ? <FindingList title={`需要处理（${actionableFindings.length}）`} findings={actionableFindings} /> : null}
+      {advisoryFindings.length > 0 ? <FindingList title={`自动观察（${advisoryFindings.length}，不阻断本次运行）`} findings={advisoryFindings} advisory /> : null}
       <details className="mt-2 rounded-md border border-border/70 bg-card/60 px-2.5 py-2">
-        <summary className="cursor-pointer select-none text-[10px] font-medium text-secondary-text hover:text-foreground">查看自动检查项</summary>
+        <summary className="cursor-pointer select-none text-[10px] font-medium text-secondary-text hover:text-foreground">查看全部自动检查项</summary>
         <div className="mt-1.5 grid gap-1 sm:grid-cols-2">{audit.checks.map((check) => <div key={check.code} className="flex items-start gap-1.5 text-[10px]">
           <span className={cn('mt-0.5 size-1.5 shrink-0 rounded-full', check.status === 'danger' ? 'bg-danger' : check.status === 'warning' ? 'bg-warning' : check.status === 'info' ? 'bg-cyan' : 'bg-success')} />
           <span><span className="font-medium text-foreground">{check.label}</span><span className="ml-1 text-secondary-text">{check.detail}</span></span>
@@ -855,6 +928,40 @@ function BehaviorAuditCard({
         </div> : null}
       </div> : null}
     </Card>
+  </div>;
+}
+
+function FindingList({
+  title,
+  findings,
+  advisory = false,
+}: {
+  title: string;
+  findings: AgentBehaviorAudit['findings'];
+  advisory?: boolean;
+}) {
+  return <div className="mt-2 space-y-1.5">
+    <p className={cn('text-[11px] font-semibold', advisory ? 'text-cyan' : 'text-foreground')}>{title}</p>
+    {findings.map((finding) => {
+      const tone = advisory ? 'info' : finding.severity;
+      return <div key={`${finding.code}-${finding.title}`} className={cn('rounded-lg border px-3 py-2', tone === 'danger' ? 'border-danger/20 bg-danger/5' : tone === 'info' ? 'border-cyan/20 bg-cyan/5' : 'border-warning/20 bg-warning/8')}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 items-start gap-2">
+            {tone === 'info' ? <Activity className="mt-0.5 size-3.5 shrink-0 text-cyan" /> : <TriangleAlert className={cn('mt-0.5 size-3.5 shrink-0', tone === 'danger' ? 'text-danger' : 'text-warning')} />}
+            <div className="min-w-0">
+              <p className={cn('text-xs font-medium', tone === 'danger' ? 'text-danger' : tone === 'info' ? 'text-cyan' : 'text-warning')}>{finding.title}</p>
+              <p className="mt-0.5 text-[11px] leading-5 text-foreground/75">{finding.detail}</p>
+              {finding.remediation ? <p className="mt-1 text-[10px] leading-4 text-secondary-text">建议：{finding.remediation}</p> : null}
+            </div>
+          </div>
+          <button type="button" onClick={() => document.getElementById('run-tools')?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="shrink-0 rounded-md border border-border/70 bg-card px-2 py-1 text-[10px] text-secondary-text transition hover:text-foreground">查看调用链</button>
+        </div>
+        {finding.links && finding.links.length > 0 ? <details className="mt-1.5 pl-5 text-[10px] text-secondary-text">
+          <summary className="cursor-pointer select-none hover:text-foreground">查看 {finding.links.length} 条关联来源（仅展示，不代表已读取）</summary>
+          <div className="mt-1 space-y-0.5 border-l border-border pl-2">{finding.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer" className="block break-all text-cyan hover:underline">{link}</a>)}</div>
+        </details> : null}
+      </div>;
+    })}
   </div>;
 }
 

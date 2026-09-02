@@ -14,7 +14,12 @@ from src.agent.langgraph_runtime.presentation import (
     project_arguments_for_timeline,
     project_tool_result_for_timeline,
 )
-from src.agent.behavior_audit import describe_tool_access, describe_tool_quality
+from src.agent.behavior_audit import (
+    INSPECTION_SCHEMA_VERSION,
+    describe_tool_access,
+    describe_tool_outcome,
+    describe_tool_quality,
+)
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -62,8 +67,25 @@ def _trace_result_items(value: Any) -> list[dict[str, Any]]:
 def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     projected: list[dict[str, Any]] = []
     for item in results[:80]:
-        source_refs = _short_list(item.get("source_refs"), item_limit=16, text_limit=1_000)
         raw_result = item.get("result") if isinstance(item.get("result"), Mapping) else {}
+        source_refs = _short_list(
+            item.get("source_refs") or raw_result.get("source_refs"),
+            item_limit=16,
+            text_limit=1_000,
+        )
+        outcome = describe_tool_outcome(
+            _short_text(item.get("tool_name"), 128),
+            item,
+        )
+
+        def value(*keys: str) -> Any:
+            for key in keys:
+                if key in item and item[key] is not None:
+                    return item[key]
+                if key in raw_result and raw_result[key] is not None:
+                    return raw_result[key]
+            return None
+
         display_result = (
             dict(item.get("display_result") or {})
             if isinstance(item.get("display_result"), Mapping)
@@ -77,14 +99,26 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         arguments = project_arguments_for_timeline(
             raw_arguments if isinstance(raw_arguments, Mapping) else {},
         )
+        data_time = value("data_time", "dataTime")
+        data_time_provenance = value("data_time_provenance", "dataTimeProvenance")
+        data_time_applicable = value("data_time_applicable", "dataTimeApplicable")
+        if data_time_applicable is None:
+            data_time_applicable = True
+        is_stale = value("is_stale", "isStale")
+        freshness_unknown = value("freshness_unknown", "freshnessUnknown")
+        if freshness_unknown is None:
+            freshness_unknown = data_time is None
+        partial_result = value("partial", "partial_result", "partialResult")
+        fallback_used = value("fallback_used", "fallbackUsed")
         projected.append(
             {
                 "action_id": _short_text(item.get("action_id") or item.get("id"), 96),
                 "tool_call_id": _short_text(item.get("tool_call_id"), 128) or None,
                 "tool_name": _short_text(item.get("tool_name"), 128),
+                "effect": _short_text(item.get("effect"), 32) or "read",
                 "arguments": arguments,
-                "success": item.get("success") is True,
-                "partial": bool(item.get("partial")),
+                "success": outcome["execution_status"] == "completed",
+                "partial": bool(partial_result),
                 "reused": bool(item.get("reused")),
                 "error_code": _short_text(
                     item.get("error_code") or raw_result.get("error_code"),
@@ -95,16 +129,16 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     item_limit=8,
                     text_limit=800,
                 ),
-                "data_time": _short_text(item.get("data_time"), 160) or None,
-                "data_time_provenance": _short_text(item.get("data_time_provenance"), 80) or None,
-                "data_time_applicable": raw_result.get("data_time_applicable", True),
-                "is_stale": item.get("is_stale"),
-                "freshness_unknown": bool(item.get("freshness_unknown")),
-                "partial_result": bool(item.get("partial")),
-                "fallback_used": bool(item.get("fallback_used") or raw_result.get("fallback_used")),
-                "fallback_provider": _short_text(item.get("fallback_provider") or raw_result.get("fallback_provider"), 160) or None,
-                "source_scope": _short_text(item.get("source_scope"), 240) or None,
-                "source_origin": _short_text(item.get("source_origin"), 240) or None,
+                "data_time": _short_text(data_time, 160) or None,
+                "data_time_provenance": _short_text(data_time_provenance, 80) or None,
+                "data_time_applicable": data_time_applicable,
+                "is_stale": is_stale,
+                "freshness_unknown": bool(freshness_unknown),
+                "partial_result": bool(partial_result),
+                "fallback_used": bool(fallback_used),
+                "fallback_provider": _short_text(value("fallback_provider", "fallbackProvider"), 160) or None,
+                "source_scope": _short_text(value("source_scope", "sourceScope"), 240) or None,
+                "source_origin": _short_text(value("source_origin", "sourceOrigin"), 240) or None,
                 "warnings": _short_list(
                     item.get("warnings") or raw_result.get("warnings"),
                     item_limit=8,
@@ -139,6 +173,7 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                     _short_text(item.get("tool_name"), 128),
                     item,
                 ),
+                "outcome": outcome,
                 "data_quality": describe_tool_quality(
                     _short_text(item.get("tool_name"), 128),
                     item,
@@ -305,9 +340,20 @@ class AgentTerminalPublisher:
             for item in (state.get("claim_evidence") or [])
             if isinstance(item, Mapping)
         ]
+        execution_trace = _execution_trace(
+            stage_history=stage_history,
+            tool_results=tool_results,
+            evidence=evidence,
+            claim_evidence=claim_evidence,
+            state=state,
+        )
         quality_projection = {
             "engine": "langgraph_agent_loop",
-            "tool_results": tool_results,
+            "inspection_schema_version": INSPECTION_SCHEMA_VERSION,
+            # The quality projection is the bounded, user-safe run contract.
+            # Full provider payloads remain in the durable step ledger and are
+            # loaded only when the explorer requests them.
+            "tool_results": execution_trace["tool_results"],
             "evidence": evidence,
             "claim_evidence": claim_evidence,
             "completed_tool_call_ids": list(state.get("completed_tool_call_ids") or []),
@@ -318,18 +364,13 @@ class AgentTerminalPublisher:
                 "evidence_repair_count": int(state.get("evidence_repair_count") or 0),
                 "evidence_repair_limit": int(state.get("evidence_repair_limit") or 0),
             },
-            "execution_trace": _execution_trace(
-                stage_history=stage_history,
-                tool_results=tool_results,
-                evidence=evidence,
-                claim_evidence=claim_evidence,
-                state=state,
-            ),
+            "execution_trace": execution_trace,
         }
         trace_payload = {
             "engine": "langgraph_agent_loop",
             "run_id": self.run.run_id,
             "status": status,
+            "schema_version": INSPECTION_SCHEMA_VERSION,
             "model_turn_count": state.get("model_turn_count"),
             "tool_call_count": state.get("tool_call_count"),
             "evidence_repair_count": state.get("evidence_repair_count"),

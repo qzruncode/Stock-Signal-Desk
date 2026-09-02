@@ -45,12 +45,7 @@ _CONTENT_KEYS = frozenset(
         "content_html",
         "chunks",
         "content_chunks",
-        "resources",
-        "resource",
-        "evidence_collection",
-        "extraction_method",
         "content_length",
-        "coverage_digest",
     }
 )
 _URL_KEYS = frozenset(
@@ -63,10 +58,25 @@ _URL_KEYS = frozenset(
         "referenceLinks",
     }
 )
+_RESULT_COLLECTION_KEYS = (
+    "items",
+    "results",
+    "rows",
+    "records",
+    "entries",
+    "data",
+    "documents",
+    "articles",
+    "result_items",
+    "resultItems",
+)
 _MAX_LINKS = 20
 _MAX_FINDING_LINKS = 12
 _MAX_TOOL_CHAIN = 80
 _EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
+INSPECTION_SCHEMA_VERSION = "agent-run-inspection-v1"
+ACTION_REQUIRED = "action_required"
+ADVISORY = "advisory"
 _DATA_TIME_NOT_APPLICABLE_TOOLS = frozenset(
     {
         "search_stocks",
@@ -77,6 +87,15 @@ _DATA_TIME_NOT_APPLICABLE_TOOLS = frozenset(
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _observation_with_result_fields(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Expose canonical result fields while preserving outer execution facts."""
+    item = dict(value or {})
+    raw_result = _mapping(item.get("result"))
+    for key, nested_value in raw_result.items():
+        item.setdefault(str(key), nested_value)
+    return item
 
 
 def _sequence(value: Any) -> list[Any]:
@@ -181,6 +200,22 @@ def _read_urls(item: Mapping[str, Any], step: Mapping[str, Any]) -> list[str]:
     return urls[:_MAX_LINKS]
 
 
+def _result_collection_state(payload: Mapping[str, Any]) -> tuple[list[Any], bool]:
+    """Return one useful result collection and whether an empty one exists."""
+    first_collection: list[Any] = []
+    has_empty_collection = False
+    for key in _RESULT_COLLECTION_KEYS:
+        value = payload.get(key)
+        if not isinstance(value, list):
+            continue
+        if value:
+            if not first_collection:
+                first_collection = value
+        else:
+            has_empty_collection = True
+    return first_collection, has_empty_collection
+
+
 def _content_signal(value: Any, *, depth: int = 0) -> bool:
     if depth > 4:
         return False
@@ -261,10 +296,7 @@ def describe_tool_access(tool_name: str, observation: Mapping[str, Any] | None) 
     content access from arbitrary provider response fields.  It intentionally
     excludes the content body itself.
     """
-    item = dict(observation or {})
-    raw_result = _mapping(item.get("result"))
-    for key, value in raw_result.items():
-        item.setdefault(str(key), value)
+    item = _observation_with_result_fields(observation)
     mode = _access_mode(tool_name, item, {})
     references = _reference_urls(item)
     extracted = _content_extracted(item, {}, mode)
@@ -289,22 +321,18 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
     true.  Tool-specific validators can add stronger checks later without
     changing the run record contract.
     """
-    item = dict(observation or {})
+    item = _observation_with_result_fields(observation)
     payload = _mapping(item.get("result")) or item
-    collections: list[Any] = []
-    for key in ("items", "results", "rows", "records", "entries", "data"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            collections = value
-            break
-    result_count = _field(payload, "result_count", "resultCount", "item_count", "itemCount", "count", "total")
+    collections, has_empty_collection = _result_collection_state(payload)
+    result_count = _field(item, "result_count", "resultCount", "item_count", "itemCount", "count", "total")
     try:
         result_count_int = int(result_count) if result_count is not None else None
     except (TypeError, ValueError):
         result_count_int = None
-    success = item.get("success") is True or payload.get("success") is True
-    warnings = _field(payload, "warnings", "warning")
-    errors = _field(payload, "errors", "error")
+    success_value = item["success"] if "success" in item else payload.get("success")
+    success = success_value is True
+    warnings = _field(item, "warnings", "warning")
+    errors = _field(item, "errors", "error")
     warning_count = len(_sequence(warnings)) if isinstance(warnings, list) else int(bool(warnings))
     error_count = len(_sequence(errors)) if isinstance(errors, list) else int(bool(errors))
     duplicate_count = 0
@@ -320,15 +348,22 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
             duplicate_count += 1
         elif identity:
             identities.add(identity)
-    fallback_used = _truthy(_field(item, "fallback_used", "fallbackUsed") or _field(payload, "fallback_used", "fallbackUsed"))
-    stale = _truthy(_field(item, "is_stale", "isStale") or _field(payload, "is_stale", "isStale"))
-    partial = _truthy(_field(item, "partial") or _field(payload, "partial"))
-    freshness_unknown = _truthy(_field(item, "freshness_unknown", "freshnessUnknown") or _field(payload, "freshness_unknown", "freshnessUnknown"))
+    fallback_used = _truthy(_field(item, "fallback_used", "fallbackUsed"))
+    stale = _truthy(_field(item, "is_stale", "isStale"))
+    partial = _truthy(_field(item, "partial", "partial_result", "partialResult"))
+    freshness_unknown = _truthy(_field(item, "freshness_unknown", "freshnessUnknown"))
+    source_refs = _sequence(_field(item, "source_refs", "sourceRefs"))
+    if not source_refs:
+        source_refs = _sequence(_field(payload, "source_refs", "sourceRefs"))
     source_present = bool(
-        _field(payload, "source", "sources", "provider", "data_source", "dataSource")
-        or _field(item, "source_refs", "sourceRefs")
+        _field(item, "source", "sources", "provider", "data_source", "dataSource")
+        or any(
+            not _text(reference, 1_000).lower().startswith("tool:")
+            for reference in source_refs
+            if _text(reference, 1_000)
+        )
     )
-    entity_uncertain = _field(payload, "unverified_entity_mention_count", "unverifiedEntityMentionCount")
+    entity_uncertain = _field(item, "unverified_entity_mention_count", "unverifiedEntityMentionCount")
     try:
         entity_uncertain_int = int(entity_uncertain or 0)
     except (TypeError, ValueError):
@@ -336,7 +371,7 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
     checks: list[dict[str, Any]] = []
     if not success:
         checks.append({"code": "tool_failed", "status": "danger", "detail": "工具返回失败。"})
-    if result_count_int == 0:
+    if result_count_int == 0 or (result_count_int is None and has_empty_collection):
         checks.append({"code": "empty_result", "status": "warning", "detail": "成功调用没有返回可枚举的数据项。"})
     if result_count_int is not None and collections and result_count_int < len(collections):
         checks.append({"code": "count_inconsistent", "status": "warning", "detail": f"返回数量字段为 {result_count_int}，但响应中发现至少 {len(collections)} 项。"})
@@ -352,7 +387,7 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
         checks.append({"code": "stale_data", "status": "warning", "detail": "结果被来源标记为过期。"})
     if partial:
         checks.append({"code": "partial_result", "status": "warning", "detail": "结果被标记为不完整。"})
-    if success and (result_count_int or collections) and freshness_unknown and _data_time_applicable(payload, tool_name=tool_name):
+    if success and (result_count_int or collections) and freshness_unknown and _data_time_applicable(item, tool_name=tool_name):
         checks.append({"code": "unknown_data_time", "status": "warning", "detail": "结果没有可验证的数据时间。"})
     if (result_count_int or collections) and not source_present:
         checks.append({"code": "missing_source", "status": "warning", "detail": "结果没有明确来源标识。"})
@@ -372,15 +407,88 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
     }
 
 
+def describe_tool_outcome(tool_name: str, observation: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the single semantic outcome used by the run record and audit.
+
+    Execution, source access, and data quality are different facts.  Keeping
+    them in one bounded envelope prevents consumers from presenting a
+    successful tool call together with a contradictory generic "read failed"
+    badge.  ``usable`` means usable within the operation's declared scope; a
+    reference-only result can therefore be usable as an index without proving
+    that its linked document was read.
+    """
+    item = _observation_with_result_fields(observation)
+    raw_result = _mapping(item.get("result"))
+    success_value = item["success"] if "success" in item else raw_result.get("success")
+    success = success_value is True
+    access = describe_tool_access(tool_name, item)
+    quality = describe_tool_quality(tool_name, item)
+    result_count = _field(
+        item,
+        "result_count",
+        "resultCount",
+        "count",
+        "item_count",
+        "itemCount",
+    )
+    try:
+        result_count_int = int(result_count) if result_count is not None else None
+    except (TypeError, ValueError):
+        result_count_int = None
+    stale = _truthy(_field(item, "is_stale", "isStale"))
+    partial = _truthy(_field(item, "partial", "partial_result", "partialResult"))
+    fallback = _truthy(_field(item, "fallback_used", "fallbackUsed"))
+    freshness_unknown = _truthy(_field(item, "freshness_unknown", "freshnessUnknown"))
+    _collections, has_empty_collection = _result_collection_state(item)
+    empty = result_count_int == 0 or (
+        result_count_int is None and has_empty_collection
+    ) or (
+        access.get("mode") == "content_read"
+        and access.get("content_extracted") is not True
+    )
+    if not success:
+        data_status = "error"
+    elif empty:
+        data_status = "empty"
+    elif stale:
+        data_status = "stale"
+    elif partial:
+        data_status = "partial"
+    elif fallback:
+        data_status = "fallback"
+    elif freshness_unknown and _data_time_applicable(item, tool_name=tool_name):
+        data_status = "freshness_unknown"
+    else:
+        data_status = "usable"
+
+    if access.get("mode") == "content_read" and access.get("content_extracted") is not True:
+        access_status = "content_unavailable"
+    elif access.get("content_extracted") is True:
+        access_status = "content_extracted"
+    else:
+        access_status = str(access.get("mode") or "structured_data")
+    return {
+        "execution_status": "completed" if success else "failed",
+        "access_status": access_status,
+        "data_status": data_status,
+        "usable": bool(success and data_status != "empty"),
+        "quality_status": quality["status"],
+    }
+
+
 def _camel_key(value: str) -> str:
     parts = value.split("_")
     return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
 
 
 def _status_for_check(findings: Sequence[Mapping[str, Any]]) -> str:
-    if any(_text(item.get("severity"), 20) == "danger" for item in findings):
+    actionable = [
+        item for item in findings
+        if _text(item.get("disposition"), 32) == ACTION_REQUIRED
+    ]
+    if any(_text(item.get("severity"), 20) == "danger" for item in actionable):
         return "danger"
-    if any(_text(item.get("severity"), 20) == "warning" for item in findings):
+    if any(_text(item.get("severity"), 20) == "warning" for item in actionable):
         return "warning"
     if findings:
         return "info"
@@ -403,10 +511,15 @@ def _finding(
     action_ids: Sequence[str] = (),
     links: Sequence[str] = (),
     confidence: float = 1.0,
+    disposition: str | None = None,
 ) -> dict[str, Any]:
+    normalized_disposition = disposition if disposition in {ACTION_REQUIRED, ADVISORY} else (
+        ACTION_REQUIRED if severity in {"danger", "warning"} else ADVISORY
+    )
     return {
         "code": code,
         "severity": severity,
+        "disposition": normalized_disposition,
         "category": category,
         "title": title,
         "detail": detail,
@@ -453,13 +566,16 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     tool_chain: list[dict[str, Any]] = []
     candidate_links: dict[str, dict[str, Any]] = {}
-    failed_tools: list[tuple[str, str, str]] = []
+    failed_tools: list[tuple[str, str, str, str]] = []
     empty_tools: list[tuple[str, str]] = []
-    fallback_tools: list[str] = []
-    stale_tools: list[str] = []
+    fallback_tools: list[tuple[str, str]] = []
+    stale_tools: list[tuple[str, str]] = []
     unknown_time_tools: list[str] = []
-    partial_tools: list[str] = []
+    partial_tools: list[tuple[str, str]] = []
     missing_evidence_tools: list[tuple[str, str]] = []
+    quality_by_action: dict[str, Mapping[str, Any]] = {}
+    usable_action_ids: set[str] = set()
+    successful_fingerprints: set[tuple[str, str]] = set()
     content_read_calls = 0
     content_extracted_calls = 0
     reference_only_tool_count = 0
@@ -470,11 +586,15 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     quality_issue_groups: defaultdict[str, list[tuple[str, str, str]]] = defaultdict(list)
     previous_call: tuple[str, str] | None = None
 
-    for raw in raw_results[:_MAX_TOOL_CHAIN]:
-        item = dict(raw)
+    normalized_results = [
+        _observation_with_result_fields(raw)
+        for raw in raw_results[:_MAX_TOOL_CHAIN]
+    ]
+    for item in normalized_results:
         tool_name = _text(_field(item, "tool_name", "toolName"), 160) or "未指定工具"
         action_id = _text(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
-        success = _field(item, "success") is True
+        outcome = describe_tool_outcome(tool_name, item)
+        success = outcome["execution_status"] == "completed"
         step = _step_for_tool(steps, item, action_id)
         mode = _access_mode(tool_name, item, step)
         extracted = _content_extracted(item, step, mode)
@@ -516,24 +636,34 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             result_count_int = int(result_count) if result_count is not None else None
         except (TypeError, ValueError):
             result_count_int = None
-        if success and result_count_int == 0:
+        if success and outcome["data_status"] == "empty":
             empty_tools.append((tool_name, action_id))
-        if _truthy(_field(item, "partial")):
-            partial_tools.append(tool_name)
+        if _truthy(_field(item, "partial", "partial_result", "partialResult")):
+            partial_tools.append((tool_name, action_id))
         if _truthy(_field(item, "fallback_used", "fallbackUsed")):
-            fallback_tools.append(tool_name)
+            fallback_tools.append((tool_name, action_id))
         if _truthy(_field(item, "is_stale", "isStale")):
-            stale_tools.append(tool_name)
+            stale_tools.append((tool_name, action_id))
         if success and _truthy(_field(item, "freshness_unknown", "freshnessUnknown")) and _data_time_applicable(item, tool_name=tool_name):
             unknown_time_tools.append(tool_name)
-        if success and result_count_int is not None and result_count_int > 0 and not evidence_by_action.get(action_id):
+        collections, _has_empty_collection = _result_collection_state(item)
+        has_result_items = bool(collections) or (
+            result_count_int is not None and result_count_int > 0
+        )
+        if success and has_result_items and not evidence_by_action.get(action_id):
             missing_evidence_tools.append((tool_name, action_id))
         if not success:
             errors = _field(item, "errors", "error")
             error_text = _text(errors, 500) or _text(_field(item, "error_code", "errorCode"), 160) or "未提供具体错误"
-            failed_tools.append((tool_name, action_id, error_text))
+            failed_tools.append((tool_name, action_id, error_text, _arguments_fingerprint(item)))
+        else:
+            successful_fingerprints.add((tool_name, _arguments_fingerprint(item)))
+            if action_id and outcome.get("usable"):
+                usable_action_ids.add(action_id)
 
-        quality = _mapping(_field(item, "data_quality", "dataQuality"))
+        quality = _mapping(_field(item, "data_quality", "dataQuality")) or describe_tool_quality(tool_name, item)
+        if action_id:
+            quality_by_action[action_id] = quality
         for quality_check in _sequence(quality.get("checks")):
             check = _mapping(quality_check)
             code = _text(check.get("code"), 80)
@@ -541,7 +671,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 quality_issue_groups[code].append((tool_name, action_id, _text(check.get("detail"), 240)))
 
         fingerprint = (tool_name, _arguments_fingerprint(item))
-        if previous_call == fingerprint:
+        if previous_call == fingerprint and not _truthy(_field(item, "reused")):
             repeated_calls.append(tool_name)
         previous_call = fingerprint
         evidence_count = evidence_by_action.get(action_id, 0)
@@ -552,12 +682,9 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 "success": success,
                 "behavior": mode,
                 "access_status": (
-                    "content_extracted" if extracted else "content_read"
-                    if mode == "content_read" and success
-                    else "reference_only" if mode == "reference_only"
-                    else "failed" if not success
-                    else "structured_data"
+                    outcome["access_status"]
                 ),
+                "outcome": dict(outcome),
                 "reference_link_count": len(refs),
                 "content_extracted": extracted,
                 "evidence_count": evidence_count,
@@ -565,6 +692,11 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             }
         )
 
+    recovered_failed_action_ids = {
+        action_id
+        for _tool_name, action_id, _error, fingerprint in failed_tools
+        if (fingerprint and (_tool_name, fingerprint) in successful_fingerprints)
+    }
     unread = [entry for key, entry in candidate_links.items() if key not in read_urls]
     unread_documents = [entry for entry in unread if entry.get("kind") == "document"]
     unread_articles = [entry for entry in unread if entry.get("kind") == "article"]
@@ -598,7 +730,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     )
     raw_results_by_action = {
         _text(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId"), 160): item
-        for item in raw_results
+        for item in normalized_results
         if _text(_field(item, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
     }
     cited_reference_actions: dict[str, Mapping[str, Any]] = {}
@@ -621,6 +753,16 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         step = _step_for_tool(steps, raw_result, action_id)
         if _access_mode(tool_name, raw_result, step) == "reference_only":
             cited_reference_actions[action_id] = raw_result
+    claim_action_ids = {
+        action_id
+        for claim in claims
+        for evidence_id in _sequence(_field(claim, "evidence_ids", "evidenceIds"))
+        for evidence_item in [evidence_by_id.get(_text(evidence_id, 160))]
+        for action_id in [_text(_field(evidence_item or {}, "action_id", "actionId"), 160)]
+        if action_id
+    }
+    cited_action_ids = set(cited_reference_actions) | claim_action_ids
+    empty_has_usable_alternative = bool(usable_action_ids)
     cited_unread_links_by_action: dict[str, list[str]] = defaultdict(list)
     for entry in candidate_links.values():
         canonical = _canonical_url(entry.get("url"))
@@ -630,7 +772,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             action = _text(action_id, 160)
             if action in cited_reference_actions and entry.get("url") not in cited_unread_links_by_action[action]:
                 cited_unread_links_by_action[action].append(str(entry.get("url") or ""))
-    cited_action_ids = set(cited_reference_actions)
+    cited_action_ids = set(cited_reference_actions) | claim_action_ids
     unselected_documents = [
         entry
         for entry in unselected_documents
@@ -648,31 +790,53 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
 
     if failed_tools:
         grouped: defaultdict[str, list[tuple[str, str]]] = defaultdict(list)
-        for tool_name, action_id, error in failed_tools:
+        for tool_name, action_id, error, _fingerprint in failed_tools:
             grouped[tool_name].append((action_id, error))
         for tool_name, failures in grouped.items():
             detail = failures[0][1]
             suffix = f"；共 {len(failures)} 次失败" if len(failures) > 1 else ""
+            recovered_count = sum(
+                action_id in recovered_failed_action_ids
+                for action_id, _error in failures
+                if action_id
+            )
+            unresolved_count = len(failures) - recovered_count
+            recovered_suffix = (
+                f"；其中 {recovered_count} 次随后由相同参数的成功调用恢复"
+                if recovered_count
+                else ""
+            )
             findings.append(
                 _finding(
                     code="tool_execution_failed",
-                    severity="danger",
+                    severity="danger" if unresolved_count else "info",
                     category="execution",
-                    title=f"工具 {tool_name} 执行失败",
-                    detail=f"运行记录标记为失败：{detail}{suffix}。",
-                    remediation="查看请求参数、来源尝试链路和服务端错误；必要时更换来源或修复工具。",
+                    title=f"工具 {tool_name} 执行失败" if unresolved_count else f"工具 {tool_name} 曾失败但已恢复",
+                    detail=f"运行记录标记为失败：{detail}{suffix}{recovered_suffix}。",
+                    remediation=(
+                        "查看失败调用的请求参数、来源尝试链路和服务端错误；"
+                        "已恢复的调用保留为诊断记录，不再把它当作本轮未恢复故障。"
+                        if unresolved_count
+                        else "失败调用已由后续相同参数的成功调用覆盖，保留原始记录供排查。"
+                    ),
                     tool_names=[tool_name],
                     action_ids=[item[0] for item in failures],
+                    disposition=ACTION_REQUIRED if unresolved_count else ADVISORY,
                 )
             )
 
     if pending_documents:
+        cited = any(
+            _text(action, 160) in cited_action_ids
+            for entry in pending_documents
+            for action in entry.get("actions") or []
+        )
         findings.append(
             _finding(
                 code="content_read_incomplete_document",
-                severity="warning",
+                severity="warning" if cited else "info",
                 category="content_access",
-                title="已选择文档，但正文读取未成功",
+                title="已引用文档，但正文读取未成功" if cited else "已选择文档，但正文读取未成功",
                 detail=(
                     f"有 {len(pending_documents)} 个已选择的 PDF/文档链接没有成功提取正文；"
                     "这些链接只能证明存在来源引用，不能证明模型已经阅读过文档。"
@@ -681,9 +845,10 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 tool_names=sorted({tool for entry in pending_documents for tool in entry["tools"]}),
                 action_ids=[action for entry in pending_documents for action in entry["actions"]],
                 links=[entry["url"] for entry in pending_documents],
+                disposition=ACTION_REQUIRED if cited else ADVISORY,
             )
         )
-    elif unselected_documents and has_document_read:
+    if unselected_documents:
         findings.append(
             _finding(
                 code="reference_not_selected_document",
@@ -692,7 +857,11 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 title="仍有文档候选未选择读取",
                 detail=(
                     f"工具返回了 {len(unselected_documents)} 个未选择的 PDF/文档链接；"
-                    "本次已有其他文档正文成功读取，未选择的候选不代表执行失败。"
+                    + (
+                        "本次已有其他文档正文成功读取，未选择的候选不代表执行失败。"
+                        if has_document_read
+                        else "本次没有发起这些候选的正文读取，未选择本身不代表执行失败。"
+                    )
                 ),
                 remediation="仅在结论需要这些候选时再读取；未读取来源只能作为链接/索引展示。",
                 tool_names=sorted({tool for entry in unselected_documents for tool in entry["tools"]}),
@@ -701,30 +870,18 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 confidence=0.98,
             )
         )
-    elif unselected_documents:
-        findings.append(
-            _finding(
-                code="reference_only_document",
-                severity="warning",
-                category="content_access",
-                title="发现文档来源，但没有正文读取",
-                detail=(
-                    f"工具返回了 {len(unselected_documents)} 个 PDF/文档链接，但本次没有选择任何文档正文读取。"
-                    "这些链接只能证明存在来源引用，不能证明模型阅读过文档。"
-                ),
-                remediation="从候选中选择需要支撑结论的文档调用网页/PDF读取工具；若无需正文，应明确限定结论范围。",
-                tool_names=sorted({tool for entry in unselected_documents for tool in entry["tools"]}),
-                action_ids=[action for entry in unselected_documents for action in entry["actions"]],
-                links=[entry["url"] for entry in unselected_documents],
-            )
-        )
     if pending_articles:
+        cited = any(
+            _text(action, 160) in cited_action_ids
+            for entry in pending_articles
+            for action in entry.get("actions") or []
+        )
         findings.append(
             _finding(
                 code="content_read_incomplete_article",
-                severity="warning",
+                severity="warning" if cited else "info",
                 category="content_access",
-                title="已选择文章，但正文读取未成功",
+                title="已引用文章，但正文读取未成功" if cited else "已选择文章，但正文读取未成功",
                 detail=(
                     f"有 {len(pending_articles)} 个已选择的新闻/文章链接没有成功提取正文；"
                     "文章标题或摘要不等于已经核对过正文。"
@@ -733,9 +890,10 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 tool_names=sorted({tool for entry in pending_articles for tool in entry["tools"]}),
                 action_ids=[action for entry in pending_articles for action in entry["actions"]],
                 links=[entry["url"] for entry in pending_articles],
+                disposition=ACTION_REQUIRED if cited else ADVISORY,
             )
         )
-    elif unselected_articles and has_article_read:
+    if unselected_articles:
         findings.append(
             _finding(
                 code="reference_not_selected_article",
@@ -744,7 +902,11 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 title="仍有文章候选未选择读取",
                 detail=(
                     f"工具返回了 {len(unselected_articles)} 个未选择的新闻/文章链接；"
-                    "本次已有其他来源正文成功读取，未选择的候选不代表执行失败。"
+                    + (
+                        "本次已有其他文章正文成功读取，未选择的候选不代表执行失败。"
+                        if has_article_read
+                        else "本次没有发起这些候选的正文读取，未选择本身不代表执行失败。"
+                    )
                 ),
                 remediation="仅在结论需要这些候选时再读取；未读取来源只能作为链接/索引展示。",
                 tool_names=sorted({tool for entry in unselected_articles for tool in entry["tools"]}),
@@ -753,28 +915,11 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 confidence=0.98,
             )
         )
-    elif unselected_articles:
-        findings.append(
-            _finding(
-                code="reference_only_article",
-                severity="warning",
-                category="content_access",
-                title="发现文章来源，但没有正文读取",
-                detail=(
-                    f"工具返回了 {len(unselected_articles)} 个新闻/文章链接，但本次没有选择任何文章正文读取。"
-                    "文章标题或摘要不等于已经核对过正文。"
-                ),
-                remediation="从候选中选择需要支撑结论的文章调用网页读取工具；若无需正文，应明确限定结论范围。",
-                tool_names=sorted({tool for entry in unselected_articles for tool in entry["tools"]}),
-                action_ids=[action for entry in unselected_articles for action in entry["actions"]],
-                links=[entry["url"] for entry in unselected_articles],
-            )
-        )
     if unmatched_content_reads:
         findings.append(
             _finding(
                 code="content_read_unmapped",
-                severity="warning",
+                severity="info",
                 category="content_access",
                 title="正文读取调用无法关联到来源链接",
                 detail=(
@@ -813,40 +958,78 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         )
 
     if empty_tools:
+        empty_requires_action = not empty_has_usable_alternative
         findings.append(
             _finding(
                 code="successful_empty_result",
-                severity="warning",
+                severity="warning" if empty_requires_action else "info",
                 category="data_quality",
                 title="部分工具成功返回但没有数据",
-                detail=f"{len(empty_tools)} 个成功调用返回 0 条结果：{', '.join(sorted({item[0] for item in empty_tools})[:5])}。",
-                remediation="确认查询范围、数据源状态和空结果是否符合业务预期。",
+                detail=(
+                    f"{len(empty_tools)} 个成功调用返回 0 条结果："
+                    f"{', '.join(sorted({item[0] for item in empty_tools})[:5])}。"
+                    + (
+                        "本次没有其他可用观察，结果可能无法支撑完整回答。"
+                        if empty_requires_action
+                        else "本次存在其他可用观察，空结果作为已保留的诊断信息，不单独判定为运行失败。"
+                    )
+                ),
+                remediation=(
+                    "确认查询范围和数据源状态，并在必要时使用 search_web_source(source_id=auto) 或其他可用来源。"
+                    if empty_requires_action
+                    else "保留空结果记录；只有当该查询是结论所需的唯一来源时才需要重新取证。"
+                ),
                 tool_names=sorted({item[0] for item in empty_tools}),
                 action_ids=[item[1] for item in empty_tools],
+                disposition=ACTION_REQUIRED if empty_requires_action else ADVISORY,
             )
         )
     if fallback_tools:
+        untraceable_fallbacks = [
+            item for item in fallback_tools
+            if not quality_by_action.get(item[1], {}).get("source_present", False)
+        ]
         findings.append(
             _finding(
                 code="fallback_used",
-                severity="warning",
+                severity="warning" if untraceable_fallbacks else "info",
                 category="data_quality",
                 title="部分资料使用了降级来源",
-                detail=f"{len(set(fallback_tools))} 个工具发生来源降级：{', '.join(sorted(set(fallback_tools))[:6])}。",
-                remediation="核对降级来源是否仍满足主体、时间和字段要求，避免把降级结果当成首选来源。",
-                tool_names=sorted(set(fallback_tools)),
+                detail=(
+                    f"{len(fallback_tools)} 次工具调用发生来源降级："
+                    f"{', '.join(sorted({item[0] for item in fallback_tools})[:6])}。"
+                    + (
+                        "部分降级结果没有可追溯来源，可能影响结论。"
+                        if untraceable_fallbacks
+                        else "降级结果仍保留来源标识，作为可用结果记录，不单独判定为运行失败。"
+                    )
+                ),
+                remediation=(
+                    "核对降级来源是否仍满足主体、时间和字段要求，并补充可追溯来源。"
+                    if untraceable_fallbacks
+                    else "核对降级来源的主体、时间和字段范围；若满足要求，可继续使用并保留降级标记。"
+                ),
+                tool_names=sorted({item[0] for item in fallback_tools}),
+                action_ids=[item[1] for item in fallback_tools],
+                disposition=ACTION_REQUIRED if untraceable_fallbacks else ADVISORY,
             )
         )
     if stale_tools:
+        used_stale = [item for item in stale_tools if item[1] and item[1] in cited_action_ids]
         findings.append(
             _finding(
                 code="stale_data",
-                severity="warning",
+                severity="warning" if used_stale else "info",
                 category="data_quality",
                 title="发现过期资料",
-                detail=f"{len(set(stale_tools))} 个工具返回的数据被标记为过期。",
-                remediation="明确回答中的数据截止时间，必要时重新获取。",
-                tool_names=sorted(set(stale_tools)),
+                detail=(
+                    f"{len(stale_tools)} 次工具调用返回的数据被标记为过期。"
+                    + ("其中部分已进入结论引用。" if used_stale else "当前没有发现它们进入结论引用。")
+                ),
+                remediation="不要把过期观察表述为当前事实；若该观察支撑结论，应重新获取带有效时间的数据。",
+                tool_names=sorted({item[0] for item in stale_tools}),
+                action_ids=[item[1] for item in stale_tools],
+                disposition=ACTION_REQUIRED if used_stale else ADVISORY,
             )
         )
     if unknown_time_tools:
@@ -863,15 +1046,21 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             )
         )
     if partial_tools:
+        used_partial = [item for item in partial_tools if item[1] and item[1] in cited_action_ids]
         findings.append(
             _finding(
                 code="partial_result",
-                severity="warning",
+                severity="warning" if used_partial else "info",
                 category="data_quality",
                 title="部分资料返回不完整",
-                detail=f"{len(set(partial_tools))} 个工具返回了 partial 结果。",
-                remediation="检查是否需要继续分页、读取下一段或补充来源。",
-                tool_names=sorted(set(partial_tools)),
+                detail=(
+                    f"{len(partial_tools)} 次工具调用返回了 partial 结果。"
+                    + ("其中部分已进入结论引用。" if used_partial else "当前没有发现它们进入结论引用。")
+                ),
+                remediation="检查是否需要继续分页、读取下一段或补充来源；不要把不完整观察当成完整覆盖。",
+                tool_names=sorted({item[0] for item in partial_tools}),
+                action_ids=[item[1] for item in partial_tools],
+                disposition=ACTION_REQUIRED if used_partial else ADVISORY,
             )
         )
     quality_titles = {
@@ -889,7 +1078,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         findings.append(
             _finding(
                 code=f"data_quality_{code}",
-                severity="warning",
+                severity="warning" if any(action_id and action_id in cited_action_ids for _tool, action_id, _detail in records) else "info",
                 category="data_quality",
                 title=title,
                 detail=f"{len(records)} 个工具调用触发了该检查；示例：{records[0][2] or '未提供详细说明'}。",
@@ -897,13 +1086,18 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 tool_names=sorted({record[0] for record in records}),
                 action_ids=[record[1] for record in records],
                 confidence=0.9,
+                disposition=(
+                    ACTION_REQUIRED
+                    if any(action_id and action_id in cited_action_ids for _tool, action_id, _detail in records)
+                    else ADVISORY
+                ),
             )
         )
     if missing_evidence_tools:
         findings.append(
             _finding(
                 code="successful_result_without_evidence",
-                severity="warning",
+                severity="info",
                 category="evidence",
                 title="成功返回的数据没有进入证据台账",
                 detail=f"{len(missing_evidence_tools)} 个返回数据的工具调用没有关联证据记录。",
@@ -911,19 +1105,21 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 tool_names=sorted({item[0] for item in missing_evidence_tools}),
                 action_ids=[item[1] for item in missing_evidence_tools],
                 confidence=0.88,
+                disposition=ADVISORY,
             )
         )
     if repeated_calls:
         findings.append(
             _finding(
                 code="repeated_identical_tool_call",
-                severity="warning",
+                severity="info",
                 category="model_behavior",
                 title="发现连续重复的工具调用",
                 detail=f"至少有一次工具在相同参数下被连续调用：{', '.join(sorted(set(repeated_calls)))}。",
                 remediation="检查是否因为模型没有理解返回结果、工具结果未进入上下文或重试去重失效。",
                 tool_names=sorted(set(repeated_calls)),
                 confidence=0.8,
+                disposition=ADVISORY,
             )
         )
 
@@ -949,6 +1145,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 ),
                 remediation="打开结论与证据映射，补充取证或降低回答中的确定性表述。",
                 confidence=0.95,
+                disposition=ACTION_REQUIRED,
             )
         )
 
@@ -1005,7 +1202,21 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     danger_count = sum(1 for item in findings if item["severity"] == "danger")
     warning_count = sum(1 for item in findings if item["severity"] == "warning")
     info_count = sum(1 for item in findings if item["severity"] == "info")
-    risk_score = min(100, danger_count * 35 + warning_count * 12)
+    action_required_count = sum(
+        item.get("disposition") == ACTION_REQUIRED for item in findings
+    )
+    advisory_count = sum(
+        item.get("disposition") == ADVISORY for item in findings
+    )
+    actionable_danger_count = sum(
+        item["severity"] == "danger" and item.get("disposition") == ACTION_REQUIRED
+        for item in findings
+    )
+    actionable_warning_count = sum(
+        item["severity"] == "warning" and item.get("disposition") == ACTION_REQUIRED
+        for item in findings
+    )
+    risk_score = min(100, actionable_danger_count * 35 + actionable_warning_count * 12)
     audit_status = _status_for_check(findings)
     model_turn_count = _field(loop, "model_turn_count", "modelTurnCount")
     tool_call_count = _field(loop, "tool_call_count", "toolCallCount")
@@ -1040,10 +1251,13 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             sampled_keys.add(key)
 
     return {
+        "schema_version": INSPECTION_SCHEMA_VERSION,
         "status": audit_status,
-        "attention_level": "urgent" if danger_count else "review" if warning_count else "none",
+        "attention_level": "urgent" if actionable_danger_count else "review" if actionable_warning_count else "none",
         "risk_score": risk_score,
         "issue_count": len(findings),
+        "action_required_count": action_required_count,
+        "advisory_count": advisory_count,
         "danger_count": danger_count,
         "warning_count": warning_count,
         "info_count": info_count,
@@ -1076,9 +1290,13 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 __all__ = [
+    "ACTION_REQUIRED",
+    "ADVISORY",
     "CONTENT_READER_TOOLS",
+    "INSPECTION_SCHEMA_VERSION",
     "REFERENCE_ONLY_TOOL_KINDS",
     "build_behavior_audit",
     "describe_tool_access",
+    "describe_tool_outcome",
     "describe_tool_quality",
 ]

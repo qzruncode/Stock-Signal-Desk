@@ -472,6 +472,8 @@ class _AgentQualityMethods2:
                 "warning_runs": sum(audit["status"] == "warning" for audit in behavior_audits),
                 "danger_runs": sum(audit["status"] == "danger" for audit in behavior_audits),
                 "info_runs": sum(audit["status"] == "info" for audit in behavior_audits),
+                "action_required_count": sum(audit["action_required_count"] for audit in behavior_audits),
+                "advisory_count": sum(audit["advisory_count"] for audit in behavior_audits),
                 "unread_reference_count": sum(audit["unread_reference_count"] for audit in behavior_audits),
                 "content_read_call_count": sum(audit["content_read_call_count"] for audit in behavior_audits),
                 "issues": dict(behavior_issue_counts),

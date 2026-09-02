@@ -293,10 +293,10 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
           </p>
         </Card>
         <Card padding="none" className="rounded-xl px-3 py-2.5">
-          <p className="text-xs text-secondary-text">待核对问题</p>
+          <p className="text-xs text-secondary-text">质量契约问题</p>
           <p className="mt-0.5 text-xl font-semibold leading-6">{violationCount ?? '—'}</p>
-          {behaviorReviewRuns != null ? <p className="mt-0.5 text-[10px] text-warning">自动巡检异常运行 {behaviorReviewRuns} 条</p> : null}
-          {behaviorInfoRuns ? <p className="mt-0.5 text-[10px] text-cyan">另有检查提示 {behaviorInfoRuns} 条</p> : null}
+          {behaviorReviewRuns != null ? <p className="mt-0.5 text-[10px] text-warning">需要处理的巡检运行 {behaviorReviewRuns} 条</p> : null}
+          {behaviorInfoRuns ? <p className="mt-0.5 text-[10px] text-cyan">另有观察提示运行 {behaviorInfoRuns} 条</p> : null}
         </Card>
         <Card padding="none" className="rounded-xl px-3 py-2.5">
           <p className="text-xs text-secondary-text">平均核对分</p>
@@ -383,14 +383,14 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
                       <span className="text-xs font-medium text-foreground">
                         核对 {percent(item.qualityScore)}
                       </span>
-                      {item.unreadDocumentCount ? <Badge variant="warning">候选未读取文档 {item.unreadDocumentCount}</Badge> : null}
-                      {item.unreadArticleCount ? <Badge variant="warning">候选未读取文章 {item.unreadArticleCount}</Badge> : null}
-                      {(item.behaviorWarningCount ?? 0) + (item.behaviorDangerCount ?? 0) > 0 ? (
-                        <Badge variant={item.behaviorStatus === 'danger' ? 'danger' : 'warning'}>
-                          行为待核对 {(item.behaviorWarningCount ?? 0) + (item.behaviorDangerCount ?? 0)}
+                      {item.unreadDocumentCount ? <Badge variant="info">候选文档未选取 {item.unreadDocumentCount}</Badge> : null}
+                      {item.unreadArticleCount ? <Badge variant="info">候选文章未选取 {item.unreadArticleCount}</Badge> : null}
+                      {(item.behaviorActionRequiredCount ?? ((item.behaviorWarningCount ?? 0) + (item.behaviorDangerCount ?? 0))) > 0 ? (
+                        <Badge variant={(item.behaviorDangerCount ?? 0) > 0 ? 'danger' : 'warning'}>
+                          需要处理 {(item.behaviorActionRequiredCount ?? ((item.behaviorWarningCount ?? 0) + (item.behaviorDangerCount ?? 0)))}
                         </Badge>
-                      ) : item.behaviorInfoCount ? (
-                        <Badge variant="info">检查提示 {item.behaviorInfoCount}</Badge>
+                      ) : (item.behaviorAdvisoryCount ?? item.behaviorInfoCount ?? 0) ? (
+                        <Badge variant="info">观察提示 {(item.behaviorAdvisoryCount ?? item.behaviorInfoCount ?? 0)}</Badge>
                       ) : null}
                     </div>
                     <p className="mt-1 line-clamp-1 text-xs text-foreground/85">

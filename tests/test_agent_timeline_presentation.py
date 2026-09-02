@@ -102,3 +102,29 @@ def test_terminal_trace_persists_result_rows_instead_of_a_false_source_count() -
     assert trace["result_items"][0]["url"] == "https://example.test/report"
     assert trace["source_refs"] == ["东方财富"]
 
+
+def test_terminal_trace_normalizes_nested_empty_result_outcome() -> None:
+    trace = _trace_tool_results(
+        [
+            {
+                "action_id": "call-empty",
+                "tool_name": "read_sector_news",
+                "success": True,
+                "result": {
+                    "success": True,
+                    "items": [],
+                    "data_time": "2026-08-28",
+                },
+            }
+        ]
+    )[0]
+
+    assert trace["success"] is True
+    assert trace["data_time"] == "2026-08-28"
+    assert trace["outcome"] == {
+        "execution_status": "completed",
+        "access_status": "structured_data",
+        "data_status": "empty",
+        "usable": False,
+        "quality_status": "warning",
+    }

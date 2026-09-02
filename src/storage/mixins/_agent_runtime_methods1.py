@@ -542,6 +542,7 @@ class _AgentRuntimeMixinMethods1:
             trace_field_map = {
                 "stage_durations": "stage_durations_json",
                 "latest_stage": "latest_stage_json",
+                "schema_version": "schema_version",
                 "quality_projection": "quality_projection_json",
             }
             for source_key, target_field in trace_field_map.items():

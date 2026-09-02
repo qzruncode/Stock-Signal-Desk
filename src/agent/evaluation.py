@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 
-EVALUATOR_VERSION = "langgraph-agent-loop-quality-3.1"
+EVALUATOR_VERSION = "langgraph-agent-loop-quality-3.2"
 _EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 
 
@@ -201,7 +201,13 @@ def score_agent_run_snapshot(
     forbidden_terms = _string_set(expected.get("forbidden_answer_terms"))
     missing_terms = sorted(term for term in required_terms if term not in final_text)
     present_forbidden_terms = sorted(term for term in forbidden_terms if term in final_text)
-    answer_checks = [bool(final_text), not missing_terms, not present_forbidden_terms]
+    terminal_failure_statuses = {"failed", "blocked", "cancelled", "partial"}
+    answer_contract_applicable = bool(final_text) or actual_status not in terminal_failure_statuses
+    answer_checks = (
+        [bool(final_text), not missing_terms, not present_forbidden_terms]
+        if answer_contract_applicable
+        else [True]
+    )
     answer_score = _ratio(sum(answer_checks), len(answer_checks))
 
     budget_limits = {
@@ -275,6 +281,7 @@ def score_agent_run_snapshot(
             0.15,
             {
                 "has_answer": bool(final_text),
+                "not_applicable": not answer_contract_applicable,
                 "missing_required_terms": missing_terms,
                 "present_forbidden_terms": present_forbidden_terms,
             },
