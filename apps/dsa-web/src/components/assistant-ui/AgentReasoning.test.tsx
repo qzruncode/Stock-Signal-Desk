@@ -1,10 +1,11 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMessage } from '@assistant-ui/react';
+import { useMessage, useMessageTiming } from '@assistant-ui/react';
 import { AgentExecutionTimeline } from './AgentReasoning';
 
 vi.mock('@assistant-ui/react', () => ({
   useMessage: vi.fn(),
+  useMessageTiming: vi.fn(),
 }));
 
 const mockMessage = (message: Record<string, unknown>) => {
@@ -16,6 +17,7 @@ const mockMessage = (message: Record<string, unknown>) => {
 describe('AgentExecutionTimeline', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useMessageTiming).mockReturnValue(undefined);
   });
 
   it('merges the actual tool result into one compact execution line', () => {
@@ -104,6 +106,10 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
+    expect(screen.getByRole('button', { name: /展开执行过程，执行完成/ })).toBeInTheDocument();
+    expect(screen.queryByText('执行过程')).not.toBeInTheDocument();
+    expect(screen.queryByText('search_web_source')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
     expect(screen.getByText('执行过程')).toBeInTheDocument();
     expect(screen.getByText('search_web_source')).toBeInTheDocument();
     expect(screen.getByText(/请求：source_id=exa · query=人形机器人产业链 · num_results=2/)).toBeInTheDocument();
@@ -156,6 +162,7 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
+    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
     expect(screen.getByText('notify_user：用户拒绝，未执行')).toBeInTheDocument();
     expect(screen.queryByText(/调用未成功/)).not.toBeInTheDocument();
   });
@@ -220,6 +227,7 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
+    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
     expect(screen.getByText('模型决策 · 第 2 轮')).toBeInTheDocument();
     expect(screen.getByText('模型已给出候选回答，正在检查其证据关联')).toBeInTheDocument();
     expect(screen.queryByText(/候选回答正文不应/)).not.toBeInTheDocument();
@@ -297,8 +305,101 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
+    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
     expect(screen.getByText(/数据来源：firecrawl_searxng/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'https://finance.example.test/article-1' })).toBeInTheDocument();
     expect(screen.queryByText('来源 3 个')).not.toBeInTheDocument();
+  });
+
+  it('collapses a completed process but keeps the full process and reasoning log recoverable', () => {
+    const reasoning = '先确认问题范围\n再核对公开资料';
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-history',
+            stage: 'model',
+            status: 'completed',
+            summary: '已完成规划',
+            occurred_at: '2026-09-02T10:00:00+08:00',
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-history',
+            stage: 'publish',
+            status: 'completed',
+            summary: '已发布最终回答',
+            occurred_at: '2026-09-02T10:00:04+08:00',
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline reasoningText={reasoning} />);
+
+    expect(screen.getByRole('button', { name: '展开执行过程，用时 4s' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('已完成规划')).not.toBeInTheDocument();
+    expect(screen.queryByText(reasoning)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，用时 4s' }));
+
+    expect(screen.getByText('已完成规划')).toBeInTheDocument();
+    expect(screen.getByText(/先确认问题范围/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '收起执行过程，用时 4s' })).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: '收起执行过程，用时 4s' }));
+
+    expect(screen.queryByText('已完成规划')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '展开执行过程，用时 4s' })).toBeInTheDocument();
+  });
+
+  it('keeps a waiting-for-approval process expanded because it is not terminal', () => {
+    mockMessage({
+      status: { type: 'requires-action', reason: 'interrupt' },
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-approval',
+          stage: 'approval',
+          status: 'started',
+          summary: '等待用户确认',
+        }],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    expect(screen.getByText('等待用户确认')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /展开执行过程/ })).not.toBeInTheDocument();
+  });
+
+  it('prefers assistant-ui message timing when it is available', () => {
+    vi.mocked(useMessageTiming).mockReturnValue({
+      streamStartTime: 1,
+      totalStreamTime: 67 * 60 * 1_000 + 3_000,
+      totalChunks: 1,
+      toolCallCount: 0,
+    });
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-timing',
+          stage: 'publish',
+          status: 'completed',
+          summary: '已发布最终回答',
+        }],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    expect(screen.getByRole('button', { name: '展开执行过程，用时 1h 7m 3s' })).toBeInTheDocument();
   });
 });

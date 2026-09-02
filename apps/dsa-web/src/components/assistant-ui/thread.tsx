@@ -42,7 +42,7 @@ import { splitAssistantText } from '../../utils/assistantTextSplit';
 import { cn } from '../../utils/cn';
 import { latestAgentStageEvent } from '../../utils/agentStage';
 import { getChatQuestionDomId } from '../../utils/chatQuestionLocator';
-import { AgentExecutionTimeline, AssistantReasoning } from './AgentReasoning';
+import { AgentExecutionTimeline } from './AgentReasoning';
 
 /* ── Thread (root) ───────────────────────────────────────────────────── */
 
@@ -416,11 +416,10 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
         <div className="w-full min-w-0 overflow-hidden rounded-xl bg-card/75 px-3.5 py-3 text-sm text-foreground sm:px-4 sm:py-3.5">
-          <AgentExecutionTimeline />
+          <AgentExecutionTimeline reasoningText={reasoningText} />
           {!latestStage && isRunning && !hasVisibleContent ? (
             <AssistantPendingIndicator />
           ) : null}
-          <AssistantReasoning text={reasoningText} />
           <AssistantMarkdown text={answerText} />
         </div>
         <div className="absolute bottom-0 left-0 flex h-5 items-center gap-1">

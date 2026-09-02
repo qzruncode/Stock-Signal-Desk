@@ -1,9 +1,11 @@
 import type { FC } from 'react';
-import { useMemo } from 'react';
-import { useMessage } from '@assistant-ui/react';
+import { useId, useMemo, useState } from 'react';
+import { useMessage, useMessageTiming } from '@assistant-ui/react';
 import {
   CheckCircle2Icon,
   CircleAlertIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   Loader2Icon,
 } from 'lucide-react';
 import {
@@ -15,6 +17,7 @@ import {
   type AgentStageEventV2,
 } from '../../utils/agentStage';
 import { cn } from '../../utils/cn';
+import { formatElapsedDuration } from '../../utils/format';
 
 type TraceRecord = Record<string, unknown>;
 
@@ -311,8 +314,14 @@ const toolDetails = (result: TraceRecord | undefined, event: AgentStageEvent | u
   return lines;
 };
 
-export const AgentExecutionTimeline: FC = () => {
-  const messageRunning = useMessage((state) => state.status?.type === 'running');
+const visibleReasoningText = (rawText: string): string => (
+  rawText.length > 12_000 ? `${rawText.slice(-12_000)}\n[较早过程已截断]` : rawText
+);
+
+export const AgentExecutionTimeline: FC<{ reasoningText?: string }> = ({ reasoningText = '' }) => {
+  const messageStatus = useMessage((state) => state.status?.type);
+  const messageActive = messageStatus === 'running' || messageStatus === 'requires-action';
+  const messageTiming = useMessageTiming();
   const stageData = useMessage((state) => state.metadata?.unstable_data);
   const traceData = useMessage((state) => (
     state.metadata?.custom?.agent_execution_trace
@@ -361,82 +370,154 @@ export const AgentExecutionTimeline: FC = () => {
     }
     return output;
   }, [events, results]);
-  if (rows.length === 0) return null;
   const latest = events.at(-1) || null;
   const terminalProblem = Boolean(latest?.errorCode)
+    || messageStatus === 'incomplete'
     || latest?.status === 'failed'
     || latest?.status === 'blocked'
     || latest?.status === 'cancelled';
-  const done = !messageRunning && Boolean(latest) && !terminalProblem;
+  const done = !messageActive && !terminalProblem;
   const headerStatus: AgentStageEvent['status'] = terminalProblem
     ? 'failed'
     : done ? 'completed' : 'started';
+  const reasoningVisible = visibleReasoningText(reasoningText);
+  const hasExecutionContent = rows.length > 0 || Boolean(reasoningVisible.trim());
+  const eventDurationMs = useMemo(() => {
+    const timestamps = events
+      .map((event) => event.occurredAt ? Date.parse(event.occurredAt) : Number.NaN)
+      .filter((value) => Number.isFinite(value));
+    if (timestamps.length < 2) return undefined;
+    const duration = Math.max(...timestamps) - Math.min(...timestamps);
+    return duration >= 0 ? duration : undefined;
+  }, [events]);
+  const durationMs = typeof messageTiming?.totalStreamTime === 'number'
+    && Number.isFinite(messageTiming.totalStreamTime)
+    && messageTiming.totalStreamTime >= 0
+    ? messageTiming.totalStreamTime
+    : eventDurationMs;
+  const durationLabel = durationMs == null ? null : formatElapsedDuration(durationMs);
+  const compactLabel = durationLabel ? `用时 ${durationLabel}` : done ? '执行完成' : `执行${reasoningStatusLabel(messageActive, latest)}`;
+  const detailId = useId();
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const expanded = messageActive || expandedOverride === true;
+
+  if (!hasExecutionContent) return null;
+
+  if (!expanded) {
+    return (
+      <div className="mb-3 border-y border-border/70 bg-card/35">
+        <button
+          type="button"
+          aria-expanded={false}
+          aria-controls={detailId}
+          aria-label={`展开执行过程，${compactLabel}`}
+          onClick={() => setExpandedOverride(true)}
+          className="flex w-full items-center justify-between gap-3 px-2 py-3 text-left text-sm text-muted-foreground transition hover:bg-muted/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            {terminalProblem ? <CircleAlertIcon className="size-4 shrink-0 text-amber-600" /> : null}
+            <span className="truncate">{compactLabel}</span>
+            {terminalProblem ? (
+              <span className="shrink-0 text-xs text-amber-700">· {reasoningStatusLabel(false, latest)}</span>
+            ) : null}
+          </span>
+          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <section className="mb-3 overflow-hidden rounded-xl border border-primary/15 bg-primary/[0.035]" aria-label="执行过程">
-      <div className="flex w-full items-center justify-between gap-3 px-3 py-2" role="status">
-        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
-          <StatusIcon
-            status={headerStatus}
-            problem={terminalProblem}
-            className={cn('size-4 shrink-0', !done && !terminalProblem && 'animate-spin text-primary')}
-          />
-          <span className="text-sm font-medium text-foreground">执行过程</span>
-          <span className="text-xs text-muted-foreground">{rows.length} 条实际记录</span>
-        </span>
-      </div>
+      {messageActive ? (
+        <div className="flex w-full items-center justify-between gap-3 px-3 py-2" role="status">
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+            <StatusIcon
+              status={headerStatus}
+              problem={terminalProblem}
+              className={cn('size-4 shrink-0', !done && !terminalProblem && 'animate-spin text-primary')}
+            />
+            <span className="text-sm font-medium text-foreground">执行过程</span>
+            <span className="text-xs text-muted-foreground">{rows.length} 条实际记录</span>
+          </span>
+        </div>
+      ) : (
+        <button
+          type="button"
+          aria-expanded={true}
+          aria-controls={detailId}
+          aria-label={`收起执行过程，${compactLabel}`}
+          onClick={() => setExpandedOverride(false)}
+          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition hover:bg-muted/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+        >
+          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
+            <StatusIcon status={headerStatus} problem={terminalProblem} className="size-4 shrink-0" />
+            <span className="text-sm font-medium text-foreground">执行过程</span>
+            <span className="text-xs text-muted-foreground">{rows.length} 条实际记录 · {compactLabel}</span>
+          </span>
+          <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
+      )}
 
-      <div className="border-t border-primary/10 px-3 py-2">
-        <ol className="space-y-1">
-          {rows.map((row) => {
-            const event = row.event;
-            const status = row.kind === 'tool' ? toolStatus(row.result, event) : (event?.status || 'started');
-            const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
-              || Boolean(row.kind === 'stage' && event?.errorCode);
-            const label = row.kind === 'tool'
-              ? (toolName(row.result) || text(recordValue(event?.details, 'tool_name', 'toolName'), 120) || '原子工具')
-              : `${agentStageLabel(event?.stage || '')}${row.modelTurn ? ` · 第 ${row.modelTurn} 轮` : ''}`;
-            const summary = row.kind === 'tool'
-              ? toolSummary(row.result, event)
-              : (event?.summary || '正在处理');
-            const detailLines = row.kind === 'tool' ? toolDetails(row.result, event) : stageDetails(event!);
-            return (
-              <li key={row.key} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
-                <StatusIcon status={status} problem={problem} className={cn(
-                  'mt-0.5 size-3.5 shrink-0',
-                  problem ? 'text-amber-600' : status === 'completed' || status === 'succeeded' ? 'text-emerald-600' : 'animate-spin text-primary',
-                )} />
-                <div className="min-w-0 flex-1 leading-5">
-                  <span className="font-medium text-foreground">{label}</span>
-                  <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
-                  <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
-                  {detailLines.length > 0 ? (
-                    <div className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
-                      {detailLines.map((detail) => (
-                        <div key={detail.key} className="whitespace-pre-wrap break-words">
-                          <span>{detail.text}</span>
-                          {detail.href ? (
-                            <>
-                              <span> · </span>
-                              <a
-                                href={detail.href}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="break-all text-primary underline-offset-2 hover:underline"
-                              >
-                                {detail.href}
-                              </a>
-                            </>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
+      <div id={detailId} role="region" aria-label="执行过程详情" className="border-t border-primary/10 px-3 py-2">
+        {rows.length > 0 ? (
+          <ol className="space-y-1">
+            {rows.map((row) => {
+              const event = row.event;
+              const status = row.kind === 'tool' ? toolStatus(row.result, event) : (event?.status || 'started');
+              const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
+                || Boolean(row.kind === 'stage' && event?.errorCode);
+              const label = row.kind === 'tool'
+                ? (toolName(row.result) || text(recordValue(event?.details, 'tool_name', 'toolName'), 120) || '原子工具')
+                : `${agentStageLabel(event?.stage || '')}${row.modelTurn ? ` · 第 ${row.modelTurn} 轮` : ''}`;
+              const summary = row.kind === 'tool'
+                ? toolSummary(row.result, event)
+                : (event?.summary || '正在处理');
+              const detailLines = row.kind === 'tool' ? toolDetails(row.result, event) : stageDetails(event!);
+              return (
+                <li key={row.key} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
+                  <StatusIcon status={status} problem={problem} className={cn(
+                    'mt-0.5 size-3.5 shrink-0',
+                    problem ? 'text-amber-600' : status === 'completed' || status === 'succeeded' ? 'text-emerald-600' : 'animate-spin text-primary',
+                  )} />
+                  <div className="min-w-0 flex-1 leading-5">
+                    <span className="font-medium text-foreground">{label}</span>
+                    <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
+                    <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
+                    {detailLines.length > 0 ? (
+                      <div className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
+                        {detailLines.map((detail) => (
+                          <div key={detail.key} className="whitespace-pre-wrap break-words">
+                            <span>{detail.text}</span>
+                            {detail.href ? (
+                              <>
+                                <span> · </span>
+                                <a
+                                  href={detail.href}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="break-all text-primary underline-offset-2 hover:underline"
+                                >
+                                  {detail.href}
+                                </a>
+                              </>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        ) : null}
+        {reasoningVisible.trim() ? (
+          <div className={cn('text-xs text-muted-foreground', rows.length > 0 && 'mt-3 border-t border-primary/10 pt-2')}>
+            <div>运行日志 · {reasoningStatusLabel(messageActive, latest)}</div>
+            <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{reasoningVisible}</pre>
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -459,23 +540,6 @@ export const AgentStageIndicator: FC<{ event: AgentStageEventV2 }> = ({ event })
       />
       <span className="shrink-0 font-medium text-foreground">{agentStageLabel(event.stage)}</span>
       <span className="min-w-0 whitespace-pre-wrap break-words">{event.summary}</span>
-    </div>
-  );
-};
-
-export const AssistantReasoning: FC<{ text: string }> = ({ text: rawText }) => {
-  const messageRunning = useMessage((state) => state.status?.type === 'running');
-  const stageData = useMessage((state) => state.metadata?.unstable_data);
-  const latest = useMemo(
-    () => reconcileTerminalStageEvents(agentStageEvents(stageData)).at(-1) ?? null,
-    [stageData],
-  );
-  const visibleText = rawText.length > 12_000 ? `${rawText.slice(-12_000)}\n[较早过程已截断]` : rawText;
-  if (!visibleText.trim()) return null;
-  return (
-    <div className="mb-3 rounded-lg border border-border/70 bg-muted/25 px-3 py-2">
-      <div className="text-xs text-muted-foreground">运行日志 · {reasoningStatusLabel(messageRunning, latest)}</div>
-      <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{visibleText}</pre>
     </div>
   );
 };

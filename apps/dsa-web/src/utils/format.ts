@@ -24,6 +24,25 @@ export const formatDate = (value?: string): string => {
   }).format(date);
 };
 
+/**
+ * Format an elapsed duration for compact activity summaries.
+ *
+ * This intentionally uses stable ASCII units so a long-running response can
+ * be scanned quickly in the same way as the reference chat UI.
+ */
+export const formatElapsedDuration = (durationMs?: number | null): string => {
+  if (durationMs == null || !Number.isFinite(durationMs) || durationMs < 0) return '—';
+
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+};
+
 export const toDateInputValue = (date: Date): string => {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, '0');
