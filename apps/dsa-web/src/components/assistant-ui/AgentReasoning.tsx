@@ -408,7 +408,7 @@ export const AgentExecutionTimeline: FC<{ reasoningText?: string }> = ({ reasoni
         'mb-3 overflow-hidden transition-[background-color,border-color,border-radius,box-shadow] duration-300 ease-out',
         expanded
           ? 'rounded-xl border border-primary/15 bg-primary/[0.035]'
-          : 'border-y border-border/70 bg-card/35',
+          : 'border-b border-border/70 bg-card/35',
       )}
       aria-label="执行过程"
     >

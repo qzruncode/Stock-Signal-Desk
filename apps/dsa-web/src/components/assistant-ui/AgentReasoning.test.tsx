@@ -346,8 +346,11 @@ describe('AgentExecutionTimeline', () => {
     const { container } = render(<AgentExecutionTimeline reasoningText={reasoning} />);
 
     const toggle = screen.getByRole('button', { name: '展开执行过程，用时 4s' });
+    const process = container.querySelector<HTMLElement>('[aria-label="执行过程"]')!;
     const details = container.querySelector<HTMLElement>('[role="region"][aria-label="执行过程详情"]')!;
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(process).toHaveClass('border-b');
+    expect(process).not.toHaveClass('border-y');
     expect(details).toHaveAttribute('aria-hidden', 'true');
     expect(details).toHaveStyle({ gridTemplateRows: '0fr' });
 
