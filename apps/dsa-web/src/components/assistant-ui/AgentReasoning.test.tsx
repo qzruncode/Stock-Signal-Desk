@@ -104,12 +104,17 @@ describe('AgentExecutionTimeline', () => {
       },
     });
 
-    render(<AgentExecutionTimeline />);
+    const { container } = render(<AgentExecutionTimeline />);
 
-    expect(screen.getByRole('button', { name: /展开执行过程，执行完成/ })).toBeInTheDocument();
-    expect(screen.queryByText('执行过程')).not.toBeInTheDocument();
-    expect(screen.queryByText('search_web_source')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
+    const toggle = screen.getByRole('button', { name: /展开执行过程，执行完成/ });
+    const details = container.querySelector<HTMLElement>('[role="region"][aria-label="执行过程详情"]')!;
+    expect(toggle).toBeInTheDocument();
+    expect(details).toHaveAttribute('aria-hidden', 'true');
+    expect(details).toHaveStyle({ gridTemplateRows: '0fr' });
+    expect(details).toHaveClass('transition-[grid-template-rows]');
+    fireEvent.click(toggle);
+    expect(details).toHaveAttribute('aria-hidden', 'false');
+    expect(details).toHaveStyle({ gridTemplateRows: '1fr' });
     expect(screen.getByText('执行过程')).toBeInTheDocument();
     expect(screen.getByText('search_web_source')).toBeInTheDocument();
     expect(screen.getByText(/请求：source_id=exa · query=人形机器人产业链 · num_results=2/)).toBeInTheDocument();
@@ -338,21 +343,26 @@ describe('AgentExecutionTimeline', () => {
       },
     });
 
-    render(<AgentExecutionTimeline reasoningText={reasoning} />);
+    const { container } = render(<AgentExecutionTimeline reasoningText={reasoning} />);
 
-    expect(screen.getByRole('button', { name: '展开执行过程，用时 4s' })).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByText('已完成规划')).not.toBeInTheDocument();
-    expect(screen.queryByText(reasoning)).not.toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: '展开执行过程，用时 4s' });
+    const details = container.querySelector<HTMLElement>('[role="region"][aria-label="执行过程详情"]')!;
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(details).toHaveAttribute('aria-hidden', 'true');
+    expect(details).toHaveStyle({ gridTemplateRows: '0fr' });
 
-    fireEvent.click(screen.getByRole('button', { name: '展开执行过程，用时 4s' }));
+    fireEvent.click(toggle);
 
     expect(screen.getByText('已完成规划')).toBeInTheDocument();
     expect(screen.getByText(/先确认问题范围/)).toBeInTheDocument();
+    expect(details).toHaveAttribute('aria-hidden', 'false');
+    expect(details).toHaveStyle({ gridTemplateRows: '1fr' });
     expect(screen.getByRole('button', { name: '收起执行过程，用时 4s' })).toHaveAttribute('aria-expanded', 'true');
 
     fireEvent.click(screen.getByRole('button', { name: '收起执行过程，用时 4s' }));
 
-    expect(screen.queryByText('已完成规划')).not.toBeInTheDocument();
+    expect(details).toHaveAttribute('aria-hidden', 'true');
+    expect(details).toHaveStyle({ gridTemplateRows: '0fr' });
     expect(screen.getByRole('button', { name: '展开执行过程，用时 4s' })).toBeInTheDocument();
   });
 
