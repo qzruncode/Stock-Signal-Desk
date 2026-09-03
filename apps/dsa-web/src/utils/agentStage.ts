@@ -166,6 +166,17 @@ export function agentStageEvents(values: readonly unknown[] | undefined): AgentS
   }, []);
 }
 
+export function agentStageDurationMs(
+  events: readonly Pick<AgentStageEvent, 'occurredAt'>[],
+): number | undefined {
+  const timestamps = events
+    .map((event) => event.occurredAt ? Date.parse(event.occurredAt) : Number.NaN)
+    .filter((value) => Number.isFinite(value));
+  if (timestamps.length < 2) return undefined;
+  const duration = Math.max(...timestamps) - Math.min(...timestamps);
+  return duration >= 0 ? duration : undefined;
+}
+
 const stageInstanceKey = (event: AgentStageEvent): string => [
   event.runId,
   event.stage,

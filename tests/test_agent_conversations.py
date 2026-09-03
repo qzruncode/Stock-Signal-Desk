@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 import src.auth as auth
+from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
 from src.services.chat_session_service import ChatSessionService
 
 
@@ -185,6 +186,49 @@ def test_get_conversation_returns_execution_trace_once_at_canonical_level(
     body = response.json()
     assert body["execution_trace"] == trace["execution_trace"]
     assert "execution_trace" not in body["resume_state"]
+
+
+def test_get_conversation_uses_durable_answer_after_retained_run_finishes(
+    client,
+    mock_service,
+):
+    """终态运行对象仍在保留期时，也不能覆盖数据库已提交的回答。"""
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    durable = {
+        "run_id": "run-durable",
+        "conversation_id": "c1",
+        "status": "completed",
+        "event_cursor": 0,
+        "final_text": "数据库中的最终回答",
+        "context_snapshot": None,
+    }
+    retained_broadcaster = RunBroadcaster()
+    retained_broadcaster.assistant_text_snapshot = "已结束运行的临时重复文本"
+    retained = ActiveRun(
+        conversation_id="c1",
+        broadcaster=retained_broadcaster,
+        run_id="run-retained",
+        status="completed",
+    )
+    with (
+        patch.object(active_run_registry, "get", return_value=retained),
+        patch.object(active_run_registry, "is_active", return_value=False),
+        patch(
+            "src.storage.manager.DatabaseManager.get_agent_run",
+            return_value=durable,
+        ),
+        patch(
+            "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+            return_value=None,
+        ),
+    ):
+        response = client.get("/api/v1/agent/conversations/c1")
+
+    assert response.status_code == 200
+    resume = response.json()["resume_state"]
+    assert resume["active"] is False
+    assert resume["run_id"] == "run-durable"
+    assert resume["assistant_text"] == "数据库中的最终回答"
 
 
 def test_get_conversation_does_not_reconstruct_removed_verification_retry(

@@ -9,8 +9,8 @@ import { type AgentExecutionTrace, type ChatConversationDetail } from '../../api
  * ChatRuntimeBridge:把后端会话详情(ChatConversationDetail)桥接到 assistant-ui
  * 的 ThreadRuntime。负责规范化 hydration、续流(startRun)与生成态判定。
  *
- * 从 ChatHomePage 抽出,使页面文件守住 600 行预算;本文件只导出该组件,
- * 辅助函数不导出以保持 Fast Refresh 干净。
+ * 从 ChatHomePage 抽出,使页面文件守住 600 行预算;展示片段转换函数保持
+ * 纯函数，供 hydration 测试直接验证，不在组件里复制一套解析逻辑。
  */
 
 const PENDING_ASSISTANT_SUFFIX = '-assistant-pending';
@@ -34,6 +34,10 @@ const normalizeMessageRole = (role: string): 'user' | 'assistant' | 'system' => 
   }
   return 'assistant';
 };
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+);
 
 const stageEventKey = (value: unknown): string => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return String(value);
@@ -80,11 +84,87 @@ const hasPersistedExecution = (
   });
 };
 
+type RuntimeContentPart = Extract<ThreadMessageLike['content'], readonly unknown[]>[number];
+
+const displayPartProviderMetadata = (part: Record<string, unknown>): Record<string, Record<string, string>> => {
+  const metadata: Record<string, string> = {
+    displayKind: String(part.displayKind ?? part.display_kind ?? 'progress'),
+  };
+  const roundId = part.roundId ?? part.round_id;
+  if (roundId !== undefined && roundId !== null && roundId !== '') {
+    metadata.roundId = String(roundId);
+  }
+  return { dsa: metadata };
+};
+
+const displayPartsForRuntime = (
+  executionTrace: AgentExecutionTrace | null | undefined,
+  canonicalAnswer: string,
+): RuntimeContentPart[] => {
+  const rawParts = executionTrace?.displayParts;
+  if (!Array.isArray(rawParts)) return [];
+  let answerPartSeen = false;
+  const parts: RuntimeContentPart[] = [];
+
+  rawParts.forEach((rawPart) => {
+    if (!isRecord(rawPart)) return;
+    const type = String(rawPart.type || '');
+    if (type === 'text') {
+      const displayKind = String(rawPart.displayKind ?? rawPart.display_kind ?? 'progress');
+      const rawText = String(rawPart.text || '');
+      const text = displayKind === 'answer' && canonicalAnswer
+        ? canonicalAnswer
+        : rawText;
+      if (!text) return;
+      if (displayKind === 'answer') answerPartSeen = true;
+      parts.push({
+        type: 'text',
+        text,
+        providerMetadata: displayPartProviderMetadata(rawPart),
+        ...(rawPart.parentId || rawPart.parent_id
+          ? { parentId: String(rawPart.parentId ?? rawPart.parent_id) }
+          : {}),
+      } as RuntimeContentPart);
+      return;
+    }
+    if (type !== 'tool-call') return;
+    const toolCallId = String(rawPart.toolCallId ?? rawPart.tool_call_id ?? '');
+    const toolName = String(rawPart.toolName ?? rawPart.tool_name ?? '原子工具');
+    if (!toolCallId) return;
+    const toolPart: Record<string, unknown> = {
+      type: 'tool-call',
+      toolCallId,
+      toolName,
+      argsText: String(rawPart.argsText ?? rawPart.args_text ?? ''),
+      providerMetadata: displayPartProviderMetadata(rawPart),
+    };
+    const parentId = rawPart.parentId ?? rawPart.parent_id;
+    if (parentId) toolPart.parentId = String(parentId);
+    if (Object.prototype.hasOwnProperty.call(rawPart, 'result')) {
+      toolPart.result = rawPart.result;
+    }
+    if (Object.prototype.hasOwnProperty.call(rawPart, 'isError')
+      || Object.prototype.hasOwnProperty.call(rawPart, 'is_error')) {
+      toolPart.isError = Boolean(rawPart.isError ?? rawPart.is_error);
+    }
+    parts.push(toolPart as RuntimeContentPart);
+  });
+
+  if (canonicalAnswer && !answerPartSeen) {
+    parts.push({
+      type: 'text',
+      text: canonicalAnswer,
+      providerMetadata: { dsa: { displayKind: 'answer' } },
+    } as RuntimeContentPart);
+  }
+  return parts;
+};
+
 const isTerminalRunStatus = (status: string | null | undefined): boolean => (
   typeof status === 'string' && TERMINAL_RUN_STATUSES.has(status)
 );
 
-const toRuntimeMessages = (
+export const toRuntimeMessages = (
   conversationId: string,
   messages: ChatConversationDetail['messages'],
   latestStage?: NonNullable<ChatConversationDetail['resumeState']>['latestStage'],
@@ -112,11 +192,16 @@ const toRuntimeMessages = (
     .filter((message) => (message.content || '').trim().length > 0)
     .map((message) => {
       const stages = message.id === traceAssistantId ? persistedStages : [];
+      const displayParts = message.id === traceAssistantId
+        ? displayPartsForRuntime(executionTrace, normalizedAssistantText)
+        : [];
       return {
         id: message.id,
         role: normalizeMessageRole(message.role),
         createdAt: message.createdAt ? new Date(message.createdAt) : new Date(),
-        content: [{ type: 'text' as const, text: message.content || '' }],
+        content: displayParts.length > 0
+          ? displayParts
+          : [{ type: 'text' as const, text: message.content || '' }],
         ...(
           (stages.length > 0 || (message.id === traceAssistantId && executionTrace))
             ? {
@@ -144,7 +229,7 @@ const toRuntimeMessages = (
       id: `${conversationId}-agent-trace-${runId || stageRunId || 'latest'}`,
       role: 'assistant',
       createdAt: new Date(),
-      content: [],
+      content: displayPartsForRuntime(executionTrace, normalizedAssistantText),
       metadata: {
         ...(persistedStages.length > 0 ? { unstable_data: persistedStages } : {}),
         ...(executionTrace ? { custom: { agent_execution_trace: executionTrace } } : {}),
@@ -170,6 +255,8 @@ const getConversationHydrationKey = (detail: ChatConversationDetail): string => 
       ?? '',
     executionTrace?.stages?.length ?? 0,
     stageEventKey(executionTrace?.stages?.at(-1)),
+    executionTrace?.displayParts?.length ?? 0,
+    stageEventKey(executionTrace?.displayParts?.at(-1)),
     executionTrace?.toolResults?.length ?? 0,
     executionTrace?.evidence?.length ?? 0,
     executionTrace?.claimEvidence?.length ?? 0,

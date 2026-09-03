@@ -69,6 +69,14 @@ _TOOL_RESULT_STREAM_MIN_REMAINING_BYTES = 1_024
 _REASONING_STREAM_MAX_CHARACTERS = 12_000
 _REASONING_STREAM_MAX_CHUNKS = 64
 _REASONING_STREAM_TRUNCATION_NOTICE = "\n（其余内部过程已截断；执行步骤仍会继续更新。）"
+# The terminal UI replays a compact native-part projection from the same
+# ordered stream used by assistant-ui.  The complete event log and tool-step
+# ledger remain the audit source; this projection is only a bounded rendering
+# contract for conversation hydration.
+_DISPLAY_PARTS_MAX_ITEMS = 240
+_DISPLAY_PARTS_MAX_BYTES = 120_000
+_DISPLAY_PART_TEXT_MAX_CHARACTERS = 12_000
+_DISPLAY_PART_ARGS_MAX_CHARACTERS = 8_000
 
 
 def _serialized_bytes(value: Any) -> int:
@@ -459,6 +467,187 @@ class RunBroadcaster:
                 continue
             stages.append(dict(chunk.data))
         return stages
+
+    def display_parts_snapshot(
+        self,
+        *,
+        final_text: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Project the committed native stream into ordered UI message parts.
+
+        This deliberately consumes the assistant-stream chunks instead of
+        rebuilding a timeline from stage summaries.  Text is flushed at the
+        exact position where a tool call begins, and tool deltas/results fill
+        the same part in place.  ``round_id`` is copied from the stage event
+        that preceded each chunk, so a terminal hydration has the same stable
+        phase identity as the live run without using text-gap heuristics.
+
+        Reasoning chunks are intentionally excluded: they are an auxiliary
+        private channel, not user-facing progress.  The underlying ordered
+        event log remains available for audit/replay.
+        """
+        parts: list[dict[str, Any]] = []
+        tool_indices: dict[str, int] = {}
+        current_text: dict[str, Any] | None = None
+        current_round: str | None = None
+        current_kind = "progress"
+
+        def flush_text() -> None:
+            nonlocal current_text
+            if current_text is not None and str(current_text.get("text") or ""):
+                parts.append(current_text)
+            current_text = None
+
+        def ensure_tool(tool_call_id: str) -> dict[str, Any]:
+            existing_index = tool_indices.get(tool_call_id)
+            if existing_index is not None:
+                return parts[existing_index]
+            item: dict[str, Any] = {
+                "type": "tool-call",
+                "tool_call_id": tool_call_id,
+                "tool_name": "原子工具",
+                "args_text": "",
+                "round_id": current_round,
+            }
+            tool_indices[tool_call_id] = len(parts)
+            parts.append(item)
+            return item
+
+        for chunk in self._history:
+            if isinstance(chunk, DataChunk):
+                data = chunk.data
+                if not isinstance(data, Mapping):
+                    continue
+                if data.get("event") != "agent_stage":
+                    continue
+                round_id = data.get("round_id") or data.get("roundId")
+                if round_id not in (None, ""):
+                    current_round = str(round_id)
+                if (
+                    data.get("stage") == "publish"
+                    and data.get("status") in {"started", "completed", "succeeded", "failed", "cancelled"}
+                ):
+                    current_kind = "answer"
+                continue
+
+            if isinstance(chunk, TextDeltaChunk):
+                value = str(chunk.text_delta or "")
+                if not value:
+                    continue
+                parent_id = getattr(chunk, "parent_id", None)
+                if (
+                    current_text is None
+                    or current_text.get("round_id") != current_round
+                    or current_text.get("display_kind") != current_kind
+                    or current_text.get("parent_id") != parent_id
+                ):
+                    flush_text()
+                    current_text = {
+                        "type": "text",
+                        "text": "",
+                        "display_kind": current_kind,
+                        "round_id": current_round,
+                    }
+                    if parent_id:
+                        current_text["parent_id"] = str(parent_id)
+                current_text["text"] += value
+                continue
+
+            if isinstance(chunk, ToolCallBeginChunk):
+                flush_text()
+                tool_call_id = str(chunk.tool_call_id or "")
+                if not tool_call_id:
+                    continue
+                item = ensure_tool(tool_call_id)
+                item["tool_name"] = str(chunk.tool_name or "原子工具")[:160]
+                parent_id = getattr(chunk, "parent_id", None)
+                if parent_id:
+                    item["parent_id"] = str(parent_id)
+                item["round_id"] = current_round
+                continue
+
+            if isinstance(chunk, ToolCallDeltaChunk):
+                tool_call_id = str(chunk.tool_call_id or "")
+                if not tool_call_id:
+                    continue
+                item = ensure_tool(tool_call_id)
+                item["args_text"] = (
+                    str(item.get("args_text") or "")
+                    + str(chunk.args_text_delta or "")
+                )[:_DISPLAY_PART_ARGS_MAX_CHARACTERS]
+                continue
+
+            if isinstance(chunk, ToolResultChunk):
+                tool_call_id = str(chunk.tool_call_id or "")
+                if not tool_call_id:
+                    continue
+                item = ensure_tool(tool_call_id)
+                item["result"] = _json_safe(chunk.result)
+                item["is_error"] = bool(chunk.is_error)
+
+        flush_text()
+
+        normalized_final = str(final_text or "")
+        if normalized_final:
+            # TerminalPublicationMiddleware emits the accepted answer as one
+            # final text delta. Mark that existing part instead of appending a
+            # second copy. The fallback append is for recovered/legacy runs
+            # whose in-memory prefix does not contain the terminal delta.
+            answer_part = next(
+                (
+                    item
+                    for item in reversed(parts)
+                    if item.get("type") == "text"
+                    and str(item.get("text") or "") == normalized_final
+                ),
+                None,
+            )
+            if answer_part is not None:
+                answer_part["display_kind"] = "answer"
+            elif not any(
+                item.get("type") == "text"
+                and str(item.get("text") or "").strip() == normalized_final.strip()
+                for item in parts
+            ):
+                parts.append(
+                    {
+                        "type": "text",
+                        "text": normalized_final,
+                        "display_kind": "answer",
+                        "round_id": current_round,
+                    }
+                )
+
+        projected: list[dict[str, Any]] = []
+        used_bytes = 2
+        for raw in parts[:_DISPLAY_PARTS_MAX_ITEMS]:
+            item = {
+                key: value
+                for key, value in raw.items()
+                if value not in (None, "")
+            }
+            if item.get("type") == "text":
+                item["text"] = str(item.get("text") or "")[:_DISPLAY_PART_TEXT_MAX_CHARACTERS]
+            if item.get("type") == "tool-call" and "result" in item:
+                item["result"] = _bounded_stream_value(
+                    item["result"],
+                    collection_limit=24,
+                    mapping_limit=32,
+                    text_limit=1_200,
+                )
+            item_bytes = _serialized_bytes(item)
+            if projected and used_bytes + item_bytes > _DISPLAY_PARTS_MAX_BYTES:
+                break
+            if not projected and item_bytes > _DISPLAY_PARTS_MAX_BYTES:
+                if item.get("type") == "text":
+                    item["text"] = str(item.get("text") or "")[:2_000]
+                else:
+                    item.pop("result", None)
+                    item["args_text"] = str(item.get("args_text") or "")[:1_000]
+                item_bytes = _serialized_bytes(item)
+            projected.append(item)
+            used_bytes += item_bytes
+        return projected
 
     def subscribe(
         self,

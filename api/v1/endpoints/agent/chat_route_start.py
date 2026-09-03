@@ -104,10 +104,9 @@ async def agent_chat_impl(
     )
     edit_message_id = _extract_edit_message_id(body)
 
-    # The current chat UI has one integrated execution timeline.  It does not
-    # render legacy assistant-ui tool cards, so a reconnect must not replay a
-    # second copy of every tool payload into the client-side message store.
-    # Older/third-party clients retain the full assistant-stream contract.
+    # The current chat UI renders the standard assistant-stream parts in order
+    # and uses agent_stage data for the durable execution summary. Keep the
+    # stream projection hook so the response contract remains explicit.
     timeline_presentation = body.get("stream_presentation") == "timeline"
 
     def stream_for_client(source: Any):

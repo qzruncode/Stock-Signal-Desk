@@ -1,22 +1,25 @@
 import type { FC } from 'react';
 import { useId, useMemo, useState } from 'react';
 import { useMessage, useMessageTiming } from '@assistant-ui/react';
+import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import {
+  BookOpenIcon,
   CheckCircle2Icon,
   CircleAlertIcon,
   ChevronRightIcon,
   Loader2Icon,
 } from 'lucide-react';
 import {
+  agentStageDurationMs,
   agentStageEvents,
   agentStageLabel,
-  reasoningStatusLabel,
   reconcileTerminalStageEvents,
   type AgentStageEvent,
   type AgentStageEventV2,
 } from '../../utils/agentStage';
 import { cn } from '../../utils/cn';
 import { formatElapsedDuration } from '../../utils/format';
+import { AssistantMarkdown } from './AssistantMarkdownText';
 
 type TraceRecord = Record<string, unknown>;
 
@@ -176,6 +179,13 @@ interface TimelineRow {
   modelTurn?: number;
 }
 
+interface TimelinePhase {
+  key: string;
+  index: number;
+  modelTurn?: number;
+  rows: TimelineRow[];
+}
+
 const toolStatus = (result: TraceRecord | undefined, event: AgentStageEvent | undefined): AgentStageEvent['status'] => {
   if (result?.success === false) return 'failed';
   if (event?.status) return event.status;
@@ -197,6 +207,95 @@ const toolSummary = (result: TraceRecord | undefined, event: AgentStageEvent | u
     return `${name}：${errors || '调用未成功，模型可改用其他来源或收束回答'}`;
   }
   return event?.summary || `${name} 已返回`;
+};
+
+const positiveModelTurn = (value: unknown): number | undefined => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const rowModelTurn = (row: TimelineRow): number | undefined => (
+  row.modelTurn ?? positiveModelTurn(recordValue(row.event?.details, 'model_turn', 'modelTurn'))
+);
+
+/**
+ * Group the durable event stream into model-turn phases.
+ *
+ * A phase is deliberately wider than a tool call: it contains one model
+ * decision, all tools selected by that decision (including parallel tools),
+ * and the resulting evidence/publication events.  ``roundId`` is the stable
+ * identity for new runs.  The model-turn/order fallback keeps old persisted
+ * runs readable without guessing from human-facing summaries.
+ */
+const groupTimelinePhases = (rows: TimelineRow[]): TimelinePhase[] => {
+  const groups = new Map<string, TimelinePhase>();
+  let currentKey: string | undefined;
+  let currentRunId: string | undefined;
+  let legacyIndex = 0;
+
+  for (const row of rows) {
+    const event = row.event;
+    const eventRunId = event?.runId?.trim();
+    if (eventRunId && currentRunId && eventRunId !== currentRunId) {
+      // A conversation can contain a recovered/retried run whose model-turn
+      // counter starts again at one.  Never merge that phase with the prior
+      // run just because both rounds have the same number.
+      currentKey = undefined;
+    }
+    if (eventRunId) currentRunId = eventRunId;
+    const runPrefix = `run:${currentRunId || 'unknown'}`;
+    const roundId = event?.roundId?.trim();
+    const turn = rowModelTurn(row);
+    let key: string;
+
+    if (roundId) {
+      key = `${runPrefix}:round:${roundId}`;
+    } else if (event?.stage === 'model') {
+      key = turn ? `${runPrefix}:turn:${turn}` : `${runPrefix}:legacy:${++legacyIndex}`;
+    } else if (turn) {
+      key = `${runPrefix}:turn:${turn}`;
+    } else {
+      key = currentKey || `${runPrefix}:legacy:${++legacyIndex}`;
+    }
+
+    currentKey = key;
+    const phase = groups.get(key) || {
+      key,
+      index: groups.size + 1,
+      modelTurn: turn,
+      rows: [],
+    };
+    if (!phase.modelTurn && turn) phase.modelTurn = turn;
+    phase.rows.push(row);
+    groups.set(key, phase);
+  }
+
+  return [...groups.values()];
+};
+
+const genericToolSummary = (summary: string, name: string): boolean => {
+  const normalized = summary.trim();
+  return !normalized || normalized === `执行原子工具 ${name}`;
+};
+
+const toolPartLabel = ({
+  name,
+  summary,
+  waitingForApproval,
+  problem,
+  hasResult,
+}: {
+  name: string;
+  summary: string;
+  waitingForApproval: boolean;
+  problem: boolean;
+  hasResult: boolean;
+}): string => {
+  if (!genericToolSummary(summary, name)) return summary.trim();
+  if (waitingForApproval) return `等待确认：${name}`;
+  if (problem) return `${name} 执行失败`;
+  if (hasResult) return `${name} 已完成`;
+  return `正在执行 ${name}`;
 };
 
 const stringValues = (value: unknown, limit = 2_400): string[] => (
@@ -313,11 +412,389 @@ const toolDetails = (result: TraceRecord | undefined, event: AgentStageEvent | u
   return lines;
 };
 
+const TimelineDetailLines: FC<{ lines: DetailLine[] }> = ({ lines }) => {
+  if (lines.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
+      {lines.map((detail) => (
+        <div key={detail.key} className="whitespace-pre-wrap break-words">
+          <span>{detail.text}</span>
+          {detail.href ? (
+            <>
+              <span> · </span>
+              <a
+                href={detail.href}
+                target="_blank"
+                rel="noreferrer"
+                className="break-all text-primary underline-offset-2 hover:underline"
+              >
+                {detail.href}
+              </a>
+            </>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const TimelineStageRow: FC<{ row: TimelineRow }> = ({ row }) => {
+  const event = row.event;
+  if (!event) return null;
+  const status = event.status;
+  const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
+    || Boolean(event.errorCode);
+  if (event.stage === 'model') {
+    const progress = text(recordValue(event.details, 'progress_preview'), 2_400);
+    return (
+      <li className="min-w-0 py-1.5 text-sm text-foreground/90">
+        {progress ? (
+          <AssistantMarkdown text={progress} />
+        ) : (
+          <div className={cn(
+            'whitespace-pre-wrap break-words leading-6',
+            problem ? 'text-amber-700' : 'text-foreground/90',
+          )}>
+            {event.summary || '模型继续处理当前阶段'}
+          </div>
+        )}
+      </li>
+    );
+  }
+  const label = agentStageLabel(event.stage);
+  const details = stageDetails(event);
+  return (
+    <li className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
+      <StatusIcon
+        status={status}
+        problem={problem}
+        className={cn(
+          'mt-0.5 size-3.5 shrink-0',
+          problem
+            ? 'text-amber-600'
+            : status === 'completed' || status === 'succeeded'
+              ? 'text-emerald-600'
+              : 'animate-spin text-primary',
+        )}
+      />
+      <div className="min-w-0 flex-1 leading-5">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="font-medium text-foreground">{label}</span>
+          <span className="text-muted-foreground">{statusText(status, problem)}</span>
+        </div>
+        {event.summary && event.stage !== 'model' ? (
+          <div className="whitespace-pre-wrap break-words text-muted-foreground">{event.summary}</div>
+        ) : null}
+        <TimelineDetailLines lines={details} />
+      </div>
+    </li>
+  );
+};
+
+const TimelineToolRow: FC<{ row: TimelineRow }> = ({ row }) => {
+  const event = row.event;
+  const name = toolName(row.result)
+    || text(recordValue(event?.details, 'tool_name', 'toolName'), 120)
+    || '原子工具';
+  const status = toolStatus(row.result, event);
+  const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
+    || Boolean(event?.errorCode)
+    || errorCode(row.result) !== '';
+  const summary = toolSummary(row.result, event);
+  const details = toolDetails(row.result, event);
+  const detailId = useId();
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <li className="min-w-0 border-t border-primary/10 first:border-t-0">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailId}
+        aria-label={`${expanded ? '收起' : '展开'}工具 ${name} 详情`}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full min-w-0 items-start gap-2 py-2 text-left text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+      >
+        <StatusIcon
+          status={status}
+          problem={problem}
+          className={cn(
+            'mt-0.5 size-3.5 shrink-0',
+            problem
+              ? 'text-amber-600'
+              : status === 'completed' || status === 'succeeded'
+                ? 'text-emerald-600'
+                : 'animate-spin text-primary',
+          )}
+        />
+        <span className="min-w-0 flex-1 leading-5">
+          <span className="font-medium text-foreground">{name}</span>
+          <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
+          <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
+        </span>
+        <ChevronRightIcon
+          className={cn(
+            'mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform duration-300 ease-out',
+            expanded && 'rotate-90',
+          )}
+          aria-hidden="true"
+        />
+      </button>
+      <div
+        id={detailId}
+        role="region"
+        aria-label={`${name}工具详情`}
+        aria-hidden={!expanded}
+        className="grid transition-[grid-template-rows] duration-300 ease-out"
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className={cn(
+            'pb-2 pl-5 pr-5 text-muted-foreground transition-opacity duration-300 ease-out',
+            expanded ? 'opacity-100' : 'opacity-0',
+          )}>
+            {details.length > 0
+              ? <TimelineDetailLines lines={details} />
+              : <div className="text-[11px] leading-5">该工具未提供结构化详情。</div>}
+          </div>
+        </div>
+      </div>
+    </li>
+  );
+};
+
+const phaseStatus = (phase: TimelinePhase): AgentStageEvent['status'] => {
+  const statuses = phase.rows.map((row) => row.kind === 'tool'
+    ? toolStatus(row.result, row.event)
+    : row.event?.status || 'started');
+  if (statuses.some((status) => status === 'failed' || status === 'blocked')) return 'failed';
+  if (statuses.some((status) => status === 'cancelled')) return 'cancelled';
+  if (statuses.some((status) => status === 'started')) return 'started';
+  return statuses.at(-1) || 'completed';
+};
+
+const phaseProblem = (phase: TimelinePhase): boolean => phase.rows.some((row) => {
+  const status = row.kind === 'tool' ? toolStatus(row.result, row.event) : row.event?.status;
+  return status === 'failed'
+    || status === 'blocked'
+    || status === 'cancelled'
+    || Boolean(row.event?.errorCode)
+    || Boolean(row.kind === 'tool' && errorCode(row.result));
+});
+
+const phaseHeadline = (phase: TimelinePhase): string => {
+  const model = phase.rows.find((row) => row.kind === 'stage' && row.event?.stage === 'model');
+  const modelProgress = text(recordValue(model?.event?.details, 'progress_preview'), 360);
+  if (modelProgress) return modelProgress;
+  if (model?.event?.summary) return model.event.summary;
+  const first = phase.rows[0];
+  if (first?.kind === 'tool') return toolSummary(first.result, first.event);
+  return first?.event?.summary || '执行阶段';
+};
+
+const TimelinePhaseRow: FC<{
+  phase: TimelinePhase;
+  messageActive: boolean;
+}> = ({ phase, messageActive }) => {
+  const [expandedOverride, setExpandedOverride] = useState(false);
+  const detailId = useId();
+  const expanded = expandedOverride;
+  const status = phaseStatus(phase);
+  const problem = phaseProblem(phase);
+  const toolRows = phase.rows.filter((row) => row.kind === 'tool');
+  const phaseNumber = phase.modelTurn || phase.index;
+  const phaseLabel = `第 ${phaseNumber} 阶段`;
+  const headline = phaseHeadline(phase);
+  const phaseSummary = toolRows.length > 0
+    ? `${messageActive || status === 'started' ? '正在执行' : problem ? '执行出现问题' : '已完成'} ${toolRows.length} 个工具`
+    : headline;
+
+  return (
+    <li className="min-w-0 border-b border-border/60 last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailId}
+        aria-label={`${expanded ? '收起' : '展开'}${phaseLabel}`}
+        onClick={() => setExpandedOverride((value) => !value)}
+        className="flex w-full min-w-0 items-center gap-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+      >
+        <StatusIcon
+          status={status}
+          problem={problem}
+          className={cn(
+            'size-4 shrink-0',
+            problem
+              ? 'text-amber-600'
+              : status === 'completed' || status === 'succeeded'
+                ? 'text-emerald-600'
+                : 'animate-spin text-primary',
+          )}
+        />
+        <span className="min-w-0 flex-1 truncate" title={headline}>
+          <span className="font-medium text-foreground">{phaseLabel}</span>
+          <span className="ml-2 text-muted-foreground">{phaseSummary}</span>
+        </span>
+        {toolRows.length > 0 ? <span className="shrink-0 text-xs">{toolRows.length} 个工具</span> : null}
+        <ChevronRightIcon
+          className={cn(
+            'size-4 shrink-0 text-muted-foreground transition-transform duration-300 ease-out',
+            expanded && 'rotate-90',
+          )}
+          aria-hidden="true"
+        />
+      </button>
+      <div
+        id={detailId}
+        role="region"
+        aria-label={`${phaseLabel}详情`}
+        aria-hidden={!expanded}
+        className="grid transition-[grid-template-rows] duration-300 ease-out"
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className={cn(
+            'pl-2 transition-opacity duration-300 ease-out',
+            expanded ? 'opacity-100' : 'opacity-0',
+          )}>
+            <ol className="space-y-0.5">
+              {phase.rows.map((row) => row.kind === 'tool'
+                ? <TimelineToolRow key={row.key} row={row} />
+                : <TimelineStageRow key={row.key} row={row} />)}
+            </ol>
+          </div>
+        </div>
+      </div>
+    </li>
+  );
+};
+
+/**
+ * Render the native assistant-ui tool part used by the live message stream.
+ *
+ * The backend emits tool-call parts through assistant-stream. Keeping this
+ * renderer at the part boundary lets assistant-ui preserve the actual
+ * ``model text -> tool -> model text`` order instead of reconstructing it from
+ * separately accumulated stage metadata. The durable stage event is used only
+ * for the safe, user-facing summary; raw tool arguments/results stay out of
+ * this live fallback.
+ */
+export const AgentToolCallPart: FC<ToolCallMessagePartProps> = ({
+  toolName: name,
+  toolCallId,
+  args,
+  status,
+  result,
+  isError,
+  approval,
+}) => {
+  const stageData = useMessage((message) => message.metadata?.unstable_data);
+  const event = useMemo(
+    () => agentStageEvents(stageData)
+      .filter((candidate) => (
+        candidate.toolCallId === toolCallId || candidate.actionId === toolCallId
+      ))
+      .at(-1) ?? null,
+    [stageData, toolCallId],
+  );
+  const resultFailed = isRecord(result) && result.success === false;
+  const waitingForApproval = Boolean(
+    approval && approval.approved === undefined && !approval.resolution,
+  );
+  const problem = Boolean(isError) || resultFailed || Boolean(event?.errorCode)
+    || event?.status === 'failed'
+    || event?.status === 'blocked'
+    || event?.status === 'cancelled';
+  const hasResult = status.type === 'complete' || result !== undefined;
+  const summary = waitingForApproval
+    ? '该操作需要用户确认后才能继续'
+    : event?.summary
+      || (hasResult ? `${name} 已返回` : `执行原子工具 ${name}`);
+  const label = toolPartLabel({
+    name,
+    summary,
+    waitingForApproval,
+    problem,
+    hasResult,
+  });
+  const detailLines = useMemo(() => {
+    const request = argumentSummary(args);
+    const nativeResult = isRecord(result) ? result : undefined;
+    return [
+      ...(request ? [{ key: 'request', text: `请求：${request}` }] : []),
+      ...toolDetails(nativeResult, event ?? undefined),
+    ];
+  }, [args, event, result]);
+  const detailId = useId();
+  const [expanded, setExpanded] = useState(false);
+  const ToolIcon = problem || waitingForApproval
+    ? CircleAlertIcon
+    : hasResult
+      ? BookOpenIcon
+      : Loader2Icon;
+
+  return (
+    <div className="min-w-0 border-b border-border/60 last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailId}
+        aria-label={`${expanded ? '收起' : '展开'}工具 ${name} 详情`}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full min-w-0 items-start gap-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+      >
+        <ToolIcon
+          className={cn(
+            'mt-0.5 size-4 shrink-0',
+            problem || waitingForApproval
+              ? 'text-amber-600'
+              : hasResult
+                ? 'text-muted-foreground'
+                : 'animate-spin text-primary',
+          )}
+        />
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words leading-5">{label}</span>
+        <ChevronRightIcon
+          className={cn(
+            'mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform duration-300 ease-out',
+            expanded && 'rotate-90',
+          )}
+          aria-hidden="true"
+        />
+      </button>
+      <div
+        id={detailId}
+        role="region"
+        aria-label={`${name}工具详情`}
+        aria-hidden={!expanded}
+        className="grid transition-[grid-template-rows] duration-300 ease-out"
+        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className={cn(
+            'pb-2 pl-6 text-xs text-muted-foreground transition-opacity duration-300 ease-out',
+            expanded ? 'opacity-100' : 'opacity-0',
+          )}>
+            {detailLines.length > 0
+              ? <TimelineDetailLines lines={detailLines} />
+              : <div className="leading-5">暂无结构化详情</div>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const visibleReasoningText = (rawText: string): string => (
   rawText.length > 12_000 ? `${rawText.slice(-12_000)}\n[较早过程已截断]` : rawText
 );
 
-export const AgentExecutionTimeline: FC<{ reasoningText?: string }> = ({ reasoningText = '' }) => {
+export const AgentExecutionTimeline: FC<{
+  reasoningText?: string;
+  processText?: string;
+  /** Legacy traces have no native parts; render them inline while they are
+   * being upgraded instead of hiding the whole run behind one process card. */
+  presentation?: 'inline' | 'disclosure';
+}> = ({ reasoningText = '', processText = '', presentation = 'disclosure' }) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const messageActive = messageStatus === 'running' || messageStatus === 'requires-action';
   const messageTiming = useMessageTiming();
@@ -344,7 +821,7 @@ export const AgentExecutionTimeline: FC<{ reasoningText?: string }> = ({ reasoni
     const resultByAction = new Map(results.map((result) => [actionId(result), result]));
     const includedResults = new Set<string>();
     const output: TimelineRow[] = events.map((event, eventIndex) => {
-      const action = event.actionId || '';
+      const action = event.actionId || event.toolCallId || '';
       const isTool = event.stage === 'tool' || event.stage === 'execute';
       const result = isTool ? resultByAction.get(action) : undefined;
       if (result) includedResults.add(action);
@@ -360,105 +837,98 @@ export const AgentExecutionTimeline: FC<{ reasoningText?: string }> = ({ reasoni
             .length;
         }
       }
-      return { key: stageKey(event), event, result, kind: isTool ? 'tool' : 'stage', modelTurn };
+      return {
+        key: isTool ? `tool:${action || eventIndex}` : stageKey(event),
+        event,
+        result,
+        kind: isTool ? 'tool' : 'stage',
+        modelTurn,
+      };
     });
-    for (const result of results) {
+    results.forEach((result, resultIndex) => {
       const key = actionId(result);
-      if (!key || includedResults.has(key)) continue;
-      output.push({ key: `tool:${key}`, result, kind: 'tool' });
-    }
+      if (key && includedResults.has(key)) return;
+      output.push({ key: `tool:${key || `unmatched-${resultIndex}`}`, result, kind: 'tool' });
+    });
     return output;
   }, [events, results]);
-  const latest = events.at(-1) || null;
-  const terminalProblem = Boolean(latest?.errorCode)
-    || messageStatus === 'incomplete'
-    || latest?.status === 'failed'
-    || latest?.status === 'blocked'
-    || latest?.status === 'cancelled';
-  const done = !messageActive && !terminalProblem;
-  const headerStatus: AgentStageEvent['status'] = terminalProblem
-    ? 'failed'
-    : done ? 'completed' : 'started';
-  const reasoningVisible = visibleReasoningText(reasoningText);
-  const hasExecutionContent = rows.length > 0 || Boolean(reasoningVisible.trim());
-  const eventDurationMs = useMemo(() => {
-    const timestamps = events
-      .map((event) => event.occurredAt ? Date.parse(event.occurredAt) : Number.NaN)
-      .filter((value) => Number.isFinite(value));
-    if (timestamps.length < 2) return undefined;
-    const duration = Math.max(...timestamps) - Math.min(...timestamps);
-    return duration >= 0 ? duration : undefined;
-  }, [events]);
+  const phases = useMemo(() => groupTimelinePhases(rows), [rows]);
+  const eventDurationMs = useMemo(() => agentStageDurationMs(events), [events]);
   const durationMs = typeof messageTiming?.totalStreamTime === 'number'
     && Number.isFinite(messageTiming.totalStreamTime)
     && messageTiming.totalStreamTime >= 0
     ? messageTiming.totalStreamTime
     : eventDurationMs;
   const durationLabel = durationMs == null ? null : formatElapsedDuration(durationMs);
-  const compactLabel = durationLabel ? `用时 ${durationLabel}` : done ? '执行完成' : `执行${reasoningStatusLabel(messageActive, latest)}`;
+  const compactLabel = durationLabel ? `用时 ${durationLabel}` : '用时';
   const detailId = useId();
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const expanded = messageActive || expandedOverride === true;
+  const processVisible = visibleReasoningText(
+    processText.trim() || (phases.length === 0 ? reasoningText : ''),
+  );
 
-  if (!hasExecutionContent) return null;
+  if (phases.length === 0 && !processVisible.trim()) return null;
+
+  // A live fallback is still a normal stream.  It must not add the terminal
+  // duration row or a second execution card above the message content.
+  if (messageActive) {
+    return (
+      <section className="mb-3 min-w-0" aria-label="执行过程">
+        {processVisible.trim() ? (
+          <div className="mb-2">
+            <AssistantMarkdown text={processVisible} />
+          </div>
+        ) : null}
+        {phases.length > 0 ? (
+          <ol className="space-y-1">
+            {phases.map((phase) => (
+              <TimelinePhaseRow key={phase.key} phase={phase} messageActive />
+            ))}
+          </ol>
+        ) : null}
+      </section>
+    );
+  }
+
+  if (presentation === 'inline') {
+    return (
+      <section className="mb-3 min-w-0" aria-label="执行过程">
+        {processVisible.trim() ? (
+          <div className="mb-2">
+            <AssistantMarkdown text={processVisible} />
+          </div>
+        ) : null}
+        {phases.length > 0 ? (
+          <ol className="space-y-1">
+            {phases.flatMap((phase) => phase.rows.map((row) => row.kind === 'tool'
+              ? <TimelineToolRow key={`${phase.key}:${row.key}`} row={row} />
+              : <TimelineStageRow key={`${phase.key}:${row.key}`} row={row} />))}
+          </ol>
+        ) : null}
+      </section>
+    );
+  }
 
   return (
-    <section
-      className={cn(
-        'mb-3 overflow-hidden transition-[background-color,border-color,border-radius,box-shadow] duration-300 ease-out',
-        expanded
-          ? 'rounded-xl border border-primary/15 bg-primary/[0.035]'
-          : 'border-b border-border/70 bg-card/35',
-      )}
-      aria-label="执行过程"
-    >
-      {messageActive ? (
-        <div className="flex w-full items-center justify-between gap-3 px-3 py-2" role="status">
-          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
-            <StatusIcon
-              status={headerStatus}
-              problem={terminalProblem}
-              className={cn('size-4 shrink-0', !done && !terminalProblem && 'animate-spin text-primary')}
-            />
-            <span className="text-sm font-medium text-foreground">执行过程</span>
-            <span className="text-xs text-muted-foreground">{rows.length} 条实际记录</span>
-          </span>
-        </div>
-      ) : (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={detailId}
-          aria-label={`${expanded ? '收起' : '展开'}执行过程，${compactLabel}`}
-          onClick={() => setExpandedOverride((value) => value === true ? false : true)}
-          className="flex w-full items-center justify-between gap-3 px-2 py-3 text-left text-sm text-muted-foreground transition-colors duration-300 hover:bg-muted/35 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 sm:px-3 sm:py-2"
-        >
-          <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5">
-            {expanded ? (
-              <StatusIcon status={headerStatus} problem={terminalProblem} className="size-4 shrink-0" />
-            ) : terminalProblem ? (
-              <CircleAlertIcon className="size-4 shrink-0 text-amber-600" />
-            ) : null}
-            <span className={cn(expanded && 'font-medium text-foreground')}>
-              {expanded ? '执行过程' : compactLabel}
-            </span>
-            {expanded ? (
-              <span className="text-xs text-muted-foreground">
-                {rows.length > 0 ? `${rows.length} 条实际记录 · ` : ''}{compactLabel}
-              </span>
-            ) : terminalProblem ? (
-              <span className="shrink-0 text-xs text-amber-700">· {reasoningStatusLabel(false, latest)}</span>
-            ) : null}
-          </span>
-          <ChevronRightIcon
-            className={cn(
-              'size-4 shrink-0 text-muted-foreground transition-transform duration-300 ease-out',
-              expanded && 'rotate-90',
-            )}
-            aria-hidden="true"
-          />
-        </button>
-      )}
+    <section className="mb-3 min-w-0 overflow-hidden" aria-label="执行过程">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailId}
+        aria-label={`${expanded ? '收起' : '展开'}${compactLabel}`}
+        onClick={() => setExpandedOverride((value) => value === true ? false : true)}
+        className="flex w-full min-w-0 items-center justify-between gap-3 border-b border-border/70 py-2 text-left text-sm text-muted-foreground transition-colors duration-300 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+      >
+        <span className="min-w-0 truncate">{compactLabel}</span>
+        <ChevronRightIcon
+          className={cn(
+            'size-4 shrink-0 transition-transform duration-300 ease-out',
+            expanded && 'rotate-90',
+          )}
+          aria-hidden="true"
+        />
+      </button>
 
       <div
         id={detailId}
@@ -470,66 +940,20 @@ export const AgentExecutionTimeline: FC<{ reasoningText?: string }> = ({ reasoni
       >
         <div className="min-h-0 overflow-hidden">
           <div className={cn(
-            'border-t border-primary/10 px-3 py-2 transition-opacity duration-300 ease-out',
+            'pt-2 transition-opacity duration-300 ease-out',
             expanded ? 'opacity-100' : 'opacity-0',
           )}>
-            {rows.length > 0 ? (
-              <ol className="space-y-1">
-                {rows.map((row) => {
-                  const event = row.event;
-                  const status = row.kind === 'tool' ? toolStatus(row.result, event) : (event?.status || 'started');
-                  const problem = status === 'failed' || status === 'blocked' || status === 'cancelled'
-                    || Boolean(row.kind === 'stage' && event?.errorCode);
-                  const label = row.kind === 'tool'
-                    ? (toolName(row.result) || text(recordValue(event?.details, 'tool_name', 'toolName'), 120) || '原子工具')
-                    : `${agentStageLabel(event?.stage || '')}${row.modelTurn ? ` · 第 ${row.modelTurn} 轮` : ''}`;
-                  const summary = row.kind === 'tool'
-                    ? toolSummary(row.result, event)
-                    : (event?.summary || '正在处理');
-                  const detailLines = row.kind === 'tool' ? toolDetails(row.result, event) : stageDetails(event!);
-                  return (
-                    <li key={row.key} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
-                      <StatusIcon status={status} problem={problem} className={cn(
-                        'mt-0.5 size-3.5 shrink-0',
-                        problem ? 'text-amber-600' : status === 'completed' || status === 'succeeded' ? 'text-emerald-600' : 'animate-spin text-primary',
-                      )} />
-                      <div className="min-w-0 flex-1 leading-5">
-                        <span className="font-medium text-foreground">{label}</span>
-                        <span className="ml-2 text-muted-foreground">{statusText(status, problem)}</span>
-                        <span className="ml-2 whitespace-pre-wrap break-words text-muted-foreground">{summary}</span>
-                        {detailLines.length > 0 ? (
-                          <div className="mt-0.5 space-y-0.5 text-[11px] leading-5 text-muted-foreground/85">
-                            {detailLines.map((detail) => (
-                              <div key={detail.key} className="whitespace-pre-wrap break-words">
-                                <span>{detail.text}</span>
-                                {detail.href ? (
-                                  <>
-                                    <span> · </span>
-                                    <a
-                                      href={detail.href}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="break-all text-primary underline-offset-2 hover:underline"
-                                    >
-                                      {detail.href}
-                                    </a>
-                                  </>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            ) : null}
-            {reasoningVisible.trim() ? (
-              <div className={cn('text-xs text-muted-foreground', rows.length > 0 && 'mt-3 border-t border-primary/10 pt-2')}>
-                <div>运行日志 · {reasoningStatusLabel(messageActive, latest)}</div>
-                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-muted-foreground">{reasoningVisible}</pre>
+            {processVisible.trim() ? (
+              <div className={cn('mb-3', phases.length > 0 && 'border-b border-primary/10 pb-2')}>
+                <AssistantMarkdown text={processVisible} />
               </div>
+            ) : null}
+            {phases.length > 0 ? (
+              <ol className="space-y-2">
+                {phases.map((phase) => (
+                  <TimelinePhaseRow key={phase.key} phase={phase} messageActive={messageActive} />
+                ))}
+              </ol>
             ) : null}
           </div>
         </div>

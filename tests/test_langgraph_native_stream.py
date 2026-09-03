@@ -136,3 +136,17 @@ def test_graph_event_bridge_never_replaces_unverified_candidate_text() -> None:
     events.text("已核验的最终答案")
 
     assert controller.texts == ["先规划：先查资料。", "已核验的最终答案"]
+
+
+def test_graph_event_bridge_assigns_one_round_id_to_each_model_phase() -> None:
+    events = GraphEventBridge(None, run_id="run-phase-identity")
+
+    events.begin_model_turn(1)
+    first = events.stage("model", "started", "第一阶段")
+    parallel_tool = events.stage("tool", "started", "执行 search_source", action_id="call-1")
+    events.begin_model_turn(2)
+    second = events.stage("model", "started", "第二阶段")
+
+    assert first["round_id"] == "1"
+    assert parallel_tool["round_id"] == "1"
+    assert second["round_id"] == "2"

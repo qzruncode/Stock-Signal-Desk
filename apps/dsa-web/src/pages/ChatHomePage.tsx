@@ -337,8 +337,8 @@ const ChatHomePage: React.FC = () => {
           conversation_id: selectedConversationId,
           resume_existing: true,
           after_chunk_index: resumeExisting.afterChunkIndex,
-          // The execution timeline already consumes structured stage events.
-          // Avoid rebuilding a redundant tool-card repository on reconnect.
+          // Preserve assistant-stream text/tool parts so reconnects rebuild the
+          // same ordered plan -> tool -> next-turn presentation.
           stream_presentation: 'timeline',
         };
       }

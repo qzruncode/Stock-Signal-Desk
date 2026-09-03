@@ -258,7 +258,11 @@ def get_agent_conversation(
         else None
     )
     conversation["resume_state"] = {
-        "run_id": (run.run_id if run else (durable_run.get("run_id") if durable_run else None)),
+        "run_id": (
+            run.run_id
+            if is_generating and run
+            else (durable_run.get("run_id") if durable_run else (run.run_id if run else None))
+        ),
         # `active` is an attachment contract, not a history-exists flag.  A
         # terminal run can have a long durable event log, but replaying it as
         # a live data stream makes the browser recreate transient tool parts
@@ -270,14 +274,18 @@ def get_agent_conversation(
         # The durable event log is the authoritative presentation state.
         # Replaying from zero reconstructs tool cards even if the browser died
         # before its onFinish snapshot.
-        "after_chunk_index": (run.broadcaster.history_length if run and not durable_run else 0),
-        "event_cursor": (run.broadcaster.history_length if run else durable_event_cursor),
+        "after_chunk_index": (run.broadcaster.history_length if is_generating and run and not durable_run else 0),
+        "event_cursor": (run.broadcaster.history_length if is_generating and run else durable_event_cursor),
         "assistant_text": (
             run.broadcaster.assistant_text_snapshot
-            if run
+            if is_generating and run
             else str(durable_run.get("final_text") or "") if durable_run else ""
         ),
-        "has_tool_events": (run.broadcaster.has_tool_events if run else durable_has_tool_events),
+        "has_tool_events": (
+            run.broadcaster.has_tool_events
+            if run
+            else durable_has_tool_events
+        ),
         "latest_stage": persisted_stage,
         "pending_interrupt": pending_interrupt,
     }

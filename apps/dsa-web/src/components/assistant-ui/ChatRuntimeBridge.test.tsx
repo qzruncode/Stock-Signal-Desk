@@ -2,7 +2,7 @@ import { render, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import type { ChatConversationDetail } from '../../api/agent';
-import { ChatRuntimeBridge } from './ChatRuntimeBridge';
+import { ChatRuntimeBridge, toRuntimeMessages } from './ChatRuntimeBridge';
 
 vi.mock('@assistant-ui/react', () => ({
   useThread: vi.fn(),
@@ -72,6 +72,57 @@ describe('ChatRuntimeBridge', () => {
     vi.mocked(useThreadRuntime).mockReturnValue(
       runtime as unknown as ReturnType<typeof useThreadRuntime>,
     );
+  });
+
+  it('rehydrates the durable native parts in their original text/tool order', () => {
+    const detail = makeDetail(false);
+    detail.messages[1]!.content = '最终回答';
+    detail.executionTrace = {
+      displayParts: [
+        {
+          type: 'text',
+          text: '先确认取证范围。',
+          displayKind: 'progress',
+          roundId: '1',
+        },
+        {
+          type: 'tool-call',
+          toolCallId: 'call-1',
+          toolName: 'read_source',
+          argsText: '{"url":"https://example.com"}',
+          result: { success: true },
+          roundId: '1',
+        },
+        {
+          type: 'text',
+          text: '最终回答',
+          displayKind: 'answer',
+          roundId: '1',
+        },
+      ],
+    };
+
+    const messages = toRuntimeMessages(
+      detail.id,
+      detail.messages,
+      undefined,
+      detail.executionTrace,
+      'run-1',
+      '最终回答',
+    );
+    const assistant = messages.find((message) => message.id === 'assistant-1');
+    const content = assistant?.content as unknown as Array<Record<string, unknown>>;
+
+    expect(content.map((part) => part.type)).toEqual(['text', 'tool-call', 'text']);
+    expect(content[0]?.text).toBe('先确认取证范围。');
+    expect(content[1]?.toolCallId).toBe('call-1');
+    expect(content[1]?.toolName).toBe('read_source');
+    expect(content[1]?.argsText).toBe('{"url":"https://example.com"}');
+    expect((content[1]?.providerMetadata as Record<string, unknown>).dsa).toEqual({
+      displayKind: 'progress',
+      roundId: '1',
+    });
+    expect(content[2]?.text).toBe('最终回答');
   });
 
   it('restores plain text history from canonical messages instead of importing thread state', async () => {

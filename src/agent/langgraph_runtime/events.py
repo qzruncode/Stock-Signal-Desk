@@ -164,8 +164,15 @@ class GraphEventBridge:
             return "".join(parts)
         return str(content or "")
 
-    def begin_model_turn(self, _model_turn: int | str | None = None) -> None:
-        """Start an isolated model-output buffer for one native graph turn."""
+    def begin_model_turn(self, model_turn: int | str | None = None) -> None:
+        """Start an isolated model-output buffer for one native graph turn.
+
+        The model turn is also the durable phase identity.  Every stage and
+        tool event emitted until the next model turn inherits this round id,
+        which lets the client group parallel tools without reconstructing a
+        phase from display text.
+        """
+        self.set_round(model_turn)
         self._pending_model_text = ""
         self._model_chunks_seen = False
 

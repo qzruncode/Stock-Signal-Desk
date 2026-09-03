@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useMessage, useMessageTiming } from '@assistant-ui/react';
-import { AgentExecutionTimeline } from './AgentReasoning';
+import { AgentExecutionTimeline, AgentToolCallPart } from './AgentReasoning';
 
 vi.mock('@assistant-ui/react', () => ({
   useMessage: vi.fn(),
@@ -14,10 +14,85 @@ const mockMessage = (message: Record<string, unknown>) => {
   )) as never);
 };
 
+const expandFirstPhase = () => {
+  fireEvent.click(screen.getByRole('button', { name: /展开第 \d+ 阶段/ }));
+};
+
+const expandTool = (name: string) => {
+  fireEvent.click(screen.getByRole('button', { name: `展开工具 ${name} 详情` }));
+};
+
 describe('AgentExecutionTimeline', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(useMessageTiming).mockReturnValue(undefined);
+  });
+
+  it('renders a native tool part at its stream position', () => {
+    mockMessage({
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-ordered',
+          stage: 'tool',
+          status: 'started',
+          action_id: 'call-ordered',
+          tool_call_id: 'call-ordered',
+          summary: '正在读取主来源',
+        }],
+      },
+    });
+
+    render(
+      <AgentToolCallPart
+        type="tool-call"
+        toolCallId="call-ordered"
+        toolName="read_primary_source"
+        args={{}}
+        argsText="{}"
+        status={{ type: 'running' }}
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('正在读取主来源')).toBeInTheDocument();
+    expect(screen.queryByText('执行原子工具 read_primary_source')).not.toBeInTheDocument();
+    expect(screen.queryByText('进行中')).not.toBeInTheDocument();
+  });
+
+  it('normalizes the internal fallback summary into one concise tool line', () => {
+    mockMessage({
+      metadata: {
+        unstable_data: [{
+          event: 'agent_stage',
+          run_id: 'run-compact',
+          stage: 'tool',
+          status: 'started',
+          action_id: 'call-compact',
+          tool_call_id: 'call-compact',
+          summary: '执行原子工具 search_stocks',
+        }],
+      },
+    });
+
+    render(
+      <AgentToolCallPart
+        type="tool-call"
+        toolCallId="call-compact"
+        toolName="search_stocks"
+        args={{}}
+        argsText="{}"
+        status={{ type: 'running' }}
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: '展开工具 search_stocks 详情' })).toBeInTheDocument();
+    expect(screen.queryByText(/执行原子工具/)).not.toBeInTheDocument();
   });
 
   it('merges the actual tool result into one compact execution line', () => {
@@ -106,7 +181,7 @@ describe('AgentExecutionTimeline', () => {
 
     const { container } = render(<AgentExecutionTimeline />);
 
-    const toggle = screen.getByRole('button', { name: /展开执行过程，执行完成/ });
+    const toggle = screen.getByRole('button', { name: /展开用时/ });
     const details = container.querySelector<HTMLElement>('[role="region"][aria-label="执行过程详情"]')!;
     expect(toggle).toBeInTheDocument();
     expect(details).toHaveAttribute('aria-hidden', 'true');
@@ -115,8 +190,11 @@ describe('AgentExecutionTimeline', () => {
     fireEvent.click(toggle);
     expect(details).toHaveAttribute('aria-hidden', 'false');
     expect(details).toHaveStyle({ gridTemplateRows: '1fr' });
-    expect(screen.getByText('执行过程')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '展开第 1 阶段' })).toHaveAttribute('aria-expanded', 'false');
+    expandFirstPhase();
     expect(screen.getByText('search_web_source')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '展开工具 search_web_source 详情' })).toHaveAttribute('aria-expanded', 'false');
+    expandTool('search_web_source');
     expect(screen.getByText(/请求：source_id=exa · query=人形机器人产业链 · num_results=2/)).toBeInTheDocument();
     expect(screen.getByText(/返回 2 条结果 · 数据来源：Exa、证券时报、财联社/)).toBeInTheDocument();
     expect(screen.getByText(/数据时间：2026-08-08/)).toBeInTheDocument();
@@ -167,7 +245,9 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
+    fireEvent.click(screen.getByRole('button', { name: /展开用时/ }));
+    expandFirstPhase();
+    expandTool('notify_user');
     expect(screen.getByText('notify_user：用户拒绝，未执行')).toBeInTheDocument();
     expect(screen.queryByText(/调用未成功/)).not.toBeInTheDocument();
   });
@@ -232,14 +312,172 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
-    expect(screen.getByText('模型决策 · 第 2 轮')).toBeInTheDocument();
-    expect(screen.getByText('模型已给出候选回答，正在检查其证据关联')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /展开用时/ }));
+    expect(screen.getByRole('button', { name: '展开第 2 阶段' })).toBeInTheDocument();
+    expect(screen.getAllByText('模型已给出候选回答，正在检查其证据关联')).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: '展开第 2 阶段' }));
+    expect(screen.getAllByText('模型已给出候选回答，正在检查其证据关联')).toHaveLength(2);
     expect(screen.queryByText(/候选回答正文不应/)).not.toBeInTheDocument();
     expect(screen.queryByText(/候选回答摘录/)).not.toBeInTheDocument();
   });
 
-  it('keeps the latest stage summary visible without a collapsible header', () => {
+  it('keeps the phase collapsed until clicked and lets its tool expand independently', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-process',
+            stage: 'model',
+            status: 'completed',
+            summary: '模型请求 1 个原子操作',
+            details: { model_turn: 1 },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-process',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-native',
+            summary: 'search_stocks 已返回',
+            details: { tool_name: 'search_stocks' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-process',
+            stage: 'evidence',
+            status: 'completed',
+            summary: '已关联证据',
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-native-process',
+            stage: 'publish',
+            status: 'completed',
+            summary: '已发布最终回答',
+          },
+        ],
+        custom: {
+          agent_execution_trace: {
+            tool_results: [{
+              action_id: 'call-native',
+              tool_name: 'search_stocks',
+              success: true,
+            }],
+          },
+        },
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    fireEvent.click(screen.getByRole('button', { name: /展开用时/ }));
+    expect(screen.getByRole('button', { name: '展开第 1 阶段' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: '展开工具 search_stocks 详情' })).not.toBeInTheDocument();
+    expandFirstPhase();
+    expect(screen.getByRole('button', { name: '展开工具 search_stocks 详情' })).toHaveAttribute('aria-expanded', 'false');
+    expandTool('search_stocks');
+    expect(screen.getByRole('button', { name: '收起工具 search_stocks 详情' })).toBeInTheDocument();
+    expect(screen.getByText('已关联证据')).toBeInTheDocument();
+    expect(screen.getByText('已发布最终回答')).toBeInTheDocument();
+  });
+
+  it('keeps parallel tools in one phase and expands each tool independently', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-parallel-phase',
+            round_id: 'round-1',
+            stage: 'model',
+            status: 'completed',
+            summary: '第 1 轮：模型请求 2 个原子操作',
+            details: {
+              model_turn: 1,
+              operations: [
+                { tool_name: 'search_stocks', arguments: { query: '新强联' } },
+                { tool_name: 'read_realtime_quote', arguments: { symbol: '300850' } },
+              ],
+            },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-parallel-phase',
+            round_id: 'round-1',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-search',
+            summary: 'search_stocks 已返回结果',
+            details: { tool_name: 'search_stocks' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-parallel-phase',
+            round_id: 'round-1',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-quote',
+            summary: 'read_realtime_quote 已返回结果',
+            details: { tool_name: 'read_realtime_quote' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-parallel-phase',
+            round_id: 'round-1',
+            stage: 'publish',
+            status: 'completed',
+            summary: '已发布最终回答',
+          },
+        ],
+        custom: {
+          agent_execution_trace: {
+            tool_results: [
+              {
+                action_id: 'call-search',
+                tool_name: 'search_stocks',
+                arguments: { query: '新强联' },
+                success: true,
+                result_count: 1,
+              },
+              {
+                action_id: 'call-quote',
+                tool_name: 'read_realtime_quote',
+                arguments: { symbol: '300850' },
+                success: true,
+                result_count: 1,
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    fireEvent.click(screen.getByRole('button', { name: /展开用时/ }));
+    const phase = screen.getByRole('button', { name: '展开第 1 阶段' });
+    expect(phase).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('button', { name: '展开工具 search_stocks 详情' })).not.toBeInTheDocument();
+
+    fireEvent.click(phase);
+    const search = screen.getByRole('button', { name: '展开工具 search_stocks 详情' });
+    const quote = screen.getByRole('button', { name: '展开工具 read_realtime_quote 详情' });
+    expect(search).toHaveAttribute('aria-expanded', 'false');
+    expect(quote).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(search);
+    expect(screen.getByRole('button', { name: '收起工具 search_stocks 详情' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '展开工具 read_realtime_quote 详情' })).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(quote);
+    expect(screen.getByRole('button', { name: '收起工具 search_stocks 详情' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '收起工具 read_realtime_quote 详情' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('keeps the latest stage summary behind a collapsible phase header', () => {
     const summary = '第 1 轮：模型正在基于当前问题、工具观察和证据决定下一步';
     mockMessage({
       status: { type: 'running' },
@@ -260,11 +498,17 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    const header = screen.getByRole('status');
-    expect(header).not.toHaveTextContent(summary);
-    expect(screen.getByText(summary)).toBeInTheDocument();
-    expect(header.tagName).not.toBe('BUTTON');
-    expect(screen.queryByRole('button', { name: /查看详细|收起详细|查看详情/ })).not.toBeInTheDocument();
+    const phase = screen.getByRole('button', { name: '展开第 1 阶段' });
+    const details = document.querySelector<HTMLElement>('[role="region"][aria-label="第 1 阶段详情"]')!;
+    expect(phase).toHaveAttribute('aria-expanded', 'false');
+    expect(details).toHaveAttribute('aria-hidden', 'true');
+
+    fireEvent.click(phase);
+
+    expect(phase).toHaveAttribute('aria-expanded', 'true');
+    expect(details).toHaveAttribute('aria-hidden', 'false');
+    expect(screen.getAllByText(summary)).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /展开用时/ })).not.toBeInTheDocument();
   });
 
   it('lists exact historical references instead of calling their length a source count', () => {
@@ -310,13 +554,16 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    fireEvent.click(screen.getByRole('button', { name: /展开执行过程/ }));
+    fireEvent.click(screen.getByRole('button', { name: /展开用时/ }));
+    expandFirstPhase();
+    expandTool('search_web_source');
     expect(screen.getByText(/数据来源：firecrawl_searxng/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'https://finance.example.test/article-1' })).toBeInTheDocument();
     expect(screen.queryByText('来源 3 个')).not.toBeInTheDocument();
   });
 
-  it('collapses a completed process but keeps the full process and reasoning log recoverable', () => {
+  it('collapses a completed process but keeps planning text and reasoning recoverable', () => {
+    const processText = '先确认问题范围\n再核对公开资料';
     const reasoning = '先确认问题范围\n再核对公开资料';
     mockMessage({
       status: { type: 'complete' },
@@ -343,33 +590,78 @@ describe('AgentExecutionTimeline', () => {
       },
     });
 
-    const { container } = render(<AgentExecutionTimeline reasoningText={reasoning} />);
+    const { container } = render(
+      <AgentExecutionTimeline processText={processText} reasoningText={reasoning} />,
+    );
 
-    const toggle = screen.getByRole('button', { name: '展开执行过程，用时 4s' });
+    const toggle = screen.getByRole('button', { name: '展开用时 4s' });
     const process = container.querySelector<HTMLElement>('[aria-label="执行过程"]')!;
     const details = container.querySelector<HTMLElement>('[role="region"][aria-label="执行过程详情"]')!;
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(process).toHaveClass('border-b');
+    expect(toggle).toHaveClass('border-b');
     expect(process).not.toHaveClass('border-y');
     expect(details).toHaveAttribute('aria-hidden', 'true');
     expect(details).toHaveStyle({ gridTemplateRows: '0fr' });
+    expect(screen.queryByText(processText)).not.toBeInTheDocument();
 
     fireEvent.click(toggle);
 
-    expect(screen.getByText('已完成规划')).toBeInTheDocument();
-    expect(screen.getByText(/先确认问题范围/)).toBeInTheDocument();
+    expect(screen.getAllByText('已完成规划')).toHaveLength(2);
+    expect(screen.getAllByText(/先确认问题范围/)).toHaveLength(1);
     expect(details).toHaveAttribute('aria-hidden', 'false');
     expect(details).toHaveStyle({ gridTemplateRows: '1fr' });
-    expect(screen.getByRole('button', { name: '收起执行过程，用时 4s' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: '收起用时 4s' })).toHaveAttribute('aria-expanded', 'true');
 
-    fireEvent.click(screen.getByRole('button', { name: '收起执行过程，用时 4s' }));
+    fireEvent.click(screen.getByRole('button', { name: '收起用时 4s' }));
 
     expect(details).toHaveAttribute('aria-hidden', 'true');
     expect(details).toHaveStyle({ gridTemplateRows: '0fr' });
-    expect(screen.getByRole('button', { name: '展开执行过程，用时 4s' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '展开用时 4s' })).toBeInTheDocument();
   });
 
-  it('keeps a waiting-for-approval process expanded because it is not terminal', () => {
+  it('can render a legacy trace inline with independently collapsible tools', () => {
+    mockMessage({
+      status: { type: 'complete' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-inline',
+            stage: 'model',
+            status: 'completed',
+            summary: '先确认来源，再整理结论',
+            details: { model_turn: 1 },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-inline',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-inline',
+            summary: 'read_source 已返回结果',
+            details: { tool_name: 'read_source' },
+          },
+        ],
+        custom: {
+          agent_execution_trace: {
+            tool_results: [{
+              action_id: 'call-inline',
+              tool_name: 'read_source',
+              success: true,
+            }],
+          },
+        },
+      },
+    });
+
+    render(<AgentExecutionTimeline presentation="inline" />);
+
+    expect(screen.getByText('先确认来源，再整理结论')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '展开工具 read_source 详情' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /展开用时/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps a waiting-for-approval process collapsible while it is not terminal', () => {
     mockMessage({
       status: { type: 'requires-action', reason: 'interrupt' },
       metadata: {
@@ -386,8 +678,16 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    expect(screen.getByText('等待用户确认')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /展开执行过程/ })).not.toBeInTheDocument();
+    const phase = screen.getByRole('button', { name: '展开第 1 阶段' });
+    const details = document.querySelector<HTMLElement>('[role="region"][aria-label="第 1 阶段详情"]')!;
+    expect(phase).toHaveAttribute('aria-expanded', 'false');
+    expect(details).toHaveAttribute('aria-hidden', 'true');
+
+    fireEvent.click(phase);
+
+    expect(phase).toHaveAttribute('aria-expanded', 'true');
+    expect(details).toHaveAttribute('aria-hidden', 'false');
+    expect(screen.queryByRole('button', { name: /展开用时/ })).not.toBeInTheDocument();
   });
 
   it('prefers assistant-ui message timing when it is available', () => {
@@ -413,6 +713,6 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    expect(screen.getByRole('button', { name: '展开执行过程，用时 1h 7m 3s' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '展开用时 1h 7m 3s' })).toBeInTheDocument();
   });
 });

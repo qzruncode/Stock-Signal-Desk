@@ -53,6 +53,8 @@ export interface PersistedAgentStage {
 }
 
 export interface AgentExecutionTrace {
+  /** Ordered, bounded assistant-stream parts used for terminal replay. */
+  displayParts?: Record<string, unknown>[];
   stages?: PersistedAgentStage[];
   actions?: Record<string, unknown>[];
   toolResults?: Record<string, unknown>[];
@@ -159,7 +161,9 @@ const CLIENT_TRACE_MAX_CHARACTERS = 180_000;
 const CLIENT_TRACE_MAX_DEPTH = 7;
 const CLIENT_TRACE_MAX_OBJECT_KEYS = 24;
 const CLIENT_TRACE_MAX_TEXT = 1_600;
+const CLIENT_DISPLAY_PART_TEXT = 12_000;
 const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
+  ['display_parts', 'displayParts', 240],
   ['stages', 'stages', 120],
   ['actions', 'actions', 32],
   ['tool_results', 'toolResults', 80],
@@ -180,6 +184,7 @@ const projectTraceValue = (
   budget: TraceBudget,
   depth = 0,
   arrayLimit = 16,
+  textLimit = CLIENT_TRACE_MAX_TEXT,
 ): unknown => {
   if (budget.remaining <= 0) {
     budget.exhausted = true;
@@ -190,7 +195,7 @@ const projectTraceValue = (
     return value;
   }
   if (typeof value === 'string') {
-    const projected = value.slice(0, Math.min(CLIENT_TRACE_MAX_TEXT, budget.remaining));
+    const projected = value.slice(0, Math.min(textLimit, budget.remaining));
     budget.remaining -= projected.length;
     if (projected.length < value.length) budget.exhausted = true;
     return projected;
@@ -202,7 +207,7 @@ const projectTraceValue = (
   }
   if (Array.isArray(value)) {
     const projected = value.slice(0, arrayLimit).map((item) => (
-      projectTraceValue(item, budget, depth + 1)
+      projectTraceValue(item, budget, depth + 1, 16, textLimit)
     ));
     if (value.length > projected.length) {
       projected.push(`[其余 ${value.length - projected.length} 项已折叠]`);
@@ -222,12 +227,12 @@ const projectTraceValue = (
       }
       const safeKey = key.slice(0, 96);
       budget.remaining -= safeKey.length;
-      projected[safeKey] = projectTraceValue(value[key], budget, depth + 1);
+      projected[safeKey] = projectTraceValue(value[key], budget, depth + 1, 16, textLimit);
       keyCount += 1;
     }
     return projected;
   }
-  const projected = String(value).slice(0, Math.min(CLIENT_TRACE_MAX_TEXT, budget.remaining));
+  const projected = String(value).slice(0, Math.min(textLimit, budget.remaining));
   budget.remaining -= projected.length;
   return projected;
 };
@@ -239,7 +244,13 @@ const projectExecutionTraceForClient = (value: unknown): Record<string, unknown>
   for (const [snakeKey, camelKey, arrayLimit] of CLIENT_TRACE_FIELD_LIMITS) {
     const raw = value[snakeKey] ?? value[camelKey];
     if (raw === undefined) continue;
-    projected[snakeKey] = projectTraceValue(raw, budget, 0, arrayLimit);
+    projected[snakeKey] = projectTraceValue(
+      raw,
+      budget,
+      0,
+      arrayLimit,
+      snakeKey === 'display_parts' ? CLIENT_DISPLAY_PART_TEXT : CLIENT_TRACE_MAX_TEXT,
+    );
   }
   if (budget.exhausted) projected.client_trace_truncated = true;
   return projected;

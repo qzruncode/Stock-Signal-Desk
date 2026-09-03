@@ -241,6 +241,7 @@ def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str,
 def _execution_trace(
     *,
     stage_history: Sequence[Mapping[str, Any]],
+    display_parts: Sequence[Mapping[str, Any]] = (),
     tool_results: Sequence[Mapping[str, Any]],
     evidence: Sequence[Mapping[str, Any]],
     claim_evidence: Sequence[Mapping[str, Any]],
@@ -250,6 +251,14 @@ def _execution_trace(
         "stages": project_stage_history_for_client(
             [item for item in stage_history if isinstance(item, Mapping)],
         ),
+        # This is the bounded native assistant-stream projection used for
+        # terminal hydration.  The ordered event log and tool ledger remain
+        # the authoritative sources for audit and detailed inspection.
+        "display_parts": [
+            dict(item)
+            for item in display_parts[:240]
+            if isinstance(item, Mapping)
+        ],
         "tool_results": _trace_tool_results(tool_results),
         "evidence": _trace_evidence(evidence),
         "claim_evidence": _trace_claim_evidence(claim_evidence),
@@ -302,6 +311,12 @@ class AgentTerminalPublisher:
         if stage_history is None:
             snapshot = getattr(self.controller, "stage_history_snapshot", None)
             stage_history = snapshot() if callable(snapshot) else []
+        display_parts_snapshot = getattr(self.controller, "display_parts_snapshot", None)
+        display_parts = (
+            display_parts_snapshot(final_text=final_text)
+            if callable(display_parts_snapshot)
+            else []
+        )
         terminal_messages = [dict(message) for message in self.messages]
         if final_text.strip():
             terminal_messages.append(
@@ -342,6 +357,7 @@ class AgentTerminalPublisher:
         ]
         execution_trace = _execution_trace(
             stage_history=stage_history,
+            display_parts=display_parts,
             tool_results=tool_results,
             evidence=evidence,
             claim_evidence=claim_evidence,
@@ -353,6 +369,7 @@ class AgentTerminalPublisher:
             # The quality projection is the bounded, user-safe run contract.
             # Full provider payloads remain in the durable step ledger and are
             # loaded only when the explorer requests them.
+            "display_parts": execution_trace["display_parts"],
             "tool_results": execution_trace["tool_results"],
             "evidence": evidence,
             "claim_evidence": claim_evidence,
