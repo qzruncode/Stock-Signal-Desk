@@ -56,6 +56,7 @@ env/
 # 数据和日志
 reports/
 /data/exports/
+/data/agent_resources/
 *.db
 *.db-wal
 *.db-shm
