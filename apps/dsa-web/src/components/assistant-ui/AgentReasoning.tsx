@@ -581,6 +581,12 @@ const phaseProblem = (phase: TimelinePhase): boolean => phase.rows.some((row) =>
     || Boolean(row.kind === 'tool' && errorCode(row.result));
 });
 
+const phaseHasActiveDetails = (phase: TimelinePhase): boolean => phase.rows.some((row) => {
+  if (row.kind === 'tool') return true;
+  const stage = row.event?.stage;
+  return Boolean(stage && stage !== 'model' && stage !== 'publish');
+});
+
 const phaseHeadline = (phase: TimelinePhase): string => {
   const model = phase.rows.find((row) => row.kind === 'stage' && row.event?.stage === 'model');
   const modelProgress = text(recordValue(model?.event?.details, 'progress_preview'), 360);
@@ -593,8 +599,7 @@ const phaseHeadline = (phase: TimelinePhase): string => {
 
 const TimelinePhaseRow: FC<{
   phase: TimelinePhase;
-  messageActive: boolean;
-}> = ({ phase, messageActive }) => {
+}> = ({ phase }) => {
   const [expandedOverride, setExpandedOverride] = useState(false);
   const detailId = useId();
   const expanded = expandedOverride;
@@ -605,7 +610,7 @@ const TimelinePhaseRow: FC<{
   const phaseLabel = `第 ${phaseNumber} 阶段`;
   const headline = phaseHeadline(phase);
   const phaseSummary = toolRows.length > 0
-    ? `${messageActive || status === 'started' ? '正在执行' : problem ? '执行出现问题' : '已完成'} ${toolRows.length} 个工具`
+    ? `${status === 'started' ? '正在执行' : problem ? '执行出现问题' : '已完成'} ${toolRows.length} 个工具`
     : headline;
 
   return (
@@ -853,14 +858,45 @@ export const AgentExecutionTimeline: FC<{
     return output;
   }, [events, results]);
   const phases = useMemo(() => groupTimelinePhases(rows), [rows]);
+  // A model.started event is an internal lifecycle marker, not user-facing
+  // progress. During a live run, do not turn that marker into a separate
+  // phase card before the model has emitted its readable plan. Tool/evidence/
+  // approval phases remain visible, and terminal history keeps every phase.
+  const visiblePhases = useMemo(
+    () => messageActive ? phases.filter(phaseHasActiveDetails) : phases,
+    [messageActive, phases],
+  );
+  const problemSummary = useMemo(() => {
+    const problemEvent = [...events].reverse().find((event) => (
+      event.status === 'failed'
+      || event.status === 'blocked'
+      || event.status === 'cancelled'
+      || Boolean(event.errorCode)
+    ));
+    if (!problemEvent) return '';
+    return problemEvent.summary.trim() || problemEvent.errorCode || '本轮执行未完成，请重试';
+  }, [events]);
+  // Tool-level negative outcomes are still valid terminal decisions (for
+  // example, a user rejecting an approval).  Only a failed lifecycle event
+  // makes the whole run incomplete; the individual tool row keeps its own
+  // warning state and explanation.
+  const hasProblem = problemSummary.length > 0;
   const eventDurationMs = useMemo(() => agentStageDurationMs(events), [events]);
-  const durationMs = typeof messageTiming?.totalStreamTime === 'number'
+  const streamDurationMs = typeof messageTiming?.totalStreamTime === 'number'
     && Number.isFinite(messageTiming.totalStreamTime)
     && messageTiming.totalStreamTime >= 0
     ? messageTiming.totalStreamTime
+    : undefined;
+  // A terminal trace placeholder has no local stream timer and assistant-ui
+  // reports 0. Prefer the durable event interval when it contains real time.
+  const durationMs = streamDurationMs !== undefined
+    && (streamDurationMs > 0 || eventDurationMs === undefined)
+    ? streamDurationMs
     : eventDurationMs;
   const durationLabel = durationMs == null ? null : formatElapsedDuration(durationMs);
-  const compactLabel = durationLabel ? `用时 ${durationLabel}` : '用时';
+  const compactLabel = hasProblem && !messageActive
+    ? `执行未完成${durationLabel ? ` · 用时 ${durationLabel}` : ''}`
+    : durationLabel ? `用时 ${durationLabel}` : '用时';
   const detailId = useId();
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const expanded = messageActive || expandedOverride === true;
@@ -868,7 +904,7 @@ export const AgentExecutionTimeline: FC<{
     processText.trim() || (phases.length === 0 ? reasoningText : ''),
   );
 
-  if (phases.length === 0 && !processVisible.trim()) return null;
+  if (visiblePhases.length === 0 && !processVisible.trim()) return null;
 
   // A live fallback is still a normal stream.  It must not add the terminal
   // duration row or a second execution card above the message content.
@@ -877,13 +913,13 @@ export const AgentExecutionTimeline: FC<{
       <section className="mb-3 min-w-0" aria-label="执行过程">
         {processVisible.trim() ? (
           <div className="mb-2">
-            <AssistantMarkdown text={processVisible} />
+            <AssistantMarkdown text={processVisible} evidence={trace} />
           </div>
         ) : null}
-        {phases.length > 0 ? (
+        {visiblePhases.length > 0 ? (
           <ol className="space-y-1">
-            {phases.map((phase) => (
-              <TimelinePhaseRow key={phase.key} phase={phase} messageActive />
+            {visiblePhases.map((phase) => (
+              <TimelinePhaseRow key={phase.key} phase={phase} />
             ))}
           </ol>
         ) : null}
@@ -896,12 +932,12 @@ export const AgentExecutionTimeline: FC<{
       <section className="mb-3 min-w-0" aria-label="执行过程">
         {processVisible.trim() ? (
           <div className="mb-2">
-            <AssistantMarkdown text={processVisible} />
+            <AssistantMarkdown text={processVisible} evidence={trace} />
           </div>
         ) : null}
-        {phases.length > 0 ? (
+        {visiblePhases.length > 0 ? (
           <ol className="space-y-1">
-            {phases.flatMap((phase) => phase.rows.map((row) => row.kind === 'tool'
+            {visiblePhases.flatMap((phase) => phase.rows.map((row) => row.kind === 'tool'
               ? <TimelineToolRow key={`${phase.key}:${row.key}`} row={row} />
               : <TimelineStageRow key={`${phase.key}:${row.key}`} row={row} />))}
           </ol>
@@ -929,6 +965,15 @@ export const AgentExecutionTimeline: FC<{
           aria-hidden="true"
         />
       </button>
+      {hasProblem && problemSummary ? (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/70 px-3 py-2 text-xs text-amber-900"
+        >
+          <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+          <span className="min-w-0 whitespace-pre-wrap break-words">{problemSummary}</span>
+        </div>
+      ) : null}
 
       <div
         id={detailId}
@@ -945,13 +990,13 @@ export const AgentExecutionTimeline: FC<{
           )}>
             {processVisible.trim() ? (
               <div className={cn('mb-3', phases.length > 0 && 'border-b border-primary/10 pb-2')}>
-                <AssistantMarkdown text={processVisible} />
+                <AssistantMarkdown text={processVisible} evidence={trace} />
               </div>
             ) : null}
-            {phases.length > 0 ? (
+            {visiblePhases.length > 0 ? (
               <ol className="space-y-2">
-                {phases.map((phase) => (
-                  <TimelinePhaseRow key={phase.key} phase={phase} messageActive={messageActive} />
+                {visiblePhases.map((phase) => (
+                  <TimelinePhaseRow key={phase.key} phase={phase} />
                 ))}
               </ol>
             ) : null}

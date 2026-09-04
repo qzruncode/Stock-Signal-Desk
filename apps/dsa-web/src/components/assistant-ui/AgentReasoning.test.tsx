@@ -477,7 +477,7 @@ describe('AgentExecutionTimeline', () => {
     expect(screen.getByRole('button', { name: '收起工具 read_realtime_quote 详情' })).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('keeps the latest stage summary behind a collapsible phase header', () => {
+  it('does not expose a model-only lifecycle marker while the run is active', () => {
     const summary = '第 1 轮：模型正在基于当前问题、工具观察和证据决定下一步';
     mockMessage({
       status: { type: 'running' },
@@ -498,17 +498,59 @@ describe('AgentExecutionTimeline', () => {
 
     render(<AgentExecutionTimeline />);
 
-    const phase = screen.getByRole('button', { name: '展开第 1 阶段' });
-    const details = document.querySelector<HTMLElement>('[role="region"][aria-label="第 1 阶段详情"]')!;
-    expect(phase).toHaveAttribute('aria-expanded', 'false');
-    expect(details).toHaveAttribute('aria-hidden', 'true');
-
-    fireEvent.click(phase);
-
-    expect(phase).toHaveAttribute('aria-expanded', 'true');
-    expect(details).toHaveAttribute('aria-hidden', 'false');
-    expect(screen.getAllByText(summary)).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: '展开第 1 阶段' })).not.toBeInTheDocument();
+    expect(screen.queryByText(summary)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /展开用时/ })).not.toBeInTheDocument();
+  });
+
+  it('keeps a completed phase completed while a later phase is still running', () => {
+    mockMessage({
+      status: { type: 'running' },
+      metadata: {
+        unstable_data: [
+          {
+            event: 'agent_stage',
+            run_id: 'run-phase-status',
+            stage: 'model',
+            status: 'completed',
+            summary: '第 1 轮已完成工具选择',
+            details: { model_turn: 1 },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-phase-status',
+            stage: 'tool',
+            status: 'completed',
+            action_id: 'call-phase-one',
+            summary: 'search_stocks 已返回',
+            details: { tool_name: 'search_stocks' },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-phase-status',
+            stage: 'model',
+            status: 'started',
+            summary: '第 2 轮正在决定下一步',
+            details: { model_turn: 2 },
+          },
+          {
+            event: 'agent_stage',
+            run_id: 'run-phase-status',
+            stage: 'tool',
+            status: 'started',
+            action_id: 'call-phase-two',
+            summary: '正在读取补充数据',
+            details: { tool_name: 'read_market_data' },
+          },
+        ],
+        custom: {},
+      },
+    });
+
+    render(<AgentExecutionTimeline />);
+
+    expect(screen.getByText('已完成 1 个工具')).toBeInTheDocument();
+    expect(screen.getByText('正在执行 1 个工具')).toBeInTheDocument();
   });
 
   it('lists exact historical references instead of calling their length a source count', () => {

@@ -1,5 +1,6 @@
 import type { ErrorInfo, FC, ReactNode } from 'react';
 import { Component, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   AuiIf,
   ThreadPrimitive,
@@ -8,6 +9,7 @@ import {
   ActionBarPrimitive,
   useMessage,
   useMessageTiming,
+  useScrollLock,
   useThread,
   useAui,
   useAuiState,
@@ -43,6 +45,12 @@ import {
 import { Tooltip } from '../common/Tooltip';
 import { AssistantMarkdown, AssistantMarkdownText } from './AssistantMarkdownText';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
+import {
+  assistantAnswerTextFromContent as answerTextFromContent,
+  assistantDisplayKindOf as displayKindOf,
+  assistantPostToolBodyText as firstPostToolProgressText,
+  hasAssistantDisplayMetadata as hasDisplayMetadata,
+} from '../../utils/assistantAnswer';
 import { cn } from '../../utils/cn';
 import { getChatQuestionDomId } from '../../utils/chatQuestionLocator';
 import {
@@ -59,10 +67,14 @@ const Thread: FC<{ onUserCancel?: () => void; onDeleteUserTurn?: (messageId: str
   onUserCancel,
   onDeleteUserTurn,
 }) => {
+  const isRunning = useAuiState((state) => state.thread.isRunning);
+
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col overflow-hidden">
       <ThreadPrimitive.Viewport
+        autoScroll={isRunning}
         data-chat-thread-viewport="true"
+        style={{ overflowAnchor: 'none' }}
         className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-[linear-gradient(180deg,hsl(var(--background)),hsl(var(--background)))] px-3 pb-4 pt-2 sm:gap-4 sm:px-4 sm:pb-5 lg:px-6 lg:pt-2"
       >
         <AuiIf condition={(s) => s.thread.isEmpty}>
@@ -382,6 +394,63 @@ class AssistantMessageBoundary extends Component<
 
 const InlineMessagePartGroup: FC<{ children?: ReactNode }> = ({ children }) => <>{children}</>;
 
+const DISCLOSURE_ANIMATION_DURATION_MS = 300;
+
+type NativeDisclosureProps = {
+  children?: ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  detailId: string;
+  ariaLabel: string;
+  renderTrigger?: (toggle: () => void) => ReactNode;
+};
+
+/**
+ * Keep the details in the message's normal flow so the answer moves through
+ * the same local layout as the details collapse. Motion owns the height
+ * interpolation, while the viewport's scroll lock and disabled scroll
+ * anchoring prevent the thread from being treated as a page transition.
+ */
+const NativeDisclosure: FC<NativeDisclosureProps> = ({
+  children,
+  open,
+  onToggle,
+  detailId,
+  ariaLabel,
+  renderTrigger,
+}) => {
+  const disclosureRef = useRef<HTMLDivElement | null>(null);
+  const lockScroll = useScrollLock(disclosureRef, DISCLOSURE_ANIMATION_DURATION_MS);
+
+  const toggle = () => {
+    lockScroll();
+    onToggle();
+  };
+
+  return (
+    <div ref={disclosureRef} className="min-w-0">
+      {renderTrigger?.(toggle)}
+      <AnimatePresence initial={false}>
+        {open ? (
+          <motion.div
+            id={detailId}
+            role="region"
+            aria-label={ariaLabel}
+            aria-hidden={false}
+            initial={{ height: 0 }}
+            animate={{ height: 'auto' }}
+            exit={{ height: 0 }}
+            transition={{ duration: DISCLOSURE_ANIMATION_DURATION_MS / 1000, ease: 'easeOut' }}
+            className="min-w-0 overflow-hidden"
+          >
+            <div className="min-w-0">{children}</div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 /**
  * assistant-ui already groups adjacent tool-call parts from the same streamed
  * message. Keep that grouping boundary and make the group the single
@@ -393,98 +462,53 @@ const NativeToolGroup: FC<{
   startIndex: number;
   endIndex: number;
 }> = ({ children, startIndex, endIndex }) => {
-  const messageStatus = useMessage((state) => state.status?.type);
-  const active = messageStatus === 'running' || messageStatus === 'requires-action';
+  const active = useAuiState((state) => state.message.parts
+    .slice(startIndex, endIndex + 1)
+    .some((part) => (
+      part.type === 'tool-call'
+      && (part.status.type === 'running' || part.status.type === 'requires-action')
+    )));
   const [expanded, setExpanded] = useState(false);
   const detailId = useId();
   const toolCount = Math.max(1, endIndex - startIndex + 1);
   const label = active ? '正在执行' : '已完成';
 
   return (
-    <div className="min-w-0 border-b border-border/60">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={detailId}
-        aria-label={`${expanded ? '收起' : '展开'}阶段工具调用`}
-        onClick={() => setExpanded((value) => !value)}
-        className="flex w-full min-w-0 items-center gap-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-      >
-        {active ? (
-          <Loader2Icon className="size-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
-        ) : (
-          <BookOpenIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+    <div className="relative min-w-0">
+      <NativeDisclosure
+        open={expanded}
+        onToggle={() => setExpanded((value) => !value)}
+        detailId={detailId}
+        ariaLabel="阶段工具调用详情"
+        renderTrigger={(toggle) => (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={detailId}
+            aria-label={`${expanded ? '收起' : '展开'}阶段工具调用`}
+            onClick={toggle}
+            className="flex w-full min-w-0 items-center gap-2 py-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+          >
+            {active ? (
+              <Loader2Icon className="size-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
+            ) : (
+              <BookOpenIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            )}
+            <span className="min-w-0 flex-1 truncate">{label} {toolCount} 个工具</span>
+            <ChevronRightIcon
+              className={cn(
+                'size-4 shrink-0 transition-transform duration-300 ease-out',
+                expanded && 'rotate-90',
+              )}
+              aria-hidden="true"
+            />
+          </button>
         )}
-        <span className="min-w-0 flex-1 truncate">{label} {toolCount} 个工具</span>
-        <ChevronRightIcon
-          className={cn(
-            'size-4 shrink-0 transition-transform duration-300 ease-out',
-            expanded && 'rotate-90',
-          )}
-          aria-hidden="true"
-        />
-      </button>
-      <div
-        id={detailId}
-        role="region"
-        aria-label="阶段工具调用详情"
-        aria-hidden={!expanded}
-        className="grid transition-[grid-template-rows] duration-300 ease-out"
-        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
       >
-        <div className="min-h-0 overflow-hidden">
-          <div className={cn(
-            'pl-2 transition-opacity duration-300 ease-out',
-            expanded ? 'opacity-100' : 'opacity-0',
-          )}>
-            {children}
-          </div>
-        </div>
-      </div>
+        <div className="pl-2">{children}</div>
+      </NativeDisclosure>
     </div>
   );
-};
-
-type NativeDisplayKind = 'progress' | 'answer';
-
-const displayKindOf = (part: { providerMetadata?: unknown }): NativeDisplayKind | null => {
-  const metadata = part.providerMetadata;
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) return null;
-  const dsa = (metadata as Record<string, unknown>).dsa;
-  if (typeof dsa !== 'object' || dsa === null || Array.isArray(dsa)) return null;
-  const displayKind = (dsa as Record<string, unknown>).displayKind
-    ?? (dsa as Record<string, unknown>).display_kind;
-  return displayKind === 'progress' || displayKind === 'answer' ? displayKind : null;
-};
-
-const hasDisplayMetadata = (part: { providerMetadata?: unknown }): boolean => (
-  displayKindOf(part) !== null
-);
-
-const answerTextFromContent = (
-  content: readonly {
-    type: string;
-    text?: string;
-    providerMetadata?: unknown;
-  }[],
-): string => {
-  const explicitAnswer = content
-    .map((part) => (
-      part.type === 'text' && displayKindOf(part) === 'answer' ? part.text || '' : ''
-    ))
-    .filter(Boolean)
-    .join('\n');
-  if (explicitAnswer) return explicitAnswer;
-
-  let lastToolPart = -1;
-  content.forEach((part, index) => {
-    if (part.type === 'tool-call') lastToolPart = index;
-  });
-  return content
-    .slice(lastToolPart + 1)
-    .map((part) => (part.type === 'text' ? part.text || '' : ''))
-    .filter(Boolean)
-    .join('\n');
 };
 
 const NativeTextPart: FC<TextMessagePartProps> = (part) => (
@@ -495,12 +519,16 @@ const NativeTextPartContent: FC<TextMessagePartProps> = (part) => {
   const messageStatus = useMessage((state) => state.status?.type);
   const active = messageStatus === 'running' || messageStatus === 'requires-action';
   const answerText = useMessage((state) => answerTextFromContent(state.content));
+  const postToolBody = useMessage((state) => firstPostToolProgressText(state.content));
   const isTerminalFallbackAnswer = !active
     && displayKindOf(part) === null
     && part.text.trim().length > 0
     && part.text.trim() === answerText.trim();
+  const isTerminalPostToolBody = !active
+    && postToolBody.trim().length > 0
+    && part.text.trim() === postToolBody.trim();
 
-  return displayKindOf(part) === 'answer' || isTerminalFallbackAnswer
+  return displayKindOf(part) === 'answer' || isTerminalFallbackAnswer || isTerminalPostToolBody
     ? null
     : <AssistantMarkdownText {...part} />;
 };
@@ -528,70 +556,49 @@ const NativeExecutionDisclosure: FC<{ children?: ReactNode }> = ({ children }) =
   const expanded = active || expandedOverride === true;
 
   return (
-    <section className="mb-3 min-w-0 overflow-hidden" aria-label="执行过程">
-      {!active ? (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={detailId}
-          aria-label={`${expanded ? '收起' : '展开'}${compactLabel}`}
-          onClick={() => setExpandedOverride((value) => value === true ? false : true)}
-          className="flex w-full min-w-0 items-center justify-between gap-3 border-b border-border/70 py-2 text-left text-sm text-muted-foreground transition-colors duration-300 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
-        >
-          <span className="min-w-0 truncate">{compactLabel}</span>
-          <ChevronRightIcon
-            className={cn(
-              'size-4 shrink-0 transition-transform duration-300 ease-out',
-              expanded && 'rotate-90',
-            )}
-            aria-hidden="true"
-          />
-        </button>
-      ) : null}
-      <div
-        id={detailId}
-        role="region"
-        aria-label="执行过程详情"
-        aria-hidden={!expanded}
-        className="grid transition-[grid-template-rows] duration-300 ease-out"
-        style={{ gridTemplateRows: expanded ? '1fr' : '0fr' }}
+    <section className="relative mb-3 min-w-0" aria-label="执行过程">
+      <NativeDisclosure
+        open={expanded}
+        onToggle={() => setExpandedOverride((value) => value === true ? false : true)}
+        detailId={detailId}
+        ariaLabel="执行过程详情"
+        renderTrigger={!active ? (toggle) => (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={detailId}
+            aria-label={`${expanded ? '收起' : '展开'}${compactLabel}`}
+            onClick={toggle}
+            className="flex w-full min-w-0 items-center justify-between gap-3 py-2 text-left text-sm text-muted-foreground transition-colors duration-300 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/25"
+          >
+            <span className="min-w-0 truncate">{compactLabel}</span>
+            <ChevronRightIcon
+              className={cn(
+                'size-4 shrink-0 transition-transform duration-300 ease-out',
+                expanded && 'rotate-90',
+              )}
+              aria-hidden="true"
+            />
+          </button>
+        ) : undefined}
       >
-        <div className="min-h-0 overflow-hidden">
-          <div className={cn(
-            'pt-2 transition-opacity duration-300 ease-out',
-            expanded ? 'opacity-100' : 'opacity-0',
-          )}>
-            {children}
-          </div>
-        </div>
-      </div>
+        <div className="pt-0">{children}</div>
+      </NativeDisclosure>
     </section>
   );
 };
 
 const NativeAssistantParts: FC = () => {
-  const messageStatus = useMessage((state) => state.status?.type);
-  const active = messageStatus === 'running' || messageStatus === 'requires-action';
-  const hasTrailingText = useAuiState((state) => {
-    const last = state.message.parts.at(-1);
-    return last?.type === 'text' || last?.type === 'reasoning';
-  });
-
-  return (
-    <>
-      <MessagePrimitive.Parts
-        unstable_showEmptyOnNonTextEnd={false}
-        components={{
-          Text: NativeTextPart,
-          Reasoning: () => null,
-          tools: { Fallback: AgentToolCallPart },
-          ToolGroup: NativeToolGroup,
-          ReasoningGroup: InlineMessagePartGroup,
-        }}
-      />
-      {active && !hasTrailingText ? <AssistantPendingIndicator /> : null}
-    </>
-  );
+  return <MessagePrimitive.Parts
+    unstable_showEmptyOnNonTextEnd={false}
+    components={{
+      Text: NativeTextPart,
+      Reasoning: () => null,
+      tools: { Fallback: AgentToolCallPart },
+      ToolGroup: NativeToolGroup,
+      ReasoningGroup: InlineMessagePartGroup,
+    }}
+  />;
 };
 
 const AssistantMessage: FC = () => {
@@ -610,6 +617,10 @@ const AssistantMessage: FC = () => {
   // use the same ordered renderer as a tool run without inferring boundaries
   // from the distance between text parts.
   const answerText = useMessage((s) => answerTextFromContent(s.content));
+  const evidenceTrace = useMessage((s) => (
+    s.metadata?.custom?.agent_execution_trace
+    ?? s.metadata?.custom?.agentExecutionTrace
+  ));
   const hasOrderedPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
     // The default assistant-ui reasoning renderer is intentionally hidden;
@@ -624,6 +635,7 @@ const AssistantMessage: FC = () => {
   const hasNativeAnswerPart = useMessage((s) => s.content.some((part) => (
     part.type === 'text' && displayKindOf(part) === 'answer'
   )));
+  const hasNativeTerminalAnswer = !isActive && hasNativeDisplayPart && answerText.trim().length > 0;
   const hasNativeProcessPart = useMessage((s) => s.content.some((part) => {
     if (part.type === 'tool-call') return true;
     if (part.type === 'text') {
@@ -636,12 +648,12 @@ const AssistantMessage: FC = () => {
       if (part.type === 'text') {
         return splitAssistantText(part.text).content.trim().length > 0;
       }
-      if (part.type === 'reasoning') {
-        return part.text.trim().length > 0;
-      }
       return false;
     }),
   );
+  const hasActiveExecutionDetail = useMessage((s) => agentStageEvents(s.metadata?.unstable_data).some((event) => (
+    event.stage !== 'model' && event.stage !== 'publish'
+  )));
   const hasExecutionRecord = useMessage((s) => {
     if (Array.isArray(s.metadata?.unstable_data) && s.metadata.unstable_data.length > 0) {
       return true;
@@ -656,7 +668,7 @@ const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
-        <div className="w-full min-w-0 overflow-hidden rounded-xl bg-card/75 px-3.5 py-3 text-sm text-foreground sm:px-4 sm:py-3.5">
+        <div className="w-full min-w-0 overflow-hidden rounded-xl bg-card/75 px-3.5 pt-1.5 pb-3 text-sm text-foreground sm:px-4 sm:pt-2 sm:pb-3.5">
           {isActive || hasNativeDisplayPart ? (
             <>
               {hasNativeProcessPart ? (
@@ -664,15 +676,20 @@ const AssistantMessage: FC = () => {
                   <NativeAssistantParts />
                 </NativeExecutionDisclosure>
               ) : null}
-              {!isActive && hasNativeAnswerPart ? <AssistantMarkdown text={answerText} /> : null}
-              {isActive && !hasOrderedPart && hasExecutionRecord ? (
+              {hasNativeTerminalAnswer || hasNativeAnswerPart ? (
+                <AssistantMarkdown text={answerText} evidence={evidenceTrace} />
+              ) : null}
+              {isActive && !hasOrderedPart && hasExecutionRecord && hasActiveExecutionDetail ? (
                 <AgentExecutionTimeline reasoningText={reasoningText} />
+              ) : null}
+              {isActive && !hasOrderedPart && !hasNativeProcessPart && !hasVisibleContent && !hasActiveExecutionDetail ? (
+                <AssistantPendingIndicator />
               ) : null}
             </>
           ) : (
             <>
               <AgentExecutionTimeline reasoningText={reasoningText} />
-              <AssistantMarkdown text={answerText} />
+              <AssistantMarkdown text={answerText} evidence={evidenceTrace} />
             </>
           )}
         </div>

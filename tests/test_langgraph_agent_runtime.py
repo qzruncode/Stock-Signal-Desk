@@ -582,6 +582,52 @@ def test_missing_evidence_link_reenters_model_without_a_fixed_verify_workflow() 
     asyncio.run(scenario())
 
 
+def test_unique_short_evidence_id_is_canonicalized_before_publication() -> None:
+    async def scenario() -> None:
+        action_id = "abcdefghi1234567890"
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call(action_id, "primary"),
+                AIMessage(content="已核对来源【证据 ev_abcdefghi】"),
+            ]
+        )
+        result, _executor = await _run(model=model, conversation_id="evidence-prefix")
+
+        assert result.status == "completed"
+        assert result.final_text == "已核对来源【证据 ev_abcdefghi1234567890】"
+        assert result.state["claim_evidence"][0]["evidence_ids"] == [
+            "ev_abcdefghi1234567890"
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_exhausted_evidence_repair_keeps_validator_details_out_of_final_answer() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("evidence", "primary"),
+                AIMessage(content="候选回答【证据 ev_missing】"),
+                AIMessage(content="修订回答【证据 ev_missing】"),
+                AIMessage(content="最终回答【证据 ev_missing】"),
+            ]
+        )
+        result, _executor = await _run(model=model, conversation_id="evidence-budget")
+
+        assert result.status == "partial"
+        assert result.error_code == "evidence_link_incomplete"
+        assert "本轮外部证据关联未能完整通过" not in result.final_text
+        assert "引用了无法解析的 evidence_id" in str(
+            next(
+                item
+                for item in result.stage_history or []
+                if item["stage"] == "evidence" and item["status"] == "failed"
+            )["details"]["issues"]
+        )
+
+    asyncio.run(scenario())
+
+
 def test_reference_only_source_requires_successful_web_body_read_before_final_answer() -> None:
     async def scenario() -> None:
         url = "https://example.test/news/1"

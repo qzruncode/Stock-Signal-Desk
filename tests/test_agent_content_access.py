@@ -228,3 +228,36 @@ def test_required_reads_are_scoped_to_the_cited_reference_tool_call() -> None:
     )
 
     assert [item["url"] for item in required] == [news_url]
+
+
+def test_required_reads_resolve_a_unique_short_reference_id() -> None:
+    news_url = "https://example.test/news/1"
+    tool_results = [
+        {
+            "tool_name": "read_company_news_akshare",
+            "action_id": "news-call",
+            "success": True,
+            "result": {
+                "content_access": {
+                    "mode": "reference_only",
+                    "content_read_required": True,
+                },
+                "reference_links": [news_url],
+            },
+        }
+    ]
+    targets, _pending = build_content_access_targets(tool_results=tool_results)
+
+    required = required_content_access_targets(
+        answer="新闻已核对【证据 ev_abcdefgh】",
+        evidence=[
+            {
+                "evidence_id": "ev_abcdefghijklmnop",
+                "action_id": "news-call",
+            }
+        ],
+        tool_results=tool_results,
+        targets=targets,
+    )
+
+    assert [item["url"] for item in required] == [news_url]

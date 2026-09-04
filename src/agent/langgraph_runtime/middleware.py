@@ -31,6 +31,7 @@ from .content_access import (
 from .claim_evidence import build_claim_evidence_ledger
 from .events import redact_arguments
 from .executor import action_fingerprint
+from .evidence_identity import canonicalize_evidence_markers
 from .presentation import project_arguments_for_timeline, project_tool_result_for_timeline
 from .state import AgentState, GraphContext
 
@@ -101,8 +102,9 @@ def _claim_evidence_for_partial_answer(
     ]
     if not factual_evidence:
         return []
+    normalized_answer, _ = canonicalize_evidence_markers(answer, factual_evidence)
     ledger = build_claim_evidence_ledger(
-        answer,
+        normalized_answer,
         factual_evidence,
         [
             item
@@ -662,6 +664,14 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         error_code: str,
     ) -> dict[str, Any]:
         answer = _message_text(message).rstrip()
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if isinstance(item, Mapping)
+            and item.get("success") is True
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        answer, _ = canonicalize_evidence_markers(answer, factual_evidence)
         if not answer:
             answer = "已获取来源索引，但本轮未完成正文读取。"
         claim_evidence = _claim_evidence_for_partial_answer(state, answer)
@@ -866,9 +876,15 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         context: GraphContext,
         message: AIMessage,
     ) -> dict[str, Any]:
-        answer = _message_text(message)
+        raw_answer = _message_text(message)
         evidence = [item for item in state.get("evidence") or [] if item.get("success") is True]
         factual_evidence = [item for item in evidence if str(item.get("effect") or "read") != "side_effect"]
+        answer, unresolved_evidence_ids = canonicalize_evidence_markers(
+            raw_answer,
+            factual_evidence,
+        )
+        if not answer:
+            answer = raw_answer
         budget_exhausted = bool(state.get("work_budget_exhausted"))
         budget_detail = str(state.get("work_budget_detail") or "").strip()
 
@@ -915,6 +931,11 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         )
         cited = list(ledger["cited_evidence_ids"])
         issues: list[str] = []
+        if unresolved_evidence_ids:
+            issues.append(
+                "引用了无法解析的 evidence_id: "
+                + ", ".join(unresolved_evidence_ids)
+            )
         if not cited:
             issues.append("答案使用了外部工具结果，但没有标注任何 evidence_id")
         issues.extend(str(item) for item in ledger["issues"])
@@ -928,6 +949,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             "claim_count": len(ledger["claims"]),
             "fact_claim_count": int(ledger["fact_claim_count"]),
             "inference_claim_count": int(ledger["inference_claim_count"]),
+            "unresolved_evidence_ids": unresolved_evidence_ids,
         }
 
         if issues and int(state.get("evidence_repair_count") or 0) < int(state.get("evidence_repair_limit") or 0):
@@ -956,6 +978,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 + "、".join(available_ids)
                 + "\n修订要求：只修复真实的证据关联问题，不要因为引用位于表格后的来源行而删除表格内容；"
                 "表格或连续列表可由紧随其后的来源行统一引用。重复已核实事实时，沿用对应的已有 evidence_id；"
+                "引用必须逐字复制工具结果中的完整 evidence_id，禁止截断、改写或自造 ID；无法确定 ID 时不要添加引用标记。"
                 "否定性时效说明（例如无法确认最新价）不要改写成当前/最新事实。"
                 + ("\n需要处理的片段：\n" + target_text if target_text else "")
             )
@@ -979,7 +1002,6 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             }
 
         if issues:
-            suffix = "\n\n[本轮外部证据关联未能完整通过：" + "；".join(issues) + "。以上内容应视为未完全核验的部分结论。]"
             context.events.stage(
                 "evidence",
                 "failed",
@@ -993,7 +1015,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             return _budget_partial(
                 {
                     "answer_draft": answer,
-                    "answer_final": answer + suffix,
+                    "answer_final": answer,
                     "claim_evidence": ledger["claims"],
                     "status": "partial",
                     "error_code": "evidence_link_incomplete",

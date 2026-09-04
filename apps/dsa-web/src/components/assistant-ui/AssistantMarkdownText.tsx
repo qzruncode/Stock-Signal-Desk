@@ -1,11 +1,210 @@
-import type { FC } from 'react';
+import { useMemo, type FC } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { TextMessagePartProps } from '@assistant-ui/react';
+import { Tooltip } from '../common/Tooltip';
+import {
+  assistantEvidenceIdFromHref,
+  assistantEvidenceIndexFromTrace,
+  assistantEvidenceReferenceForId,
+  replaceAssistantEvidenceMarkers,
+  type AssistantEvidenceReference,
+} from '../../utils/assistantEvidence';
 import { splitAssistantText } from '../../utils/assistantTextSplit';
 
-export const AssistantMarkdown: FC<{ text: string }> = ({ text }) => {
+type AssistantMarkdownProps = {
+  text: string;
+  evidence?: unknown;
+};
+
+const evidenceSourceLabel = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  try {
+    return new URL(trimmed).hostname.replace(/^www\./i, '');
+  } catch {
+    return trimmed.replace(/^tool:/i, '');
+  }
+};
+
+const EVIDENCE_ATTRIBUTE_LABELS: Record<string, string> = {
+  amount: '成交额',
+  amount_unit: '成交额单位',
+  amplitude: '振幅',
+  book_value_per_share: '每股净资产',
+  change: '涨跌额',
+  change_pct: '涨跌幅',
+  circulating_market_value: '流通市值',
+  close: '收盘价',
+  current_ratio: '流动比率',
+  deducted_net_profit_yoy: '扣非净利润同比',
+  high: '最高',
+  ipo_date: '上市日期',
+  low: '最低',
+  market: '市场',
+  market_value_unit: '市值单位',
+  open: '今开',
+  parent_net_profit: '归母净利润',
+  pe_ttm: '市盈率（TTM）',
+  pb: '市净率',
+  previous_close: '昨收',
+  price: '最新价',
+  report_period: '报告期',
+  revenue_latest: '最新营收',
+  sector: '行业',
+  status: '状态',
+  total_market_value: '总市值',
+  trade_time: '成交时间',
+  turnover_rate: '换手率',
+  volume: '成交量',
+  volume_unit: '成交量单位',
+};
+
+const evidenceAttributeLabel = (name: string): string => (
+  EVIDENCE_ATTRIBUTE_LABELS[name] ?? name.replaceAll('_', ' ')
+);
+
+const EvidenceTooltipContent: FC<{
+  label: string;
+  reference: AssistantEvidenceReference;
+}> = ({ label, reference }) => {
+  const sources = [...reference.sourceLabels, ...reference.sourceRefs]
+    .map(evidenceSourceLabel)
+    .filter(Boolean)
+    .filter((source, index, values) => values.indexOf(source) === index)
+    .slice(0, 4);
+  const visibleItems = reference.resultItems.slice(0, 3);
+  const hasReferenceContent = Boolean(
+    reference.resultSummary || reference.resultItems.length > 0,
+  );
+  const hasMetadata = Boolean(
+    reference.toolName
+      || sources.length > 0
+      || reference.dataTime
+      || reference.observedAt
+      || reference.partial
+      || reference.warnings.length > 0
+      || reference.errors.length > 0,
+  );
+  const hasDetails = Boolean(
+    reference.resultSummary
+      || reference.resultItems.length > 0
+      || sources.length > 0
+      || reference.dataTime
+      || reference.observedAt
+      || reference.warnings.length > 0
+      || reference.errors.length > 0,
+  );
+
+  return (
+    <span className="block max-w-[24rem] whitespace-normal">
+      <span className="block text-[11px] font-medium tracking-wide text-muted-foreground">
+        参考内容 · {label}
+      </span>
+      {reference.resultSummary ? (
+        <span className="mt-1 block break-words font-medium leading-5 text-foreground">
+          {reference.resultSummary}
+        </span>
+      ) : null}
+      {visibleItems.length > 0 ? (
+        <span className="mt-1.5 block space-y-1">
+          {visibleItems.map((item, index) => (
+            <span key={`${item.title}-${item.url ?? index}`} className="block break-words">
+              <span className="font-medium leading-5 text-foreground">{item.title}</span>
+              {item.summary ? (
+                <span className="mt-0.5 block text-foreground/90">{item.summary}</span>
+              ) : null}
+              {item.attributes?.length ? (
+                <span className="mt-0.5 block text-foreground/80">
+                  {item.attributes
+                    .map((attribute) => `${evidenceAttributeLabel(attribute.name)}：${attribute.value}`)
+                    .join(' · ')}
+                </span>
+              ) : null}
+              {item.source || item.publishedAt ? (
+                <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">
+                  {[item.source, item.publishedAt].filter(Boolean).join(' · ')}
+                </span>
+              ) : null}
+            </span>
+          ))}
+        </span>
+      ) : null}
+      {reference.resultItems.length > visibleItems.length ? (
+        <span className="mt-1 block text-[10px] text-muted-foreground">
+          另有 {reference.resultItems.length - visibleItems.length} 条参考记录
+        </span>
+      ) : null}
+      {!hasReferenceContent ? (
+        <span className="mt-1 block text-foreground/80">
+          {hasMetadata ? '该证据暂无可展示的结构化摘录。' : '证据详情暂不可用。'}
+        </span>
+      ) : null}
+      {hasMetadata ? (
+        <span
+          data-evidence-metadata
+          className="mt-2 block border-t border-border/60 pt-1 text-[10px] leading-4 text-muted-foreground"
+        >
+          {reference.toolName ? <span className="block">工具：{reference.toolName}</span> : null}
+          {sources.length > 0 ? (
+            <span className="block break-words">来源：{sources.join('、')}</span>
+          ) : null}
+          {reference.dataTime ? (
+            <span className="block">数据时间：{reference.dataTime}</span>
+          ) : reference.observedAt ? (
+            <span className="block">获取时间：{reference.observedAt}</span>
+          ) : null}
+          {reference.partial ? <span className="block text-amber-700">提示：本次仅返回部分结果</span> : null}
+          {reference.warnings.map((warning) => (
+            <span key={`warning-${warning}`} className="block text-amber-700">提示：{warning}</span>
+          ))}
+          {reference.errors.map((error) => (
+            <span key={`error-${error}`} className="block text-red-700">异常：{error}</span>
+          ))}
+        </span>
+      ) : null}
+      {!hasDetails ? (
+        <span className="block break-all font-mono text-[10px] text-muted-foreground/80">
+          证据 ID：{reference.evidenceId}
+        </span>
+      ) : null}
+    </span>
+  );
+};
+
+const EvidenceCitation: FC<{
+  evidenceId: string;
+  label: string;
+  reference?: AssistantEvidenceReference;
+}> = ({ evidenceId, label, reference }) => {
+  const resolvedReference = reference ?? {
+    evidenceId,
+    sourceLabels: [],
+    sourceRefs: [],
+    resultItems: [],
+    warnings: [],
+    errors: [],
+  };
+  return (
+    <Tooltip
+      focusable
+      interactive
+      ariaLabel={`查看证据 ${label}`}
+      content={<EvidenceTooltipContent label={label} reference={resolvedReference} />}
+      className="mx-0.5 align-baseline cursor-help"
+      contentClassName="max-w-[24rem] whitespace-normal"
+    >
+      <span className="align-[0.08em] text-[0.85em] font-semibold leading-none text-primary">
+        {label}
+      </span>
+    </Tooltip>
+  );
+};
+
+export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence }) => {
   const { content, stopped } = splitAssistantText(text);
+  const evidenceIndex = useMemo(() => assistantEvidenceIndexFromTrace(evidence), [evidence]);
+  const renderedContent = useMemo(() => replaceAssistantEvidenceMarkers(content), [content]);
 
   return (
     <div className="w-full min-w-0 space-y-2">
@@ -68,19 +267,31 @@ export const AssistantMarkdown: FC<{ text: string }> = ({ text }) => {
                 </div>
               ),
               strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-              a: ({ href, children }) => (
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  className="font-medium text-primary underline decoration-primary/30 underline-offset-4 transition hover:decoration-primary"
-                >
-                  {children}
-                </a>
-              ),
+              a: ({ href, children }) => {
+                const evidenceId = assistantEvidenceIdFromHref(href);
+                if (evidenceId) {
+                  return (
+                    <EvidenceCitation
+                      evidenceId={evidenceId}
+                      label={String(children)}
+                      reference={assistantEvidenceReferenceForId(evidenceIndex, evidenceId)}
+                    />
+                  );
+                }
+                return (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="font-medium text-primary underline decoration-primary/30 underline-offset-4 transition hover:decoration-primary"
+                  >
+                    {children}
+                  </a>
+                );
+              },
             }}
           >
-            {content}
+            {renderedContent}
           </Markdown>
         </div>
       )}

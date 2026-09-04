@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 import src.auth as auth
 from src.agent.run_registry import ActiveRun, RunBroadcaster, active_run_registry
+from api.v1.endpoints.agent.conversations import _conversation_presentation
 from src.services.chat_session_service import ChatSessionService
 
 
@@ -119,6 +120,28 @@ def test_get_conversation_returns_payload(client, mock_service):
     assert resp.json()["id"] == "c1"
 
 
+def test_conversation_presentation_cleans_legacy_evidence_diagnostic() -> None:
+    canonical_id = "ev_abcdefghi1234567890"
+    payload = _conversation_presentation(
+        {
+            "id": "c1",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "结论【证据 ev_abcdefghi】\n\n"
+                        "[本轮外部证据关联未能完整通过：引用了不存在或失败的 evidence_id: "
+                        "ev_abcdefghi。以上内容应视为未完全核验的部分结论。]"
+                    ),
+                }
+            ],
+        },
+        evidence=[{"evidence_id": canonical_id}],
+    )
+
+    assert payload["messages"][0]["content"] == f"结论【证据 {canonical_id}】"
+
+
 def test_get_conversation_returns_persisted_terminal_agent_stage(
     client,
     mock_service,
@@ -188,6 +211,65 @@ def test_get_conversation_returns_execution_trace_once_at_canonical_level(
     assert "execution_trace" not in body["resume_state"]
 
 
+def test_get_conversation_enriches_historical_evidence_with_result_preview(
+    client,
+    mock_service,
+):
+    mock_service.get_conversation.return_value = {"id": "c1"}
+    durable = {
+        "run_id": "run-trace",
+        "conversation_id": "c1",
+        "status": "completed",
+        "event_cursor": 0,
+        "final_text": "答案",
+        "context_snapshot": None,
+    }
+    trace = {
+        "run_id": "run-trace",
+        "status": "completed",
+        "execution_trace": {
+            "evidence": [{
+                "evidence_id": "ev-market",
+                "action_id": "call-market",
+                "result_items": [],
+            }],
+        },
+        "quality_projection": {
+            "evidence": [{
+                "evidence_id": "ev-market",
+                "action_id": "call-market",
+                "result": {
+                    "indices": {
+                        "shanghai_composite": {
+                            "name": "上证指数",
+                            "price": 3942.0879,
+                        },
+                    },
+                },
+            }],
+        },
+    }
+    with (
+        patch(
+            "src.storage.manager.DatabaseManager.get_agent_run",
+            return_value=durable,
+        ),
+        patch(
+            "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+            return_value=trace,
+        ),
+    ):
+        response = client.get("/api/v1/agent/conversations/c1")
+
+    assert response.status_code == 200
+    evidence = response.json()["execution_trace"]["evidence"][0]
+    assert evidence["result_items"][0]["title"] == "上证指数"
+    assert evidence["result_items"][0]["attributes"] == [
+        {"name": "price", "value": "3942.0879"},
+    ]
+    assert "quality_projection" not in response.json()
+
+
 def test_get_conversation_uses_durable_answer_after_retained_run_finishes(
     client,
     mock_service,
@@ -229,6 +311,53 @@ def test_get_conversation_uses_durable_answer_after_retained_run_finishes(
     assert resume["active"] is False
     assert resume["run_id"] == "run-durable"
     assert resume["assistant_text"] == "数据库中的最终回答"
+
+
+def test_get_conversation_aligns_durable_answer_with_cleaned_history(
+    client,
+    mock_service,
+):
+    canonical_id = "ev_abcdefghi1234567890"
+    legacy_answer = (
+        "结论【证据 ev_abcdefghi】\n\n"
+        "[本轮外部证据关联未能完整通过：引用了不存在或失败的 evidence_id: "
+        "ev_abcdefghi。以上内容应视为未完全核验的部分结论。]"
+    )
+    mock_service.get_conversation.return_value = {
+        "id": "c1",
+        "messages": [{"id": "assistant-1", "role": "assistant", "content": legacy_answer}],
+    }
+    durable = {
+        "run_id": "run-cleanup",
+        "conversation_id": "c1",
+        "status": "partial",
+        "event_cursor": 0,
+        "final_text": legacy_answer,
+        "context_snapshot": None,
+    }
+    trace = {
+        "run_id": "run-cleanup",
+        "status": "partial",
+        "execution_trace": {
+            "evidence": [{"evidence_id": canonical_id}],
+        },
+    }
+    with (
+        patch(
+            "src.storage.manager.DatabaseManager.get_agent_run",
+            return_value=durable,
+        ),
+        patch(
+            "src.storage.manager.DatabaseManager.get_latest_agent_run_trace",
+            return_value=trace,
+        ),
+    ):
+        response = client.get("/api/v1/agent/conversations/c1")
+
+    body = response.json()
+    expected = f"结论【证据 {canonical_id}】"
+    assert body["messages"][0]["content"] == expected
+    assert body["resume_state"]["assistant_text"] == expected
 
 
 def test_get_conversation_does_not_reconstruct_removed_verification_retry(
@@ -543,6 +672,36 @@ def test_get_conversation_hides_legacy_terminal_status_message():
     detail = service.get_conversation("conversation-1")
 
     assert [message["id"] for message in detail["messages"]] == ["user-1"]
+
+
+def test_get_conversation_removes_legacy_evidence_diagnostic_from_history():
+    service = object.__new__(ChatSessionService)
+    service.db = MagicMock()
+    service.db.get_chat_conversation.return_value = SimpleNamespace(
+        thread_state_json=None,
+        to_dict=lambda: {"id": "conversation-1"},
+    )
+    service.db.get_chat_messages.return_value = [
+        SimpleNamespace(
+            role="assistant",
+            content=(
+                "结论\n\n[本轮外部证据关联未能完整通过：引用了不存在或失败的 evidence_id: "
+                "ev_old。以上内容应视为未完全核验的部分结论。]"
+            ),
+            to_dict=lambda: {
+                "id": "assistant-1",
+                "role": "assistant",
+                "content": (
+                    "结论\n\n[本轮外部证据关联未能完整通过：引用了不存在或失败的 evidence_id: "
+                    "ev_old。以上内容应视为未完全核验的部分结论。]"
+                ),
+            },
+        )
+    ]
+
+    detail = service.get_conversation("conversation-1")
+
+    assert detail["messages"][0]["content"] == "结论"
 
 
 def test_server_history_drops_legacy_terminal_status_message():

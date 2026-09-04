@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from src.agent.run_registry import ActiveRun, RunBroadcaster
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
 from src.agent.langgraph_runtime.presentation import (
+    enrich_execution_trace_with_result_previews,
     project_arguments_for_timeline,
     project_tool_result_for_timeline,
 )
@@ -247,7 +248,7 @@ def _execution_trace(
     claim_evidence: Sequence[Mapping[str, Any]],
     state: Mapping[str, Any],
 ) -> dict[str, Any]:
-    return {
+    projected = {
         "stages": project_stage_history_for_client(
             [item for item in stage_history if isinstance(item, Mapping)],
         ),
@@ -282,6 +283,11 @@ def _execution_trace(
             text_limit=96,
         ),
     }
+    return enrich_execution_trace_with_result_previews(
+        projected,
+        tool_results=tool_results,
+        evidence=evidence,
+    )
 
 
 @dataclass

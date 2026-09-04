@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.agent.langgraph_runtime.claim_evidence import build_claim_evidence_ledger
+from src.agent.langgraph_runtime.evidence_identity import canonicalize_evidence_markers
 
 
 def _evidence(**overrides: Any) -> dict[str, Any]:
@@ -53,6 +54,43 @@ def test_claim_ledger_persists_fact_mapping_and_all_generic_checks() -> None:
         "entity_scope": True,
         "time": True,
     }
+
+
+def test_claim_ledger_resolves_a_unique_long_evidence_prefix() -> None:
+    canonical_id = "ev_abcdefghi1234567890"
+    ledger = build_claim_evidence_ledger(
+        "人形机器人产业链有新的公开进展。【证据 ev_abcdefghi】",
+        [_evidence(evidence_id=canonical_id)],
+        [_tool_result()],
+    )
+
+    assert ledger["issues"] == []
+    assert ledger["cited_evidence_ids"] == [canonical_id]
+    assert ledger["claims"][0]["evidence_ids"] == [canonical_id]
+
+
+def test_claim_ledger_keeps_an_ambiguous_prefix_unresolved() -> None:
+    ledger = build_claim_evidence_ledger(
+        "资料显示产业链有新的公开进展。【证据 ev_abcdefgh】",
+        [
+            _evidence(evidence_id="ev_abcdefgh11111111"),
+            _evidence(evidence_id="ev_abcdefgh22222222", action_id="call-other"),
+        ],
+        [_tool_result(), _tool_result(action_id="call-other")],
+    )
+
+    assert any("不存在或失败的 evidence_id: ev_abcdefgh" in issue for issue in ledger["issues"])
+    assert ledger["claims"][0]["evidence_ids"] == ["ev_abcdefgh"]
+
+
+def test_canonicalize_evidence_markers_removes_an_invalid_marker() -> None:
+    normalized, unresolved = canonicalize_evidence_markers(
+        "结论【证据 ev_估值历史】【证据 ev_abcdefghi】",
+        [{"evidence_id": "ev_abcdefghi1234567890"}],
+    )
+
+    assert normalized == "结论【证据 ev_abcdefghi1234567890】"
+    assert unresolved == ["ev_估值历史"]
 
 
 def test_claim_ledger_rejects_missing_real_source_and_failed_tool_record() -> None:

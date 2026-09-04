@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from src.storage import DatabaseManager
 from src.agent.progress import is_non_answer_agent_message, strip_agent_progress
+from src.agent.langgraph_runtime.evidence_identity import strip_internal_evidence_diagnostic
 
 
 class ChatSessionService:
@@ -123,14 +124,16 @@ class ChatSessionService:
         )
         if not conversation:
             return None
-        messages = [
-            message
-            for message in self.db.get_chat_messages(conversation_id)
-            if not (
-                str(getattr(message, "role", "")) == "assistant"
-                and is_non_answer_agent_message(getattr(message, "content", ""))
-            )
-        ]
+        messages = []
+        for message in self.db.get_chat_messages(conversation_id):
+            role = str(getattr(message, "role", ""))
+            content = getattr(message, "content", "")
+            if role == "assistant" and is_non_answer_agent_message(content):
+                continue
+            serialized = message.to_dict()
+            if role == "assistant":
+                serialized["content"] = strip_internal_evidence_diagnostic(content)
+            messages.append(serialized)
         thread_state = None
         if include_thread_state and getattr(conversation, "thread_state_json", None):
             try:
@@ -141,7 +144,7 @@ class ChatSessionService:
                 thread_state = None
         payload = {
             **conversation.to_dict(),
-            "messages": [message.to_dict() for message in messages],
+            "messages": messages,
         }
         if include_thread_state:
             payload["thread_state"] = thread_state

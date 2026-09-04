@@ -1,6 +1,6 @@
+import { HoverCard as HoverCardPrimitive, Tooltip as TooltipPrimitive } from 'radix-ui';
 import type React from 'react';
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useId } from 'react';
 import { cn } from '../../utils/cn';
 
 interface TooltipProps {
@@ -8,144 +8,93 @@ interface TooltipProps {
   children: React.ReactNode;
   side?: 'top' | 'bottom';
   focusable?: boolean;
+  /** Use an interactive hover card when the content can be hovered, selected, or clicked. */
+  interactive?: boolean;
   ariaLabel?: string;
   className?: string;
   contentClassName?: string;
 }
 
-type TooltipStyle = {
-  top: number;
-  left: number;
-};
+const tooltipContentClassName =
+  'pointer-events-auto z-[120] min-w-max max-w-[18rem] rounded-xl border border-border/70 bg-elevated/95 px-3 py-1.5 text-xs leading-5 text-foreground shadow-[0_16px_40px_rgba(3,8,20,0.18)] backdrop-blur-xl';
 
+/**
+ * Shared hover surface. Radix owns the trigger/content handoff and pointer
+ * grace area so a user can move into the floating content without racing a
+ * local close timer.
+ */
 export const Tooltip: React.FC<TooltipProps> = ({
   content,
   children,
   side = 'top',
   focusable = false,
+  interactive = false,
   ariaLabel,
   className = '',
   contentClassName = '',
 }) => {
-  const triggerRef = useRef<HTMLSpanElement | null>(null);
-  const tooltipRef = useRef<HTMLSpanElement | null>(null);
   const tooltipId = useId();
-  const [open, setOpen] = useState(false);
-  const [resolvedSide, setResolvedSide] = useState<'top' | 'bottom'>(side);
-  const [style, setStyle] = useState<TooltipStyle>({ top: 0, left: 0 });
-
-  const updatePosition = useCallback(() => {
-    const trigger = triggerRef.current;
-    const tooltip = tooltipRef.current;
-    if (!trigger || !tooltip) {
-      return;
-    }
-
-    const triggerRect = trigger.getBoundingClientRect();
-    const tooltipRect = tooltip.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-    const gap = 10;
-    const margin = 8;
-
-    let nextSide = side;
-    let top =
-      side === 'top'
-        ? triggerRect.top - tooltipRect.height - gap
-        : triggerRect.bottom + gap;
-
-    if (side === 'top' && top < margin) {
-      nextSide = 'bottom';
-      top = triggerRect.bottom + gap;
-    } else if (side === 'bottom' && top + tooltipRect.height > viewportHeight - margin) {
-      nextSide = 'top';
-      top = triggerRect.top - tooltipRect.height - gap;
-    }
-
-    let left = triggerRect.left + triggerRect.width / 2 - tooltipRect.width / 2;
-    left = Math.max(margin, Math.min(left, viewportWidth - tooltipRect.width - margin));
-    top = Math.max(margin, Math.min(top, viewportHeight - tooltipRect.height - margin));
-
-    setResolvedSide(nextSide);
-    setStyle({ top, left });
-  }, [side]);
-
-  useLayoutEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const frameId = window.requestAnimationFrame(() => {
-      updatePosition();
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [open, content, updatePosition]);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const handleViewportChange = () => updatePosition();
-    window.addEventListener('resize', handleViewportChange);
-    window.addEventListener('scroll', handleViewportChange, true);
-
-    return () => {
-      window.removeEventListener('resize', handleViewportChange);
-      window.removeEventListener('scroll', handleViewportChange, true);
-    };
-  }, [open, updatePosition]);
 
   if (!content) {
     return <>{children}</>;
   }
 
-  return (
-    <>
-      <span
-        ref={triggerRef}
-        className={cn('inline-flex', className)}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            setOpen(false);
-          }
-        }}
-        tabIndex={focusable ? 0 : undefined}
-        aria-label={ariaLabel}
-        aria-describedby={open ? tooltipId : undefined}
-      >
-        {children}
-      </span>
+  const trigger = (
+    <span
+      className={cn('inline-flex', className)}
+      tabIndex={focusable ? 0 : undefined}
+      aria-label={ariaLabel}
+    >
+      {children}
+    </span>
+  );
 
-      {typeof document !== 'undefined' && open
-        ? createPortal(
-            <span
-              ref={tooltipRef}
-              id={tooltipId}
-              role="tooltip"
-              style={{
-                position: 'fixed',
-                top: style.top,
-                left: style.left,
-              }}
-              className={cn(
-                'pointer-events-none z-[120] min-w-max max-w-[18rem] rounded-xl border border-border/70 bg-elevated/95 px-3 py-1.5 text-xs leading-5 text-foreground shadow-[0_16px_40px_rgba(3,8,20,0.18)] backdrop-blur-xl',
-                resolvedSide === 'top' ? 'origin-bottom' : 'origin-top',
-                contentClassName,
-              )}
-            >
-              {content}
-            </span>,
-            document.body,
-          )
-        : null}
-    </>
+  if (interactive) {
+    return (
+      <HoverCardPrimitive.Root openDelay={0} closeDelay={500}>
+        <HoverCardPrimitive.Trigger asChild>{trigger}</HoverCardPrimitive.Trigger>
+        <HoverCardPrimitive.Portal>
+          <HoverCardPrimitive.Content
+            id={tooltipId}
+            role="tooltip"
+            aria-label={ariaLabel}
+            side={side}
+            sideOffset={8}
+            align="center"
+            collisionPadding={8}
+            className={cn(
+              tooltipContentClassName,
+              side === 'top' ? 'origin-bottom' : 'origin-top',
+              contentClassName,
+            )}
+          >
+            {content}
+          </HoverCardPrimitive.Content>
+        </HoverCardPrimitive.Portal>
+      </HoverCardPrimitive.Root>
+    );
+  }
+
+  return (
+    <TooltipPrimitive.Provider delayDuration={0} disableHoverableContent={false}>
+      <TooltipPrimitive.Root>
+        <TooltipPrimitive.Trigger asChild>{trigger}</TooltipPrimitive.Trigger>
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content
+            id={tooltipId}
+            side={side}
+            sideOffset={8}
+            collisionPadding={8}
+            className={cn(
+              tooltipContentClassName,
+              side === 'top' ? 'origin-bottom' : 'origin-top',
+              contentClassName,
+            )}
+          >
+            {content}
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
 };

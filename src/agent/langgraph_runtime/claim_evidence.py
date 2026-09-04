@@ -18,8 +18,13 @@ import json
 import re
 from typing import Any, Mapping, Sequence
 
+from .evidence_identity import (
+    EVIDENCE_REFERENCE as _EVIDENCE_REFERENCE,
+    contains_evidence_reference,
+    evidence_ids_in_text,
+    resolve_evidence_id,
+)
 
-_EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 _CITATION_ONLY_BLOCK = re.compile(
     r"^(?:(?:\*\*|__)\s*)?"
     r"(?:【\s*(?:证据\s*)?ev_[A-Za-z0-9_-]+\s*】\s*)+"
@@ -216,7 +221,7 @@ def _is_heading_only(candidate: str) -> bool:
     """Do not audit a Markdown section label as if it were a data claim."""
     return bool(
         re.match(r"^#{1,6}\s+", candidate)
-        and not _EVIDENCE_REFERENCE.search(candidate)
+        and not contains_evidence_reference(candidate)
         and not _EXPLICIT_DATE.search(candidate)
     )
 
@@ -273,7 +278,7 @@ def _is_source_note_block(block: str) -> bool:
     unrelated paragraph borrow a later citation.
     """
     lines = [line.strip() for line in block.splitlines() if line.strip()]
-    if not lines or not _EVIDENCE_REFERENCE.search(block):
+    if not lines or not contains_evidence_reference(block):
         return False
     citation_only = " ".join(lines)
     if len(lines) == 1 and _CITATION_ONLY_BLOCK.fullmatch(citation_only):
@@ -345,7 +350,7 @@ def _logical_answer_blocks(answer: str) -> list[tuple[str, bool]]:
             structured
             and scoped
             and not scoped[-1][1]
-            and _EVIDENCE_REFERENCE.search(scoped[-1][0])
+            and contains_evidence_reference(scoped[-1][0])
         ):
             previous, _ = scoped[-1]
             scoped[-1] = (previous + "\n" + block, True)
@@ -375,7 +380,7 @@ def _claim_fragments(answer: str) -> list[str]:
             candidate = raw.strip()
             explicit_times, relative_time = _time_mentions(candidate)
             if candidate and not _is_heading_only(candidate) and (
-                _EVIDENCE_REFERENCE.search(candidate)
+                contains_evidence_reference(candidate)
                 or explicit_times
                 or relative_time
             ):
@@ -383,7 +388,7 @@ def _claim_fragments(answer: str) -> list[str]:
     # A malformed answer can place a citation immediately after a heading or
     # in a line without a sentence boundary.  Preserve it as one auditable
     # fragment rather than silently dropping the citation from the ledger.
-    if not fragments and _EVIDENCE_REFERENCE.search(answer):
+    if not fragments and contains_evidence_reference(answer):
         fragments.append(answer.strip())
     return fragments
 
@@ -477,7 +482,15 @@ def build_claim_evidence_ledger(
     }
     issues: list[str] = []
     claims: list[dict[str, Any]] = []
-    cited_evidence_ids = _unique(_EVIDENCE_REFERENCE.findall(answer))
+    def resolve_ids(raw_ids: Sequence[str]) -> list[str]:
+        return _unique(
+            [
+                resolve_evidence_id(raw_id, successful) or raw_id
+                for raw_id in raw_ids
+            ]
+        )
+
+    cited_evidence_ids = resolve_ids(evidence_ids_in_text(answer))
     cited_evidence = [
         successful[evidence_id]
         for evidence_id in cited_evidence_ids
@@ -485,7 +498,7 @@ def build_claim_evidence_ledger(
     ]
     prior_cited_ids: list[str] = []
     for index, fragment in enumerate(_claim_fragments(answer), start=1):
-        direct_evidence_ids = _unique(_EVIDENCE_REFERENCE.findall(fragment))
+        direct_evidence_ids = resolve_ids(evidence_ids_in_text(fragment))
         explicit_times, relative_time = _time_mentions(fragment)
         inherited_ids = _inherited_evidence_ids(
             explicit_times,

@@ -195,10 +195,12 @@ class AgentRunTraceMixin:
                 except (TypeError, ValueError):
                     latest_stage = None
             execution_trace = None
+            quality_projection = None
             if record.quality_projection_json:
                 try:
                     projection = json.loads(record.quality_projection_json)
                     if isinstance(projection, dict):
+                        quality_projection = projection
                         candidate = projection.get("execution_trace")
                         if isinstance(candidate, dict):
                             execution_trace = candidate
@@ -210,6 +212,9 @@ class AgentRunTraceMixin:
                 "error_code": record.error_code,
                 "latest_stage": latest_stage,
                 "execution_trace": execution_trace,
+                # Kept internal for the conversation presentation layer to
+                # derive bounded previews from historical canonical results.
+                "quality_projection": quality_projection,
                 "updated_at": (record.updated_at.isoformat() if record.updated_at is not None else None),
             }
 

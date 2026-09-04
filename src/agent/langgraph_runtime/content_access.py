@@ -9,9 +9,10 @@ candidate URLs plus the URLs the model chose to read.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
+
+from .evidence_identity import evidence_ids_in_text, evidence_id_from_record, resolve_evidence_id
 
 
 REFERENCE_ONLY_TOOL_KINDS: dict[str, str] = {
@@ -20,7 +21,6 @@ REFERENCE_ONLY_TOOL_KINDS: dict[str, str] = {
 }
 CONTENT_READER_TOOLS = frozenset({"read_web_source"})
 DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT = 2
-_EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 
 _CONTENT_FIELDS = frozenset(
     {
@@ -57,6 +57,23 @@ def canonical_url(value: Any) -> str:
 
 def _text(value: Any, limit: int = 2_000) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _cited_evidence_ids(
+    answer: str,
+    evidence: Sequence[Mapping[str, Any]],
+) -> set[str]:
+    canonical_ids = [
+        evidence_id_from_record(item)
+        for item in evidence
+        if isinstance(item, Mapping) and evidence_id_from_record(item)
+    ]
+    resolved: set[str] = set()
+    for raw_id in evidence_ids_in_text(answer):
+        evidence_id = resolve_evidence_id(raw_id, canonical_ids)
+        if evidence_id:
+            resolved.add(evidence_id)
+    return resolved
 
 
 def _non_empty(value: Any, *, depth: int = 0) -> bool:
@@ -266,7 +283,7 @@ def required_content_access_targets(
     Unselected candidates remain valid index metadata and are not silently
     treated as unread failures.
     """
-    cited_ids = set(_EVIDENCE_REFERENCE.findall(str(answer or "")))
+    cited_ids = _cited_evidence_ids(str(answer or ""), evidence)
     if not cited_ids:
         return []
     records_by_action = {
@@ -334,7 +351,7 @@ def cited_reference_action_ids(
     tool_results: Sequence[Mapping[str, Any]],
 ) -> set[str]:
     """Return cited reference-only action ids without imposing a read queue."""
-    cited_ids = set(_EVIDENCE_REFERENCE.findall(str(answer or "")))
+    cited_ids = _cited_evidence_ids(str(answer or ""), evidence)
     if not cited_ids:
         return set()
     records_by_action = {

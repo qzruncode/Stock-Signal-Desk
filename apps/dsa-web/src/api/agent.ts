@@ -164,11 +164,15 @@ const CLIENT_TRACE_MAX_TEXT = 1_600;
 const CLIENT_DISPLAY_PART_TEXT = 12_000;
 const CLIENT_TRACE_FIELD_LIMITS: Array<[string, string, number]> = [
   ['display_parts', 'displayParts', 240],
-  ['stages', 'stages', 120],
-  ['actions', 'actions', 32],
+  // Citations are part of the final answer contract.  Keep the compact
+  // evidence/result projections before the verbose stage history so a long
+  // run cannot make every hover degrade to "details unavailable" merely
+  // because the shared defensive budget was consumed by timeline metadata.
   ['tool_results', 'toolResults', 80],
   ['evidence', 'evidence', 80],
   ['claim_evidence', 'claimEvidence', 80],
+  ['stages', 'stages', 120],
+  ['actions', 'actions', 32],
   ['loop', 'loop', 1],
   ['completed_tool_call_ids', 'completedToolCallIds', 80],
 ];

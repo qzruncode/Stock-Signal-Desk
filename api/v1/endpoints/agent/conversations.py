@@ -14,6 +14,8 @@ from api.v1.endpoints.agent import router
 from src.agent.run_registry import active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
+from src.agent.langgraph_runtime.evidence_identity import prepare_answer_for_client
+from src.agent.langgraph_runtime.presentation import enrich_execution_trace_with_result_previews
 from src.agent.runtime_safety import AgentRequestValidationError, validate_conversation_snapshot_body
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
@@ -54,6 +56,7 @@ def _execution_trace_for_run(
     trace: Mapping[str, Any] | None,
     run: Any | None,
     durable_run: Mapping[str, Any] | None,
+    quality_projection: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     run_id = str(run.run_id if run is not None else (durable_run or {}).get("run_id") or "")
     if not run_id:
@@ -89,6 +92,20 @@ def _execution_trace_for_run(
                 seen.add(identity)
     if stages:
         persisted["stages"] = project_stage_history_for_client(stages)
+    if isinstance(quality_projection, Mapping):
+        persisted = enrich_execution_trace_with_result_previews(
+            persisted,
+            tool_results=(
+                quality_projection.get("tool_results")
+                if isinstance(quality_projection.get("tool_results"), list)
+                else ()
+            ),
+            evidence=(
+                quality_projection.get("evidence")
+                if isinstance(quality_projection.get("evidence"), list)
+                else ()
+            ),
+        )
     return persisted or None
 
 
@@ -103,7 +120,11 @@ def _session_service(
     )
 
 
-def _conversation_presentation(conversation: Mapping[str, Any]) -> dict[str, Any]:
+def _conversation_presentation(
+    conversation: Mapping[str, Any],
+    *,
+    evidence: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
+) -> dict[str, Any]:
     """Exclude an obsolete assistant-ui snapshot from browser responses.
 
     Canonical messages plus the durable LangGraph trace are the display
@@ -113,6 +134,20 @@ def _conversation_presentation(conversation: Mapping[str, Any]) -> dict[str, Any
     """
     payload = dict(conversation)
     payload.pop("thread_state", None)
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        visible_messages: list[dict[str, Any]] = []
+        for raw_message in messages:
+            if not isinstance(raw_message, Mapping):
+                continue
+            message = dict(raw_message)
+            if str(message.get("role") or "") == "assistant":
+                message["content"], _ = prepare_answer_for_client(
+                    message.get("content"),
+                    evidence,
+                )
+            visible_messages.append(message)
+        payload["messages"] = visible_messages
     return payload
 
 
@@ -219,6 +254,18 @@ def get_agent_conversation(
         trace=trace,
         run=run,
         durable_run=durable_run,
+        quality_projection=(
+            trace.get("quality_projection")
+            if isinstance(trace, Mapping)
+            and isinstance(trace.get("quality_projection"), Mapping)
+            else None
+        ),
+    )
+    trace_evidence = (
+        execution_trace.get("evidence")
+        if isinstance(execution_trace, Mapping)
+        and isinstance(execution_trace.get("evidence"), list)
+        else []
     )
     persisted_stage = (
         trace.get("latest_stage")
@@ -246,6 +293,12 @@ def get_agent_conversation(
             "error_code": "tool_failed",
             "summary": "后台运行已经中断，没有仍在执行的任务",
         }
+    assistant_text = (
+        run.broadcaster.assistant_text_snapshot
+        if is_generating and run
+        else str(durable_run.get("final_text") or "") if durable_run else ""
+    )
+    assistant_text, _ = prepare_answer_for_client(assistant_text, trace_evidence)
     conversation["is_generating"] = is_generating
     conversation["execution_trace"] = execution_trace
     context_snapshot = durable_run.get("context_snapshot") if durable_run else None
@@ -276,11 +329,7 @@ def get_agent_conversation(
         # before its onFinish snapshot.
         "after_chunk_index": (run.broadcaster.history_length if is_generating and run and not durable_run else 0),
         "event_cursor": (run.broadcaster.history_length if is_generating and run else durable_event_cursor),
-        "assistant_text": (
-            run.broadcaster.assistant_text_snapshot
-            if is_generating and run
-            else str(durable_run.get("final_text") or "") if durable_run else ""
-        ),
+        "assistant_text": assistant_text,
         "has_tool_events": (
             run.broadcaster.has_tool_events
             if run
@@ -290,7 +339,7 @@ def get_agent_conversation(
         "pending_interrupt": pending_interrupt,
     }
     conversation["pending_interrupt"] = pending_interrupt
-    return _conversation_presentation(conversation)
+    return _conversation_presentation(conversation, evidence=trace_evidence)
 
 
 @router.patch("/agent/conversations/{conversation_id}")

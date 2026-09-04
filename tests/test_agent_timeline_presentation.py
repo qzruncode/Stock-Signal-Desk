@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.agent.langgraph_runtime.presentation import (
+    enrich_execution_trace_with_result_previews,
     project_arguments_for_timeline,
     project_tool_result_for_timeline,
 )
@@ -48,6 +49,76 @@ def test_timeline_projection_names_provider_and_each_returned_result() -> None:
     ]
     assert projected["result_items"][0]["url"] == "https://example.test/robotics-1"
     assert projected["result_items"][0]["summary"] == "核心零部件进入放量阶段。"
+
+
+def test_timeline_projection_turns_named_mapping_records_into_result_rows() -> None:
+    projected = project_tool_result_for_timeline(
+        {
+            "indices": {
+                "shanghai_composite": {
+                    "code": "sh000001",
+                    "name": "上证指数",
+                    "price": 3942.0879,
+                    "change_pct": 0.018,
+                },
+                "shenzhen_component": {
+                    "code": "sz399001",
+                    "name": "深证成指",
+                    "price": 13625.122,
+                    "change_pct": 0.1,
+                },
+            },
+            "total_amount": 17589.16,
+            "total_amount_unit": "亿元",
+            "turnover_scope": "沪深市场",
+            "source": "新浪实时指数行情",
+        }
+    )
+
+    assert projected["result_count"] == 2
+    assert [item["title"] for item in projected["result_items"]] == [
+        "sh000001 上证指数",
+        "sz399001 深证成指",
+    ]
+    assert projected["result_items"][0]["attributes"] == [
+        {"name": "price", "value": "3942.0879"},
+        {"name": "change_pct", "value": "0.018"},
+    ]
+
+
+def test_historical_trace_enrichment_reuses_the_bounded_result_projection() -> None:
+    enriched = enrich_execution_trace_with_result_previews(
+        {
+            "tool_results": [{
+                "action_id": "call-market",
+                "tool_name": "read_market_indices_sina",
+                "result_items": [],
+            }],
+            "evidence": [{
+                "evidence_id": "ev-market",
+                "action_id": "call-market",
+                "source_refs": ["新浪实时指数行情"],
+            }],
+        },
+        evidence=[{
+            "evidence_id": "ev-market",
+            "action_id": "call-market",
+            "result": {
+                "indices": {
+                    "shanghai_composite": {
+                        "name": "上证指数",
+                        "price": 3942.0879,
+                    },
+                },
+            },
+        }],
+    )
+
+    assert enriched["evidence"][0]["result_items"][0]["title"] == "上证指数"
+    assert enriched["evidence"][0]["result_items"][0]["attributes"] == [
+        {"name": "price", "value": "3942.0879"},
+    ]
+    assert enriched["tool_results"][0]["result_items"][0]["title"] == "上证指数"
 
 
 def test_timeline_arguments_keep_query_but_redact_secrets_and_server_fields() -> None:

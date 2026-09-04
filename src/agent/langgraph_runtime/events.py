@@ -134,13 +134,12 @@ class GraphEventBridge:
         self.run_id = run_id
         self._stage_history: list[dict[str, Any]] = []
         self._round_id: str | None = None
-        # Model content is buffered until LangGraph has produced the complete
-        # AI message.  A tool-call turn is then published as user-visible
-        # progress, while a no-tool candidate is committed only after the
-        # universal evidence/content checks accept it.  This is the important
-        # append-only boundary: a repair turn can never replace text already
-        # rendered by the browser.
-        self._pending_model_text = ""
+        # Native LangChain chunks are published as soon as they arrive so the
+        # browser can render a real token stream.  Keep the text emitted for
+        # the current model turn only to reconcile it with the server-owned
+        # answer after evidence/content checks; terminal hydration remains the
+        # canonical replacement for a repaired candidate.
+        self._model_text_published = ""
         self._model_chunks_seen = False
         self._last_committed_answer: str | None = None
 
@@ -165,7 +164,7 @@ class GraphEventBridge:
         return str(content or "")
 
     def begin_model_turn(self, model_turn: int | str | None = None) -> None:
-        """Start an isolated model-output buffer for one native graph turn.
+        """Start an isolated model-output stream for one native graph turn.
 
         The model turn is also the durable phase identity.  Every stage and
         tool event emitted until the next model turn inherits this round id,
@@ -173,20 +172,15 @@ class GraphEventBridge:
         phase from display text.
         """
         self.set_round(model_turn)
-        self._pending_model_text = ""
+        self._model_text_published = ""
         self._model_chunks_seen = False
+        self._last_committed_answer = None
 
     def model_message(self, message: AIMessage | AIMessageChunk) -> None:
-        """Observe native LangChain message chunks without replacing output."""
+        """Publish native LangChain text deltas without waiting for a finish."""
         if isinstance(message, AIMessageChunk):
             self._model_chunks_seen = True
-            self._pending_model_text += self._message_text(message)
-            # Provider streams usually emit the natural-language plan before
-            # the first tool-call delta.  Once LangChain has identified that
-            # this is a tool turn, publish that plan immediately; later
-            # chunks still append to the same durable stream.
-            if getattr(message, "tool_call_chunks", None):
-                self.flush_model_progress()
+            self._publish_model_text(self._message_text(message))
             return
         if not isinstance(message, AIMessage):
             return
@@ -194,31 +188,40 @@ class GraphEventBridge:
         # ``messages`` stream.  Only use its content when no chunks were
         # delivered (for example a deterministic test/adapter model).
         if not self._model_chunks_seen:
-            self._pending_model_text = self._message_text(message)
-        if message.tool_calls:
-            self.flush_model_progress()
-
-    def flush_model_progress(self) -> None:
-        """Publish a completed tool-call turn as one append-only text delta."""
-        pending = self._pending_model_text
-        self._pending_model_text = ""
-        if pending:
-            self._publish_text_delta(pending)
+            self._publish_model_text(self._message_text(message))
 
     def commit_model_answer(self, answer: str) -> None:
-        """Commit an accepted candidate/final answer exactly once."""
+        """Commit the accepted answer without duplicating already streamed text."""
         normalized = str(answer or "")
         if not normalized:
-            self.flush_model_progress()
             return
         if normalized == self._last_committed_answer:
-            self._pending_model_text = ""
+            self._model_text_published = normalized
             return
-        # A no-tool candidate may have been buffered while policy checks ran.
-        # Publish the accepted server-owned answer, not the unverified buffer.
-        self._pending_model_text = ""
-        self._publish_text_delta(normalized)
+
+        streamed = self._model_text_published
+        if streamed == normalized:
+            # The accepted answer was already streamed as a provisional model
+            # candidate.  Terminal publication and hydration still mark it as
+            # the canonical answer without sending a second copy.
+            pass
+        elif streamed and normalized.startswith(streamed):
+            # Partial-result suffixes (for example a bounded-budget warning)
+            # can be appended smoothly after the already visible prefix.
+            self._publish_model_text(normalized[len(streamed):])
+        else:
+            # A repair can produce text different from the provisional stream.
+            # Keep the stream append-only and let terminal hydration replace the
+            # provisional display with this accepted server-owned answer.
+            self._publish_model_text(normalized)
         self._last_committed_answer = normalized
+
+    def _publish_model_text(self, value: str) -> None:
+        text = str(value or "")
+        if not text:
+            return
+        self._publish_text_delta(text)
+        self._model_text_published += text
 
     def _publish_text_delta(self, value: str) -> None:
         text = str(value or "")

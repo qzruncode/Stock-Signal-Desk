@@ -103,7 +103,7 @@ def test_litellm_adapter_uses_langchain_async_stream_and_merges_tool_calls() -> 
     asyncio.run(scenario())
 
 
-def test_graph_event_bridge_never_replaces_unverified_candidate_text() -> None:
+def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answer() -> None:
     class Controller:
         def __init__(self) -> None:
             self.texts: list[str] = []
@@ -135,7 +135,23 @@ def test_graph_event_bridge_never_replaces_unverified_candidate_text() -> None:
     events.commit_model_answer("已核验的最终答案")
     events.text("已核验的最终答案")
 
-    assert controller.texts == ["先规划：先查资料。", "已核验的最终答案"]
+    assert controller.texts == [
+        "先规划：",
+        "先查资料。",
+        "未核验候选答案",
+        "已核验的最终答案",
+    ]
+
+    events.begin_model_turn(3)
+    events.model_message(AIMessageChunk(content="最终答案"))
+    events.commit_model_answer("最终答案")
+
+    assert controller.texts[-1:] == ["最终答案"]
+
+    events.begin_model_turn(4)
+    events.commit_model_answer("最终答案")
+
+    assert controller.texts[-1:] == ["最终答案"]
 
 
 def test_graph_event_bridge_assigns_one_round_id_to_each_model_phase() -> None:

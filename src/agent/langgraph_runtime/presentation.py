@@ -187,6 +187,14 @@ def _collection_candidates(
             structured = 20 if any(isinstance(entry, Mapping) for entry in sequence[:12]) else 0
             candidates.append((preferred + structured - depth * 10, -order, sequence))
         elif isinstance(item, Mapping):
+            named_items = [
+                dict(entry) | {"_collection_key": str(raw_entry_key)[:120]}
+                for raw_entry_key, entry in list(item.items())[:80]
+                if isinstance(entry, Mapping)
+            ]
+            if named_items and len(named_items) == min(len(item), 80):
+                preferred = 120 - _COLLECTION_KEYS.index(key) if key in _COLLECTION_KEYS else 0
+                candidates.append((preferred + 30 - depth * 10, -order, named_items))
             candidates.extend(_collection_candidates(item, depth=depth + 1))
     return candidates
 
@@ -221,10 +229,11 @@ def _result_item(value: Any, index: int) -> dict[str, Any]:
         return {"title": _text(value, 360) or f"结果 {index}"}
     title = _first(value, _TITLE_KEYS, 360)
     identifier = _first(value, _IDENTIFIER_KEYS, 80)
+    collection_key = _text(value.get("_collection_key"), 120)
     if identifier and title and identifier not in title:
         title = f"{identifier} {title}"
     elif not title:
-        title = identifier
+        title = identifier or collection_key
     url = _first(value, _URL_KEYS, 1_000)
     source = ""
     for key in _SOURCE_KEYS:
@@ -372,4 +381,134 @@ def project_tool_result_for_timeline(
     return projected
 
 
-__all__ = ["project_arguments_for_timeline", "project_tool_result_for_timeline"]
+def _trace_records(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [item for item in list(value)[:80] if isinstance(item, Mapping)]
+
+
+def _trace_values(value: Any) -> list[Any]:
+    if isinstance(value, (str, int, float)):
+        return [value]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return list(value)[:16]
+    return []
+
+
+def _trace_record_identities(record: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        _text(record.get("evidence_id") or record.get("evidenceId"), 96),
+        _text(record.get("action_id") or record.get("actionId"), 96),
+        _text(record.get("tool_call_id") or record.get("toolCallId"), 128),
+    )
+
+
+def _trace_record_preview(record: Mapping[str, Any]) -> dict[str, Any]:
+    result = record.get("result")
+    if not isinstance(result, Mapping):
+        return {}
+    source_refs = _trace_values(record.get("source_refs") or result.get("source_refs"))
+    return project_tool_result_for_timeline(result, source_refs=source_refs)
+
+
+def _preview_richness(preview: Mapping[str, Any]) -> tuple[int, int, int]:
+    items = preview.get("result_items")
+    return (
+        len(items) if isinstance(items, Sequence) and not isinstance(items, (str, bytes, bytearray)) else 0,
+        1 if _text(preview.get("result_summary"), 800) else 0,
+        len(preview.get("source_labels") or []) if isinstance(preview.get("source_labels"), Sequence) else 0,
+    )
+
+
+def _store_preview(
+    index: dict[str, dict[str, Any]],
+    key: str,
+    preview: Mapping[str, Any],
+) -> None:
+    if not key:
+        return
+    candidate = dict(preview)
+    current = index.get(key)
+    if current is None or _preview_richness(candidate) > _preview_richness(current):
+        index[key] = candidate
+
+
+def _merge_preview_fields(
+    record: Mapping[str, Any],
+    preview: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    merged = dict(record)
+    if not preview:
+        return merged
+    for key in (
+        "source_labels",
+        "result_count",
+        "omitted_result_count",
+        "result_summary",
+        "result_items",
+        "reference_links",
+        "content_access",
+    ):
+        value = preview.get(key)
+        if value in (None, "", [], {}):
+            continue
+        current = merged.get(key)
+        if current in (None, "", [], {}):
+            merged[key] = list(value) if isinstance(value, list) else value
+    return merged
+
+
+def enrich_execution_trace_with_result_previews(
+    execution_trace: Mapping[str, Any] | None,
+    *,
+    tool_results: Sequence[Mapping[str, Any]] = (),
+    evidence: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Fill compact timeline rows from canonical result payloads.
+
+    The persisted execution trace intentionally omits raw provider payloads.
+    This helper derives the same bounded preview used by live tool rows from
+    canonical evidence/tool records, so historical hydration has the same
+    truthful hover detail without exposing the raw result to the browser.
+    """
+    if not isinstance(execution_trace, Mapping):
+        return {}
+
+    by_evidence: dict[str, dict[str, Any]] = {}
+    by_action: dict[str, dict[str, Any]] = {}
+    by_tool_call: dict[str, dict[str, Any]] = {}
+    for record in (*_trace_records(tool_results), *_trace_records(evidence)):
+        preview = _trace_record_preview(record)
+        if not preview:
+            continue
+        evidence_id, action_id, tool_call_id = _trace_record_identities(record)
+        _store_preview(by_evidence, evidence_id, preview)
+        _store_preview(by_action, action_id, preview)
+        _store_preview(by_tool_call, tool_call_id, preview)
+
+    if not (by_evidence or by_action or by_tool_call):
+        return dict(execution_trace)
+
+    enriched = dict(execution_trace)
+    for collection_name in ("tool_results", "evidence"):
+        records = _trace_records(execution_trace.get(collection_name))
+        if not records:
+            continue
+        collection: list[dict[str, Any]] = []
+        for record in records:
+            evidence_id, action_id, tool_call_id = _trace_record_identities(record)
+            preview = (
+                by_evidence.get(evidence_id)
+                if collection_name == "evidence"
+                else None
+            ) or by_action.get(action_id) or by_tool_call.get(tool_call_id)
+            collection.append(_merge_preview_fields(record, preview))
+        enriched[collection_name] = collection
+    return enriched
+
+
+__all__ = [
+    "enrich_execution_trace_with_result_previews",
+    "project_arguments_for_timeline",
+    "project_tool_result_for_timeline",
+]

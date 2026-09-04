@@ -153,4 +153,42 @@ describe('agentApi.syncConversationSnapshot', () => {
     expect(trace?.clientTraceTruncated).toBe(true);
     expect(JSON.stringify(trace).length).toBeLessThan(190_000);
   });
+
+  it('preserves citation projections when a long stage history consumes the shared budget', async () => {
+    get.mockResolvedValue({
+      data: {
+        id: 'c1',
+        title: '对话',
+        title_source: 'auto',
+        created_at: '2026-07-26T00:00:00Z',
+        updated_at: '2026-07-26T00:00:00Z',
+        messages: [],
+        execution_trace: {
+          display_parts: [],
+          stages: Array.from({ length: 120 }, (_, index) => ({
+            event: 'agent_stage',
+            stage: 'tool',
+            status: 'completed',
+            summary: `stage-${index}-${'x'.repeat(900)}`,
+            details: { payload: 'x'.repeat(1_200) },
+          })),
+          tool_results: [{
+            action_id: 'action-market',
+            tool_name: 'read_market_indices',
+            result_summary: '指数行情已返回。',
+          }],
+          evidence: [{
+            evidence_id: 'ev_market0123456789',
+            action_id: 'action-market',
+          }],
+        },
+      },
+    });
+
+    const detail = await agentApi.getConversation('c1');
+
+    expect(detail.executionTrace?.evidence).toEqual([
+      expect.objectContaining({ evidenceId: 'ev_market0123456789' }),
+    ]);
+  });
 });
