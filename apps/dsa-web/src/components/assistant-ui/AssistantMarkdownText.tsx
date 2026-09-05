@@ -204,7 +204,10 @@ const EvidenceCitation: FC<{
 export const AssistantMarkdown: FC<AssistantMarkdownProps> = ({ text, evidence }) => {
   const { content, stopped } = splitAssistantText(text);
   const evidenceIndex = useMemo(() => assistantEvidenceIndexFromTrace(evidence), [evidence]);
-  const renderedContent = useMemo(() => replaceAssistantEvidenceMarkers(content), [content]);
+  const renderedContent = useMemo(
+    () => replaceAssistantEvidenceMarkers(content, evidenceIndex),
+    [content, evidenceIndex],
+  );
 
   return (
     <div className="w-full min-w-0 space-y-2">

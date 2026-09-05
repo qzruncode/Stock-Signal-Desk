@@ -130,13 +130,52 @@ def test_valuation_reads_remain_source_specific() -> None:
 
 def test_valuation_quote_marks_missing_source_timestamp_as_unavailable() -> None:
     quote = {"price": 10.0, "pe_ttm": 20.0, "quote_time": None}
-    with patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote):
+    with (
+        patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote),
+        patch(
+            "src.tools.get_valuation_ratios._fetch_history",
+            side_effect=RuntimeError("history unavailable"),
+        ),
+    ):
         result = read_valuation_quote_eastmoney("600519", use_cache=False)
 
     assert result["data_time"] is None
     assert result["data_time_provenance"] == "unavailable"
     assert "quote_time" in result["data_time_note"]
     assert result["freshness_unknown"] is True
+
+
+def test_valuation_quote_falls_back_to_the_latest_dated_history_snapshot() -> None:
+    quote = {"price": 10.0, "pe_ttm": 20.0, "quote_time": None}
+    history = pd.DataFrame(
+        [
+            {
+                "数据日期": "2026-08-07",
+                "当日收盘价": 9.5,
+                "PE(TTM)": 18.0,
+                "PE(静)": 19.0,
+                "市净率": 2.0,
+                "总市值": 950.0,
+            }
+        ]
+    )
+    with (
+        patch("src.tools.get_valuation_ratios._fetch_quote", return_value=quote),
+        patch("src.tools.get_valuation_ratios._fetch_history", return_value=history),
+    ):
+        result = read_valuation_quote_eastmoney("600519", use_cache=False)
+
+    assert result["success"] is True
+    assert result["source_scope"] == "dated_valuation_snapshot"
+    assert result["fallback_used"] is True
+    assert result["fallback_provider"] == "东方财富估值历史/AKShare"
+    assert result["price"] == 9.5
+    assert result["pe_ttm"] == 18.0
+    assert result["data_time"] == "2026-08-07"
+    assert [item["source"] for item in result["source_attempts"]] == [
+        "eastmoney_quote",
+        "eastmoney_history",
+    ]
 
 
 def test_market_source_reads_do_not_activate_legacy_snapshot_fallbacks() -> None:

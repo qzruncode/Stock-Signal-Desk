@@ -15,12 +15,30 @@ from src.agent.run_registry import active_run_registry
 from src.agent.langgraph_runtime import agent_graph_runtime
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
 from src.agent.langgraph_runtime.evidence_identity import prepare_answer_for_client
+from src.tools.base import evidence_record_is_eligible
 from src.agent.langgraph_runtime.presentation import enrich_execution_trace_with_result_previews
 from src.agent.runtime_safety import AgentRequestValidationError, validate_conversation_snapshot_body
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+
+def _client_evidence_is_resolvable(item: Mapping[str, Any]) -> bool:
+    """Allow only explicit evidence, plus id-only records from old traces."""
+    if evidence_record_is_eligible(item):
+        return True
+    # Before the semantic result contract, the terminal trace persisted only
+    # the canonical id.  It is safe to preserve that exact historical marker;
+    # a record that explicitly says success/has_data/evidence_eligible=False
+    # must still be rejected by the current contract.
+    return bool(
+        str(item.get("evidence_id") or item.get("id") or "").strip()
+        and not any(
+            key in item
+            for key in ("success", "has_data", "evidence_eligible")
+        )
+    )
 
 
 def _stage_history_from_events(
@@ -106,6 +124,12 @@ def _execution_trace_for_run(
                 else ()
             ),
         )
+    if isinstance(persisted.get("evidence"), list):
+        persisted["evidence"] = [
+            item
+            for item in persisted["evidence"]
+            if isinstance(item, Mapping) and _client_evidence_is_resolvable(item)
+        ]
     return persisted or None
 
 
@@ -267,6 +291,7 @@ def get_agent_conversation(
         and isinstance(execution_trace.get("evidence"), list)
         else []
     )
+    trace_evidence = [item for item in trace_evidence if _client_evidence_is_resolvable(item)]
     persisted_stage = (
         trace.get("latest_stage")
         if isinstance(trace, dict)

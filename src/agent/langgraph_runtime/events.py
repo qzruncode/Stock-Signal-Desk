@@ -134,13 +134,16 @@ class GraphEventBridge:
         self.run_id = run_id
         self._stage_history: list[dict[str, Any]] = []
         self._round_id: str | None = None
-        # Native LangChain chunks are published as soon as they arrive so the
-        # browser can render a real token stream.  Keep the text emitted for
-        # the current model turn only to reconcile it with the server-owned
-        # answer after evidence/content checks; terminal hydration remains the
-        # canonical replacement for a repaired candidate.
+        # Model text is provisional until the application validates the model
+        # turn.  Publishing it immediately makes an invalid answer impossible
+        # to retract from an append-only assistant stream and was the source
+        # of repeated full answers during repair loops.  Tool-progress text is
+        # flushed explicitly after the completed model turn; final text is
+        # flushed only by ``commit_model_answer``.
+        self._model_text_buffer: list[str] = []
         self._model_text_published = ""
         self._model_chunks_seen = False
+        self._model_progress_committed = False
         self._last_committed_answer: str | None = None
 
     def set_round(self, round_id: str | int | None) -> None:
@@ -172,15 +175,19 @@ class GraphEventBridge:
         phase from display text.
         """
         self.set_round(model_turn)
+        self._model_text_buffer = []
         self._model_text_published = ""
         self._model_chunks_seen = False
+        self._model_progress_committed = False
         self._last_committed_answer = None
 
     def model_message(self, message: AIMessage | AIMessageChunk) -> None:
-        """Publish native LangChain text deltas without waiting for a finish."""
+        """Buffer native LangChain text until the turn's owner validates it."""
         if isinstance(message, AIMessageChunk):
             self._model_chunks_seen = True
-            self._publish_model_text(self._message_text(message))
+            text = self._message_text(message)
+            if text:
+                self._model_text_buffer.append(text)
             return
         if not isinstance(message, AIMessage):
             return
@@ -188,10 +195,21 @@ class GraphEventBridge:
         # ``messages`` stream.  Only use its content when no chunks were
         # delivered (for example a deterministic test/adapter model).
         if not self._model_chunks_seen:
-            self._publish_model_text(self._message_text(message))
+            text = self._message_text(message)
+            if text:
+                self._model_text_buffer.append(text)
+
+    def commit_model_progress(self) -> None:
+        """Publish buffered text belonging to a model tool-planning turn."""
+        if self._model_progress_committed:
+            return
+        for text in self._model_text_buffer:
+            self._publish_model_text(text)
+        self._model_text_buffer = []
+        self._model_progress_committed = True
 
     def commit_model_answer(self, answer: str) -> None:
-        """Commit the accepted answer without duplicating already streamed text."""
+        """Publish exactly one server-accepted answer for the current turn."""
         normalized = str(answer or "")
         if not normalized:
             return
@@ -199,11 +217,12 @@ class GraphEventBridge:
             self._model_text_published = normalized
             return
 
-        streamed = self._model_text_published
+        # A no-tool model turn is a candidate, not a committed stream.  Drop
+        # it before publishing the validated answer so retries cannot append
+        # the same full answer over and over.
+        self._model_text_buffer = []
+        streamed = self._model_text_published if self._model_progress_committed else ""
         if streamed == normalized:
-            # The accepted answer was already streamed as a provisional model
-            # candidate.  Terminal publication and hydration still mark it as
-            # the canonical answer without sending a second copy.
             pass
         elif streamed and normalized.startswith(streamed):
             # Partial-result suffixes (for example a bounded-budget warning)

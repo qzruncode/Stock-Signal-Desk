@@ -202,6 +202,112 @@ def test_cited_reference_only_call_is_checked_independently_from_other_calls() -
     assert audit["cited_reference_tool_count"] == 1
 
 
+def test_selected_multi_link_article_satisfies_cited_reference_without_fanning_out() -> None:
+    audit = build_behavior_audit(
+        _snapshot(
+            [
+                {
+                    "action_id": "news-1",
+                    "tool_name": "read_company_news_akshare",
+                    "success": True,
+                    "result_count": 2,
+                    "reference_links": [
+                        "https://example.test/news/1",
+                        "https://example.test/news/2",
+                    ],
+                },
+                {
+                    "action_id": "read-1",
+                    "tool_name": "read_web_source",
+                    "success": True,
+                    "arguments": {"url": "https://example.test/news/1"},
+                    "content_access": {
+                        "mode": "content_read",
+                        "content_read": True,
+                        "content_extracted": True,
+                        "content_length": 100,
+                    },
+                },
+            ],
+            claims=[
+                {
+                    "evidence_ids": ["ev-news"],
+                    "checks": {"tool_success": True},
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_id": "ev-news",
+                    "action_id": "news-1",
+                    "tool_name": "read_company_news_akshare",
+                }
+            ],
+        )
+    )
+
+    assert audit["cited_unread_reference_count"] == 0
+    assert not any(item["code"] == "cited_reference_without_body" for item in audit["findings"])
+
+
+def test_cited_multi_link_article_is_not_satisfied_by_another_action_read() -> None:
+    audit = build_behavior_audit(
+        _snapshot(
+            [
+                {
+                    "action_id": "news-1",
+                    "tool_name": "read_company_news_akshare",
+                    "success": True,
+                    "result_count": 2,
+                    "reference_links": [
+                        "https://example.test/news/1",
+                        "https://example.test/news/2",
+                    ],
+                },
+                {
+                    "action_id": "report-1",
+                    "tool_name": "read_company_research_reports_akshare",
+                    "success": True,
+                    "result_count": 1,
+                    "reference_links": ["https://example.test/report/1.pdf"],
+                },
+                {
+                    "action_id": "read-1",
+                    "tool_name": "read_web_source",
+                    "success": True,
+                    "arguments": {"url": "https://example.test/report/1.pdf"},
+                    "content_access": {
+                        "mode": "content_read",
+                        "content_read": True,
+                        "content_extracted": True,
+                        "content_length": 100,
+                    },
+                },
+            ],
+            claims=[
+                {
+                    "evidence_ids": ["ev-news"],
+                    "checks": {"tool_success": True},
+                }
+            ],
+            evidence=[
+                {
+                    "evidence_id": "ev-news",
+                    "action_id": "news-1",
+                    "tool_name": "read_company_news_akshare",
+                }
+            ],
+        )
+    )
+
+    finding = next(item for item in audit["findings"] if item["code"] == "cited_reference_without_body")
+    assert finding["action_ids"] == ["news-1"]
+    assert finding["links"] == [
+        "https://example.test/news/1",
+        "https://example.test/news/2",
+    ]
+    assert "至少要读取实际用于结论的相关链接" in finding["detail"]
+
+
 def test_cited_reference_falls_back_to_final_text_when_partial_run_has_no_ledger() -> None:
     audit = build_behavior_audit(
         _snapshot(
@@ -296,6 +402,179 @@ def test_failed_tool_is_high_risk_and_quality_checks_are_exposed() -> None:
     assert audit["status"] == "danger"
     assert audit["danger_count"] == 1
     assert audit["findings"][0]["code"] == "tool_execution_failed"
+
+
+def test_projected_scalar_outcome_is_not_reclassified_as_empty() -> None:
+    outcome = describe_tool_outcome(
+        "read_valuation_quote_eastmoney",
+        {
+            "success": True,
+            "result_items": [],
+            "outcome": {
+                "execution_status": "completed",
+                "access_status": "structured_data",
+                "data_status": "freshness_unknown",
+                "usable": True,
+                "quality_status": "clear",
+            },
+        },
+    )
+
+    assert outcome["data_status"] == "freshness_unknown"
+    assert outcome["usable"] is True
+
+
+def test_projected_content_outcome_is_not_reclassified_as_empty() -> None:
+    outcome = describe_tool_outcome(
+        "read_web_source",
+        {
+            "success": True,
+            "result_items": [],
+            "content_access": {
+                "mode": "content_read",
+                "content_read": True,
+                "content_extracted": True,
+            },
+            "outcome": {
+                "execution_status": "completed",
+                "access_status": "content_extracted",
+                "data_status": "fallback",
+                "usable": True,
+                "quality_status": "warning",
+            },
+        },
+    )
+
+    assert outcome["data_status"] == "fallback"
+    assert outcome["usable"] is True
+
+
+def test_named_attributes_disambiguate_valid_multi_segment_rows() -> None:
+    quality = describe_tool_quality(
+        "read_business_segments_eastmoney",
+        {
+            "success": True,
+            "result_count": 2,
+            "items": [
+                {
+                    "title": "300850",
+                    "published_at": "2026-06-30",
+                    "attributes": [{"name": "segment_name", "value": "风电类轴承及配套产品"}],
+                },
+                {
+                    "title": "300850",
+                    "published_at": "2026-06-30",
+                    "attributes": [{"name": "segment_name", "value": "其他工业轴承类产品"}],
+                },
+            ],
+        },
+    )
+
+    assert quality["duplicate_count"] == 0
+    assert not any(check["code"] == "duplicate_items" for check in quality["checks"])
+
+
+def test_quality_uses_the_persisted_display_projection_for_row_identity() -> None:
+    quality = describe_tool_quality(
+        "read_business_segments_eastmoney",
+        {
+            "success": True,
+            "result": {
+                "result_count": 2,
+                "rows": [
+                    {"symbol": "300850", "report_date": "2026-06-30"},
+                    {"symbol": "300850", "report_date": "2026-06-30"},
+                ],
+            },
+            "display_result": {
+                "result_count": 2,
+                "result_items": [
+                    {
+                        "title": "300850",
+                        "published_at": "2026-06-30",
+                        "attributes": [
+                            {"name": "segment_name", "value": "风电类轴承及配套产品"}
+                        ],
+                    },
+                    {
+                        "title": "300850",
+                        "published_at": "2026-06-30",
+                        "attributes": [
+                            {"name": "segment_name", "value": "其他工业轴承类产品"}
+                        ],
+                    },
+                ],
+            },
+        },
+    )
+
+    assert quality["duplicate_count"] == 0
+    assert not any(check["code"] == "duplicate_items" for check in quality["checks"])
+
+
+def test_cited_provider_warning_remains_an_advisory_diagnostic() -> None:
+    audit = build_behavior_audit(
+        _snapshot(
+            [
+                {
+                    "action_id": "technical-1",
+                    "tool_name": "calculate_technical_indicator",
+                    "success": True,
+                    "result_count": 1,
+                    "items": [{"value": 26.81}],
+                    "source_refs": ["本地 StockDaily"],
+                    "warnings": ["成交额字段缺失，但指标仍可计算"],
+                }
+            ],
+            claims=[{"evidence_ids": ["ev-technical"]}],
+            evidence=[{"evidence_id": "ev-technical", "action_id": "technical-1"}],
+        )
+    )
+
+    finding = next(item for item in audit["findings"] if item["code"] == "data_quality_provider_warning")
+    assert finding["severity"] == "info"
+    assert finding["disposition"] == "advisory"
+    assert audit["action_required_count"] == 0
+
+
+def test_explicit_terminal_reason_replaces_generic_incomplete_run_finding() -> None:
+    audit = build_behavior_audit(
+        {
+            "run": {
+                "status": "partial",
+                "error_code": "evidence_link_incomplete",
+                "error_detail": "证据关联修订预算已用尽",
+            },
+            "trace": {"status": "partial", "error_code": "evidence_link_incomplete"},
+            "quality_projection": {
+                "budgets": {"model_turn_count": 1, "tool_call_count": 0},
+                "tool_results": [],
+                "evidence": [],
+                "claim_evidence": [],
+                "execution_trace": {"stages": [{"stage": "evidence", "status": "failed"}]},
+            },
+            "steps": [],
+        }
+    )
+
+    assert not any(item["code"] == "run_not_completed" for item in audit["findings"])
+
+
+def test_incomplete_run_without_terminal_reason_is_still_reported() -> None:
+    audit = build_behavior_audit(
+        {
+            "run": {"status": "partial"},
+            "quality_projection": {
+                "budgets": {"model_turn_count": 1, "tool_call_count": 0},
+                "tool_results": [],
+                "evidence": [],
+                "claim_evidence": [],
+            },
+            "steps": [],
+        }
+    )
+
+    assert any(item["code"] == "run_not_completed" for item in audit["findings"])
 
 
 def test_successful_reader_without_body_is_not_marked_as_extracted() -> None:
@@ -484,6 +763,43 @@ def test_failed_tool_is_advisory_when_same_arguments_later_succeed() -> None:
     assert finding["severity"] == "info"
     assert "已恢复" in finding["title"]
     assert audit["status"] == "info"
+    assert audit["action_required_count"] == 0
+
+
+def test_failed_tool_is_advisory_when_a_later_web_fallback_has_evidence() -> None:
+    audit = build_behavior_audit(
+        _snapshot(
+            [
+                {
+                    "action_id": "failed-source",
+                    "tool_name": "read_recent_kline",
+                    "success": False,
+                    "errors": ["upstream disconnected"],
+                },
+                {
+                    "action_id": "web-fallback",
+                    "tool_name": "search_web_source",
+                    "success": True,
+                    "result": {"items": [{"title": "网页事实"}]},
+                    "source_refs": ["https://example.test/fallback"],
+                },
+            ],
+            evidence=[
+                {
+                    "evidence_id": "ev-web-fallback",
+                    "action_id": "web-fallback",
+                    "tool_name": "search_web_source",
+                    "success": True,
+                    "result": {"items": [{"title": "网页事实"}]},
+                }
+            ],
+        )
+    )
+
+    finding = next(item for item in audit["findings"] if item["code"] == "tool_execution_failed")
+    assert finding["disposition"] == "advisory"
+    assert finding["severity"] == "info"
+    assert "网页兜底恢复" in finding["title"]
     assert audit["action_required_count"] == 0
 
 

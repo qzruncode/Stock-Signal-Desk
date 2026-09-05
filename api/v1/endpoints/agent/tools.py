@@ -173,10 +173,12 @@ def _maybe_attach_search_fallback(
     _arguments: dict[str, Any],
     result: Any,
 ) -> Any:
-    """Compatibility hook that deliberately performs no hidden fallback.
+    """Keep the legacy callback side-effect free; fallback is graph-owned.
 
-    Tool failures must remain visible observations. The graph's reflection
-    node may discover another source and create a new explicit action.
+    The dispatcher still invokes this compatibility hook for older embedders,
+    but it must not make a nested web request.  The operation-policy middleware
+    detects unresolved source gaps and routes a normal, budgeted
+    ``search_web_source``/``read_web_source`` tool call through the graph.
     """
     return result
 

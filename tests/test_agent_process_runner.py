@@ -129,6 +129,27 @@ def test_dispatcher_forwards_server_approval_only_to_isolated_worker() -> None:
     assert captured["effect_approved"] is True
 
 
+def test_dispatcher_rejects_malformed_result_instead_of_synthesizing_success() -> None:
+    dispatcher = ToolDispatcher(
+        ToolRegistry(),
+        isolated_executor=lambda *_args, **_kwargs: "malformed",
+        compact_result=lambda _name, result: result,
+        attach_fallback=lambda _name, _arguments, result: result,
+    )
+
+    with pytest.raises(TypeError, match="must return an object"):
+        dispatcher.execute(
+            ToolDispatchRequest(
+                tool_name="read_market_indices_sina",
+                arguments={},
+                idempotency_key="key",
+                force_isolation=True,
+            ),
+            cancel_event=threading.Event(),
+            progress_observer=lambda _update: None,
+        )
+
+
 def test_worker_exposes_and_resets_server_owned_contexts() -> None:
     request_stream = StringIO(
         json.dumps(

@@ -22,6 +22,10 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from src.tools.base import classify_result_semantics, evidence_record_is_eligible
+
+from .reference_access import reference_access_status
+
 
 CONTENT_READER_TOOLS = frozenset(
     {
@@ -70,6 +74,24 @@ _RESULT_COLLECTION_KEYS = (
     "result_items",
     "resultItems",
 )
+_RECORD_IDENTITY_KEYS = (
+    "url",
+    "link",
+    "id",
+    "code",
+    "symbol",
+    "title",
+    "name",
+    "date",
+    "published",
+    "published_at",
+    "publishedAt",
+    "report_date",
+    "reportDate",
+    "trade_date",
+    "tradeDate",
+    "period",
+)
 _MAX_LINKS = 20
 _MAX_FINDING_LINKS = 12
 _MAX_TOOL_CHAIN = 80
@@ -92,10 +114,44 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 def _observation_with_result_fields(value: Mapping[str, Any] | None) -> dict[str, Any]:
     """Expose canonical result fields while preserving outer execution facts."""
     item = dict(value or {})
+    display_result = _mapping(item.get("display_result"))
     raw_result = _mapping(item.get("result"))
+    # ``display_result`` is the existing bounded projection used by the
+    # inspection UI.  Quality checks must inspect the same semantic rows as
+    # that projection; otherwise a provider's raw rows can collapse distinct
+    # segments/periods into false duplicate warnings.  Raw fields remain a
+    # fallback for legacy records and execution metadata not present in the
+    # projection.
+    for key, nested_value in display_result.items():
+        item.setdefault(str(key), nested_value)
     for key, nested_value in raw_result.items():
         item.setdefault(str(key), nested_value)
     return item
+
+
+def _semantic_result_payload(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Expose a legacy observation payload through the common result contract."""
+    raw_result = _mapping(item.get("result"))
+    if not raw_result:
+        return item
+    payload = dict(raw_result)
+    if "success" not in payload and item.get("success") is True:
+        payload["success"] = True
+    for key in (
+        "partial",
+        "data_time",
+        "data_time_provenance",
+        "data_time_note",
+        "data_time_applicable",
+        "is_stale",
+        "freshness_unknown",
+        "fallback_used",
+        "fallback_provider",
+        "evidence_eligible",
+    ):
+        if key not in payload and key in item:
+            payload[key] = item[key]
+    return payload
 
 
 def _sequence(value: Any) -> list[Any]:
@@ -213,7 +269,54 @@ def _result_collection_state(payload: Mapping[str, Any]) -> tuple[list[Any], boo
                 first_collection = value
         else:
             has_empty_collection = True
+    if not first_collection:
+        for key in ("item", "calculation"):
+            value = payload.get(key)
+            if isinstance(value, Mapping) and value:
+                first_collection = [value]
+                has_empty_collection = False
+                break
+            if value not in (None, "", [], {}):
+                first_collection = [value]
+                has_empty_collection = False
+                break
     return first_collection, has_empty_collection
+
+
+def _record_identity(record: Mapping[str, Any]) -> str:
+    """Build a conservative identity for one projected result item.
+
+    A number of providers put the actual row discriminator in a generic
+    ``attributes`` list.  Looking only at a title/code therefore turns a
+    valid multi-period or multi-segment response into a duplicate warning.
+    Include those named attributes in the identity while keeping the logic
+    provider-independent.
+    """
+    parts = [
+        f"{key}={value}"
+        for key in _RECORD_IDENTITY_KEYS
+        if (value := _text(record.get(key), 160))
+    ]
+    attributes = record.get("attributes")
+    attribute_parts: list[str] = []
+    if isinstance(attributes, Mapping):
+        attribute_parts.extend(
+            f"{key}={_text(value, 500)}"
+            for key, value in sorted(attributes.items(), key=lambda item: str(item[0]))
+            if _text(key, 160) and _text(value, 500)
+        )
+    elif isinstance(attributes, Sequence) and not isinstance(attributes, (str, bytes, bytearray)):
+        for attribute in attributes:
+            item = _mapping(attribute)
+            if not item:
+                continue
+            name = _text(_field(item, "name", "key", "label", "field", "attribute"), 160)
+            value = _text(_field(item, "value", "text", "content"), 500)
+            if name and value:
+                attribute_parts.append(f"{name}={value}")
+    if attribute_parts:
+        parts.append("attributes=" + ";".join(sorted(attribute_parts)))
+    return "|".join(parts)
 
 
 def _content_signal(value: Any, *, depth: int = 0) -> bool:
@@ -322,7 +425,9 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
     changing the run record contract.
     """
     item = _observation_with_result_fields(observation)
-    payload = _mapping(item.get("result")) or item
+    payload = _mapping(item.get("display_result")) or _mapping(item.get("result")) or item
+    semantic_payload = _semantic_result_payload(item)
+    semantics = classify_result_semantics(semantic_payload)
     collections, has_empty_collection = _result_collection_state(payload)
     result_count = _field(item, "result_count", "resultCount", "item_count", "itemCount", "count", "total")
     try:
@@ -339,11 +444,7 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
     identities: set[str] = set()
     for raw in collections[:200]:
         record = _mapping(raw)
-        identity = "|".join(
-            _text(record.get(key), 160)
-            for key in ("url", "link", "id", "code", "symbol", "title", "name", "date", "published")
-            if _text(record.get(key), 160)
-        )
+        identity = _record_identity(record)
         if identity and identity in identities:
             duplicate_count += 1
         elif identity:
@@ -368,10 +469,19 @@ def describe_tool_quality(tool_name: str, observation: Mapping[str, Any] | None)
         entity_uncertain_int = int(entity_uncertain or 0)
     except (TypeError, ValueError):
         entity_uncertain_int = 0
+    persisted_outcome = _mapping(item.get("outcome"))
+    persisted_data_status = _text(persisted_outcome.get("data_status"), 64)
+    persisted_nonempty_status = persisted_data_status in {
+        "usable",
+        "stale",
+        "partial",
+        "fallback",
+        "freshness_unknown",
+    }
     checks: list[dict[str, Any]] = []
     if not success:
         checks.append({"code": "tool_failed", "status": "danger", "detail": "工具返回失败。"})
-    if result_count_int == 0 or (result_count_int is None and has_empty_collection):
+    if success and not semantics["has_data"] and not persisted_nonempty_status:
         checks.append({"code": "empty_result", "status": "warning", "detail": "成功调用没有返回可枚举的数据项。"})
     if result_count_int is not None and collections and result_count_int < len(collections):
         checks.append({"code": "count_inconsistent", "status": "warning", "detail": f"返回数量字段为 {result_count_int}，但响应中发现至少 {len(collections)} 项。"})
@@ -419,6 +529,10 @@ def describe_tool_outcome(tool_name: str, observation: Mapping[str, Any] | None)
     """
     item = _observation_with_result_fields(observation)
     raw_result = _mapping(item.get("result"))
+    semantic_payload = _semantic_result_payload(item)
+    semantics = classify_result_semantics(semantic_payload)
+    persisted_outcome = _mapping(item.get("outcome"))
+    persisted_data_status = _text(persisted_outcome.get("data_status"), 64)
     success_value = item["success"] if "success" in item else raw_result.get("success")
     success = success_value is True
     access = describe_tool_access(tool_name, item)
@@ -439,10 +553,7 @@ def describe_tool_outcome(tool_name: str, observation: Mapping[str, Any] | None)
     partial = _truthy(_field(item, "partial", "partial_result", "partialResult"))
     fallback = _truthy(_field(item, "fallback_used", "fallbackUsed"))
     freshness_unknown = _truthy(_field(item, "freshness_unknown", "freshnessUnknown"))
-    _collections, has_empty_collection = _result_collection_state(item)
-    empty = result_count_int == 0 or (
-        result_count_int is None and has_empty_collection
-    ) or (
+    empty = not semantics["has_data"] or (
         access.get("mode") == "content_read"
         and access.get("content_extracted") is not True
     )
@@ -467,12 +578,37 @@ def describe_tool_outcome(tool_name: str, observation: Mapping[str, Any] | None)
         access_status = "content_extracted"
     else:
         access_status = str(access.get("mode") or "structured_data")
+    quality_status = quality["status"]
+    usable = bool(semantics["usable"])
+    persisted_execution_status = _text(persisted_outcome.get("execution_status"), 64).lower()
+    if (
+        success
+        and persisted_execution_status == "completed"
+        and persisted_data_status in {
+            "error",
+            "empty",
+            "stale",
+            "partial",
+            "fallback",
+            "freshness_unknown",
+            "usable",
+        }
+        and isinstance(persisted_outcome.get("usable"), bool)
+    ):
+        # ``quality_projection.tool_results`` is intentionally compact.  Its
+        # explicit outcome is computed from the full tool record before scalar
+        # values and document bodies are removed, so it is authoritative for
+        # whether a successful result is usable.
+        data_status = persisted_data_status
+        usable = bool(persisted_outcome["usable"])
+        access_status = _text(persisted_outcome.get("access_status"), 80) or access_status
+        quality_status = _text(persisted_outcome.get("quality_status"), 80) or quality_status
     return {
         "execution_status": "completed" if success else "failed",
         "access_status": access_status,
         "data_status": data_status,
-        "usable": bool(success and data_status != "empty"),
-        "quality_status": quality["status"],
+        "usable": usable,
+        "quality_status": quality_status,
     }
 
 
@@ -539,6 +675,34 @@ def _arguments_fingerprint(item: Mapping[str, Any]) -> str:
         return _text(arguments, 1_000)
 
 
+def _has_terminal_explanation(
+    run: Mapping[str, Any],
+    trace: Mapping[str, Any],
+    execution_trace: Mapping[str, Any],
+) -> bool:
+    """Whether an incomplete run already records a concrete terminal cause."""
+    for record in (run, trace, execution_trace):
+        if any(
+            _text(_field(record, key), 500)
+            for key in ("error_code", "errorCode", "error_detail", "errorDetail")
+        ):
+            return True
+    stages = _sequence(_field(execution_trace, "stages"))
+    if not stages:
+        stages = _sequence(_field(trace, "stages"))
+    for raw_stage in stages:
+        stage = _mapping(raw_stage)
+        stage_status = _text(_field(stage, "status", "stage_status", "stageStatus"), 40).lower()
+        if stage_status in {"failed", "cancelled"}:
+            return True
+        if any(
+            _text(_field(stage, key), 500)
+            for key in ("error_code", "errorCode", "error_detail", "errorDetail")
+        ):
+            return True
+    return False
+
+
 def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     """Build a compact, actionable audit for a persisted run snapshot."""
 
@@ -557,7 +721,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     evidence_by_id: dict[str, Mapping[str, Any]] = {}
     for item in evidence:
         action_id = _text(_field(item, "action_id", "actionId"), 160)
-        if action_id:
+        if action_id and evidence_record_is_eligible(item):
             evidence_by_action[action_id] += 1
         evidence_id = _text(_field(item, "evidence_id", "evidenceId", "id"), 160)
         if evidence_id:
@@ -661,7 +825,12 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             if action_id and outcome.get("usable"):
                 usable_action_ids.add(action_id)
 
-        quality = _mapping(_field(item, "data_quality", "dataQuality")) or describe_tool_quality(tool_name, item)
+        # Re-run the deterministic checks against the current compact
+        # projection.  Persisted ``data_quality`` is useful display metadata,
+        # but keeping it as the audit authority would freeze old heuristics in
+        # historical runs (for example, a multi-segment row misread as a
+        # duplicate after its discriminator became available in the projection).
+        quality = describe_tool_quality(tool_name, item)
         if action_id:
             quality_by_action[action_id] = quality
         for quality_check in _sequence(quality.get("checks")):
@@ -692,11 +861,42 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             }
         )
 
-    recovered_failed_action_ids = {
+    same_call_recovered_action_ids = {
         action_id
         for _tool_name, action_id, _error, fingerprint in failed_tools
         if (fingerprint and (_tool_name, fingerprint) in successful_fingerprints)
     }
+    web_fallback_recovered_action_ids: set[str] = set()
+    for index, failed in enumerate(normalized_results):
+        failed_tool_name = _text(_field(failed, "tool_name", "toolName"), 160)
+        failed_action_id = _text(
+            _field(failed, "action_id", "actionId", "tool_call_id", "toolCallId"),
+            160,
+        )
+        if not failed_action_id or not failed_tool_name:
+            continue
+        if _text(_field(failed, "success"), 20).lower() in {"true", "1"}:
+            continue
+        if any(
+            _text(_field(candidate, "tool_name", "toolName"), 160)
+            in {"search_web_source", "read_web_source"}
+            and describe_tool_outcome(
+                _text(_field(candidate, "tool_name", "toolName"), 160),
+                candidate,
+            )["execution_status"]
+            == "completed"
+            and evidence_by_action.get(
+                _text(
+                    _field(candidate, "action_id", "actionId", "tool_call_id", "toolCallId"),
+                    160,
+                )
+            )
+            for candidate in normalized_results[index + 1 :]
+        ):
+            web_fallback_recovered_action_ids.add(failed_action_id)
+    recovered_failed_action_ids = (
+        same_call_recovered_action_ids | web_fallback_recovered_action_ids
+    )
     unread = [entry for key, entry in candidate_links.items() if key not in read_urls]
     unread_documents = [entry for entry in unread if entry.get("kind") == "document"]
     unread_articles = [entry for entry in unread if entry.get("kind") == "article"]
@@ -762,16 +962,51 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         if action_id
     }
     cited_action_ids = set(cited_reference_actions) | claim_action_ids
+    cited_empty_action_ids = {
+        action_id
+        for _tool_name, action_id in empty_tools
+        if action_id and action_id in cited_action_ids
+    }
     empty_has_usable_alternative = bool(usable_action_ids)
+    access_targets = [
+        {
+            "url": entry.get("url"),
+            "kind": entry.get("kind"),
+            "action_id": (entry.get("actions") or [""])[0],
+            "action_ids": list((entry.get("actions") or [])[1:]),
+        }
+        for entry in candidate_links.values()
+        if entry.get("actions")
+    ]
+    cited_access = reference_access_status(
+        cited_action_ids=set(cited_reference_actions),
+        targets=access_targets,
+        selected_urls=read_attempt_urls,
+        successful_urls=read_urls,
+        url_normalizer=_canonical_url,
+    )
+    selection_required_actions = {
+        action_id
+        for action_id, access in cited_access.items()
+        if access.get("selection_required") is True
+    }
     cited_unread_links_by_action: dict[str, list[str]] = defaultdict(list)
-    for entry in candidate_links.values():
-        canonical = _canonical_url(entry.get("url"))
-        if not canonical or canonical in read_urls:
-            continue
-        for action_id in entry.get("actions") or []:
-            action = _text(action_id, 160)
-            if action in cited_reference_actions and entry.get("url") not in cited_unread_links_by_action[action]:
-                cited_unread_links_by_action[action].append(str(entry.get("url") or ""))
+    for action_id, access in cited_access.items():
+        if access.get("selection_required") is True:
+            unresolved_targets = access.get("candidate_targets") or []
+        else:
+            # A selected but failed URL is already represented by the more
+            # specific pending-article/document finding below.  Keep this
+            # finding for an unambiguous candidate that was never selected.
+            unresolved_targets = [
+                target
+                for target in access.get("pending_targets") or []
+                if _canonical_url(target.get("url")) not in read_attempt_urls
+            ]
+        for target in unresolved_targets:
+            url = str(target.get("url") or "")
+            if url and url not in cited_unread_links_by_action[action_id]:
+                cited_unread_links_by_action[action_id].append(url)
     cited_action_ids = set(cited_reference_actions) | claim_action_ids
     unselected_documents = [
         entry
@@ -801,23 +1036,47 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 if action_id
             )
             unresolved_count = len(failures) - recovered_count
+            same_count = sum(
+                action_id in same_call_recovered_action_ids
+                for action_id, _error in failures
+                if action_id
+            )
+            web_fallback_count = sum(
+                action_id in web_fallback_recovered_action_ids
+                for action_id, _error in failures
+                if action_id
+            )
+            recovery_details: list[str] = []
+            if same_count:
+                recovery_details.append(f"{same_count} 次随后由相同参数的成功调用恢复")
+            if web_fallback_count:
+                recovery_details.append(f"{web_fallback_count} 次随后由网页搜索/读取兜底恢复")
             recovered_suffix = (
-                f"；其中 {recovered_count} 次随后由相同参数的成功调用恢复"
-                if recovered_count
+                "；其中 " + "，".join(recovery_details)
+                if recovery_details
                 else ""
+            )
+            title = (
+                f"工具 {tool_name} 执行失败"
+                if unresolved_count
+                else (
+                    f"工具 {tool_name} 曾失败但已由网页兜底恢复"
+                    if web_fallback_count
+                    else f"工具 {tool_name} 曾失败但已恢复"
+                )
             )
             findings.append(
                 _finding(
                     code="tool_execution_failed",
                     severity="danger" if unresolved_count else "info",
                     category="execution",
-                    title=f"工具 {tool_name} 执行失败" if unresolved_count else f"工具 {tool_name} 曾失败但已恢复",
+                    title=title,
                     detail=f"运行记录标记为失败：{detail}{suffix}{recovered_suffix}。",
                     remediation=(
                         "查看失败调用的请求参数、来源尝试链路和服务端错误；"
                         "已恢复的调用保留为诊断记录，不再把它当作本轮未恢复故障。"
                         if unresolved_count
-                        else "失败调用已由后续相同参数的成功调用覆盖，保留原始记录供排查。"
+                        else "失败调用已由后续成功调用覆盖；保留原始记录供排查，并以网页兜底结果作为最终取证来源。"
                     ),
                     tool_names=[tool_name],
                     action_ids=[item[0] for item in failures],
@@ -948,9 +1207,14 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 title="回答引用了未读取正文的来源索引",
                 detail=(
                     f"最终结论引用了 {len(cited_unread_links_by_action)} 次 reference-only 工具调用，"
-                    f"其中 {len(cited_links)} 个对应链接尚未成功提取正文；引用该次调用不能替代正文核验。"
+                    + (
+                        f"其中 {len(selection_required_actions)} 次多链接来源尚未选择要核验的正文 URL；"
+                        "候选索引不要求全部读取，但至少要读取实际用于结论的相关链接。"
+                        if selection_required_actions
+                        else f"其中 {len(cited_links)} 个被要求核验的链接尚未成功提取正文；引用索引不能替代正文核验。"
+                    )
                 ),
-                remediation="按工具调用逐一读取其返回链接的正文，或删除该次索引证据并降低结论确定性。",
+                remediation="按工具调用选择并读取实际支撑结论的相关正文 URL；未选择的候选不要求全部读取，若只使用索引信息则明确降低结论确定性。",
                 tool_names=cited_tool_names,
                 action_ids=list(cited_unread_links_by_action),
                 links=cited_links,
@@ -958,7 +1222,9 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         )
 
     if empty_tools:
-        empty_requires_action = not empty_has_usable_alternative
+        empty_requires_action = (
+            not empty_has_usable_alternative or bool(cited_empty_action_ids)
+        )
         findings.append(
             _finding(
                 code="successful_empty_result",
@@ -971,13 +1237,13 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                     + (
                         "本次没有其他可用观察，结果可能无法支撑完整回答。"
                         if empty_requires_action
-                        else "本次存在其他可用观察，空结果作为已保留的诊断信息，不单独判定为运行失败。"
+                        else "本次存在其他可用观察，且空结果没有被结论引用，作为已保留的诊断信息。"
                     )
                 ),
                 remediation=(
                     "确认查询范围和数据源状态，并在必要时使用 search_web_source(source_id=auto) 或其他可用来源。"
                     if empty_requires_action
-                    else "保留空结果记录；只有当该查询是结论所需的唯一来源时才需要重新取证。"
+                    else "保留空结果记录；当前结论没有依赖它，不需要单独重试。"
                 ),
                 tool_names=sorted({item[0] for item in empty_tools}),
                 action_ids=[item[1] for item in empty_tools],
@@ -1075,10 +1341,15 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         if code in {"tool_failed", "empty_result", "fallback_used", "stale_data", "partial_result", "unknown_data_time"}:
             continue
         title, remediation = quality_titles.get(code, ("发现工具返回质量风险", "检查工具返回和来源质量。"))
+        cited = any(action_id and action_id in cited_action_ids for _tool, action_id, _detail in records)
+        # A warning is a non-fatal diagnostic in the common tool contract.  It
+        # must remain visible, but it cannot by itself make a cited result an
+        # action item; tools use partial/errors/stale markers for that.
+        warning_is_advisory = code == "provider_warning"
         findings.append(
             _finding(
                 code=f"data_quality_{code}",
-                severity="warning" if any(action_id and action_id in cited_action_ids for _tool, action_id, _detail in records) else "info",
+                severity="info" if warning_is_advisory else "warning" if cited else "info",
                 category="data_quality",
                 title=title,
                 detail=f"{len(records)} 个工具调用触发了该检查；示例：{records[0][2] or '未提供详细说明'}。",
@@ -1087,9 +1358,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 action_ids=[record[1] for record in records],
                 confidence=0.9,
                 disposition=(
-                    ACTION_REQUIRED
-                    if any(action_id and action_id in cited_action_ids for _tool, action_id, _detail in records)
-                    else ADVISORY
+                    ADVISORY if warning_is_advisory else ACTION_REQUIRED if cited else ADVISORY
                 ),
             )
         )
@@ -1128,7 +1397,8 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     for claim in claims:
         checks = _mapping(_field(claim, "checks"))
         evidence_ids = _sequence(_field(claim, "evidence_ids", "evidenceIds"))
-        if not evidence_ids:
+        requires_evidence = _field(claim, "requires_evidence", "requiresEvidence") is not False
+        if requires_evidence and not evidence_ids:
             unsupported_claims.append(claim)
         if checks and any(value is False for value in checks.values()):
             failed_claims.append(claim)
@@ -1151,7 +1421,8 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
 
     run = _mapping(root.get("run"))
     trace = _mapping(root.get("trace"))
-    loop = _mapping(projection.get("budgets")) or _mapping(_field(projection.get("execution_trace"), "loop"))
+    execution_trace = _mapping(projection.get("execution_trace"))
+    loop = _mapping(projection.get("budgets")) or _mapping(_field(execution_trace, "loop"))
     if not loop:
         loop = _mapping(_field(trace, "loop"))
     work_budget_exhausted = _truthy(_field(loop, "work_budget_exhausted", "workBudgetExhausted"))
@@ -1168,7 +1439,11 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         )
 
     status = _text(_field(run, "status"), 40).lower()
-    if status in {"failed", "blocked", "partial", "cancelled"} and not failed_tools:
+    if (
+        status in {"failed", "blocked", "partial", "cancelled"}
+        and not failed_tools
+        and not _has_terminal_explanation(run, trace, execution_trace)
+    ):
         findings.append(
             _finding(
                 code="run_not_completed",

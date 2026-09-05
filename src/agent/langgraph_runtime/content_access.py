@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
+from ..reference_access import canonical_url, reference_access_status
 from .evidence_identity import evidence_ids_in_text, evidence_id_from_record, resolve_evidence_id
 
 
@@ -31,28 +31,6 @@ _CONTENT_FIELDS = frozenset(
         "chunks",
     }
 )
-
-
-def canonical_url(value: Any) -> str:
-    """Normalize a public URL for matching a reference to a read call."""
-    text = str(value or "").strip()
-    if not text.lower().startswith(("http://", "https://")):
-        return ""
-    try:
-        parts = urlsplit(text)
-    except ValueError:
-        return text
-    if not parts.netloc:
-        return text
-    return urlunsplit(
-        (
-            parts.scheme.lower(),
-            parts.netloc.lower(),
-            parts.path.rstrip("/") or "/",
-            parts.query,
-            "",
-        )
-    )
 
 
 def _text(value: Any, limit: int = 2_000) -> str:
@@ -273,75 +251,33 @@ def required_content_access_targets(
     tool_results: Sequence[Mapping[str, Any]],
     targets: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return only explicitly selected body reads behind cited references.
+    """Return the body URLs required by cited reference-only actions.
 
     A reference-only operation can return a list of many candidate URLs.  The
     runtime must not turn that list into an implicit fan-out requirement: doing
-    so caused unrelated pages to become false "missing data" errors.  A URL is
-    required here only after the model explicitly selected it with
-    ``read_web_source`` and cited the reference operation that produced it.
-    Unselected candidates remain valid index metadata and are not silently
-    treated as unread failures.
+    so caused unrelated pages to become false "missing data" errors.  A
+    multi-link action contributes only URLs explicitly selected by the model;
+    a single-link action remains unambiguous and is required directly.
     """
-    cited_ids = _cited_evidence_ids(str(answer or ""), evidence)
-    if not cited_ids:
-        return []
-    records_by_action = {
-        _text(record.get("action_id") or record.get("id"), 120): record
-        for raw_record in tool_results
-        if isinstance(raw_record, Mapping)
-        for record in [raw_record]
-        if _text(record.get("action_id") or record.get("id"), 120)
+    access_by_action = cited_reference_access_status(
+        answer=answer,
+        evidence=evidence,
+        tool_results=tool_results,
+        targets=targets,
+    )
+    required_urls = {
+        canonical_url(target.get("url"))
+        for access in access_by_action.values()
+        for target in access["required_targets"]
+        if canonical_url(target.get("url"))
     }
-    cited_reference_actions: set[str] = set()
-    for raw_evidence in evidence:
-        item = raw_evidence if isinstance(raw_evidence, Mapping) else {}
-        evidence_id = _text(item.get("evidence_id") or item.get("id"), 120)
-        action_id = _text(item.get("action_id"), 120)
-        record = records_by_action.get(action_id)
-        if evidence_id in cited_ids and record is not None and _reference_read_required(record):
-            cited_reference_actions.add(action_id)
-    if not cited_reference_actions:
-        return []
-
-    selected_urls = content_read_call_urls(tool_results)
-    action_target_counts: dict[str, int] = {}
-    for raw_target in targets:
-        target = raw_target if isinstance(raw_target, Mapping) else {}
-        action_ids = {
-            _text(target.get("action_id"), 120),
-            *{
-                _text(value, 120)
-                for value in target.get("action_ids", [])
-                if _text(value, 120)
-            },
-        }
-        for action_id in action_ids & cited_reference_actions:
-            action_target_counts[action_id] = action_target_counts.get(action_id, 0) + 1
-    required: list[dict[str, Any]] = []
-    for raw_target in targets:
-        target = dict(raw_target) if isinstance(raw_target, Mapping) else {}
-        target_url = canonical_url(target.get("url"))
-        action_ids = {
-            _text(target.get("action_id"), 120),
-            *{
-                _text(value, 120)
-                for value in target.get("action_ids", [])
-                if _text(value, 120)
-            },
-        }
-        cited_target_actions = action_ids & cited_reference_actions
-        if not cited_target_actions:
-            continue
-        if target_url in selected_urls:
-            required.append(target)
-            continue
-        # A single-link reference is unambiguous and can be required directly.
-        # With several links, wait for the model to choose the relevant one;
-        # never manufacture an all-links read fan-out.
-        if any(action_target_counts.get(action_id) == 1 for action_id in cited_target_actions):
-            required.append(target)
-    return required
+    return [
+        dict(target)
+        for raw_target in targets
+        if isinstance(raw_target, Mapping)
+        for target in [raw_target]
+        if canonical_url(target.get("url")) in required_urls
+    ]
 
 
 def cited_reference_action_ids(
@@ -372,6 +308,59 @@ def cited_reference_action_ids(
         and action_id in records_by_action
         and _reference_read_required(records_by_action[action_id])
     }
+
+
+def cited_reference_access_status(
+    *,
+    answer: str,
+    evidence: Sequence[Mapping[str, Any]],
+    tool_results: Sequence[Mapping[str, Any]],
+    targets: Sequence[Mapping[str, Any]],
+    selected_urls: Any = None,
+    successful_urls: Any = None,
+    cited_action_ids: Sequence[str] | set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return body-access status independently for each cited source action.
+
+    The same URL may be present in more than one source action, so the status
+    is calculated from the action associations on each target rather than from
+    a run-wide successful-read count.  This is the shared contract used by
+    the live gate and the persisted audit: one source's successful body read
+    cannot satisfy a different cited source action.
+
+    For a multi-link reference result, ``selection_required`` is true until
+    the model selects at least one candidate.  Unselected candidates remain
+    available as index metadata but do not become mandatory reads.
+    """
+    cited_actions = (
+        cited_reference_action_ids(
+            answer=answer,
+            evidence=evidence,
+            tool_results=tool_results,
+        )
+        if cited_action_ids is None
+        else {
+            _text(action_id, 120)
+            for action_id in cited_action_ids
+            if _text(action_id, 120)
+        }
+    )
+    selected = (
+        content_read_call_urls(tool_results)
+        if selected_urls is None
+        else selected_urls
+    )
+    successful = (
+        successful_content_read_urls(tool_results)
+        if successful_urls is None
+        else successful_urls
+    )
+    return reference_access_status(
+        cited_action_ids=cited_actions,
+        targets=targets,
+        selected_urls=selected,
+        successful_urls=successful,
+    )
 
 
 def build_content_access_targets(
@@ -423,6 +412,7 @@ __all__ = [
     "build_content_access_targets",
     "canonical_url",
     "cited_reference_action_ids",
+    "cited_reference_access_status",
     "content_read_call_urls",
     "required_content_access_targets",
     "reference_candidates",

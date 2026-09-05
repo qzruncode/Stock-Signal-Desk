@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatResult
@@ -12,6 +13,7 @@ from langchain_core.outputs import ChatResult
 from src.tools.registry import ToolRegistry
 
 from .agent_tools import build_langchain_tools
+from .answer_contract import StructuredAgentAnswer
 from .middleware import (
     AgentPromptMiddleware,
     OperationPolicyMiddleware,
@@ -50,7 +52,15 @@ class _RuntimeModelPlaceholder(BaseChatModel):
         return self.bind(tools=tools, tool_choice=tool_choice, **kwargs)
 
 
-def build_agent_graph(*, checkpointer: Any, registry: ToolRegistry) -> Any:
+DEFAULT_RESPONSE_FORMAT = ToolStrategy(StructuredAgentAnswer)
+
+
+def build_agent_graph(
+    *,
+    checkpointer: Any,
+    registry: ToolRegistry,
+    response_format: Any | None = DEFAULT_RESPONSE_FORMAT,
+) -> Any:
     """Return the durable standard ``model → tools → model`` agent graph.
 
     ``create_agent`` compiles a LangGraph StateGraph with dynamic ``Send``
@@ -69,8 +79,9 @@ def build_agent_graph(*, checkpointer: Any, registry: ToolRegistry) -> Any:
         state_schema=AgentState,
         context_schema=GraphContext,
         checkpointer=checkpointer,
+        response_format=response_format,
         name="application_agent",
     )
 
 
-__all__ = ["build_agent_graph"]
+__all__ = ["DEFAULT_RESPONSE_FORMAT", "build_agent_graph"]

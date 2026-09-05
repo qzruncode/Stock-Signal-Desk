@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping, Sequence
 
+from src.tools.base import evidence_record_is_eligible
+
 
 _TRANSPORT_METADATA_FIELDS = frozenset(
     {
@@ -231,8 +233,12 @@ def project_evidence_for_model(
     max_total_chars: int = 24_000,
     max_item_chars: int = 12_000,
 ) -> list[dict[str, Any]]:
-    """Return a bounded evidence view while retaining every evidence ID."""
-    successful = [item for item in evidence if item.get("success") is True]
+    """Return bounded view of evidence-eligible observations.
+
+    Failed and successful-but-empty observations remain available through the
+    tool-observation view, but they are not offered as citation candidates.
+    """
+    successful = [item for item in evidence if evidence_record_is_eligible(item)]
     if not successful:
         return []
 
@@ -249,6 +255,10 @@ def project_evidence_for_model(
             "tool_name": str(item.get("tool_name") or ""),
             "success": True,
             "partial": bool(item.get("partial")),
+            "has_data": bool(item.get("has_data", True)),
+            "data_status": str(item.get("data_status") or "usable"),
+            "usable": bool(item.get("usable", True)),
+            "evidence_eligible": True,
             "entities": _compact(item.get("entities") or {}),
             # data_time is source-provided only. observed_at is deliberately
             # omitted so it cannot be restated as a data date in an answer.
@@ -339,7 +349,7 @@ def project_evidence_for_model(
 def project_tool_observations_for_model(
     results: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Keep execution status and failure details; successful values live in evidence."""
+    """Keep execution/status details; only eligible successful values live in evidence."""
     observations: list[dict[str, Any]] = []
     for item in list(results)[:80]:
         nested = item.get("result") if isinstance(item.get("result"), Mapping) else {}
@@ -349,6 +359,10 @@ def project_tool_observations_for_model(
                 "tool_name": str(item.get("tool_name") or ""),
                 "success": item.get("success") is True,
                 "partial": bool(item.get("partial")),
+                "has_data": bool(item.get("has_data")),
+                "data_status": str(item.get("data_status") or ""),
+                "usable": bool(item.get("usable")),
+                "evidence_eligible": bool(item.get("evidence_eligible")),
                 "error_code": str(item.get("error_code") or nested.get("error_code") or ""),
                 "errors": [str(error)[:800] for error in list(item.get("errors") or [])[:8]],
                 "data_time": item.get("data_time"),

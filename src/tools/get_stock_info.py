@@ -556,6 +556,7 @@ TOOLS = (
         ),
         executor=read_company_profile_cninfo,
         category="data",
+        web_fallback=True,
     ),
     ToolSpec(
         name="read_stock_capital_snapshot_eastmoney",
@@ -571,6 +572,7 @@ TOOLS = (
         ),
         executor=read_stock_capital_snapshot_eastmoney,
         category="data",
+        web_fallback=True,
     ),
 )
 

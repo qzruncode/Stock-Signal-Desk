@@ -5,6 +5,7 @@ import json
 from src.agent.langgraph_runtime.content_access import (
     build_content_access_targets,
     canonical_url,
+    cited_reference_access_status,
     required_content_access_targets,
 )
 from src.agent.langgraph_runtime.middleware import _tool_message_content
@@ -261,3 +262,74 @@ def test_required_reads_resolve_a_unique_short_reference_id() -> None:
     )
 
     assert [item["url"] for item in required] == [news_url]
+
+
+def test_cited_multi_link_access_requires_selection_per_reference_action() -> None:
+    news_url = "https://example.test/news/1"
+    second_news_url = "https://example.test/news/2"
+    report_url = "https://example.test/report/1.pdf"
+    tool_results = [
+        {
+            "tool_name": "read_company_news_akshare",
+            "action_id": "news-call",
+            "success": True,
+            "result": {
+                "content_access": {
+                    "mode": "reference_only",
+                    "content_read_required": True,
+                },
+                "reference_links": [news_url, second_news_url],
+            },
+        },
+        {
+            "tool_name": "read_company_research_reports_akshare",
+            "action_id": "report-call",
+            "success": True,
+            "result": {
+                "content_access": {
+                    "mode": "reference_only",
+                    "content_read_required": True,
+                },
+                "reference_links": [report_url],
+            },
+        },
+    ]
+    targets, _pending = build_content_access_targets(tool_results=tool_results)
+
+    status = cited_reference_access_status(
+        answer="新闻结论【证据 ev_news】",
+        evidence=[
+            {"evidence_id": "ev_news", "action_id": "news-call"},
+            {"evidence_id": "ev_report", "action_id": "report-call"},
+        ],
+        tool_results=[
+            *tool_results,
+            {
+                "tool_name": "read_web_source",
+                "action_id": "read-report",
+                "success": True,
+                "arguments": {"url": report_url},
+                "result": {"content": "研报正文"},
+            },
+        ],
+        targets=targets,
+    )
+
+    news_status = status["news-call"]
+    assert news_status["selection_required"] is True
+    assert news_status["satisfied"] is False
+    assert news_status["selected_targets"] == []
+    assert news_status["required_targets"] == []
+    assert status.keys() == {"news-call"}
+
+    selected_status = cited_reference_access_status(
+        answer="新闻结论【证据 ev_news】",
+        evidence=[{"evidence_id": "ev_news", "action_id": "news-call"}],
+        tool_results=tool_results,
+        targets=targets,
+        selected_urls={news_url, report_url},
+        successful_urls={news_url, report_url},
+    )["news-call"]
+    assert selected_status["selection_required"] is False
+    assert selected_status["satisfied"] is True
+    assert [item["url"] for item in selected_status["required_targets"]] == [news_url]

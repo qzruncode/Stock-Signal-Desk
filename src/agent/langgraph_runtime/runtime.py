@@ -27,19 +27,30 @@ from src.agent.runtime_safety import get_agent_runtime_limits
 from src.tools.registry import ToolRegistry
 
 from .catalog import ToolCatalog
-from .claim_evidence import build_claim_evidence_ledger
+from .claim_evidence import (
+    build_claim_evidence_ledger,
+    build_structured_claim_evidence_ledger,
+)
 from .content_access import (
     DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT,
     build_content_access_targets,
     canonical_url,
+    cited_reference_access_status,
     required_content_access_targets,
     successful_content_read_urls,
 )
 from .events import GraphEventBridge
 from .executor import AtomicToolExecutor
-from .graph import build_agent_graph
+from .evidence_identity import prepare_answer_for_client
+from .answer_contract import (
+    finalize_terminal_answer,
+    render_structured_answer,
+    structured_answer_mapping,
+)
+from .graph import DEFAULT_RESPONSE_FORMAT, build_agent_graph
 from .model import LiteLLMChatModel, LiteLLMGateway
 from .state import AgentGraphInput, GraphContext
+from src.tools.base import evidence_record_is_eligible
 
 
 # ``checkpoint_ns`` is reserved by LangGraph for subgraph routing and the root
@@ -154,6 +165,10 @@ def _checkpoint_summary(snapshot: Any) -> dict[str, Any]:
             "tool_call_count": int(values.get("tool_call_count") or 0),
             "evidence_repair_count": int(values.get("evidence_repair_count") or 0),
             "content_access_repair_count": int(values.get("content_access_repair_count") or 0),
+            "response_repair_count": int(values.get("response_repair_count") or 0),
+            "response_repair_limit": int(values.get("response_repair_limit") or 0),
+            "fallback_repair_count": int(values.get("fallback_repair_count") or 0),
+            "fallback_repair_limit": int(values.get("fallback_repair_limit") or 0),
             "required_content_read_count": len(values.get("required_content_reads") or []),
             "pending_content_read_count": len(values.get("pending_content_reads") or []),
             "has_pending_interrupt": isinstance(values.get("pending_interrupt"), Mapping),
@@ -185,6 +200,28 @@ def _content_access_repair_limit() -> int:
         return DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT
 
 
+def _response_repair_limit() -> int:
+    """Bound provider attempts to satisfy the application answer contract."""
+    try:
+        return max(
+            0,
+            min(8, int(str(os.getenv("AGENT_RESPONSE_REPAIR_LIMIT") or "1").strip())),
+        )
+    except ValueError:
+        return 1
+
+
+def _fallback_repair_limit() -> int:
+    """Bound explicit web fallback turns while allowing web readers to retry internally."""
+    try:
+        return max(
+            0,
+            min(4, int(str(os.getenv("AGENT_SOURCE_FALLBACK_REPAIR_LIMIT") or "1").strip())),
+        )
+    except ValueError:
+        return 1
+
+
 @dataclass(frozen=True)
 class GraphRunResult:
     status: str
@@ -205,11 +242,13 @@ class LangGraphRuntimeManager:
         registry: ToolRegistry | None = None,
         compact_result: Callable[[str, Any], Any] = _identity_compact,
         attach_fallback: Callable[[str, dict[str, Any], Any], Any] = _identity_fallback,
+        response_format: Any | None = DEFAULT_RESPONSE_FORMAT,
     ) -> None:
         self.registry = registry or ToolRegistry()
         self.catalog = ToolCatalog(self.registry)
         self.compact_result = compact_result
         self.attach_fallback = attach_fallback
+        self.response_format = response_format
         self.checkpointer: Any | None = None
         self.graph: Any | None = None
         self._checkpointer_context: AbstractAsyncContextManager[Any] | None = None
@@ -271,7 +310,11 @@ class LangGraphRuntimeManager:
                 self.checkpointer = await context.__aenter__()
                 await self.checkpointer.setup()
                 self._backend = f"sqlite:{sqlite_path}"
-        self.graph = build_agent_graph(checkpointer=self.checkpointer, registry=self.registry)
+        self.graph = build_agent_graph(
+            checkpointer=self.checkpointer,
+            registry=self.registry,
+            response_format=self.response_format,
+        )
 
     async def close(self) -> None:
         self.graph = None
@@ -468,9 +511,22 @@ class LangGraphRuntimeManager:
     ) -> Mapping[str, Any]:
         snapshot = await graph.aget_state(config)
         state = dict(snapshot.values or {})
+        structured_answer = structured_answer_mapping(state.get("structured_answer"))
         answer = str(state.get("answer_final") or state.get("answer_draft") or "").strip()
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if evidence_record_is_eligible(item)
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        if not answer and structured_answer:
+            answer = render_structured_answer(
+                structured_answer,
+                factual_evidence,
+            )
         if is_non_answer_agent_message(answer):
             answer = ""
+        answer, _ = prepare_answer_for_client(answer, factual_evidence)
         content_targets, pending_content_reads = build_content_access_targets(
             tool_results=state.get("tool_results") or [],
             existing_targets=state.get("content_access_targets") or [],
@@ -481,6 +537,17 @@ class LangGraphRuntimeManager:
             tool_results=state.get("tool_results") or [],
             targets=content_targets,
         )
+        cited_access = cited_reference_access_status(
+            answer=answer,
+            evidence=state.get("evidence") or [],
+            tool_results=state.get("tool_results") or [],
+            targets=content_targets,
+        )
+        selection_required = [
+            access
+            for access in cited_access.values()
+            if access.get("selection_required") is True
+        ]
         target_urls = {canonical_url(item.get("url")) for item in content_targets}
         successful_urls = successful_content_read_urls(state.get("tool_results") or []) & target_urls
         required_pending = [
@@ -497,22 +564,28 @@ class LangGraphRuntimeManager:
                 if canonical_url(item.get("url")) not in pending_urls
             ],
         ]
-        if pending_content_reads and "正文未核验" not in answer:
-            if not answer:
-                answer = "已获取来源索引，但本轮未完成正文读取。"
-            answer = (
-                answer.rstrip()
-                + "\n\n[正文取证未完成："
+        terminal_error_code = error_code
+        terminal_detail = message
+        if pending_content_reads or selection_required:
+            terminal_error_code = "content_access_incomplete"
+            terminal_detail = (
+                "正文取证未完成："
                 + message
-                + "以上结论仅基于来源链接、标题/摘要或结构化字段，正文未核验。]"
+                + "以上结论仅基于来源链接、标题/摘要或结构化字段，正文未核验"
             )
-        factual_evidence = [
-            item
-            for item in state.get("evidence") or []
-            if isinstance(item, Mapping)
-            and item.get("success") is True
-            and str(item.get("effect") or "read") != "side_effect"
-        ]
+            answer = finalize_terminal_answer(
+                answer or "已获取来源索引，但本轮未完成正文读取。",
+                status="partial",
+                error_code=terminal_error_code,
+                detail=terminal_detail,
+            )
+        else:
+            answer = finalize_terminal_answer(
+                answer,
+                status="partial",
+                error_code=terminal_error_code,
+                detail=terminal_detail,
+            )
         claim_evidence = (
             build_claim_evidence_ledger(
                 answer,
@@ -529,10 +602,27 @@ class LangGraphRuntimeManager:
         update = {
             "answer_final": answer,
             "status": "partial",
-            "error_code": error_code,
+            "error_code": terminal_error_code,
+            "terminal_detail": terminal_detail,
         }
+        if structured_answer:
+            update["structured_answer"] = structured_answer
         if factual_evidence:
-            update["claim_evidence"] = list(claim_evidence or [])
+            if structured_answer:
+                update["claim_evidence"] = list(
+                    build_structured_claim_evidence_ledger(
+                        structured_answer.get("blocks") or [],
+                        factual_evidence,
+                        [
+                            item
+                            for item in state.get("tool_results") or []
+                            if isinstance(item, Mapping)
+                        ],
+                    ).get("claims")
+                    or []
+                )
+            else:
+                update["claim_evidence"] = list(claim_evidence or [])
         if content_targets or pending_content_reads:
             update.update(
                 {
@@ -546,8 +636,17 @@ class LangGraphRuntimeManager:
             await graph.aupdate_state(config, update)
         except Exception:
             pass
-        context.events.close_open_stages(status="failed", reason=message, error_code=error_code)
-        context.events.stage("publish", "failed", message, error_code=error_code)
+        context.events.close_open_stages(
+            status="failed",
+            reason=terminal_detail,
+            error_code=terminal_error_code,
+        )
+        context.events.stage(
+            "publish",
+            "failed",
+            terminal_detail,
+            error_code=terminal_error_code,
+        )
         if answer:
             context.events.text(answer)
         return {**state, **update}
@@ -601,19 +700,29 @@ class LangGraphRuntimeManager:
             "model_turn_count": Overwrite(0),
             "evidence_repair_count": Overwrite(0),
             "content_access_repair_count": Overwrite(0),
+            "response_repair_count": Overwrite(0),
+            "fallback_repair_count": Overwrite(0),
             "tool_call_limit": limits.max_tool_calls,
             "evidence_repair_limit": _evidence_repair_limit(),
             "content_access_repair_limit": _content_access_repair_limit(),
+            "response_repair_limit": _response_repair_limit(),
+            "fallback_repair_limit": _fallback_repair_limit(),
             "work_budget_exhausted": False,
             "work_budget_detail": "",
             "evidence_feedback": "",
+            "fallback_feedback": "",
             "content_access_targets": [],
             "required_content_reads": [],
             "pending_content_reads": [],
             "content_access_feedback": "",
+            "response_format_feedback": "",
             "pending_interrupt": None,
+            "structured_answer": None,
+            "structured_answer_call_id": "",
+            "structured_output_required": self.response_format is not None,
             "answer_draft": "",
             "answer_final": "",
+            "terminal_detail": "",
             "status": "running",
             "error_code": None,
         }

@@ -1,4 +1,4 @@
-import type { ErrorInfo, FC, ReactNode } from 'react';
+import type { ClipboardEvent, ErrorInfo, FC, ReactNode } from 'react';
 import { Component, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
@@ -254,11 +254,34 @@ const CAPABILITIES = [
 
 /* ── User Message ────────────────────────────────────────────────────── */
 
+const UserMessageTextPart: FC<TextMessagePartProps> = ({ text }) => (
+  <span className="whitespace-pre-wrap break-words">{text}</span>
+);
+
+const normalizeUserMessageClipboardText = (text: string): string => (
+  text.replace(/\r\n?/g, '\n').replace(/\n+$/g, '')
+);
+
 const UserMessage: FC<{ onDeleteTurn?: (messageId: string) => void }> = ({ onDeleteTurn }) => {
   const messageId = useMessage((state) => state.id);
 
+  const handleCopy = (event: ClipboardEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const selectedText = selection.toString();
+    const normalizedText = normalizeUserMessageClipboardText(selectedText);
+    if (normalizedText === selectedText) return;
+
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', normalizedText);
+  };
+
   return (
-    <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-end">
+    <MessagePrimitive.Root
+      className="group/message mb-1.5 flex w-full min-w-0 items-start justify-end"
+      onCopyCapture={handleCopy}
+    >
       <div className="relative flex min-w-0 max-w-[82%] flex-col items-end pb-6 sm:max-w-[68%] sm:pb-5">
         <UserMessageAttachments />
         {/* 编辑态:点击 Edit 后 composer.isEditing=true,这里渲染编辑输入框;
@@ -292,7 +315,7 @@ const UserMessage: FC<{ onDeleteTurn?: (messageId: string) => void }> = ({ onDel
               'transition-[background-color,box-shadow] duration-300 data-[chat-question-located=true]:bg-primary/[0.12] data-[chat-question-located=true]:shadow-[0_0_0_3px_hsl(var(--primary)/0.28)]',
             )}
           >
-            <MessagePrimitive.Parts />
+            <MessagePrimitive.Parts components={{ Text: UserMessageTextPart }} />
           </div>
           <div className="absolute bottom-0 right-0 flex h-6 items-center gap-0.5 opacity-100 transition-opacity sm:h-5 sm:opacity-0 sm:group-hover/message:opacity-100 sm:focus-within:opacity-100">
             <button
@@ -668,7 +691,7 @@ const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root className="group/message mb-1.5 flex w-full min-w-0 items-start justify-start">
       <div className="relative min-w-0 flex-1 pb-5">
-        <div className="w-full min-w-0 overflow-hidden rounded-xl bg-card/75 px-3.5 pt-1.5 pb-3 text-sm text-foreground sm:px-4 sm:pt-2 sm:pb-3.5">
+        <div className="w-full min-w-0 overflow-hidden text-sm text-foreground">
           {isActive || hasNativeDisplayPart ? (
             <>
               {hasNativeProcessPart ? (
@@ -761,14 +784,13 @@ const AssistantActionBar: FC = () => (
 );
 
 const AssistantPendingIndicator: FC = () => (
-  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-    <Loader2Icon className="size-4 animate-spin text-primary" />
+  <div
+    className="flex min-h-8 items-center gap-2 text-sm text-muted-foreground"
+    role="status"
+    aria-live="polite"
+  >
+    <Loader2Icon className="size-4 shrink-0 animate-spin text-primary/80 motion-reduce:animate-none" aria-hidden="true" />
     <span>正在思考</span>
-    <span className="inline-flex items-center gap-0.5" aria-hidden="true">
-      <span className="size-1 animate-bounce rounded-full bg-primary/70 [animation-delay:-0.24s]" />
-      <span className="size-1 animate-bounce rounded-full bg-primary/70 [animation-delay:-0.12s]" />
-      <span className="size-1 animate-bounce rounded-full bg-primary/70" />
-    </span>
   </div>
 );
 

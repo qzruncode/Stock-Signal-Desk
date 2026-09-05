@@ -80,7 +80,9 @@ def test_claim_ledger_keeps_an_ambiguous_prefix_unresolved() -> None:
     )
 
     assert any("不存在或失败的 evidence_id: ev_abcdefgh" in issue for issue in ledger["issues"])
-    assert ledger["claims"][0]["evidence_ids"] == ["ev_abcdefgh"]
+    assert ledger["claims"][0]["evidence_ids"] == []
+    assert ledger["claims"][0]["unresolved_evidence_ids"] == ["ev_abcdefgh"]
+    assert ledger["unresolved_evidence_ids"] == ["ev_abcdefgh"]
 
 
 def test_canonicalize_evidence_markers_removes_an_invalid_marker() -> None:
@@ -176,6 +178,47 @@ def test_claim_ledger_binds_a_source_note_to_the_preceding_markdown_table() -> N
     assert ledger["issues"] == []
     assert ledger["claims"][0]["evidence_ids"] == ["ev_robot"]
     assert ledger["claims"][0]["time_references"] == ["2026-07-13", "2026-07-03", "2025"]
+
+
+def test_claim_ledger_requires_local_evidence_for_table_and_material_sections() -> None:
+    ledger = build_claim_evidence_ledger(
+        "### 财务数据\n"
+        "| 报告期 | 营收同比 |\n"
+        "|---|---|\n"
+        "| 2026H1 | -6.2% |\n\n"
+        "**核心观察**：营收增长放缓。【证据 ev_robot】\n\n"
+        "### 综合判断\n\n"
+        "**结论：当前估值处于低位，但需注意风险。**\n\n"
+        "**操作建议：**\n"
+        "- 分批关注后续数据，不一次性重仓",
+        [_evidence(result={"summary": "财务数据与估值观察"})],
+        [_tool_result()],
+    )
+
+    assert len(ledger["claims"]) == 4
+    assert ledger["claims"][0]["evidence_ids"] == []
+    assert ledger["claims"][1]["evidence_ids"] == ["ev_robot"]
+    assert ledger["claims"][2]["evidence_ids"] == []
+    assert ledger["claims"][3]["evidence_ids"] == []
+    missing = [
+        issue
+        for issue in ledger["issues"]
+        if issue.startswith("回答片段没有关联有效 evidence_id:")
+    ]
+    assert len(missing) == 3
+
+
+def test_claim_ledger_does_not_scope_a_following_list_from_cited_prose() -> None:
+    ledger = build_claim_evidence_ledger(
+        "已核对来源中的主体数据【证据 ev_robot】\n\n"
+        "- 2026H1 的营收同比为 -6.2%",
+        [_evidence(result={"summary": "主体数据"})],
+        [_tool_result()],
+    )
+
+    assert len(ledger["claims"]) == 2
+    assert ledger["claims"][0]["evidence_ids"] == ["ev_robot"]
+    assert ledger["claims"][1]["evidence_ids"] == []
 
 
 def test_claim_ledger_binds_a_bold_citation_only_line_to_the_preceding_table() -> None:

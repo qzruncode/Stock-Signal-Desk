@@ -129,6 +129,7 @@ def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answ
             tool_calls=[{"name": "search_source", "args": {}, "id": "call-1", "type": "tool_call"}],
         )
     )
+    events.commit_model_progress()
 
     events.begin_model_turn(2)
     events.model_message(AIMessageChunk(content="未核验候选答案"))
@@ -138,7 +139,6 @@ def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answ
     assert controller.texts == [
         "先规划：",
         "先查资料。",
-        "未核验候选答案",
         "已核验的最终答案",
     ]
 

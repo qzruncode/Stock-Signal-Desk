@@ -8,7 +8,7 @@ import pandas as pd
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.tools._kline import _normalize_kline_df
 from src.tools._trading_calendar import latest_completed_trade_day
-from src.tools.kline_gateway import read_reliable_kline
+from src.tools.kline_gateway import read_reliable_kline, read_reliable_kline_range
 from src.tools.registry import ToolRegistry
 
 
@@ -154,6 +154,53 @@ def test_auto_quote_falls_back_to_the_latest_completed_close() -> None:
     assert any("收盘快照" in warning for warning in result["warnings"])
 
 
+def test_auto_quote_replaces_a_successful_but_undated_quote() -> None:
+    with (
+        patch(
+            "src.tools.get_realtime_quotes.get_realtime_quotes",
+            return_value={
+                "success": True,
+                "partial": False,
+                "items": [{"code": "600519", "price": 1500.0}],
+                "total": 1,
+                "data_time": None,
+                "data_time_provenance": "unavailable",
+                "data_time_note": "provider did not return trade time",
+                "is_stale": None,
+                "freshness_unknown": True,
+                "fallback_used": False,
+                "errors": [],
+                "warnings": [],
+            },
+        ),
+        patch(
+            "src.tools.kline_gateway.read_reliable_kline",
+            return_value={
+                "success": True,
+                "data": [{"date": "2026-08-14", "close": 1490.0}],
+                "data_time": "2026-08-14",
+                "data_time_provenance": "source",
+                "is_stale": False,
+                "source": "东方财富日线（AKShare）",
+                "source_attempts": [],
+                "warnings": [],
+                "_cached": True,
+                "_fetched_at": "2026-08-15T17:42:00+08:00",
+            },
+        ),
+    ):
+        result = ToolRegistry().execute(
+            "read_realtime_quote",
+            {"symbol": "600519"},
+        )
+
+    assert result["success"] is True
+    assert result["fallback_used"] is True
+    assert result["quote_mode"] == "latest_completed_bar"
+    assert result["items"][0]["price"] == 1490.0
+    assert result["data_time"] == "2026-08-14"
+
+
 def test_strict_kline_mode_does_not_read_cache_or_switch_source() -> None:
     calls: list[tuple[str, str, str]] = []
 
@@ -254,6 +301,83 @@ def test_reliable_kline_falls_back_and_records_provider_attempts() -> None:
     assert result["source_key"] == "tencent"
     assert result["fallback_used"] is True
     assert result["source_attempts"][0]["error_type"] == "ConnectionError"
+    assert result["source_attempts"][-1]["status"] == "success"
+
+
+def test_reliable_kline_range_falls_back_after_provider_failure() -> None:
+    calls: list[str] = []
+
+    def eastmoney(_symbol: str, _start: str, _end: str) -> pd.DataFrame:
+        calls.append("eastmoney")
+        raise ConnectionError("RemoteDisconnected")
+
+    def tencent(_symbol: str, _start: str, _end: str) -> pd.DataFrame:
+        calls.append("tencent")
+        return _completed_kline_frame()
+
+    with (
+        patch("src.tools.kline_gateway.latest_completed_trade_day", return_value=date(2026, 8, 13)),
+        patch("src.tools.kline_gateway._get_kline_range_from_stock_daily", return_value=None),
+        patch("src.tools.kline_gateway._get_kline_from_cache", return_value=None),
+        patch("src.tools.kline_gateway._save_kline_to_cache"),
+        patch("src.tools.kline_gateway._save_to_stock_daily"),
+    ):
+        result = read_reliable_kline_range(
+            "600519",
+            preferred_source="eastmoney",
+            start_date="20260810",
+            end_date="20260813",
+            sources={
+                "eastmoney": ("东方财富", eastmoney),
+                "tencent": ("腾讯财经", tencent),
+            },
+        )
+
+    assert calls == ["eastmoney", "tencent"]
+    assert result["success"] is True
+    assert result["source_key"] == "tencent"
+    assert result["fallback_used"] is True
+    assert result["requested_start_date"] == "20260810"
+    assert result["requested_end_date"] == "20260813"
+    assert result["source_attempts"][0]["error_type"] == "ConnectionError"
+    assert result["source_attempts"][-1]["status"] == "success"
+
+
+def test_reliable_kline_range_skips_a_stale_provider_response() -> None:
+    calls: list[str] = []
+    stale_frame = _completed_kline_frame()
+    stale_frame["日期"] = pd.date_range(end="2026-08-10", periods=len(stale_frame), freq="B").strftime("%Y-%m-%d")
+
+    def eastmoney(_symbol: str, _start: str, _end: str) -> pd.DataFrame:
+        calls.append("eastmoney")
+        return stale_frame
+
+    def tencent(_symbol: str, _start: str, _end: str) -> pd.DataFrame:
+        calls.append("tencent")
+        return _completed_kline_frame()
+
+    with (
+        patch("src.tools.kline_gateway.latest_completed_trade_day", return_value=date(2026, 8, 13)),
+        patch("src.tools.kline_gateway._get_kline_range_from_stock_daily", return_value=None),
+        patch("src.tools.kline_gateway._get_kline_from_cache", return_value=None),
+        patch("src.tools.kline_gateway._save_kline_to_cache"),
+        patch("src.tools.kline_gateway._save_to_stock_daily"),
+    ):
+        result = read_reliable_kline_range(
+            "600519",
+            preferred_source="eastmoney",
+            start_date="20260810",
+            end_date="20260813",
+            sources={
+                "eastmoney": ("东方财富", eastmoney),
+                "tencent": ("腾讯财经", tencent),
+            },
+        )
+
+    assert calls == ["eastmoney", "tencent"]
+    assert result["success"] is True
+    assert result["source_key"] == "tencent"
+    assert result["source_attempts"][0]["status"] == "stale"
     assert result["source_attempts"][-1]["status"] == "success"
 
 

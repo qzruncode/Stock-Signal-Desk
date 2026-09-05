@@ -14,7 +14,10 @@ from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
+from src.agent.langgraph_runtime.answer_contract import STRUCTURED_OUTPUT_TOOL_NAME
 from src.agent.langgraph_runtime.executor import action_fingerprint
+from src.agent.langgraph_runtime.graph import DEFAULT_RESPONSE_FORMAT
+from src.agent.langgraph_runtime.middleware import _source_fallback_reason
 from src.agent.langgraph_runtime.runtime import LangGraphRuntimeManager
 from src.tools.base import ToolSpec, object_schema
 from src.tools.registry import ToolRegistry
@@ -83,7 +86,7 @@ class FakeAtomicExecutor:
         success = outcome.get("success") is not False
         data_time = outcome.get("data_time", "2026-08-08")
         source_refs = list(outcome.get("source_refs") or ["https://source.example/test"])
-        result = dict(outcome.get("result") or {"source_id": call["arguments"].get("source_id")})
+        result = dict(outcome.get("result") or {"value": "test-observation"})
         record = {
             "id": action_id,
             "action_id": action_id,
@@ -125,7 +128,7 @@ def _registry(*tools: ToolSpec) -> ToolRegistry:
     return registry
 
 
-def _search_operation() -> ToolSpec:
+def _search_operation(*, category: str = "data") -> ToolSpec:
     return ToolSpec(
         name="search_source",
         description="从一个明确来源检索公开材料",
@@ -141,6 +144,25 @@ def _search_operation() -> ToolSpec:
             {"id": "primary", "name": "主来源", "purpose": "测试来源"},
             {"id": "secondary", "name": "备用来源", "purpose": "测试来源"},
         ),
+        category=category,
+        max_attempts=1,
+    )
+
+
+def _web_search_operation() -> ToolSpec:
+    return ToolSpec(
+        name="search_web_source",
+        description="通过网页搜索获取公开来源。",
+        parameters=object_schema(
+            {
+                "source_id": {"type": "string", "enum": ["auto"]},
+                "query": {"type": "string"},
+            },
+            required=("source_id", "query"),
+        ),
+        executor=lambda **_kwargs: {"success": True},
+        category="source_search",
+        source_catalog=({"id": "auto", "name": "自动网页搜索", "purpose": "测试"},),
         max_attempts=1,
     )
 
@@ -166,6 +188,25 @@ def _named_tool_call(call_id: str, tool_name: str, arguments: Mapping[str, Any])
             {
                 "name": tool_name,
                 "args": dict(arguments),
+                "id": call_id,
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+def _structured_output_call(
+    call_id: str,
+    blocks: list[Mapping[str, Any]],
+    *,
+    title: str = "",
+) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": STRUCTURED_OUTPUT_TOOL_NAME,
+                "args": {"title": title, "blocks": [dict(block) for block in blocks]},
                 "id": call_id,
                 "type": "tool_call",
             }
@@ -219,9 +260,13 @@ async def _run(
     registry: ToolRegistry | None = None,
     executor: FakeAtomicExecutor | None = None,
     conversation_id: str,
+    response_format: Any | None = None,
 ) -> tuple[Any, FakeAtomicExecutor]:
     atomic_executor = executor or FakeAtomicExecutor()
-    manager = LangGraphRuntimeManager(registry=registry or _registry(_search_operation()))
+    manager = LangGraphRuntimeManager(
+        registry=registry or _registry(_search_operation()),
+        response_format=response_format,
+    )
     await manager.start(testing=True)
     try:
         result = await manager.run_new(
@@ -255,6 +300,599 @@ def test_plain_answer_uses_the_standard_model_completion_path() -> None:
         assert result.final_text == "这是无需外部取证的解释。"
         assert executor.calls == []
         assert [item["stage"] for item in result.stage_history or []] == ["model", "model", "publish"]
+
+    asyncio.run(scenario())
+
+
+def test_unresolved_source_failure_cannot_end_without_a_bounded_web_fallback() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "source-failed",
+                    "search_source",
+                    {"source_id": "primary", "query": "测试问题"},
+                ),
+                AIMessage(content="主来源失败，但先给出一个没有网页核验的回答。"),
+                AIMessage(content="仍然没有完成网页核验。"),
+            ]
+        )
+        executor = FakeAtomicExecutor(
+            {"search_source": [{"success": False, "error_code": "provider_unavailable"}]}
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(_search_operation(category="source_read")),
+            executor=executor,
+            conversation_id="source-fallback-required",
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "source_fallback_incomplete"
+        assert result.state["fallback_repair_count"] == 1
+        assert [call["tool_name"] for call in executor.calls] == ["search_source"]
+        assert any(
+            item["stage"] == "source_fallback" and item["status"] == "started"
+            for item in result.stage_history or []
+        )
+        assert any(
+            item["stage"] == "source_fallback" and item["status"] == "failed"
+            for item in result.stage_history or []
+        )
+
+    asyncio.run(scenario())
+
+
+def test_source_failure_is_recovered_only_by_a_successful_web_evidence_call() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "source-failed-for-web",
+                    "search_source",
+                    {"source_id": "primary", "query": "测试问题"},
+                ),
+                _named_tool_call(
+                    "web-fallback",
+                    "search_web_source",
+                    {"source_id": "auto", "query": "测试问题"},
+                ),
+                AIMessage(content="网页来源已补充该事实。【证据 ev_web-fallback】"),
+            ]
+        )
+        executor = FakeAtomicExecutor(
+            {
+                "search_source": [{"success": False, "error_code": "provider_unavailable"}],
+                "search_web_source": [{"result": {"items": [{"title": "网页事实"}]}}],
+            }
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(_search_operation(category="source_read"), _web_search_operation()),
+            executor=executor,
+            conversation_id="source-fallback-recovered",
+        )
+
+        assert result.status == "completed"
+        assert result.error_code is None
+        assert [call["tool_name"] for call in executor.calls] == [
+            "search_source",
+            "search_web_source",
+        ]
+        assert result.final_text.endswith("【证据 ev_web-fallback】")
+        assert result.state["fallback_repair_count"] == 0
+        assert len(model.calls) == 3
+
+    asyncio.run(scenario())
+
+
+def test_structured_terminal_candidate_cannot_bypass_source_fallback_gate() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "structured-source-failed",
+                    "search_source",
+                    {"source_id": "primary", "query": "测试问题"},
+                ),
+                _structured_output_call(
+                    "structured-source-candidate",
+                    [
+                        {
+                            "section": "结论",
+                            "kind": "fact",
+                            "content": "主来源返回失败。",
+                            "evidence_ids": [],
+                        }
+                    ],
+                ),
+                _structured_output_call(
+                    "structured-source-candidate-2",
+                    [
+                        {
+                            "section": "结论",
+                            "kind": "fact",
+                            "content": "仍未完成网页核验。",
+                            "evidence_ids": [],
+                        }
+                    ],
+                ),
+            ]
+        )
+        executor = FakeAtomicExecutor(
+            {"search_source": [{"success": False, "error_code": "provider_unavailable"}]}
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(_search_operation(category="source_read")),
+            executor=executor,
+            conversation_id="structured-source-fallback-required",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "source_fallback_incomplete"
+        assert result.state["fallback_repair_count"] == 1
+        assert len(model.calls) == 3
+
+    asyncio.run(scenario())
+
+
+def test_partial_source_result_requires_web_fallback_when_no_declared_fallback_was_used() -> None:
+    spec = _search_operation(category="source_read")
+
+    assert _source_fallback_reason(
+        {
+            "tool_name": "search_source",
+            "success": True,
+            "result": {
+                "success": True,
+                "partial": True,
+                "items": [{"headline": "只返回部分结果"}],
+                "data_time": "2026-09-04",
+            },
+        },
+        spec,
+    ) == "主来源只返回了不完整结果"
+
+
+def test_non_temporal_source_is_not_forced_to_web_fallback_for_unknown_time() -> None:
+    spec = _search_operation(category="source_read")
+
+    assert _source_fallback_reason(
+        {
+            "tool_name": "search_source",
+            "success": True,
+            "result": {
+                "success": True,
+                "item": {"name": "静态资料"},
+                "data_time": None,
+                "data_time_applicable": False,
+                "freshness_unknown": True,
+            },
+        },
+        spec,
+    ) is None
+
+
+def test_native_structured_answer_preserves_block_boundaries_and_evidence() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("structured-read", "primary"),
+                _structured_output_call(
+                    "structured-final",
+                    [
+                        {
+                            "section": "财务数据",
+                            "kind": "fact",
+                            "content": "| 指标 | 结果 |\n|---|---|\n| 营收 | -6.2% |",
+                            "evidence_ids": ["ev_structured-read"],
+                        },
+                        {
+                            "section": "综合判断",
+                            "kind": "inference",
+                            "content": "已核验资料显示，增长仍有压力。",
+                            "evidence_ids": ["ev_structured-read"],
+                        },
+                        {
+                            "section": "操作建议",
+                            "kind": "recommendation",
+                            "content": "继续观察后续数据，不一次性重仓。",
+                            "evidence_ids": ["ev_structured-read"],
+                        },
+                    ],
+                    title="结构化分析",
+                ),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="structured-answer-contract",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert result.error_code is None
+        assert "| 营收 | -6.2% |" in result.final_text
+        assert "操作建议" in result.final_text
+        assert result.final_text.count("【证据 ev_structured-read】") == 3
+        assert len(result.state["claim_evidence"]) == 3
+        assert all(all(claim["checks"].values()) for claim in result.state["claim_evidence"])
+        assert result.state["structured_answer_call_id"] == "structured-final"
+
+    asyncio.run(scenario())
+
+
+def test_native_structured_answer_repairs_a_material_block_that_lacks_evidence() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("structured-read-missing", "primary"),
+                _structured_output_call(
+                    "structured-missing-final",
+                    [
+                        {
+                            "section": "财务数据",
+                            "kind": "fact",
+                            "content": "营收增长放缓。",
+                            "evidence_ids": [],
+                        },
+                        {
+                            "section": "风险",
+                            "kind": "risk",
+                            "content": "结论仍需结合后续数据观察。",
+                            "evidence_ids": ["ev_structured-read-missing"],
+                        },
+                    ],
+                ),
+                _structured_output_call(
+                    "structured-repaired-final",
+                    [
+                        {
+                            "section": "财务数据",
+                            "kind": "fact",
+                            "content": "营收增长放缓。",
+                            "evidence_ids": ["ev_structured-read-missing"],
+                        },
+                        {
+                            "section": "风险",
+                            "kind": "risk",
+                            "content": "结论仍需结合后续数据观察。",
+                            "evidence_ids": ["ev_structured-read-missing"],
+                        },
+                    ],
+                ),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="structured-answer-missing-evidence",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert result.error_code is None
+        assert "营收增长放缓" in result.final_text
+        assert result.state["claim_evidence"][0]["checks"]["tool_success"] is True
+        assert result.state["evidence_repair_count"] == 1
+        assert len(model.calls) == 3
+
+    asyncio.run(scenario())
+
+
+def test_tool_strategy_retries_schema_errors_without_reusing_a_previous_structured_response() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("structured-validation-read", "primary"),
+                _structured_output_call("invalid-structured", [], title="无效"),
+                _structured_output_call(
+                    "valid-structured",
+                    [
+                        {
+                            "section": "结论",
+                            "kind": "fact",
+                            "content": "来源已返回可用材料。",
+                            "evidence_ids": ["ev_structured-validation-read"],
+                        }
+                    ],
+                ),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            conversation_id="structured-answer-schema-retry",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert len(model.calls) == 3
+        assert result.final_text.endswith("【证据 ev_structured-validation-read】")
+        assert result.state["structured_answer_call_id"] == "valid-structured"
+
+    asyncio.run(scenario())
+
+
+def test_structured_answer_uses_the_existing_scoped_content_access_gate() -> None:
+    async def scenario() -> None:
+        url = "https://example.test/structured-news"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "structured-reference-news",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                _structured_output_call(
+                    "structured-reference-candidate",
+                    [
+                        {
+                            "section": "新闻结论",
+                            "kind": "fact",
+                            "content": "索引显示存在相关消息。",
+                            "evidence_ids": ["ev_structured-reference-news"],
+                        }
+                    ],
+                ),
+                _named_tool_call(
+                    "structured-reference-body",
+                    "read_web_source",
+                    {"source_id": "http", "url": url},
+                ),
+                _structured_output_call(
+                    "structured-reference-final",
+                    [
+                        {
+                            "section": "新闻结论",
+                            "kind": "fact",
+                            "content": "正文已确认该消息。",
+                            "evidence_ids": ["ev_structured-reference-body"],
+                        }
+                    ],
+                ),
+            ]
+        )
+        executor = FakeAtomicExecutor(
+            {
+                "read_company_news_akshare": [
+                    {
+                        "source_refs": [url],
+                        "result": {
+                            "items": [{"title": "测试新闻", "url": url}],
+                            "reference_links": [url],
+                            "content_access": {
+                                "mode": "reference_only",
+                                "content_read": False,
+                                "content_extracted": False,
+                                "content_read_required": True,
+                            },
+                        },
+                    }
+                ],
+                "read_web_source": [
+                    {
+                        "source_refs": [url],
+                        "result": {"url": url, "content": "测试新闻正文。"},
+                    }
+                ],
+            }
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(_company_news_operation(), _web_source_operation()),
+            executor=executor,
+            conversation_id="structured-answer-content-access",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "completed"
+        assert [call["tool_name"] for call in executor.calls] == [
+            "read_company_news_akshare",
+            "read_web_source",
+        ]
+        assert result.state["content_access_repair_count"] == 1
+        assert result.final_text.endswith("【证据 ev_structured-reference-body】")
+        assert result.state["structured_answer_call_id"] == "structured-reference-final"
+        assert len(model.calls) == 4
+
+    asyncio.run(scenario())
+
+
+def test_structured_output_plain_repair_is_bounded_and_publishes_one_partial_answer() -> None:
+    async def scenario() -> None:
+        candidate = "这是模型返回的普通文本候选。"
+        model = ScriptedChatModel(
+            responses=[
+                AIMessage(content=candidate),
+                AIMessage(content=candidate),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(),
+            conversation_id="structured-output-plain-repair-bound",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "structured_output_incomplete"
+        assert result.state["response_repair_count"] == 1
+        assert len(model.calls) == 2
+        assert result.final_text.count(candidate) == 1
+        assert any(
+            item["stage"] == "response_format" and item["status"] == "failed"
+            for item in result.stage_history or []
+        )
+
+    asyncio.run(scenario())
+
+
+def test_invalid_structured_output_repair_is_bounded() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _structured_output_call("invalid-structured-1", []),
+                _structured_output_call("invalid-structured-2", []),
+            ]
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(),
+            conversation_id="structured-output-invalid-repair-bound",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "structured_output_incomplete"
+        assert result.state["response_repair_count"] == 1
+        assert len(model.calls) == 2
+
+    asyncio.run(scenario())
+
+
+def test_content_repair_keeps_the_structured_candidate_when_model_returns_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_CONTENT_ACCESS_REPAIR_LIMIT", "1")
+
+    async def scenario() -> None:
+        first_url = "https://example.test/news/1"
+        second_url = "https://example.test/news/2"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "reference-news",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                _structured_output_call(
+                    "reference-candidate",
+                    [
+                        {
+                            "section": "新闻结论",
+                            "kind": "fact",
+                            "content": "索引显示存在相关消息。",
+                            "evidence_ids": ["ev_reference-news"],
+                        }
+                    ],
+                ),
+                AIMessage(content="索引显示存在相关消息。【证据 ev_reference-news】"),
+            ]
+        )
+        executor = FakeAtomicExecutor(
+            {
+                "read_company_news_akshare": [
+                    {
+                        "source_refs": [first_url, second_url],
+                        "result": {
+                            "items": [
+                                {"title": "测试新闻 1", "url": first_url},
+                                {"title": "测试新闻 2", "url": second_url},
+                            ],
+                            "reference_links": [first_url, second_url],
+                            "content_access": {
+                                "mode": "reference_only",
+                                "content_read": False,
+                                "content_extracted": False,
+                                "content_read_required": True,
+                            },
+                        },
+                    }
+                ]
+            }
+        )
+        result, _executor = await _run(
+            model=model,
+            registry=_registry(_company_news_operation()),
+            executor=executor,
+            conversation_id="structured-output-content-repair-plain",
+            response_format=DEFAULT_RESPONSE_FORMAT,
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "content_access_incomplete"
+        assert len(model.calls) == 3
+        assert result.state["structured_answer_call_id"] == "reference-candidate"
+        assert result.final_text.count("索引显示存在相关消息。") == 1
+        assert "正文取证未完成" in result.final_text
+
+    asyncio.run(scenario())
+
+
+def test_structured_response_channel_cannot_end_a_later_turn_with_plain_text() -> None:
+    async def scenario() -> None:
+        conversation_id = "structured-answer-cross-turn"
+        manager = LangGraphRuntimeManager(registry=_registry(_search_operation()))
+        await manager.start(testing=True)
+        try:
+            first = await manager.run_new(
+                messages=[{"role": "user", "content": "第一轮"}],
+                user_text="第一轮",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="structured-cross-turn-1",
+                conversation_id=conversation_id,
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=ScriptedChatModel(
+                    responses=[
+                        _tool_call("structured-cross-read", "primary"),
+                        _structured_output_call(
+                            "structured-cross-first",
+                            [
+                                {
+                                    "kind": "fact",
+                                    "content": "第一轮结果。",
+                                    "evidence_ids": ["ev_structured-cross-read"],
+                                }
+                            ],
+                        ),
+                    ]
+                ),
+                executor=FakeAtomicExecutor(),
+            )
+            assert first.status == "completed"
+
+            second_model = ScriptedChatModel(
+                responses=[
+                    AIMessage(content="第二轮候选文本。"),
+                    _structured_output_call(
+                        "structured-cross-second",
+                        [
+                            {
+                                "kind": "context",
+                                "content": "第二轮结构化结果。",
+                                "evidence_ids": [],
+                            }
+                        ],
+                    ),
+                ]
+            )
+            second = await manager.run_new(
+                messages=[{"role": "user", "content": "第二轮"}],
+                user_text="第二轮",
+                system_prompt="",
+                llm_config={},
+                database=None,
+                controller=None,
+                run_id="structured-cross-turn-2",
+                conversation_id=conversation_id,
+                run_attempt=1,
+                tenant_id="tenant",
+                owner_id="owner",
+                model=second_model,
+                executor=FakeAtomicExecutor(),
+            )
+
+            assert second.status == "completed"
+            assert second.final_text == "第二轮结构化结果。"
+            assert len(second_model.calls) == 2
+        finally:
+            await manager.close()
 
     asyncio.run(scenario())
 
@@ -301,6 +939,7 @@ def test_partial_provider_status_is_not_promoted_to_an_assistant_answer() -> Non
             "answer_final": "",
             "status": "partial",
             "error_code": "model_provider_timeout",
+            "terminal_detail": "上游模型服务返回超时；已保留已有工具观察和证据。",
         }
         assert events.texts == []
         assert events.stages[-1] == ("publish", "failed", "上游模型服务返回超时；已保留已有工具观察和证据。")
@@ -393,7 +1032,7 @@ def test_group_context_survives_a_later_turn_on_the_same_checkpoint_thread() -> 
                 ]
             }
         )
-        manager = LangGraphRuntimeManager(registry=registry)
+        manager = LangGraphRuntimeManager(registry=registry, response_format=None)
         await manager.start(testing=True)
         try:
             first = await manager.run_new(
@@ -529,7 +1168,10 @@ def test_native_tool_handler_reuses_the_application_executor_contract() -> None:
                 "data_time": "2026-08-08",
             },
         )
-        manager = LangGraphRuntimeManager(registry=_registry(operation))
+        manager = LangGraphRuntimeManager(
+            registry=_registry(operation),
+            response_format=None,
+        )
         await manager.start(testing=True)
         try:
             result = await manager.run_new(
@@ -578,6 +1220,89 @@ def test_missing_evidence_link_reenters_model_without_a_fixed_verify_workflow() 
             for item in result.stage_history or []
         )
         assert result.final_text.endswith("【证据 ev_evidence】")
+
+    asyncio.run(scenario())
+
+
+def test_material_answer_sections_reenter_model_when_their_local_evidence_is_missing() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("evidence", "primary"),
+                AIMessage(
+                    content=(
+                        "| 报告期 | 营收同比 |\n"
+                        "|---|---|\n"
+                        "| 2026H1 | -6.2% |\n\n"
+                        "核心观察：营收增长放缓。【证据 ev_evidence】\n\n"
+                        "### 综合判断\n\n"
+                        "**结论：当前估值处于低位，但需注意风险。**\n\n"
+                        "**操作建议：**\n"
+                        "- 分批关注后续数据，不一次性重仓"
+                    )
+                ),
+                AIMessage(
+                    content=(
+                        "| 报告期 | 营收同比 |\n"
+                        "|---|---|\n"
+                        "| 2026H1 | -6.2% |\n\n"
+                        "> 来源：财务数据【证据 ev_evidence】\n\n"
+                        "核心观察：营收增长放缓。【证据 ev_evidence】\n\n"
+                        "### 综合判断\n\n"
+                        "**结论：当前估值处于低位，但需注意风险。【证据 ev_evidence】**\n\n"
+                        "**操作建议：**\n"
+                        "- 分批关注后续数据，不一次性重仓【证据 ev_evidence】"
+                    )
+                ),
+            ]
+        )
+        result, _executor = await _run(model=model, conversation_id="material-evidence-repair")
+
+        assert result.status == "completed"
+        assert result.state["evidence_repair_count"] == 1
+        assert len(model.calls) == 3
+        assert len(result.state["claim_evidence"]) == 4
+        assert all(claim["evidence_ids"] == ["ev_evidence"] for claim in result.state["claim_evidence"])
+        repair = next(
+            item
+            for item in result.stage_history or []
+            if item["stage"] == "evidence" and item["status"] == "started"
+        )
+        repair_text = "\n".join(
+            str(target.get("text") or "")
+            for target in repair["details"]["repair_targets"]
+        )
+        assert "报告期" in repair_text
+        assert "结论" in repair_text
+        assert "操作建议" in repair_text
+
+    asyncio.run(scenario())
+
+
+def test_unresolved_evidence_id_is_reported_once_and_does_not_enter_claim_mapping() -> None:
+    async def scenario() -> None:
+        model = ScriptedChatModel(
+            responses=[
+                _tool_call("evidence", "primary"),
+                AIMessage(content="已核对来源【证据 ev_missing】"),
+                AIMessage(content="已核对来源【证据 ev_evidence】"),
+            ]
+        )
+        result, _executor = await _run(model=model, conversation_id="invalid-evidence-id")
+
+        assert result.status == "completed"
+        assert result.state["evidence_repair_count"] == 1
+        assert result.state["claim_evidence"][0]["evidence_ids"] == ["ev_evidence"]
+        repair = next(
+            item
+            for item in result.stage_history or []
+            if item["stage"] == "evidence" and item["status"] == "started"
+        )
+        assert repair["details"]["unresolved_evidence_ids"] == ["ev_missing"]
+        assert sum(
+            "引用了无法解析的 evidence_id" in issue
+            for issue in repair["details"]["issues"]
+        ) == 1
 
     asyncio.run(scenario())
 
@@ -818,6 +1543,113 @@ def test_reference_body_gate_is_scoped_to_the_cited_tool_call() -> None:
         assert [item["url"] for item in result.state["required_content_reads"]] == [news_url]
         assert result.state["pending_content_reads"] == []
         assert len(model.calls) == 5
+
+    asyncio.run(scenario())
+
+
+def test_reference_body_gate_does_not_accept_another_action_body_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENT_CONTENT_ACCESS_REPAIR_LIMIT", "1")
+
+    async def scenario() -> None:
+        news_url = "https://example.test/news/1"
+        second_news_url = "https://example.test/news/2"
+        report_url = "https://example.test/report/1.pdf"
+        model = ScriptedChatModel(
+            responses=[
+                _named_tool_call(
+                    "news-call",
+                    "read_company_news_akshare",
+                    {"symbol": "600519"},
+                ),
+                _named_tool_call(
+                    "report-call",
+                    "read_company_research_reports_akshare",
+                    {"symbol": "600519"},
+                ),
+                AIMessage(content="新闻结论【证据 ev_news-call】"),
+                _named_tool_call(
+                    "read-report",
+                    "read_web_source",
+                    {"source_id": "http", "url": report_url},
+                ),
+                AIMessage(content="新闻结论【证据 ev_news-call】"),
+            ]
+        )
+        result, executor = await _run(
+            model=model,
+            registry=_registry(
+                _company_news_operation(),
+                _company_research_operation(),
+                _web_source_operation(),
+            ),
+            executor=FakeAtomicExecutor(
+                {
+                    "read_company_news_akshare": [
+                        {
+                            "result": {
+                                "success": True,
+                                "items": [
+                                    {"title": "新闻 1", "url": news_url},
+                                    {"title": "新闻 2", "url": second_news_url},
+                                ],
+                                "content_access": {
+                                    "mode": "reference_only",
+                                    "content_read": False,
+                                    "content_extracted": False,
+                                    "content_read_required": True,
+                                },
+                                "reference_links": [news_url, second_news_url],
+                            }
+                        }
+                    ],
+                    "read_company_research_reports_akshare": [
+                        {
+                            "result": {
+                                "success": True,
+                                "items": [{"title": "研报", "url": report_url}],
+                                "content_access": {
+                                    "mode": "reference_only",
+                                    "content_read": False,
+                                    "content_extracted": False,
+                                    "content_read_required": True,
+                                },
+                                "reference_links": [report_url],
+                            }
+                        }
+                    ],
+                    "read_web_source": [
+                        {
+                            "result": {
+                                "success": True,
+                                "url": report_url,
+                                "content": "研报正文",
+                            }
+                        }
+                    ],
+                }
+            ),
+            conversation_id="content-access-cross-action",
+        )
+
+        assert result.status == "partial"
+        assert result.error_code == "content_access_incomplete"
+        assert [call["tool_name"] for call in executor.calls] == [
+            "read_company_news_akshare",
+            "read_company_research_reports_akshare",
+            "read_web_source",
+        ]
+        assert result.state["content_access_repair_count"] == 1
+        assert result.state["required_content_reads"] == []
+        assert "正文取证未完成" in result.final_text
+        failed_stage = next(
+            item
+            for item in result.stage_history or []
+            if item["stage"] == "content_access" and item["status"] == "failed"
+        )
+        assert failed_stage["details"]["selection_required_count"] == 1
+        assert failed_stage["details"]["selection_required_action_ids"] == ["news-call"]
 
     asyncio.run(scenario())
 

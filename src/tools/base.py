@@ -33,6 +33,241 @@ ToolEffect = Literal["read", "side_effect"]
 ApprovalPolicy = Literal["required_for_side_effect"]
 DataTimeProvenance = Literal["source", "inferred", "unavailable"]
 ToolEffectResolver = Callable[[Mapping[str, Any]], ToolEffect]
+
+# These are the common structural shapes used by the existing source tools.
+# They describe the result envelope only; a tool still owns the meaning of its
+# domain fields.  Keeping this list here gives the executor, evidence ledger,
+# audit projection and evaluators one semantic boundary instead of each
+# re-implementing a different ``success``/``empty`` heuristic.
+_RESULT_COLLECTION_FIELDS = frozenset(
+    {
+        "items",
+        "results",
+        "rows",
+        "records",
+        "entries",
+        "data",
+        "documents",
+        "articles",
+        "result_items",
+        "resultitems",
+        "boards",
+        "segments",
+    }
+)
+_RESULT_SINGLETON_FIELDS = frozenset(
+    {"item", "calculation", "summary", "content", "output", "message"}
+)
+_RESULT_COUNT_FIELDS = frozenset(
+    {"count", "total", "result_count", "item_count", "returned_count", "record_count", "row_count", "total_count"}
+)
+_RESULT_METADATA_FIELDS = frozenset(
+    {
+        "success",
+        "partial",
+        "id",
+        "action_id",
+        "tool_name",
+        "tool_call_id",
+        "effect",
+        "fingerprint",
+        "arguments",
+        "display_arguments",
+        "display_result",
+        "outcome",
+        "result",
+        "errors",
+        "warnings",
+        "error_code",
+        "data_time",
+        "data_time_provenance",
+        "data_time_note",
+        "data_time_inferred",
+        "data_time_applicable",
+        "is_stale",
+        "freshness_unknown",
+        "fallback_used",
+        "fallback_provider",
+        "fallback_attempted",
+        "fallback_recommended",
+        "source",
+        "sources",
+        "source_id",
+        "source_key",
+        "source_scope",
+        "source_origin",
+        "source_refs",
+        "source_attempts",
+        "reference_links",
+        "reference_urls",
+        "requested_symbols",
+        "missing_symbols",
+        "invalid_symbols",
+        "symbol",
+        "name",
+        "_cached",
+        "_fetched_at",
+        "retrieved_at",
+        "has_data",
+        "data_status",
+        "usable",
+        "evidence_eligible",
+    }
+)
+
+
+def _meaningful_result_value(
+    value: Any,
+    *,
+    key: str = "",
+    depth: int = 0,
+    data_context: bool = False,
+) -> bool:
+    """Return whether a value contains answerable source data.
+
+    The check is intentionally structural.  It recognizes singleton payloads
+    such as ``item`` and ``calculation`` but ignores transport/provenance
+    metadata such as ``source_attempts``.  It is not a domain validator.
+    """
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, Mapping):
+        if depth >= 4:
+            return bool(value)
+        return any(
+            _meaningful_result_value(
+                child,
+                key=str(raw_key),
+                depth=depth + 1,
+                data_context=data_context,
+            )
+            for raw_key, child in value.items()
+            if (
+                str(raw_key).strip().lower() not in _RESULT_METADATA_FIELDS
+                or (data_context and str(raw_key).strip().lower() in {"name", "symbol"})
+            )
+        )
+    if isinstance(value, (list, tuple, set)):
+        return any(
+            _meaningful_result_value(
+                child,
+                depth=depth + 1,
+                data_context=data_context,
+            )
+            for child in value
+        )
+    return True
+
+
+def result_has_data(result: Mapping[str, Any] | None) -> bool:
+    """Determine whether a successful result contains answerable data.
+
+    ``success`` describes execution, not payload usability.  An empty list,
+    missing scalar calculation, or a response that only contains provider
+    attempts therefore does not qualify as data.  A non-empty singleton
+    ``item``/``calculation`` does qualify.
+    """
+    if not isinstance(result, Mapping):
+        return False
+
+    for raw_key, value in result.items():
+        key = str(raw_key).strip().lower()
+        if key in _RESULT_COUNT_FIELDS or key.endswith("_count"):
+            try:
+                if int(value) > 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+    for raw_key, value in result.items():
+        key = str(raw_key).strip().lower()
+        if key in _RESULT_COLLECTION_FIELDS or key in _RESULT_SINGLETON_FIELDS:
+            if _meaningful_result_value(value, key=key, data_context=True):
+                return True
+
+    # Some legacy tools expose a domain scalar directly instead of using one
+    # of the conventional collection/singleton keys.  Count any non-envelope
+    # value, while keeping routing and freshness metadata out of the result.
+    return any(
+        _meaningful_result_value(value, key=key)
+        for raw_key, value in result.items()
+        if (key := str(raw_key).strip().lower()) not in _RESULT_METADATA_FIELDS
+        and key not in _RESULT_COUNT_FIELDS
+        and not key.startswith("_")
+    )
+
+
+def classify_result_semantics(result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return the common execution/data/evidence semantics for one result."""
+    payload = result if isinstance(result, Mapping) else {}
+    success = payload.get("success") is True
+    has_data = bool(success and result_has_data(payload))
+    stale = payload.get("is_stale") is True
+    partial = payload.get("partial") is True
+    freshness_unknown = payload.get("freshness_unknown") is True
+    data_time_applicable = payload.get("data_time_applicable") is not False
+    if not success:
+        data_status = "error"
+    elif not has_data:
+        data_status = "empty"
+    elif stale:
+        data_status = "stale"
+    elif partial:
+        data_status = "partial"
+    elif payload.get("fallback_used") is True:
+        data_status = "fallback"
+    elif freshness_unknown and data_time_applicable:
+        data_status = "freshness_unknown"
+    else:
+        data_status = "usable"
+
+    requested_eligibility = payload.get("evidence_eligible")
+    evidence_eligible = (
+        bool(requested_eligibility)
+        if isinstance(requested_eligibility, bool)
+        else has_data
+    )
+    return {
+        "has_data": has_data,
+        "data_status": data_status,
+        "usable": has_data,
+        "evidence_eligible": bool(evidence_eligible and has_data),
+    }
+
+
+def evidence_record_is_eligible(record: Mapping[str, Any] | None) -> bool:
+    """Return whether an executor evidence record may support a claim.
+
+    This deliberately keeps a successful-but-empty observation in the audit
+    trail while preventing it from becoming a selectable citation.  Historical
+    or time-unknown data can still be evidence for a claim that states the
+    corresponding limitation; freshness rules are enforced by the claim
+    validator rather than silently deleting that context.
+    """
+    if not isinstance(record, Mapping):
+        return False
+    if record.get("success") is not True:
+        return False
+    if str(record.get("effect") or "read") == "side_effect":
+        return False
+    if record.get("evidence_eligible") is False:
+        return False
+    if isinstance(record.get("has_data"), bool):
+        return bool(record["has_data"])
+    payload = record.get("result")
+    if not isinstance(payload, Mapping):
+        payload = record
+    # Historical evidence rows predate the nested result contract and store
+    # ``success`` on the envelope while keeping the payload as a plain mapping
+    # (for example ``{"headline": ...}``).  Preserve their valid data without
+    # treating the envelope's action metadata as source data.
+    if payload is not record and "success" not in payload and record.get("success") is True:
+        payload = {**payload, "success": True}
+    return bool(classify_result_semantics(payload)["evidence_eligible"])
 # A model never chooses an operation, workflow, capability, or provider route
 # through an arbitrary argument.  ``source_id`` is the one intentional
 # exception: generic read operations use it to name one entry from their
@@ -235,6 +470,11 @@ def enforce_result_contract(tool_name: str, result: Any) -> Dict[str, Any]:
     payload.setdefault("warnings", [])
     if not isinstance(payload["warnings"], list):
         raise ValueError(f"{tool_name} result.warnings must be an array")
+    # Populate the semantic part of the common contract at the one boundary
+    # every registry execution crosses.  ``success`` remains the execution
+    # outcome; these fields describe whether the returned payload contains
+    # answerable data and may enter the evidence ledger.
+    payload.update(classify_result_semantics(payload))
     return payload
 
 
@@ -279,10 +519,16 @@ class ToolSpec:
     # pure metadata: selecting ``source_id`` can only choose one listed source
     # for the current atomic operation, never another operation or fallback.
     source_catalog: tuple[dict[str, Any], ...] = ()
+    # ``None`` keeps the shared category default; external tools whose legacy
+    # category is also used by local/persisted reads can explicitly opt in or
+    # out without duplicating fallback logic in their executor.
+    web_fallback: bool | None = None
 
     def __post_init__(self) -> None:
         if self.effect not in {"read", "side_effect"}:
             raise ValueError(f"{self.name} has invalid effect: {self.effect}")
+        if self.web_fallback is not None and not isinstance(self.web_fallback, bool):
+            raise ValueError(f"{self.name} web_fallback must be boolean or null")
         if self.approval_policy != "required_for_side_effect":
             raise ValueError(f"{self.name} has invalid approval policy")
         if self.max_attempts < 1:
@@ -420,6 +666,10 @@ class TypedToolResult(BaseModel):
     data_time_note: str | None = None
     is_stale: bool | None = None
     freshness_unknown: bool = False
+    has_data: bool = False
+    data_status: str = "empty"
+    usable: bool = False
+    evidence_eligible: bool = False
 
 
 class LegacyCompatibleToolResult(TypedToolResult):

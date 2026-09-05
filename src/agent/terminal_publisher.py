@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from src.agent.run_registry import ActiveRun, RunBroadcaster
 from src.agent.langgraph_runtime.events import project_stage_history_for_client
+from src.agent.langgraph_runtime.answer_contract import finalize_terminal_answer
 from src.agent.langgraph_runtime.presentation import (
     enrich_execution_trace_with_result_previews,
     project_arguments_for_timeline,
@@ -21,6 +22,8 @@ from src.agent.behavior_audit import (
     describe_tool_outcome,
     describe_tool_quality,
 )
+from src.agent.langgraph_runtime.evidence_identity import prepare_answer_for_client
+from src.tools.base import evidence_record_is_eligible
 from src.services.chat_session_service import ChatSessionService
 from src.storage import DatabaseManager
 
@@ -135,6 +138,10 @@ def _trace_tool_results(results: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                 "data_time_applicable": data_time_applicable,
                 "is_stale": is_stale,
                 "freshness_unknown": bool(freshness_unknown),
+                "has_data": bool(value("has_data")),
+                "data_status": _short_text(value("data_status"), 64) or outcome["data_status"],
+                "usable": bool(value("usable")) if value("usable") is not None else bool(outcome["usable"]),
+                "evidence_eligible": bool(value("evidence_eligible")),
                 "partial_result": bool(partial_result),
                 "fallback_used": bool(fallback_used),
                 "fallback_provider": _short_text(value("fallback_provider", "fallbackProvider"), 160) or None,
@@ -197,9 +204,14 @@ def _trace_evidence(evidence: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
             "observed_at": _short_text(item.get("observed_at"), 160) or None,
             "is_stale": item.get("is_stale"),
             "freshness_unknown": bool(item.get("freshness_unknown")),
+            "has_data": bool(item.get("has_data")),
+            "data_status": _short_text(item.get("data_status"), 64) or None,
+            "usable": bool(item.get("usable")),
+            "evidence_eligible": bool(item.get("evidence_eligible")),
             "source_refs": _short_list(item.get("source_refs"), item_limit=12, text_limit=240),
         }
         for item in evidence[:80]
+        if evidence_record_is_eligible(item)
     ]
 
 
@@ -215,6 +227,11 @@ def _trace_claim_evidence(claims: Sequence[Mapping[str, Any]]) -> list[dict[str,
                 "text": _short_text(item.get("text"), 2_000),
                 "kind": _short_text(item.get("kind"), 32),
                 "evidence_ids": _short_list(item.get("evidence_ids"), item_limit=16, text_limit=96),
+                "unresolved_evidence_ids": _short_list(
+                    item.get("unresolved_evidence_ids"),
+                    item_limit=16,
+                    text_limit=96,
+                ),
                 "entity_fields": _short_list(item.get("entity_fields"), item_limit=24, text_limit=96),
                 "time_references": _short_list(item.get("time_references"), item_limit=12, text_limit=96),
                 "uses_relative_time": bool(item.get("uses_relative_time")),
@@ -269,6 +286,10 @@ def _execution_trace(
             "tool_call_limit": int(state.get("tool_call_limit") or 0),
             "evidence_repair_count": int(state.get("evidence_repair_count") or 0),
             "evidence_repair_limit": int(state.get("evidence_repair_limit") or 0),
+            "response_repair_count": int(state.get("response_repair_count") or 0),
+            "response_repair_limit": int(state.get("response_repair_limit") or 0),
+            "fallback_repair_count": int(state.get("fallback_repair_count") or 0),
+            "fallback_repair_limit": int(state.get("fallback_repair_limit") or 0),
             "content_access_repair_count": int(state.get("content_access_repair_count") or 0),
             "content_access_repair_limit": int(state.get("content_access_repair_limit") or 0),
             "content_access_target_count": len(state.get("content_access_targets") or []),
@@ -313,6 +334,22 @@ class AgentTerminalPublisher:
         stage_history: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
         """Commit transcript, generic trace, and run status in one DB transaction."""
+        state = dict(graph_state or {})
+        eligible_evidence = [
+            dict(item)
+            for item in (state.get("evidence") or [])
+            if evidence_record_is_eligible(item)
+        ]
+        # The terminal publisher is the last server-owned boundary before a
+        # message becomes durable.  Only evidence that passed the same semantic
+        # eligibility rule as the claim ledger may resolve visible markers.
+        final_text, _ = prepare_answer_for_client(final_text, eligible_evidence)
+        final_text = finalize_terminal_answer(
+            final_text,
+            status=status,
+            error_code=error_code,
+            detail=error_detail,
+        )
         await self.controller.drain()
         if stage_history is None:
             snapshot = getattr(self.controller, "stage_history_snapshot", None)
@@ -345,7 +382,6 @@ class AgentTerminalPublisher:
             ),
             "",
         )
-        state = dict(graph_state or {})
         tool_results = [
             dict(item)
             for item in (state.get("tool_results") or [])
@@ -377,7 +413,7 @@ class AgentTerminalPublisher:
             # loaded only when the explorer requests them.
             "display_parts": execution_trace["display_parts"],
             "tool_results": execution_trace["tool_results"],
-            "evidence": evidence,
+            "evidence": eligible_evidence,
             "claim_evidence": claim_evidence,
             "completed_tool_call_ids": list(state.get("completed_tool_call_ids") or []),
             "budgets": {
@@ -386,6 +422,10 @@ class AgentTerminalPublisher:
                 "model_turn_count": int(state.get("model_turn_count") or 0),
                 "evidence_repair_count": int(state.get("evidence_repair_count") or 0),
                 "evidence_repair_limit": int(state.get("evidence_repair_limit") or 0),
+                "response_repair_count": int(state.get("response_repair_count") or 0),
+                "response_repair_limit": int(state.get("response_repair_limit") or 0),
+                "fallback_repair_count": int(state.get("fallback_repair_count") or 0),
+                "fallback_repair_limit": int(state.get("fallback_repair_limit") or 0),
             },
             "execution_trace": execution_trace,
         }
@@ -397,6 +437,7 @@ class AgentTerminalPublisher:
             "model_turn_count": state.get("model_turn_count"),
             "tool_call_count": state.get("tool_call_count"),
             "evidence_repair_count": state.get("evidence_repair_count"),
+            "fallback_repair_count": state.get("fallback_repair_count"),
             "quality_projection": quality_projection,
         }
         if error_code:

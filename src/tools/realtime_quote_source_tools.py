@@ -159,7 +159,16 @@ def _read_auto_source(symbol: str) -> dict[str, Any]:
     from src.tools.get_realtime_quotes import get_realtime_quotes
 
     result = dict(get_realtime_quotes([code]))
-    if result.get("success") is not True:
+    # A successful transport response is not enough: a quote with no source
+    # timestamp or a provider-marked stale quote cannot satisfy a current-price
+    # request.  Give the completed-bar gateway one explicit opportunity to
+    # replace it, while preserving the original observation if that gateway
+    # also cannot produce a usable dated value.
+    if (
+        result.get("success") is not True
+        or result.get("freshness_unknown") is True
+        or result.get("is_stale") is True
+    ):
         result = _fallback_to_completed_close(code, result)
     result.update(
         {
@@ -177,6 +186,21 @@ def _read_auto_source(symbol: str) -> dict[str, Any]:
 
 def _fallback_to_completed_close(symbol: str, failed_result: dict[str, Any]) -> dict[str, Any]:
     """Use the latest completed daily bar when no quote provider has a price."""
+
+    def fallback_unavailable(reason: str) -> dict[str, Any]:
+        warnings = [
+            str(value)
+            for value in list(failed_result.get("warnings") or [])
+            if str(value).strip()
+        ]
+        warnings.append(f"已尝试最近完成交易日收盘快照，但未能替换原行情：{reason}")
+        return {
+            **failed_result,
+            "fallback_attempted": True,
+            "fallback_recommended": True,
+            "warnings": warnings,
+        }
+
     try:
         from src.tools.kline_gateway import read_reliable_kline
         from src.tools.kline_source_tools import _SOURCES as kline_sources
@@ -188,19 +212,19 @@ def _fallback_to_completed_close(symbol: str, failed_result: dict[str, Any]) -> 
             sources=kline_sources,
             allow_fallback=True,
         )
-    except Exception:
-        return failed_result
+    except Exception as exc:
+        return fallback_unavailable(f"{type(exc).__name__}: {exc}")
     records = list(kline.get("data") or [])
     if not kline.get("success") or not records:
-        return failed_result
+        return fallback_unavailable("没有可用的已完成日线")
     latest = records[-1]
     close = latest.get("close")
     try:
         close_value = float(close)
     except (TypeError, ValueError):
-        return failed_result
+        return fallback_unavailable("最近日线收盘价无效")
     if close_value <= 0:
-        return failed_result
+        return fallback_unavailable("最近日线收盘价非正数")
     previous_close = records[-2].get("close") if len(records) > 1 else None
     item: dict[str, Any] = {
         "code": symbol,
@@ -245,6 +269,8 @@ def _fallback_to_completed_close(symbol: str, failed_result: dict[str, Any]) -> 
         "quote_mode": "latest_completed_bar",
         "quote_mode_label": "非交易时段的最近完成交易日收盘快照，不是当前时刻实时成交",
         "fallback_used": True,
+        "fallback_attempted": True,
+        "fallback_recommended": False,
         "source": item["source"],
         "source_scope": "completed_daily_close_snapshot",
         "source_attempts": list(kline.get("source_attempts") or []),

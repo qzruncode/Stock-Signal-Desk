@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import inspect
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -21,7 +21,7 @@ from src.tools.get_sector_flow import (
     get_sector_flow,
     read_sector_flow_eastmoney,
 )
-from src.tools.get_stock_capital_flow import _market_for, get_stock_capital_flow
+from src.tools.get_stock_capital_flow import _is_stale, _market_for, get_stock_capital_flow
 from src.tools.get_monetary_policy_operations import _operation_item
 from src.tools.registry import ToolRegistry
 from src.tools.rss_sources import RSS_ROUTE_CAPABILITIES
@@ -425,6 +425,19 @@ def test_capital_flow_recognizes_bse_920_codes() -> None:
     assert _market_for("920000") == "bj"
     assert _market_for("600519") == "sh"
     assert _market_for("000001") == "sz"
+
+
+def test_capital_flow_history_uses_latest_completed_trade_day_intraday() -> None:
+    now = datetime.fromisoformat("2026-09-04T11:10:00+08:00")
+    with patch(
+        "src.tools._trading_calendar.trade_dates",
+        return_value=[date(2026, 9, 3), date(2026, 9, 4)],
+    ):
+        assert _is_stale(date(2026, 9, 3), now) == (False, None)
+        stale, warning = _is_stale(date(2026, 9, 2), now)
+
+    assert stale is True
+    assert "2026-09-03" in (warning or "")
 
 def test_sector_flow_paginates_and_preserves_true_money_flow_fields() -> None:
     page_one = [

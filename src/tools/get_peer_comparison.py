@@ -429,6 +429,7 @@ TOOLS = (
         ),
         executor=read_peer_comparison_dimension_eastmoney,
         category="analysis",
+        web_fallback=True,
     ),
 )
 

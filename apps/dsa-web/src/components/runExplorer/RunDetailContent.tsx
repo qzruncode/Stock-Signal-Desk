@@ -981,7 +981,7 @@ function ClaimEvidenceCard({ claims }: { claims: Array<Record<string, unknown>> 
         const failed = Object.values(checks).some((value) => value === false);
         return <div key={text(claim.claimId ?? claim.claim_id) || index} className={cn('rounded-lg border px-2.5 py-2', failed || evidenceIds.length === 0 ? 'border-warning/20 bg-warning/8' : 'border-border/70 bg-card/60')}>
           <div className="flex items-start justify-between gap-2">
-            <p className="line-clamp-3 text-xs leading-5 text-foreground">{text(claim.text) || '未记录结论文本'}</p>
+            <p className="min-w-0 flex-1 line-clamp-3 text-xs leading-5 text-foreground">{text(claim.text) || '未记录结论文本'}</p>
             <Badge variant={failed || evidenceIds.length === 0 ? 'warning' : 'success'}>{evidenceIds.length > 0 ? `${evidenceIds.length} 条证据` : '无证据'}</Badge>
           </div>
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-secondary-text">

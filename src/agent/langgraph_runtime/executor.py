@@ -15,7 +15,7 @@ from src.agent.resource_scheduler import ResourceCapacityExceeded, agent_resourc
 from src.agent.run_registry import active_run_registry
 from src.agent.runtime_safety import get_agent_runtime_limits
 from src.agent.tool_dispatch import ToolDispatcher, ToolDispatchOutcome, ToolDispatchRequest
-from src.tools.base import ToolProgressUpdate
+from src.tools.base import ToolProgressUpdate, classify_result_semantics
 from src.tools.process_runner import execute_tool_isolated
 from src.tools.registry import ToolRegistry
 
@@ -555,9 +555,13 @@ class AtomicToolExecutor:
         result: Mapping[str, Any],
         reused: bool,
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-        success = result.get("success") is not False
+        # The result contract requires an explicit boolean.  Treat anything
+        # other than ``True`` as a failed execution so an incomplete/malformed
+        # payload can never mint an evidence id.
+        success = result.get("success") is True
         now = datetime.now().astimezone().isoformat()
         source_refs = _source_refs(result)
+        semantics = classify_result_semantics(result)
         spec = self.registry.get_tool(tool_name)
         display_arguments = project_arguments_for_timeline(
             arguments,
@@ -576,6 +580,12 @@ class AtomicToolExecutor:
             "display_arguments": display_arguments,
             "success": success,
             "partial": bool(result.get("partial")),
+            "has_data": bool(semantics["has_data"]),
+            "data_status": str(semantics["data_status"]),
+            "usable": bool(semantics["usable"]),
+            "evidence_eligible": bool(
+                semantics["evidence_eligible"] and effect == "read"
+            ),
             "result": dict(result),
             "display_result": display_result,
             "errors": list(result.get("errors") or []),
@@ -592,7 +602,7 @@ class AtomicToolExecutor:
         }
         if isinstance(result.get("content_access"), Mapping):
             record["content_access"] = dict(result["content_access"])
-        if not success:
+        if not success or not semantics["evidence_eligible"] or effect != "read":
             return record, None
         evidence_id = f"ev_{fingerprint[:20]}"
         evidence = {
@@ -602,8 +612,14 @@ class AtomicToolExecutor:
             "tool_name": tool_name,
             "tool_call_id": tool_call_id,
             "effect": effect,
-            "success": True,
+            "success": success,
             "partial": bool(result.get("partial")),
+            "has_data": bool(semantics["has_data"]),
+            "data_status": str(semantics["data_status"]),
+            "usable": bool(semantics["usable"]),
+            "evidence_eligible": bool(
+                semantics["evidence_eligible"] and effect == "read"
+            ),
             "entities": _request_context(arguments),
             "data_time": result.get("data_time"),
             "data_time_applicable": result.get("data_time_applicable", True),

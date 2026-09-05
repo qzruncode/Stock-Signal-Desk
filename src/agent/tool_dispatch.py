@@ -9,6 +9,7 @@ import threading
 
 from src.tools.base import (
     ToolProgressUpdate,
+    enforce_result_contract,
     tool_execution_context,
     tool_effect_approval,
     tool_idempotency_context,
@@ -104,23 +105,19 @@ class ToolDispatcher:
             arguments,
             raw_result,
         )
-        normalized = (
-            canonical
-            if isinstance(canonical, dict)
-            else {
-                "success": True,
-                "result": canonical,
-                "errors": [],
-                "partial": False,
-            }
-        )
+        # Registry execution and isolated workers both promise the same
+        # object-shaped result envelope.  Do not turn a malformed scalar or a
+        # compatibility-hook return value into a synthetic success: the
+        # executor must record it as a failed tool observation and let the
+        # source-fallback policy decide the next step.
+        normalized = enforce_result_contract(request.tool_name, canonical)
         presentation = self._compact_result(
             request.tool_name,
             normalized,
         )
         if not isinstance(presentation, dict):
             presentation = {
-                "success": normalized.get("success", True),
+                "success": normalized["success"],
                 "result": presentation,
                 "errors": normalized.get("errors", []),
                 "partial": normalized.get("partial", False),

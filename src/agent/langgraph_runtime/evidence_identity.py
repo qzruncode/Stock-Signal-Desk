@@ -124,7 +124,21 @@ def canonicalize_evidence_markers(
             return ""
         return marker.group(0).replace(raw_id, resolved, 1)
 
-    normalized = _CITATION_MARKER.sub(replace, text).strip()
+    normalized = _CITATION_MARKER.sub(replace, text)
+
+    # Structured answers use a typed evidence_ids field, while legacy/plain
+    # answers may contain a bare ``ev_…`` token.  Leaving an invalid bare token
+    # in the published text is still a false citation even when the marker
+    # form is sanitized, so apply the same run-local resolver to both forms.
+    def replace_bare(reference: re.Match[str]) -> str:
+        raw_id = reference.group(0)
+        resolved = resolve_evidence_id(raw_id, canonical_ids)
+        if resolved is None:
+            unresolved.append(raw_id)
+            return ""
+        return resolved
+
+    normalized = EVIDENCE_REFERENCE.sub(replace_bare, normalized).strip()
     return normalized, _unique(unresolved)
 
 
@@ -140,8 +154,6 @@ def prepare_answer_for_client(
     """Clean legacy internal diagnostics and normalize visible evidence ids."""
     cleaned = strip_internal_evidence_diagnostic(answer)
     evidence_records = list(evidence)
-    if not canonical_evidence_ids(evidence_records):
-        return cleaned, []
     return canonicalize_evidence_markers(cleaned, evidence_records)
 
 

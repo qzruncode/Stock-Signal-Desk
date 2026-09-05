@@ -141,7 +141,10 @@ async def _execute_background_agent_run(
             final_text=final_text,
             graph_state=graph_result.state,
             error_code=graph_result.error_code,
-            error_detail=graph_result.error_code,
+            error_detail=(
+                str(graph_result.state.get("terminal_detail") or "").strip()
+                or graph_result.error_code
+            ),
             stage_history=graph_result.stage_history,
         )
         await active_run_registry.mark_done(

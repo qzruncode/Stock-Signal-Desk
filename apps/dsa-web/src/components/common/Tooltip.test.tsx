@@ -62,6 +62,8 @@ describe('Tooltip', () => {
 
       const tooltip = screen.getByRole('tooltip');
       expect(screen.getByRole('button', { name: '复制证据' })).toBeInTheDocument();
+      expect(tooltip).toHaveAttribute('data-state', 'open');
+      expect(tooltip).toHaveClass('data-[state=open]:animate-tooltip-in');
 
       fireEvent.pointerLeave(trigger);
       fireEvent.pointerEnter(tooltip);
@@ -76,6 +78,45 @@ describe('Tooltip', () => {
         vi.advanceTimersByTime(500);
       });
       expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows only the latest interactive tooltip when moving between triggers', () => {
+    vi.useFakeTimers();
+
+    try {
+      render(
+        <>
+          <Tooltip interactive content="第一条证据" focusable ariaLabel="查看第一条证据">
+            <span>①</span>
+          </Tooltip>
+          <Tooltip interactive content="第二条证据" focusable ariaLabel="查看第二条证据">
+            <span>②</span>
+          </Tooltip>
+        </>,
+      );
+
+      const firstTrigger = screen.getByLabelText('查看第一条证据');
+      const secondTrigger = screen.getByLabelText('查看第二条证据');
+
+      fireEvent.pointerEnter(firstTrigger);
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+      expect(screen.getAllByRole('tooltip')).toHaveLength(1);
+      expect(screen.getByText('第一条证据')).toBeInTheDocument();
+
+      fireEvent.pointerLeave(firstTrigger);
+      fireEvent.pointerEnter(secondTrigger);
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+
+      expect(screen.getAllByRole('tooltip')).toHaveLength(1);
+      expect(screen.getByText('第二条证据')).toBeInTheDocument();
+      expect(screen.queryByText('第一条证据')).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

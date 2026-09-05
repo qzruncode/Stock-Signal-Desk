@@ -23,6 +23,8 @@ AGENT_MAX_PROVIDER_CALLS=64
 AGENT_MAX_ESTIMATED_TOKENS=1000000
 AGENT_MAX_ESTIMATED_COST_MICROS=5000000
 AGENT_EVIDENCE_REPAIR_LIMIT=2
+AGENT_RESPONSE_REPAIR_LIMIT=1
+AGENT_SOURCE_FALLBACK_REPAIR_LIMIT=1
 AGENT_ISOLATE_ALL_STATELESS=true
 AGENT_TRACE_ENCRYPTION_KEY=replace-with-valid-fernet-key
 
@@ -50,8 +52,10 @@ WEBFETCH_ALLOW_PRIVATE=false
 - 一次会话最多一个活跃 Run；数据库唯一约束与租约协调跨 worker 竞争。
 - 每个原子工具调用都经过 schema 校验、隔离执行、结构化结果归一化和幂等账本。
 - 只读调用可并行；副作用严格串行，必须经 `interrupt()`、服务端批准和调用指纹后才执行一次。
-- 工具失败是一条模型可见观察；模型决定是否换来源、改写请求或交付带缺口的答案，没有服务端
-  的隐藏固定回退链。
+- 结果合同区分“调用成功”和“数据可用”：失败、空结果、过期或时效未知不会进入可引用证据。
+  已声明安全来源链的 operation 在自身边界内完成结构化切换并记录每次尝试；仍未恢复的来源缺口
+  会被 Agent 中间件拦截，要求模型在有限次数内显式执行 `search_web_source(source_id=auto)`
+  或 `read_web_source(source_id=auto)`。网页 operation 自己负责 HTTP/provider 级切换，禁止隐藏嵌套调用。
 - 最终回答中每个外部事实都绑定 `ev_...` 证据。发布前会检查工具成功、来源、实体范围和
   时间口径；无法修复时发布 `partial` 并明确缺口。
 - 事件先持久化后广播；最终消息、运行状态和 terminal 事件在同一事务提交。
@@ -70,7 +74,8 @@ WEBFETCH_ALLOW_PRIVATE=false
 
 - 无工具的通用问答；
 - 需要最新外部材料的多来源取证；
-- 主来源失败后模型自行选择替代来源；
+- 主来源失败后，安全的结构化 operation 自动完成声明式来源切换；仍未恢复时必须经过一次有界的
+  网页搜索/读取兜底，兜底失败则发布 `partial` 并说明缺口；
 - 没有相近模板的长尾问题；
 - 副作用的批准、拒绝、重复批准和重启恢复；
 - 用户取消、断线续流、同会话并发冲突和终态原子提交；

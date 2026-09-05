@@ -151,6 +151,11 @@ const evidenceIdFrom = (record: Record<string, unknown>, includeGenericId = true
   ), 160)
 );
 
+const evidenceIsUsable = (record: Record<string, unknown>): boolean => (
+  readValue(record, 'evidence_eligible', 'evidenceEligible') !== false
+  && readValue(record, 'success') !== false
+);
+
 const matchingResult = (
   record: Record<string, unknown>,
   byAction: Map<string, Record<string, unknown>>,
@@ -196,6 +201,7 @@ export const assistantEvidenceIndexFromTrace = (
 
   const index = new Map<string, AssistantEvidenceReference>();
   recordList(readValue(trace, 'evidence')).forEach((evidence) => {
+    if (!evidenceIsUsable(evidence)) return;
     const evidenceId = evidenceIdFrom(evidence);
     if (!evidenceId) return;
     upsert(index, evidenceId, evidence, matchingResult(evidence, byAction, byToolCall));
@@ -204,12 +210,14 @@ export const assistantEvidenceIndexFromTrace = (
   // Some older traces put the evidence ID on the projected tool result. Keep
   // those records usable without requiring a backend migration first.
   toolResults.forEach((result) => {
+    if (!evidenceIsUsable(result)) return;
     const evidenceId = evidenceIdFrom(result, false);
     if (evidenceId) upsert(index, evidenceId, result);
   });
 
   recordList(readValue(trace, 'claim_evidence', 'claimEvidence')).forEach((claim) => {
     recordList(readValue(claim, 'evidence')).forEach((evidence) => {
+      if (!evidenceIsUsable(evidence)) return;
       const evidenceId = evidenceIdFrom(evidence);
       if (evidenceId) upsert(index, evidenceId, evidence, matchingResult(evidence, byAction, byToolCall));
     });
@@ -225,8 +233,6 @@ export const assistantEvidenceIndexFromTrace = (
       ));
       if (prefixMatches.length === 1) {
         index.set(evidenceId, prefixMatches[0]);
-      } else {
-        upsert(index, evidenceId);
       }
     });
   });
@@ -253,20 +259,32 @@ export const assistantEvidenceReferenceForId = (
 };
 
 /** Converts the model's durable evidence markers into compact Markdown links. */
-export const replaceAssistantEvidenceMarkers = (text: string): string => {
+export const replaceAssistantEvidenceMarkers = (
+  text: string,
+  evidenceIndex?: Map<string, AssistantEvidenceReference>,
+): string => {
   const ordinalById = new Map<string, number>();
   let nextOrdinal = 0;
   return text.replace(EVIDENCE_MARKER, (marker, rawEvidenceId: string) => {
     const evidenceId = rawEvidenceId.trim();
     if (!evidenceId) return marker;
-    let ordinal = ordinalById.get(evidenceId);
+    const reference = evidenceIndex
+      ? assistantEvidenceReferenceForId(evidenceIndex, evidenceId)
+      : undefined;
+    // During streaming, the answer chunk can arrive before the durable
+    // evidence projection. Keep an unresolved marker as plain text until the
+    // run-local index can resolve it; never create a clickable citation for an
+    // unknown or explicitly ineligible evidence id.
+    if (evidenceIndex && !reference) return marker;
+    const resolvedEvidenceId = reference?.evidenceId ?? evidenceId;
+    let ordinal = ordinalById.get(resolvedEvidenceId);
     if (ordinal === undefined) {
       ordinal = nextOrdinal;
       nextOrdinal += 1;
-      ordinalById.set(evidenceId, ordinal);
+      ordinalById.set(resolvedEvidenceId, ordinal);
     }
     const label = assistantEvidenceFootnoteLabel(ordinal);
-    return `[${label}](${EVIDENCE_HREF_PREFIX}${encodeURIComponent(evidenceId)})`;
+    return `[${label}](${EVIDENCE_HREF_PREFIX}${encodeURIComponent(resolvedEvidenceId)})`;
   });
 };
 

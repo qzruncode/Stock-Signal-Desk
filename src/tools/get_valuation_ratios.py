@@ -357,9 +357,9 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
                 if name == "history":
                     history_frame = value
                 elif name == "quote":
-                    quote = value
+                    quote = value if isinstance(value, dict) else {}
                 elif name == "comparison":
-                    comparison = value
+                    comparison = value if isinstance(value, dict) else {}
                 else:
                     dividend_frame = value
             except Exception as exc:
@@ -367,11 +367,18 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
                 errors.append(f"{name}: {exc}")
 
     history = _latest_history(history_frame) if history_frame is not None else {}
-    current_price = quote.get("price") or history.get("price")
+    quote_is_current = bool(quote.get("price") is not None and quote.get("quote_time"))
+    # A numeric quote without a source timestamp is still useful as a raw
+    # diagnostic, but it is not a current valuation snapshot.  Prefer the
+    # dated history row for all values that are presented as current; if no
+    # history exists, retain the raw values with an explicit unknown-time
+    # contract instead of inventing today's timestamp.
+    quote_values = quote if quote_is_current or not history else {}
+    current_price = quote_values.get("price") or history.get("price")
     history_price = history.get("price")
-    pe_ttm = quote.get("pe_ttm") or history.get("pe_ttm")
-    pe_static = quote.get("pe_static") or history.get("pe_static")
-    pe_dynamic = quote.get("pe_dynamic")
+    pe_ttm = quote_values.get("pe_ttm") or history.get("pe_ttm")
+    pe_static = quote_values.get("pe_static") or history.get("pe_static")
+    pe_dynamic = quote_values.get("pe_dynamic")
     pb_mrq = _scale(history.get("pb_mrq"), current_price, history_price)
     ps_ttm = _scale(history.get("ps_ttm"), current_price, history_price)
     pcf_ttm = _scale(history.get("pcf_ttm"), current_price, history_price)
@@ -428,7 +435,7 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         }
     )
     success = any(value is not None for value in (pe_ttm, pe_static, pb_mrq, ps_ttm, pcf_ttm))
-    quote_live = bool(quote and quote.get("price") is not None)
+    quote_live = quote_is_current
     history_trade_date = history.get("trade_date")
     expected_completed = _expected_completed_trade_day(now)
     if quote_live:
@@ -440,8 +447,10 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
     sources = []
     if history_frame is not None:
         sources.append("东方财富估值历史/AKShare")
-    if quote:
+    if quote_is_current:
         sources.append("东方财富实时估值快照")
+    elif quote:
+        sources.append("东方财富实时估值快照（时间未知，未用于当前口径）")
     if comparison:
         sources.append("东方财富同行估值比较")
     if dividend_frame is not None:
@@ -456,7 +465,7 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         "pe_static": pe_static,
         "pe_dynamic": pe_dynamic,
         "pb_mrq": pb_mrq,
-        "pb_annual": quote.get("pb_annual"),
+        "pb_annual": quote_values.get("pb_annual"),
         "pb": pb_mrq,
         "ps_ttm": ps_ttm,
         "ps": ps_ttm,
@@ -493,8 +502,8 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         "industry_benchmark": benchmark,
         "industry_average": industry_compat,
         "price_overdraft_signal": signal,
-        "total_market_cap": quote.get("total_market_cap") or history.get("total_market_cap"),
-        "circulating_market_cap": quote.get("circulating_market_cap") or history.get("circulating_market_cap"),
+        "total_market_cap": quote_values.get("total_market_cap") or history.get("total_market_cap"),
+        "circulating_market_cap": quote_values.get("circulating_market_cap") or history.get("circulating_market_cap"),
         "total_shares": history.get("total_shares"),
         "circulating_shares": history.get("circulating_shares"),
         "price_unit": "人民币元",
@@ -521,11 +530,24 @@ def _build(symbol: str, with_history: bool, use_cache: bool) -> dict[str, Any]:
         "success": success,
         "partial": success and bool(errors),
         "errors": errors,
-        "data_time": quote.get("quote_time") or (now.isoformat() if quote_live else history_trade_date),
-        "data_time_inferred": quote_live and not quote.get("quote_time"),
+        "warnings": (
+            [
+                "东方财富估值实时快照未返回可信 quote_time，未将其作为当前估值；"
+                + (
+                    "已使用最近一条带日期的估值历史快照。"
+                    if history_trade_date
+                    else "当前估值时间无法确认。"
+                )
+            ]
+            if quote and not quote_is_current
+            else []
+        ),
+        "data_time": quote.get("quote_time") if quote_live else history_trade_date,
+        "data_time_inferred": False,
         "is_stale": stale,
         "freshness_unknown": stale is None,
-        "fallback_used": history_frame is None and quote_live,
+        "fallback_used": bool(quote and not quote_live and history_trade_date),
+        "fallback_provider": "东方财富估值历史/AKShare" if quote and not quote_live and history_trade_date else None,
         "cache_detail": cache_detail,
         "_cached": bool(cache_detail) and all(cache_detail.values()),
         "_fetched_at": now.isoformat(),
@@ -630,7 +652,7 @@ def read_valuation_quote_eastmoney(
     *,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """Read one Eastmoney real-time valuation/market-cap quote."""
+    """Read one dated Eastmoney valuation snapshot, with history fallback."""
     code = _validated_symbol(symbol)
     quote, cached = (
         cached_call(
@@ -643,33 +665,114 @@ def read_valuation_quote_eastmoney(
         else (_fetch_quote(code), False)
     )
     now = datetime.now().astimezone()
+    quote = quote if isinstance(quote, dict) else {}
     success = any(
         quote.get(key) is not None
         for key in ("price", "pe_ttm", "pe_static", "pe_dynamic", "total_market_cap", "circulating_market_cap")
     )
     data_time = quote.get("quote_time")
+    source_attempts: list[dict[str, Any]] = [
+        {
+            "source": "eastmoney_quote",
+            "label": "东方财富估值实时快照",
+            "status": "success" if success else "failed",
+            "data_time": data_time,
+            **({} if success else {"error": "no_valuation_fields"}),
+        }
+    ]
+    warnings: list[str] = []
+    fallback_used = False
+    fallback_provider: str | None = None
+    fallback_attempted = False
+    source_scope = "realtime_valuation_quote"
+    snapshot = dict(quote)
+    history_result: dict[str, Any] = {}
+    if not data_time:
+        fallback_attempted = True
+        try:
+            history_result = read_valuation_history_eastmoney(code, days=250, use_cache=use_cache)
+        except Exception as exc:
+            history_result = {
+                "success": False,
+                "latest": None,
+                "errors": [f"{type(exc).__name__}: {exc}"],
+            }
+        latest = history_result.get("latest") if isinstance(history_result, dict) else None
+        if isinstance(latest, dict) and latest.get("trade_date"):
+            for quote_key, history_key in (
+                ("price", "price"),
+                ("pe_ttm", "pe_ttm"),
+                ("pe_static", "pe_static"),
+                ("total_market_cap", "total_market_cap"),
+                ("circulating_market_cap", "circulating_market_cap"),
+            ):
+                if latest.get(history_key) is not None:
+                    snapshot[quote_key] = latest[history_key]
+            snapshot["trade_date"] = latest["trade_date"]
+            data_time = str(latest["trade_date"])
+            fallback_used = True
+            fallback_provider = "东方财富估值历史/AKShare"
+            source_scope = "dated_valuation_snapshot"
+            source_attempts.append(
+                {
+                    "source": "eastmoney_history",
+                    "label": "东方财富估值历史/AKShare",
+                    "status": "success",
+                    "data_time": data_time,
+                }
+            )
+            warnings.append(
+                "实时估值快照未返回 quote_time，已使用最近一条带日期的估值历史快照。"
+            )
+        else:
+            source_attempts.append(
+                {
+                    "source": "eastmoney_history",
+                    "label": "东方财富估值历史/AKShare",
+                    "status": "failed",
+                    "error": "; ".join(str(item) for item in list(history_result.get("errors") or [])[:2])
+                    if isinstance(history_result, dict)
+                    else "no_dated_history",
+                }
+            )
+            warnings.append(
+                "实时估值快照未返回 quote_time，且估值历史没有可用日期；时效性无法确认。"
+            )
+    snapshot_success = any(
+        snapshot.get(key) is not None
+        for key in ("price", "pe_ttm", "pe_static", "pe_dynamic", "total_market_cap", "circulating_market_cap")
+    )
     return {
         "symbol": code,
-        **quote,
+        **snapshot,
         "price_unit": "人民币元",
         "market_cap_unit": "元",
         "ratio_unit": "倍",
         "source": "东方财富实时估值快照",
-        "source_scope": "realtime_valuation_quote",
-        "success": success,
+        "source_scope": source_scope,
+        "success": snapshot_success,
         "partial": False,
-        "errors": [] if success else ["东方财富没有返回可用估值快照字段"],
-        "warnings": [],
+        "errors": [] if snapshot_success else ["东方财富没有返回可用估值快照字段"],
+        "warnings": warnings,
         "data_time": data_time,
         "data_time_provenance": "source" if data_time else "unavailable",
         "data_time_note": (
             None
             if data_time
-            else "东方财富实时估值快照未返回 quote_time；_fetched_at 仅表示本服务获取时间。"
+            else "东方财富实时估值快照未返回 quote_time，且估值历史均未返回可验证时间；_fetched_at 仅表示本服务获取时间。"
         ),
-        "is_stale": False if data_time else None,
+        "is_stale": (
+            history_result.get("is_stale")
+            if fallback_used
+            else datetime.fromisoformat(str(data_time)[:10]).date() < _expected_completed_trade_day(now)
+            if data_time
+            else None
+        ),
         "freshness_unknown": data_time is None,
-        "fallback_used": False,
+        "fallback_used": fallback_used,
+        "fallback_attempted": fallback_attempted,
+        "fallback_provider": fallback_provider,
+        "source_attempts": source_attempts,
         "_cached": cached,
         "_fetched_at": now.isoformat(),
     }
@@ -795,7 +898,8 @@ TOOLS = (
         name="read_valuation_quote_eastmoney",
         description=(
             "从东方财富读取一只 A 股的当前价格、PE（TTM/静态/动态）、PB（年报）和市值快照；"
-            "不查询历史估值、同行比较或分红。"
+            "正常不查询历史估值、同行比较或分红；若实时快照缺少 quote_time，按结果合同降级到"
+            "最近一条带日期估值历史，并明确标注为有日期快照而非实时行情。"
         ),
         parameters=object_schema(
             {"symbol": {"type": "string", "description": "A股股票代码或可解析的股票名称"}},

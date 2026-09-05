@@ -19,7 +19,7 @@ from src.tools._kline import (
     _kline_is_stale,
     _normalize_kline_df,
 )
-from src.tools.kline_gateway import read_reliable_kline
+from src.tools.kline_gateway import read_reliable_kline, read_reliable_kline_range
 from src.tools.symbols import resolve_local_symbol
 
 
@@ -71,6 +71,15 @@ def _read_source(
             code,
             preferred_source=source_key,
             count=requested_count,
+            sources=_SOURCES,
+            allow_fallback=True,
+        )
+    if range_mode and allow_fallback:
+        return read_reliable_kline_range(
+            code,
+            preferred_source=source_key,
+            start_date=start_date,
+            end_date=end_date,
             sources=_SOURCES,
             allow_fallback=True,
         )

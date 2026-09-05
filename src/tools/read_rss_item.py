@@ -337,6 +337,7 @@ TOOL = ToolSpec(
     ),
     executor=read_registered_rss_item,
     category="sentiment",
+    web_fallback=True,
 )
 
 

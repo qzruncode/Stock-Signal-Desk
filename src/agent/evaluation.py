@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from src.tools.base import evidence_record_is_eligible
+
 
 EVALUATOR_VERSION = "langgraph-agent-loop-quality-3.2"
 _EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
@@ -148,7 +150,8 @@ def score_agent_run_snapshot(
     factual_evidence = [
         item
         for item in evidence
-        if item.get("success") is True and str(item.get("effect") or "read") != "side_effect"
+        if evidence_record_is_eligible(item)
+        and str(item.get("effect") or "read") != "side_effect"
     ]
     evidence_by_id = {
         _evidence_id(item): item

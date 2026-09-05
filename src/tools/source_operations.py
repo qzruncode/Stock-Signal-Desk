@@ -238,8 +238,9 @@ def read_kline_range(
     symbol: str,
     start_date: str,
     end_date: str,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
-    """Read one source's requested daily-bar range only."""
+    """Read a requested daily-bar range through the declared source gateway."""
     from src.tools.kline_source_tools import _validate_date
 
     start = _validate_date(start_date, "start_date")
@@ -253,6 +254,7 @@ def read_kline_range(
         end_date=end,
         requested_count=None,
         range_mode=True,
+        allow_fallback=bool(allow_fallback),
     )
 
 
@@ -462,13 +464,21 @@ TOOLS = (
     ),
     ToolSpec(
         name="read_kline_range",
-        description="读取一个明确指定来源的一只 A 股日期区间前复权日线；不计算指标或改查来源。",
+        description=(
+            "读取一只 A 股日期区间前复权日线；默认在指定来源失败、空结果、未覆盖区间时"
+            "按目录切换备用日线来源，并记录每次尝试。排查单一 provider 时将 allow_fallback 设为 false。"
+        ),
         parameters=object_schema(
             {
                 "source_id": {**_SOURCE_ID, "enum": _source_enum(KLINE_SOURCE_CATALOG)},
                 "symbol": {"type": "string", "description": "A 股代码或名称"},
                 "start_date": {"type": "string", "pattern": "^[0-9]{8}$"},
                 "end_date": {"type": "string", "pattern": "^[0-9]{8}$"},
+                "allow_fallback": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "失败、空结果或未覆盖请求区间时是否切换备用来源；排错时可设为 false。",
+                },
             },
             ["source_id", "symbol", "start_date", "end_date"],
         ),

@@ -262,6 +262,16 @@ class ToolRegistryModelFitnessTestCase(unittest.TestCase):
         self.assertEqual(schemas["read_company_news_akshare"]["properties"]["days"]["default"], 30)
         self.assertEqual(schemas["read_company_research_reports_akshare"]["properties"]["days"]["default"], 365)
 
+    def test_web_fallback_capability_is_declared_for_external_legacy_categories(self) -> None:
+        registry = ToolRegistry()
+
+        self.assertIs(registry.get_tool("read_company_profile_cninfo").web_fallback, True)
+        self.assertIs(registry.get_tool("read_stock_capital_snapshot_eastmoney").web_fallback, True)
+        self.assertIs(registry.get_tool("read_peer_comparison_dimension_eastmoney").web_fallback, True)
+        self.assertIs(registry.get_tool("read_rss_item").web_fallback, True)
+        self.assertIsNone(registry.get_tool("read_text_document").web_fallback)
+        self.assertIsNone(registry.get_tool("search_analysis_history").web_fallback)
+
     def test_removed_search_fallback_tools_are_not_registered(self) -> None:
         registry = ToolRegistry()
         names = set(registry.get_tool_names())

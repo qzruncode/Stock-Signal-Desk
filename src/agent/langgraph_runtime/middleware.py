@@ -18,26 +18,192 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langgraph.types import Command, interrupt
 
+from src.tools.base import classify_result_semantics, evidence_record_is_eligible
+
 from .agent_tools import NATIVE_TOOL_RESULT_MARKER, native_tool_context
 from .content_access import (
     DEFAULT_CONTENT_ACCESS_REPAIR_LIMIT,
     build_content_access_targets,
     canonical_url,
     cited_reference_action_ids,
+    cited_reference_access_status,
     content_read_call_urls,
     required_content_access_targets,
     successful_content_read_urls,
 )
-from .claim_evidence import build_claim_evidence_ledger
+from .answer_contract import (
+    STRUCTURED_OUTPUT_TOOL_NAME,
+    finalize_terminal_answer,
+    render_structured_answer,
+    structured_answer_blocks,
+    structured_answer_mapping,
+)
+from .claim_evidence import (
+    build_claim_evidence_ledger,
+    build_structured_claim_evidence_ledger,
+)
 from .events import redact_arguments
 from .executor import action_fingerprint
-from .evidence_identity import canonicalize_evidence_markers
+from .evidence_identity import canonicalize_evidence_markers, prepare_answer_for_client
 from .presentation import project_arguments_for_timeline, project_tool_result_for_timeline
 from .state import AgentState, GraphContext
 
 
 def _last_ai_message(messages: Sequence[BaseMessage]) -> AIMessage | None:
     return next((message for message in reversed(messages) if isinstance(message, AIMessage)), None)
+
+
+_WEB_FALLBACK_TOOL_NAMES = frozenset({"search_web_source", "read_web_source"})
+_WEB_FALLBACK_CATEGORIES = frozenset(
+    {
+        "source_read",
+        "source_search",
+        "news_source",
+        "research",
+        "events",
+        "macro",
+        "market",
+        "financials",
+    }
+)
+
+
+def _semantic_result_payload(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Build one semantic payload from a current or legacy tool record."""
+    raw_result = record.get("result")
+    payload = dict(raw_result) if isinstance(raw_result, Mapping) else {}
+    # Native executor records keep the application envelope in ``result``;
+    # older test/embedding records may keep the status fields on the record.
+    for key in (
+        "success",
+        "partial",
+        "data_time",
+        "data_time_applicable",
+        "is_stale",
+        "freshness_unknown",
+        "has_data",
+        "data_status",
+        "fallback_used",
+        "fallback_recommended",
+    ):
+        if key not in payload and key in record:
+            payload[key] = record[key]
+    return payload
+
+
+def _web_fallback_succeeded(record: Mapping[str, Any]) -> bool:
+    return (
+        str(record.get("tool_name") or "").strip() in _WEB_FALLBACK_TOOL_NAMES
+        and record.get("success") is True
+        and evidence_record_is_eligible(record)
+    )
+
+
+def _web_fallback_enabled(spec: Any) -> bool:
+    """Resolve the declarative web-fallback capability for one tool."""
+    configured = getattr(spec, "web_fallback", None)
+    if configured is not None:
+        return bool(configured)
+    return str(getattr(spec, "category", "") or "") in _WEB_FALLBACK_CATEGORIES
+
+
+def _source_fallback_reason(
+    record: Mapping[str, Any],
+    spec: Any,
+) -> str | None:
+    """Return a user-safe reason when a source result must be web-checked."""
+    tool_name = str(record.get("tool_name") or "").strip()
+    if (
+        not tool_name
+        or tool_name in _WEB_FALLBACK_TOOL_NAMES
+        or spec is None
+        or getattr(spec, "effect", "read") != "read"
+    ):
+        return None
+
+    payload = _semantic_result_payload(record)
+    semantics = classify_result_semantics(payload)
+    fallback_recommended = payload.get("fallback_recommended") is True
+    if not _web_fallback_enabled(spec) and not fallback_recommended:
+        return None
+    success = record.get("success") is True
+    stale = payload.get("is_stale") is True or record.get("is_stale") is True
+    data_time_applicable = payload.get("data_time_applicable") is not False
+    freshness_unknown = bool(
+        payload.get("freshness_unknown") or record.get("freshness_unknown")
+    ) and data_time_applicable
+    empty = (
+        payload.get("has_data") is False
+        or record.get("has_data") is False
+        or semantics["data_status"] == "empty"
+    )
+
+    if not success:
+        return "主来源调用失败"
+    if empty:
+        return "主来源返回了成功但无可用数据的结果"
+    if stale:
+        return "主来源返回的数据已过期"
+    if freshness_unknown:
+        return "主来源没有提供可核验的数据时间"
+    if semantics["data_status"] == "partial" and payload.get("fallback_used") is not True:
+        return "主来源只返回了不完整结果"
+    if fallback_recommended:
+        return "主来源已明确建议改用替代来源"
+    return None
+
+
+def _source_fallback_requirements(
+    state: Mapping[str, Any],
+    registry: Any,
+) -> list[dict[str, Any]]:
+    """Find unresolved source gaps without guessing a domain-specific query."""
+    records = [
+        item
+        for item in state.get("tool_results") or []
+        if isinstance(item, Mapping)
+    ]
+    requirements: list[dict[str, Any]] = []
+    for index, record in enumerate(records):
+        tool_name = str(record.get("tool_name") or "").strip()
+        spec = registry.get_tool(tool_name) if tool_name else None
+        reason = _source_fallback_reason(record, spec)
+        if reason is None:
+            continue
+        if any(_web_fallback_succeeded(item) for item in records[index + 1 :]):
+            continue
+        payload = _semantic_result_payload(record)
+        raw_refs = record.get("source_refs") or payload.get("source_refs") or []
+        if isinstance(raw_refs, (str, bytes, bytearray)):
+            raw_refs = [raw_refs]
+        elif not isinstance(raw_refs, (list, tuple, set)):
+            raw_refs = []
+        source_refs = [
+            str(value).strip()
+            for value in raw_refs
+            if str(value).strip().startswith(("http://", "https://"))
+        ]
+        requirements.append(
+            {
+                "action_id": str(record.get("action_id") or record.get("id") or ""),
+                "tool_name": tool_name,
+                "reason": reason,
+                "fallback_operation": "read_web_source" if source_refs else "search_web_source",
+                "source_refs": source_refs[:6],
+                "arguments": dict(record.get("display_arguments") or {}),
+            }
+        )
+    return requirements
+
+
+def _structured_output_call_id(message: AIMessage | None) -> str | None:
+    if message is None:
+        return None
+    for call in message.tool_calls or []:
+        if str(call.get("name") or "").strip() == STRUCTURED_OUTPUT_TOOL_NAME:
+            call_id = str(call.get("id") or "").strip()
+            return call_id or None
+    return None
 
 
 def _message_text(message: AIMessage) -> str:
@@ -97,7 +263,7 @@ def _claim_evidence_for_partial_answer(
         item
         for item in state.get("evidence") or []
         if isinstance(item, Mapping)
-        and item.get("success") is True
+        and evidence_record_is_eligible(item)
         and str(item.get("effect") or "read") != "side_effect"
     ]
     if not factual_evidence:
@@ -323,13 +489,16 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         evidence = [item for item in state.get("evidence") or [] if isinstance(item, Mapping)]
         observations = [item for item in state.get("tool_results") or [] if isinstance(item, Mapping)]
         feedback = str(state.get("evidence_feedback") or "").strip()
+        fallback_feedback = str(state.get("fallback_feedback") or "").strip()
         content_feedback = str(state.get("content_access_feedback") or "").strip()
+        response_format_feedback = str(state.get("response_format_feedback") or "").strip()
         content_targets, pending_content_reads = build_content_access_targets(
             tool_results=state.get("tool_results") or [],
             existing_targets=state.get("content_access_targets") or [],
         )
         target_urls = {canonical_url(item.get("url")) for item in content_targets}
         successful_target_reads = successful_content_read_urls(state.get("tool_results") or []) & target_urls
+        unread_target_reads = target_urls - successful_target_reads
         conversation_context = state.get("conversation_context")
         model_turn = max(0, int(state.get("model_turn_count") or 0)) + 1
         context.events.begin_model_turn(model_turn)
@@ -345,9 +514,11 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
 对需要多步取证的问题：第一次工具调用前，用一小段简洁的用户可见文字说明目标、准备做的步骤和下一步；每轮工具返回后，先简洁总结已完成的工作，再说明下一步。不要输出隐藏的 chain-of-thought，只输出可供用户理解的计划、阶段总结和行动说明。
 
-外部事实必须紧邻标注本轮成功的【证据 ev_...】；只能使用证据里的 data_time，不能把检索时间当成数据时间。没有可用 data_time 时，不要称为“最新/当前/今日”，应继续取证或明确时效未知。失败、空结果、过期结果和 freshness_unknown 都必须如实读取：若用户需要最新事实，改用 search_web_source(source_id=auto)；已有 URL 则用 read_web_source(source_id=auto)。不要把失败或过期观察当成最新事实。
+准备结束本轮时，必须调用结构化输出工具 StructuredAgentAnswer，不要直接输出最终 Markdown。把标题、表格、结论、判断、操作建议和风险拆成有明确边界的 blocks；每个事实、推断、建议或风险 block 都要把支持它的完整 evidence_id 放入 evidence_ids。不要把 evidence_id 写进 content，服务端会按 evidence_ids 统一渲染为【证据 ev_...】。只有 context/disclaimer block 可以在没有外部证据时输出。
 
-reference-only 结果只是标题、摘要或来源索引，不是正文。只有在确实需要文章/PDF内容时，选择相关 URL 调用 read_web_source；不要为了满足规则读取全部候选链接。没有正文时只能按索引事实表述，并明确正文未读取。表格或连续列表可由紧随其后的来源行统一引用，不要因引用位置而删除已核实内容。""",
+外部事实只能使用本轮成功工具结果里的证据；只能使用证据里的 data_time，不能把检索时间当成数据时间。没有可用 data_time 时，不要称为“最新/当前/今日”，应继续取证或明确时效未知。失败、空结果、过期结果和 freshness_unknown 都必须如实读取：若用户需要最新事实，改用 search_web_source(source_id=auto)；已有 URL 则用 read_web_source(source_id=auto)。不要把失败或过期观察当成最新事实。
+
+reference-only 结果只是标题、摘要或来源索引，不是正文。只有在确实需要文章/PDF内容时，选择相关 URL 调用 read_web_source；不要为了满足规则读取全部候选链接。没有正文时只能按索引事实表述，并明确正文未读取。表格或连续列表可由紧随其后的来源行统一引用；结论、判断和操作建议也必须关联支持它们的有效 evidence_id，不要因引用位置而删除已核实内容。""",
                 (
                     "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用）：\n"
                     + json.dumps(conversation_context, ensure_ascii=False, default=str)
@@ -357,6 +528,16 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。只�
                 (
                     "待处理的正文读取反馈：\n" + content_feedback
                     if content_feedback
+                    else ""
+                ),
+                (
+                    "结构化回答格式反馈：\n" + response_format_feedback
+                    if response_format_feedback
+                    else ""
+                ),
+                (
+                    "来源兜底反馈：\n" + fallback_feedback
+                    if fallback_feedback
                     else ""
                 ),
                 (
@@ -374,7 +555,7 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。只�
                         default=str,
                     )
                     + (f"\n其余候选数量：{len(content_targets) - 24}" if len(content_targets) > 24 else "")
-                    if content_targets and (content_feedback or pending_content_reads or not successful_target_reads)
+                    if content_targets and (content_feedback or pending_content_reads or unread_target_reads)
                     else ""
                 ),
                 (
@@ -404,6 +585,7 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。只�
                 "prior_tool_observation_count": len(observations),
                 "observation_character_count": _serialized_character_count(observations),
                 "has_evidence_feedback": bool(feedback),
+                "has_fallback_feedback": bool(fallback_feedback),
                 "content_access_candidate_count": len(content_targets),
                 "content_access_successful_count": len(successful_target_reads),
                 "pending_content_read_count": len(pending_content_reads),
@@ -417,7 +599,21 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。只�
             )
         )
         last = _last_ai_message(response.result)
-        if last is not None and last.tool_calls:
+        structured_response = getattr(response, "structured_response", None)
+        structured_call_id = _structured_output_call_id(last)
+        if structured_response is not None:
+            context.events.stage(
+                "model",
+                "completed",
+                f"第 {model_turn} 轮：模型已提交结构化回答，正在进入终态检查",
+                details={
+                    "model_turn": model_turn,
+                    "structured_output": True,
+                    "structured_output_call_id": structured_call_id,
+                    "structured_block_count": len(structured_answer_blocks(structured_response)),
+                },
+            )
+        elif last is not None and last.tool_calls:
             operations: list[dict[str, Any]] = []
             for call in last.tool_calls:
                 tool_name = str(call.get("name") or "")
@@ -460,9 +656,26 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。只�
                     "answer_preview_truncated": len(answer) > preview_limit,
                 },
             )
+        if last is not None and last.tool_calls and any(
+            str(call.get("name") or "").strip() != STRUCTURED_OUTPUT_TOOL_NAME
+            for call in last.tool_calls
+        ):
+            # Tool-planning text is useful progress.  A structured-output
+            # call, on the other hand, remains a candidate until the policy
+            # middleware validates it.
+            context.events.commit_model_progress()
+        command_update: dict[str, Any] = {"model_turn_count": 1}
+        if structured_call_id:
+            # Clear the application-side identity when LangChain is retrying
+            # an invalid structured call.  This prevents the previous valid
+            # response from being reused if a provider happens to recycle a
+            # tool-call id across retries.
+            command_update["structured_answer_call_id"] = (
+                structured_call_id if structured_response is not None else ""
+            )
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"model_turn_count": 1}),
+            command=Command(update=command_update),
         )
 
 
@@ -471,7 +684,140 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
     name = "operation_policy"
 
-    @hook_config(can_jump_to=["model"])
+    @staticmethod
+    def _source_fallback_partial(
+        *,
+        state: AgentState,
+        context: GraphContext,
+        last: AIMessage,
+        requirements: Sequence[Mapping[str, Any]],
+        candidate: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Publish a bounded partial result when the web fallback did not finish."""
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if isinstance(item, Mapping)
+            and evidence_record_is_eligible(item)
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        structured_candidate = structured_answer_mapping(candidate)
+        if not structured_candidate:
+            structured_candidate = structured_answer_mapping(state.get("structured_answer"))
+        if structured_candidate:
+            answer = render_structured_answer(structured_candidate, factual_evidence)
+        else:
+            answer = _message_text(last)
+        answer, _ = canonicalize_evidence_markers(answer, factual_evidence)
+        if not answer:
+            answer = "本轮未完成外部来源核验。"
+        detail = (
+            "主来源存在失败、空结果、过期或时效未知，且限定次数内未完成网页搜索/读取兜底："
+            + "；".join(
+                f"{item.get('tool_name')}: {item.get('reason')}"
+                for item in requirements[:8]
+            )
+        )
+        final_answer = finalize_terminal_answer(
+            answer,
+            status="partial",
+            error_code="source_fallback_incomplete",
+            detail=detail,
+        )
+        context.events.stage(
+            "source_fallback",
+            "failed",
+            "网页兜底未完成，已阻止把原始缺口当作完整回答发布",
+            error_code="source_fallback_incomplete",
+            details={
+                "requirements": [dict(item) for item in requirements[:8]],
+                "fallback_repair_count": int(state.get("fallback_repair_count") or 0),
+                "fallback_repair_limit": int(state.get("fallback_repair_limit") or 0),
+            },
+        )
+        update: dict[str, Any] = {
+            "answer_draft": answer,
+            "answer_final": final_answer,
+            "claim_evidence": _claim_evidence_for_partial_answer(state, answer),
+            "fallback_feedback": "",
+            "status": "partial",
+            "error_code": "source_fallback_incomplete",
+            "terminal_detail": detail,
+            "jump_to": "end",
+        }
+        if structured_candidate:
+            update["structured_answer"] = structured_candidate
+        context.events.commit_model_answer(final_answer)
+        return update
+
+    def _source_fallback_gate(
+        self,
+        state: AgentState,
+        context: GraphContext,
+        last: AIMessage,
+        candidate: Mapping[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Require an explicit, traceable web fallback before terminal checks."""
+        requirements = _source_fallback_requirements(state, context.registry)
+        if not requirements:
+            return None
+        # A web operation in the current model turn is the required recovery
+        # action. Let the native tool loop execute it and re-evaluate its result
+        # on the next model turn; never synthesize nested hidden tool calls here.
+        if any(
+            str(call.get("name") or "").strip() in _WEB_FALLBACK_TOOL_NAMES
+            for call in last.tool_calls or []
+        ):
+            return None
+
+        repair_count = max(0, int(state.get("fallback_repair_count") or 0))
+        repair_limit = max(0, int(state.get("fallback_repair_limit") or 0))
+        if repair_count >= repair_limit:
+            return self._source_fallback_partial(
+                state=state,
+                context=context,
+                last=last,
+                requirements=requirements,
+                candidate=candidate,
+            )
+
+        instructions: list[str] = []
+        for item in requirements[:8]:
+            operation = str(item.get("fallback_operation") or "search_web_source")
+            if operation == "read_web_source" and item.get("source_refs"):
+                instructions.append(
+                    f"{item.get('tool_name')}：{item.get('reason')}；请对相关 URL 显式调用 "
+                    "read_web_source(source_id=auto)，不要把索引或摘要当正文。"
+                )
+            else:
+                instructions.append(
+                    f"{item.get('tool_name')}：{item.get('reason')}；请显式调用 "
+                    "search_web_source(source_id=auto) 重新取证；若返回相关 URL，再调用 "
+                    "read_web_source(source_id=auto)。"
+                )
+        feedback = (
+            "当前不能结束回答。检测到外部来源存在未恢复的数据缺口：\n"
+            + "\n".join(f"- {item}" for item in instructions)
+            + "\n网页搜索/读取是本轮的强制兜底路径；只有成功获得可引用结果后才能继续最终回答。"
+            "不要重试同一个已失败的主来源，不要引用失败、空、过期或时效未知的观察。"
+        )
+        context.events.stage(
+            "source_fallback",
+            "started",
+            "检测到来源缺口，要求模型执行一次有界的网页搜索/读取兜底",
+            details={
+                "requirements": [dict(item) for item in requirements[:8]],
+                "fallback_repair_count": repair_count + 1,
+                "fallback_repair_limit": repair_limit,
+            },
+        )
+        return {
+            "fallback_feedback": feedback,
+            "fallback_repair_count": 1,
+            "jump_to": "model",
+        }
+
+    @hook_config(can_jump_to=["end", "model"])
     async def aafter_model(
         self,
         state: AgentState,
@@ -481,10 +827,63 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         last = _last_ai_message(state.get("messages") or [])
         if last is None:
             return None
+        current_structured_call_id = _structured_output_call_id(last)
+        structured_answer = structured_answer_mapping(state.get("structured_response"))
+        recorded_structured_call_id = str(state.get("structured_answer_call_id") or "").strip()
+        pending_structured_answer = self._pending_structured_answer(state)
+        source_fallback_update = self._source_fallback_gate(
+            state,
+            context,
+            last,
+            structured_answer or pending_structured_answer,
+        )
+        if source_fallback_update is not None:
+            return source_fallback_update
+        if structured_answer and current_structured_call_id == recorded_structured_call_id:
+            return self._check_structured_answer(state, context, structured_answer)
+        if current_structured_call_id and current_structured_call_id != recorded_structured_call_id:
+            # LangChain has already attached a schema-validation error for this
+            # new structured output call.  It is still a provider candidate,
+            # not an implicit retry instruction.  Keep the retry inside the
+            # same bounded response-contract state machine.
+            if pending_structured_answer:
+                return self._check_structured_answer(
+                    state,
+                    context,
+                    pending_structured_answer,
+                )
+            return self._request_structured_output_repair(
+                state,
+                context,
+                candidate=_message_text(last),
+                reason="模型返回的结构化输出没有通过 LangChain 的解析校验",
+            )
         if not last.tool_calls:
-            content_access_update, blocked = self._content_access_gate(state, context, last)
+            if pending_structured_answer:
+                # A content-repair turn may return ordinary text even though
+                # the previous typed candidate is still the only answer under
+                # review.  Re-run the candidate through the existing content
+                # gate; never publish the ordinary text as a second answer.
+                return self._check_structured_answer(
+                    state,
+                    context,
+                    pending_structured_answer,
+                )
+            content_access_update, blocked = self._content_access_gate(
+                state,
+                context,
+                _message_text(last),
+            )
             if blocked:
                 return content_access_update
+            if bool(state.get("structured_output_required")):
+                return self._request_structured_output_repair(
+                    state,
+                    context,
+                    candidate=_message_text(last),
+                    content_access_update=content_access_update,
+                    reason="模型返回了普通文本而不是要求的 StructuredAgentAnswer",
+                )
             return {**content_access_update, **self._check_answer(state, context, last)}
 
         used = max(0, int(state.get("tool_call_count") or 0))
@@ -652,33 +1051,184 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         raise ValueError("approval decision must be approve or reject")
 
     @staticmethod
-    def _content_access_partial(
+    def _pending_structured_answer(state: AgentState) -> dict[str, Any] | None:
+        """Return a typed candidate that has not reached a terminal state."""
+        candidate = structured_answer_mapping(state.get("structured_answer"))
+        if not candidate or str(state.get("answer_final") or "").strip():
+            return None
+        return candidate
+
+    @staticmethod
+    def _structured_output_partial(
         *,
         state: AgentState,
         context: GraphContext,
-        message: AIMessage,
-        targets: list[dict[str, Any]],
-        pending: list[dict[str, Any]],
-        required: list[dict[str, Any]],
+        candidate: str,
         reason: str,
-        error_code: str,
+        content_access_update: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        answer = _message_text(message).rstrip()
+        """End a failed response-format repair without exposing its candidate."""
+        structured_answer = structured_answer_mapping(state.get("structured_answer"))
         factual_evidence = [
             item
             for item in state.get("evidence") or []
             if isinstance(item, Mapping)
-            and item.get("success") is True
+            and evidence_record_is_eligible(item)
             and str(item.get("effect") or "read") != "side_effect"
         ]
-        answer, _ = canonicalize_evidence_markers(answer, factual_evidence)
+        tool_results = [
+            item
+            for item in state.get("tool_results") or []
+            if isinstance(item, Mapping)
+        ]
+
+        answer = str(candidate or state.get("answer_draft") or "").strip()
+        claims: list[dict[str, Any]] = []
+        if structured_answer:
+            answer = render_structured_answer(structured_answer, factual_evidence)
+            claims = list(
+                build_structured_claim_evidence_ledger(
+                    structured_answer_blocks(structured_answer),
+                    factual_evidence,
+                    tool_results,
+                ).get("claims")
+                or []
+            )
+        else:
+            answer, _ = canonicalize_evidence_markers(answer, factual_evidence)
+            if factual_evidence:
+                claims = list(
+                    build_claim_evidence_ledger(
+                        answer,
+                        factual_evidence,
+                        tool_results,
+                    ).get("claims")
+                    or []
+                )
         if not answer:
-            answer = "已获取来源索引，但本轮未完成正文读取。"
-        claim_evidence = _claim_evidence_for_partial_answer(state, answer)
-        suffix = (
-            "\n\n[正文取证未完成："
+            answer = "本轮未能生成符合要求的结构化回答。"
+
+        detail = "结构化回答未能在有限修订次数内完成：" + str(reason or "未提供原因")
+        final_answer = finalize_terminal_answer(
+            answer,
+            status="partial",
+            error_code="structured_output_incomplete",
+            detail=detail,
+        )
+        context.events.stage(
+            "response_format",
+            "failed",
+            "结构化回答修订次数已用尽，已停止继续调用模型",
+            error_code="structured_output_incomplete",
+            details={
+                "response_repair_count": int(state.get("response_repair_count") or 0),
+                "response_repair_limit": int(state.get("response_repair_limit") or 0),
+                "candidate_character_count": len(str(candidate or "")),
+                "had_structured_candidate": bool(structured_answer),
+                "reason": reason,
+            },
+        )
+        context.events.commit_model_answer(final_answer)
+        update: dict[str, Any] = {
+            **dict(content_access_update or {}),
+            "answer_draft": answer,
+            "answer_final": final_answer,
+            "claim_evidence": claims,
+            "response_format_feedback": "",
+            "status": "partial",
+            "error_code": "structured_output_incomplete",
+            "terminal_detail": detail,
+            "jump_to": "end",
+        }
+        if structured_answer:
+            update["structured_answer"] = structured_answer
+        return update
+
+    def _request_structured_output_repair(
+        self,
+        state: AgentState,
+        context: GraphContext,
+        *,
+        candidate: str,
+        reason: str,
+        content_access_update: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Request one bounded format repair or terminate with a partial result."""
+        repair_count = max(0, int(state.get("response_repair_count") or 0))
+        repair_limit = max(0, int(state.get("response_repair_limit") or 0))
+        if repair_count >= repair_limit:
+            return self._structured_output_partial(
+                state=state,
+                context=context,
+                candidate=candidate,
+                reason=reason,
+                content_access_update=content_access_update,
+            )
+
+        feedback = (
+            reason
+            + "。本次不会把普通文本当作最终答案；请根据当前工具观察和反馈，"
+            "只调用 StructuredAgentAnswer 输出完整 blocks。"
+        )
+        context.events.stage(
+            "response_format",
+            "failed",
+            "候选回答未满足结构化输出契约，已请求一次受限修订",
+            details={
+                "response_repair_count": repair_count + 1,
+                "response_repair_limit": repair_limit,
+                "candidate_character_count": len(str(candidate or "")),
+                "reason": reason,
+            },
+        )
+        return {
+            **dict(content_access_update or {}),
+            "answer_draft": str(candidate or "").strip(),
+            "response_format_feedback": feedback,
+            "response_repair_count": 1,
+            "jump_to": "model",
+        }
+
+    @staticmethod
+    def _content_access_partial(
+        *,
+        state: AgentState,
+        context: GraphContext,
+        message: AIMessage | None = None,
+        answer: str | None = None,
+        targets: list[dict[str, Any]],
+        pending: list[dict[str, Any]],
+        required: list[dict[str, Any]],
+        selection_required: Sequence[Mapping[str, Any]] = (),
+        reason: str,
+        error_code: str,
+        claim_evidence: Sequence[Mapping[str, Any]] | None = None,
+        structured_answer: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        candidate_answer = str(answer if answer is not None else _message_text(message)).rstrip()
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if isinstance(item, Mapping)
+            and evidence_record_is_eligible(item)
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        candidate_answer, _ = canonicalize_evidence_markers(candidate_answer, factual_evidence)
+        if not candidate_answer:
+            candidate_answer = "已获取来源索引，但本轮未完成正文读取。"
+        claims = list(claim_evidence or [])
+        if claim_evidence is None:
+            claims = _claim_evidence_for_partial_answer(state, candidate_answer)
+        detail = (
+            "正文取证未完成："
             + reason
-            + "以上结论仅基于来源链接、标题/摘要或结构化字段，正文未核验。]"
+            + "以上结论仅基于来源链接、标题/摘要或结构化字段，正文未核验"
+        )
+        final_answer = finalize_terminal_answer(
+            candidate_answer,
+            status="partial",
+            error_code=error_code,
+            detail=detail,
         )
         context.events.stage(
             "content_access",
@@ -690,35 +1240,47 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 "required_count": len(required),
                 "pending_count": len(pending),
                 "pending_urls": [str(item.get("url") or "") for item in pending],
+                "selection_required_count": len(selection_required),
+                "selection_required_action_ids": [
+                    str(item.get("action_id") or "")
+                    for item in selection_required
+                    if str(item.get("action_id") or "")
+                ],
                 "reason": reason,
             },
         )
-        context.events.commit_model_answer(answer + suffix)
-        return {
+        update = {
             "content_access_targets": targets,
             "required_content_reads": required,
             "pending_content_reads": pending,
             "content_access_feedback": "",
-            "claim_evidence": claim_evidence,
-            "answer_draft": answer,
-            "answer_final": answer + suffix,
+            "response_format_feedback": "",
+            "claim_evidence": claims,
+            "answer_draft": candidate_answer,
+            "answer_final": final_answer,
             "status": "partial",
             "error_code": error_code,
+            "terminal_detail": detail,
+            "jump_to": "end",
         }
+        if structured_answer is not None:
+            update["structured_answer"] = dict(structured_answer)
+        context.events.commit_model_answer(final_answer)
+        return update
 
     @classmethod
     def _content_access_gate(
         cls,
         state: AgentState,
         context: GraphContext,
-        message: AIMessage,
+        answer: str,
     ) -> tuple[dict[str, Any], bool]:
         """Keep reference-only results from silently becoming body-backed facts."""
         targets, pending = build_content_access_targets(
             tool_results=state.get("tool_results") or [],
             existing_targets=state.get("content_access_targets") or [],
         )
-        answer = _message_text(message)
+        answer = str(answer or "").strip()
         required = required_content_access_targets(
             answer=answer,
             evidence=state.get("evidence") or [],
@@ -761,8 +1323,20 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             evidence=state.get("evidence") or [],
             tool_results=state.get("tool_results") or [],
         )
-        if not pending:
-            if successful_target_reads or required:
+        cited_access = cited_reference_access_status(
+            answer=answer,
+            evidence=state.get("evidence") or [],
+            tool_results=state.get("tool_results") or [],
+            targets=targets,
+        )
+        selection_gaps = [
+            access
+            for access in cited_access.values()
+            if access.get("selection_required") is True
+        ]
+        content_access_gaps = bool(pending or required_pending or selection_gaps)
+        if not content_access_gaps:
+            if successful_target_reads or required or not cited_reference_actions or cited_access:
                 context.events.stage(
                     "content_access",
                     "completed",
@@ -774,47 +1348,62 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                         "selected_count": len(selected_target_reads),
                         "successful_count": len(successful_target_reads),
                         "pending_count": 0,
+                        "selection_required_count": 0,
                     },
                 )
-                return base_update, False
-            # A reference-only result may contain many candidates.  If the
-            # answer cites it without selecting a body URL, ask the model to
-            # choose the relevant page; never manufacture an all-links read
-            # fan-out.  This keeps the body contract strict for cited claims
-            # without turning unrelated candidates into false gaps.
-            if not cited_reference_actions:
-                return base_update, False
-            feedback = (
-                "当前答案引用了 reference-only 来源，但还没有选择要核验的正文 URL。"
-                "请只选择与当前问题直接相关的 URL，调用 read_web_source（通常使用 source_id=auto）；"
+            return base_update, False
+
+        feedback_parts: list[str] = []
+        if selection_gaps:
+            selection_candidates = [
+                {
+                    "action_id": access.get("action_id"),
+                    "candidate_count": access.get("candidate_count"),
+                    "candidates": access.get("candidate_targets") or [],
+                }
+                for access in selection_gaps
+            ]
+            feedback_parts.append(
+                "当前答案引用了包含多个候选链接的 reference-only 来源，但还没有选择要核验的正文 URL。"
+                "请按引用的具体结论，只选择相关 URL 调用 read_web_source（通常使用 source_id=auto）；"
                 "不要求读取未选择的候选链接。若只需来源索引，请明确按标题/摘要或索引信息表述。\n"
-                "候选来源：\n"
-                + json.dumps(targets[:24], ensure_ascii=False, default=str)
-                + (f"\n其余候选数量：{len(targets) - 24}" if len(targets) > 24 else "")
+                "待选择的来源：\n"
+                + json.dumps(selection_candidates, ensure_ascii=False, default=str)
             )
         if required_pending:
-            feedback = (
-                "当前不能结束回答。你已选定正文来源，但该 URL 尚未成功提取非空正文。"
+            feedback_parts.append(
+                "当前不能结束回答。已选定或唯一的正文来源尚未成功提取非空正文。"
                 "请重试 read_web_source 或改选一个相关 URL；不要求读取未选择的候选链接。\n"
                 + json.dumps(required_pending, ensure_ascii=False, default=str)
             )
-        else:
-            feedback = (
-                "当前不能结束回答。你已经选择了部分来源，但以下已选择 URL 尚未成功提取非空正文。"
+        elif pending:
+            feedback_parts.append(
+                "当前不能结束回答。已选择的来源尚未成功提取非空正文。"
                 "请重试 read_web_source 或选择合适的来源读取器；未选择的候选来源不需要读取。\n"
                 "待完成的已选择来源：\n"
                 + json.dumps(pending, ensure_ascii=False, default=str)
             )
+        feedback = "\n\n".join(feedback_parts)
+        selection_required = selection_gaps
+        if selection_gaps and not required_pending and not pending:
+            partial_reason = "引用了多链接 reference-only 来源但未选择结论对应的正文链接；"
+        elif selection_gaps:
+            partial_reason = "部分引用的 reference-only 来源未选择正文链接，且已有来源读取未完成；"
+        elif bool(state.get("work_budget_exhausted")):
+            partial_reason = "工具调用预算已用尽；未成功读取的候选来源只能作为标题/摘要或结构化字段，"
+        else:
+            partial_reason = "正文读取失败、被忽略或达到取证重试上限；未成功读取的候选来源只能作为标题/摘要或结构化字段，"
         if bool(state.get("work_budget_exhausted")):
             return (
                 cls._content_access_partial(
                     state=state,
                     context=context,
-                    message=message,
+                    answer=answer,
                     targets=targets,
                     pending=pending,
                     required=required,
-                    reason="工具调用预算已用尽；未成功读取的候选来源只能作为标题/摘要或结构化字段，",
+                    selection_required=selection_required,
+                    reason=partial_reason,
                     error_code="content_access_budget_exceeded",
                 ),
                 True,
@@ -834,11 +1423,12 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 cls._content_access_partial(
                     state=state,
                     context=context,
-                    message=message,
+                    answer=answer,
                     targets=targets,
                     pending=pending,
                     required=required,
-                    reason="正文读取失败、被忽略或达到取证重试上限；未成功读取的候选来源只能作为标题/摘要或结构化字段，",
+                    selection_required=selection_required,
+                    reason=partial_reason,
                     error_code="content_access_incomplete",
                 ),
                 True,
@@ -870,6 +1460,197 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             True,
         )
 
+    def _check_structured_answer(
+        self,
+        state: AgentState,
+        context: GraphContext,
+        structured_answer: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Validate and publish one native LangChain structured response.
+
+        ``ToolStrategy`` owns schema parsing and retry.  This method owns the
+        application boundary after parsing: source-body access, the explicit
+        block-to-evidence ledger, and the terminal status.  It deliberately
+        does not parse the rendered Markdown back into claims.
+        """
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if isinstance(item, Mapping)
+            and evidence_record_is_eligible(item)
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        blocks = structured_answer_blocks(structured_answer)
+        answer = render_structured_answer(structured_answer, factual_evidence)
+        tool_results = [
+            item
+            for item in state.get("tool_results") or []
+            if isinstance(item, Mapping)
+        ]
+        ledger = build_structured_claim_evidence_ledger(
+            blocks,
+            factual_evidence,
+            tool_results,
+        )
+        base_update: dict[str, Any] = {
+            "structured_answer": dict(structured_answer),
+            "answer_draft": answer,
+            "claim_evidence": list(ledger.get("claims") or []),
+            "response_format_feedback": "",
+        }
+
+        if not answer:
+            detail = "结构化回答没有可发布的正文区块"
+            final_answer = finalize_terminal_answer(
+                "本轮未能生成可发布的回答。",
+                status="partial",
+                error_code="agent_runtime_failed",
+                detail=detail,
+            )
+            context.events.stage(
+                "evidence",
+                "failed",
+                "结构化回答为空，已阻止发布空结果",
+                error_code="agent_runtime_failed",
+                details={"structured_output": True, "block_count": len(blocks)},
+            )
+            context.events.commit_model_answer(final_answer)
+            return {
+                **base_update,
+                "answer_final": final_answer,
+                "status": "partial",
+                "error_code": "agent_runtime_failed",
+                "terminal_detail": detail,
+                "evidence_feedback": "",
+            }
+
+        content_access_update, blocked = self._content_access_gate(
+            state,
+            context,
+            answer,
+        )
+        if blocked:
+            # A content-access retry keeps the typed candidate in the
+            # checkpoint.  If the retry limit is reached, the gate already
+            # supplied the terminal partial answer; its fields win below.
+            return {
+                **base_update,
+                **content_access_update,
+                "structured_answer": dict(structured_answer),
+                "claim_evidence": list(ledger.get("claims") or []),
+                "answer_draft": answer,
+            }
+
+        issues = list(dict.fromkeys(str(item) for item in ledger.get("issues") or []))
+        available_ids = sorted(
+            str(item.get("evidence_id") or item.get("id") or "")
+            for item in factual_evidence
+            if str(item.get("evidence_id") or item.get("id") or "")
+        )
+        audit_details = {
+            "structured_output": True,
+            "block_count": len(blocks),
+            "claim_count": len(ledger.get("claims") or []),
+            "fact_claim_count": int(ledger.get("fact_claim_count") or 0),
+            "inference_claim_count": int(ledger.get("inference_claim_count") or 0),
+            "evidence_ids": list(ledger.get("cited_evidence_ids") or []),
+            "available_evidence_ids": available_ids,
+            "unresolved_evidence_ids": list(ledger.get("unresolved_evidence_ids") or []),
+        }
+        if issues:
+            repair_count = max(0, int(state.get("evidence_repair_count") or 0))
+            repair_limit = max(0, int(state.get("evidence_repair_limit") or 0))
+            if repair_count < repair_limit:
+                repair_targets = []
+                for index, block in enumerate(blocks):
+                    claim = (
+                        ledger.get("claims") or []
+                    )[index] if index < len(ledger.get("claims") or []) else {}
+                    checks = dict(claim.get("checks") or {}) if isinstance(claim, Mapping) else {}
+                    if checks and all(bool(value) for value in checks.values()):
+                        continue
+                    repair_targets.append(
+                        {
+                            "section": str(block.get("section") or "")[:160],
+                            "kind": str(block.get("kind") or "fact")[:32],
+                            "content": str(block.get("content") or "")[:600],
+                            "evidence_ids": list(block.get("evidence_ids") or [])[:24],
+                            "checks": checks,
+                        }
+                    )
+                feedback = (
+                    "结构化回答没有通过证据校验，请重新输出完整的 StructuredAgentAnswer。"
+                    "只修复证据字段，不要删除已生成的事实、表格、判断、风险或建议区块。"
+                    "fact/inference/recommendation/risk 区块必须引用下方可用的完整 evidence_id；"
+                    "context/disclaimer 区块可以不引用。禁止截断、改写或自造 evidence_id；"
+                    "不要把 evidence_id 写进 content，放入 evidence_ids 字段。\n"
+                    "可用 evidence_id："
+                    + ("、".join(available_ids) or "无")
+                    + "\n未通过的区块："
+                    + json.dumps(repair_targets[:12], ensure_ascii=False, default=str)
+                    + "\n校验问题："
+                    + "；".join(issues)
+                )
+                context.events.stage(
+                    "evidence",
+                    "started",
+                    "发现结构化回答的证据关联缺口，正在请求模型修订结构化区块",
+                    details={
+                        **audit_details,
+                        "issues": issues,
+                        "repair_count": repair_count + 1,
+                        "repair_limit": repair_limit,
+                        "repair_targets": repair_targets[:12],
+                    },
+                )
+                return {
+                    **base_update,
+                    "evidence_feedback": feedback,
+                    "evidence_repair_count": 1,
+                    "jump_to": "model",
+                }
+
+            detail = "结构化回答中有区块未关联有效证据，证据关联修订预算已用尽"
+            final_answer = finalize_terminal_answer(
+                answer,
+                status="partial",
+                error_code="evidence_link_incomplete",
+                detail=detail,
+            )
+            context.events.stage(
+                "evidence",
+                "failed",
+                "结构化回答的区块证据校验未通过，已发布可追溯的部分结果",
+                error_code="evidence_link_incomplete",
+                details={**audit_details, "issues": issues},
+            )
+            context.events.commit_model_answer(final_answer)
+            return {
+                **base_update,
+                "answer_final": final_answer,
+                "status": "partial",
+                "error_code": "evidence_link_incomplete",
+                "terminal_detail": detail,
+                "evidence_feedback": "",
+            }
+
+        context.events.stage(
+            "evidence",
+            "completed",
+            f"已核对结构化回答的 {len(ledger.get('claims') or [])} 个区块与 {len(ledger.get('cited_evidence_ids') or [])} 条成功证据",
+            details=audit_details,
+        )
+        context.events.commit_model_answer(answer)
+        return {
+            **base_update,
+            "answer_final": answer,
+            "status": "completed",
+            "error_code": None,
+            "terminal_detail": "",
+            "evidence_feedback": "",
+            **content_access_update,
+        }
+
     @staticmethod
     def _check_answer(
         state: AgentState,
@@ -877,31 +1658,47 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         message: AIMessage,
     ) -> dict[str, Any]:
         raw_answer = _message_text(message)
-        evidence = [item for item in state.get("evidence") or [] if item.get("success") is True]
-        factual_evidence = [item for item in evidence if str(item.get("effect") or "read") != "side_effect"]
-        answer, unresolved_evidence_ids = canonicalize_evidence_markers(
+        factual_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if evidence_record_is_eligible(item)
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        normalized_answer, unresolved_evidence_ids = canonicalize_evidence_markers(
             raw_answer,
             factual_evidence,
         )
-        if not answer:
+        answer = normalized_answer
+        ledger_answer = normalized_answer
+        if not answer and not unresolved_evidence_ids:
             answer = raw_answer
+            ledger_answer = answer
         budget_exhausted = bool(state.get("work_budget_exhausted"))
         budget_detail = str(state.get("work_budget_detail") or "").strip()
 
         def _budget_partial(payload: dict[str, Any]) -> dict[str, Any]:
-            final_answer = str(payload.get("answer_final") or answer).rstrip()
+            payload_status = str(payload.get("status") or "completed")
+            payload_error_code = str(payload.get("error_code") or "").strip() or None
+            terminal_error_code = "tool_call_budget_exceeded" if budget_exhausted else payload_error_code
+            terminal_detail = (
+                "本轮未完成全部取证：" + (budget_detail or "工具调用预算已用尽")
+                if budget_exhausted
+                else str(payload.get("terminal_detail") or "").strip()
+            )
+            final_status = "partial" if budget_exhausted else payload_status
+            final_answer = finalize_terminal_answer(
+                payload.get("answer_final") or answer,
+                status=final_status,
+                error_code=terminal_error_code,
+                detail=terminal_detail,
+            )
             if budget_exhausted:
-                suffix = (
-                    "\n\n[本轮未完成全部取证："
-                    + (budget_detail or "工具调用预算已用尽")
-                    + "]"
-                )
-                final_answer += suffix
                 payload = {
                     **payload,
                     "answer_final": final_answer,
                     "status": "partial",
                     "error_code": "tool_call_budget_exceeded",
+                    "terminal_detail": terminal_detail,
                 }
                 context.events.stage(
                     "evidence",
@@ -910,6 +1707,8 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     error_code="tool_call_budget_exceeded",
                     details={"detail": budget_detail or "tool call budget exhausted"},
                 )
+            else:
+                payload = {**payload, "answer_final": final_answer}
             context.events.commit_model_answer(final_answer)
             return payload
 
@@ -925,9 +1724,17 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             )
 
         ledger = build_claim_evidence_ledger(
-            answer,
+            ledger_answer,
             factual_evidence,
             [item for item in state.get("tool_results") or [] if isinstance(item, Mapping)],
+        )
+        unresolved_evidence_ids = list(
+            dict.fromkeys(
+                [
+                    *unresolved_evidence_ids,
+                    *list(ledger.get("unresolved_evidence_ids") or []),
+                ]
+            )
         )
         cited = list(ledger["cited_evidence_ids"])
         issues: list[str] = []
@@ -939,6 +1746,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         if not cited:
             issues.append("答案使用了外部工具结果，但没有标注任何 evidence_id")
         issues.extend(str(item) for item in ledger["issues"])
+        issues = list(dict.fromkeys(issues))
         available_ids = sorted(
             str(item.get("evidence_id") or item.get("id") or "")
             for item in factual_evidence
@@ -962,6 +1770,14 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 for claim in ledger["claims"]
                 if not all(bool(value) for value in (claim.get("checks") or {}).values())
             ][:12]
+            if unresolved_evidence_ids and not repair_targets:
+                repair_targets = [
+                    {
+                        "text": raw_answer[:600],
+                        "evidence_ids": [],
+                        "checks": {"evidence_id": False},
+                    }
+                ]
             target_text = "\n".join(
                 "- "
                 + target["text"]
@@ -977,7 +1793,8 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                 + "\n可用 evidence_id："
                 + "、".join(available_ids)
                 + "\n修订要求：只修复真实的证据关联问题，不要因为引用位于表格后的来源行而删除表格内容；"
-                "表格或连续列表可由紧随其后的来源行统一引用。重复已核实事实时，沿用对应的已有 evidence_id；"
+                "表格或连续列表可由紧随其后的来源行统一引用；表格、结论、判断和操作建议必须在本片段内或紧随其后的来源行关联有效 evidence_id，"
+                "后续分析段的引用不能覆盖前面的片段。重复已核实事实时，沿用对应的已有 evidence_id；"
                 "引用必须逐字复制工具结果中的完整 evidence_id，禁止截断、改写或自造 ID；无法确定 ID 时不要添加引用标记。"
                 "否定性时效说明（例如无法确认最新价）不要改写成当前/最新事实。"
                 + ("\n需要处理的片段：\n" + target_text if target_text else "")
@@ -1019,6 +1836,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     "claim_evidence": ledger["claims"],
                     "status": "partial",
                     "error_code": "evidence_link_incomplete",
+                    "terminal_detail": "证据关联修订预算已用尽，保留答案并明确标注未完全核验的缺口",
                     "evidence_feedback": "",
                 }
             )
@@ -1132,6 +1950,8 @@ class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
         }
         if conversation_context is not None:
             update["conversation_context"] = conversation_context
+        if tool_name in _WEB_FALLBACK_TOOL_NAMES and success:
+            update["fallback_feedback"] = ""
         return Command(update=update)
 
 
@@ -1148,17 +1968,43 @@ class TerminalPublicationMiddleware(AgentMiddleware[AgentState, GraphContext]):
             answer = _message_text(last) if last is not None else ""
         if not answer:
             answer = "本轮未能生成可发布的回答。"
+        publishable_evidence = [
+            item
+            for item in state.get("evidence") or []
+            if isinstance(item, Mapping)
+            and evidence_record_is_eligible(item)
+            and str(item.get("effect") or "read") != "side_effect"
+        ]
+        answer, _ = prepare_answer_for_client(answer, publishable_evidence)
         status = str(state.get("status") or "partial")
         if status not in {"completed", "partial", "failed", "cancelled", "blocked"}:
             status = "partial"
+        error_code = str(state.get("error_code") or "").strip() or None
+        terminal_detail = str(
+            state.get("terminal_detail")
+            or state.get("work_budget_detail")
+            or ""
+        ).strip()
+        answer = finalize_terminal_answer(
+            answer,
+            status=status,
+            error_code=error_code,
+            detail=terminal_detail,
+        )
         context.events.stage(
             "publish",
             "completed" if status == "completed" else "failed",
             "已发布最终回答" if status == "completed" else "已发布带明确缺口说明的结果",
+            error_code=error_code,
             details={"status": status, "answer_preview": answer[:1_200]},
         )
         context.events.text(answer)
-        return {"answer_final": answer, "status": status}
+        return {
+            "answer_final": answer,
+            "status": status,
+            "error_code": error_code,
+            "terminal_detail": terminal_detail,
+        }
 
 
 __all__ = [

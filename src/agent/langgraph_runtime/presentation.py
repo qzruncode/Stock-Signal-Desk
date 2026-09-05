@@ -34,6 +34,8 @@ _COLLECTION_KEYS = (
     "documents",
     "articles",
     "data",
+    "boards",
+    "segments",
 )
 _NON_RESULT_COLLECTION_KEYS = {
     "errors",
@@ -42,7 +44,11 @@ _NON_RESULT_COLLECTION_KEYS = {
     "attachments",
     "source_refs",
     "references",
+    # Provider-attempt metadata explains fallback routing; it is not a data
+    # collection and must never make a scalar result look like one.
+    "source_attempts",
 }
+_SINGLETON_RESULT_KEYS = ("item", "calculation")
 _COUNT_KEYS = (
     "result_count",
     "item_count",
@@ -206,6 +212,23 @@ def _result_collection(result: Mapping[str, Any]) -> list[Any]:
     return list(max(candidates, key=lambda item: (item[0], item[1]))[2])
 
 
+def _singleton_result(result: Mapping[str, Any]) -> list[Any]:
+    """Project common single-value payloads as one result row.
+
+    Atomic tools are allowed to return a scalar calculation or one normalized
+    item instead of a collection.  Treating only list-valued fields as data
+    was the reason valid MACD/RSI and capital-flow observations were reported
+    as empty in Run Explorer.
+    """
+    for key in _SINGLETON_RESULT_KEYS:
+        value = result.get(key)
+        if isinstance(value, Mapping) and value:
+            return [{**dict(value), "_collection_key": key}]
+        if value not in (None, "", [], {}):
+            return [{"value": value, "_collection_key": key}]
+    return []
+
+
 def _first(record: Mapping[str, Any], keys: Sequence[str], limit: int) -> str:
     for key in keys:
         rendered = _text(record.get(key), limit)
@@ -320,6 +343,8 @@ def project_tool_result_for_timeline(
     if not isinstance(result, Mapping):
         return {}
     collection = _result_collection(result)
+    if not collection:
+        collection = _singleton_result(result)
     item_limit = max(1, min(int(max_items), 20))
     items = [_result_item(item, index + 1) for index, item in enumerate(collection[:item_limit])]
 

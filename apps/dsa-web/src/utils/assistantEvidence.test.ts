@@ -94,4 +94,46 @@ describe('assistant evidence presentation adapter', () => {
       }),
     );
   });
+
+  it('does not turn an explicitly ineligible or unknown ID into a citation target', () => {
+    const index = assistantEvidenceIndexFromTrace({
+      evidence: [{
+        evidence_id: 'ev_empty',
+        success: true,
+        has_data: false,
+        evidence_eligible: false,
+      }],
+      tool_results: [{
+        action_id: 'empty-call',
+        evidence_id: 'ev_empty',
+        success: true,
+        has_data: false,
+        evidence_eligible: false,
+      }],
+      claim_evidence: [{ evidence_ids: ['ev_missing'] }],
+    });
+
+    expect(index.has('ev_empty')).toBe(false);
+    expect(index.has('ev_missing')).toBe(false);
+    expect(assistantEvidenceReferenceForId(index, 'ev_empty')).toBeUndefined();
+    expect(assistantEvidenceReferenceForId(index, 'ev_missing')).toBeUndefined();
+  });
+
+  it('keeps unresolved streaming markers non-clickable until the index resolves them', () => {
+    const index = assistantEvidenceIndexFromTrace({
+      evidence: [{
+        evidence_id: 'ev_ready0123456789',
+        success: true,
+        has_data: true,
+        evidence_eligible: true,
+      }],
+    });
+
+    expect(replaceAssistantEvidenceMarkers(
+      '已核验【证据 ev_ready】；未知【证据 ev_missing】。',
+      index,
+    )).toBe(
+      '已核验[①](#assistant-evidence-ev_ready0123456789)；未知【证据 ev_missing】。',
+    );
+  });
 });

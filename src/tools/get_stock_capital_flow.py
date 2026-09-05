@@ -16,7 +16,7 @@ import pandas as pd
 
 from data_provider.utils import is_bse_code
 from src.tools._akshare import bare_local_symbol, bare_symbol, cached_call
-from src.tools._trading_calendar import _fallback_trade_day, _fetch_trade_dates, expected_trade_day, is_trading_time
+from src.tools._trading_calendar import is_trading_time, latest_completed_trade_day
 from src.tools.base import ToolSpec, object_schema
 
 DESCRIPTION = (
@@ -266,10 +266,9 @@ def _window_summary(items: list[dict[str, Any]], window: int) -> dict[str, Any]:
 def _is_stale(latest_date: date | None, now: datetime) -> tuple[bool | None, str | None]:
     if latest_date is None:
         return None, "没有可用的资金流交易日，无法判断新鲜度"
-    try:
-        expected = expected_trade_day(now, _fetch_trade_dates())
-    except Exception:
-        expected = _fallback_trade_day(now)
+    # Let the shared helper own calendar loading and its weekday fallback; an
+    # eager calendar call here would bypass that error boundary.
+    expected = latest_completed_trade_day(now)
     if latest_date < expected:
         return True, f"最新资金流日期 {latest_date} 早于应有交易日 {expected}"
     return False, None

@@ -143,6 +143,8 @@ export default {
         'pulse-glow': 'pulseGlow 2s ease-in-out infinite',
         'spin-slow': 'spin 2s linear infinite',
         'float-in': 'floatIn 0.45s ease-out',
+        'tooltip-in': 'tooltipIn 160ms ease-out both',
+        'tooltip-out': 'tooltipOut 120ms ease-in both',
       },
       keyframes: {
         fadeIn: {
@@ -160,6 +162,14 @@ export default {
         floatIn: {
           from: { opacity: '0', transform: 'translateY(16px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        tooltipIn: {
+          from: { opacity: '0', transform: 'scale(0.96)' },
+          to: { opacity: '1', transform: 'scale(1)' },
+        },
+        tooltipOut: {
+          from: { opacity: '1', transform: 'scale(1)' },
+          to: { opacity: '0', transform: 'scale(0.96)' },
         },
         pulseGlow: {
           '0%, 100%': { boxShadow: '0 0 20px rgba(0, 212, 255, 0.4)' },

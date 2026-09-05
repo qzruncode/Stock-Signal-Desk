@@ -102,7 +102,7 @@ def test_valuation_tool_separates_dynamic_forward_and_trailing_peg() -> None:
         "pb_annual": 5.0,
         "total_market_cap": 1_100.0,
         "circulating_market_cap": 990.0,
-        "quote_time": None,
+        "quote_time": "2026-07-15T15:00:00+08:00",
     }
     with (
         patch("src.tools.get_valuation_ratios._fetch_history", return_value=_history_frame()),

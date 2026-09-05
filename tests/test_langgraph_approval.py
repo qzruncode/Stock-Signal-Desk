@@ -108,7 +108,10 @@ def test_model_cannot_self_authorize_a_side_effect() -> None:
 def test_approval_executes_exactly_once_even_if_the_resume_is_replayed() -> None:
     async def scenario() -> None:
         executor = FakeAtomicExecutor()
-        manager = LangGraphRuntimeManager(registry=_registry(_side_effect_operation()))
+        manager = LangGraphRuntimeManager(
+            registry=_registry(_side_effect_operation()),
+            response_format=None,
+        )
         await manager.start(testing=True)
         try:
             interrupted = await _start_interrupt(
@@ -152,7 +155,10 @@ def test_approval_executes_exactly_once_even_if_the_resume_is_replayed() -> None
 def test_rejection_records_an_observation_and_executes_nothing() -> None:
     async def scenario() -> None:
         executor = FakeAtomicExecutor()
-        manager = LangGraphRuntimeManager(registry=_registry(_side_effect_operation()))
+        manager = LangGraphRuntimeManager(
+            registry=_registry(_side_effect_operation()),
+            response_format=None,
+        )
         await manager.start(testing=True)
         try:
             interrupted = await _start_interrupt(
@@ -189,7 +195,7 @@ def test_pending_interrupt_survives_a_native_sqlite_checkpointer_restart(
         registry = _registry(_side_effect_operation())
         executor = FakeAtomicExecutor()
 
-        first = LangGraphRuntimeManager(registry=registry)
+        first = LangGraphRuntimeManager(registry=registry, response_format=None)
         await first.start()
         try:
             interrupted = await _start_interrupt(
@@ -201,7 +207,7 @@ def test_pending_interrupt_survives_a_native_sqlite_checkpointer_restart(
         finally:
             await first.close()
 
-        second = LangGraphRuntimeManager(registry=registry)
+        second = LangGraphRuntimeManager(registry=registry, response_format=None)
         await second.start()
         try:
             pending = await second.pending_interrupt("sqlite-restart")
