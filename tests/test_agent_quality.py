@@ -76,6 +76,16 @@ def _quality_projection(*, linked: bool = True) -> dict:
     }
 
 
+def test_quality_rejects_legacy_unresolved_citations() -> None:
+    projection = _quality_projection()
+    projection["claim_evidence"][0]["unresolved_evidence_ids"] = ["ev_missing"]
+    score = score_agent_run_snapshot({
+        "run": {"status": "partial", "final_text": "结论【证据 ev_news】"},
+        "quality_projection": projection,
+    })
+    assert score["dimensions"]["evidence_links"]["details"]["failed_claim_checks"] == ["claim_news"]
+
+
 def _terminal_run(
     database: DatabaseManager,
     *,

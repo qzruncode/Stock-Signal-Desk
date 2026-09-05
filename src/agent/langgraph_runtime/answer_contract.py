@@ -14,6 +14,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypedDict
 
+from src.tools.base import evidence_record_is_eligible
+
 from .evidence_identity import canonicalize_evidence_markers, resolve_evidence_id
 
 
@@ -46,7 +48,7 @@ class StructuredAnswerBlock(TypedDict):
             default="fact",
             description=(
                 "Block semantics: context/disclaimer may be used without external evidence; "
-                "fact/inference/recommendation/risk require supporting evidence_ids."
+                "fact/inference/recommendation/risk require supporting source_ids."
             ),
         ),
     ]
@@ -57,18 +59,18 @@ class StructuredAnswerBlock(TypedDict):
             max_length=24_000,
             description=(
                 "Markdown body for this block. Keep one coherent evidence scope per block; "
-                "put evidence references in evidence_ids instead of embedding evidence markers here."
+                "put source references in source_ids instead of embedding evidence markers here."
             ),
         ),
     ]
-    evidence_ids: Annotated[
-        list[str],
+    source_ids: Annotated[
+        list[Annotated[int, Field(strict=True, ge=1)]],
         Field(
             default_factory=list,
             max_length=24,
             description=(
-                "Exact evidence IDs from successful tool observations supporting this block. "
-                "Do not invent, truncate, or copy IDs from another run."
+                "Integer source_ids from the current run's source catalog supporting this block. "
+                "The server resolves these numbers to durable evidence IDs. Never write ev_ hashes."
             ),
         ),
     ]
@@ -123,6 +125,52 @@ def structured_answer_blocks(value: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_blocks, Sequence) or isinstance(raw_blocks, (str, bytes, bytearray)):
         return []
     return [dict(item) for item in raw_blocks if isinstance(item, Mapping)]
+
+
+def evidence_source_catalog(evidence: Iterable[Any]) -> list[dict[str, Any]]:
+    """Number append-only checkpoint slots, not hashes authored by the model.
+
+    Slots are assigned before eligibility filtering so an updated/rejected
+    observation cannot renumber another source during repair or resume.
+    No secondary counter or parallel-tool state channel is needed.
+    """
+    catalog = []
+    for index, item in enumerate(evidence, start=1):
+        if not isinstance(item, Mapping) or not evidence_record_is_eligible(item):
+            continue
+        if str(item.get("effect") or "read") == "side_effect":
+            continue
+        evidence_id = str(item.get("evidence_id") or item.get("id") or "").strip()
+        if evidence_id:
+            catalog.append({
+                "source_id": index,
+                "evidence_id": evidence_id,
+                "tool_name": item.get("tool_name"),
+                "data_time": item.get("data_time"),
+                "source_refs": item.get("source_refs") or [],
+            })
+    return catalog
+
+
+def resolve_answer_sources(value: Any, evidence: Iterable[Any]) -> dict[str, Any]:
+    """Resolve native typed citations once at the application boundary.
+
+    Historical/checkpoint answers already contain canonical ``evidence_ids``.
+    Unknown numbers remain explicit unresolved references for the existing
+    claim validator; they are never guessed, dropped, or treated as evidence.
+    """
+    answer = structured_answer_mapping(value)
+    if not answer:
+        return answer
+    sources = {item["source_id"]: item["evidence_id"] for item in evidence_source_catalog(evidence)}
+    blocks = structured_answer_blocks(answer)
+    for block in blocks:
+        if "source_ids" in block:
+            block["evidence_ids"] = [
+                sources.get(source_id, f"source:{source_id}")
+                for source_id in block["source_ids"]
+            ]
+    return {**answer, "blocks": blocks}
 
 
 def _canonical_ids(evidence: Iterable[Any]) -> list[str]:
@@ -245,7 +293,7 @@ def finalize_terminal_answer(
         "agent_loop_budget_exceeded": "Agent 循环未完成，回答只覆盖已完成的部分",
         "agent_runtime_failed": "运行过程中断，回答只覆盖已完成的部分",
         "structured_output_incomplete": "模型未能在有限修订次数内提交符合要求的结构化回答",
-        "source_fallback_incomplete": "主来源缺口未能在有限次数内完成网页搜索或读取兜底",
+        "source_fallback_incomplete": "来源恢复后仍未取得支持回答的有效证据",
         "cancelled": "本轮任务已停止",
     }
     reason = str(detail or "").strip() or defaults.get(error_code or "", "本轮核验未完整结束")
@@ -258,8 +306,10 @@ __all__ = [
     "STRUCTURED_OUTPUT_TOOL_NAME",
     "StructuredAgentAnswer",
     "StructuredAnswerBlock",
+    "evidence_source_catalog",
     "finalize_terminal_answer",
     "render_structured_answer",
+    "resolve_answer_sources",
     "structured_answer_blocks",
     "structured_answer_mapping",
 ]

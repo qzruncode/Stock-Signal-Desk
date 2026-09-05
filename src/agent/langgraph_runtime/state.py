@@ -101,8 +101,8 @@ class AgentState(LangChainAgentState, total=False):
     # Feedback injected into the next model turn when deterministic evidence
     # checks find a repairable issue.
     evidence_feedback: str
-    # Feedback injected when a source failure/empty/stale result must be
-    # recovered through the explicit web-search/read operations.
+    # A bounded recovery request for an unsupported final candidate. While
+    # set, ModelRequest requires an actual web-search/read tool invocation.
     fallback_feedback: str
     # Complete reference candidates plus the subset of model-selected URLs
     # whose source body still needs a successful read.

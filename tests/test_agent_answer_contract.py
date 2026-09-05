@@ -36,6 +36,7 @@ def test_typed_answer_schema_rejects_extra_fields_and_empty_blocks() -> None:
     parsed = adapter.validate_python({"blocks": [{"content": "事实"}]})
     assert parsed["title"] == ""
     assert parsed["blocks"][0]["kind"] == "fact"
+    assert parsed["blocks"][0]["source_ids"] == []
 
     with pytest.raises(ValidationError):
         adapter.validate_python({"blocks": [], "unexpected": "not allowed"})
@@ -118,6 +119,7 @@ def test_structured_ledger_requires_evidence_for_material_blocks_even_without_to
     )
 
     assert ledger["claims"][0]["checks"] == {
+        "reference_integrity": True,
         "tool_success": True,
         "source": True,
         "entity_scope": True,

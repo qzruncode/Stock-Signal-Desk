@@ -272,6 +272,7 @@ function buildQualityIssues(
   const hasActionableExecutionFinding = behaviorAudit?.findings.some((finding) => (
     finding.category === 'execution' && finding.disposition !== 'advisory'
   ));
+  const hasFailedTools = failedToolResults.length > 0 || failedSteps.length > 0;
   if (
     (behaviorAudit
       ? hasActionableExecutionFinding
@@ -285,13 +286,13 @@ function buildQualityIssues(
     const status = text(field(dimensionDetails(score, 'execution'), ['status']));
     issues.push({
       key: 'execution',
-      title: '工具执行没有全部完成',
+      title: hasFailedTools ? '工具执行没有全部完成' : '运行未完整完成',
       detail: failedTools.length > 0
         ? `${failedTools.slice(0, 3).join('、')}${failedTools.length > 3 ? ` 等 ${failedTools.length} 个入口` : ''}存在失败或未完成记录。`
         : `本次运行状态为“${status || '异常'}”，没有完整结束。`,
       tone: 'danger',
-      target: 'failed-tool',
-      actionLabel: '定位失败工具',
+      target: hasFailedTools ? 'failed-tool' : undefined,
+      actionLabel: hasFailedTools ? '定位失败工具' : undefined,
     });
   }
 
@@ -968,6 +969,10 @@ function FindingList({
 function ClaimEvidenceCard({ claims }: { claims: Array<Record<string, unknown>> }) {
   if (claims.length === 0) return null;
   const checkLabels: Record<string, string> = {
+    referenceIntegrity: '引用有效性',
+    reference_integrity: '引用有效性',
+    tool_success: '工具成功',
+    entity_scope: '主体',
     toolSuccess: '工具成功',
     source: '来源',
     entityScope: '主体',
@@ -978,12 +983,18 @@ function ClaimEvidenceCard({ claims }: { claims: Array<Record<string, unknown>> 
       {claims.slice(0, 40).map((claim, index) => {
         const checks = record(claim.checks);
         const evidenceIds = stringList(claim.evidenceIds ?? claim.evidence_ids);
-        const failed = Object.values(checks).some((value) => value === false);
-        return <div key={text(claim.claimId ?? claim.claim_id) || index} className={cn('rounded-lg border px-2.5 py-2', failed || evidenceIds.length === 0 ? 'border-warning/20 bg-warning/8' : 'border-border/70 bg-card/60')}>
+        const unresolvedIds = stringList(claim.unresolvedEvidenceIds ?? claim.unresolved_evidence_ids);
+        const claimIssues = stringList(claim.issues);
+        const requiresEvidence = (claim.requiresEvidence ?? claim.requires_evidence) !== false;
+        const failed = Object.values(checks).some((value) => value !== true)
+          || unresolvedIds.length > 0 || claimIssues.length > 0 || (requiresEvidence && evidenceIds.length === 0);
+        return <div key={text(claim.claimId ?? claim.claim_id) || index} className={cn('rounded-lg border px-2.5 py-2', failed ? 'border-warning/20 bg-warning/8' : 'border-border/70 bg-card/60')}>
           <div className="flex items-start justify-between gap-2">
             <p className="min-w-0 flex-1 line-clamp-3 text-xs leading-5 text-foreground">{text(claim.text) || '未记录结论文本'}</p>
-            <Badge variant={failed || evidenceIds.length === 0 ? 'warning' : 'success'}>{evidenceIds.length > 0 ? `${evidenceIds.length} 条证据` : '无证据'}</Badge>
+            <Badge variant={failed ? 'warning' : 'success'}>{evidenceIds.length > 0 ? `${evidenceIds.length} 条证据` : requiresEvidence ? '无证据' : '无需引证'}</Badge>
           </div>
+          {unresolvedIds.length > 0 ? <p className="mt-1 break-all text-xs text-danger">无效引用：{unresolvedIds.join('、')}</p> : null}
+          {claimIssues.map((issue) => <p key={issue} className="mt-1 text-xs text-danger">{issue}</p>)}
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-secondary-text">
             {Object.entries(checks).map(([key, value]) => <span key={key} className={value === true ? 'text-success' : 'text-danger'}>{checkLabels[key] ?? key}：{value === true ? '通过' : '未通过'}</span>)}
             {evidenceIds.length > 0 ? <span className="font-mono">{evidenceIds.slice(0, 3).join('、')}</span> : null}

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.tools.get_financials import read_core_financial_indicators_ths
@@ -187,6 +189,7 @@ def test_market_source_reads_do_not_activate_legacy_snapshot_fallbacks() -> None
     }
     with (
         patch("src.tools.market_snapshot_tools._fetch_legu_activity", return_value=breadth) as fetch_breadth,
+        patch("src.tools._trading_calendar.trade_dates", return_value=[date(2026, 8, 7)]),
         patch(
             "src.tools.market_snapshot_tools._fetch_pool",
             return_value={"count": 42, "source": "stock_zt_pool_em"},
@@ -199,6 +202,42 @@ def test_market_source_reads_do_not_activate_legacy_snapshot_fallbacks() -> None
     fetch_pool.assert_called_once_with("stock_zt_pool_em", "20260807")
     assert breadth_result["source_scope"] == "market_breadth"
     assert pool_result["source_scope"] == "market_limit_pool"
+    assert pool_result["is_stale"] is False
+
+
+@pytest.mark.parametrize("now,data_time,stale", [
+    ("2026-09-05T18:30:00+08:00", "2026-09-04T15:00:00+08:00", False),
+    ("2026-09-07T08:30:00+08:00", "2026-09-04T15:00:00+08:00", False),
+    ("2026-09-07T14:30:00+08:00", "2026-09-04T15:00:00+08:00", True),
+    ("2026-10-06T18:30:00+08:00", "2026-09-30T15:00:00+08:00", False),
+    ("2026-09-05T18:30:00+08:00", "2026-09-03T15:00:00+08:00", True),
+])
+def test_breadth_freshness_uses_exchange_sessions(now, data_time, stale) -> None:
+    calendar = [date(2026, 9, 3), date(2026, 9, 4), date(2026, 9, 7), date(2026, 9, 30), date(2026, 10, 9)]
+    with (
+        patch("src.tools.market_snapshot_tools.datetime", wraps=datetime) as clock,
+        patch("src.tools._trading_calendar.trade_dates", return_value=calendar),
+        patch("src.tools.market_snapshot_tools._fetch_legu_activity", return_value={
+            "up_count": 2249, "down_count": 2773, "data_time": data_time,
+        }),
+    ):
+        clock.now.return_value = datetime.fromisoformat(now)
+        result = read_market_breadth_legu(use_cache=False)
+    assert result["is_stale"] is stale
+    assert result["data_time"] == data_time
+
+
+def test_breadth_does_not_certify_freshness_if_calendar_is_unavailable() -> None:
+    with (
+        patch("src.tools._trading_calendar.trade_dates", side_effect=RuntimeError("unavailable")),
+        patch("src.tools.market_snapshot_tools._fetch_legu_activity", return_value={
+            "up_count": 2249, "down_count": 2773, "data_time": "2026-09-04T15:00:00+08:00",
+        }),
+    ):
+        result = read_market_breadth_legu(use_cache=False)
+    assert result["success"] is True
+    assert result["is_stale"] is None
+    assert result["freshness_unknown"] is True
 
 
 def test_stock_capital_snapshot_never_uses_fetch_time_as_quote_time() -> None:

@@ -14,8 +14,10 @@ from typing import Any, Mapping, Sequence
 
 from src.tools.base import evidence_record_is_eligible
 
+from .claim_validation import claim_checks_pass
 
-EVALUATOR_VERSION = "langgraph-agent-loop-quality-3.2"
+
+EVALUATOR_VERSION = "langgraph-agent-loop-quality-3.3"
 _EVIDENCE_REFERENCE = re.compile(r"\bev_[A-Za-z0-9_-]+\b")
 
 
@@ -180,8 +182,7 @@ def score_agent_run_snapshot(
     }
     failed_claim_checks = []
     for index, claim in enumerate(claim_evidence):
-        checks = _mapping(claim.get("checks"))
-        if not checks or not all(value is True for value in checks.values()):
+        if not claim_checks_pass(claim):
             failed_claim_checks.append(str(claim.get("claim_id") or f"claim-{index + 1}"))
     ledger_required = (
         str(projection.get("engine") or "") == "langgraph_agent_loop"

@@ -212,7 +212,7 @@ def _response_repair_limit() -> int:
 
 
 def _fallback_repair_limit() -> int:
-    """Bound explicit web fallback turns while allowing web readers to retry internally."""
+    """Bound recovery requests for unsupported final answers, not ongoing tools."""
     try:
         return max(
             0,

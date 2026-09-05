@@ -24,6 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from src.tools.base import classify_result_semantics, evidence_record_is_eligible
 
+from .claim_validation import claim_checks_pass
 from .reference_access import reference_access_status
 
 
@@ -739,7 +740,6 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     missing_evidence_tools: list[tuple[str, str]] = []
     quality_by_action: dict[str, Mapping[str, Any]] = {}
     usable_action_ids: set[str] = set()
-    successful_fingerprints: set[tuple[str, str]] = set()
     content_read_calls = 0
     content_extracted_calls = 0
     reference_only_tool_count = 0
@@ -821,7 +821,6 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             error_text = _text(errors, 500) or _text(_field(item, "error_code", "errorCode"), 160) or "未提供具体错误"
             failed_tools.append((tool_name, action_id, error_text, _arguments_fingerprint(item)))
         else:
-            successful_fingerprints.add((tool_name, _arguments_fingerprint(item)))
             if action_id and outcome.get("usable"):
                 usable_action_ids.add(action_id)
 
@@ -861,42 +860,6 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             }
         )
 
-    same_call_recovered_action_ids = {
-        action_id
-        for _tool_name, action_id, _error, fingerprint in failed_tools
-        if (fingerprint and (_tool_name, fingerprint) in successful_fingerprints)
-    }
-    web_fallback_recovered_action_ids: set[str] = set()
-    for index, failed in enumerate(normalized_results):
-        failed_tool_name = _text(_field(failed, "tool_name", "toolName"), 160)
-        failed_action_id = _text(
-            _field(failed, "action_id", "actionId", "tool_call_id", "toolCallId"),
-            160,
-        )
-        if not failed_action_id or not failed_tool_name:
-            continue
-        if _text(_field(failed, "success"), 20).lower() in {"true", "1"}:
-            continue
-        if any(
-            _text(_field(candidate, "tool_name", "toolName"), 160)
-            in {"search_web_source", "read_web_source"}
-            and describe_tool_outcome(
-                _text(_field(candidate, "tool_name", "toolName"), 160),
-                candidate,
-            )["execution_status"]
-            == "completed"
-            and evidence_by_action.get(
-                _text(
-                    _field(candidate, "action_id", "actionId", "tool_call_id", "toolCallId"),
-                    160,
-                )
-            )
-            for candidate in normalized_results[index + 1 :]
-        ):
-            web_fallback_recovered_action_ids.add(failed_action_id)
-    recovered_failed_action_ids = (
-        same_call_recovered_action_ids | web_fallback_recovered_action_ids
-    )
     unread = [entry for key, entry in candidate_links.items() if key not in read_urls]
     unread_documents = [entry for entry in unread if entry.get("kind") == "document"]
     unread_articles = [entry for entry in unread if entry.get("kind") == "article"]
@@ -962,6 +925,44 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
         if action_id
     }
     cited_action_ids = set(cited_reference_actions) | claim_action_ids
+    # A recovery must be chronological and tied to the failed read. Merely
+    # finding a successful search elsewhere in the run proves neither.
+    same_call_recovered_action_ids: set[str] = set()
+    retained_evidence_action_ids: set[str] = set()
+    web_fallback_recovered_action_ids: set[str] = set()
+    for index, failed in enumerate(normalized_results):
+        failed_id = _text(_field(failed, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
+        if not any(action_id == failed_id for _, action_id, _, _ in failed_tools):
+            continue
+        failed_name = _text(_field(failed, "tool_name", "toolName"), 160)
+        fingerprint = _arguments_fingerprint(failed)
+        failed_urls = {_canonical_url(url) for url in _reference_urls(failed) + _read_urls(failed, {})}
+        failed_urls.discard("")
+        for candidate_index, candidate in enumerate(normalized_results):
+            candidate_id = _text(_field(candidate, "action_id", "actionId", "tool_call_id", "toolCallId"), 160)
+            if candidate_id not in usable_action_ids:
+                continue
+            candidate_name = _text(_field(candidate, "tool_name", "toolName"), 160)
+            same_request = candidate_name == failed_name and _arguments_fingerprint(candidate) == fingerprint
+            if same_request and candidate_index > index:
+                same_call_recovered_action_ids.add(failed_id)
+            elif same_request and candidate_index < index and candidate_id in cited_action_ids:
+                retained_evidence_action_ids.add(failed_id)
+            elif (
+                candidate_index > index
+                and candidate_name == "read_web_source"
+                and candidate_id in cited_action_ids
+                and evidence_by_action.get(candidate_id)
+                and _content_extracted(candidate, {}, "content_read")
+                and failed_urls.intersection(_canonical_url(url) for url in _read_urls(candidate, {}))
+            ):
+                web_fallback_recovered_action_ids.add(failed_id)
+    # One failure has one resolution, never two counted recoveries.
+    web_fallback_recovered_action_ids -= same_call_recovered_action_ids
+    retained_evidence_action_ids -= same_call_recovered_action_ids | web_fallback_recovered_action_ids
+    recovered_failed_action_ids = (
+        same_call_recovered_action_ids | web_fallback_recovered_action_ids | retained_evidence_action_ids
+    )
     cited_empty_action_ids = {
         action_id
         for _tool_name, action_id in empty_tools
@@ -1046,11 +1047,14 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 for action_id, _error in failures
                 if action_id
             )
+            retained_count = sum(action_id in retained_evidence_action_ids for action_id, _ in failures)
             recovery_details: list[str] = []
             if same_count:
                 recovery_details.append(f"{same_count} 次随后由相同参数的成功调用恢复")
             if web_fallback_count:
-                recovery_details.append(f"{web_fallback_count} 次随后由网页搜索/读取兜底恢复")
+                recovery_details.append(f"{web_fallback_count} 次随后由相同来源的正文读取恢复并进入引用")
+            if retained_count:
+                recovery_details.append(f"{retained_count} 次重复读取失败，但回答已引用此前相同请求的可用证据（不是随后恢复）")
             recovered_suffix = (
                 "；其中 " + "，".join(recovery_details)
                 if recovery_details
@@ -1062,7 +1066,10 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 else (
                     f"工具 {tool_name} 曾失败但已由网页兜底恢复"
                     if web_fallback_count
-                    else f"工具 {tool_name} 曾失败但已恢复"
+                    else (
+                        f"工具 {tool_name} 重复读取失败，已引用此前证据"
+                        if retained_count else f"工具 {tool_name} 曾失败但已恢复"
+                    )
                 )
             )
             findings.append(
@@ -1076,7 +1083,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                         "查看失败调用的请求参数、来源尝试链路和服务端错误；"
                         "已恢复的调用保留为诊断记录，不再把它当作本轮未恢复故障。"
                         if unresolved_count
-                        else "失败调用已由后续成功调用覆盖；保留原始记录供排查，并以网页兜底结果作为最终取证来源。"
+                        else "回答已有对应的可用证据；保留失败尝试和实际引用链路，不把它计为未恢复的取证故障。"
                     ),
                     tool_names=[tool_name],
                     action_ids=[item[0] for item in failures],
@@ -1395,12 +1402,11 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
     failed_claims = []
     unsupported_claims = []
     for claim in claims:
-        checks = _mapping(_field(claim, "checks"))
         evidence_ids = _sequence(_field(claim, "evidence_ids", "evidenceIds"))
         requires_evidence = _field(claim, "requires_evidence", "requiresEvidence") is not False
         if requires_evidence and not evidence_ids:
             unsupported_claims.append(claim)
-        if checks and any(value is False for value in checks.values()):
+        if not claim_checks_pass(_mapping(claim)):
             failed_claims.append(claim)
     if unsupported_claims or failed_claims:
         findings.append(
@@ -1411,7 +1417,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                 title="部分回答结论没有通过证据检查",
                 detail=(
                     f"{len(unsupported_claims)} 个结论没有关联证据，"
-                    f"{len(failed_claims)} 个结论的主体、来源或时间检查未通过。"
+                    f"{len(failed_claims)} 个结论的引用、主体、来源或时间检查未通过。"
                 ),
                 remediation="打开结论与证据映射，补充取证或降低回答中的确定性表述。",
                 confidence=0.95,

@@ -42,6 +42,31 @@ const detail: AgentRunDetail = {
 };
 
 describe('RunDetailContent', () => {
+  it('distinguishes evidence failure from failed tools and exempts disclaimers', () => {
+    const evidenceDetail: AgentRunDetail = {
+      ...detail,
+      snapshot: {
+        ...detail.snapshot,
+        run: { ...detail.snapshot.run, errorCode: 'evidence_link_incomplete', errorDetail: '证据关联修订预算已用尽', finalText: '研究结果' },
+        qualityProjection: {
+          toolResults: [{ actionId: 'read', toolName: 'read_quote', success: true }],
+          claimEvidence: [
+            { claimId: 'risk', text: '风险结论', evidenceIds: ['ev_valid'], unresolvedEvidenceIds: ['ev_missing'], checks: { source: true, time: true } },
+            { claimId: 'disclaimer', text: '仅供研究参考', requiresEvidence: false, evidenceIds: [], checks: { source: true, time: true } },
+          ],
+          evidence: [],
+        },
+      },
+      score: { ...detail.score, dimensions: { execution: { score: 0.75, weight: 0.25, details: { status: 'partial' } } } },
+    };
+    render(<RunDetailContent detail={evidenceDetail} onFeedback={vi.fn()} />);
+    expect(screen.queryByText('工具执行没有全部完成')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '定位失败工具' })).not.toBeInTheDocument();
+    expect(screen.getByText('运行未完整完成')).toBeInTheDocument();
+    expect(screen.getByText('无效引用：ev_missing')).toBeInTheDocument();
+    expect(screen.getByText('无需引证')).toBeInTheDocument();
+  });
+
   it('shows expandable run and tool error details', () => {
     render(<RunDetailContent detail={detail} onFeedback={vi.fn()} />);
 

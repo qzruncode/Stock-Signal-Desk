@@ -21,6 +21,20 @@ def _snapshot(tool_results, *, claims=None, evidence=None, final_text=""):
     }
 
 
+def test_legacy_claim_with_invalid_citation_requires_action_despite_passing_checks() -> None:
+    audit = build_behavior_audit(_snapshot([], claims=[{
+        "claim_id": "risk", "evidence_ids": ["ev_valid"],
+        "unresolved_evidence_ids": ["ev_missing"],
+        "checks": {"source": True, "time": True, "tool_success": True, "entity_scope": True},
+    }, {
+        "claim_id": "disclaimer", "requires_evidence": False, "evidence_ids": [],
+        "checks": {"source": True, "time": True},
+    }]))
+    finding = next(item for item in audit["findings"] if item["code"] == "claim_evidence_check_failed")
+    assert finding["disposition"] == "action_required"
+    assert "1 个结论的引用" in finding["detail"]
+
+
 def test_reference_links_are_not_treated_as_document_reads() -> None:
     audit = build_behavior_audit(
         _snapshot(
@@ -766,7 +780,7 @@ def test_failed_tool_is_advisory_when_same_arguments_later_succeed() -> None:
     assert audit["action_required_count"] == 0
 
 
-def test_failed_tool_is_advisory_when_a_later_web_fallback_has_evidence() -> None:
+def test_unrelated_later_web_success_does_not_prove_source_recovery() -> None:
     audit = build_behavior_audit(
         _snapshot(
             [
@@ -797,10 +811,42 @@ def test_failed_tool_is_advisory_when_a_later_web_fallback_has_evidence() -> Non
     )
 
     finding = next(item for item in audit["findings"] if item["code"] == "tool_execution_failed")
-    assert finding["disposition"] == "advisory"
-    assert finding["severity"] == "info"
-    assert "网页兜底恢复" in finding["title"]
-    assert audit["action_required_count"] == 0
+    assert finding["disposition"] == "action_required"
+    assert finding["severity"] == "danger"
+    assert "恢复" not in finding["title"]
+
+
+def test_earlier_success_is_retained_evidence_only_when_actually_cited() -> None:
+    tools = [
+        {"action_id": "early", "tool_name": "read_market_indices_sina", "success": True, "arguments": {}, "result_count": 4},
+        {"action_id": "failed", "tool_name": "read_market_indices_sina", "success": False, "arguments": {}, "errors": ["disconnected"]},
+    ]
+    evidence = [{"evidence_id": "ev_early", "action_id": "early", "success": True}]
+    for cited in (False, True):
+        audit = build_behavior_audit(_snapshot(tools, evidence=evidence, claims=[
+            {"evidence_ids": ["ev_early"], "checks": {"source": True}},
+        ] if cited else []))
+        finding = next(item for item in audit["findings"] if item["code"] == "tool_execution_failed")
+        assert finding["disposition"] == ("advisory" if cited else "action_required")
+        assert "已恢复" not in finding["title"]
+        if cited:
+            assert "此前" in finding["title"]
+
+
+def test_web_recovery_requires_matching_body_and_final_citation() -> None:
+    for matching, cited in ((True, True), (False, True), (True, False)):
+        url = "https://example.test/report"
+        tools = [
+            {"action_id": "failed", "tool_name": "read_text_document", "arguments": {"url": url}, "success": False},
+            {"action_id": "body", "tool_name": "read_web_source", "arguments": {"url": url if matching else url + "-other"}, "success": True, "content_text": "已提取正文。"},
+        ]
+        audit = build_behavior_audit(_snapshot(tools,
+            evidence=[{"evidence_id": "ev_body", "action_id": "body", "success": True}],
+            claims=[{"evidence_ids": ["ev_body"]}] if cited else [],
+        ))
+        finding = next(item for item in audit["findings"] if item["code"] == "tool_execution_failed")
+        assert finding["disposition"] == ("advisory" if matching and cited else "action_required")
+        assert finding["detail"].count("次随后") <= 1
 
 
 def test_reused_tool_observation_is_not_reported_as_repeated_model_call() -> None:

@@ -18,6 +18,7 @@ from langchain.agents.middleware.types import ExtendedModelResponse, ModelReques
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langgraph.types import Command, interrupt
 
+from src.agent.claim_validation import claim_checks_pass
 from src.tools.base import classify_result_semantics, evidence_record_is_eligible
 
 from .agent_tools import NATIVE_TOOL_RESULT_MARKER, native_tool_context
@@ -33,8 +34,10 @@ from .content_access import (
 )
 from .answer_contract import (
     STRUCTURED_OUTPUT_TOOL_NAME,
+    evidence_source_catalog,
     finalize_terminal_answer,
     render_structured_answer,
+    resolve_answer_sources,
     structured_answer_blocks,
     structured_answer_mapping,
 )
@@ -89,14 +92,6 @@ def _semantic_result_payload(record: Mapping[str, Any]) -> dict[str, Any]:
         if key not in payload and key in record:
             payload[key] = record[key]
     return payload
-
-
-def _web_fallback_succeeded(record: Mapping[str, Any]) -> bool:
-    return (
-        str(record.get("tool_name") or "").strip() in _WEB_FALLBACK_TOOL_NAMES
-        and record.get("success") is True
-        and evidence_record_is_eligible(record)
-    )
 
 
 def _web_fallback_enabled(spec: Any) -> bool:
@@ -157,20 +152,23 @@ def _source_fallback_requirements(
     state: Mapping[str, Any],
     registry: Any,
 ) -> list[dict[str, Any]]:
-    """Find unresolved source gaps without guessing a domain-specific query."""
+    """Expose source problems for recovery, never infer coverage from tool order.
+
+    A later successful read does not establish that an earlier gap was filled.
+    The existing claim/evidence validator decides whether the actual answer
+    has usable support, regardless of which source produced that evidence.
+    """
     records = [
         item
         for item in state.get("tool_results") or []
         if isinstance(item, Mapping)
     ]
     requirements: list[dict[str, Any]] = []
-    for index, record in enumerate(records):
+    for record in records:
         tool_name = str(record.get("tool_name") or "").strip()
         spec = registry.get_tool(tool_name) if tool_name else None
         reason = _source_fallback_reason(record, spec)
         if reason is None:
-            continue
-        if any(_web_fallback_succeeded(item) for item in records[index + 1 :]):
             continue
         payload = _semantic_result_payload(record)
         raw_refs = record.get("source_refs") or payload.get("source_refs") or []
@@ -190,10 +188,47 @@ def _source_fallback_requirements(
                 "reason": reason,
                 "fallback_operation": "read_web_source" if source_refs else "search_web_source",
                 "source_refs": source_refs[:6],
-                "arguments": dict(record.get("display_arguments") or {}),
+                "arguments": dict(record.get("display_arguments") or record.get("arguments") or {}),
             }
         )
     return requirements
+
+
+def _source_recovery_tool_names(state: Mapping[str, Any], registry: Any) -> set[str]:
+    """Search when no source URL exists; a reader needs an actual target."""
+    names = {"search_web_source"}
+    if any(item.get("source_refs") for item in _source_fallback_requirements(state, registry)):
+        names.add("read_web_source")
+    return {name for name in names if registry.get_tool(name) is not None}
+
+
+def _source_answer_ledger(
+    state: Mapping[str, Any],
+    last: AIMessage,
+    candidate: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Reuse the publication validator to distinguish an answer from progress."""
+    evidence = [
+        item for item in state.get("evidence") or []
+        if isinstance(item, Mapping)
+        and evidence_record_is_eligible(item)
+        and str(item.get("effect") or "read") != "side_effect"
+    ]
+    results = [item for item in state.get("tool_results") or [] if isinstance(item, Mapping)]
+    if candidate:
+        return build_structured_claim_evidence_ledger(
+            structured_answer_blocks(candidate), evidence, results,
+        )
+    return build_claim_evidence_ledger(_message_text(last), evidence, results)
+
+
+def _has_supported_claim(ledger: Mapping[str, Any]) -> bool:
+    return any(
+        claim.get("requires_evidence") is not False
+        and claim.get("evidence_ids")
+        and claim_checks_pass(claim)
+        for claim in ledger.get("claims") or []
+    )
 
 
 def _structured_output_call_id(message: AIMessage | None) -> str | None:
@@ -377,8 +412,8 @@ def _tool_message_content(record: Mapping[str, Any], evidence: Mapping[str, Any]
             )
         else:
             next_action = (
-                "如果用户问题要求最新外部事实，请显式调用 search_web_source(source_id=auto) 获取网页来源；"
-                "若已有相关 URL，再调用 read_web_source(source_id=auto)。"
+                "如果用户问题仍需要这些外部事实，请选择能补齐相同数据的替代来源，"
+                "或调用 search_web_source 搜索、read_web_source 读取相关网页；参数以工具 schema 为准。"
                 "保留本次失败/空/过期观察，并禁止把它当作最新事实。"
             )
         payload["next_action"] = next_action
@@ -479,6 +514,27 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
     name = "agent_prompt"
 
+    async def abefore_model(self, state: AgentState, runtime: Any) -> dict[str, Any] | None:
+        """Consume recovery feedback once, after the native tools join.
+
+        Parallel tools must not write this scalar state channel. Matching
+        ToolMessages also cover rejected/failed calls, so an exhausted tool
+        budget cannot leave every later request forced into recovery mode.
+        """
+        if not state.get("fallback_feedback"):
+            return None
+        messages = state.get("messages") or []
+        last = _last_ai_message(messages)
+        completed_ids = {
+            message.tool_call_id for message in messages if isinstance(message, ToolMessage)
+        }
+        if last and any(
+            call.get("name") in _WEB_FALLBACK_TOOL_NAMES and call.get("id") in completed_ids
+            for call in last.tool_calls or []
+        ):
+            return {"fallback_feedback": ""}
+        return None
+
     async def awrap_model_call(
         self,
         request: ModelRequest[GraphContext],
@@ -490,6 +546,18 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
         observations = [item for item in state.get("tool_results") or [] if isinstance(item, Mapping)]
         feedback = str(state.get("evidence_feedback") or "").strip()
         fallback_feedback = str(state.get("fallback_feedback") or "").strip()
+        # Recovery is a real native tool turn. Exclude the answer tool for
+        # this one request so ToolStrategy cannot satisfy required tool use
+        # by producing another final-answer candidate instead of a read.
+        recovery_names = _source_recovery_tool_names(state, context.registry) if fallback_feedback else set()
+        recovery_tools = [
+            tool for tool in request.tools
+            if getattr(tool, "name", None) in recovery_names
+        ] if fallback_feedback else []
+        if recovery_tools:
+            request = request.override(
+                tools=recovery_tools, tool_choice="required", response_format=None,
+            )
         content_feedback = str(state.get("content_access_feedback") or "").strip()
         response_format_feedback = str(state.get("response_format_feedback") or "").strip()
         content_targets, pending_content_reads = build_content_access_targets(
@@ -514,11 +582,15 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
 
 对需要多步取证的问题：第一次工具调用前，用一小段简洁的用户可见文字说明目标、准备做的步骤和下一步；每轮工具返回后，先简洁总结已完成的工作，再说明下一步。不要输出隐藏的 chain-of-thought，只输出可供用户理解的计划、阶段总结和行动说明。
 
-准备结束本轮时，必须调用结构化输出工具 StructuredAgentAnswer，不要直接输出最终 Markdown。把标题、表格、结论、判断、操作建议和风险拆成有明确边界的 blocks；每个事实、推断、建议或风险 block 都要把支持它的完整 evidence_id 放入 evidence_ids。不要把 evidence_id 写进 content，服务端会按 evidence_ids 统一渲染为【证据 ev_...】。只有 context/disclaimer block 可以在没有外部证据时输出。
+准备结束本轮时，必须调用结构化输出工具 StructuredAgentAnswer，不要直接输出最终 Markdown。把标题、表格、结论、判断、操作建议和风险拆成有明确边界的 blocks；每个事实、推断、建议或风险 block 都要从本轮来源目录选择支持它的数字 source_id，放入 source_ids（例如 [1, 3]）。不要抄写 ev_ 长编号，也不要把引用写进 content；服务端会将数字映射到真实证据并统一渲染引用。只有 context/disclaimer block 可以在没有外部证据时输出。同一指标的不同口径或时间不得混用；来源冲突时应说明差异，不可拼成一个确定结论。
 
-外部事实只能使用本轮成功工具结果里的证据；只能使用证据里的 data_time，不能把检索时间当成数据时间。没有可用 data_time 时，不要称为“最新/当前/今日”，应继续取证或明确时效未知。失败、空结果、过期结果和 freshness_unknown 都必须如实读取：若用户需要最新事实，改用 search_web_source(source_id=auto)；已有 URL 则用 read_web_source(source_id=auto)。不要把失败或过期观察当成最新事实。
+外部事实只能使用本轮成功工具结果里的证据；只能使用证据里的 data_time，不能把检索时间当成数据时间。没有可用 data_time 时，不要称为“最新/当前/今日”，应继续取证或明确时效未知。来源失败、空结果或不满足所需时效时，继续选择可补齐同一问题的替代来源；也可使用 search_web_source 搜索、read_web_source 读取相关网页，参数以绑定 schema 为准。失败尝试保留在执行记录中，最终结论必须引用实际取得的有效证据。不要重复调用同一个已失败的来源和参数，不要引用失败结果。
 
 reference-only 结果只是标题、摘要或来源索引，不是正文。只有在确实需要文章/PDF内容时，选择相关 URL 调用 read_web_source；不要为了满足规则读取全部候选链接。没有正文时只能按索引事实表述，并明确正文未读取。表格或连续列表可由紧随其后的来源行统一引用；结论、判断和操作建议也必须关联支持它们的有效 evidence_id，不要因引用位置而删除已核实内容。""",
+                (
+                    "本轮可引用来源目录（source_ids 只能选这些数字；目录随成功取证追加）：\n"
+                    + json.dumps(evidence_source_catalog(evidence), ensure_ascii=False, default=str)
+                ),
                 (
                     "最近一次已解析的会话数据上下文（仅在本轮问题继续引用时使用）：\n"
                     + json.dumps(conversation_context, ensure_ascii=False, default=str)
@@ -539,6 +611,11 @@ reference-only 结果只是标题、摘要或来源索引，不是正文。只�
                     "来源兜底反馈：\n" + fallback_feedback
                     if fallback_feedback
                     else ""
+                ),
+                (
+                    "本轮是取证恢复调用，只能调用当前绑定的搜索/读取工具，"
+                    "不可提交最终回答。读取结果返回后会恢复正常工具和结构化回答。"
+                    if recovery_tools else ""
                 ),
                 (
                     "可选的参考来源候选（只选择与当前问题相关的 URL，不要求全部读取）：\n"
@@ -693,7 +770,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         requirements: Sequence[Mapping[str, Any]],
         candidate: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        """Publish a bounded partial result when the web fallback did not finish."""
+        """Publish a terminal result without promoting pending tool narration."""
         factual_evidence = [
             item
             for item in state.get("evidence") or []
@@ -704,15 +781,16 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         structured_candidate = structured_answer_mapping(candidate)
         if not structured_candidate:
             structured_candidate = structured_answer_mapping(state.get("structured_answer"))
-        if structured_candidate:
+        ledger = _source_answer_ledger(state, last, structured_candidate)
+        if structured_candidate and _has_supported_claim(ledger):
             answer = render_structured_answer(structured_candidate, factual_evidence)
         else:
-            answer = _message_text(last)
+            answer = "未能取得支持本次分析的有效外部数据，本轮分析已结束。"
         answer, _ = canonicalize_evidence_markers(answer, factual_evidence)
         if not answer:
             answer = "本轮未完成外部来源核验。"
         detail = (
-            "主来源存在失败、空结果、过期或时效未知，且限定次数内未完成网页搜索/读取兜底："
+            "来源恢复后仍缺少可支持回答的证据："
             + "；".join(
                 f"{item.get('tool_name')}: {item.get('reason')}"
                 for item in requirements[:8]
@@ -727,7 +805,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         context.events.stage(
             "source_fallback",
             "failed",
-            "网页兜底未完成，已阻止把原始缺口当作完整回答发布",
+            "来源恢复未取得可支持回答的证据，本轮已结束",
             error_code="source_fallback_incomplete",
             details={
                 "requirements": [dict(item) for item in requirements[:8]],
@@ -757,22 +835,30 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         last: AIMessage,
         candidate: Mapping[str, Any] | None,
     ) -> dict[str, Any] | None:
-        """Require an explicit, traceable web fallback before terminal checks."""
-        requirements = _source_fallback_requirements(state, context.registry)
-        if not requirements:
-            return None
-        # A web operation in the current model turn is the required recovery
-        # action. Let the native tool loop execute it and re-evaluate its result
-        # on the next model turn; never synthesize nested hidden tool calls here.
+        """Recover an unsupported terminal candidate inside the native loop."""
+        # An ordinary tool call is ongoing work, not a terminal candidate.
+        # Native ToolNode must execute it and return its matching ToolMessage;
+        # jumping back to the model here would strand pending tool calls.
         if any(
-            str(call.get("name") or "").strip() in _WEB_FALLBACK_TOOL_NAMES
+            str(call.get("name") or "").strip() != STRUCTURED_OUTPUT_TOOL_NAME
             for call in last.tool_calls or []
         ):
             return None
 
+        requirements = _source_fallback_requirements(state, context.registry)
+        if not requirements:
+            return None
+        # A failed attempt need not block an answer supported by another
+        # source. The normal evidence/content gates still validate every
+        # block; a successful but uncited web read never clears all failures.
+        if _has_supported_claim(_source_answer_ledger(state, last, candidate)):
+            return None
+
         repair_count = max(0, int(state.get("fallback_repair_count") or 0))
         repair_limit = max(0, int(state.get("fallback_repair_limit") or 0))
-        if repair_count >= repair_limit:
+        recovery_available = bool(_source_recovery_tool_names(state, context.registry))
+        remaining = max(0, int(state.get("tool_call_limit") or 0) - int(state.get("tool_call_count") or 0))
+        if repair_count >= repair_limit or not recovery_available or not remaining:
             return self._source_fallback_partial(
                 state=state,
                 context=context,
@@ -786,25 +872,26 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             operation = str(item.get("fallback_operation") or "search_web_source")
             if operation == "read_web_source" and item.get("source_refs"):
                 instructions.append(
-                    f"{item.get('tool_name')}：{item.get('reason')}；请对相关 URL 显式调用 "
-                    "read_web_source(source_id=auto)，不要把索引或摘要当正文。"
+                    f"{item.get('tool_name')}：{item.get('reason')}；相关 URL："
+                    + "、".join(str(url) for url in item["source_refs"])
+                    + "。调用 read_web_source 读取，必要时搜索独立来源；参数以绑定 schema 为准。"
                 )
             else:
                 instructions.append(
                     f"{item.get('tool_name')}：{item.get('reason')}；请显式调用 "
-                    "search_web_source(source_id=auto) 重新取证；若返回相关 URL，再调用 "
-                    "read_web_source(source_id=auto)。"
+                    "search_web_source 重新取证；若返回相关 URL，再调用 read_web_source。"
                 )
         feedback = (
             "当前不能结束回答。检测到外部来源存在未恢复的数据缺口：\n"
             + "\n".join(f"- {item}" for item in instructions)
-            + "\n网页搜索/读取是本轮的强制兜底路径；只有成功获得可引用结果后才能继续最终回答。"
+            + "\n本轮执行搜索/读取以补齐用户问题需要的证据；一次无关网页成功不能证明缺口已恢复。"
             "不要重试同一个已失败的主来源，不要引用失败、空、过期或时效未知的观察。"
+            "若所有来源仍不可用，明确说明未获得的数据，不要把下一步计划当成最终结论。"
         )
         context.events.stage(
             "source_fallback",
             "started",
-            "检测到来源缺口，要求模型执行一次有界的网页搜索/读取兜底",
+            "最终回答缺少有效来源，下一轮通过工具选择约束执行搜索/读取",
             details={
                 "requirements": [dict(item) for item in requirements[:8]],
                 "fallback_repair_count": repair_count + 1,
@@ -828,18 +915,24 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
         if last is None:
             return None
         current_structured_call_id = _structured_output_call_id(last)
-        structured_answer = structured_answer_mapping(state.get("structured_response"))
+        structured_answer = resolve_answer_sources(
+            state.get("structured_response"), state.get("evidence") or [],
+        )
         recorded_structured_call_id = str(state.get("structured_answer_call_id") or "").strip()
         pending_structured_answer = self._pending_structured_answer(state)
-        source_fallback_update = self._source_fallback_gate(
-            state,
-            context,
-            last,
-            structured_answer or pending_structured_answer,
+        valid_current_answer = bool(
+            structured_answer and current_structured_call_id
+            and current_structured_call_id == recorded_structured_call_id
         )
-        if source_fallback_update is not None:
-            return source_fallback_update
-        if structured_answer and current_structured_call_id == recorded_structured_call_id:
+        candidate = structured_answer if valid_current_answer else pending_structured_answer
+        # Source checks need a parsed candidate with resolved bindings. An
+        # unstructured/invalid response has no binding contract yet; treating
+        # that as missing source data needlessly forces another external read.
+        if candidate or state.get("fallback_feedback") or not state.get("structured_output_required"):
+            source_fallback_update = self._source_fallback_gate(state, context, last, candidate)
+            if source_fallback_update is not None:
+                return source_fallback_update
+        if valid_current_answer:
             return self._check_structured_answer(state, context, structured_answer)
         if current_structured_call_id and current_structured_call_id != recorded_structured_call_id:
             # LangChain has already attached a schema-validation error for this
@@ -869,6 +962,13 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                     context,
                     pending_structured_answer,
                 )
+            if bool(state.get("structured_output_required")):
+                return self._request_structured_output_repair(
+                    state,
+                    context,
+                    candidate=_message_text(last),
+                    reason="模型返回了普通文本而不是要求的 StructuredAgentAnswer",
+                )
             content_access_update, blocked = self._content_access_gate(
                 state,
                 context,
@@ -876,14 +976,6 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
             )
             if blocked:
                 return content_access_update
-            if bool(state.get("structured_output_required")):
-                return self._request_structured_output_repair(
-                    state,
-                    context,
-                    candidate=_message_text(last),
-                    content_access_update=content_access_update,
-                    reason="模型返回了普通文本而不是要求的 StructuredAgentAnswer",
-                )
             return {**content_access_update, **self._check_answer(state, context, last)}
 
         used = max(0, int(state.get("tool_call_count") or 0))
@@ -1567,7 +1659,7 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                         ledger.get("claims") or []
                     )[index] if index < len(ledger.get("claims") or []) else {}
                     checks = dict(claim.get("checks") or {}) if isinstance(claim, Mapping) else {}
-                    if checks and all(bool(value) for value in checks.values()):
+                    if claim_checks_pass(claim):
                         continue
                     repair_targets.append(
                         {
@@ -1575,17 +1667,19 @@ class OperationPolicyMiddleware(AgentMiddleware[AgentState, GraphContext]):
                             "kind": str(block.get("kind") or "fact")[:32],
                             "content": str(block.get("content") or "")[:600],
                             "evidence_ids": list(block.get("evidence_ids") or [])[:24],
+                            "source_ids": list(block.get("source_ids") or [])[:24],
                             "checks": checks,
+                            "issues": list(claim.get("issues") or []),
+                            "unresolved_evidence_ids": list(claim.get("unresolved_evidence_ids") or []),
                         }
                     )
                 feedback = (
                     "结构化回答没有通过证据校验，请重新输出完整的 StructuredAgentAnswer。"
-                    "只修复证据字段，不要删除已生成的事实、表格、判断、风险或建议区块。"
-                    "fact/inference/recommendation/risk 区块必须引用下方可用的完整 evidence_id；"
-                    "context/disclaimer 区块可以不引用。禁止截断、改写或自造 evidence_id；"
-                    "不要把 evidence_id 写进 content，放入 evidence_ids 字段。\n"
-                    "可用 evidence_id："
-                    + ("、".join(available_ids) or "无")
+                    "保留已核实内容；按具体问题补齐来源、修正口径或明确证据不足。"
+                    "fact/inference/recommendation/risk 区块必须在 source_ids 中选择支持它的数字来源编号；"
+                    "context/disclaimer 区块可以不引用。不要抄写 ev_ 长编号。\n"
+                    "可用来源目录："
+                    + json.dumps(evidence_source_catalog(state.get("evidence") or []), ensure_ascii=False, default=str)
                     + "\n未通过的区块："
                     + json.dumps(repair_targets[:12], ensure_ascii=False, default=str)
                     + "\n校验问题："
@@ -1950,8 +2044,6 @@ class ToolExecutionMiddleware(AgentMiddleware[AgentState, GraphContext]):
         }
         if conversation_context is not None:
             update["conversation_context"] = conversation_context
-        if tool_name in _WEB_FALLBACK_TOOL_NAMES and success:
-            update["fallback_feedback"] = ""
         return Command(update=update)
 
 

@@ -605,6 +605,8 @@ def _validate_claim(
     validator.  Only the former has to discover claim boundaries or citations
     from text; the latter supplies both explicitly.
     """
+    aggregate_issues = issues
+    issues = []
     normalized_evidence_ids = _unique(list(evidence_ids))
     normalized_unresolved_ids = _unique(list(unresolved_ids))
     if normalized_unresolved_ids:
@@ -682,14 +684,18 @@ def _validate_claim(
         issues.append("引用证据未关联到成功工具结果: " + ", ".join(normalized_evidence_ids))
     if supporting and not entity_scope_ok:
         issues.append("引用证据缺少实体范围: " + ", ".join(normalized_evidence_ids))
-    if unsupported_identifiers:
+    if unsupported_identifiers and (requires_evidence or normalized_evidence_ids):
         issues.append(
             "结论中的显式标识未出现在引用证据中: "
             + ", ".join(unsupported_identifiers)
         )
     if unsupported_times:
         issues.append("结论中的时间无法在引用证据中核对: " + ", ".join(unsupported_times))
-    if relative_time and not _supports_relative_time(supporting):
+    if (
+        (requires_evidence or normalized_evidence_ids)
+        and relative_time
+        and not _supports_relative_time(supporting)
+    ):
         issues.append("结论使用了当前/最新时间口径，但引用证据没有可用数据时间")
 
     claim = {
@@ -704,6 +710,7 @@ def _validate_claim(
         "time_references": explicit_times,
         "uses_relative_time": relative_time,
         "checks": {
+            "reference_integrity": not normalized_unresolved_ids,
             "tool_success": tool_success if requires_evidence or supporting else True,
             "source": source_ok if requires_evidence or supporting else True,
             "entity_scope": entity_ok,
@@ -721,6 +728,8 @@ def _validate_claim(
     }
     if section:
         claim["section"] = _short(section, 160)
+    claim["issues"] = _unique(issues)
+    aggregate_issues.extend(claim["issues"])
     return claim
 
 

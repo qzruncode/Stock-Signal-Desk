@@ -4,8 +4,81 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from pydantic import TypeAdapter, ValidationError
+
+from src.agent.langgraph_runtime.answer_contract import (
+    StructuredAgentAnswer, evidence_source_catalog, resolve_answer_sources,
+)
+from src.agent.langgraph_runtime.state import merge_records
 from src.agent.langgraph_runtime.claim_evidence import build_claim_evidence_ledger
 from src.agent.langgraph_runtime.evidence_identity import canonicalize_evidence_markers
+from src.agent.langgraph_runtime.claim_evidence import build_structured_claim_evidence_ledger
+from src.agent.claim_validation import claim_checks_pass
+
+
+def test_numbered_sources_remain_stable_across_replay_append_and_ineligible_results() -> None:
+    records = [
+        _evidence(id="ev_robot"),
+        _evidence(id="ev_failed", evidence_id="ev_failed", success=False),
+        _evidence(id="ev_write", evidence_id="ev_write", effect="side_effect"),
+        _evidence(id="ev_other", evidence_id="ev_other"),
+    ]
+    catalog = evidence_source_catalog(records)
+    assert [(item["source_id"], item["evidence_id"]) for item in catalog] == [(1, "ev_robot"), (4, "ev_other")]
+    replay = merge_records(records, [records[0], _evidence(id="ev_new", evidence_id="ev_new")])
+    assert evidence_source_catalog(replay)[:2] == catalog
+    assert evidence_source_catalog(replay)[-1]["source_id"] == 5
+    answer = resolve_answer_sources({"blocks": [{
+        "kind": "fact", "content": "来源提供了观察。", "source_ids": [1, 4, 2, 3, 99],
+    }]}, records)
+    assert answer["blocks"][0]["evidence_ids"] == ["ev_robot", "ev_other", "source:2", "source:3", "source:99"]
+    ledger = build_structured_claim_evidence_ledger(answer["blocks"], records, [_tool_result()])
+    assert not claim_checks_pass(ledger["claims"][0])
+    assert set(ledger["unresolved_evidence_ids"]) == {"source:2", "source:3", "source:99"}
+
+
+@pytest.mark.parametrize("source_id", ["ev_typo", "1", 0, -1, 1.5, True])
+def test_native_source_schema_rejects_hashes_and_invalid_source_numbers(source_id) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(StructuredAgentAnswer).validate_python({"blocks": [{
+            "content": "来源提供了观察。", "source_ids": [source_id],
+        }]})
+
+
+def test_old_canonical_answer_can_still_be_read_without_remapping() -> None:
+    answer = {"blocks": [{"content": "已核实。", "evidence_ids": ["ev_robot"]}]}
+    assert resolve_answer_sources(answer, [_evidence()]) == answer
+
+
+def test_structured_validation_reports_invalid_reference_on_its_block_only() -> None:
+    ledger = build_structured_claim_evidence_ledger(
+        [
+            {"kind": "risk", "content": "产业链仍存在不确定性。", "evidence_ids": ["ev_robot", "ev_missing"]},
+            {"kind": "disclaimer", "content": "截至2026-09-04，本分析仅供研究参考，不构成投资建议。", "evidence_ids": []},
+            {"kind": "context", "content": "本次研究对象为300850，截至今日。", "evidence_ids": []},
+        ], [_evidence()], [_tool_result()],
+    )
+    risk, disclaimer, context = ledger["claims"]
+    assert not claim_checks_pass(risk)
+    assert risk["checks"]["reference_integrity"] is False
+    assert risk["issues"] == ledger["issues"]
+    assert claim_checks_pass(disclaimer)
+    assert claim_checks_pass(context)
+    assert disclaimer["issues"] == context["issues"] == []
+
+
+def test_cited_disclaimer_still_checks_time_and_legacy_claim_checks_include_invalid_ids() -> None:
+    ledger = build_structured_claim_evidence_ledger(
+        [{"kind": "disclaimer", "content": "截至2027-01-01，仅供参考。", "evidence_ids": ["ev_robot"]}],
+        [_evidence()], [_tool_result()],
+    )
+    assert not claim_checks_pass(ledger["claims"][0])
+    assert ledger["issues"]
+    assert not claim_checks_pass({
+        "checks": {"source": True, "time": True},
+        "evidence_ids": ["ev_robot"], "unresolved_evidence_ids": ["ev_missing"],
+    })
 
 
 def _evidence(**overrides: Any) -> dict[str, Any]:
@@ -49,6 +122,7 @@ def test_claim_ledger_persists_fact_mapping_and_all_generic_checks() -> None:
     assert claim["evidence_ids"] == ["ev_robot"]
     assert claim["time_references"] == ["2026-08-08"]
     assert claim["checks"] == {
+        "reference_integrity": True,
         "tool_success": True,
         "source": True,
         "entity_scope": True,

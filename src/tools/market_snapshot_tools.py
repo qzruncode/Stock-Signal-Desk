@@ -20,6 +20,7 @@ from src.tools._market_snapshot import (
     _parse_datetime,
 )
 from src.tools.base import ToolSpec, object_schema
+from src.tools._trading_calendar import expected_trade_day
 
 
 def _read_breadth(
@@ -38,6 +39,15 @@ def _read_breadth(
     data_time = data.get("data_time")
     parsed_time = _parse_datetime(data_time)
     inferred_time = bool(data.get("data_time_inferred"))
+    # A Friday close is the current snapshot on a weekend/holiday. Reuse
+    # the same exchange calendar as the other direct market readers.
+    expected_day = None
+    if parsed_time is not None and not inferred_time:
+        try:
+            expected_day = expected_trade_day(now)
+        except Exception:
+            # Calendar failure cannot certify freshness (especially holidays).
+            pass
     return {
         **data,
         "source": source_name,
@@ -61,11 +71,11 @@ def _read_breadth(
         ),
         "data_time_inferred": inferred_time,
         "is_stale": (
-            parsed_time.date() < now.date()
-            if parsed_time is not None and not inferred_time
+            parsed_time.date() < expected_day
+            if parsed_time is not None and expected_day is not None
             else None
         ),
-        "freshness_unknown": parsed_time is None or inferred_time,
+        "freshness_unknown": parsed_time is None or inferred_time or expected_day is None,
         "fallback_used": False,
         "_cached": cached,
         "_fetched_at": now.isoformat(),
@@ -162,7 +172,9 @@ def _read_limit_pool(
         "errors": [] if data.get("count") is not None else [f"东方财富没有返回{pool_name}"],
         "warnings": [],
         "data_time": iso_date,
-        "is_stale": datetime.fromisoformat(iso_date).date() < now.date(),
+        # This endpoint explicitly reads the requested historical date.
+        # An older requested period is not a stale response to that request.
+        "is_stale": False if data.get("count") is not None else None,
         "freshness_unknown": False,
         "fallback_used": False,
         "_cached": cached,
