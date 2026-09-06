@@ -16,6 +16,10 @@ const CATEGORY_LABEL: Record<ToolCategory, string> = {
   events: '公告',
   risk: '风险',
   action: '操作',
+  source_read: '来源读取',
+  source_catalog: '来源目录',
+  source_search: '来源搜索',
+  news_source: '新闻来源',
   deterministic_calculation: '指标计算',
 };
 
@@ -32,6 +36,10 @@ const CATEGORY_VARIANT = {
   events: 'info' as const,
   risk: 'warning' as const,
   action: 'warning' as const,
+  source_read: 'info' as const,
+  source_catalog: 'default' as const,
+  source_search: 'default' as const,
+  news_source: 'warning' as const,
   deterministic_calculation: 'info' as const,
 };
 

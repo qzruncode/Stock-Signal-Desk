@@ -131,7 +131,10 @@ class GuardedModelRuntime:
         self.database = database
         self.run_id = run_id
         self.worker_id = worker_id
-        self.model = model or "default"
+        model_name = str(model or "").strip()
+        if not model_name:
+            raise ValueError("model must be provided by the configured model settings")
+        self.model = model_name
         self.token_estimator = token_estimator
 
     async def complete(
@@ -189,19 +192,25 @@ class GuardedModelRuntime:
                 released = True
                 try:
                     if self.database is not None:
-                        if error is None or isinstance(
-                            error,
-                            asyncio.CancelledError,
-                        ):
+                        if error is None or isinstance(error, asyncio.CancelledError):
                             await asyncio.to_thread(
                                 self.database.record_agent_circuit_success,
                                 provider_resource,
                             )
-                        else:
+                        elif _is_transient_provider_error(error):
                             await asyncio.to_thread(
                                 self.database.record_agent_circuit_failure,
                                 provider_resource,
                                 error=f"{type(error).__name__}: {error}",
+                            )
+                        else:
+                            # Validation/configuration and other deterministic
+                            # failures do not prove provider unavailability.
+                            # They must not accumulate until the provider
+                            # circuit blocks otherwise healthy requests.
+                            await asyncio.to_thread(
+                                self.database.record_agent_circuit_success,
+                                provider_resource,
                             )
                 finally:
                     await lease_manager.__aexit__(

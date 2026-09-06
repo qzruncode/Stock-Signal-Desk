@@ -15,6 +15,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import ConfigDict, Field
 
 from src.agent.langgraph_runtime.answer_contract import STRUCTURED_OUTPUT_TOOL_NAME
+from src.agent.langgraph_runtime.catalog import ToolCatalog
 from src.agent.langgraph_runtime.executor import action_fingerprint
 from src.agent.langgraph_runtime.graph import DEFAULT_RESPONSE_FORMAT
 from src.agent.langgraph_runtime.middleware import _source_fallback_reason
@@ -1144,22 +1145,65 @@ def test_partial_provider_status_is_not_promoted_to_an_assistant_answer() -> Non
 
 def test_model_stage_reports_prompt_footprint_without_imposing_a_new_limit() -> None:
     async def scenario() -> None:
+        registry = _registry(_search_operation())
+        model = ScriptedChatModel(responses=[
+            _tool_call("prompt-source", "primary"),
+            AIMessage(content="读取完成【证据 ev_prompt-source】"),
+        ])
         result, _executor = await _run(
-            model=ScriptedChatModel(responses=[AIMessage(content="这是一个可用的回答。")]),
-            registry=_registry(_search_operation()),
+            model=model,
+            registry=registry,
             conversation_id="prompt-footprint",
         )
 
-        model_started = next(
+        model_started = [
             item
             for item in result.stage_history or []
             if item["stage"] == "model" and item["status"] == "started"
+        ]
+        assert len(model_started) == len(model.calls) == 2
+        catalog_text = ToolCatalog(registry).model_context()
+        for stage, messages in zip(model_started, model.calls, strict=True):
+            system_text = str(next(message.content for message in messages if message.type == "system"))
+            assert system_text.count(catalog_text) == 1
+            details = stage["details"]
+            assert details["operation_count"] == details["bound_tool_count"] == 1
+            assert details["directory_character_count"] == len(catalog_text)
+            assert details["system_prompt_character_count"] == len(system_text)
+        assert result.status == "completed"
+
+    asyncio.run(scenario())
+
+
+def test_native_rss_validation_preserves_error_feedback_and_allows_corrected_call() -> None:
+    from src.tools.source_operations import TOOLS
+
+    async def scenario() -> None:
+        operation = next(tool for tool in TOOLS if tool.name == "read_rss_source")
+        model = ScriptedChatModel(responses=[
+            _named_tool_call("rss-invalid", operation.name, {
+                "source_id": "cls_subject", "source_params": {"subject": "未来产业"},
+            }),
+            _named_tool_call("rss-valid", operation.name, {
+                "source_id": "cls_subject", "source_params": {"id": "101"},
+            }),
+            AIMessage(content="读取完成【证据 ev_rss-valid】"),
+        ])
+        result, executor = await _run(
+            model=model, registry=_registry(operation), conversation_id="rss-validation",
         )
-        details = model_started["details"]
-        assert details["operation_count"] == 1
-        assert details["bound_tool_count"] == 1
-        assert details["directory_character_count"] > 0
-        assert details["system_prompt_character_count"] > 0
+        assert [call["action_id"] for call in executor.calls] == ["rss-valid"]
+        assert executor.calls[0]["arguments"]["source_params"] == {"id": "101"}
+        failed = result.state["tool_results"][0]
+        assert failed["success"] is False
+        assert failed["error_code"] == "invalid_arguments"
+        assert "subject" in str(failed["errors"])
+        assert "invalid JSON" not in str(failed["errors"])
+        feedback = next(message for message in model.calls[1] if message.type == "tool")
+        assert feedback.status == "error"
+        assert "subject" in str(feedback.content)
+        assert len(result.state["evidence"]) == 1
+        assert result.state["evidence"][0]["action_id"] == "rss-valid"
         assert result.status == "completed"
 
     asyncio.run(scenario())

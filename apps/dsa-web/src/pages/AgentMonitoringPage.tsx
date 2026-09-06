@@ -326,6 +326,10 @@ const AgentMonitoringPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
   const slo = metrics?.slo24h;
   const workload = metrics?.workload24h;
   const persistenceBatches = numberValue(persistence?.batches);
+  const openCircuits = countValue(metrics?.openCircuits);
+  const halfOpenCircuits = countValue(metrics?.halfOpenCircuits);
+  const expiredCircuits = countValue(metrics?.expiredCircuits);
+  const activeCircuits = metrics == null ? null : openCircuits + halfOpenCircuits;
   const lastCheckedAt = [metricsResponse?.checkedAt, readiness?.checkedAt]
     .filter((value): value is string => Boolean(value))
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0];
@@ -449,10 +453,12 @@ const AgentMonitoringPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
         />
         <SummaryCell
           label="依赖熔断"
-          value={formatCount(metrics?.openCircuits)}
-          hint={`${formatCount(metrics?.expiredRunLeases)} 个过期租约`}
+          value={activeCircuits == null ? '—' : formatCount(activeCircuits)}
+          hint={activeCircuits == null
+            ? '等待依赖熔断数据'
+            : `${formatCount(openCircuits)} 个打开 · ${formatCount(halfOpenCircuits)} 个半开 · ${formatCount(expiredCircuits)} 个已过期`}
           icon={ShieldAlert}
-          tone={countValue(metrics?.openCircuits) > 0 ? 'danger' : 'success'}
+          tone={activeCircuits == null ? 'primary' : activeCircuits > 0 ? 'danger' : expiredCircuits > 0 ? 'warning' : 'success'}
         />
       </section>
 
@@ -580,6 +586,8 @@ const AgentMonitoringPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
           <div className="grid grid-cols-2 gap-px bg-border/70 sm:grid-cols-3 lg:grid-cols-2">
             {([
               ['打开熔断', metrics?.openCircuits, ShieldAlert],
+              ['半开熔断', metrics?.halfOpenCircuits, ShieldAlert],
+              ['已过期熔断', metrics?.expiredCircuits, Timer],
               ['过期租约', metrics?.expiredRunLeases, Timer],
               ['活动资源租约', metrics?.activeResourceLeases, HardDrive],
               ['24h 恢复尝试', metrics?.recoveryAttempts24h, RotateCcw],
@@ -588,13 +596,14 @@ const AgentMonitoringPage: React.FC<{ embedded?: boolean }> = ({ embedded = fals
             ] as Array<[string, unknown, React.ComponentType<{ className?: string }>]>)
               .map(([label, value, Icon]) => {
               const count = countValue(value);
-              const isIssue = ['打开熔断', '过期租约', '事件写入失败'].includes(String(label)) && count > 0;
+              const isIssue = ['打开熔断', '半开熔断', '过期租约', '事件写入失败'].includes(String(label)) && count > 0;
+              const isExpiredCircuit = label === '已过期熔断' && count > 0;
               return (
                 <div key={String(label)} className="flex items-center gap-2 bg-card px-3 py-3">
-                  <Icon className={cn('size-4 shrink-0', isIssue ? 'text-danger' : 'text-primary')} />
+                  <Icon className={cn('size-4 shrink-0', isIssue ? 'text-danger' : isExpiredCircuit ? 'text-warning' : 'text-primary')} />
                   <div className="min-w-0">
                     <p className="truncate text-[10px] text-secondary-text">{label}</p>
-                    <p className={cn('mt-0.5 text-sm font-semibold', isIssue ? 'text-danger' : 'text-foreground')}>{formatCount(value)}</p>
+                    <p className={cn('mt-0.5 text-sm font-semibold', isIssue ? 'text-danger' : isExpiredCircuit ? 'text-warning' : 'text-foreground')}>{formatCount(value)}</p>
                   </div>
                 </div>
               );

@@ -11,6 +11,10 @@ export type ToolCategory =
   | 'events'
   | 'risk'
   | 'action'
+  | 'source_read'
+  | 'source_catalog'
+  | 'source_search'
+  | 'news_source'
   | 'deterministic_calculation';
 
 export interface ToolParameterSpec {

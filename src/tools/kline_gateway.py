@@ -63,6 +63,11 @@ def _completed_records(records: list[dict[str, Any]], as_of: date) -> list[dict[
 def _normalize_cached_records(data: Any, source: str | None, as_of: date) -> list[dict[str, Any]]:
     if not isinstance(data, list):
         return []
+    try:
+        return _completed_records(_normalize_record_list(data, source), as_of)
+    except Exception:
+        logger.debug("[K线网关] 缓存数据标准化失败", exc_info=True)
+        return []
 
 
 def _range_records(
@@ -92,11 +97,6 @@ def _range_is_covered(
     first = _record_date(records[0])
     last = _latest_date(records)
     return bool(first and last and first <= start_date and last >= effective_end_date)
-    try:
-        return _completed_records(_normalize_record_list(data, source), as_of)
-    except Exception:
-        logger.debug("[K线网关] 缓存数据标准化失败", exc_info=True)
-        return []
 
 
 def _trim(records: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:

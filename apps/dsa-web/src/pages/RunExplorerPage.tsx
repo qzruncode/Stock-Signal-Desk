@@ -287,7 +287,7 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
           <p className="mt-0.5 text-xl font-semibold leading-6">{summary?.terminalRuns ?? '—'}</p>
         </Card>
         <Card padding="none" className="rounded-xl px-3 py-2.5">
-          <p className="text-xs text-secondary-text">核对通过</p>
+          <p className="text-xs text-secondary-text">规则核对通过</p>
           <p className="mt-0.5 text-xl font-semibold leading-6">
             {summary ? `${summary.quality.passedRuns}/${summary.quality.scoredRuns}` : '—'}
           </p>
@@ -295,11 +295,11 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
         <Card padding="none" className="rounded-xl px-3 py-2.5">
           <p className="text-xs text-secondary-text">质量契约问题</p>
           <p className="mt-0.5 text-xl font-semibold leading-6">{violationCount ?? '—'}</p>
-          {behaviorReviewRuns != null ? <p className="mt-0.5 text-[10px] text-warning">需要处理的巡检运行 {behaviorReviewRuns} 条</p> : null}
+          {behaviorReviewRuns != null ? <p className="mt-0.5 text-[10px] text-warning">执行诊断发现待处理问题 {behaviorReviewRuns} 条运行</p> : null}
           {behaviorInfoRuns ? <p className="mt-0.5 text-[10px] text-cyan">另有观察提示运行 {behaviorInfoRuns} 条</p> : null}
         </Card>
         <Card padding="none" className="rounded-xl px-3 py-2.5">
-          <p className="text-xs text-secondary-text">平均核对分</p>
+          <p className="text-xs text-secondary-text">平均规则核对分</p>
           <p className="mt-0.5 text-xl font-semibold leading-6">{percent(summary?.quality.averageScore)}</p>
         </Card>
       </section>
@@ -381,7 +381,7 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
                         {STATUS_LABELS[item.status] ?? item.status}
                       </Badge>
                       <span className="text-xs font-medium text-foreground">
-                        核对 {percent(item.qualityScore)}
+                        规则核对 {percent(item.qualityScore)}
                       </span>
                       {item.unreadDocumentCount ? <Badge variant="info">候选文档未选取 {item.unreadDocumentCount}</Badge> : null}
                       {item.unreadArticleCount ? <Badge variant="info">候选文章未选取 {item.unreadArticleCount}</Badge> : null}
@@ -414,9 +414,9 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
                 <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-secondary-text">
                   <span>{item.toolObservationCount} 条资料返回</span>
                   <span>{item.evidenceCount} 条证据</span>
-                  <span>{item.toolCallCount} 个资料入口</span>
+                  <span>{item.toolCallCount} 次工具调用</span>
                   {item.contentReadCallCount != null ? <span>正文读取 {item.contentReadCallCount} 次</span> : null}
-                  {item.failedToolCount ? <span className="text-danger">失败工具 {item.failedToolCount}</span> : null}
+                  {item.failedToolCount ? <span className="text-danger">失败尝试 {item.failedToolCount} 次</span> : null}
                   <span>{formatDuration(item.durationMs)}</span>
                 </div>
               </button>

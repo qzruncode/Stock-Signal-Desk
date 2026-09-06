@@ -132,6 +132,9 @@ class LiteLLMGateway:
     ) -> None:
         self.llm_config = dict(llm_config)
         self._completion = completion
+        configured_model = str(self.llm_config.get("model") or "").strip()
+        if not configured_model:
+            raise ValueError("model must be provided by the configured model settings")
 
         def estimate(messages: list[dict[str, Any]], model: str) -> int:
             try:
@@ -146,7 +149,7 @@ class LiteLLMGateway:
             database=database,
             run_id=run_id,
             worker_id=worker_id,
-            model=str(self.llm_config.get("model") or "default"),
+            model=configured_model,
             token_estimator=estimate,
         )
 
@@ -172,7 +175,7 @@ class LiteLLMChatModel(BaseChatModel):
 
     @property
     def _identifying_params(self) -> dict[str, Any]:
-        return {"model": str(self.llm_config.get("model") or "default")}
+        return {"model": str(self.llm_config.get("model") or "")}
 
     def bind_tools(
         self,

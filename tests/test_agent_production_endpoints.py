@@ -94,11 +94,16 @@ def test_tool_registry_is_read_only_and_exposes_execution_policy_metadata() -> N
     auth._auth_enabled = None
     assert response.status_code == 200
     assert forbidden.status_code in {404, 405}
-    tools = {item["name"]: item for item in response.json()["tools"]}
+    payload = response.json()
+    tools = {item["name"]: item for item in payload["tools"]}
     assert "read_market_indices_sina" in tools
+    assert tools["read_company_news_akshare"]["category"] == "news_source"
+    assert payload["categories"]["news_source"] == 1
     assert tools["read_market_indices_sina"]["effect"] == "read"
     assert tools["read_market_indices_sina"]["effect_mode"] == "fixed"
     assert tools["read_market_indices_sina"]["timeout_seconds"] > 0
+    assert tools["read_market_indices_sina"]["typed"] is False
+    assert tools["read_market_indices_sina"]["result_schema"]["additionalProperties"] is True
     assert tools["read_market_indices_sina"]["max_attempts"] >= 1
     assert "confirmed" not in tools["add_watchlist_items"]["args_schema"]["properties"]
     assert tools["add_watchlist_items"]["approval_policy"] == "required_for_side_effect"

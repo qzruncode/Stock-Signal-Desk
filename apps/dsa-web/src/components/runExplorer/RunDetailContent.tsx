@@ -286,7 +286,7 @@ function buildQualityIssues(
     const status = text(field(dimensionDetails(score, 'execution'), ['status']));
     issues.push({
       key: 'execution',
-      title: hasFailedTools ? '工具执行没有全部完成' : '运行未完整完成',
+      title: hasFailedTools ? '工具调用存在未解决的问题' : '运行未完整完成',
       detail: failedTools.length > 0
         ? `${failedTools.slice(0, 3).join('、')}${failedTools.length > 3 ? ` 等 ${failedTools.length} 个入口` : ''}存在失败或未完成记录。`
         : `本次运行状态为“${status || '异常'}”，没有完整结束。`,
@@ -399,17 +399,31 @@ export function RunDetailContent({
     toolOutcomeFor(text(result.toolName), result).executionStatus !== 'completed'
   ));
   const failedSteps = steps.filter((step) => (
-    text(step.status) === 'failed' || Boolean(errorCodeFrom(step)) || errorDetailsFrom(step).length > 0
+    ['failed', 'blocked', 'cancelled'].includes(text(step.status))
+    || (!text(step.status) && (Boolean(errorCodeFrom(step)) || errorDetailsFrom(step).length > 0))
   ));
+  const callIds = (item: Record<string, unknown>) => uniqueStrings([
+    text(field(item, ['actionId', 'action_id'])),
+    text(field(item, ['modelToolCallId', 'model_tool_call_id'])),
+    text(field(item, ['stepId', 'step_id'])),
+    text(field(item, ['toolCallId', 'tool_call_id'])),
+  ].filter(Boolean));
+  const observedCallIds = new Set(toolResults.flatMap(callIds));
+  const unobservedFailedSteps = failedSteps.filter((step) => !callIds(step).some((id) => observedCallIds.has(id)));
+  const failedCallCount = failedToolResults.length + unobservedFailedSteps.length;
   const runErrorCodes = uniqueStrings([
     errorCodeFrom(run),
     errorCodeFrom(detail.snapshot.trace),
-    ...failedSteps.map(errorCodeFrom),
-    ...failedToolResults.map(errorCodeFrom),
   ].filter(Boolean));
   const runErrorDetails = uniqueStrings([
     ...errorDetailsFrom(run),
     ...errorDetailsFrom(detail.snapshot.trace),
+  ]);
+  const toolErrorCodes = uniqueStrings([
+    ...failedSteps.map(errorCodeFrom),
+    ...failedToolResults.map(errorCodeFrom),
+  ].filter(Boolean));
+  const toolErrorDetails = uniqueStrings([
     ...failedSteps.flatMap((step) => {
       const label = text(step.toolName) || text(step.tool_name) || text(step.stepId) || text(step.step_id);
       return errorDetailsFrom(step).map((error) => label ? `${label}: ${error}` : error);
@@ -420,9 +434,10 @@ export function RunDetailContent({
     }),
   ]);
   const runStatus = text(run.status);
-  const hasRunFailure = ['partial', 'failed', 'blocked', 'cancelled'].includes(runStatus)
-    || runErrorCodes.length > 0
-    || runErrorDetails.length > 0;
+  const hasRunFailure = ['partial', 'failed', 'blocked', 'cancelled'].includes(runStatus);
+  const toolFailureNeedsAttention = !behaviorAudit || behaviorAudit.findings.some((finding) => (
+    finding.category === 'execution' && finding.disposition !== 'advisory'
+  ));
   const durationMs = text(run.startedAt) && text(run.finishedAt)
     ? new Date(text(run.finishedAt)).getTime() - new Date(text(run.startedAt)).getTime()
     : null;
@@ -459,29 +474,29 @@ export function RunDetailContent({
             <p className="text-xs font-semibold text-foreground">助手给出的结论</p>
             <span className={cn('text-[11px] font-medium', answerStatusTone)}>
               {behaviorAudit?.status === 'danger'
-                ? `自动巡检发现 ${behaviorReviewCount} 个需要处理的问题`
+                ? `执行诊断发现 ${behaviorReviewCount} 个需要处理的问题`
                 : behaviorAudit?.status === 'warning'
                   ? `有 ${behaviorReviewCount} 个需要处理的核对问题`
                   : behaviorAudit?.status === 'info'
                     ? `运行完成，有 ${behaviorAdvisoryCount} 个观察提示`
                   : detail.score.passed
-                    ? '资料核对通过'
+                    ? '回答与引用规则核对通过'
                     : `有 ${detail.score.violations.length} 个待核对问题`}
             </span>
           </div>
           <div className="mt-1.5 max-h-56 overflow-y-auto whitespace-pre-wrap text-xs leading-6 text-foreground/85">{text(run.finalText) || '尚未生成最终回答。'}</div>
         </div>
-        {hasRunFailure ? <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 p-3">
+        {hasRunFailure ? <div className={cn('mt-3 rounded-lg border p-3', runStatus === 'failed' ? 'border-danger/30 bg-danger/5' : 'border-warning/30 bg-warning/5')}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <p className="text-xs font-semibold text-danger">本次运行存在失败记录</p>
+              <p className={cn('text-xs font-semibold', runStatus === 'failed' ? 'text-danger' : 'text-warning')}>
+                {runStatus === 'failed' ? '本次运行失败' : runStatus === 'cancelled' ? '本次运行已取消' : runStatus === 'blocked' ? '本次运行受阻' : '本次运行未完整完成'}
+              </p>
               <p className="mt-0.5 text-[11px] text-foreground/70">
-                {failedToolResults.length > 0
-                  ? `有 ${failedToolResults.length} 个资料入口失败，可展开查看具体原因。`
-                  : '本次运行未正常结束，可展开查看具体错误。'}
+                可展开查看本次运行的终止原因，工具调用情况见下方执行诊断。
               </p>
             </div>
-            <Badge variant="danger">{STATUS_LABELS[runStatus] ?? '异常'}</Badge>
+            <Badge variant={statusVariant(runStatus)}>{STATUS_LABELS[runStatus] ?? '异常'}</Badge>
           </div>
           <ErrorDetails
             title="查看运行错误详情"
@@ -491,12 +506,25 @@ export function RunDetailContent({
             fallback="运行记录中没有返回具体错误文本，请结合调用编号和服务端日志继续排查。"
           />
         </div> : null}
+        {failedCallCount > 0 ? <div className={cn('mt-3 rounded-lg border p-3', toolFailureNeedsAttention ? 'border-warning/30 bg-warning/5' : 'border-cyan/30 bg-cyan/5')}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold text-foreground">
+                {runStatus === 'completed' ? `已完成，有 ${failedCallCount} 次工具调用失败` : `有 ${failedCallCount} 次工具调用失败`}
+              </p>
+              <p className="mt-0.5 text-[11px] text-foreground/70">失败尝试及恢复情况保留在执行诊断中，可展开查看调用错误。</p>
+            </div>
+            <Badge variant={toolFailureNeedsAttention ? 'warning' : 'info'}>{failedCallCount} 次失败尝试</Badge>
+          </div>
+          <ErrorDetails title="查看工具调用错误" errorCode={toolErrorCodes.join('、')} details={toolErrorDetails} fallback="请查看对应工具的调用记录。" />
+        </div> : null}
         <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Metric icon={<Clock3 className="size-3.5 text-cyan" />} label="耗时" value={formatDuration(durationMs)} />
           <Metric icon={<ListChecks className="size-3.5 text-purple" />} label="资料返回" value={String(toolResults.length)} />
           <Metric icon={<Database className="size-3.5 text-emerald-600" />} label="资料入口" value={String(toolNames.length)} />
-          <Metric icon={<Activity className="size-3.5 text-warning" />} label="核对分" value={percent(detail.score.totalScore)} />
+          <Metric icon={<Activity className="size-3.5 text-warning" />} label="规则核对分" value={percent(detail.score.totalScore)} />
         </div>
+        <p className="mt-2 text-[11px] leading-5 text-secondary-text">核对分反映回答完整性、引用关联和运行规则的检查结果，不代表事实准确率。工具异常与恢复情况请看执行诊断。</p>
       </Card>
 
       <BehaviorAuditCard audit={behaviorAudit} onSampleSources={onSampleSources} sourceSampling={sourceSampling} sourceSample={sourceSample} />
@@ -516,7 +544,7 @@ export function RunDetailContent({
         </Card>
       </div>
 
-      <Card padding="none" className="rounded-xl p-3" title="需要处理的核对问题" subtitle="只显示会影响结果可信度的项目">
+      <Card padding="none" className="rounded-xl p-3" title="需要处理的问题" subtitle="汇总未解决的工具调用与回答核对问题">
         {qualityIssues.length > 0 ? <div className="space-y-1.5">
           {qualityIssues.map((issue) => <div key={issue.key} className={cn('rounded-lg border px-3 py-2', issue.tone === 'danger' ? 'border-danger/20 bg-danger/5' : 'border-warning/20 bg-warning/8')}>
             <div className="flex items-start justify-between gap-2">
@@ -877,7 +905,7 @@ function BehaviorAuditCard({
       ? <Activity className="size-4 text-cyan" />
       : <TriangleAlert className={cn('size-4', audit.status === 'danger' ? 'text-danger' : 'text-warning')} />;
   return <div id="run-behavior-audit" className="scroll-mt-3">
-      <Card padding="none" className="rounded-xl p-3" title="自动巡检结论" subtitle="系统先核对可观察执行行为，开发人员只需处理异常项">
+      <Card padding="none" className="rounded-xl p-3" title="执行诊断" subtitle="根据调用记录核对执行、数据和证据异常，并保留恢复情况">
       <div className={cn('flex items-start justify-between gap-2 rounded-lg border px-3 py-2.5', audit.status === 'danger' ? 'border-danger/25 bg-danger/5' : audit.status === 'warning' ? 'border-warning/25 bg-warning/8' : audit.status === 'info' ? 'border-cyan/25 bg-cyan/5' : 'border-success/25 bg-success/8')}>
         <div className="flex min-w-0 items-start gap-2">
           {statusIcon}
@@ -887,7 +915,9 @@ function BehaviorAuditCard({
               {actionCount > 0
                 ? `发现 ${actionCount} 个需要处理的核对项（高风险 ${audit.dangerCount}，待核对 ${Math.max(0, actionCount - audit.dangerCount)}）。`
                 : `当前没有需要人工处理的异常${advisoryCount ? `，保留 ${advisoryCount} 条观察提示供排查。` : '。'} `}
-              自动检查通过不等于事实绝对正确，表示结构、来源和执行链路暂未发现需要处理的异常。
+              {actionCount > 0
+                ? '请核对下方异常项及其对应调用。'
+                : '自动核对未发现待处理异常，不代表回答中的事实已经全部验证。'}
             </p>
           </div>
         </div>

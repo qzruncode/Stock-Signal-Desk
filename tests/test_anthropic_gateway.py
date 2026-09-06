@@ -142,14 +142,14 @@ class TestResolveGatewayConfig(unittest.TestCase):
         "os.environ",
         {
             **_FULL_ENV,
-            "ANTHROPIC_MODEL": "openai/glm-5.2",
+            "ANTHROPIC_MODEL": "configured/provider-model",
         },
         clear=True,
     )
     def test_provider_prefix_kept(self):
         """provider/model 前缀原样保留，custom_llm_provider 仍强制 anthropic。"""
         cfg = resolve_anthropic_gateway_config()
-        self.assertEqual(cfg["model"], "openai/glm-5.2")
+        self.assertEqual(cfg["model"], "configured/provider-model")
         self.assertEqual(cfg["custom_llm_provider"], "anthropic")
 
     @mock.patch.dict(
@@ -176,10 +176,10 @@ class TestParseModelContextWindow(unittest.TestCase):
         return _parse_model_context_window(name)
 
     def test_1m_suffix_strips_and_sets_window(self):
-        self.assertEqual(self._parse("openai/glm-5.2[1m]"), ("openai/glm-5.2", 1_000_000))
+        self.assertEqual(self._parse("configured/provider-model[1m]"), ("configured/provider-model", 1_000_000))
 
     def test_no_suffix_default_window(self):
-        self.assertEqual(self._parse("openai/glm-5.2"), ("openai/glm-5.2", 200_000))
+        self.assertEqual(self._parse("configured/provider-model"), ("configured/provider-model", 200_000))
 
     def test_case_insensitive(self):
         self.assertEqual(self._parse("GLM[1M]"), ("GLM", 1_000_000))

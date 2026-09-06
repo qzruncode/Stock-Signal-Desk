@@ -37,6 +37,7 @@ _VALID_CATEGORIES = {
     "source_read",
     "source_catalog",
     "source_search",
+    "news_source",
     "deterministic_calculation",
 }
 _registry = ToolRegistry()
@@ -113,6 +114,11 @@ def _flatten_parameters(parameters: Dict[str, Any]) -> List[ToolParameterSpec]:
 
 def _build_tool_meta(tool_def: Any) -> ToolMeta:
     category = tool_def.category if tool_def.category in _VALID_CATEGORIES else "data"
+    result_schema = (
+        tool_def.result_model.model_json_schema()
+        if tool_def.result_model is not None
+        else None
+    )
     return ToolMeta(
         name=tool_def.name,
         category=category,  # type: ignore[arg-type]
@@ -130,9 +136,13 @@ def _build_tool_meta(tool_def: Any) -> ToolMeta:
         idempotent=tool_def.idempotent,
         sensitive_fields=list(tool_def.sensitive_fields),
         parameters=_flatten_parameters(tool_def.model_parameters()),
-        typed=(tool_def.args_model is not None and tool_def.result_model is not None),
+        typed=bool(
+            tool_def.args_model is not None
+            and result_schema is not None
+            and result_schema.get("additionalProperties") is False
+        ),
         args_schema=tool_def.model_parameters(),
-        result_schema=(tool_def.result_model.model_json_schema() if tool_def.result_model is not None else None),
+        result_schema=result_schema,
         source_catalog=[dict(item) for item in tool_def.source_catalog],
     )
 

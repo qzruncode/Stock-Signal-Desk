@@ -818,7 +818,10 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
             missing_evidence_tools.append((tool_name, action_id))
         if not success:
             errors = _field(item, "errors", "error")
-            error_text = _text(errors, 500) or _text(_field(item, "error_code", "errorCode"), 160) or "未提供具体错误"
+            error_text = (
+                "；".join(filter(None, (_text(error, 500) for error in _sequence(errors))))[:500]
+                if isinstance(errors, (list, tuple)) else _text(errors, 500)
+            ) or _text(_field(item, "error_code", "errorCode"), 160) or "未提供具体错误"
             failed_tools.append((tool_name, action_id, error_text, _arguments_fingerprint(item)))
         else:
             if action_id and outcome.get("usable"):
@@ -1078,7 +1081,7 @@ def build_behavior_audit(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
                     severity="danger" if unresolved_count else "info",
                     category="execution",
                     title=title,
-                    detail=f"运行记录标记为失败：{detail}{suffix}{recovered_suffix}。",
+                    detail=f"工具调用记录失败：{detail}{suffix}{recovered_suffix}。",
                     remediation=(
                         "查看失败调用的请求参数、来源尝试链路和服务端错误；"
                         "已恢复的调用保留为诊断记录，不再把它当作本轮未恢复故障。"

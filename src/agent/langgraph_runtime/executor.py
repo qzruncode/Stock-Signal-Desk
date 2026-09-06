@@ -133,6 +133,11 @@ def _retryable(error: BaseException) -> bool:
     }
 
 
+def _should_trip_tool_circuit(error: BaseException) -> bool:
+    """Trip a tool circuit only for failures that indicate source unavailability."""
+    return _error_code(error) in {"timeout", "provider_unavailable"}
+
+
 class AtomicToolExecutor:
     """Execute an action after graph policy and approval checks have passed."""
 
@@ -493,11 +498,17 @@ class AtomicToolExecutor:
                         worker_id=active_run_registry.worker_id,
                         attempt=attempt,
                     )
-                    await asyncio.to_thread(
-                        self.database.record_agent_circuit_failure,
-                        f"tool:{tool_name}",
-                        error=f"{type(exc).__name__}: {exc}",
-                    )
+                    if _should_trip_tool_circuit(exc):
+                        await asyncio.to_thread(
+                            self.database.record_agent_circuit_failure,
+                            f"tool:{tool_name}",
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                    elif _error_code(exc) != "circuit_open":
+                        await asyncio.to_thread(
+                            self.database.record_agent_circuit_success,
+                            f"tool:{tool_name}",
+                        )
                 if retry:
                     await asyncio.sleep(max(0.0, float(spec.retry_backoff_seconds)) * (2 ** (attempt - 1)))
                     continue

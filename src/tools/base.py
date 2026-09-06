@@ -34,6 +34,35 @@ ApprovalPolicy = Literal["required_for_side_effect"]
 DataTimeProvenance = Literal["source", "inferred", "unavailable"]
 ToolEffectResolver = Callable[[Mapping[str, Any]], ToolEffect]
 
+
+def parse_iso_data_time(value: Any) -> datetime | None:
+    """Parse a source timestamp into an aware datetime when possible.
+
+    Source adapters may return either an ISO datetime or an ISO calendar date.
+    Naive values are interpreted in the host's local timezone so the common
+    result contract can compare them without silently treating them as UTC.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time())
+    elif isinstance(value, str) and value.strip():
+        normalized = value.strip()
+        if normalized.endswith(("Z", "z")):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                parsed = datetime.combine(date.fromisoformat(normalized), datetime.min.time())
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
+
 # These are the common structural shapes used by the existing source tools.
 # They describe the result envelope only; a tool still owns the meaning of its
 # domain fields.  Keeping this list here gives the executor, evidence ledger,
@@ -432,6 +461,16 @@ def enforce_result_contract(tool_name: str, result: Any) -> Dict[str, Any]:
     elif data_time is not None and not isinstance(data_time, str):
         raise ValueError(f"{tool_name} result.data_time must be an ISO string or null")
     data_time = payload["data_time"]
+    invalid_data_time = isinstance(data_time, str) and bool(data_time.strip()) and parse_iso_data_time(data_time) is None
+    if invalid_data_time:
+        payload["data_time"] = None
+        payload["data_time_provenance"] = "unavailable"
+        payload["is_stale"] = None
+    elif isinstance(data_time, str) and not data_time.strip():
+        payload["data_time"] = None
+        payload["data_time_provenance"] = "unavailable"
+        payload["is_stale"] = None
+    data_time = payload["data_time"]
     expected_provenance: DataTimeProvenance = (
         "unavailable"
         if data_time is None
@@ -451,6 +490,16 @@ def enforce_result_contract(tool_name: str, result: Any) -> Dict[str, Any]:
     data_time_note = payload.get("data_time_note")
     if data_time_note is not None and not isinstance(data_time_note, str):
         raise ValueError(f"{tool_name} result.data_time_note must be a string or null")
+    if invalid_data_time:
+        invalid_note = "来源返回的 data_time 无法解析为 ISO 8601，已降级为时间未知。"
+        data_time_note = f"{data_time_note} {invalid_note}".strip() if data_time_note else invalid_note
+        payload["data_time_note"] = data_time_note
+        warnings = payload.setdefault("warnings", [])
+        if not isinstance(warnings, list):
+            raise ValueError(f"{tool_name} result.warnings must be an array")
+        warning = "来源返回了无法解析的 data_time；已按时间未知处理。"
+        if warning not in warnings:
+            warnings.append(warning)
     if data_time is None and not data_time_note:
         payload["data_time_note"] = "数据源未提供原始数据时间；仅能确认本次查询已完成。"
     payload.setdefault("is_stale", None)

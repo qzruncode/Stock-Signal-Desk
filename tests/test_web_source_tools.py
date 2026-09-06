@@ -268,6 +268,34 @@ def test_direct_reader_extracts_a_clearly_labelled_source_time_from_content() ->
     assert result["data_time_note"] == "网页正文中明确标注的来源时间字段：时间。"
 
 
+def test_direct_reader_downgrades_malformed_provider_time_to_unknown() -> None:
+    raw = {
+        "provider": "http",
+        "success": True,
+        "duration_ms": 31,
+        "content": "页面正文",
+        "attachments": None,
+        "final_url": "https://example.com/article",
+        "title": "文章",
+        "content_type": "text/html",
+        "content_time": "2024-07-25 2024-07-25 20:06:12",
+        "extraction_method": "http+article",
+    }
+    with (
+        patch("src.tools.web_source_tools._validate_public_url"),
+        patch("src.tools.web_source_tools._http_fetch", return_value=raw),
+    ):
+        result = read_web_http("https://example.com/article")
+
+    assert result["success"] is True
+    assert result["data_time"] is None
+    assert result["content_time"] is None
+    assert result["data_time_provenance"] == "unavailable"
+    assert result["freshness_unknown"] is True
+    assert any("无法解析" in warning for warning in result["warnings"])
+    assert "无法解析" in result["data_time_note"]
+
+
 def test_direct_reader_does_not_infer_a_source_time_from_an_unlabelled_body_date() -> None:
     raw = {
         "provider": "patchright",

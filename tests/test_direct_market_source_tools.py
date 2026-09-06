@@ -405,6 +405,59 @@ def test_fresh_stock_daily_cache_is_not_marked_as_provider_fallback() -> None:
     eastmoney.assert_not_called()
 
 
+def test_fresh_kline_cache_is_reused_before_provider_fetch() -> None:
+    cached_records = _normalize_kline_df(_completed_kline_frame(), "600519", "eastmoney")
+    with (
+        patch("src.tools.kline_gateway.latest_completed_trade_day", return_value=date(2026, 8, 13)),
+        patch("src.tools.kline_gateway._get_kline_from_stock_daily", return_value=None),
+        patch(
+            "src.tools.kline_gateway._get_kline_from_cache",
+            return_value={"source": "eastmoney", "data": cached_records},
+        ),
+    ):
+        provider = patch("src.tools.kline_gateway._fetch_kline_em")
+        with provider as fetch:
+            result = read_reliable_kline(
+                "600519",
+                preferred_source="eastmoney",
+                count=20,
+                sources={"eastmoney": ("测试来源", fetch)},
+            )
+
+    assert result["success"] is True
+    assert result["_cached"] is True
+    assert result["source_key"] == "eastmoney"
+    fetch.assert_not_called()
+
+
+def test_complete_kline_range_cache_is_reused_before_provider_fetch() -> None:
+    cached_records = _normalize_kline_df(_completed_kline_frame(), "600519", "eastmoney")
+    with (
+        patch("src.tools.kline_gateway.latest_completed_trade_day", return_value=date(2026, 8, 13)),
+        patch("src.tools.kline_gateway._get_kline_range_from_stock_daily", return_value=None),
+        patch(
+            "src.tools.kline_gateway._get_kline_from_cache",
+            return_value={"source": "eastmoney", "data": cached_records},
+        ),
+    ):
+        provider = patch("src.tools.kline_gateway._fetch_kline_em")
+        with provider as fetch:
+            result = read_reliable_kline_range(
+                "600519",
+                preferred_source="eastmoney",
+                start_date="20260810",
+                end_date="20260813",
+                sources={"eastmoney": ("测试来源", fetch)},
+            )
+
+    assert result["success"] is True
+    assert result["_cached"] is True
+    assert result["source_key"] == "eastmoney"
+    assert result["requested_start_date"] == "20260810"
+    assert result["requested_end_date"] == "20260813"
+    fetch.assert_not_called()
+
+
 def test_completed_trade_day_excludes_intraday_bar() -> None:
     calendar = [date(2026, 8, 13), date(2026, 8, 14)]
 

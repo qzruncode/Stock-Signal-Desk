@@ -9,10 +9,12 @@ diagnostics.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Annotated, Any, Callable, Mapping
+
+from pydantic import Field, ValidationInfo, WithJsonSchema, field_validator
 
 from src.tools._rss_agent import rss_options_schema
-from src.tools.base import ToolSpec, object_schema, report_tool_progress
+from src.tools.base import ToolSpec, model_from_object_schema, object_schema, report_tool_progress
 from src.tools._trading_calendar import latest_completed_trade_day
 from src.tools.kline_source_tools import _read_source as _read_kline_source
 from src.tools.realtime_quote_source_tools import _read_source as _read_quote_source
@@ -68,22 +70,42 @@ def _rss_source_metadata(source: RssSourceDefinition) -> dict[str, Any]:
 
 RSS_SOURCE_CATALOG = tuple(_rss_source_metadata(source) for source in RSS_SOURCE_DEFINITIONS)
 
+# Provider schemas and runtime validation share the existing source definitions.
+_RSS_PARAM_MODELS = {
+    _rss_source_id(source): model_from_object_schema(
+        f"{source.tool_name}_params",
+        object_schema(
+            {
+                item.name: {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": item.description,
+                    **({"enum": list(item.enum)} if item.enum else {}),
+                }
+                for item in source.parameters
+            },
+            [item.name for item in source.parameters if item.required],
+        ),
+    )
+    for source in RSS_SOURCE_DEFINITIONS
+}
+
 
 def _rss_params(source: RssSourceDefinition, params: Mapping[str, Any]) -> dict[str, Any]:
-    allowed = {item.name for item in source.parameters}
-    unknown = sorted(str(key) for key in params if str(key) not in allowed)
-    if unknown:
-        raise ValueError(
-            f"source_id={_rss_source_id(source)} 不支持参数: " + ", ".join(unknown)
-        )
-    normalized = {
-        item.name: str(params[item.name]).strip()
-        for item in source.parameters
-        if params.get(item.name) not in (None, "")
+    if not isinstance(params, Mapping):
+        raise ValueError("source_params 必须是所选来源的路径参数对象")
+    model = _RSS_PARAM_MODELS[_rss_source_id(source)]
+    # Keep numeric path IDs and omitted optional values supported by the API.
+    # Containers, booleans and unknown keys must still reach typed validation.
+    prepared = {
+        key: str(value).strip() if isinstance(value, (str, int, float)) and not isinstance(value, bool) else value
+        for key, value in params.items()
     }
-    for item in source.parameters:
-        if item.required and not normalized.get(item.name):
-            raise ValueError(f"source_id={_rss_source_id(source)} 缺少必填参数 {item.name}")
+    prepared = {
+        key: value for key, value in prepared.items()
+        if key not in model.model_fields or value not in (None, "")
+    }
+    normalized = model.model_validate(prepared).model_dump(exclude_unset=True, exclude_none=True)
     last_bound = max(
         (index for index, item in enumerate(source.parameters) if item.name in normalized),
         default=-1,
@@ -382,20 +404,51 @@ def _source_enum(catalog: tuple[dict[str, Any], ...]) -> list[str]:
 _SOURCE_ID = {"type": "string", "description": "从下方完整来源目录选择一个 source_id"}
 
 
+class ReadRssSourceArgs(model_from_object_schema(
+    "read_rss_source_args",
+    object_schema(
+        {
+            "source_id": {**_SOURCE_ID, "enum": _source_enum(RSS_SOURCE_CATALOG)},
+            "options": rss_options_schema(),
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
+            "force": {"type": "boolean", "default": False},
+        },
+        ["source_id"],
+    ),
+)):
+    """Validate the selected source before native tool dispatch reaches I/O."""
+
+    # Annotated metadata survives LangChain's tool-call schema projection.
+    # Keep the flat call shape and portable property-level anyOf; the field
+    # validator enforces the binding to the sibling source_id at execution.
+    source_params: Annotated[dict[str, str], WithJsonSchema({
+        "type": "object",
+        "anyOf": [
+            {**model.model_json_schema(), "description": f"source_id={source_id} 的路径参数"}
+            for source_id, model in _RSS_PARAM_MODELS.items()
+        ],
+    })] = Field(
+        default_factory=dict,
+        validate_default=True,
+        description="所选 source_id 声明的路径参数键值；只填写该来源的参数，编号从来源目录获取。",
+    )
+
+    @field_validator("source_params", mode="before")
+    @classmethod
+    def validate_source_params(cls, value: Any, info: ValidationInfo) -> dict[str, Any]:
+        source = _RSS_SOURCES.get(info.data.get("source_id"))
+        if source is None:
+            # source_id has its own enum validation error.
+            return value
+        return _rss_params(source, {} if value is None else value)
+
+
 TOOLS = (
     ToolSpec(
         name="read_rss_source",
         description="读取一个明确指定的 RSS 数据源。先在完整 RSS 来源目录中选择 source_id；每次只访问该来源，不搜索或切换来源。",
-        parameters=object_schema(
-            {
-                "source_id": {**_SOURCE_ID, "enum": _source_enum(RSS_SOURCE_CATALOG)},
-                "source_params": {"type": "object", "additionalProperties": True, "default": {}, "description": "所选来源目录中声明的路径参数键值"},
-                "options": rss_options_schema(),
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 30},
-                "force": {"type": "boolean", "default": False},
-            },
-            ["source_id"],
-        ),
+        parameters=None,
+        args_model=ReadRssSourceArgs,
         executor=read_rss_source,
         category="source_read",
         max_attempts=2,

@@ -13,7 +13,7 @@ import hashlib
 import json
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from src.storage.models import (

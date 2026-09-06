@@ -360,6 +360,29 @@ def test_inferred_market_breadth_time_is_not_treated_as_source_time() -> None:
     assert result["is_stale"] is None
 
 
+def test_sina_market_breadth_uses_the_shared_retry_policy() -> None:
+    calls: list[tuple[str, int]] = []
+    payload = {
+        "up_count": 3000,
+        "down_count": 1000,
+        "flat_count": 100,
+        "data_time": None,
+    }
+
+    def cached_call_with_default_attempts(key, fetcher, *, ttl_seconds, attempts=2):
+        calls.append((key, attempts))
+        return fetcher(), False
+
+    with (
+        patch("src.tools.market_snapshot_tools.cached_call", side_effect=cached_call_with_default_attempts),
+        patch("src.tools.market_snapshot_tools._fetch_sina_a_breadth", return_value=payload),
+    ):
+        result = read_market_breadth_sina(use_cache=True)
+
+    assert result["success"] is True
+    assert calls == [("market-breadth:sina:atomic:v1", 2)]
+
+
 def test_stock_search_is_a_local_read_and_never_starts_maintenance() -> None:
     item = MagicMock()
     item.to_dict.return_value = {

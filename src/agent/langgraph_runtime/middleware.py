@@ -454,6 +454,11 @@ def _error_tool_message(
 
 def _native_tool_result(response: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Decode the envelope returned by a native LangGraph tool handler."""
+    if isinstance(response, ToolMessage) and response.status == "error":
+        # ToolNode's default handler returns argument-validation failures as
+        # ToolMessage. Preserve its actionable error instead of trying to
+        # decode it as our successful-dispatch JSON envelope.
+        raise ValueError(_message_text(response) or "工具参数校验未通过")
     content = getattr(response, "content", None)
     payload: Any = content
     if isinstance(content, str):
@@ -587,6 +592,11 @@ class AgentPromptMiddleware(AgentMiddleware[AgentState, GraphContext]):
 外部事实只能使用本轮成功工具结果里的证据；只能使用证据里的 data_time，不能把检索时间当成数据时间。没有可用 data_time 时，不要称为“最新/当前/今日”，应继续取证或明确时效未知。来源失败、空结果或不满足所需时效时，继续选择可补齐同一问题的替代来源；也可使用 search_web_source 搜索、read_web_source 读取相关网页，参数以绑定 schema 为准。失败尝试保留在执行记录中，最终结论必须引用实际取得的有效证据。不要重复调用同一个已失败的来源和参数，不要引用失败结果。
 
 reference-only 结果只是标题、摘要或来源索引，不是正文。只有在确实需要文章/PDF内容时，选择相关 URL 调用 read_web_source；不要为了满足规则读取全部候选链接。没有正文时只能按索引事实表述，并明确正文未读取。表格或连续列表可由紧随其后的来源行统一引用；结论、判断和操作建议也必须关联支持它们的有效 evidence_id，不要因引用位置而删除已核实内容。""",
+                (
+                    "工具来源与执行效果目录（source_params 只能使用所选来源声明的参数；"
+                    "需要分类或话题编号时，按目录说明调用现有目录工具取得编号）：\n"
+                    + source_catalog
+                ),
                 (
                     "本轮可引用来源目录（source_ids 只能选这些数字；目录随成功取证追加）：\n"
                     + json.dumps(evidence_source_catalog(evidence), ensure_ascii=False, default=str)

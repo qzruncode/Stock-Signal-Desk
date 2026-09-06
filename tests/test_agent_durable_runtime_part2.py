@@ -12,10 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 from src.services.chat_session_service import ChatSessionService
+from src.agent.langgraph_runtime.executor import _should_trip_tool_circuit
 from src.agent.model_runtime import GuardedModelRuntime
 from src.agent.terminal_publisher import AgentTerminalPublisher
 from src.storage import DatabaseManager
-from src.storage.models import AgentRun
+from src.storage.models import AgentCircuitBreaker, AgentRun
 
 
 
@@ -212,6 +213,53 @@ def test_releasing_one_cancelled_run_frees_only_its_resource_slots(database):
     )
     assert replacement in {first, second}
 
+
+def test_runtime_metrics_separate_active_half_open_and_expired_circuits(database):
+    active = "tool:active-circuit"
+    expired = "tool:expired-circuit"
+    half_open = "tool:half-open-circuit"
+    database.record_agent_circuit_failure(
+        active,
+        error="temporary provider timeout",
+        failure_threshold=1,
+        cooldown_seconds=60,
+    )
+    database.record_agent_circuit_failure(
+        expired,
+        error="temporary provider timeout",
+        failure_threshold=1,
+        cooldown_seconds=60,
+    )
+    database.record_agent_circuit_failure(
+        half_open,
+        error="temporary provider timeout",
+        failure_threshold=1,
+        cooldown_seconds=60,
+    )
+    with database.session_scope() as session:
+        for resource_name in (expired, half_open):
+            record = session.get(AgentCircuitBreaker, resource_name)
+            assert record is not None
+            record.opened_until = datetime.now() - timedelta(seconds=1)
+
+    before_probe = database.agent_runtime_metrics()
+    assert before_probe["open_circuits"] == 1
+    assert before_probe["half_open_circuits"] == 0
+    assert before_probe["expired_circuits"] == 2
+
+    assert database.agent_circuit_before_request(half_open, worker_id="worker-a")["state"] == "half_open"
+    after_probe = database.agent_runtime_metrics()
+    assert after_probe["open_circuits"] == 1
+    assert after_probe["half_open_circuits"] == 1
+    assert after_probe["expired_circuits"] == 1
+
+
+def test_tool_circuit_only_trips_for_transient_source_failures() -> None:
+    assert _should_trip_tool_circuit(TimeoutError("source timeout")) is True
+    assert _should_trip_tool_circuit(ConnectionError("source disconnected")) is True
+    assert _should_trip_tool_circuit(ValueError("invalid arguments")) is False
+    assert _should_trip_tool_circuit(PermissionError("approval required")) is False
+
 def test_chat_service_enforces_owner_and_tenant_boundary(database):
     owner_a = ChatSessionService(
         database,
@@ -271,6 +319,36 @@ def test_model_runtime_retries_only_transient_start_failures(
     assert result["choices"][0]["message"]["content"] == "ok"
     assert calls == 2
     assert database.get_agent_run(run_id="run-model-retry")["provider_call_count"] == 2
+
+
+def test_model_runtime_does_not_open_a_circuit_for_deterministic_provider_errors(
+    database,
+    monkeypatch,
+):
+    conversation_id = _conversation(database, "model-deterministic-error")
+    _claim(database, conversation_id, run_id="run-model-deterministic-error")
+    monkeypatch.setenv("AGENT_PROVIDER_MAX_ATTEMPTS", "3")
+
+    async def completion(**_kwargs):
+        raise ValueError("provider rejected an invalid request")
+
+    runtime = GuardedModelRuntime(
+        database=database,
+        run_id="run-model-deterministic-error",
+        worker_id="worker-a",
+        model="configured-model",
+        token_estimator=lambda messages, model: 10,
+    )
+    with pytest.raises(ValueError, match="invalid request"):
+        asyncio.run(
+            runtime.complete(
+                completion,
+                messages=[{"role": "user", "content": "hello"}],
+                max_tokens=20,
+            )
+        )
+
+    assert database.agent_runtime_metrics()["open_circuits"] == 0
 
 
 def test_model_runtime_does_not_cancel_slow_provider_reasoning(database, monkeypatch) -> None:

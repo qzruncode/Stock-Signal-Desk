@@ -22,6 +22,8 @@ describe('agentMonitoringApi', () => {
           expired_run_leases: 0,
           active_resource_leases: 0,
           open_circuits: 0,
+          half_open_circuits: 0,
+          expired_circuits: 0,
           step_idempotency_reuses: 0,
           recovery_attempts_24h: 1,
           recovery_24h: { terminal_runs: 1, successful_runs: 1, success_rate: 1 },

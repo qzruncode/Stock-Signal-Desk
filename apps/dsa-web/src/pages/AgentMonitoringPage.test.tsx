@@ -19,6 +19,8 @@ const metrics = {
     expiredRunLeases: 1,
     activeResourceLeases: 2,
     openCircuits: 0,
+    halfOpenCircuits: 0,
+    expiredCircuits: 0,
     stepIdempotencyReuses: 0,
     recoveryAttempts24h: 1,
     recovery24h: { terminalRuns: 1, successfulRuns: 1, successRate: 1 },
@@ -53,7 +55,7 @@ const readiness = {
   checkedAt: '2026-08-14T10:00:00+08:00',
   checks: {
     database: { ok: true, schemaVersion: 'v1', expectedSchemaVersion: 'v1' },
-    model: { ok: true, model: 'ai/glm-5.2[1m]' },
+    model: { ok: true, model: 'configured-model[1m]' },
     runtime: {
       ok: true,
       engine: 'langgraph_agent_loop',
@@ -87,7 +89,7 @@ describe('AgentMonitoringPage', () => {
     expect(await screen.findByRole('heading', { name: '系统运行监控' })).toBeInTheDocument();
     expect(screen.getByText('系统完成率低于 SLO')).toBeInTheDocument();
     expect(screen.getByText('实际 80% · 阈值 95%')).toBeInTheDocument();
-    expect(screen.getByText('ai/glm-5.2[1m]')).toBeInTheDocument();
+    expect(screen.getByText('configured-model[1m]')).toBeInTheDocument();
     expect(screen.getByText('系统异常')).toBeInTheDocument();
     expect(screen.queryByText('当前运行分布')).not.toBeInTheDocument();
     expect(screen.queryByText('工具步骤健康度')).not.toBeInTheDocument();

@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import re
 from typing import Any, Callable, Mapping
 
-from src.tools.base import report_tool_progress
+from src.tools.base import parse_iso_data_time, report_tool_progress
 from src.tools.webfetch import (
     DEFAULT_TIMEOUT,
     MAX_TIMEOUT,
@@ -127,15 +127,29 @@ def _bounded_context(value: int | None) -> int:
 
 
 def _source_datetime(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
-    return parsed
+    return parse_iso_data_time(value)
+
+
+def _resolve_source_time(raw_value: Any, content: str) -> tuple[str | None, str | None, list[str]]:
+    """Resolve provider metadata and clearly labelled body time as source time."""
+    data_time = str(raw_value).strip() if raw_value not in (None, "") else None
+    notes: list[str] = []
+    warnings: list[str] = []
+    if data_time and parse_iso_data_time(data_time) is None:
+        data_time = None
+        notes.append("来源返回的 data_time 无法解析为 ISO 8601，已降级为时间未知。")
+        warnings.append("来源返回了无法解析的 data_time；已按时间未知处理。")
+    if not data_time:
+        explicit_time = _explicit_content_time(content)
+        if explicit_time is not None:
+            candidate, label = explicit_time
+            if parse_iso_data_time(candidate) is not None:
+                data_time = candidate
+                notes.append(f"网页正文中明确标注的来源时间字段：{label}。")
+            else:
+                notes.append("网页正文中的来源时间字段无法解析为 ISO 8601，已按时间未知处理。")
+                warnings.append("网页正文中的来源时间字段无法解析；已按时间未知处理。")
+    return data_time, (" ".join(notes) if notes else None), warnings
 
 
 def _content_access(
@@ -376,15 +390,12 @@ def _single_provider_fetch(
     if success and challenge:
         success = False
         error = challenge
-    content_time = raw.get("content_time")
-    data_time = str(content_time).strip() if content_time not in (None, "") else None
-    content_time_note: str | None = None
-    if not data_time:
-        explicit_time = _explicit_content_time(content)
-        if explicit_time is not None:
-            data_time, label = explicit_time
-            content_time_note = f"网页正文中明确标注的来源时间字段：{label}。"
+    data_time, content_time_note, time_warnings = _resolve_source_time(
+        raw.get("content_time"),
+        content,
+    )
     warning = str(raw.get("quality_warning") or "").strip()
+    warnings = ([warning] if success and warning else []) + time_warnings
     final_url = str(raw.get("final_url") or url)
     extraction_method = raw.get("extraction_method")
     report_tool_progress(f"公开网页来源 {provider} 已返回", progress=100)
@@ -429,7 +440,7 @@ def _single_provider_fetch(
         "fallback_used": False,
         "_truncated": bool(raw.get("_truncated")) or truncated,
         "errors": [] if success else ([error] if error else [f"{provider} 未返回网页内容"]),
-        "warnings": [warning] if success and warning else [],
+        "warnings": warnings,
         "failure_kind": "challenge" if challenge else raw.get("failure_kind"),
     }
     result["content_access"] = _content_access(
@@ -482,15 +493,14 @@ def read_web_auto(
         success = False
         content = ""
         errors.insert(0, unusable_document)
-    content_time = raw.get("content_time")
-    data_time = str(content_time).strip() if content_time not in (None, "") else None
-    content_time_note: str | None = None
-    if not data_time:
-        explicit_time = _explicit_content_time(content)
-        if explicit_time is not None:
-            data_time, label = explicit_time
-            content_time_note = f"网页正文中明确标注的来源时间字段：{label}。"
     warnings = [str(item) for item in list(raw.get("warnings") or []) if str(item).strip()]
+    data_time, content_time_note, time_warnings = _resolve_source_time(
+        raw.get("content_time"),
+        content,
+    )
+    for warning in time_warnings:
+        if warning not in warnings:
+            warnings.append(warning)
     report_tool_progress("公开网页自动读取完成", progress=100)
     result = {
         "url": str(url),

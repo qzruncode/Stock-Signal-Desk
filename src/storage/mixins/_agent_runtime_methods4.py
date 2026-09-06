@@ -12,6 +12,7 @@ from src.storage.mixins.agent_runtime import (
     Sequence,
     delete,
     func,
+    or_,
     select,
     IntegrityError,
     AgentArtifact,
@@ -123,7 +124,31 @@ class _AgentRuntimeMixinMethods4:
             successes = sum(record.status == "completed" for record in terminal_recent)
             open_circuits = (
                 session.execute(
-                    select(func.count(AgentCircuitBreaker.resource_name)).where(AgentCircuitBreaker.state != "closed")
+                    select(func.count(AgentCircuitBreaker.resource_name)).where(
+                        AgentCircuitBreaker.state == "open",
+                        or_(
+                            AgentCircuitBreaker.opened_until.is_(None),
+                            AgentCircuitBreaker.opened_until > now,
+                        ),
+                    )
+                ).scalar()
+                or 0
+            )
+            half_open_circuits = (
+                session.execute(
+                    select(func.count(AgentCircuitBreaker.resource_name)).where(
+                        AgentCircuitBreaker.state == "half_open",
+                    )
+                ).scalar()
+                or 0
+            )
+            expired_circuits = (
+                session.execute(
+                    select(func.count(AgentCircuitBreaker.resource_name)).where(
+                        AgentCircuitBreaker.state == "open",
+                        AgentCircuitBreaker.opened_until.is_not(None),
+                        AgentCircuitBreaker.opened_until <= now,
+                    )
                 ).scalar()
                 or 0
             )
@@ -158,6 +183,8 @@ class _AgentRuntimeMixinMethods4:
                 "expired_run_leases": int(expired),
                 "active_resource_leases": int(active_resource_leases),
                 "open_circuits": int(open_circuits),
+                "half_open_circuits": int(half_open_circuits),
+                "expired_circuits": int(expired_circuits),
                 "step_idempotency_reuses": int(step_reuses),
                 "recovery_attempts_24h": int(recovery_attempts),
                 "recovery_24h": {

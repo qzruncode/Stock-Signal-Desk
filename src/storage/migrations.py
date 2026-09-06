@@ -13,7 +13,7 @@ from src.storage.models import AgentRuntimeControl, Base
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2026.07.31.5"
+SCHEMA_VERSION = "2026.09.05.2"
 
 
 def get_schema_version(engine) -> str | None:

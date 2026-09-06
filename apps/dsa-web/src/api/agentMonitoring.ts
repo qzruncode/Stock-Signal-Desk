@@ -13,6 +13,8 @@ export interface AgentRuntimeMetrics {
   expiredRunLeases: number;
   activeResourceLeases: number;
   openCircuits: number;
+  halfOpenCircuits: number;
+  expiredCircuits: number;
   stepIdempotencyReuses: number;
   recoveryAttempts24h: number;
   recovery24h: {

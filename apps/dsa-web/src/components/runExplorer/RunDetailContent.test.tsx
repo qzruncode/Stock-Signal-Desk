@@ -41,7 +41,94 @@ const detail: AgentRunDetail = {
   },
 };
 
+const completedWithFailedCall: AgentRunDetail = {
+  ...detail,
+  snapshot: {
+    ...detail.snapshot,
+    run: { status: 'completed', finalText: '回答已完成' },
+    qualityProjection: {
+      toolResults: [{
+        actionId: 'rss-invalid', toolCallId: 'rss-ledger', toolName: 'read_rss_source',
+        success: false, errorCode: 'invalid_arguments', errors: ['source_params.subject 不支持'],
+      }],
+      evidence: [],
+    },
+    steps: [
+      { stepId: 'rss-invalid', toolCallId: 'rss-ledger', toolName: 'read_rss_source', status: 'failed', errorCode: 'invalid_arguments', errorDetail: 'source_params.subject 不支持' },
+      { stepId: 'other-read', toolName: 'read_web_source', status: 'completed', errorDetail: '已通过备用来源返回' },
+    ],
+    behaviorAudit: {
+      status: 'danger', attentionLevel: 'urgent', riskScore: 35,
+      issueCount: 1, dangerCount: 1, warningCount: 0, infoCount: 0,
+      actionRequiredCount: 1, advisoryCount: 0,
+      modelTurnCount: 2, toolCallCount: 2, toolObservationCount: 2,
+      contentReadCallCount: 1, contentExtractedCallCount: 1,
+      referenceOnlyToolCount: 0, referenceLinkCount: 0,
+      unreadReferenceCount: 0, unreadDocumentCount: 0, unreadArticleCount: 0,
+      failedToolCount: 1, evidenceCount: 1, claimCount: 1,
+      checks: [], toolChain: [],
+      findings: [{
+        code: 'tool_execution_failed', severity: 'danger', category: 'execution',
+        disposition: 'action_required', title: '工具 read_rss_source 执行失败',
+        detail: '工具调用记录失败：source_params.subject 不支持。',
+        remediation: '检查来源参数。', actionIds: ['rss-invalid'],
+      }],
+    },
+  },
+  score: { ...detail.score, status: 'passed', passed: true, totalScore: 1 },
+};
+
 describe('RunDetailContent', () => {
+  it('keeps a completed run distinct from a failed tool attempt and deduplicates the ledger', () => {
+    render(<RunDetailContent detail={completedWithFailedCall} onFeedback={vi.fn()} />);
+
+    expect(screen.getByText('已完成，有 1 次工具调用失败')).toBeInTheDocument();
+    expect(screen.getByText('已完成')).toBeInTheDocument();
+    expect(screen.queryByText('查看运行错误详情')).not.toBeInTheDocument();
+    expect(screen.queryByText('本次运行失败')).not.toBeInTheDocument();
+    expect(screen.getByText('查看工具调用错误')).toBeInTheDocument();
+    expect(screen.getByText('工具调用存在未解决的问题')).toBeInTheDocument();
+    expect(screen.getByText('100%')).toBeInTheDocument();
+    expect(screen.getByText(/不代表事实准确率/)).toBeInTheDocument();
+    expect(screen.queryByText(/自动检查通过/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/自动核对未发现待处理异常/)).not.toBeInTheDocument();
+  });
+
+  it('retains recovered failures as history without reviving an actionable issue', () => {
+    const audit = completedWithFailedCall.snapshot.behaviorAudit!;
+    const recovered: AgentRunDetail = {
+      ...completedWithFailedCall,
+      snapshot: {
+        ...completedWithFailedCall.snapshot,
+        behaviorAudit: {
+          ...audit, status: 'info', attentionLevel: 'none', riskScore: 0,
+          dangerCount: 0, infoCount: 1, actionRequiredCount: 0, advisoryCount: 1,
+          findings: [{
+            ...audit.findings[0], severity: 'info', disposition: 'advisory',
+            title: '工具 read_rss_source 曾失败但已恢复',
+          }],
+        },
+      },
+    };
+    render(<RunDetailContent detail={recovered} onFeedback={vi.fn()} />);
+
+    expect(screen.getByText('已完成，有 1 次工具调用失败')).toBeInTheDocument();
+    expect(screen.getByText('工具 read_rss_source 曾失败但已恢复')).toBeInTheDocument();
+    expect(screen.queryByText('工具调用存在未解决的问题')).not.toBeInTheDocument();
+    expect(screen.queryByText('查看运行错误详情')).not.toBeInTheDocument();
+  });
+
+  it('shows failures from historical ledger-only records without changing run status', () => {
+    render(<RunDetailContent detail={{
+      ...completedWithFailedCall,
+      snapshot: { ...completedWithFailedCall.snapshot, qualityProjection: { toolResults: [], evidence: [] } },
+    }} onFeedback={vi.fn()} />);
+
+    expect(screen.getByText('已完成，有 1 次工具调用失败')).toBeInTheDocument();
+    expect(screen.getByText('查看工具调用错误')).toBeInTheDocument();
+    expect(screen.queryByText('查看运行错误详情')).not.toBeInTheDocument();
+  });
+
   it('distinguishes evidence failure from failed tools and exempts disclaimers', () => {
     const evidenceDetail: AgentRunDetail = {
       ...detail,
@@ -60,7 +147,7 @@ describe('RunDetailContent', () => {
       score: { ...detail.score, dimensions: { execution: { score: 0.75, weight: 0.25, details: { status: 'partial' } } } },
     };
     render(<RunDetailContent detail={evidenceDetail} onFeedback={vi.fn()} />);
-    expect(screen.queryByText('工具执行没有全部完成')).not.toBeInTheDocument();
+    expect(screen.queryByText('工具调用存在未解决的问题')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '定位失败工具' })).not.toBeInTheDocument();
     expect(screen.getByText('运行未完整完成')).toBeInTheDocument();
     expect(screen.getByText('无效引用：ev_missing')).toBeInTheDocument();
@@ -74,8 +161,8 @@ describe('RunDetailContent', () => {
     expect(screen.getByText('查看错误详情')).toBeInTheDocument();
     expect(screen.getByText(/ConnectionError: upstream closed the connection/)).toBeInTheDocument();
     expect(screen.getAllByText(/The upstream service did not return a response/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/错误代码：tool_execution_failed/)).toBeInTheDocument();
-    expect(screen.getByText('工具执行没有全部完成')).toBeInTheDocument();
+    expect(screen.getAllByText(/错误代码：tool_execution_failed/).length).toBeGreaterThan(0);
+    expect(screen.getByText('工具调用存在未解决的问题')).toBeInTheDocument();
     expect(screen.queryByText('回答内容还有待补全')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: '定位失败工具' })).toBeInTheDocument();
     expect(screen.getByText('查看错误详情').closest('details')).toBeInTheDocument();
@@ -191,7 +278,7 @@ describe('RunDetailContent', () => {
 
     render(<RunDetailContent detail={auditedDetail} onFeedback={vi.fn()} />);
 
-    expect(screen.getByText('自动巡检结论')).toBeInTheDocument();
+    expect(screen.getByText('执行诊断')).toBeInTheDocument();
     expect(screen.getByText('发现文档来源，但没有对应正文读取')).toBeInTheDocument();
     expect(screen.getByText('调用完成 · 来源索引')).toBeInTheDocument();
     expect(screen.getByText(/有 1 个需要处理的核对问题/)).toBeInTheDocument();

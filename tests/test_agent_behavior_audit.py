@@ -814,6 +814,8 @@ def test_unrelated_later_web_success_does_not_prove_source_recovery() -> None:
     assert finding["disposition"] == "action_required"
     assert finding["severity"] == "danger"
     assert "恢复" not in finding["title"]
+    assert finding["detail"].startswith("工具调用记录失败：upstream disconnected")
+    assert "运行记录标记为失败" not in finding["detail"]
 
 
 def test_earlier_success_is_retained_evidence_only_when_actually_cited() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from src.agent.langgraph_runtime.events import GraphEventBridge
@@ -101,6 +102,16 @@ def test_litellm_adapter_uses_langchain_async_stream_and_merges_tool_calls() -> 
         assert combined.tool_calls[0]["id"] == "call-1"
 
     asyncio.run(scenario())
+
+
+def test_litellm_gateway_requires_a_model_from_configuration() -> None:
+    with pytest.raises(ValueError, match="configured model settings"):
+        LiteLLMGateway(
+            llm_config={},
+            database=None,
+            run_id="run-missing-model",
+            worker_id="worker",
+        )
 
 
 def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answer() -> None:

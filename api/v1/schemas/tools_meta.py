@@ -27,6 +27,7 @@ ToolCategory = Literal[
     "source_read",
     "source_catalog",
     "source_search",
+    "news_source",
     "deterministic_calculation",
 ]
 
@@ -64,7 +65,7 @@ class ToolMeta(BaseModel):
     idempotent: bool = Field(..., description="是否支持幂等重放")
     sensitive_fields: List[str] = Field(default_factory=list, description="审批卡片需要脱敏的字段")
     parameters: List[ToolParameterSpec] = Field(default_factory=list, description="参数列表")
-    typed: bool = Field(False, description="参数和结果是否都由同源运行时模型校验")
+    typed: bool = Field(False, description="参数和结果是否都使用显式且严格的同源运行时模型校验")
     args_schema: Dict[str, Any] = Field(
         default_factory=dict,
         description="运行时参数模型生成的完整 JSON Schema",

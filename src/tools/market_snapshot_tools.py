@@ -32,7 +32,7 @@ def _read_breadth(
 ) -> dict[str, Any]:
     now = datetime.now().astimezone()
     data, cached = (
-        cached_call(cache_key, fetcher, ttl_seconds=60, attempts=1)
+        cached_call(cache_key, fetcher, ttl_seconds=60)
         if use_cache
         else (fetcher(), False)
     )

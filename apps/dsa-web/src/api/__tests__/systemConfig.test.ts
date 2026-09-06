@@ -113,7 +113,7 @@ describe('systemConfigApi', () => {
       items: [
         { key: 'ANTHROPIC_BASE_URL', value: 'https://gw.example.com' },
         { key: 'ANTHROPIC_AUTH_TOKEN', value: 'secret-token' },
-        { key: 'ANTHROPIC_MODEL', value: 'openai/glm-5.2' },
+        { key: 'ANTHROPIC_MODEL', value: 'configured/provider-model' },
       ],
       maskToken: '******',
       timeoutSeconds: 9,
@@ -125,7 +125,7 @@ describe('systemConfigApi', () => {
         items: [
           { key: 'ANTHROPIC_BASE_URL', value: 'https://gw.example.com' },
           { key: 'ANTHROPIC_AUTH_TOKEN', value: 'secret-token' },
-          { key: 'ANTHROPIC_MODEL', value: 'openai/glm-5.2' },
+          { key: 'ANTHROPIC_MODEL', value: 'configured/provider-model' },
         ],
         mask_token: '******',
         timeout_seconds: 9,

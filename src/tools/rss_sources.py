@@ -1,8 +1,9 @@
 """Stable source metadata for Agent-visible RSSHub atomic tools.
 
 This module describes data sources only.  It contains no query routing,
-relevance score, fallback chain, or workflow.  Every definition below becomes
-one model-visible tool whose executor reads exactly the fixed ``route_path``.
+relevance score, fallback chain, or workflow. The generic read_rss_source
+operation exposes these definitions as its source directory and reads the
+selected source's fixed ``route_path``.
 """
 
 from __future__ import annotations
@@ -97,7 +98,7 @@ RSS_SOURCE_DEFINITIONS: tuple[RssSourceDefinition, ...] = (
         "cih-index",
         "中指研究院",
         "房地产与城市指数报告",
-        "读取中指研究院报告列表；分类编码可先由 list_rss_cih_report_categories 获取。",
+        '读取中指研究院报告列表；分类编码可先由 list_rss_source_catalog(source_id="cih_report_categories") 获取。',
         "research",
         "industry",
         parameters=(
@@ -147,7 +148,7 @@ RSS_SOURCE_DEFINITIONS: tuple[RssSourceDefinition, ...] = (
         "cls",
         "财联社",
         "指定话题文章",
-        "读取一个财联社话题；话题编号可先由 list_rss_cls_subjects 获取。",
+        '读取一个财联社话题；话题编号可先由 list_rss_source_catalog(source_id="cls_subjects", keyword="话题关键词") 获取，再填写 id。',
         "market",
         "company",
         "industry",
@@ -253,7 +254,7 @@ RSS_SOURCE_DEFINITIONS: tuple[RssSourceDefinition, ...] = (
         "futunn",
         "富途牛牛",
         "指定专题",
-        "读取一个富途专题；专题编号可先由 list_rss_futunn_topics 获取。",
+        '读取一个富途专题；专题编号可先由 list_rss_source_catalog(source_id="futunn_topics", keyword="专题关键词") 获取，再填写 id。',
         "company",
         "industry",
         parameters=(
@@ -300,7 +301,7 @@ RSS_SOURCE_DEFINITIONS: tuple[RssSourceDefinition, ...] = (
         "gelonghui",
         "格隆汇",
         "指定主题文章",
-        "读取一个格隆汇主题；主题编号可先由 list_rss_gelonghui_subjects 获取。",
+        '读取一个格隆汇主题；主题编号可先由 list_rss_source_catalog(source_id="gelonghui_subjects", keyword="主题关键词") 获取，再填写 id。',
         "company",
         "industry",
         parameters=(
@@ -478,7 +479,7 @@ RSS_SOURCE_DEFINITIONS: tuple[RssSourceDefinition, ...] = (
         "nanhua",
         "南华期货",
         "期货研报",
-        "读取南华期货一个明确分类的研报；合法分类组合可先由 list_rss_nanhua_report_types 获取。",
+        '读取南华期货一个明确分类的研报；合法分类组合可先由 list_rss_source_catalog(source_id="nanhua_report_types") 获取。',
         "research",
         "industry",
         "macro",

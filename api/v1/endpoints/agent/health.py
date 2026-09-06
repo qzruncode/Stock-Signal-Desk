@@ -247,12 +247,13 @@ def agent_metrics(
                 "threshold": 0,
             }
         )
-    if metrics.get("open_circuits"):
+    active_circuits = int(metrics.get("open_circuits") or 0) + int(metrics.get("half_open_circuits") or 0)
+    if active_circuits:
         alerts.append(
             {
                 "code": "agent_dependency_circuit_open",
                 "severity": "warning",
-                "value": metrics["open_circuits"],
+                "value": active_circuits,
                 "threshold": 0,
             }
         )
@@ -282,6 +283,10 @@ def agent_metrics_prometheus(
             f"dsa_agent_expired_run_leases {int(metrics.get('expired_run_leases') or 0)}",
             "# TYPE dsa_agent_open_circuits gauge",
             f"dsa_agent_open_circuits {int(metrics.get('open_circuits') or 0)}",
+            "# TYPE dsa_agent_half_open_circuits gauge",
+            f"dsa_agent_half_open_circuits {int(metrics.get('half_open_circuits') or 0)}",
+            "# TYPE dsa_agent_expired_circuits gauge",
+            f"dsa_agent_expired_circuits {int(metrics.get('expired_circuits') or 0)}",
             "# TYPE dsa_agent_active_resource_leases gauge",
             "dsa_agent_active_resource_leases " f"{int(metrics.get('active_resource_leases') or 0)}",
             "# TYPE dsa_agent_step_idempotency_reuses_total counter",

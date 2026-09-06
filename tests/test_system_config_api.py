@@ -289,7 +289,7 @@ class SystemConfigApiTestCase(unittest.TestCase):
                     items=[
                         {"key": "ANTHROPIC_BASE_URL", "value": "https://gw.example.com"},
                         {"key": "ANTHROPIC_AUTH_TOKEN", "value": "secret-token"},
-                        {"key": "ANTHROPIC_MODEL", "value": "openai/glm-5.2"},
+                        {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
                     ],
                     timeout_seconds=5,
                 ),

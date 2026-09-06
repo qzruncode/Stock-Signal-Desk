@@ -89,7 +89,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 items=[
                     {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
                     {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
-                    {"key": "ANTHROPIC_MODEL", "value": "openai/glm-5.2"},
+                    {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
                 ],
                 timeout_seconds=9,
             )
@@ -99,7 +99,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         kwargs = mock_completion.call_args.kwargs
         self.assertEqual(kwargs["api_base"], "https://submitted.example.com")
         self.assertEqual(kwargs["api_key"], "submitted-secret")
-        self.assertEqual(kwargs["model"], "openai/glm-5.2")
+        self.assertEqual(kwargs["model"], "configured/provider-model")
         self.assertEqual(kwargs["timeout"], 9.0)
         self.assertNotIn("submitted-secret", self.env_path.read_text(encoding="utf-8"))
 
@@ -125,7 +125,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
                 items=[
                     {"key": "ANTHROPIC_BASE_URL", "value": "https://submitted.example.com"},
                     {"key": "ANTHROPIC_AUTH_TOKEN", "value": "submitted-secret"},
-                    {"key": "ANTHROPIC_MODEL", "value": "ai/glm-5.2"},
+                    {"key": "ANTHROPIC_MODEL", "value": "configured/provider-model"},
                 ]
             )
 
