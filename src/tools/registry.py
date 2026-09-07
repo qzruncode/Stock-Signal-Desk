@@ -136,6 +136,23 @@ TOOL_MODULES: tuple[str, ...] = (
 class ToolRegistry:
     """Discover tool definitions and execute them by registered name."""
 
+    @classmethod
+    def from_tools(cls, tools: list[ToolSpec]) -> "ToolRegistry":
+        """Explicit dependency injection for offline experiments and embeddings.
+
+        Injected operations cannot be reconstructed by isolated production
+        workers; supports_isolated_execution intentionally returns False.
+        """
+        registry = cls.__new__(cls)
+        registry._tools = OrderedDict()
+        registry._owners = {}
+        for tool in tools:
+            if tool.name in registry._tools:
+                raise ValueError(f"duplicate tool: {tool.name}")
+            registry._tools[tool.name] = tool
+            registry._owners[tool.name] = "injected"
+        return registry
+
     def __init__(self) -> None:
         self._tools: OrderedDict[str, ToolSpec] = OrderedDict()
         self._owners: dict[str, str] = {}

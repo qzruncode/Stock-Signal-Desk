@@ -31,6 +31,7 @@ const metrics = {
       toolCalls: 20,
       estimatedTokens: 5000,
       estimatedCostMicros: 100,
+      actualUsage: { inputTokens: 100, outputTokens: 23, totalTokens: 123, reportedCalls: 10, unreportedCalls: 2 },
     },
     slo24h: {
       terminalRuns: 10,
@@ -87,10 +88,12 @@ describe('AgentMonitoringPage', () => {
     );
 
     expect(await screen.findByRole('heading', { name: '系统运行监控' })).toBeInTheDocument();
-    expect(screen.getByText('系统完成率低于 SLO')).toBeInTheDocument();
+    expect(await screen.findByText('系统完成率低于 SLO')).toBeInTheDocument();
     expect(screen.getByText('实际 80% · 阈值 95%')).toBeInTheDocument();
     expect(screen.getByText('configured-model[1m]')).toBeInTheDocument();
     expect(screen.getByText('系统异常')).toBeInTheDocument();
+    expect(screen.getByText('实际 Token（提供商已报告）：123')).toBeInTheDocument();
+    expect(screen.getByText('用量报告覆盖：10 次，未报告 2 次')).toBeInTheDocument();
     expect(screen.queryByText('当前运行分布')).not.toBeInTheDocument();
     expect(screen.queryByText('工具步骤健康度')).not.toBeInTheDocument();
 

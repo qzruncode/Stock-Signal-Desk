@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.storage.models import (
     AgentArtifact,
+    AgentFinancialConclusion,
     AgentCircuitBreaker,
     AgentEffectOutbox,
     AgentRateLimitBucket,
@@ -73,6 +74,7 @@ def _run_dict(record: AgentRun) -> dict[str, Any]:
         "provider_call_count": int(record.provider_call_count or 0),
         "estimated_token_count": int(record.estimated_token_count or 0),
         "estimated_cost_micros": int(record.estimated_cost_micros or 0),
+        "actual_usage": {key: value for key, value in _load_json(record.usage_json, {}).items() if key != "call_ids"} or None,
         "created_at": record.created_at,
         "started_at": record.started_at,
         "finished_at": record.finished_at,

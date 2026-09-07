@@ -335,8 +335,8 @@ export const agentApi = {
     return toCamelCase<ChatConversationItem>(response.data);
   },
 
-  async getConversation(conversationId: string): Promise<ChatConversationDetail> {
-    const response = await apiClient.get<Record<string, unknown>>(`/api/v1/agent/conversations/${conversationId}`);
+  async getConversation(conversationId: string, signal?: AbortSignal): Promise<ChatConversationDetail> {
+    const response = await apiClient.get<Record<string, unknown>>(`/api/v1/agent/conversations/${conversationId}`, { signal });
     return normalizeConversationDetail(response.data);
   },
 

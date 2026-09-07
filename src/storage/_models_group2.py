@@ -229,6 +229,7 @@ class AgentRun(Base):
     provider_call_count = Column(Integer, nullable=False, default=0)
     estimated_token_count = Column(Integer, nullable=False, default=0)
     estimated_cost_micros = Column(Integer, nullable=False, default=0)
+    usage_json = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
     started_at = Column(DateTime)
     finished_at = Column(DateTime, index=True)

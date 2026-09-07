@@ -19,27 +19,36 @@ A 股 / 港股 / 美股自选股 AI 分析工作台。项目由 FastAPI 后端�
 
 | 路径 | 页面 | 说明 |
 | --- | --- | --- |
-| `/` | 选股通知工作台 | 单股分析、任务列表、历史报告、自选股面板、批量分析面板、模板管理 |
-| `/portfolio` | 自选股列表管理 | 添加、批量添加、筛选、分组展示、删除自选股 |
-| `/settings` | 模型 API 配置 | 维护模型配置并保存到 `.env` |
-| `/login` | 登录页 | 仅在认证开启时使用 |
+| `/` | AI 研究对话 | 流式回答、证据、审批、取消与恢复 |
+| `/research` | 研究档案 | 结论与当时证据、5/20/60 个交易日参考表现、可选变化提醒 |
+| `/stocks` | 股票与自选 | 复用股票列表与自选分组 |
+| `/screening` | 指标选股 | 复用指标筛选和分组保存 |
+| `/sources` | 财经来源 | RSS 来源与内容预览 |
+| `/runs` | 运行记录 | 工具轨迹、证据与质量检查 |
+| `/monitoring` | 系统监控 | 容量、依赖、估算预算与供应商实报 Token |
+| `/setting` | 设置 | 模型、Prompt、工具、通知及数据维护；认证开启时未登录自动显示登录页 |
 
 ## 快速开始
 
 ### 环境要求
 
-- Python 3.10+
-- Node.js 18+（需要本地开发或重新构建 WebUI 时使用）
+- Python 3.13（锁文件验收版本）
+- Node.js 24（本地开发或重新构建 WebUI）
 
 ### 安装依赖
 
 ```bash
-pip install -r requirements.txt
+python3.13 -m venv .venv
+source .venv/bin/activate
+# Linux x86_64；Intel macOS 改用 requirements-macos.lock
+python -m pip install --require-hashes -r requirements.lock
 
 cd apps/dsa-web
-npm install
+npm ci
 cd ../..
 ```
+
+锁文件更新、离线评测、迁移与定向验收见 [研究工作区维护说明](RESEARCH_WORKSPACE.md)。
 
 ### 配置
 

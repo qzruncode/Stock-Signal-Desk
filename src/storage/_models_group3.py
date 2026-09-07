@@ -154,6 +154,10 @@ class AlertRuleRecord(Base):
     __tablename__ = "alert_rules"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    tenant_id = Column(String(64), nullable=False, default="local", index=True)
+    owner_id = Column(String(128), nullable=False, default="admin", index=True)
+    state_json = Column(Text, nullable=False, default="{}")
+    next_check_at = Column(DateTime)
     name = Column(String(64), nullable=False)
     target_scope = Column(String(32), nullable=False, default="single_symbol", index=True)
     target = Column(String(64), nullable=False, index=True)
@@ -167,7 +171,11 @@ class AlertRuleRecord(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, index=True)
 
-    __table_args__ = (Index("ix_alert_rule_type_target", "alert_type", "target"),)
+    __table_args__ = (
+        Index("ix_alert_rule_type_target", "alert_type", "target"),
+        Index("ix_alert_rules_next_check", "next_check_at"),
+        Index("ix_alert_rules_owner_source", "tenant_id", "owner_id", "source"),
+    )
 
 class AlertTriggerRecord(Base):
     """Alert trigger history."""
@@ -175,6 +183,7 @@ class AlertTriggerRecord(Base):
     __tablename__ = "alert_triggers"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    fingerprint = Column(String(64))
     rule_id = Column(Integer, index=True)
     target = Column(String(64), nullable=False, index=True)
     observed_value = Column(Float)
@@ -186,7 +195,10 @@ class AlertTriggerRecord(Base):
     status = Column(String(16), nullable=False, default="triggered", index=True)
     diagnostics = Column(Text)
 
-    __table_args__ = (Index("ix_alert_trigger_rule_time", "rule_id", "triggered_at"),)
+    __table_args__ = (
+        Index("ix_alert_trigger_rule_time", "rule_id", "triggered_at"),
+        Index("ix_alert_trigger_fingerprint", "fingerprint", unique=True),
+    )
 
 class AlertNotificationRecord(Base):
     """Notification attempt for alert triggers."""

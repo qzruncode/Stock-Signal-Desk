@@ -1,0 +1,515 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "general-explanation",
+      "question": "解释研究结论与实际成交的区别，不需要查询外部数据。",
+      "model_responses": [
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "context",
+                    "content": "研究结论不等于实际成交，需要区分证据、判断与执行。",
+                    "source_ids": []
+                  }
+                ],
+                "research": []
+              },
+              "type": "tool_call"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "single-source",
+      "question": "核验 600519 在 2026-09-04 的历史指标。",
+      "tools": [
+        {
+          "name": "read_metric",
+          "description": "读取明确股票的已冻结历史财务指标",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "observations": [
+            {
+              "arguments": {
+                "symbol": "600519"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "600519",
+                "value": 100,
+                "sources": [
+                  "https://example.test/financial/600519"
+                ]
+              }
+            },
+            {
+              "arguments": {
+                "symbol": "000001"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "000001",
+                "value": 101,
+                "sources": [
+                  "https://example.test/financial/000001"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "reference_tools": [
+        {
+          "name": "read_metric",
+          "args": {
+            "symbol": "600519"
+          }
+        }
+      ],
+      "model_responses": [
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read_metric",
+              "id": "metric0",
+              "args": {
+                "symbol": "600519"
+              },
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "fact",
+                    "content": "600519 在 2026-09-04 的指标为 100。",
+                    "source_ids": [
+                      1
+                    ]
+                  }
+                ],
+                "research": []
+              },
+              "type": "tool_call"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "parallel-sources",
+      "question": "比较 600519 与 000001 在 2026-09-04 的指标。",
+      "tools": [
+        {
+          "name": "read_metric",
+          "description": "读取明确股票的已冻结历史财务指标",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "observations": [
+            {
+              "arguments": {
+                "symbol": "600519"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "600519",
+                "value": 100,
+                "sources": [
+                  "https://example.test/financial/600519"
+                ]
+              }
+            },
+            {
+              "arguments": {
+                "symbol": "000001"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "000001",
+                "value": 101,
+                "sources": [
+                  "https://example.test/financial/000001"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "reference_tools": [
+        {
+          "name": "read_metric",
+          "args": {
+            "symbol": "600519"
+          }
+        },
+        {
+          "name": "read_metric",
+          "args": {
+            "symbol": "000001"
+          }
+        }
+      ],
+      "model_responses": [
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read_metric",
+              "id": "metric0",
+              "args": {
+                "symbol": "600519"
+              },
+              "type": "tool_call"
+            },
+            {
+              "name": "read_metric",
+              "id": "metric1",
+              "args": {
+                "symbol": "000001"
+              },
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "fact",
+                    "content": "600519 在 2026-09-04 的指标为 100，000001 为 101。",
+                    "source_ids": [
+                      1,
+                      2
+                    ]
+                  }
+                ],
+                "research": []
+              },
+              "type": "tool_call"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "research-annotation",
+      "question": "根据 600519 在 2026-09-04 的指标做研究观察。",
+      "tools": [
+        {
+          "name": "read_metric",
+          "description": "读取明确股票的已冻结历史财务指标",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "observations": [
+            {
+              "arguments": {
+                "symbol": "600519"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "600519",
+                "value": 100,
+                "sources": [
+                  "https://example.test/financial/600519"
+                ]
+              }
+            },
+            {
+              "arguments": {
+                "symbol": "000001"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "000001",
+                "value": 101,
+                "sources": [
+                  "https://example.test/financial/000001"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "reference_tools": [
+        {
+          "name": "read_metric",
+          "args": {
+            "symbol": "600519"
+          }
+        }
+      ],
+      "model_responses": [
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read_metric",
+              "id": "metric0",
+              "args": {
+                "symbol": "600519"
+              },
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "inference",
+                    "content": "600519 的历史指标支持继续观察，不能据此确认当前买入条件。",
+                    "source_ids": [
+                      1
+                    ]
+                  }
+                ],
+                "research": [
+                  {
+                    "symbol": "600519",
+                    "verdict": "watch",
+                    "block_indices": [
+                      1
+                    ]
+                  }
+                ]
+              },
+              "type": "tool_call"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reject-unresolved-reference",
+      "question": "核验 600519 在 2026-09-04 的历史指标。",
+      "tools": [
+        {
+          "name": "read_metric",
+          "description": "读取明确股票的已冻结历史财务指标",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "symbol": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "symbol"
+            ]
+          },
+          "observations": [
+            {
+              "arguments": {
+                "symbol": "600519"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "600519",
+                "value": 100,
+                "sources": [
+                  "https://example.test/financial/600519"
+                ]
+              }
+            },
+            {
+              "arguments": {
+                "symbol": "000001"
+              },
+              "result": {
+                "success": true,
+                "errors": [],
+                "partial": false,
+                "data_time": "2026-09-04",
+                "data_time_provenance": "source",
+                "symbol": "000001",
+                "value": 101,
+                "sources": [
+                  "https://example.test/financial/000001"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "reference_tools": [
+        {
+          "name": "read_metric",
+          "args": {
+            "symbol": "600519"
+          }
+        }
+      ],
+      "model_responses": [
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "read_metric",
+              "id": "metric0",
+              "args": {
+                "symbol": "600519"
+              },
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "fact",
+                    "content": "600519 在 2026-09-04 的指标为 100。",
+                    "source_ids": [
+                      999
+                    ]
+                  }
+                ],
+                "research": []
+              },
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "fact",
+                    "content": "600519 在 2026-09-04 的指标为 100。",
+                    "source_ids": [
+                      999
+                    ]
+                  }
+                ],
+                "research": []
+              },
+              "type": "tool_call"
+            }
+          ]
+        },
+        {
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "StructuredAgentAnswer",
+              "id": "answer",
+              "args": {
+                "title": "离线回归样本",
+                "blocks": [
+                  {
+                    "kind": "fact",
+                    "content": "600519 在 2026-09-04 的指标为 100。",
+                    "source_ids": [
+                      999
+                    ]
+                  }
+                ],
+                "research": []
+              },
+              "type": "tool_call"
+            }
+          ]
+        }
+      ],
+      "expected_status": "partial",
+      "expected_quality_pass": false
+    }
+  ]
+}

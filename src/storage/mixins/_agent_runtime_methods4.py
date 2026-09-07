@@ -170,6 +170,16 @@ class _AgentRuntimeMixinMethods4:
             tool_calls = sum(int(record.tool_call_count or 0) for record in recent_runs)
             estimated_tokens = sum(int(record.estimated_token_count or 0) for record in recent_runs)
             estimated_cost_micros = sum(int(record.estimated_cost_micros or 0) for record in recent_runs)
+            usages = [_load_json(record.usage_json, {}) for record in recent_runs]
+            reported_calls = sum(item.get("reported_calls", 0) for item in usages)
+            actual_usage = {
+                "reported_calls": reported_calls,
+                "unreported_calls": max(0, provider_calls - reported_calls),
+                "input_tokens": sum(item.get("total", {}).get("input_tokens", 0) for item in usages),
+                "output_tokens": sum(item.get("total", {}).get("output_tokens", 0) for item in usages),
+                "total_tokens": sum(item.get("total", {}).get("total_tokens", 0) for item in usages),
+                "source": "provider",
+            } if reported_calls else None
             return {
                 "runs": {status: int(count) for status, count in status_rows},
                 "steps": [
@@ -206,6 +216,7 @@ class _AgentRuntimeMixinMethods4:
                     "tool_calls": tool_calls,
                     "estimated_tokens": estimated_tokens,
                     "estimated_cost_micros": estimated_cost_micros,
+                    "actual_usage": actual_usage,
                 },
                 "slo_24h": {
                     "terminal_runs": len(terminal_recent),
@@ -238,6 +249,7 @@ class _AgentRuntimeMixinMethods4:
                     .where(
                         AgentRun.status.in_(_TERMINAL_RUN_STATUSES),
                         AgentRun.finished_at < finished_before,
+                        ~AgentRun.id.in_(select(AgentFinancialConclusion.run_id)),
                     )
                     .order_by(AgentRun.finished_at.asc())
                     .limit(max(1, min(limit, 5000)))
@@ -250,7 +262,10 @@ class _AgentRuntimeMixinMethods4:
             trace_ids = (
                 session.execute(
                     select(AgentRunTrace.id)
-                    .where(AgentRunTrace.created_at < trace_cutoff)
+                    .where(
+                        AgentRunTrace.created_at < trace_cutoff,
+                        ~AgentRunTrace.run_id.in_(select(AgentFinancialConclusion.run_id)),
+                    )
                     .order_by(AgentRunTrace.created_at.asc())
                     .limit(safe_limit)
                 )

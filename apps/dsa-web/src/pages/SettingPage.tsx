@@ -1,12 +1,11 @@
 import { lazy, useEffect } from 'react';
-import { Activity, ArrowLeft, Bell, Box, Database, Hammer, ListChecks, ListFilter, MessageSquareText, Monitor, Rss } from 'lucide-react';
+import { ArrowLeft, Bell, Box, Database, Hammer, ListChecks, MessageSquareText, Monitor } from 'lucide-react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { SettingsSidebar } from '../components/settings/SettingsSidebar';
 import type { SettingsCategory } from '../components/settings/SettingsSidebar';
 import { MobileSettingsNavigation } from '../components/settings/MobileSettingsNavigation';
 import { Button } from '../components/ui/button';
-import { cn } from '../utils/cn';
 
 const RunExplorerSettingsView = lazy(() => import('./RunExplorerPage'));
 const AgentMonitoringSettingsView = lazy(() => import('./AgentMonitoringPage'));
@@ -14,10 +13,7 @@ const ToolRegistryView = lazy(() => import('../components/tools/ToolRegistryView
 const ModelSettingsView = lazy(() => import('../components/settings/ModelSettingsView'));
 const AgentPromptView = lazy(() => import('../components/agentPrompts/AgentPromptView'));
 const NotificationSettingsView = lazy(() => import('../components/settings/NotificationSettingsView'));
-const RssSettingsView = lazy(() => import('../components/settings/RssSettingsView'));
-const StockListSettingsView = lazy(() => import('../components/settings/StockListSettingsView'));
 const DataMaintenanceSettingsView = lazy(() => import('../components/settings/DataMaintenanceSettingsView'));
-const IndicatorScreeningSettingsView = lazy(() => import('../components/settings/IndicatorScreeningSettingsView'));
 
 const SETTINGS_CATEGORIES: SettingsCategory[] = [
   {
@@ -49,32 +45,11 @@ const SETTINGS_CATEGORIES: SettingsCategory[] = [
     description: '企业微信渠道与发送测试',
   },
   {
-    id: 'stocks',
-    label: '股票列表',
-    icon: ListFilter,
-    available: true,
-    description: '浏览全市场股票并管理自选分组',
-  },
-  {
-    id: 'indicator-screening',
-    label: '指标选股',
-    icon: Activity,
-    available: true,
-    description: '使用技术指标筛选股票并保存到自选分组',
-  },
-  {
     id: 'data-maintenance',
     label: '数据维护中心',
     icon: Database,
     available: true,
     description: '同步股票、K 线和财务基础数据',
-  },
-  {
-    id: 'rss',
-    label: 'RSS 数据源',
-    icon: Rss,
-    available: true,
-    description: '浏览已筛选的财经来源并预览 Feed',
   },
   {
     id: 'model',
@@ -107,19 +82,16 @@ const SettingPage: React.FC = () => {
     : firstAvailable?.id ?? SETTINGS_CATEGORIES[0].id;
 
   const activeCategory = SETTINGS_CATEGORIES.find((category) => category.id === activeId);
-  const isTallCategory = activeCategory?.id === 'stocks' || activeCategory?.id === 'indicator-screening';
+  const businessRoutes: Record<string, string> = { stocks: '/stocks', 'indicator-screening': '/screening', rss: '/sources' };
   const handleCategorySelect = (id: string) => {
     setSearchParams({ tab: id }, { replace: true });
   };
 
+  if (requestedTab && businessRoutes[requestedTab]) return <Navigate to={businessRoutes[requestedTab]} replace />;
+
   return (
     <motion.div
-      className={cn(
-        'mx-auto max-w-6xl py-6',
-        isTallCategory
-          ? 'flex h-full min-h-0 flex-col space-y-3 overflow-hidden'
-          : 'space-y-6',
-      )}
+      className="mx-auto max-w-6xl space-y-6 py-6"
       initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{
@@ -147,10 +119,7 @@ const SettingPage: React.FC = () => {
         <h1 className="hidden text-2xl font-semibold text-foreground lg:block">设置</h1>
       </header>
 
-      <div className={cn(
-        'grid grid-cols-1 gap-6 lg:grid-cols-[14rem_1fr]',
-        isTallCategory && 'min-h-0 flex-1',
-      )}>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[14rem_1fr]">
         <aside className="hidden lg:sticky lg:top-4 lg:block lg:self-start">
           <SettingsSidebar
             categories={SETTINGS_CATEGORIES}
@@ -162,10 +131,7 @@ const SettingPage: React.FC = () => {
         <AnimatePresence mode="wait" initial={false}>
           <motion.main
             key={activeId}
-            className={cn(
-              'min-w-0',
-              isTallCategory && 'min-h-0 overflow-hidden',
-            )}
+            className="min-w-0"
             initial={{ opacity: 0, x: prefersReducedMotion ? 0 : 10 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: prefersReducedMotion ? 0 : -6 }}
@@ -186,14 +152,8 @@ const SettingPage: React.FC = () => {
               <AgentPromptView />
             ) : activeCategory?.id === 'notification' ? (
               <NotificationSettingsView />
-            ) : activeCategory?.id === 'stocks' ? (
-              <StockListSettingsView />
-            ) : activeCategory?.id === 'indicator-screening' ? (
-              <IndicatorScreeningSettingsView />
             ) : activeCategory?.id === 'data-maintenance' ? (
               <DataMaintenanceSettingsView />
-            ) : activeCategory?.id === 'rss' ? (
-              <RssSettingsView />
             ) : null}
           </motion.main>
         </AnimatePresence>

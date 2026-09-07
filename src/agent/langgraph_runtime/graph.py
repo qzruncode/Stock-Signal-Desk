@@ -21,6 +21,7 @@ from .middleware import (
     ToolExecutionMiddleware,
 )
 from .state import AgentState, GraphContext
+from .memory import ConversationMemoryMiddleware
 
 
 class _RuntimeModelPlaceholder(BaseChatModel):
@@ -71,6 +72,7 @@ def build_agent_graph(
         model=_RuntimeModelPlaceholder(),
         tools=build_langchain_tools(registry),
         middleware=(
+            ConversationMemoryMiddleware(),
             AgentPromptMiddleware(),
             OperationPolicyMiddleware(),
             ToolExecutionMiddleware(),

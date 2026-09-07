@@ -42,6 +42,7 @@ def _response_metadata(response: Any) -> dict[str, Any]:
     usage = _field(response, "usage") or {}
     return {
         "model": str(_field(response, "model") or ""),
+        "model_name": str(_field(response, "model") or ""),
         "finish_reason": str(_field(choice, "finish_reason") or ""),
         "usage": {
             key: _field(usage, key)
@@ -49,6 +50,31 @@ def _response_metadata(response: Any) -> dict[str, Any]:
             if _field(usage, key) is not None
         },
     }
+
+
+def _usage_metadata(response: Any) -> dict[str, Any] | None:
+    usage = _field(response, "usage")
+    if usage is None or _field(usage, "prompt_tokens") is None or _field(usage, "completion_tokens") is None:
+        return None
+    try:
+        inputs, outputs = int(_field(usage, "prompt_tokens")), int(_field(usage, "completion_tokens"))
+        total = int(_field(usage, "total_tokens") or inputs + outputs)
+    except (TypeError, ValueError):
+        return None
+    if min(inputs, outputs, total) < 0:
+        return None
+    result: dict[str, Any] = {
+        "input_tokens": inputs, "output_tokens": outputs,
+        "total_tokens": total,
+    }
+    details = _field(usage, "prompt_tokens_details") or {}
+    cached = _field(details, "cached_tokens")
+    if isinstance(cached, int) and cached >= 0:
+        result["input_token_details"] = {"cache_read": cached}
+    reasoning = _field(_field(usage, "completion_tokens_details") or {}, "reasoning_tokens")
+    if isinstance(reasoning, int) and reasoning >= 0:
+        result["output_token_details"] = {"reasoning": reasoning}
+    return result
 
 
 def _tool_call_chunks(value: Any) -> list[dict[str, Any]]:
@@ -114,6 +140,7 @@ def _generation_chunk(response: Any) -> ChatGenerationChunk:
         response_metadata=metadata,
         id=str(chunk_id) if chunk_id else None,
         tool_call_chunks=tool_call_chunks,
+        usage_metadata=_usage_metadata(response),
     )
     return ChatGenerationChunk(message=ai_chunk)
 
@@ -215,6 +242,8 @@ class LiteLLMChatModel(BaseChatModel):
             "temperature": options.pop("temperature", self.llm_config.get("temperature", 0.1)),
             "max_tokens": int(options.pop("max_tokens", self.llm_config.get("max_tokens", 8_000))),
         }
+        if stream:
+            request["stream_options"] = {"include_usage": True}
         if stop:
             request["stop"] = stop
         for field in ("tools", "tool_choice", "parallel_tool_calls", "response_format"):
@@ -242,17 +271,38 @@ class LiteLLMChatModel(BaseChatModel):
             **build_litellm_kwargs(self.llm_config, **request)
         )
         if hasattr(response, "__aiter__"):
+            reported_usage = None
+            model_name = str(self.llm_config.get("model") or "")
+            model_emitted = False
             try:
                 async for item in response:
                     if item is not None:
-                        yield _generation_chunk(item)
+                        chunk = _generation_chunk(item)
+                        if chunk.message.usage_metadata is not None:
+                            reported_usage = chunk.message.usage_metadata
+                            chunk.message.usage_metadata = None
+                        model_name = str(_field(item, "model") or model_name)
+                        if model_emitted:
+                            chunk.message.response_metadata.pop("model_name", None)
+                        else:
+                            chunk.message.response_metadata["model_name"] = model_name
+                            model_emitted = True
+                        yield chunk
+                if reported_usage is not None:
+                    yield ChatGenerationChunk(message=AIMessageChunk(
+                        content="", usage_metadata=reported_usage,
+                    ))
             finally:
                 closer = getattr(response, "aclose", None)
                 if callable(closer):
                     await closer()
             return
         if response is not None:
-            yield _generation_chunk(response)
+            chunk = _generation_chunk(response)
+            chunk.message.response_metadata["model_name"] = str(
+                _field(response, "model") or self.llm_config.get("model") or ""
+            )
+            yield chunk
 
     async def _agenerate(
         self,

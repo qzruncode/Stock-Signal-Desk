@@ -76,8 +76,8 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
   const [searchParams] = useSearchParams();
   const [runs, setRuns] = useState<AgentRunSummary[]>([]);
   const [summary, setSummary] = useState<AgentQualitySummary | null>(null);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() => searchParams.get('runId'));
+  const [detailOpen, setDetailOpen] = useState(() => Boolean(searchParams.get('runId')));
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [status, setStatus] = useState(() => searchParams.get('status') ?? '');
   const [tool, setTool] = useState(() => searchParams.get('tool') ?? '');
@@ -171,11 +171,11 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
       setTotal(runResponse.total);
       setSummary(qualityResponse);
       setSelectedRunId((current) => (
-        runResponse.items.some((item) => item.runId === current)
+        (current && current === searchParams.get('runId')) || runResponse.items.some((item) => item.runId === current)
           ? current
           : runResponse.items[0]?.runId ?? null
       ));
-      if (runResponse.items.length === 0) {
+      if (runResponse.items.length === 0 && !searchParams.get('runId')) {
         setDetail(null);
       }
     } catch (requestError) {
@@ -183,7 +183,7 @@ const RunExplorerPage: React.FC<RunExplorerPageProps> = ({ embedded = false }) =
     } finally {
       setLoading(false);
     }
-  }, [page, status, tool]);
+  }, [page, status, tool, searchParams]);
 
   useEffect(() => {
     document.title = '分析记录 - Stock Assistant';

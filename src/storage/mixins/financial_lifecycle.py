@@ -19,7 +19,7 @@ from src.storage.models import (
 )
 
 
-OUTCOME_ENGINE_VERSION = "financial-outcome-1.0"
+OUTCOME_ENGINE_VERSION = "financial-outcome-1.1"
 DEFAULT_OUTCOME_HORIZONS = (5, 20, 60)
 
 

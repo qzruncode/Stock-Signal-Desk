@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Suspense, useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { Shell } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -13,6 +13,10 @@ import {
   SettingPage,
 } from './utils/routePreload';
 import './App.css';
+import { WorkspaceQueryProvider } from './components/layout/WorkspaceQueryProvider';
+
+const ResearchPage = lazy(() => import('./pages/ResearchPage'));
+const MarketWorkspacePage = lazy(() => import('./pages/MarketWorkspacePage'));
 
 const PageFallback: React.FC = () => (
   <div className="flex min-h-screen items-center justify-center bg-base">
@@ -65,15 +69,19 @@ const AppContent: React.FC = () => {
 
   return (
     <Suspense fallback={<PageFallback />}>
-      <Routes>
+      <WorkspaceQueryProvider><Routes>
         <Route element={<Shell />}>
           <Route path="/" element={<ChatHomePage />} />
           <Route path="/setting" element={<SettingPage />} />
           <Route path="/runs" element={<RunExplorerPage />} />
           <Route path="/monitoring" element={<AgentMonitoringPage />} />
+          <Route path="/research" element={<ResearchPage />} />
+          <Route path="/stocks" element={<MarketWorkspacePage section="stocks" />} />
+          <Route path="/screening" element={<MarketWorkspacePage section="screening" />} />
+          <Route path="/sources" element={<MarketWorkspacePage section="sources" />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>
-      </Routes>
+      </Routes></WorkspaceQueryProvider>
     </Suspense>
   );
 };

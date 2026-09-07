@@ -76,6 +76,16 @@ class StructuredAnswerBlock(TypedDict):
     ]
 
 
+class ResearchConclusion(TypedDict):
+    """Optional business annotation of an explicit, already visible judgment."""
+
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
+    symbol: Annotated[str, Field(min_length=1, max_length=16)]
+    verdict: Literal["buy", "not_buy", "watch", "avoid"]
+    block_indices: Annotated[list[Annotated[int, Field(strict=True, ge=1)]], Field(min_length=1, max_length=12)]
+
+
 class StructuredAgentAnswer(TypedDict):
     """The only model-owned payload accepted as a new run's final answer."""
 
@@ -88,6 +98,16 @@ class StructuredAgentAnswer(TypedDict):
             max_length=240,
             description="Optional short title. Do not put factual claims only in the title.",
         ),
+    ]
+    research: Annotated[
+        list[ResearchConclusion],
+        Field(default_factory=list, max_length=30, description=(
+            "Archive each stock research judgment explicitly present in the answer. Empty for general questions. "
+            "Never invent a trading recommendation just to create an annotation. "
+            "symbol is the exact security code. block_indices are one-based indices of the supporting "
+            "inference/recommendation/risk blocks, including invalidation conditions where available. "
+            "Use watch unless the visible answer explicitly states buy, not_buy, or avoid."
+        )),
     ]
     blocks: Annotated[
         list[StructuredAnswerBlock],

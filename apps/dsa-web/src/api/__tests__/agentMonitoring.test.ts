@@ -27,7 +27,8 @@ describe('agentMonitoringApi', () => {
           step_idempotency_reuses: 0,
           recovery_attempts_24h: 1,
           recovery_24h: { terminal_runs: 1, successful_runs: 1, success_rate: 1 },
-          workload_24h: { events: 2, events_per_run: 1, provider_calls: 1, tool_calls: 1 },
+          workload_24h: { events: 2, events_per_run: 1, provider_calls: 1, tool_calls: 1,
+            actual_usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, reported_calls: 1, unreported_calls: 0 } },
           slo_24h: {
             terminal_runs: 2,
             successful_runs: 2,
@@ -46,6 +47,7 @@ describe('agentMonitoringApi', () => {
     expect(get).toHaveBeenCalledWith('/api/v1/agent/metrics');
     expect(result.metrics.slo24h.durationMsP95).toBe(200);
     expect(result.metrics.workload24h.providerCalls).toBe(1);
+    expect(result.metrics.workload24h.actualUsage?.totalTokens).toBe(15);
     expect(result.metrics.recovery24h.successRate).toBe(1);
   });
 

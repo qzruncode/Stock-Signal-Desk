@@ -10,6 +10,7 @@ cryptography>=43.0.0        # encrypted Agent traces
 
 # 数据源依赖
 akshare>=1.18.81            # A股结构化公司事件、申万指数与市场高低点修复
+chinese-calendar==1.11.0   # Existing calendar API used by stock-sync routes
 
 # 数据处理
 pandas>=2.0.0               # 数据分析
@@ -50,3 +51,4 @@ markitdown[pdf,docx,pptx,xlsx,xls]==0.1.6 # PDF/Office URL 转 Markdown（webfet
 fastapi>=0.109.0            # 现代 Python Web 框架
 uvicorn[standard]>=0.27.0   # ASGI 服务器
 python-multipart>=0.0.6     # FastAPI File/Form upload support
+assistant-stream==0.0.32   # Native assistant-ui stream protocol used by run_registry

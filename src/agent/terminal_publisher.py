@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from src.services.research_archive import project_research_conclusions
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -460,7 +461,10 @@ class AgentTerminalPublisher:
                         # graph. Clear it as the new turn becomes canonical.
                         agent_context={},
                         artifacts=(),
-                        conclusions=(),
+                        conclusions=(
+                            project_research_conclusions(state, as_of=datetime.now())
+                            if status == "completed" else ()
+                        ),
                         trace=trace_payload,
                         generated_title=(
                             self.session_service.generate_title(first_user_text)

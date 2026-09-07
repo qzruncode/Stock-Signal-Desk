@@ -1,0 +1,3 @@
+# Optional, local-only quality experiments; no tracing service is required.
+agentevals==0.0.9
+pytest==9.1.0

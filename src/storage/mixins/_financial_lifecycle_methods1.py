@@ -31,8 +31,8 @@ class _FinancialLifecycleMethods1:
             if (
                 not task_id
                 or not symbol
-                or conclusion_type != "buy_gate"
-                or verdict not in {"buy", "not_buy"}
+                or conclusion_type not in {"buy_gate", "research"}
+                or verdict not in {"buy", "not_buy", "watch", "avoid"}
             ):
                 continue
             identity = (
@@ -54,8 +54,9 @@ class _FinancialLifecycleMethods1:
                     select(StockDaily)
                     .where(
                         StockDaily.code == symbol,
-                        StockDaily.date <= as_of_at.date(),
+                        StockDaily.date < as_of_at.date(),
                         StockDaily.close.is_not(None),
+                        StockDaily.close > 0,
                     )
                     .order_by(StockDaily.date.desc())
                     .limit(1)
@@ -208,7 +209,8 @@ class _FinancialLifecycleMethods1:
                         != "completed",
                     )
                     .order_by(
-                        AgentFinancialConclusion.as_of_at.asc()
+                        AgentFinancialConclusion.updated_at.asc(),
+                        AgentFinancialConclusion.as_of_at.asc(),
                     )
                     .limit(max(1, min(limit, 5000)))
                 )
@@ -217,6 +219,7 @@ class _FinancialLifecycleMethods1:
             )
             for conclusion in conclusions:
                 counters["conclusions_scanned"] += 1
+                conclusion.updated_at = now
                 if (
                     conclusion.baseline_trade_date is None
                     or conclusion.baseline_price is None
@@ -227,8 +230,9 @@ class _FinancialLifecycleMethods1:
                             .where(
                                 StockDaily.code == conclusion.symbol,
                                 StockDaily.date
-                                <= conclusion.as_of_at.date(),
+                                < conclusion.as_of_at.date(),
                                 StockDaily.close.is_not(None),
+                                StockDaily.close > 0,
                             )
                             .order_by(StockDaily.date.desc())
                             .limit(1)
@@ -252,6 +256,8 @@ class _FinancialLifecycleMethods1:
                             StockDaily.date
                             > conclusion.baseline_trade_date,
                             StockDaily.close.is_not(None),
+                            StockDaily.close > 0,
+                            StockDaily.date < now.date(),
                         )
                         .order_by(StockDaily.date.asc())
                         .limit(max(DEFAULT_OUTCOME_HORIZONS))
@@ -313,7 +319,7 @@ class _FinancialLifecycleMethods1:
                             else "flat"
                         )
                         directional_success = return_pct > 0
-                    else:
+                    elif conclusion.verdict == "not_buy":
                         label = (
                             "avoided_drawdown"
                             if return_pct < 0
@@ -323,6 +329,9 @@ class _FinancialLifecycleMethods1:
                         )
                         # "不符合买入条件"并非看空预测，不把它伪装成
                         # 可用涨跌方向衡量的预测准确率。
+                        directional_success = None
+                    else:
+                        label = "observed_return"
                         directional_success = None
                     outcome.status = "completed"
                     outcome.evaluated_through_date = window[-1].date
@@ -350,7 +359,7 @@ class _FinancialLifecycleMethods1:
                             "semantics": (
                                 "directional_validation"
                                 if conclusion.verdict == "buy"
-                                else "opportunity_cost_only"
+                                else "opportunity_cost_only" if conclusion.verdict == "not_buy" else "observation_only"
                             ),
                         }
                     )

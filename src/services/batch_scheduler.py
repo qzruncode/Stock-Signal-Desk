@@ -145,7 +145,15 @@ def _finish_schedule_slot(slot_key: str, *, success: bool, message: str) -> None
 
 def _is_trading_day() -> bool:
     config = get_config()
-    return not config.trading_day_check_enabled or datetime.now().weekday() < 5
+    if not config.trading_day_check_enabled:
+        return True
+    from src.tools._trading_calendar import trade_dates
+
+    try:
+        return datetime.now().date() in trade_dates()
+    except Exception:
+        logger.warning("交易日历不可用，跳过定时跑批", exc_info=True)
+        return False
 
 
 async def run_batch_scheduler(
@@ -175,7 +183,7 @@ async def run_batch_scheduler(
     while not stop_event.is_set():
         try:
             schedule = await asyncio.to_thread(_load_effective_schedule)
-            if schedule and schedule.get("times") and _is_trading_day():
+            if schedule and schedule.get("times") and await asyncio.to_thread(_is_trading_day):
                 now = datetime.now()
                 due_slot = _due_schedule_slot(now, schedule["times"])
                 if (

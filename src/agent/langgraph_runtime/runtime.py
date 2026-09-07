@@ -370,7 +370,12 @@ class LangGraphRuntimeManager:
                 run_id=run_id,
                 worker_id=active_run_registry.worker_id,
             )
-            model_client: Any = LiteLLMChatModel(gateway=gateway, llm_config=dict(llm_config))
+            from src.agent.usage import PersistedUsageCallback
+
+            model_client: Any = LiteLLMChatModel(
+                gateway=gateway, llm_config=dict(llm_config),
+                callbacks=[PersistedUsageCallback(database, run_id)],
+            )
         else:
             model_client = model
         tool_executor = executor or AtomicToolExecutor(
@@ -422,6 +427,9 @@ class LangGraphRuntimeManager:
                 data = chunk.get("data")
                 if chunk_type == "messages" and isinstance(data, (list, tuple)) and data:
                     message = data[0]
+                    metadata = data[1] if len(data) > 1 and isinstance(data[1], Mapping) else {}
+                    if metadata.get("lc_source") == "summarization":
+                        continue
                     if isinstance(message, (AIMessageChunk, AIMessage)):
                         context.events.model_message(message)
                 elif chunk_type == "updates" and isinstance(data, Mapping):

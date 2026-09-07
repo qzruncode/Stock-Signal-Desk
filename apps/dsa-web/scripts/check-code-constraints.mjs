@@ -1,10 +1,14 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const repoRoot = join(root, '..', '..');
 const srcRoot = join(root, 'src');
 const staticAssetsRoot = join(repoRoot, 'static', 'assets');
+const args = process.argv.slice(2);
+if (args.length && (args[0] !== '--files' || args.length < 2)) throw new Error('Usage: check-code-constraints.mjs [--files src/file.ts ...]');
+const selected = args.length ? args.slice(1).map(path => resolve(root, path)) : null;
+if (selected?.some(path => !path.startsWith(`${srcRoot}/`) || !/\.(ts|tsx)$/.test(path))) throw new Error('Select TypeScript files inside src/');
 
 const MAX_FRONTEND_SOURCE_LINES = 600;
 const MAX_ENTRY_CHUNK_KB = 150;
@@ -37,7 +41,7 @@ function lineCount(path) {
 }
 
 function checkSourceLineBudgets() {
-  const files = walk(srcRoot, (path) => (
+  const files = selected ?? walk(srcRoot, (path) => (
     /\.(ts|tsx)$/.test(path)
     && !path.includes('/__tests__/')
     && !path.endsWith('.d.ts')
@@ -99,7 +103,7 @@ function checkBuildChunkBudgets() {
   return true;
 }
 
-const ok = [checkSourceLineBudgets(), checkBuildChunkBudgets()].every(Boolean);
+const ok = [checkSourceLineBudgets(), selected ? true : checkBuildChunkBudgets()].every(Boolean);
 if (!ok) {
   process.exitCode = 1;
 }

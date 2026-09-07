@@ -114,6 +114,29 @@ def test_litellm_gateway_requires_a_model_from_configuration() -> None:
         )
 
 
+def test_native_callback_reports_cumulative_stream_usage_only_once() -> None:
+    from langchain_core.callbacks import UsageMetadataCallbackHandler
+
+    async def scenario():
+        async def completion(**kwargs):
+            assert kwargs['stream_options'] == {'include_usage': True}
+            return _AsyncProviderStream([
+                {'model': 'test-model', 'choices': [{'delta': {'content': 'answer'}}],
+                 'usage': {'prompt_tokens': 10, 'completion_tokens': 1, 'total_tokens': 11}},
+                {'model': 'test-model', 'choices': [],
+                 'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}},
+            ])
+        gateway = LiteLLMGateway(llm_config={'model': 'test-model'}, database=None,
+                                run_id='usage', worker_id='test', completion=completion)
+        usage = UsageMetadataCallbackHandler()
+        model = LiteLLMChatModel(gateway=gateway, llm_config={'model': 'test-model'}, callbacks=[usage])
+        response = await model.ainvoke([HumanMessage(content='test')])
+        assert response.response_metadata['model_name'] == 'test-model'
+        assert response.usage_metadata['total_tokens'] == 15
+        assert usage.usage_metadata['test-model']['total_tokens'] == 15
+    asyncio.run(scenario())
+
+
 def test_graph_event_bridge_streams_native_chunks_and_deduplicates_accepted_answer() -> None:
     class Controller:
         def __init__(self) -> None:

@@ -393,6 +393,7 @@ export const ThreadListSidebar: FC<ThreadListSidebarProps> = ({
       </div>
 
       <div className="flex items-center gap-1 border-t border-border/70 bg-white px-3 py-2">
+        <Link to="/research" className="mr-auto rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted">研究工作区</Link>
         <Link
           to="/setting"
           viewTransition

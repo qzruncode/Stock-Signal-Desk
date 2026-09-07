@@ -4,10 +4,23 @@ import asyncio
 from datetime import datetime
 
 from src.services import batch_scheduler as scheduler
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 def test_normalize_times_filters_invalid_and_deduplicates():
     assert scheduler._normalize_times(["09:30", "09:30", " 18:00 ", "25:00", None]) == ["09:30", "18:00"]
+
+
+def test_scheduler_uses_calendar_and_fails_closed(monkeypatch):
+    import src.tools._trading_calendar as calendar
+    monkeypatch.setattr(scheduler, "get_config", lambda: SimpleNamespace(trading_day_check_enabled=True))
+    monkeypatch.setattr(calendar, "trade_dates", lambda: [])
+    assert scheduler._is_trading_day() is False
+    monkeypatch.setattr(calendar, "trade_dates", lambda: [datetime.now().date()])
+    assert scheduler._is_trading_day() is True
+    monkeypatch.setattr(calendar, "trade_dates", Mock(side_effect=RuntimeError("offline")))
+    assert scheduler._is_trading_day() is False
 
 
 def test_due_schedule_slot_catches_a_short_polling_delay_but_not_a_late_start():

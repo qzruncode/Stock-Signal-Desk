@@ -2,16 +2,14 @@ import type React from 'react';
 import { useEffect } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { cn } from '../../utils/cn';
+import { WorkspaceNav } from './WorkspaceNav';
 
 type ShellProps = {
   children?: React.ReactNode;
 };
 
 /**
- * Product shell for a single-purpose AI assistant.
- *
- * Global feature navigation intentionally lives inside the assistant itself;
- * this wrapper only owns the stable viewport and route content.
+ * Stable viewport with workspace navigation outside the full-screen chat.
  */
 export const Shell: React.FC<ShellProps> = ({ children }) => {
   const location = useLocation();
@@ -79,12 +77,13 @@ export const Shell: React.FC<ShellProps> = ({ children }) => {
   return (
     <div
       className={cn(
-        'w-full overflow-hidden bg-background text-foreground selection:bg-primary/20',
+        'flex w-full flex-col overflow-hidden bg-background text-foreground selection:bg-primary/20',
         isChatHome && 'fixed inset-0',
       )}
       style={isChatHome ? undefined : { height: 'var(--app-shell-height, 100svh)' }}
     >
-      <main className={cn('h-full min-h-0 min-w-0', isChatHome ? 'overflow-hidden' : 'overflow-y-auto px-4')}>
+      {!isChatHome && <WorkspaceNav />}
+      <main className={cn('min-h-0 min-w-0 flex-1', isChatHome ? 'overflow-hidden' : 'overflow-y-auto px-4')}>
         {children ?? <Outlet />}
       </main>
     </div>

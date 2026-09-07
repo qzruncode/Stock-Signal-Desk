@@ -16,6 +16,7 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from src.config import get_config
 from src.storage.models import Base
+from src.storage.mixins.agent_usage import AgentUsageMixin
 from src.storage.migrations import (
     assert_schema_compatible,
     ensure_compatible_schema,
@@ -45,6 +46,7 @@ T = TypeVar("T")
 
 
 class DatabaseManager(
+    AgentUsageMixin,
     DailyDataMixin,
     NewsMixin,
     QuoteKlineMixin,

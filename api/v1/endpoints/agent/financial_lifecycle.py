@@ -49,3 +49,10 @@ def get_financial_conclusion_calibration(
         owner_id=owner_id,
         horizon_trading_days=horizon_trading_days,
     )
+
+
+@router.post("/agent/financial-conclusions/refresh")
+def refresh_financial_conclusions(request: Request, db_manager: DatabaseManager = Depends(get_database_manager)):
+    """Recompute outcomes from stored bars only; never trigger a trade or data fetch."""
+    tenant_id, owner_id = _owner_scope(request)
+    return db_manager.refresh_financial_conclusion_outcomes(tenant_id=tenant_id, owner_id=owner_id)

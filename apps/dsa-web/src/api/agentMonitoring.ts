@@ -29,6 +29,7 @@ export interface AgentRuntimeMetrics {
     toolCalls: number;
     estimatedTokens: number;
     estimatedCostMicros: number;
+    actualUsage?: { reportedCalls: number; unreportedCalls: number; inputTokens: number; outputTokens: number; totalTokens: number } | null;
   };
   slo24h: {
     terminalRuns: number;
